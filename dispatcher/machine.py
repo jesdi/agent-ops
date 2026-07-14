@@ -79,6 +79,8 @@ def next_actions(
     if signal.status == "awaiting-review":
         if task.stage == Stage.AWAITING_SPEC_REVIEW:
             return [NoOp()]  # already notified on a previous pass
+        if task.stage != Stage.SPEC:
+            return [NoOp()]  # only the SPEC stage emits awaiting-review; ignore stale/misrouted
         return [SetTaskStage(Stage.AWAITING_SPEC_REVIEW),
                 Notify("awaiting_spec_review", signal.note)]
 
@@ -96,7 +98,9 @@ def next_actions(
             if not result.ok:
                 return [SetTaskStage(Stage.FAILED),
                         Notify("artifact_failed", result.reason)]
-        nxt = NEXT_STAGE[task.stage]
+        nxt = NEXT_STAGE.get(task.stage)
+        if nxt is None:
+            return [NoOp()]   # done signal for a terminal/unknown stage — ignore
         acts: list[object] = [SpawnStage(nxt)]
         if nxt == Stage.IMPLEMENT:
             # No plan gate — the ping links the plan so a human can kill

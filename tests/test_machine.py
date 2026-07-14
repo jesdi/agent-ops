@@ -57,7 +57,7 @@ def test_no_signal_yet_alive_is_noop():
 def test_awaiting_review_notifies_once():
     acts = next_actions(task(Stage.SPEC), sig("spec", "awaiting-review"), True)
     assert SetTaskStage(Stage.AWAITING_SPEC_REVIEW) in acts
-    assert Notify("awaiting_spec_review") in acts
+    assert any(isinstance(a, Notify) and a.template == "awaiting_spec_review" for a in acts)
     # second pass, stage already updated → no re-notify
     again = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
                          sig("spec", "awaiting-review"), True)
@@ -110,3 +110,15 @@ def test_relative_artifact_resolved_against_worktree(tmp_path):
     acts = next_actions(task(Stage.SPEC, worktree=str(tmp_path)),
                         sig("spec", "done", "docs/spec.md"), True)
     assert acts == [SpawnStage(Stage.PLAN)]
+
+
+def test_done_signal_on_blocked_stage_is_noop():
+    # BLOCKED is in IN_FLIGHT_STAGES but not in NEXT_STAGE; must not KeyError.
+    acts = next_actions(task(Stage.BLOCKED), sig("implement", "done"), True)
+    assert acts == [NoOp()]
+
+
+def test_awaiting_review_on_non_spec_stage_is_noop():
+    # Only SPEC should transition to AWAITING_SPEC_REVIEW; stale/misrouted signals are ignored.
+    acts = next_actions(task(Stage.PLAN), sig("plan", "awaiting-review"), True)
+    assert acts == [NoOp()]
