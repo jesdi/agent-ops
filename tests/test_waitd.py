@@ -1,6 +1,8 @@
 import http.client
 import json
+import shutil
 import socket
+import tempfile
 import threading
 from pathlib import Path
 
@@ -29,26 +31,31 @@ def test_handle_ping_corrupt_body_drops():
     assert n.sent == []
 
 
-def test_serve_end_to_end(tmp_path: Path):
-    sock = tmp_path / "wait.sock"
-    n = FakeNotifier()
-    t = threading.Thread(target=serve, args=(sock, n), daemon=True)
-    t.start()
-    for _ in range(100):  # wait for the socket to appear
-        if sock.exists():
-            break
-        threading.Event().wait(0.05)
+def test_serve_end_to_end():
+    # Use a short temp dir to avoid AF_UNIX path length limit (~104 bytes on macOS)
+    tmpdir = tempfile.mkdtemp(prefix="w_")
+    try:
+        sock = Path(tmpdir) / "w.sock"
+        n = FakeNotifier()
+        t = threading.Thread(target=serve, args=(sock, n), daemon=True)
+        t.start()
+        for _ in range(100):  # wait for the socket to appear
+            if sock.exists():
+                break
+            threading.Event().wait(0.05)
 
-    class UnixConn(http.client.HTTPConnection):
-        def connect(self):
-            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.sock.connect(str(sock))
+        class UnixConn(http.client.HTTPConnection):
+            def connect(self):
+                self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.sock.connect(str(sock))
 
-    conn = UnixConn("localhost")
-    body = json.dumps({"issue": 7})
-    conn.request("POST", "/waiting", body=body,
-                 headers={"Content-Type": "application/json",
-                          "Content-Length": str(len(body))})
-    resp = conn.getresponse()
-    assert resp.status == 200
-    assert n.sent == [("waiting", {"issue": 7})]
+        conn = UnixConn("localhost")
+        body = json.dumps({"issue": 7})
+        conn.request("POST", "/waiting", body=body,
+                     headers={"Content-Type": "application/json",
+                              "Content-Length": str(len(body))})
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert n.sent == [("waiting", {"issue": 7})]
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
