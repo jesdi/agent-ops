@@ -81,6 +81,16 @@ systemctl enable --now agent-ops-digest.timer
 
 cat <<'EOF'
 bootstrap done. Manual follow-ups (interactive, once):
+
+  *** FIREWALL LOCKOUT WARNING ***
+  ufw is now ACTIVE (deny all incoming except tailscale0 and UDP 41641).
+  SSH over the public IP is already BLOCKED. If you are connected via SSH
+  over the public IP and your session ends before Tailscale is up, you will
+  be locked out — recoverable only via your provider's out-of-band console.
+  ALWAYS run this script inside tmux or mosh. Complete step 1 (tailscale up)
+  and confirm `tailscale ssh <host>` connectivity BEFORE closing this session.
+  ***
+
   1. tailscale up
   2. sudo -iu agent claude    # login with the subscription account
   3. sudo -iu agent gh auth login   # fine-grained PAT: issues, projects,

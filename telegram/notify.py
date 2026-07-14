@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import sys
@@ -34,5 +35,5 @@ class Notifier:
         try:
             _http_post(f"https://api.telegram.org/bot{token}/sendMessage",
                        {"chat_id": chat_id, "text": text})
-        except OSError as e:
+        except (OSError, http.client.HTTPException) as e:
             print(f"telegram send failed: {e}", file=sys.stderr)

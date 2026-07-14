@@ -122,14 +122,18 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         slot = allocate_slot(load_all(cfg.state_dir))
         if slot is None:
             break
-        deps.github.claim(target, cand)
-        wt = create_workspace(target, cand.number, dry_run=dry_run)
+        wt = create_workspace(target, cand.number, dry_run=dry_run)  # if this throws: board never claimed (still Ready), no state file → naturally retried next pass, no strand
         task = TaskState(issue=cand.number, target=target.name,
                          stage=Stage.QUEUED, slot=slot, worktree=wt,
                          branch=f"agent/task-{cand.number}",
                          title=cand.title, updated_at=_now())
-        save(cfg.state_dir, task)
-        _spawn_stage(cfg, deps, target, task, Stage.SPEC)
+        save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
+        try:
+            deps.github.claim(target, cand)  # irreversible board mutation — last
+            _spawn_stage(cfg, deps, target, task, Stage.SPEC)
+        except Exception:
+            deps.github.release(target, cand.number, "claim/spawn failed after provisioning")
+            raise
         free -= 1
 
 

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import dispatcher.main as main
 from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
@@ -183,6 +185,46 @@ def test_dead_session_is_crash(tmp_path, monkeypatch):
     assert "session_crashed" in d.notifier.sent
     assert load(c.state_dir, 42).stage is Stage.FAILED
     assert wt.exists()  # worktree preserved
+
+
+def test_claim_skipped_when_workspace_fails(tmp_path, monkeypatch):
+    """create_workspace failure must NOT leave the board claimed (regression: orphan-claim window)."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
+    sess = FakeSessions()
+
+    def failing_workspace(target, issue, dry_run=False):
+        raise RuntimeError("git fetch failed")
+
+    monkeypatch.setattr(main, "create_workspace", failing_workspace)
+
+    with pytest.raises(RuntimeError):
+        main.run_pass(c, deps(gh, sess))
+
+    assert gh.claimed == [], "board must NOT be claimed when workspace creation fails"
+    assert load(c.state_dir, 42) is None, "no state file must exist for the stranded issue"
+
+
+def test_release_called_when_claim_fails(tmp_path, monkeypatch):
+    """github.claim failure after workspace+save must trigger release and leave QUEUED state (regression: orphan-claim window)."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+
+    class ClaimFailsGitHub(FakeGitHub):
+        def claim(self, target, cand):
+            raise RuntimeError("GitHub API error")
+
+    gh = ClaimFailsGitHub([Candidate(42, "Add widget", "u42")])
+    sess = FakeSessions()
+
+    with pytest.raises(RuntimeError):
+        main.run_pass(c, deps(gh, sess))
+
+    assert any(issue == 42 for issue, _ in gh.released), "release must be called for the issue when claim fails"
+    ts = load(c.state_dir, 42)
+    assert ts is not None and ts.stage is Stage.QUEUED, "QUEUED state file must exist for crash-recovery path"
 
 
 def test_digest(tmp_path, monkeypatch):
