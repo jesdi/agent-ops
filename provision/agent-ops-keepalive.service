@@ -1,0 +1,7 @@
+[Unit]
+Description=agent-ops claude token keepalive
+
+[Service]
+Type=oneshot
+User=agent
+ExecStart=/usr/bin/tmux new-session -d -s keepalive "claude --permission-mode plan 'Reply with exactly: ok. Then exit.'; sleep 2"

@@ -1,0 +1,14 @@
+[Unit]
+Description=agent-ops dispatcher pass
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=agent
+WorkingDirectory=/home/agent/agent-ops
+Environment=AGENT_OPS_STATE_DIR=/home/agent/agent-ops-state
+# op resolves TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from the Development
+# vault via the service-account token in OP_SERVICE_ACCOUNT_TOKEN.
+EnvironmentFile=/home/agent/agent-ops-state/op-token.env
+ExecStart=/usr/local/bin/op run --env-file=/home/agent/agent-ops/provision/op.env.tpl -- \
+  /home/agent/agent-ops/.venv/bin/python -m dispatcher.main --config /home/agent/agent-ops/targets.yaml
