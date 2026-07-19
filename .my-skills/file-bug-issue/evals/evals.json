@@ -1,0 +1,23 @@
+{
+  "skill_name": "file-bug-issue",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "While testing the data table I noticed that when a row has a null quantity, the serialize step throws a TypeError and the whole report endpoint 500s. Steps: load a report, add a row with no quantity set, hit save, watch the backend crash. Can you make sure this is tracked?",
+      "expected_output": "Searches open issues filtered by bug/python labels, judges for duplicates, and either creates a structured issue (Summary/Where/Steps/Expected/Actual/Evidence/Environment) with the bug label or comments on a real existing duplicate. Reports the issue URL.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "The company logo in the footer attribution renders as a broken image when the third-party API token is missing — it should fall back to a placeholder instead. Log this so we don't forget.",
+      "expected_output": "Picks frontend/javascript + bug labels, searches open issues, and files (or comments on) an issue with a clear UI-bug repro and expected fallback behaviour.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "I think there's already an open issue about a background job double-firing when a record is superseded. I just hit it again on a fresh branch. Make sure the latest reproduction is captured.",
+      "expected_output": "Finds the existing open issue via label-filtered + text search, judges it as the same defect, and ADDS A COMMENT with the new reproduction/context rather than creating a duplicate.",
+      "files": []
+    }
+  ]
+}

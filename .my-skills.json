@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "skills": {
+    "branch-audit": {
+      "version": "0.1.0",
+      "agents": ["claude"]
+    },
+    "ceo-review": {
+      "version": "0.1.0",
+      "agents": ["claude"]
+    },
+    "file-bug-issue": {
+      "version": "0.1.0",
+      "agents": ["claude"]
+    }
+  }
+}
