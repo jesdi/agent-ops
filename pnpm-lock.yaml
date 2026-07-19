@@ -1,0 +1,50 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      add:
+        specifier: ^2.0.6
+        version: 2.0.6
+      mattpocock-skills:
+        specifier: github:mattpocock/skills
+        version: https://codeload.github.com/mattpocock/skills/tar.gz/9603c1cc8118d08bc1b3bf34cf714f62178dea3b
+      skills:
+        specifier: ^1.5.16
+        version: 1.5.16
+
+packages:
+
+  add@2.0.6:
+    resolution: {integrity: sha512-j5QzrmsokwWWp6kUcJQySpbG+xfOBqqKnup3OIk1pz+kB/80SLorZ9V8zHFLO92Lcd+hbvq8bT+zOGoPkmBV0Q==}
+
+  mattpocock-skills@https://codeload.github.com/mattpocock/skills/tar.gz/9603c1cc8118d08bc1b3bf34cf714f62178dea3b:
+    resolution: {tarball: https://codeload.github.com/mattpocock/skills/tar.gz/9603c1cc8118d08bc1b3bf34cf714f62178dea3b}
+    version: 1.1.0
+
+  skills@1.5.16:
+    resolution: {integrity: sha512-O+pjcrnm5WkSSBD3WJxjdDssE+oynm7k1LnKMjXvsVeQdmKmY/a+gi6WUOhyGVIYptkFmBBEho/zyf22UtN6cw==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
+snapshots:
+
+  add@2.0.6: {}
+
+  mattpocock-skills@https://codeload.github.com/mattpocock/skills/tar.gz/9603c1cc8118d08bc1b3bf34cf714f62178dea3b: {}
+
+  skills@1.5.16:
+    dependencies:
+      yaml: 2.9.0
+
+  yaml@2.9.0: {}
