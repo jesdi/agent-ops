@@ -1,0 +1,7 @@
+[Unit]
+Description=agent-ops pull-based convergence pass
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/agent-ops/provision/update.sh

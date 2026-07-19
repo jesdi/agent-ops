@@ -3,13 +3,12 @@ Description=agent-ops waitd (stop-hook ping -> Telegram)
 After=network-online.target
 
 [Service]
-User=agent
-Environment=AGENT_OPS_STATE_DIR=/home/agent/agent-ops-state
-EnvironmentFile=/home/agent/agent-ops-state/op-token.env
-ExecStart=/usr/local/bin/op run --env-file=/home/agent/agent-ops/provision/op.env.tpl -- \
-  /home/agent/agent-ops/.venv/bin/python -m dispatcher.waitd
+Environment=AGENT_OPS_STATE_DIR=%h/agent-ops-state
+EnvironmentFile=%h/agent-ops-state/op-token.env
+ExecStart=/usr/local/bin/op run --env-file=%h/agent-ops/provision/op.env.tpl -- \
+  %h/agent-ops/.venv/bin/python -m dispatcher.waitd
 Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
