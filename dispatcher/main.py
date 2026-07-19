@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dispatcher.budget import fetch_usage, should_spawn
+from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, SetTaskStage,
@@ -171,7 +172,8 @@ def main() -> None:
     if args.digest:
         send_digest(cfg, deps)
     else:
-        run_pass(cfg, deps, dry_run=args.dry_run)
+        with pass_lock(cfg.state_dir):
+            run_pass(cfg, deps, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
