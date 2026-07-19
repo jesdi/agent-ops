@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Idempotent VPS bootstrap for the agent-ops box (Ubuntu 24.04, Hetzner).
-# Run as root once; safe to re-run. Manual follow-ups are printed at the end.
+# Run as root once; safe to re-run. Root is used ONLY here (packages,
+# firewall, tailscale, user + linger); all agent-ops units are systemd
+# USER units under `agent`, and ongoing deploys are pull-based via
+# agent-ops-update.timer (ADR 0001). Manual follow-ups print at the end.
 set -euo pipefail
 
 AGENT_USER=agent
@@ -50,34 +53,58 @@ ufw allow in on tailscale0
 ufw allow 41641/udp   # tailscale
 ufw --force enable
 
-# --- user + layout ----------------------------------------------------------
+# --- user + linger + layout -------------------------------------------------
 id -u $AGENT_USER >/dev/null 2>&1 || useradd -m -s /bin/bash -G docker $AGENT_USER
-sudo -u $AGENT_USER mkdir -p \
+loginctl enable-linger $AGENT_USER
+
+AGENT_UID=$(id -u $AGENT_USER)
+# Wait for the lingering user manager to come up.
+for _ in $(seq 1 30); do
+  [ -S /run/user/$AGENT_UID/bus ] && break
+  sleep 1
+done
+[ -S /run/user/$AGENT_UID/bus ] || { echo "user manager for $AGENT_USER never started" >&2; exit 1; }
+
+as_agent() {
+  sudo -u $AGENT_USER XDG_RUNTIME_DIR=/run/user/$AGENT_UID \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$AGENT_UID/bus "$@"
+}
+
+as_agent mkdir -p \
   $AGENT_HOME/repos \
-  $AGENT_HOME/agent-ops-state
+  $AGENT_HOME/agent-ops-state \
+  $AGENT_HOME/.config/systemd/user
 
 if [ ! -d $AGENT_HOME/agent-ops ]; then
-  sudo -u $AGENT_USER git clone https://github.com/jesdi/agent-ops \
-    $AGENT_HOME/agent-ops
+  as_agent git clone https://github.com/jesdi/agent-ops $AGENT_HOME/agent-ops
 fi
 cd $AGENT_HOME/agent-ops
-sudo -u $AGENT_USER python3 -m venv .venv
-sudo -u $AGENT_USER .venv/bin/pip install -e .
+as_agent python3 -m venv .venv
+as_agent .venv/bin/pip install -e .
 
-# --- systemd ----------------------------------------------------------------
-cp provision/agent-ops-dispatcher.service \
+# Seed box-local live config from the template (never overwritten).
+if [ ! -f $AGENT_HOME/agent-ops-state/targets.yaml ]; then
+  as_agent cp targets.example.yaml $AGENT_HOME/agent-ops-state/targets.yaml
+fi
+
+# --- systemd user units ------------------------------------------------------
+# Initial install; from here on agent-ops-update.timer keeps them in sync.
+as_agent cp provision/agent-ops-dispatcher.service \
    provision/agent-ops-dispatcher.timer \
    provision/agent-ops-waitd.service \
    provision/agent-ops-keepalive.service \
    provision/agent-ops-keepalive.timer \
    provision/agent-ops-digest.service \
    provision/agent-ops-digest.timer \
-   /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now agent-ops-waitd.service
-systemctl enable --now agent-ops-dispatcher.timer
-systemctl enable --now agent-ops-keepalive.timer
-systemctl enable --now agent-ops-digest.timer
+   provision/agent-ops-update.service \
+   provision/agent-ops-update.timer \
+   $AGENT_HOME/.config/systemd/user/
+as_agent systemctl --user daemon-reload
+as_agent systemctl --user enable --now agent-ops-waitd.service
+as_agent systemctl --user enable --now agent-ops-dispatcher.timer
+as_agent systemctl --user enable --now agent-ops-keepalive.timer
+as_agent systemctl --user enable --now agent-ops-digest.timer
+as_agent systemctl --user enable --now agent-ops-update.timer
 
 cat <<'EOF'
 bootstrap done. Manual follow-ups (interactive, once):
@@ -94,11 +121,13 @@ bootstrap done. Manual follow-ups (interactive, once):
   1. tailscale up
   2. sudo -iu agent claude    # login with the subscription account
   3. sudo -iu agent gh auth login   # fine-grained PAT: issues, projects,
-     contents, pull-requests on target repos only
+     contents, pull-requests on TARGET repos only — the PAT must NOT have
+     write access to jesdi/agent-ops (the box executes main; ADR 0001)
   4. echo 'OP_SERVICE_ACCOUNT_TOKEN=...' > /home/agent/agent-ops-state/op-token.env
      chown agent: /home/agent/agent-ops-state/op-token.env && chmod 600 ...
   5. clone target repos into /home/agent/repos/ and fill the real project
-     field/option IDs into /home/agent/agent-ops/targets.yaml
+     field/option IDs into /home/agent/agent-ops-state/targets.yaml
      (gh project field-list <n> --owner <owner> --format json)
-  6. start with capacity: 1 in targets.yaml for the single-lane rollout
+  6. start with capacity: 1 in ~/agent-ops-state/targets.yaml for the
+     single-lane rollout
 EOF
