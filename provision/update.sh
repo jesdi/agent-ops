@@ -57,6 +57,15 @@ if [ -n "$changed" ]; then
   for unit in $changed; do
     # try-restart: no-op for units that are not running (oneshots between
     # timer firings); restarts long-running services and live timers.
+    #
+    # KNOWN EDGE CASE — self-restart: if agent-ops-update.service or
+    # agent-ops-update.timer is among the changed units, try-restarting it
+    # here will kill or reschedule the running instance of this very script.
+    # Any unit whose name sorts after the updater's own units in $changed will
+    # not be restarted this pass.  This is accepted behaviour (plan-mandated
+    # verbatim): the next timer firing will see old==new for those units and
+    # skip them, so a co-changed service may run stale code for one deploy
+    # cycle until its own file changes again.  No units are filtered here.
     $SYSTEMCTL try-restart "$unit"
   done
 fi

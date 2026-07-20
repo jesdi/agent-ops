@@ -47,3 +47,27 @@ def test_defaults(tmp_path: Path):
     assert cfg.racing_minutes == 30
     assert cfg.racing_threshold == 0.95
     assert cfg.targets == []
+
+
+# --- env-var override tests (FIX #1) ---
+
+def test_state_dir_env_overrides_yaml(tmp_path: Path, monkeypatch):
+    """AGENT_OPS_STATE_DIR must win over whatever state_dir the YAML says."""
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /yaml/path\ntargets: []\n")
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/env/path")
+    cfg = load_config(p)
+    assert cfg.state_dir == "/env/path", (
+        "state_dir should come from AGENT_OPS_STATE_DIR when the env var is set"
+    )
+
+
+def test_state_dir_falls_back_to_yaml_when_env_unset(tmp_path: Path, monkeypatch):
+    """Without AGENT_OPS_STATE_DIR, state_dir must come from the YAML file."""
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /yaml/path\ntargets: []\n")
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    cfg = load_config(p)
+    assert cfg.state_dir == "/yaml/path", (
+        "state_dir should fall back to the YAML value when env var is absent"
+    )

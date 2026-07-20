@@ -1,6 +1,7 @@
 """Load targets.yaml into typed config objects."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,7 +37,7 @@ class Config:
 def load_config(path: str | Path) -> Config:
     raw = yaml.safe_load(Path(path).read_text())
     return Config(
-        state_dir=raw["state_dir"],
+        state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
         capacity=raw.get("capacity", 3),
         budget_threshold=raw.get("budget_threshold", 0.8),
         racing_minutes=raw.get("racing_minutes", 30),
