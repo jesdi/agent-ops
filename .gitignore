@@ -8,3 +8,4 @@ agent_ops.egg-info/
 docs/superpowers/
 
 node_modules/
+targets.yaml
