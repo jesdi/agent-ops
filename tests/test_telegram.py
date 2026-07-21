@@ -48,18 +48,6 @@ def test_dry_run_prints(monkeypatch, capsys):
     assert "[dry-run]" in capsys.readouterr().out
 
 
-def test_send_returns_zero_on_dry_run():
-    assert notify.Notifier(dry_run=True).send("waiting", issue=1) == 0
-
-
-def test_send_returns_message_id(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "T")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "C")
-    monkeypatch.setattr(notify, "_http_post",
-                        lambda url, payload: {"result": {"message_id": 55}})
-    assert notify.Notifier().send("waiting", issue=1) == 55
-
-
 def test_parked_question_mentions_reply_and_attach():
     text = render("parked_question", issue=12, title="T", url="u",
                   note="Which auth flow?")

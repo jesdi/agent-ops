@@ -1,5 +1,5 @@
 """Long-lived unix-socket listener: worktree Stop hooks curl it whenever a
-session stops for input; it forwards "task #N is waiting" to Telegram.
+session stops for input; writes waiting marker → dispatcher parks on next pass.
 Accepted v1 noise: it also fires while a human is attached mid-conversation."""
 from __future__ import annotations
 
@@ -10,30 +10,30 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import UnixStreamServer
 
-from telegram.notify import Notifier
+from dispatcher.state import mark_waiting
 
 
-def handle_ping(body: bytes, notifier) -> None:
+def handle_ping(body: bytes, state_dir) -> None:
     try:
         issue = int(json.loads(body)["issue"])
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         print(f"waitd: dropping corrupt ping: {body!r}", file=sys.stderr)
         return
-    notifier.send("waiting", issue=issue)
+    mark_waiting(state_dir, issue)
 
 
 class _Server(UnixStreamServer):
     allow_reuse_address = True
 
-    def __init__(self, sock_path, notifier):
-        self.notifier = notifier
+    def __init__(self, sock_path, state_dir):
+        self.state_dir = state_dir
         super().__init__(str(sock_path), _Handler)
 
 
 class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
-        handle_ping(self.rfile.read(length), self.server.notifier)
+        handle_ping(self.rfile.read(length), self.server.state_dir)
         self.send_response(200)
         self.end_headers()
 
@@ -45,18 +45,18 @@ class _Handler(BaseHTTPRequestHandler):
         return "unix"
 
 
-def serve(sock_path: str | Path, notifier) -> None:
+def serve(sock_path: str | Path, state_dir: str | Path) -> None:
     p = Path(sock_path)
     p.parent.mkdir(parents=True, exist_ok=True)
     if p.exists():
         p.unlink()
-    _Server(p, notifier).serve_forever()
+    _Server(p, state_dir).serve_forever()
 
 
 def main() -> None:
     state_dir = Path(os.environ.get("AGENT_OPS_STATE_DIR",
                                     Path.home() / "agent-ops-state"))
-    serve(state_dir / "wait.sock", Notifier())
+    serve(state_dir / "wait.sock", state_dir)
 
 
 if __name__ == "__main__":
