@@ -14,6 +14,7 @@ REPO_DIR="${AGENT_OPS_REPO:-$HOME/agent-ops}"
 STATE_DIR="${AGENT_OPS_STATE_DIR:-$HOME/agent-ops-state}"
 UNIT_DIR="${AGENT_OPS_UNIT_DIR:-$HOME/.config/systemd/user}"
 SYSTEMCTL="${AGENT_OPS_SYSTEMCTL:-systemctl --user}"
+PODMAN="${AGENT_OPS_PODMAN:-podman}"
 
 mkdir -p "$STATE_DIR" "$UNIT_DIR"
 
@@ -41,6 +42,10 @@ git merge --ff-only origin/main
 
 if ! git diff --quiet "$old" "$new" -- pyproject.toml; then
   .venv/bin/pip install -e .
+fi
+
+if ! git diff --quiet "$old" "$new" -- Containerfile; then
+  $PODMAN build -t agent-ops-session -f Containerfile .
 fi
 
 changed=""

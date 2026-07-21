@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Idempotent VPS bootstrap for the agent-ops box (Ubuntu 24.04, Hetzner).
-# Run as root once; safe to re-run. Root is used ONLY here (packages,
-# firewall, tailscale, user + linger); all agent-ops units are systemd
-# USER units under `agent`, and ongoing deploys are pull-based via
-# agent-ops-update.timer (ADR 0001). Manual follow-ups print at the end.
+# Idempotent VPS bootstrap for the agent-ops box (dedicated 2 vCPU / 4 GB,
+# Ubuntu 24.04, Hetzner; ADR 0002). Run as root once; safe to re-run. Root
+# is used ONLY here (packages, firewall, tailscale, user + linger); all
+# agent-ops units are systemd USER units under `agent`, and ongoing deploys
+# are pull-based via agent-ops-update.timer (ADR 0001). Manual follow-ups
+# print at the end.
 set -euo pipefail
 
 AGENT_USER=agent
@@ -12,7 +13,7 @@ AGENT_HOME=/home/$AGENT_USER
 # --- packages ---------------------------------------------------------------
 apt-get update
 apt-get install -y git tmux mosh curl ufw jq python3 python3-venv \
-  docker.io docker-compose-v2 pipenv
+  podman uidmap slirp4netns systemd-zram-generator pipenv
 
 # node + pnpm (via corepack)
 if ! command -v node >/dev/null; then
@@ -53,8 +54,16 @@ ufw allow in on tailscale0
 ufw allow 41641/udp   # tailscale
 ufw --force enable
 
+# --- zram swap (~2 GB): cushion for session RSS spikes / capacity-2 experiment
+cat > /etc/systemd/zram-generator.conf <<'ZRAM'
+[zram0]
+zram-size = 2048
+ZRAM
+systemctl daemon-reload
+systemctl start systemd-zram-setup@zram0.service || true
+
 # --- user + linger + layout -------------------------------------------------
-id -u $AGENT_USER >/dev/null 2>&1 || useradd -m -s /bin/bash -G docker $AGENT_USER
+id -u $AGENT_USER >/dev/null 2>&1 || useradd -m -s /bin/bash $AGENT_USER
 loginctl enable-linger $AGENT_USER
 
 AGENT_UID=$(id -u $AGENT_USER)
@@ -81,6 +90,7 @@ fi
 cd $AGENT_HOME/agent-ops
 as_agent python3 -m venv .venv
 as_agent .venv/bin/pip install -e .
+as_agent podman build -t agent-ops-session -f Containerfile .
 
 # Seed box-local live config from the template (never overwritten).
 if [ ! -f $AGENT_HOME/agent-ops-state/targets.yaml ]; then
@@ -119,10 +129,13 @@ bootstrap done. Manual follow-ups (interactive, once):
   ***
 
   1. tailscale up
-  2. sudo -iu agent claude    # login with the subscription account
+  2. sudo -iu agent claude    # run once on the host to log in
+     # then: cp -r ~/.claude ~/agent-ops-state/claude-home
+     # (sessions mount it; transcripts and auth live there)
   3. sudo -iu agent gh auth login   # fine-grained PAT: issues, projects,
      contents, pull-requests on TARGET repos only — the PAT must NOT have
-     write access to jesdi/agent-ops (the box executes main; ADR 0001)
+     write access to jesdi/agent-ops (the box executes main; ADR 0001);
+     the PAT additionally needs actions:write on target repos (to dispatch e2e.yml)
   4. echo 'OP_SERVICE_ACCOUNT_TOKEN=...' > /home/agent/agent-ops-state/op-token.env
      chown agent: /home/agent/agent-ops-state/op-token.env && chmod 600 ...
   5. clone target repos into /home/agent/repos/ and fill the real project

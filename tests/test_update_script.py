@@ -33,6 +33,7 @@ def box(tmp_path):
         "[Unit]\nDescription=waitd v1\n")
     (origin / "provision" / "agent-ops-dispatcher.timer").write_text(
         "[Unit]\nDescription=timer v1\n")
+    (origin / "Containerfile").write_text("FROM node:22-bookworm\n")
     commit_all(origin, "init")
 
     repo = tmp_path / "agent-ops"
@@ -51,6 +52,9 @@ def box(tmp_path):
     pip = venv_bin / "pip"
     pip.write_text(f'#!/bin/sh\necho "pip $@" >> "{calls}"\n')
     pip.chmod(0o755)
+    podman = bin_dir / "podman"
+    podman.write_text(f'#!/bin/sh\necho "podman $@" >> "{calls}"\n')
+    podman.chmod(0o755)
 
     state = tmp_path / "state"
     units = tmp_path / "units"
@@ -65,6 +69,7 @@ def box(tmp_path):
         AGENT_OPS_STATE_DIR=str(state),
         AGENT_OPS_UNIT_DIR=str(units),
         AGENT_OPS_SYSTEMCTL=f"{sysctl} --user",
+        AGENT_OPS_PODMAN=str(podman),
     )
     return SimpleNamespace(origin=origin, repo=repo, state=state,
                            units=units, calls=calls, env=env)
@@ -145,3 +150,20 @@ def test_respects_convergence_lock(box):
         assert r.returncode != 0
     finally:
         lock.close()
+
+
+def test_containerfile_change_triggers_podman_build(box):
+    (box.origin / "Containerfile").write_text(
+        "FROM node:22-bookworm\nRUN true\n")
+    commit_all(box.origin, "containerfile change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "podman build -t agent-ops-session -f Containerfile ." in calls(box)
+
+
+def test_code_change_does_not_build_image(box):
+    (box.origin / "app.py").write_text("x = 1\n")
+    commit_all(box.origin, "code change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "podman" not in calls(box)
