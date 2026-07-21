@@ -37,3 +37,13 @@ def test_implement_prompt_has_verify_and_pr():
 def test_missing_key_raises():
     with pytest.raises(KeyError):
         render_stage_prompt(Stage.SPEC, {"issue_number": 1})
+
+
+def test_implement_prompt_uses_ci_protocol():
+    ctx = dict(issue_number=1, issue_title="t", issue_url="u", repo="o/r",
+               branch="agent/task-1", slot=0, backend_port=8100,
+               frontend_port=5200, verify_cmd="make e2e-remote", spec_path="")
+    text = render_stage_prompt(Stage.IMPLEMENT, ctx)
+    assert "awaiting-ci" in text and "run_id" in text
+    assert "gh workflow run" in text
+    assert "e2e-slot" not in text
