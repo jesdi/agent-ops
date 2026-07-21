@@ -55,6 +55,7 @@ def cfg(tmp_path: Path) -> Config:
     return Config(
         state_dir=str(tmp_path / "state"), capacity=3,
         budget_threshold=0.8, racing_minutes=30, racing_threshold=0.95,
+        session_memory="2g", session_cpus="2",
         targets=[Target(
             name="portfolio_eval", repo="jesdi/portfolio_eval",
             clone_path=str(tmp_path / "repo"),

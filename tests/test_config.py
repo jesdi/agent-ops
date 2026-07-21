@@ -71,3 +71,19 @@ def test_state_dir_falls_back_to_yaml_when_env_unset(tmp_path: Path, monkeypatch
     assert cfg.state_dir == "/yaml/path", (
         "state_dir should fall back to the YAML value when env var is absent"
     )
+
+
+def test_session_caps_default(tmp_path):
+    from dispatcher.config import load_config
+    p = tmp_path / "t.yaml"
+    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    cfg = load_config(p)
+    assert cfg.session_memory == "2g" and cfg.session_cpus == "2"
+
+
+def test_session_caps_overridable(tmp_path):
+    from dispatcher.config import load_config
+    p = tmp_path / "t.yaml"
+    p.write_text("state_dir: /tmp/s\nsession_memory: 1500m\nsession_cpus: '1'\ntargets: []\n")
+    cfg = load_config(p)
+    assert cfg.session_memory == "1500m" and cfg.session_cpus == "1"

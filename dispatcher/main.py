@@ -167,7 +167,7 @@ def main() -> None:
     args = ap.parse_args()
     cfg = load_config(args.config)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
-                sessions=Sessions(dry_run=args.dry_run),
+                sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory, cpus=cfg.session_cpus),
                 notifier=Notifier(dry_run=args.dry_run))
     if args.digest:
         send_digest(cfg, deps)

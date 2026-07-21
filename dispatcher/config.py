@@ -31,6 +31,8 @@ class Config:
     budget_threshold: float
     racing_minutes: int
     racing_threshold: float
+    session_memory: str
+    session_cpus: str
     targets: list[Target]
 
 
@@ -42,5 +44,7 @@ def load_config(path: str | Path) -> Config:
         budget_threshold=raw.get("budget_threshold", 0.8),
         racing_minutes=raw.get("racing_minutes", 30),
         racing_threshold=raw.get("racing_threshold", 0.95),
+        session_memory=str(raw.get("session_memory", "2g")),
+        session_cpus=str(raw.get("session_cpus", "2")),
         targets=[Target(**t) for t in raw.get("targets", [])],
     )

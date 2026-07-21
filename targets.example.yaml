@@ -1,8 +1,10 @@
-capacity: 3
+capacity: 1
 state_dir: /home/agent/agent-ops-state
 budget_threshold: 0.8
 racing_minutes: 30
 racing_threshold: 0.95
+session_memory: 2g   # capacity-2 experiment: 1500m
+session_cpus: "2"
 targets:
   - name: portfolio_eval
     repo: jesdi/portfolio_eval
@@ -10,7 +12,7 @@ targets:
     worktrees_path: /home/agent/repos/portfolio_eval.worktrees
     rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
     setup_cmd: "scripts/setup-worktree.sh"
-    verify_cmd: "make e2e-slot SLOT={slot}"
+    verify_cmd: "make e2e-remote"
     project_number: 1
     project_owner: jesdi
     status_field_id: PVTSSF_xxx
