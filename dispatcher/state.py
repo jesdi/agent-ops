@@ -34,6 +34,13 @@ IN_FLIGHT_STAGES = frozenset({
 
 MAX_SLOTS = 3
 
+# Park lifecycle (orthogonal to stage — the stage is preserved while parked).
+# "" = not parked. Parked tasks release CAPACITY but keep their SLOT
+# (ports/worktree stay reserved until the task truly ends).
+PARK_HUMAN = "parked"            # waiting for operator input
+PARK_CI = "awaiting-ci"          # waiting for a GitHub Actions run
+PARK_WAKE = "unpark-requested"   # wake event arrived; resume when slot free
+
 
 @dataclass(frozen=True)
 class TaskState:
@@ -45,14 +52,20 @@ class TaskState:
     branch: str
     title: str
     updated_at: str
+    park: str = ""
+    ci_run_id: int = 0
+    park_msg_id: int = 0
+    pending_reply: str = ""
+    hold_for_attach: bool = False
 
 
 @dataclass(frozen=True)
 class StageSignal:
     stage: str
-    status: str  # working | awaiting-review | done | blocked
+    status: str  # working | awaiting-review | done | blocked | awaiting-ci
     note: str = ""
     artifact: str = ""
+    run_id: int = 0
 
 
 def _path(state_dir: str | Path, issue: int) -> Path:
@@ -110,6 +123,33 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
             status=str(d["status"]),
             note=str(d.get("note", "")),
             artifact=str(d.get("artifact", "")),
+            run_id=int(d.get("run_id", 0) or 0),
         )
     except (json.JSONDecodeError, KeyError, TypeError):
         return None
+
+
+def active(tasks: list[TaskState]) -> list[TaskState]:
+    return [t for t in tasks if t.stage in IN_FLIGHT_STAGES and not t.park]
+
+
+def parked(tasks: list[TaskState]) -> list[TaskState]:
+    return [t for t in tasks if t.stage in IN_FLIGHT_STAGES and t.park]
+
+
+def _waiting_path(state_dir: str | Path, issue: int) -> Path:
+    return Path(state_dir) / f"waiting-{issue}"
+
+
+def mark_waiting(state_dir: str | Path, issue: int) -> None:
+    p = _waiting_path(state_dir, issue)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.touch()
+
+
+def has_waiting(state_dir: str | Path, issue: int) -> bool:
+    return _waiting_path(state_dir, issue).exists()
+
+
+def clear_waiting(state_dir: str | Path, issue: int) -> None:
+    _waiting_path(state_dir, issue).unlink(missing_ok=True)
