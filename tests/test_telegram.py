@@ -22,8 +22,10 @@ def test_send_posts_to_bot_api(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TOK")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "CHAT")
     seen = {}
-    monkeypatch.setattr(notify, "_http_post",
-                        lambda url, payload: seen.update(url=url, payload=payload))
+    def capture_and_return(url, payload):
+        seen.update(url=url, payload=payload)
+        return {}
+    monkeypatch.setattr(notify, "_http_post", capture_and_return)
     notify.Notifier().send("pr_opened", issue=42, title="t", url="u", note="")
     assert seen["url"] == "https://api.telegram.org/botTOK/sendMessage"
     assert seen["payload"]["chat_id"] == "CHAT"
@@ -44,3 +46,27 @@ def test_dry_run_prints(monkeypatch, capsys):
                         lambda url, payload: (_ for _ in ()).throw(AssertionError))
     notify.Notifier(dry_run=True).send("pr_opened", issue=42, title="t", url="u", note="")
     assert "[dry-run]" in capsys.readouterr().out
+
+
+def test_send_returns_zero_on_dry_run():
+    assert notify.Notifier(dry_run=True).send("waiting", issue=1) == 0
+
+
+def test_send_returns_message_id(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "T")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "C")
+    monkeypatch.setattr(notify, "_http_post",
+                        lambda url, payload: {"result": {"message_id": 55}})
+    assert notify.Notifier().send("waiting", issue=1) == 55
+
+
+def test_parked_question_mentions_reply_and_attach():
+    text = render("parked_question", issue=12, title="T", url="u",
+                  note="Which auth flow?")
+    assert "Which auth flow?" in text and "Reply to THIS message" in text
+    assert "/attach 12" in text
+
+
+def test_status_renders_lines():
+    text = render("status", lines=["#1 x — implement [awaiting-ci run 9]"])
+    assert "agent-ops status" in text and "#1 x" in text
