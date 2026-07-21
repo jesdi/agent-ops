@@ -1,4 +1,5 @@
 import json
+import subprocess
 from dataclasses import replace as dc_replace
 from pathlib import Path
 
@@ -13,10 +14,11 @@ from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_WAKE, Stage, TaskState,
 
 
 class FakeGitHub:
-    def __init__(self, cands=(), run_conclusion=""):
+    def __init__(self, cands=(), run_conclusion="", run_status_raises=False):
         self.cands = list(cands)
         self.claimed, self.released = [], []
         self.run_conclusion = run_conclusion  # "" = still running
+        self.run_status_raises = run_status_raises
 
     def candidates(self, target):
         return self.cands
@@ -31,6 +33,8 @@ class FakeGitHub:
         self.released.append((issue, reason))
 
     def run_status(self, target, run_id):
+        if self.run_status_raises:
+            raise subprocess.CalledProcessError(1, ["gh"])
         return self.run_conclusion
 
 
@@ -448,3 +452,23 @@ def test_status_command_reports(tmp_path, monkeypatch):
     d = deps()
     main.run_pass(c, d)
     assert "status" in d.notifier.sent
+
+
+def test_run_status_error_does_not_abort_pass(tmp_path, monkeypatch):
+    """A gh run_status failure must be treated as 'still running': skip that task,
+    keep the pass going (e.g., a second claimable candidate is still claimed)."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    # Parked CI task whose run_status call will raise CalledProcessError
+    make_task(c, issue=42, park=PARK_CI, ci_run_id=4242)
+    # A fresh candidate available to be claimed
+    gh = FakeGitHub(cands=[Candidate(99, "fresh", "u")], run_status_raises=True)
+    sess = FakeSessions()
+    # Must NOT raise; the pass must survive the error
+    main.run_pass(c, deps(gh, sess))
+    # CI-parked task remains unchanged (still PARK_CI with same run_id)
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_CI and t.ci_run_id == 4242
+    # The rest of the pass continued: the fresh candidate was claimed
+    assert gh.claimed == [99]

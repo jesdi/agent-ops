@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,7 +160,12 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
     for task in load_all(cfg.state_dir):
         if task.target != target.name or task.park != PARK_CI:
             continue
-        conclusion = deps.github.run_status(target, task.ci_run_id)
+        try:
+            conclusion = deps.github.run_status(target, task.ci_run_id)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            print(f"[warn] run_status failed for #{task.issue} run {task.ci_run_id}: {exc}",
+                  file=sys.stderr)
+            continue
         if not conclusion:
             continue
         reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
