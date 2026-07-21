@@ -39,9 +39,10 @@ runs off-box on GitHub Actions (`e2e.yml` in portfolio_eval, dispatched via
 
 Park/resume: when a session needs human input or is waiting on a CI run,
 the dispatcher stops the container, frees the slot, and resumes via
-`claude --resume` on the same host-mounted transcripts when the wake event
-fires (Telegram reply or CI completion). Woken tasks are always
-head-of-queue.
+`claude --continue <message>` when the wake event fires (Telegram reply or
+CI completion). No session ID is recorded; `--continue` reuses the most
+recent transcript keyed by the worktree cwd, which is mounted at the same
+path inside the fresh container. Woken tasks are always head-of-queue.
 
 Runtime state lives in ~/agent-ops-state, outside the repo. That includes
 the live targets.yaml: the repo ships targets.example.yaml only; the real

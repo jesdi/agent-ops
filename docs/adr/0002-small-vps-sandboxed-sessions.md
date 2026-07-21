@@ -44,11 +44,12 @@ Two variants were explored on 2026-07-20 and discarded:
    runs/month; a $0 spending limit makes exhaustion fail loudly. Artifacts:
    `retention-days: 3`.
 
-3. **Park/resume — one mechanism, two triggers.** Park records session ID,
-   stops the container, marks state, frees the slot; woken tasks go
-   head-of-queue; resume creates fresh tmux+podman on the same worktree with
-   `claude --resume <session-id>` from host-mounted
-   `~/agent-ops-state/claude-home` transcripts. Triggers: (a) human-input —
+3. **Park/resume — one mechanism, two triggers.** Park stops the container,
+   marks state, frees the slot; woken tasks go head-of-queue; resume creates
+   a fresh tmux+podman on the same worktree with `claude --continue <message>`
+   — no session ID is recorded; `--continue` reuses the most recent transcript
+   keyed by the worktree cwd, which is mounted at the same path inside the
+   container (via `~/agent-ops-state/claude-home`). Triggers: (a) human-input —
    Telegram message with last output → wake on reply or `/attach`; (b) CI —
    session writes `{status: awaiting-ci, run_id}` → wake on completion,
    dispatcher injects the verdict.
