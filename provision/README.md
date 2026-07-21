@@ -30,8 +30,9 @@ CI→VPS push, no GitHub-held deploy credentials.
 
 Claude sessions run in rootless Podman containers: the `agent-ops-session`
 image (node + Claude Code CLI, git, gh, python/pipenv, pnpm) is launched
-per task with the task worktree and `~/agent-ops-state/claude-home`
-(Claude auth + transcripts) mounted; `--memory 2g --cpus 2`. A tmux
+per task with the task worktree, `~/agent-ops-state/claude-home`
+(Claude auth + transcripts), and gh credentials (read-only) mounted;
+`--memory 2g --cpus 2`. A tmux
 session wraps each container for TTY persistence and reply-injection. E2E
 runs off-box on GitHub Actions (`e2e.yml` in portfolio_eval, dispatched via
 `gh workflow run`); there is no nested-container machinery on the box.
