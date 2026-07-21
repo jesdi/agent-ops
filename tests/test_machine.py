@@ -6,6 +6,8 @@ from dispatcher.machine import (
     HandleCrash,
     NoOp,
     Notify,
+    ParkForCI,
+    ParkForInput,
     SetTaskStage,
     SpawnStage,
     next_actions,
@@ -16,14 +18,15 @@ GOOD_SPEC = "# t — design\n\n## Problem\n\n" + ("x " * 400) + "\n\n## Decision
 GOOD_PLAN = "# t Plan\n\n**Goal:** g\n\n### Task 1: a\n\n" + ("z " * 900)
 
 
-def task(stage, worktree="/tmp/wt", issue=101):
+def task(stage, worktree="/tmp/wt", issue=101, park=""):
     return TaskState(issue=issue, target="portfolio_eval", stage=stage, slot=0,
                      worktree=worktree, branch=f"agent/task-{issue}",
-                     title="Add widget", updated_at="2026-07-14T12:00:00+00:00")
+                     title="Add widget", updated_at="2026-07-14T12:00:00+00:00",
+                     park=park)
 
 
-def sig(stage, status, artifact=""):
-    return StageSignal(stage=stage, status=status, artifact=artifact)
+def sig(stage, status, artifact="", run_id=0):
+    return StageSignal(stage=stage, status=status, artifact=artifact, run_id=run_id)
 
 
 def test_dead_session_is_crash():
@@ -94,11 +97,12 @@ def test_implement_done_is_pr_open():
     assert Notify("pr_opened") in acts
 
 
-def test_blocked_escalates_in_place_once():
+def test_blocked_parks_and_legacy_stage_is_noop():
+    # blocked signal now emits ParkForInput (park lifecycle replaces escalate-in-place)
     acts = next_actions(task(Stage.IMPLEMENT),
                         StageSignal("implement", "blocked", note="need creds"), True)
-    assert SetTaskStage(Stage.BLOCKED) in acts
-    assert any(isinstance(a, Notify) and a.template == "stage_blocked" for a in acts)
+    assert acts == [ParkForInput("need creds")]
+    # a task already in Stage.BLOCKED (legacy) is still a no-op
     again = next_actions(task(Stage.BLOCKED),
                          StageSignal("implement", "blocked", note="need creds"), True)
     assert again == [NoOp()]
@@ -122,3 +126,42 @@ def test_awaiting_review_on_non_spec_stage_is_noop():
     # Only SPEC should transition to AWAITING_SPEC_REVIEW; stale/misrouted signals are ignored.
     acts = next_actions(task(Stage.PLAN), sig("plan", "awaiting-review"), True)
     assert acts == [NoOp()]
+
+
+def test_blocked_parks():
+    acts = next_actions(task(Stage.IMPLEMENT), sig("implement", "blocked"), True)
+    assert acts == [ParkForInput("")]
+
+
+def test_legacy_blocked_stage_is_noop():
+    assert next_actions(task(Stage.BLOCKED), sig("implement", "blocked"), True) == [NoOp()]
+
+
+def test_awaiting_ci_parks_with_run_id():
+    acts = next_actions(task(Stage.IMPLEMENT),
+                        sig("implement", "awaiting-ci", run_id=4242), True)
+    assert acts == [ParkForCI(4242)]
+
+
+def test_awaiting_ci_without_run_id_fails_stage():
+    acts = next_actions(task(Stage.IMPLEMENT), sig("implement", "awaiting-ci"), True)
+    assert SetTaskStage(Stage.FAILED) in acts
+
+
+def test_waiting_marker_parks_working_session():
+    acts = next_actions(task(Stage.SPEC), sig("spec", "working"), True, waiting=True)
+    assert acts == [ParkForInput("(session stopped mid-stage waiting for input)")]
+
+
+def test_waiting_marker_ignored_when_stage_done(tmp_path):
+    spec = tmp_path / "s.md"; spec.write_text(GOOD_SPEC)
+    acts = next_actions(task(Stage.SPEC, worktree=str(tmp_path)),
+                        sig("spec", "done", str(spec)), True, waiting=True)
+    assert SpawnStage(Stage.PLAN) in acts
+
+
+def test_parked_task_is_noop_even_with_dead_session():
+    from dataclasses import replace
+    from dispatcher.state import PARK_CI
+    t = replace(task(Stage.IMPLEMENT), park=PARK_CI)
+    assert next_actions(t, sig("implement", "awaiting-ci", run_id=1), False) == [NoOp()]
