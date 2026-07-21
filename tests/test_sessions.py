@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import dispatcher.sessions as sessions
+from dispatcher.sessions import Sessions, podman_cmd, session_name
 
 
 def test_session_name():
@@ -63,13 +64,17 @@ def test_dry_run_touches_nothing(tmp_path: Path, monkeypatch):
 def test_end_kills_session(monkeypatch):
     calls = []
     monkeypatch.setattr(sessions, "_tmux", lambda args: calls.append(args) or 0)
-    monkeypatch.setattr(sessions.subprocess, "run",
-                        lambda args, **kw: type("R", (), {"returncode": 0})())
+
+    subprocess_calls = []
+    def fake_subprocess_run(args, **kw):
+        subprocess_calls.append(args)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(sessions.subprocess, "run", fake_subprocess_run)
     sessions.Sessions().end(42)
+
     assert ["tmux", "kill-session", "-t", "task-42"] in calls
-
-
-from dispatcher.sessions import Sessions, podman_cmd, session_name
+    assert ["podman", "rm", "-f", "task-42"] in subprocess_calls
 
 
 def test_podman_cmd_mounts_and_caps(monkeypatch):
