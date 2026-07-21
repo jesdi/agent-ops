@@ -368,3 +368,83 @@ def test_parked_task_does_not_block_claims(tmp_path, monkeypatch):
     gh = FakeGitHub([Candidate(99, "fresh", "u")])
     main.run_pass(c, deps(gh, FakeSessions()))
     assert gh.claimed == [99]
+
+
+from telegram.inbound import Command, Plain, Reply
+
+
+def patch_events(monkeypatch, events):
+    monkeypatch.setattr(main.inbound, "fetch_events", lambda sd: list(events))
+
+
+def test_reply_wakes_matching_parked_task(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = replace_capacity(c, 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43)  # active task occupies the only slot
+    patch_events(monkeypatch, [Reply(reply_to_msg_id=55, text="use oauth")])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE and t.pending_reply == "use oauth"
+
+
+def test_reply_to_unknown_message_is_reported(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    patch_events(monkeypatch, [Reply(reply_to_msg_id=999, text="hi")])
+    d = deps()
+    main.run_pass(c, d)
+    assert "status" in d.notifier.sent  # "(reply didn't match any parked task)"
+
+
+def test_plain_text_with_single_parked_task_wakes_it(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = replace_capacity(c, 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43)
+    patch_events(monkeypatch, [Plain(text="go ahead")])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    assert load(c.state_dir, 42).park == PARK_WAKE
+
+
+def test_plain_text_with_two_parked_tasks_asks_which(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43, park=PARK_HUMAN, park_msg_id=56)
+    patch_events(monkeypatch, [Plain(text="yes")])
+    d = deps()
+    main.run_pass(c, d)
+    assert load(c.state_dir, 42).park == PARK_HUMAN
+    assert load(c.state_dir, 43).park == PARK_HUMAN
+    assert "status" in d.notifier.sent  # the "Which task?" prompt
+
+
+def test_attach_command_sets_hold(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = replace_capacity(c, 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43)
+    patch_events(monkeypatch, [Command(name="attach", issue=42)])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE and t.hold_for_attach is True
+
+
+def test_status_command_reports(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_CI, ci_run_id=7)
+    patch_events(monkeypatch, [Command(name="status")])
+    d = deps()
+    main.run_pass(c, d)
+    assert "status" in d.notifier.sent

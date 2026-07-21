@@ -25,6 +25,8 @@ from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_WAKE,
                               clear_waiting, has_waiting, load_all,
                               read_stage_signal, save)
 from dispatcher.workspace import create_workspace
+import telegram.inbound as inbound
+from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
 
 
@@ -41,6 +43,51 @@ def _now() -> str:
 
 def _url(target: Target, issue: int) -> str:
     return f"https://github.com/{target.repo}/issues/{issue}"
+
+
+def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False) -> None:
+    save(cfg.state_dir, replace(task, park=PARK_WAKE, pending_reply=text,
+                                hold_for_attach=hold, updated_at=_now()))
+
+
+def _status_lines(cfg: Config) -> list[str]:
+    tasks = [t for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
+    lines = [f"#{t.issue} {t.title} — {t.stage.value}"
+             + (f" [{t.park}]" if t.park else "") + f" (slot {t.slot})"
+             for t in tasks] or ["(nothing in flight)"]
+    lines.append(f"capacity {len(active(tasks))}/{cfg.capacity}")
+    return lines
+
+
+def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+    if dry_run:
+        return
+    tasks = load_all(cfg.state_dir)
+    human_parked = [t for t in tasks if t.park == PARK_HUMAN]
+    for ev in inbound.fetch_events(cfg.state_dir):
+        if isinstance(ev, Command) and ev.name == "status":
+            deps.notifier.send("status", lines=_status_lines(cfg))
+        elif isinstance(ev, Command) and ev.name == "attach":
+            match = [t for t in tasks if t.issue == ev.issue and t.park]
+            if match:
+                _wake(cfg, match[0], "", hold=True)
+            else:
+                deps.notifier.send("status",
+                                   lines=[f"#{ev.issue} is not parked"])
+        elif isinstance(ev, Reply):
+            match = [t for t in human_parked if t.park_msg_id == ev.reply_to_msg_id]
+            if match:
+                _wake(cfg, match[0], ev.text)
+            else:
+                deps.notifier.send("status",
+                                   lines=["(reply didn't match any parked task)"])
+        elif isinstance(ev, Plain):
+            if len(human_parked) == 1:
+                _wake(cfg, human_parked[0], ev.text)
+            else:
+                deps.notifier.send("status", lines=(
+                    ["Which task? Reply directly to its parked message:"]
+                    + [f"#{t.issue} {t.title}" for t in human_parked]))
 
 
 def _notify(deps: Deps, target: Target, task: TaskState, template: str,
@@ -218,6 +265,7 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
 
 
 def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+    _handle_telegram(cfg, deps, dry_run)
     usage = fetch_usage(cfg.state_dir)
     budget_ok = should_spawn(usage, cfg.budget_threshold,
                              cfg.racing_minutes, cfg.racing_threshold)
@@ -236,13 +284,7 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
 
 
 def send_digest(cfg: Config, deps: Deps) -> None:
-    lines = [
-        f"#{t.issue} {t.title} — {t.stage.value}"
-        + (f" [{t.park}]" if t.park else "")
-        + f" (slot {t.slot})"
-        for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES
-    ]
-    deps.notifier.send("daily_digest", lines=lines or ["(nothing in flight)"])
+    deps.notifier.send("daily_digest", lines=_status_lines(cfg))
 
 
 def main() -> None:
