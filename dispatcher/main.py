@@ -15,12 +15,15 @@ from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config
 from dispatcher.github import GitHubClient
-from dispatcher.machine import (HandleCrash, NoOp, Notify, SetTaskStage,
-                                SpawnStage, next_actions)
+from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
+                                ParkForInput, SetTaskStage, SpawnStage,
+                                next_actions)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
-from dispatcher.state import (IN_FLIGHT_STAGES, Stage, TaskState,
-                              allocate_slot, load_all, read_stage_signal, save)
+from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_WAKE,
+                              Stage, TaskState, active, allocate_slot,
+                              clear_waiting, has_waiting, load_all,
+                              read_stage_signal, save)
 from dispatcher.workspace import create_workspace
 from telegram.notify import Notifier
 
@@ -83,14 +86,90 @@ def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str) -> None:
                            url="", note=note)
 
 
+def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                    note: str) -> None:
+    tail = deps.sessions.capture_tail(task.issue)
+    msg_id = deps.notifier.send(
+        "parked_question", issue=task.issue, title=task.title,
+        url=_url(target, task.issue),
+        note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
+    deps.sessions.end(task.issue)
+    clear_waiting(cfg.state_dir, task.issue)
+    save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
+                                updated_at=_now()))
+
+
+def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                 run_id: int) -> None:
+    deps.sessions.end(task.issue)
+    clear_waiting(cfg.state_dir, task.issue)
+    save(cfg.state_dir, replace(task, park=PARK_CI, ci_run_id=run_id,
+                                updated_at=_now()))
+
+
+def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
+    for task in load_all(cfg.state_dir):
+        if task.target != target.name or task.park != PARK_CI:
+            continue
+        conclusion = deps.github.run_status(target, task.ci_run_id)
+        if not conclusion:
+            continue
+        reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
+                 f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
+        save(cfg.state_dir, replace(task, park=PARK_WAKE, pending_reply=reply,
+                                    ci_run_id=0, updated_at=_now()))
+
+
+def _resume_woken(cfg: Config, deps: Deps, target: Target,
+                  budget_ok: bool) -> None:
+    if not budget_ok:
+        return
+    woken = sorted(
+        [t for t in load_all(cfg.state_dir)
+         if t.target == target.name and t.park == PARK_WAKE],
+        key=lambda t: t.updated_at,
+    )
+    for task in woken:
+        tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
+        if len(active(tasks)) >= cfg.capacity:
+            return
+        agent_dir = Path(task.worktree) / ".agent"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        # Rewrite stage.json BEFORE resuming, or the next pass re-reads
+        # blocked/awaiting-ci and re-parks the freshly resumed session.
+        (agent_dir / "stage.json").write_text(json.dumps(
+            {"stage": task.stage.value, "status": "working"}))
+        if task.hold_for_attach:
+            deps.sessions.resume(task.issue, task.worktree,
+                                 "The operator is attaching to talk to you "
+                                 "directly. Wait for their input.")
+            deps.notifier.send("resumed_for_attach", issue=task.issue,
+                               title=task.title, url=_url(target, task.issue),
+                               note="")
+        else:
+            deps.sessions.resume(task.issue, task.worktree,
+                                 task.pending_reply or "Continue.")
+        save(cfg.state_dir, replace(task, park="", pending_reply="",
+                                    hold_for_attach=False, park_msg_id=0,
+                                    updated_at=_now()))
+
+
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 budget_ok: bool) -> None:
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.issue)
-    for act in next_actions(task, signal, alive):
+    waiting = has_waiting(cfg.state_dir, task.issue)
+    for act in next_actions(task, signal, alive, waiting=waiting):
         if isinstance(act, NoOp):
             continue
+        if isinstance(act, ParkForInput):
+            _park_for_input(cfg, deps, target, task, act.note)
+            return
+        if isinstance(act, ParkForCI):
+            _park_for_ci(cfg, deps, target, task, act.run_id)
+            return
         if isinstance(act, SetTaskStage):
+            clear_waiting(cfg.state_dir, task.issue)
             task = replace(task, stage=act.stage, updated_at=_now())
             save(cfg.state_dir, task)
         elif isinstance(act, Notify):
@@ -98,6 +177,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
         elif isinstance(act, SpawnStage):
             if not budget_ok:
                 return  # signal persists; retried next pass
+            clear_waiting(cfg.state_dir, task.issue)
             spec_path = signal.artifact if act.stage is Stage.PLAN else ""
             task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path)
         elif isinstance(act, HandleCrash):
@@ -110,8 +190,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
 def _claim_new(cfg: Config, deps: Deps, target: Target,
                dry_run: bool) -> None:
     tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
-    in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
-    free = cfg.capacity - len(in_flight)
+    free = cfg.capacity - len(active(tasks))
     if free <= 0:
         return
     known = {t.issue for t in tasks}
@@ -146,16 +225,23 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
                  note=f"{usage.source}: {usage.utilization:.0%}, "
                       f"reset in {usage.minutes_to_reset:.0f}m")
     for target in cfg.targets:
-        for task in load_all(cfg.state_dir):
-            if task.target == target.name and task.stage in IN_FLIGHT_STAGES:
-                _drive_task(cfg, deps, target, task, budget_ok)
+        for task in [t for t in load_all(cfg.state_dir)
+                     if t.target == target.name and not t.park
+                     and t.stage in IN_FLIGHT_STAGES]:
+            _drive_task(cfg, deps, target, task, budget_ok)
+        _wake_ci(cfg, deps, target)
+        _resume_woken(cfg, deps, target, budget_ok)
         if budget_ok:
             _claim_new(cfg, deps, target, dry_run)
 
 
 def send_digest(cfg: Config, deps: Deps) -> None:
-    lines = [f"#{t.issue} {t.title} — {t.stage.value} (slot {t.slot})"
-             for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
+    lines = [
+        f"#{t.issue} {t.title} — {t.stage.value}"
+        + (f" [{t.park}]" if t.park else "")
+        + f" (slot {t.slot})"
+        for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES
+    ]
     deps.notifier.send("daily_digest", lines=lines or ["(nothing in flight)"])
 
 
