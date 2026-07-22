@@ -30,6 +30,12 @@ class GitHubClient:
 
     # -- read side ---------------------------------------------------------
 
+    def run_status(self, target: Target, run_id: int) -> str:
+        out = _run(["gh", "run", "view", str(run_id), "--repo", target.repo,
+                    "--json", "status,conclusion"])
+        d = json.loads(out)
+        return (d.get("conclusion") or "") if d.get("status") == "completed" else ""
+
     def candidates(self, target: Target) -> list[Candidate]:
         out = _run(shlex.split(target.rank_cmd), cwd=target.clone_path)
         items = json.loads(out)

@@ -8,27 +8,19 @@ from pathlib import Path
 
 import pytest
 
+from dispatcher.state import has_waiting
 from dispatcher.waitd import handle_ping, serve
 
 
-class FakeNotifier:
-    def __init__(self):
-        self.sent = []
-
-    def send(self, template, **ctx):
-        self.sent.append((template, ctx))
+def test_ping_marks_waiting(tmp_path):
+    handle_ping(b'{"issue": 42}', tmp_path)
+    assert has_waiting(tmp_path, 42)
 
 
-def test_handle_ping():
-    n = FakeNotifier()
-    handle_ping(json.dumps({"issue": 42}).encode(), n)
-    assert n.sent == [("waiting", {"issue": 42})]
-
-
-def test_handle_ping_corrupt_body_drops():
-    n = FakeNotifier()
-    handle_ping(b"{nope", n)
-    assert n.sent == []
+def test_corrupt_ping_is_dropped(tmp_path):
+    handle_ping(b'not json', tmp_path)
+    handle_ping(b'{"issue": "x"}', tmp_path)
+    assert list(tmp_path.glob("waiting-*")) == []
 
 
 def test_serve_end_to_end():
@@ -36,8 +28,8 @@ def test_serve_end_to_end():
     tmpdir = tempfile.mkdtemp(prefix="w_")
     try:
         sock = Path(tmpdir) / "w.sock"
-        n = FakeNotifier()
-        t = threading.Thread(target=serve, args=(sock, n), daemon=True)
+        state_dir = Path(tmpdir) / "state"
+        t = threading.Thread(target=serve, args=(sock, state_dir), daemon=True)
         t.start()
         for _ in range(100):  # wait for the socket to appear
             if sock.exists():
@@ -56,6 +48,6 @@ def test_serve_end_to_end():
                               "Content-Length": str(len(body))})
         resp = conn.getresponse()
         assert resp.status == 200
-        assert n.sent == [("waiting", {"issue": 7})]
+        assert has_waiting(state_dir, 7)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

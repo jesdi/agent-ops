@@ -80,6 +80,20 @@ def test_release_comments_and_resets_board(monkeypatch):
     assert "session crashed" in " ".join(comment)
 
 
+def test_run_status_running_is_empty(monkeypatch):
+    import dispatcher.github as gh
+    monkeypatch.setattr(gh, "_run",
+                        lambda a, cwd=None: '{"status":"in_progress","conclusion":null}')
+    assert github.GitHubClient().run_status(TARGET, 4242) == ""
+
+
+def test_run_status_completed_returns_conclusion(monkeypatch):
+    import dispatcher.github as gh
+    monkeypatch.setattr(gh, "_run",
+                        lambda a, cwd=None: '{"status":"completed","conclusion":"failure"}')
+    assert github.GitHubClient().run_status(TARGET, 4242) == "failure"
+
+
 def test_dry_run_mutates_nothing(monkeypatch, capsys):
     def fake_run(args, cwd=None):
         raise AssertionError(f"dry-run must not execute: {args}")

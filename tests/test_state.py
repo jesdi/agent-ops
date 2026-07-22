@@ -93,3 +93,69 @@ def test_read_stage_signal_missing_or_corrupt(tmp_path: Path):
     agent.mkdir()
     (agent / "stage.json").write_text("{not json")
     assert read_stage_signal(tmp_path) is None
+
+
+from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_WAKE, Stage, TaskState,
+                              active, clear_waiting, has_waiting, load,
+                              mark_waiting, parked, read_stage_signal, save)
+
+
+def _task(issue=1, stage=Stage.IMPLEMENT, park=""):
+    return TaskState(issue=issue, target="t", stage=stage, slot=0,
+                     worktree="/tmp/wt", branch=f"agent/task-{issue}",
+                     title="x", updated_at="2026-07-21T00:00:00+00:00",
+                     park=park)
+
+
+def test_old_state_file_without_park_fields_loads(tmp_path):
+    # Backward-readable across the deploy: pre-park JSON has no new keys.
+    import json
+    (tmp_path / "task-7.json").write_text(json.dumps({
+        "issue": 7, "target": "t", "stage": "implement", "slot": 0,
+        "worktree": "/tmp/wt", "branch": "agent/task-7", "title": "x",
+        "updated_at": "2026-07-14T00:00:00+00:00"}))
+    ts = load(tmp_path, 7)
+    assert ts.park == "" and ts.ci_run_id == 0 and ts.park_msg_id == 0
+    assert ts.pending_reply == "" and ts.hold_for_attach is False
+
+
+def test_park_fields_roundtrip(tmp_path):
+    save(tmp_path, _task(park=PARK_CI))
+    assert load(tmp_path, 1).park == PARK_CI
+
+
+def test_active_excludes_parked_but_parked_holds_slot():
+    ts = [_task(issue=1, park=PARK_HUMAN), _task(issue=2)]
+    assert [t.issue for t in active(ts)] == [2]
+    assert [t.issue for t in parked(ts)] == [1]
+    from dispatcher.state import allocate_slot
+    assert allocate_slot(ts) not in (0,)  # slot 0 still held by both
+
+
+def test_parked_helper_covers_all_park_values():
+    ts = [_task(issue=1, park=PARK_HUMAN), _task(issue=2, park=PARK_CI),
+          _task(issue=3, park=PARK_WAKE)]
+    assert len(parked(ts)) == 3 and active(ts) == []
+
+
+def test_stage_signal_run_id(tmp_path):
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "stage.json").write_text(
+        '{"stage": "implement", "status": "awaiting-ci", "run_id": 4242}')
+    assert read_stage_signal(tmp_path).run_id == 4242
+
+
+def test_stage_signal_run_id_defaults_zero(tmp_path):
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "stage.json").write_text(
+        '{"stage": "spec", "status": "working"}')
+    assert read_stage_signal(tmp_path).run_id == 0
+
+
+def test_waiting_marker_lifecycle(tmp_path):
+    assert not has_waiting(tmp_path, 9)
+    mark_waiting(tmp_path, 9)
+    assert has_waiting(tmp_path, 9)
+    clear_waiting(tmp_path, 9)
+    assert not has_waiting(tmp_path, 9)
+    clear_waiting(tmp_path, 9)  # idempotent

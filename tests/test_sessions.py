@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import dispatcher.sessions as sessions
+from dispatcher.sessions import Sessions, podman_cmd, session_name
 
 
 def test_session_name():
@@ -63,5 +64,37 @@ def test_dry_run_touches_nothing(tmp_path: Path, monkeypatch):
 def test_end_kills_session(monkeypatch):
     calls = []
     monkeypatch.setattr(sessions, "_tmux", lambda args: calls.append(args) or 0)
+
+    subprocess_calls = []
+    def fake_subprocess_run(args, **kw):
+        subprocess_calls.append(args)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(sessions.subprocess, "run", fake_subprocess_run)
     sessions.Sessions().end(42)
+
     assert ["tmux", "kill-session", "-t", "task-42"] in calls
+    assert ["podman", "rm", "-f", "task-42"] in subprocess_calls
+
+
+def test_podman_cmd_mounts_and_caps(monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    cmd = podman_cmd(42, "/repos/pe.worktrees/task-42", "2g", "2",
+                     '"$(cat .agent/prompt-spec.md)"')
+    assert cmd.startswith("podman run --rm -it --name task-42 ")
+    assert "--memory 2g --cpus 2" in cmd
+    assert "-v /repos/pe.worktrees/task-42:/repos/pe.worktrees/task-42" in cmd
+    assert "-w /repos/pe.worktrees/task-42" in cmd
+    assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
+    assert cmd.endswith('claude --permission-mode acceptEdits "$(cat .agent/prompt-spec.md)"')
+
+
+def test_resume_quotes_message(capsys):
+    Sessions(dry_run=True).resume(42, "/tmp/wt", 'run said: "failure"')
+    out = capsys.readouterr().out
+    assert "[dry-run] resume task-42" in out
+
+
+def test_capture_tail_dry_run_empty():
+    assert Sessions(dry_run=True).capture_tail(42) == ""

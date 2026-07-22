@@ -39,6 +39,16 @@ class NoOp:
     pass
 
 
+@dataclass(frozen=True)
+class ParkForInput:
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class ParkForCI:
+    run_id: int
+
+
 NEXT_STAGE = {
     Stage.SPEC: Stage.PLAN,
     Stage.AWAITING_SPEC_REVIEW: Stage.PLAN,
@@ -62,7 +72,11 @@ def next_actions(
     task: TaskState,
     signal: StageSignal | None,
     session_alive: bool,
+    waiting: bool = False,
 ) -> list[object]:
+    if task.park:
+        return [NoOp()]  # wake/resume is dispatcher-side; never re-park
+
     done = signal is not None and signal.status == "done"
 
     if not session_alive and not done:
@@ -73,7 +87,23 @@ def next_actions(
         if task.stage in IN_FLIGHT_STAGES:
             return [HandleCrash()]
 
-    if signal is None or signal.status == "working":
+    if signal is None:
+        return [NoOp()]
+
+    if signal.status == "awaiting-ci":
+        if signal.run_id <= 0:
+            return [SetTaskStage(Stage.FAILED),
+                    Notify("artifact_failed", "awaiting-ci without run_id")]
+        return [ParkForCI(signal.run_id)]
+
+    if signal.status == "blocked":
+        if task.stage == Stage.BLOCKED:
+            return [NoOp()]  # legacy escalate-in-place state
+        return [ParkForInput(signal.note)]
+
+    if signal.status == "working":
+        if waiting and session_alive:
+            return [ParkForInput("(session stopped mid-stage waiting for input)")]
         return [NoOp()]
 
     if signal.status == "awaiting-review":
@@ -83,11 +113,6 @@ def next_actions(
             return [NoOp()]  # only the SPEC stage emits awaiting-review; ignore stale/misrouted
         return [SetTaskStage(Stage.AWAITING_SPEC_REVIEW),
                 Notify("awaiting_spec_review", signal.note)]
-
-    if signal.status == "blocked":
-        if task.stage == Stage.BLOCKED:
-            return [NoOp()]  # escalate in place, ping once
-        return [SetTaskStage(Stage.BLOCKED), Notify("stage_blocked", signal.note)]
 
     if done:
         if task.stage == Stage.IMPLEMENT:
