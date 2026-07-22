@@ -6,8 +6,10 @@ After=network-online.target
 Type=oneshot
 WorkingDirectory=%h/agent-ops
 Environment=AGENT_OPS_STATE_DIR=%h/agent-ops-state
-# op resolves TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from the Development
-# vault via the service-account token in OP_SERVICE_ACCOUNT_TOKEN.
+# op resolves TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from the agent-ops
+# vault. The token file defines OP_SERVICE_ACCOUNT_AGENT_OPS_TOKEN; the op
+# CLI only accepts OP_SERVICE_ACCOUNT_TOKEN, so env remaps it here.
 EnvironmentFile=%h/agent-ops-state/op-token.env
-ExecStart=/usr/local/bin/op run --env-file=%h/agent-ops/provision/op.env.tpl -- \
+ExecStart=/usr/bin/env OP_SERVICE_ACCOUNT_TOKEN=${OP_SERVICE_ACCOUNT_AGENT_OPS_TOKEN} \
+  /usr/local/bin/op run --env-file=%h/agent-ops/provision/op.env.tpl -- \
   %h/agent-ops/.venv/bin/python -m dispatcher.main --config %h/agent-ops-state/targets.yaml

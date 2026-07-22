@@ -136,7 +136,7 @@ bootstrap done. Manual follow-ups (interactive, once):
      contents, pull-requests on TARGET repos only — the PAT must NOT have
      write access to jesdi/agent-ops (the box executes main; ADR 0001);
      the PAT additionally needs actions:write on target repos (to dispatch e2e.yml)
-  4. echo 'OP_SERVICE_ACCOUNT_TOKEN=...' > /home/agent/agent-ops-state/op-token.env
+  4. echo 'OP_SERVICE_ACCOUNT_AGENT_OPS_TOKEN=...' > /home/agent/agent-ops-state/op-token.env
      chown agent: /home/agent/agent-ops-state/op-token.env && chmod 600 ...
   5. clone target repos into /home/agent/repos/ and fill the real project
      field/option IDs into /home/agent/agent-ops-state/targets.yaml
