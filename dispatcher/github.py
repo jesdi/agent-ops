@@ -3,6 +3,7 @@ and the board is the double-dispatch guard."""
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -10,10 +11,21 @@ from dataclasses import dataclass
 from dispatcher.config import Target
 
 
-def _run(args: list[str], cwd: str | None = None) -> str:
+def _run(args: list[str], cwd: str | None = None,
+         env: dict[str, str] | None = None) -> str:
     return subprocess.run(
         args, cwd=cwd, capture_output=True, text=True, timeout=120, check=True,
+        env=env,
     ).stdout
+
+
+def _project_env() -> dict[str, str] | None:
+    """User-owned Projects v2 are invisible to fine-grained PATs, so `gh
+    project` runs with GH_TOKEN set to the classic project-scope token
+    (GH_PROJECT_TOKEN); every other gh call keeps the stored fine-grained
+    auth."""
+    token = os.environ.get("GH_PROJECT_TOKEN")
+    return {**os.environ, "GH_TOKEN": token} if token else None
 
 
 @dataclass(frozen=True)
@@ -49,14 +61,15 @@ class GitHubClient:
         key = f"{target.project_owner}/{target.project_number}"
         if key not in self._project_node_ids:
             out = _run(["gh", "project", "view", str(target.project_number),
-                        "--owner", target.project_owner, "--format", "json"])
+                        "--owner", target.project_owner, "--format", "json"],
+                       env=_project_env())
             self._project_node_ids[key] = json.loads(out)["id"]
         return self._project_node_ids[key]
 
     def _item_id(self, target: Target, issue: int) -> str:
         out = _run(["gh", "project", "item-list", str(target.project_number),
                     "--owner", target.project_owner, "--format", "json",
-                    "--limit", "200"])
+                    "--limit", "200"], env=_project_env())
         for item in json.loads(out)["items"]:
             if (item.get("content") or {}).get("number") == issue:
                 return item["id"]
@@ -72,7 +85,7 @@ class GitHubClient:
               "--id", self._item_id(target, issue),
               "--project-id", self._project_node_id(target),
               "--field-id", target.status_field_id,
-              "--single-select-option-id", option_id])
+              "--single-select-option-id", option_id], env=_project_env())
 
     def comment(self, target: Target, issue: int, body: str) -> None:
         if self.dry_run:

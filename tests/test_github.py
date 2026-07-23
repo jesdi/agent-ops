@@ -39,7 +39,7 @@ def test_candidates_filters_and_keeps_rank_order(monkeypatch):
 def test_claim_sets_status_and_comments(monkeypatch):
     calls = []
 
-    def fake_run(args, cwd=None):
+    def fake_run(args, cwd=None, env=None):
         calls.append(args)
         joined = " ".join(args)
         if "project view" in joined:
@@ -63,7 +63,7 @@ def test_claim_sets_status_and_comments(monkeypatch):
 def test_release_comments_and_resets_board(monkeypatch):
     calls = []
 
-    def fake_run(args, cwd=None):
+    def fake_run(args, cwd=None, env=None):
         calls.append(args)
         joined = " ".join(args)
         if "project view" in joined:
@@ -105,3 +105,43 @@ def test_dry_run_mutates_nothing(monkeypatch, capsys):
     cli.set_status(TARGET, 7, "READY")
     out = capsys.readouterr().out
     assert "[dry-run]" in out
+
+
+def test_project_commands_use_project_token(monkeypatch):
+    monkeypatch.setenv("GH_PROJECT_TOKEN", "classic-tok")
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append((args, env))
+        joined = " ".join(args)
+        if "project view" in joined:
+            return json.dumps({"id": "PROJ_NODE"})
+        if "item-list" in joined:
+            return json.dumps({"items": [{"id": "ITEM7", "content": {"number": 7}}]})
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    github.GitHubClient().claim(TARGET, github.Candidate(7, "A", "u7"))
+    for args, env in calls:
+        if args[:2] == ["gh", "project"]:
+            assert env is not None and env["GH_TOKEN"] == "classic-tok"
+        else:
+            assert env is None
+
+
+def test_project_commands_without_token_inherit_ambient_auth(monkeypatch):
+    monkeypatch.delenv("GH_PROJECT_TOKEN", raising=False)
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append((args, env))
+        joined = " ".join(args)
+        if "project view" in joined:
+            return json.dumps({"id": "PROJ_NODE"})
+        if "item-list" in joined:
+            return json.dumps({"items": [{"id": "ITEM7", "content": {"number": 7}}]})
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    github.GitHubClient().set_status(TARGET, 7, "READY")
+    assert calls and all(env is None for _, env in calls)
