@@ -31,10 +31,20 @@ def test_serve_end_to_end():
         state_dir = Path(tmpdir) / "state"
         t = threading.Thread(target=serve, args=(sock, state_dir), daemon=True)
         t.start()
-        for _ in range(100):  # wait for the socket to appear
-            if sock.exists():
+        # Wait until the server actually accepts connections: the socket file
+        # appears at bind(), before listen(), so existence alone can race
+        # into ECONNREFUSED.
+        for _ in range(100):
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.connect(str(sock))
                 break
-            threading.Event().wait(0.05)
+            except (ConnectionRefusedError, FileNotFoundError):
+                threading.Event().wait(0.05)
+            finally:
+                probe.close()
+        else:
+            pytest.fail("waitd never started accepting connections")
 
         class UnixConn(http.client.HTTPConnection):
             def connect(self):
