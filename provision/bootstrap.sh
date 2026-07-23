@@ -32,11 +32,14 @@ if ! command -v gh >/dev/null; then
   apt-get update && apt-get install -y gh
 fi
 
-# 1Password CLI
+# 1Password CLI — cache.agilebits.com publishes zips only, no .deb (#13)
 if ! command -v op >/dev/null; then
-  curl -sSfo /tmp/op.deb \
-    "https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.0/op_linux_$(dpkg --print-architecture)_v2.30.0.deb" \
-    && apt-get install -y /tmp/op.deb
+  op_version=2.31.1
+  curl -sSfo /tmp/op.zip \
+    "https://cache.agilebits.com/dist/1P/op2/pkg/v${op_version}/op_linux_$(dpkg --print-architecture)_v${op_version}.zip"
+  apt-get install -y unzip
+  unzip -o /tmp/op.zip -d /tmp/op-cli op
+  install -m 755 /tmp/op-cli/op /usr/local/bin/op
 fi
 
 # Claude Code
