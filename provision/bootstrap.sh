@@ -117,11 +117,17 @@ as_agent cp provision/agent-ops-dispatcher.service \
    provision/agent-ops-update.timer \
    $AGENT_HOME/.config/systemd/user/
 as_agent systemctl --user daemon-reload
-as_agent systemctl --user enable --now agent-ops-waitd.service
+# Timers first: they must be up even though the services they trigger
+# cannot succeed until the credential follow-ups below are done. waitd
+# (start attempted immediately) fails on a fresh box for the same reason —
+# tolerated so bootstrap completes; restart it after the follow-ups.
+as_agent systemctl --user enable --now agent-ops-update.timer
 as_agent systemctl --user enable --now agent-ops-dispatcher.timer
 as_agent systemctl --user enable --now agent-ops-keepalive.timer
 as_agent systemctl --user enable --now agent-ops-digest.timer
-as_agent systemctl --user enable --now agent-ops-update.timer
+as_agent systemctl --user enable --now agent-ops-waitd.service \
+  || echo "waitd not up yet (expected before credentials): after follow-ups, run
+  systemctl --user restart agent-ops-waitd  (as agent)"
 
 cat <<'EOF'
 bootstrap done. Manual follow-ups (interactive, once):
