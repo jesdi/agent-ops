@@ -32,14 +32,23 @@ if ! command -v gh >/dev/null; then
   apt-get update && apt-get install -y gh
 fi
 
-# 1Password CLI — cache.agilebits.com publishes zips only, no .deb (#13)
+# 1Password CLI — official apt repo (latest stable, upgraded via apt; #13).
+# The signing key is pinned by fingerprint (published at
+# https://support.1password.com/verify-linux-package/) so the install does
+# not blindly trust whatever downloads.1password.com serves.
+OP_KEY_FPR=3FEF9748469ADBE15DA7CA80AC2D62742012EA22
 if ! command -v op >/dev/null; then
-  op_version=2.31.1
-  curl -sSfo /tmp/op.zip \
-    "https://cache.agilebits.com/dist/1P/op2/pkg/v${op_version}/op_linux_$(dpkg --print-architecture)_v${op_version}.zip"
-  apt-get install -y unzip
-  unzip -o /tmp/op.zip -d /tmp/op-cli op
-  install -m 755 /tmp/op-cli/op /usr/local/bin/op
+  curl -sS https://downloads.1password.com/linux/keys/1password.asc \
+    | gpg --dearmor -o /usr/share/keyrings/1password-archive-keyring.gpg
+  actual_fpr=$(gpg --show-keys --with-colons \
+    /usr/share/keyrings/1password-archive-keyring.gpg | awk -F: '/^fpr/ {print $10; exit}')
+  if [ "$actual_fpr" != "$OP_KEY_FPR" ]; then
+    echo "1Password key fingerprint mismatch: got $actual_fpr" >&2
+    exit 1
+  fi
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" \
+    > /etc/apt/sources.list.d/1password.list
+  apt-get update && apt-get install -y 1password-cli
 fi
 
 # Claude Code
