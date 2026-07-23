@@ -97,6 +97,13 @@ if [ ! -f $AGENT_HOME/agent-ops-state/targets.yaml ]; then
   as_agent cp targets.example.yaml $AGENT_HOME/agent-ops-state/targets.yaml
 fi
 
+# Credentials converge from 1Password whenever the op token is already in
+# place (re-runs, rebuilds). First run: follow-up 3 below covers it.
+if [ -f $AGENT_HOME/agent-ops-state/op-token.env ]; then
+  as_agent env AGENT_OPS_STATE_DIR=$AGENT_HOME/agent-ops-state \
+    bash provision/credentials.sh
+fi
+
 # --- systemd user units ------------------------------------------------------
 # Initial install; from here on agent-ops-update.timer keeps them in sync.
 as_agent cp provision/agent-ops-dispatcher.service \
@@ -129,20 +136,25 @@ bootstrap done. Manual follow-ups (interactive, once):
   ***
 
   1. tailscale up
-  2. sudo -iu agent claude    # run once on the host to log in
-     # then: cp -r ~/.claude ~/agent-ops-state/claude-home
-     # (sessions mount it; transcripts and auth live there)
-  3. sudo -iu agent gh auth login   # fine-grained PAT: contents, issues,
-     pull-requests, actions (all r/w) on TARGET repos only — the PAT must
-     NOT have any access to jesdi/agent-ops (the box executes main; ADR
-     0001; the repo is public, so reads need no token).
-     PLUS a second, classic PAT with ONLY the `project` scope (no repo
-     scopes) — user-owned Projects v2 are invisible to fine-grained PATs.
-     Store it in 1Password: vault agent-ops, item agent-ops-github, field
-     GH_PROJECT_TOKEN; op run injects it and the dispatcher passes it as
-     GH_TOKEN to `gh project` calls only.
-  4. echo 'OP_SERVICE_ACCOUNT_AGENT_OPS_TOKEN=...' > /home/agent/agent-ops-state/op-token.env
+  2. echo 'OP_SERVICE_ACCOUNT_AGENT_OPS_TOKEN=...' > /home/agent/agent-ops-state/op-token.env
      chown agent: /home/agent/agent-ops-state/op-token.env && chmod 600 ...
+     # the box's ONLY manually-placed secret; everything else derives from it
+  3. sudo -iu agent bash ~/agent-ops/provision/credentials.sh
+     # materializes credentials from the 1P agent-ops vault:
+     # - gh login with the fine-grained repo PAT (item agent-ops-github,
+     #   field GH_REPO_TOKEN: contents, issues, pull-requests, actions r/w
+     #   on TARGET repos only — NO access to jesdi/agent-ops; the box
+     #   executes main (ADR 0001) and the repo is public, so reads need no
+     #   token)
+     # - restores claude credentials if backed up (item agent-ops-claude,
+     #   field credentials.json)
+     # The classic project-scope PAT (same item, field GH_PROJECT_TOKEN;
+     # user-owned Projects v2 are invisible to fine-grained PATs) is not
+     # installed anywhere: op run feeds it to the dispatcher per-pass.
+  4. only if credentials.sh reported no claude backup:
+     sudo -iu agent claude    # log in once, then:
+     # cp -r ~/.claude/. ~/agent-ops-state/claude-home/
+     # (sessions mount it; transcripts and auth live there)
   5. clone target repos into /home/agent/repos/ and fill the real project
      field/option IDs into /home/agent/agent-ops-state/targets.yaml
      (gh project field-list <n> --owner <owner> --format json)
