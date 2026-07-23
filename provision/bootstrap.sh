@@ -132,10 +132,15 @@ bootstrap done. Manual follow-ups (interactive, once):
   2. sudo -iu agent claude    # run once on the host to log in
      # then: cp -r ~/.claude ~/agent-ops-state/claude-home
      # (sessions mount it; transcripts and auth live there)
-  3. sudo -iu agent gh auth login   # fine-grained PAT: issues, projects,
-     contents, pull-requests on TARGET repos only — the PAT must NOT have
-     write access to jesdi/agent-ops (the box executes main; ADR 0001);
-     the PAT additionally needs actions:write on target repos (to dispatch e2e.yml)
+  3. sudo -iu agent gh auth login   # fine-grained PAT: contents, issues,
+     pull-requests, actions (all r/w) on TARGET repos only — the PAT must
+     NOT have any access to jesdi/agent-ops (the box executes main; ADR
+     0001; the repo is public, so reads need no token).
+     PLUS a second, classic PAT with ONLY the `project` scope (no repo
+     scopes) — user-owned Projects v2 are invisible to fine-grained PATs.
+     Store it in 1Password: vault agent-ops, item agent-ops-github, field
+     GH_PROJECT_TOKEN; op run injects it and the dispatcher passes it as
+     GH_TOKEN to `gh project` calls only.
   4. echo 'OP_SERVICE_ACCOUNT_AGENT_OPS_TOKEN=...' > /home/agent/agent-ops-state/op-token.env
      chown agent: /home/agent/agent-ops-state/op-token.env && chmod 600 ...
   5. clone target repos into /home/agent/repos/ and fill the real project

@@ -44,6 +44,13 @@ CI completion). No session ID is recorded; `--continue` reuses the most
 recent transcript keyed by the worktree cwd, which is mounted at the same
 path inside the fresh container. Woken tasks are always head-of-queue.
 
+GitHub auth is split across two tokens: gh's stored auth is a fine-grained
+PAT scoped to target repos (contents/issues/PRs/actions, nothing on
+jesdi/agent-ops), and `gh project` calls use a classic PAT with only the
+`project` scope (user-owned Projects v2 don't support fine-grained PATs),
+delivered as GH_PROJECT_TOKEN via op run and injected per-command by the
+dispatcher's GitHub adapter.
+
 Runtime state lives in ~/agent-ops-state, outside the repo. That includes
 the live targets.yaml: the repo ships targets.example.yaml only; the real
 one is box-local — deliberately outside CI so ops knobs (capacity,
