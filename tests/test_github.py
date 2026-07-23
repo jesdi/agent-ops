@@ -80,6 +80,51 @@ def test_release_comments_and_resets_board(monkeypatch):
     assert "session crashed" in " ".join(comment)
 
 
+def test_item_id_title_join_when_content_redacted(monkeypatch):
+    # A project-scope token cannot expand linked issues of a private repo:
+    # item-list returns items without "content". The issue title (fetched with
+    # the stored repo auth) is the join key — GitHub syncs linked-item titles.
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append((args, env))
+        joined = " ".join(args)
+        if "project view" in joined:
+            return json.dumps({"id": "PROJ_NODE"})
+        if "item-list" in joined:
+            return json.dumps({"items": [
+                {"id": "ITEM7", "title": "A", "repository": ""},
+                {"id": "ITEM8", "title": "B", "repository": ""},
+            ]})
+        if "issue view" in joined:
+            assert "7" in args and env is None  # repo-side read, stored auth
+            return json.dumps({"title": "A"})
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    github.GitHubClient().claim(TARGET, github.Candidate(7, "A", "u7"))
+    edit = next(a for a, _ in calls if "item-edit" in a)
+    assert "ITEM7" in edit
+
+
+def test_item_id_title_join_ambiguous_duplicate_titles_raises(monkeypatch):
+    def fake_run(args, cwd=None, env=None):
+        joined = " ".join(args)
+        if "item-list" in joined:
+            return json.dumps({"items": [
+                {"id": "ITEM7", "title": "Dup"},
+                {"id": "ITEM9", "title": "Dup"},
+            ]})
+        if "issue view" in joined:
+            return json.dumps({"title": "Dup"})
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    import pytest
+    with pytest.raises(LookupError):
+        github.GitHubClient()._item_id(TARGET, 7)
+
+
 def test_run_status_running_is_empty(monkeypatch):
     import dispatcher.github as gh
     monkeypatch.setattr(gh, "_run",
