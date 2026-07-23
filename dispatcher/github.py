@@ -70,10 +70,23 @@ class GitHubClient:
         out = _run(["gh", "project", "item-list", str(target.project_number),
                     "--owner", target.project_owner, "--format", "json",
                     "--limit", "200"], env=_project_env())
-        for item in json.loads(out)["items"]:
+        items = json.loads(out)["items"]
+        for item in items:
             if (item.get("content") or {}).get("number") == issue:
                 return item["id"]
-        raise LookupError(f"issue #{issue} not on project {target.project_number}")
+        # The project-scope token cannot expand linked issues of a private
+        # repo (no "content" in item-list). GitHub syncs linked-item titles
+        # to issue titles, so the title — fetched with the stored repo auth —
+        # is the join key.
+        title = json.loads(_run(["gh", "issue", "view", str(issue),
+                                 "--repo", target.repo,
+                                 "--json", "title"]))["title"]
+        matches = [item["id"] for item in items
+                   if not item.get("content") and item.get("title") == title]
+        if len(matches) == 1:
+            return matches[0]
+        raise LookupError(f"issue #{issue} not on project {target.project_number}"
+                          f" (title join: {len(matches)} items match {title!r})")
 
     # -- write side --------------------------------------------------------
 
