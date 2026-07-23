@@ -128,6 +128,21 @@ def test_unit_change_syncs_and_restarts_only_changed_unit(box):
     assert "agent-ops-dispatcher.timer" not in log
 
 
+def test_unit_drift_heals_without_new_commits(box):
+    # Installed unit drifts from the checkout (e.g. a manual pull carried the
+    # unit change through a pass that saw old==new). Convergence must repair
+    # actual state, not just react to rev deltas.
+    (box.units / "agent-ops-waitd.service").write_text(
+        "[Unit]\nDescription=stale ExecStart\n")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "waitd v1" in (box.units / "agent-ops-waitd.service").read_text()
+    log = calls(box)
+    assert "systemctl --user daemon-reload" in log
+    assert "try-restart agent-ops-waitd.service" in log
+    assert "agent-ops-dispatcher.timer" not in log
+
+
 def test_diverged_checkout_fails_without_moving_head(box):
     (box.repo / "local.txt").write_text("local\n")
     git(box.repo, "config", "user.email", "t@t")

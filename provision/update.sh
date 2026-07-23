@@ -36,18 +36,22 @@ cd "$REPO_DIR"
 git fetch origin main
 old=$(git rev-parse HEAD)
 new=$(git rev-parse origin/main)
-[ "$old" = "$new" ] && exit 0
 
-git merge --ff-only origin/main
+if [ "$old" != "$new" ]; then
+  git merge --ff-only origin/main
 
-if ! git diff --quiet "$old" "$new" -- pyproject.toml; then
-  .venv/bin/pip install -e .
+  if ! git diff --quiet "$old" "$new" -- pyproject.toml; then
+    .venv/bin/pip install -e .
+  fi
+
+  if ! git diff --quiet "$old" "$new" -- Containerfile; then
+    $PODMAN build -t agent-ops-session -f Containerfile .
+  fi
 fi
 
-if ! git diff --quiet "$old" "$new" -- Containerfile; then
-  $PODMAN build -t agent-ops-session -f Containerfile .
-fi
-
+# Unit sync runs even when HEAD is already at origin/main: convergence
+# repairs actual unit-dir drift (manual pulls, interrupted passes), not
+# just rev deltas.
 changed=""
 for src in provision/*.service provision/*.timer; do
   unit=$(basename "$src")
