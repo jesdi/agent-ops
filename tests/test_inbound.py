@@ -66,6 +66,21 @@ def test_classify_boost_malformed():
     assert classify("/boost 42 3 9", 0) is None
 
 
+def test_classify_demote_malformed():
+    assert classify("/demote", 0) is None
+    assert classify("/demote x", 0) is None
+    assert classify("/demote 42 0", 0) is None
+    assert classify("/demote 42 -1", 0) is None
+    assert classify("/demote 42 3 9", 0) is None
+
+
+def test_classify_unicode_digits_rejected():
+    # str.isdigit() accepts Unicode superscripts; isdecimal() must reject them
+    assert classify("/boost \xb2", 0) is None       # ² (superscript 2)
+    assert classify("/next \xb2", 0) is None         # ²
+    assert classify("/attach \xb2", 0) is None       # ²
+
+
 def test_classify_next_and_force():
     assert classify("/next 42", 0) == Command(name="next", issue=42)
     assert classify("/next 42 force", 0) == Command(name="next", issue=42, force=True)
