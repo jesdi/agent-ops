@@ -61,6 +61,101 @@ def _status_lines(cfg: Config) -> list[str]:
     return lines
 
 
+NEXT_BOOST = 99
+
+
+def _find_rows(cfg: Config, deps: Deps, issue: int) -> list[tuple]:
+    return [(target, row)
+            for target in cfg.targets
+            for row in deps.github.rank_rows(target)
+            if row["number"] == issue]
+
+
+def _queue_lines(cfg: Config, deps: Deps) -> list[str]:
+    lines: list[str] = []
+    for target in cfg.targets:
+        rows = deps.github.rank_rows(target)
+        if len(cfg.targets) > 1:
+            lines.append(f"[{target.name}]")
+        available = [r for r in rows
+                     if not r["blocked"] and r.get("status") != "In progress"]
+        for idx, r in enumerate(available[:10], start=1):
+            boost = r.get("boost", 0)
+            marker = f" ↑{boost}" if boost > 0 else (f" ↓{-boost}" if boost < 0 else "")
+            value = r.get("score")
+            score = f"{value:.2f}" if value is not None else "—"
+            lines.append(f"{idx}.{marker} [{score}] #{r['number']} {r['title']}")
+        if len(available) > 10:
+            lines.append(f"… {len(available) - 10} more")
+        in_progress = [r for r in rows if r.get("status") == "In progress"]
+        if in_progress:
+            lines.append("In progress: "
+                         + ", ".join(f"#{r['number']}" for r in in_progress))
+        blocked = [r for r in rows if r["blocked"]]
+        if blocked:
+            lines.append("Blocked: "
+                         + ", ".join(f"#{r['number']}" for r in blocked))
+        if not rows:
+            lines.append("(queue empty)")
+    return lines
+
+
+def _locate(cfg: Config, deps: Deps, issue: int):
+    """Resolve an issue to (target, row); reports and returns None when it
+    can't."""
+    hits = _find_rows(cfg, deps, issue)
+    if not hits:
+        deps.notifier.send("status", lines=[f"#{issue} is not on the board"])
+        return None
+    if len(hits) > 1:
+        deps.notifier.send("status", lines=[
+            f"#{issue} exists in multiple targets ("
+            + ", ".join(t.name for t, _ in hits)
+            + ") — not yet supported, edit the board directly"])
+        return None
+    return hits[0]
+
+
+def _handle_boost(cfg: Config, deps: Deps, issue: int, amount: int) -> None:
+    located = _locate(cfg, deps, issue)
+    if not located:
+        return
+    target, row = located
+    current = row.get("boost", 0)
+    new = current + amount
+    deps.github.set_boost(target, issue, new)
+    deps.notifier.send("status", lines=[f"#{issue} boost {current} → {new}"])
+
+
+def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
+    located = _locate(cfg, deps, issue)
+    if not located:
+        return
+    target, row = located
+    if row["blocked"]:
+        deps.notifier.send("status", lines=[
+            f"#{issue} is blocked — resolve its blockers first "
+            "(blocked issues cannot be forced)"])
+        return
+    problems = []
+    if row.get("status") != "Ready":
+        problems.append(f"status is {row.get('status') or 'unset'}, not Ready")
+    if "auto" not in row.get("labels", []):
+        problems.append("missing the auto label")
+    if problems and not force:
+        deps.notifier.send("status", lines=[
+            f"#{issue} is not eligible: " + "; ".join(problems) + ".",
+            f"Send /next {issue} force to make it eligible and enqueue."])
+        return
+    if row.get("status") != "Ready":
+        deps.github.set_status(target, issue, target.status_ready_option_id)
+    if "auto" not in row.get("labels", []):
+        deps.github.add_label(target, issue, "auto")
+    deps.github.set_boost(target, issue, NEXT_BOOST)
+    deps.notifier.send("status", lines=[
+        f"#{issue} enqueued at the head (boost {NEXT_BOOST})"])
+
+
 def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
     if dry_run:
         return
@@ -76,6 +171,23 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
             else:
                 deps.notifier.send("status",
                                    lines=[f"#{ev.issue} is not parked"])
+        elif isinstance(ev, Command) and ev.name == "queue":
+            try:
+                deps.notifier.send("queue", lines=_queue_lines(cfg, deps))
+            except (subprocess.CalledProcessError, OSError) as exc:
+                deps.notifier.send("status", lines=[f"/queue failed: {exc}"])
+        elif isinstance(ev, Command) and ev.name == "boost":
+            try:
+                _handle_boost(cfg, deps, ev.issue, ev.amount)
+            except (subprocess.CalledProcessError, OSError) as exc:
+                deps.notifier.send("status",
+                                   lines=[f"#{ev.issue} boost failed: {exc}"])
+        elif isinstance(ev, Command) and ev.name == "next":
+            try:
+                _handle_next(cfg, deps, ev.issue, ev.force)
+            except (subprocess.CalledProcessError, OSError) as exc:
+                deps.notifier.send("status",
+                                   lines=[f"#{ev.issue} next failed: {exc}"])
         elif isinstance(ev, Reply):
             match = [t for t in human_parked if t.park_msg_id == ev.reply_to_msg_id]
             if match:
