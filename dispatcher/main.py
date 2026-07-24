@@ -15,11 +15,12 @@ from pathlib import Path
 
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
-from dispatcher.config import Config, Target, load_config
+from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, SetTaskStage, SpawnStage,
                                 next_actions)
+from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_WAKE,
@@ -41,6 +42,19 @@ class Deps:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _model_for(cfg: Config, target: Target, task: TaskState, stage: Stage) -> str:
+    return resolve(policy_for(cfg, target), stage.value, task.effort, task.labels)
+
+
+def _log_model(worktree: str, stage: Stage, model: str) -> None:
+    """Durable per-worktree breadcrumb. stage.json is co-owned — sessions
+    overwrite it when they signal — so the log is the record that survives."""
+    p = Path(worktree) / ".agent" / "models.log"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a") as fh:
+        fh.write(f"{_now()} {stage.value} {model}\n")
 
 
 def _url(target: Target, issue: int) -> str:
@@ -109,13 +123,15 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         spec_path=spec_path,
     )
     prompt = render_stage_prompt(stage, ctx)
+    model = _model_for(cfg, target, task, stage)
     # Reset the signal BEFORE spawning, or the next pass re-reads the
     # previous stage's `done` and advances again.
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": stage.value, "status": "working"}))
-    deps.sessions.spawn_stage(task.issue, task.worktree, prompt, stage.value)
+        {"stage": stage.value, "status": "working", "model": model}))
+    _log_model(task.worktree, stage, model)
+    deps.sessions.spawn_stage(task.issue, task.worktree, prompt, stage.value, model)
     task = replace(task, stage=stage, updated_at=_now())
     save(cfg.state_dir, task)
     return task
@@ -187,22 +203,24 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             return
+        model = _model_for(cfg, target, task, task.stage)
         agent_dir = Path(task.worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         # Rewrite stage.json BEFORE resuming, or the next pass re-reads
         # blocked/awaiting-ci and re-parks the freshly resumed session.
         (agent_dir / "stage.json").write_text(json.dumps(
-            {"stage": task.stage.value, "status": "working"}))
+            {"stage": task.stage.value, "status": "working", "model": model}))
+        _log_model(task.worktree, task.stage, model)
         if task.hold_for_attach:
             deps.sessions.resume(task.issue, task.worktree,
                                  "The operator is attaching to talk to you "
-                                 "directly. Wait for their input.")
+                                 "directly. Wait for their input.", model)
             deps.notifier.send("resumed_for_attach", issue=task.issue,
                                title=task.title, url=_url(target, task.issue),
                                note="")
         else:
             deps.sessions.resume(task.issue, task.worktree,
-                                 task.pending_reply or "Continue.")
+                                 task.pending_reply or "Continue.", model)
         save(cfg.state_dir, replace(task, park="", pending_reply="",
                                     hold_for_attach=False, park_msg_id=0,
                                     updated_at=_now()))
