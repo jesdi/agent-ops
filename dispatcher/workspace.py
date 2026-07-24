@@ -37,6 +37,19 @@ def _sh(args: list[str], cwd: str, timeout: int = 300,
                                             proc.stdout, proc.stderr)
 
 
+def _branch_exists(clone_path: str, branch: str) -> bool:
+    """Tolerant probe: a missing clone_path or any git error reads as
+    'branch absent' so create_workspace falls through to today's -b
+    creation path — the probe itself must never raise."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=clone_path, capture_output=True, text=True, timeout=30)
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     wt = str(Path(target.worktrees_path) / f"task-{issue}")
     branch = f"agent/task-{issue}"
@@ -44,9 +57,23 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
         print(f"[dry-run] create worktree {wt} on {branch}")
         return wt
 
-    _sh(["git", "fetch", "origin"], cwd=target.clone_path)
-    _sh(["git", "worktree", "add", "-b", branch, wt, "origin/main"],
-        cwd=target.clone_path)
+    if Path(wt).exists():
+        # Retry after a partial provisioning failure: the worktree (and
+        # branch) were already created and only the setup step below
+        # failed. Re-running `git worktree add` here would die on "already
+        # exists" — reuse what's there and go straight to setup.
+        pass
+    elif _branch_exists(target.clone_path, branch):
+        # Worktree was removed (e.g. manual cleanup) but the branch
+        # survived — attach a fresh worktree to it instead of trying to
+        # (re)create the branch with -b, which would die on "already
+        # exists".
+        _sh(["git", "fetch", "origin"], cwd=target.clone_path)
+        _sh(["git", "worktree", "add", wt, branch], cwd=target.clone_path)
+    else:
+        _sh(["git", "fetch", "origin"], cwd=target.clone_path)
+        _sh(["git", "worktree", "add", "-b", branch, wt, "origin/main"],
+            cwd=target.clone_path)
     _sh(containers.setup_cmd(f"task-{issue}-setup", wt, target.setup_cmd),
         cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
 

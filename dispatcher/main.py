@@ -309,7 +309,15 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
             # Board never claimed (claim is last, still Ready) → no release
             # needed; report + quarantine, and the pass survives.
             _report_provisioning_failure(cfg, deps, target, cand, dry_run)
-            continue
+            # Cap at one provisioning failure per target per pass: a
+            # systemic fault (git remote down, podman down, worktrees
+            # volume full) would otherwise fail EVERY remaining Ready
+            # candidate in this loop, filing an issue + ping + quarantine
+            # record per candidate. A systemic cause is far likelier than a
+            # per-candidate one, so stop here — the next pass retries the
+            # remaining candidates. This `break` only exits this target's
+            # candidate loop; run_pass still processes other targets.
+            break
         task = TaskState(issue=cand.number, target=target.name,
                          stage=Stage.QUEUED, slot=slot, worktree=wt,
                          branch=f"agent/task-{cand.number}",

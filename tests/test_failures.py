@@ -235,6 +235,22 @@ def test_closed_blocker_deletes_record_and_unblocks(tmp_path):
     assert not failures.quarantine_path(tmp_path, "portfolio_eval", 192).exists()
 
 
+def test_closed_blocker_also_clears_fingerprint_marker(tmp_path):
+    """Closing the blocker without fixing the cause must not silently loop
+    forever: the fingerprint marker (which dedupes report_failure) has to
+    go too, or a retried failure files nothing and pings nothing."""
+    failures.write_quarantine(tmp_path, "portfolio_eval", 192,
+                              "jesdi/agent-ops", 501, "abc")
+    marker = failures.fingerprint_path(tmp_path, "abc")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"repo": "jesdi/agent-ops", "issue": 501,
+                                  "when": "2026-07-24T00:00:00+00:00"}))
+    gh = StateGitHub(state="CLOSED")
+    assert failures.check_quarantine(tmp_path, gh, "portfolio_eval", 192) is False
+    assert not failures.quarantine_path(tmp_path, "portfolio_eval", 192).exists()
+    assert not marker.exists()
+
+
 def test_manually_deleted_record_unblocks(tmp_path):
     failures.write_quarantine(tmp_path, "portfolio_eval", 192,
                               "jesdi/agent-ops", 501, "abc")

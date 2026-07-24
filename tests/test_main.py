@@ -263,8 +263,11 @@ def test_dead_session_files_diagnosis_issue_and_blocks(tmp_path, monkeypatch):
 
 def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monkeypatch):
     """create_workspace failure: no claim, no state file, one issue + one
-    ping, quarantine written, the NEXT candidate is still claimed, and the
-    pass exits cleanly (regression: one bad candidate killed the pass)."""
+    ping, quarantine written, and the pass exits cleanly (regression: one
+    bad candidate killed the pass). Capped at one provisioning failure per
+    target per pass, so the NEXT candidate (43) is NOT claimed this pass —
+    a systemic fault is far likelier than a per-candidate one, and the next
+    pass retries 43."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     gh = FakeGitHub([Candidate(42, "Bad", "u42"), Candidate(43, "Good", "u43")])
@@ -281,7 +284,7 @@ def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monke
     d = deps(gh, sess)
     main.run_pass(c, d)  # must NOT raise
 
-    assert gh.claimed == [43], "board must NOT be claimed for the failing candidate"
+    assert gh.claimed == [], "capped at one provisioning failure per pass; 43 not claimed this pass"
     assert load(c.state_dir, 42) is None, "no state file for the failed candidate"
     repo, title, body = gh.created_issues[0]
     assert repo == "jesdi/agent-ops" and "provisioning" in title

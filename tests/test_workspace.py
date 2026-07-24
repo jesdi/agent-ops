@@ -58,6 +58,68 @@ def test_create_workspace(tmp_path: Path, monkeypatch):
     assert stop["type"] == "command" and ".agent/stop-hook.sh" in stop["command"]
 
 
+def test_create_workspace_reuses_existing_worktree_dir(tmp_path: Path, monkeypatch):
+    """The most common provisioning failure is the setup step, which runs
+    AFTER `git worktree add` already succeeded. A retry must not re-run
+    `git worktree add` (which would die on "already exists") — it should
+    skip straight to the setup step."""
+    calls = []
+
+    def fake_sh(args, cwd, timeout=300, log=None):
+        calls.append(args)
+
+    monkeypatch.setattr(workspace, "_sh", fake_sh)
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    t = target(tmp_path)
+    wt_path = Path(t.worktrees_path) / "task-42"
+    wt_path.mkdir(parents=True)
+    (wt_path / ".git").write_text(
+        f"gitdir: {tmp_path / 'repo'}/.git/worktrees/task-42\n")
+
+    wt = workspace.create_workspace(t, 42)
+
+    assert wt == str(wt_path)
+    assert not any(a[:3] == ["git", "worktree", "add"] for a in calls), \
+        "worktree already exists; git worktree add must be skipped entirely"
+    assert any(a[0] == "podman" for a in calls), "setup step must still run"
+    assert json.loads((wt_path / ".agent" / "task.json").read_text()) == {"issue": 42}
+
+
+def test_create_workspace_reuses_existing_branch(tmp_path: Path, monkeypatch):
+    """Worktree removed but the branch left behind (e.g. manual cleanup):
+    add the worktree onto the existing branch instead of trying to create
+    it again with -b, which would die on "branch already exists"."""
+    calls = []
+
+    def fake_sh(args, cwd, timeout=300, log=None):
+        calls.append(args)
+        if args[:3] == ["git", "worktree", "add"]:
+            wt = Path(args[-2])
+            wt.mkdir(parents=True, exist_ok=True)
+            (wt / ".git").write_text(
+                f"gitdir: {tmp_path / 'repo'}/.git/worktrees/task-42\n")
+
+    monkeypatch.setattr(workspace, "_sh", fake_sh)
+    monkeypatch.setattr(workspace, "_branch_exists", lambda clone_path, branch: True)
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    t = target(tmp_path)
+
+    wt = workspace.create_workspace(t, 42)
+
+    add = next(a for a in calls if a[:3] == ["git", "worktree", "add"])
+    assert "-b" not in add, "must not try to (re)create the branch"
+    assert add[-2:] == [wt, "agent/task-42"], \
+        "must add the worktree onto the existing branch"
+
+
+def test_branch_exists_probe_tolerates_missing_clone(tmp_path: Path):
+    """The probe must never raise: a missing clone_path (or any git error)
+    reads as 'branch absent' so create_workspace falls through to today's
+    -b creation path."""
+    assert workspace._branch_exists(
+        str(tmp_path / "no-such-clone"), "agent/task-42") is False
+
+
 def test_dry_run_creates_nothing(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(workspace, "_sh",
                         lambda a, cwd, timeout=300: (_ for _ in ()).throw(AssertionError))
