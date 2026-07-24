@@ -569,6 +569,40 @@ def test_status_command_reports(tmp_path, monkeypatch):
     assert "status" in d.notifier.sent
 
 
+def test_pass_crash_files_issue_and_reraises(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    gh = FakeGitHub()
+    d = deps(gh, FakeSessions())
+
+    def boom(cfg_, deps_, dry_run=False):
+        raise RuntimeError("rank.py exploded")
+
+    monkeypatch.setattr(main, "run_pass", boom)
+    with pytest.raises(RuntimeError):
+        main.guarded_pass(c, d, "targets.yaml")
+
+    repo, title, body = gh.created_issues[0]
+    assert repo == "jesdi/agent-ops"
+    assert "pass-crash" in title and "(dispatcher)" in title
+    assert "rank.py exploded" in body
+    assert "agent-ops-dispatcher --config targets.yaml" in body
+    assert "task_failed" in d.notifier.sent
+
+
+def test_pass_crash_recurring_dedupes_to_one_issue(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    gh = FakeGitHub()
+    d = deps(gh, FakeSessions())
+    monkeypatch.setattr(main, "run_pass",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("rank.py exploded")))
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            main.guarded_pass(c, d, "targets.yaml")
+    assert len(gh.created_issues) == 1
+    assert d.notifier.sent.count("task_failed") == 1
+
+
 def test_run_status_error_does_not_abort_pass(tmp_path, monkeypatch):
     """A gh run_status failure must be treated as 'still running': skip that task,
     keep the pass going (e.g., a second claimable candidate is still claimed)."""

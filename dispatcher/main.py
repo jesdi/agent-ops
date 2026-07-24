@@ -343,6 +343,20 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
             _claim_new(cfg, deps, target, dry_run)
 
 
+def guarded_pass(cfg: Config, deps: Deps, config_path: str,
+                 dry_run: bool = False) -> None:
+    try:
+        run_pass(cfg, deps, dry_run=dry_run)
+    except Exception:
+        rep = failures.FailureReport(
+            klass="pass-crash", target="", issue=0, title="(dispatcher)",
+            error=traceback.format_exc(), log_tail="",
+            repro=f"agent-ops-dispatcher --config {config_path}",
+            worktree="")
+        failures.report_failure(cfg, deps, rep, dry_run=dry_run)
+        raise  # systemd must still see the unit fail
+
+
 def send_digest(cfg: Config, deps: Deps) -> None:
     deps.notifier.send("daily_digest", lines=_status_lines(cfg))
 
@@ -361,7 +375,7 @@ def main() -> None:
         send_digest(cfg, deps)
     else:
         with pass_lock(cfg.state_dir):
-            run_pass(cfg, deps, dry_run=args.dry_run)
+            guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
