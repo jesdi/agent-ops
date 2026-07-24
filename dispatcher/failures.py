@@ -9,7 +9,13 @@ re-claimed until its blocker issue closes."""
 from __future__ import annotations
 
 import hashlib
+import json
+import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from dispatcher.config import Config
 
 
 @dataclass(frozen=True)
@@ -50,3 +56,72 @@ def issue_body(report: FailureReport, task_url: str, when: str) -> str:
         f"```\n{report.log_tail.strip() or '(none)'}\n```\n"
         "\nClosing this issue unblocks the task.\n"
     )
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def fingerprint_path(state_dir: str | Path, fp: str) -> Path:
+    return Path(state_dir) / "failures" / fp
+
+
+def reported(state_dir: str | Path, report: FailureReport) -> bool:
+    return fingerprint_path(state_dir, fingerprint(report)).exists()
+
+
+def _route(cfg: Config, report: FailureReport) -> str:
+    """Repo to file the issue on; "" = no issue (degrade to ping-only)."""
+    if report.klass == "session-crash":
+        for t in cfg.targets:
+            if t.name == report.target:
+                return t.repo
+        return ""
+    return cfg.infra_repo
+
+
+def _task_url(cfg: Config, report: FailureReport) -> str:
+    if not report.issue:
+        return ""
+    for t in cfg.targets:
+        if t.name == report.target:
+            return f"https://github.com/{t.repo}/issues/{report.issue}"
+    return ""
+
+
+def report_failure(cfg: Config, deps, report: FailureReport,
+                   dry_run: bool = False) -> int:
+    """File an issue + send one Telegram ping, exactly once per fingerprint.
+
+    Returns the blocker issue number (0 if degraded, failed, or dry-run;
+    the previously filed number on a dedupe hit). Never raises — a failure
+    to report must not break dispatching."""
+    try:
+        marker = fingerprint_path(cfg.state_dir, fingerprint(report))
+        if marker.exists():
+            return int(json.loads(marker.read_text()).get("issue", 0))
+        if dry_run:
+            print(f"[dry-run] report {report.klass} failure: {report.title}")
+            return 0
+        repo = _route(cfg, report)
+        number, url = 0, ""
+        if repo:
+            number = deps.github.create_issue(
+                repo, f"[agent-ops] {report.klass}: {report.title}",
+                issue_body(report, _task_url(cfg, report), _now()))
+            url = f"https://github.com/{repo}/issues/{number}"
+        else:
+            print(f"[warn] no repo to file {report.klass} failure on "
+                  f"(infra_repo unset?): {report.title}", file=sys.stderr)
+        deps.notifier.send("task_failed", issue=report.issue,
+                           title=report.title, url=url, note=report.klass)
+        # Marker is written LAST: a create_issue outage above leaves no
+        # marker, so the next pass retries the report.
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(
+            {"repo": repo, "issue": number, "when": _now()}))
+        return number
+    except Exception as exc:
+        print(f"[warn] failure reporting itself failed: {exc}",
+              file=sys.stderr)
+        return 0
