@@ -3,19 +3,19 @@ crashed ones are preserved for autopsy."""
 from __future__ import annotations
 
 import json
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
+from dispatcher import containers
 from dispatcher.config import Target
 
 HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
 
 
-def _sh(args: list[str], cwd: str) -> None:
+def _sh(args: list[str], cwd: str, timeout: int = 300) -> None:
     subprocess.run(args, cwd=cwd, capture_output=True, text=True,
-                   timeout=300, check=True)
+                   timeout=timeout, check=True)
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
@@ -28,7 +28,8 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     _sh(["git", "fetch", "origin"], cwd=target.clone_path)
     _sh(["git", "worktree", "add", "-b", branch, wt, "origin/main"],
         cwd=target.clone_path)
-    _sh(shlex.split(target.setup_cmd), cwd=wt)
+    _sh(containers.setup_cmd(f"task-{issue}-setup", wt, target.setup_cmd),
+        cwd=wt, timeout=1800)
 
     agent_dir = Path(wt) / ".agent"
     agent_dir.mkdir(exist_ok=True)
