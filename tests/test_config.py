@@ -87,3 +87,15 @@ def test_session_caps_overridable(tmp_path):
     p.write_text("state_dir: /tmp/s\nsession_memory: 1500m\nsession_cpus: '1'\ntargets: []\n")
     cfg = load_config(p)
     assert cfg.session_memory == "1500m" and cfg.session_cpus == "1"
+
+
+def test_infra_repo_defaults_to_empty(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE)
+    assert load_config(p).infra_repo == ""
+
+
+def test_infra_repo_loaded(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("infra_repo: jesdi/agent-ops\n" + SAMPLE)
+    assert load_config(p).infra_repo == "jesdi/agent-ops"
