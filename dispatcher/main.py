@@ -9,6 +9,7 @@ import argparse
 import json
 import subprocess
 import sys
+import traceback
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config
+from dispatcher import failures
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, SetTaskStage, SpawnStage,
@@ -241,6 +243,28 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                         updated_at=_now()))
 
 
+def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
+                                 cand, dry_run: bool) -> None:
+    wt = str(Path(target.worktrees_path) / f"task-{cand.number}")
+    rep = failures.FailureReport(
+        klass="provisioning", target=target.name, issue=cand.number,
+        title=f"provisioning failed: {cand.title}",
+        error=traceback.format_exc(),
+        log_tail=failures.setup_log_tail(wt),
+        repro=f"podman run --rm -v {wt}:{wt} -w {wt} agent-ops-session "
+              f"{target.setup_cmd}",
+        worktree=wt)
+    blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
+    # Quarantine only once the report exists (marker written) — a gh outage
+    # leaves neither, so the next pass retries both. blocker may still be 0
+    # when infra_repo is unset; that record blocks until manually deleted.
+    if not dry_run and failures.reported(cfg.state_dir, rep):
+        failures.write_quarantine(cfg.state_dir, target.name, cand.number,
+                                  blocker_repo=cfg.infra_repo if blocker else "",
+                                  blocker_issue=blocker,
+                                  fp=failures.fingerprint(rep))
+
+
 def _claim_new(cfg: Config, deps: Deps, target: Target,
                dry_run: bool) -> None:
     tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
@@ -253,10 +277,19 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
             break
         if cand.number in known:
             continue
+        if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
+                                     cand.number):
+            continue
         slot = allocate_slot(load_all(cfg.state_dir))
         if slot is None:
             break
-        wt = create_workspace(target, cand.number, dry_run=dry_run)  # if this throws: board never claimed (still Ready), no state file → naturally retried next pass, no strand
+        try:
+            wt = create_workspace(target, cand.number, dry_run=dry_run)
+        except Exception:
+            # Board never claimed (claim is last, still Ready) → no release
+            # needed; report + quarantine, and the pass survives.
+            _report_provisioning_failure(cfg, deps, target, cand, dry_run)
+            continue
         task = TaskState(issue=cand.number, target=target.name,
                          stage=Stage.QUEUED, slot=slot, worktree=wt,
                          branch=f"agent/task-{cand.number}",
