@@ -597,3 +597,29 @@ def test_models_log_appends_one_line_per_spawn(tmp_path, monkeypatch):
     log = (wt / ".agent" / "models.log").read_text().strip().splitlines()
     assert len(log) == 1
     assert log[0].endswith(" plan claude-sonnet-4-6")
+
+
+def test_status_lines_carry_the_resolved_model(tmp_path):
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
+        worktree="/wt", branch="agent/task-42", title="Fix rounding",
+        updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",)))
+    save(c.state_dir, TaskState(
+        issue=43, target="portfolio_eval", stage=Stage.SPEC, slot=1,
+        worktree="/wt2", branch="agent/task-43", title="New chart",
+        updated_at="2026-07-24T00:00:00+00:00", effort=3,
+        labels=("auto", "frontend")))
+    lines = main._status_lines(c)
+    assert lines[0] == "#42 Fix rounding — implement [claude-sonnet-4-6] (slot 0)"
+    assert lines[1] == "#43 New chart — spec [claude-fable-5] (slot 1)"
+
+
+def test_status_lines_survive_a_task_whose_target_is_gone(tmp_path):
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=44, target="retired_target", stage=Stage.PLAN, slot=0,
+        worktree="/wt", branch="agent/task-44", title="Orphan",
+        updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",)))
+    lines = main._status_lines(c)
+    assert "[claude-sonnet-4-6]" in lines[0]   # falls back to the global policy

@@ -67,10 +67,16 @@ def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False) -> None:
 
 
 def _status_lines(cfg: Config) -> list[str]:
+    by_name = {t.name: t for t in cfg.targets}
     tasks = [t for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
-    lines = [f"#{t.issue} {t.title} — {t.stage.value}"
-             + (f" [{t.park}]" if t.park else "") + f" (slot {t.slot})"
-             for t in tasks] or ["(nothing in flight)"]
+    lines = []
+    for t in tasks:
+        target = by_name.get(t.target)
+        model = (_model_for(cfg, target, t, t.stage) if target
+                 else resolve(cfg.models, t.stage.value, t.effort, t.labels))
+        lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
+                     + (f" [{t.park}]" if t.park else "") + f" (slot {t.slot})")
+    lines = lines or ["(nothing in flight)"]
     lines.append(f"capacity {len(active(tasks))}/{cfg.capacity}")
     return lines
 
