@@ -12,7 +12,7 @@ AGENT_HOME=/home/$AGENT_USER
 
 # --- packages ---------------------------------------------------------------
 apt-get update
-apt-get install -y git tmux mosh curl ufw jq python3 python3-venv \
+apt-get install -y git tmux mosh curl ufw jq python3 python3-venv rsync \
   podman uidmap slirp4netns systemd-zram-generator pipenv
 
 # node + pnpm (via corepack)
@@ -104,6 +104,13 @@ as_agent python3 -m venv .venv
 as_agent .venv/bin/pip install -e .
 as_agent podman build -t agent-ops-session -f Containerfile .
 
+# Seed claude-home from the versioned seed (ADR 0003). From here on
+# agent-ops-update.timer keeps it converged. Plugin installs need network;
+# a failure here is fatal on purpose — sessions are useless without their
+# process skills.
+as_agent env AGENT_OPS_STATE_DIR=$AGENT_HOME/agent-ops-state \
+  bash provision/claude-home-sync.sh
+
 # Seed box-local live config from the template (never overwritten).
 if [ ! -f $AGENT_HOME/agent-ops-state/targets.yaml ]; then
   as_agent cp targets.example.yaml $AGENT_HOME/agent-ops-state/targets.yaml
@@ -171,8 +178,10 @@ bootstrap done. Manual follow-ups (interactive, once):
      # installed anywhere: op run feeds it to the dispatcher per-pass.
   4. only if credentials.sh reported no claude backup:
      sudo -iu agent claude    # log in once, then:
-     # cp -r ~/.claude/. ~/agent-ops-state/claude-home/
-     # (sessions mount it; transcripts and auth live there)
+     # cp ~/.claude/.credentials.json ~/agent-ops-state/claude-home/
+     # (ONLY the credential file — all other config is converged from the
+     #  claude-home seed by the updater; a full copy would be overwritten
+     #  and would drag workstation state onto the box)
   5. clone target repos into /home/agent/repos/ and fill the real project
      field/option IDs into /home/agent/agent-ops-state/targets.yaml
      (gh project field-list <n> --owner <owner> --format json)
