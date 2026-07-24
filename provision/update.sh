@@ -78,3 +78,8 @@ if [ -n "$changed" ]; then
     $SYSTEMCTL try-restart "$unit"
   done
 fi
+
+# Claude-home convergence (ADR 0003): like unit sync, runs every pass to
+# heal drift, not just on rev deltas. A failure fails the pass (set -e) —
+# that is the loud surfacing channel for e.g. a pin mismatch.
+bash provision/claude-home-sync.sh
