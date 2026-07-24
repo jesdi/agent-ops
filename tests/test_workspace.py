@@ -128,7 +128,7 @@ def test_create_workspace_raises_on_unhealthy_reused_worktree(tmp_path: Path, mo
     (wt_path / ".git").write_text(
         f"gitdir: {tmp_path / 'repo'}/.git/worktrees/task-42\n")
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="failed its health check"):
         workspace.create_workspace(t, 42)
 
     assert not any(a[:3] == ["git", "worktree", "add"] for a in calls), \
@@ -198,7 +198,7 @@ def test_create_workspace_raises_when_branch_checked_out_elsewhere(tmp_path: Pat
     # target worktree path (task-42) is never created — this is the
     # "worktree removed, branch survived" case that normally takes -f.
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="is already checked out at"):
         workspace.create_workspace(t, 42)
 
     assert not any(a[:3] == ["git", "worktree", "add"] for a in calls), \

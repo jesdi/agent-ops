@@ -3,6 +3,7 @@ crashed ones are preserved for autopsy."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -108,8 +109,10 @@ def _status_porcelain_probe(wt: str) -> subprocess.CompletedProcess | None:
 def _worktree_health_issue(wt: str, branch: str) -> str | None:
     """Cheap check for whether an existing worktree directory is a
     complete, correctly-attached checkout rather than the wreckage of a
-    `git worktree add` killed mid-run (it runs under a 300s timeout).
-    Reads nothing but git metadata and the working tree; it deletes
+    `git worktree add` killed mid-run. No caller wraps this in a timeout;
+    its own internal budget is up to ~270s (a 30s rev-parse plus a 120s
+    status probe retried once). Reads nothing but git metadata and the
+    working tree; it deletes
     nothing, though `git status` can rewrite the index stat cache. Returns
     None when the worktree looks healthy, or a short description of
     what's wrong otherwise."""
@@ -172,6 +175,7 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
                 f"worktree {wt} exists but failed its health check "
                 f"({problem}); refusing to reuse it — this needs manual "
                 f"inspection, not a silent retry")
+        _mark_provisioned(wt)
     elif _branch_exists(target.clone_path, branch):
         # Worktree was removed (e.g. manual cleanup) but the branch
         # survived — attach a fresh worktree to it instead of trying to
@@ -185,7 +189,7 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
         # against that before touching -f: it must only ever resolve the
         # registered-but-missing case it exists for.
         other = _worktree_registered_at(target.clone_path, branch)
-        if other is not None and other != wt:
+        if other is not None and os.path.realpath(other) != os.path.realpath(wt):
             raise RuntimeError(
                 f"branch {branch!r} is already checked out at {other!r}; "
                 f"refusing to `git worktree add -f` a second checkout at "
