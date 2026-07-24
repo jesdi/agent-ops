@@ -57,6 +57,24 @@ one is box-local — deliberately outside CI so ops knobs (capacity,
 thresholds) are tunable without a merge cycle and the checkout stays clean
 for ff-only pulls.
 
+## Claude-home seed (ADR 0003)
+
+`provision/claude-home/` is the versioned source of the box's Claude
+config: `settings.json` (plugin declarations + guardrail hook wiring),
+`CLAUDE.md` (box session conventions), `skills/` (box-authored process
+skills), `hooks/` (box-variant git guardrail). `claude-home-sync.sh` —
+run by update.sh every pass and by bootstrap.sh once — converges it into
+`~/agent-ops-state/claude-home` with full authority inside those four
+paths (deletes propagate: remove a skill from the seed and it disappears
+from the box). Machine state is never touched: `.credentials.json`,
+`projects/` transcripts, the `plugins/` cache.
+
+Plugins: `settings.json`'s `enabledPlugins` values declare `true` (track
+latest) or `"x.y.z"` (pinned). The updater installs/uninstalls/updates via
+the `claude` CLI pointed at claude-home; a declared plugin that ends up
+missing or off-pin fails the update pass loudly. Never install plugins on
+the box by hand — declare them in the seed and merge.
+
 Rollout order (from the design spec §9):
 1. bootstrap.sh + the manual follow-ups it prints
 2. dispatcher --dry-run against the live board
