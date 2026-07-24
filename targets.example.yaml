@@ -11,7 +11,11 @@ targets:
     clone_path: /home/agent/repos/portfolio_eval
     worktrees_path: /home/agent/repos/portfolio_eval.worktrees
     rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
-    setup_cmd: "scripts/setup-worktree.sh"
+    # Runs INSIDE a one-shot session-image container (podman run --rm),
+    # cwd = the freshly created worktree, before the first session spawns.
+    # Must be idempotent. The worktree, the main clone, and persistent
+    # npm/xdg cache volumes are mounted; nothing else is.
+    setup_cmd: "scripts/provision-worktree.sh"
     verify_cmd: "make e2e-remote"
     project_number: 1
     project_owner: jesdi
