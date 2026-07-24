@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -138,3 +139,20 @@ class GitHubClient:
                      f"🤖 agent-ops released this task: {reason}. "
                      f"Worktree preserved for autopsy.")
         self.set_status(target, issue, target.status_ready_option_id)
+
+    def append_blocked_by(self, target: Target, issue: int,
+                          blocker: int) -> None:
+        if self.dry_run:
+            print(f"[dry-run] append_blocked_by #{issue} <- #{blocker}")
+            return
+        body = json.loads(_run(["gh", "issue", "view", str(issue),
+                                "--repo", target.repo,
+                                "--json", "body"]))["body"] or ""
+        # Idempotent: skip if a Blocked-by line already references this
+        # blocker. \b keeps #7 from matching inside #77.
+        if re.search(rf"^\s*Blocked by:.*#{blocker}\b", body, re.MULTILINE):
+            return
+        line = f"Blocked by: #{blocker}"
+        new_body = f"{body.rstrip()}\n\n{line}\n" if body.strip() else f"{line}\n"
+        _run(["gh", "issue", "edit", str(issue), "--repo", target.repo,
+              "--body", new_body])

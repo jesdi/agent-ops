@@ -1,4 +1,5 @@
 import json
+import re
 
 import dispatcher.github as github
 from dispatcher.config import Target
@@ -221,4 +222,63 @@ def test_create_issue_and_issue_state_dry_run(monkeypatch, capsys):
     cli = github.GitHubClient(dry_run=True)
     assert cli.create_issue("jesdi/agent-ops", "t", "b") == 0
     assert cli.issue_state("jesdi/agent-ops", 501) == "OPEN"
+    assert "[dry-run]" in capsys.readouterr().out
+
+
+# rank.py's pattern, copied verbatim (portfolio_eval
+# .claude/skills/backlog/rank.py) — the appended line must parse with it.
+RANK_BLOCKED_RE = re.compile(r"^\s*Blocked by:\s*(.+)$", re.MULTILINE)
+
+
+def _blocked_by_rig(monkeypatch, body):
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        if "view" in args:
+            return json.dumps({"body": body})
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    return calls
+
+
+def test_append_blocked_by_appends_parseable_line(monkeypatch):
+    calls = _blocked_by_rig(monkeypatch, "Original body.")
+    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    edit = next(a for a in calls if "edit" in a)
+    new_body = edit[edit.index("--body") + 1]
+    m = RANK_BLOCKED_RE.search(new_body)
+    assert m and "#77" in m.group(1)
+    assert new_body.startswith("Original body.")
+
+
+def test_append_blocked_by_idempotent(monkeypatch):
+    calls = _blocked_by_rig(monkeypatch, "Body.\n\nBlocked by: #77\n")
+    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    assert not any("edit" in a for a in calls)
+
+
+def test_append_blocked_by_distinct_blocker_appended(monkeypatch):
+    # #7 referenced must not swallow #77, and a different blocker adds a line.
+    calls = _blocked_by_rig(monkeypatch, "Body.\n\nBlocked by: #7\n")
+    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    edit = next(a for a in calls if "edit" in a)
+    new_body = edit[edit.index("--body") + 1]
+    assert len(RANK_BLOCKED_RE.findall(new_body)) == 2
+
+
+def test_append_blocked_by_empty_body(monkeypatch):
+    calls = _blocked_by_rig(monkeypatch, "")
+    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    edit = next(a for a in calls if "edit" in a)
+    new_body = edit[edit.index("--body") + 1]
+    assert RANK_BLOCKED_RE.search(new_body)
+
+
+def test_append_blocked_by_dry_run(monkeypatch, capsys):
+    monkeypatch.setattr(
+        github, "_run",
+        lambda a, cwd=None, env=None: (_ for _ in ()).throw(AssertionError))
+    github.GitHubClient(dry_run=True).append_blocked_by(TARGET, 42, 77)
     assert "[dry-run]" in capsys.readouterr().out
