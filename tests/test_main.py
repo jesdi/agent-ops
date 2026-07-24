@@ -23,6 +23,7 @@ class FakeGitHub:
         self.rows = list(rows)
         self.boosts, self.labeled, self.statused = [], [], []
         self.boost_raises = False
+        self.lookup_raises = False
 
     def rank_rows(self, target):
         if self.boost_raises:
@@ -30,6 +31,8 @@ class FakeGitHub:
         return self.rows
 
     def set_boost(self, target, issue, value):
+        if self.lookup_raises:
+            raise LookupError(f"issue {issue} not found in project items")
         self.boosts.append((issue, value))
 
     def add_label(self, target, issue, label):
@@ -613,4 +616,41 @@ def test_command_gh_failure_reports_error_and_pass_survives(tmp_path, monkeypatc
     patch_events(monkeypatch, [TgCommand(name="boost", issue=7, amount=1)])
     main.run_pass(cfg(tmp_path), d)   # must not raise
     assert any("failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_lookup_error_boost_reports_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    gh.lookup_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [TgCommand(name="boost", issue=7, amount=1)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("boost failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_lookup_error_next_reports_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    gh.lookup_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [TgCommand(name="next", issue=7)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("next failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_value_error_queue_reports_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+
+    def bad_rank_rows(target):
+        raise ValueError("malformed JSON from rank output")
+
+    gh = FakeGitHub(rows=[row(7)])
+    monkeypatch.setattr(gh, "rank_rows", bad_rank_rows)
+    d = deps(gh)
+    patch_events(monkeypatch, [TgCommand(name="queue")])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("/queue failed" in l
                for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))

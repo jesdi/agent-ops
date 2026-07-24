@@ -174,18 +174,21 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
         elif isinstance(ev, Command) and ev.name == "queue":
             try:
                 deps.notifier.send("queue", lines=_queue_lines(cfg, deps))
-            except (subprocess.CalledProcessError, OSError) as exc:
+            except (subprocess.CalledProcessError, OSError,
+                    LookupError, ValueError) as exc:
                 deps.notifier.send("status", lines=[f"/queue failed: {exc}"])
         elif isinstance(ev, Command) and ev.name == "boost":
             try:
                 _handle_boost(cfg, deps, ev.issue, ev.amount)
-            except (subprocess.CalledProcessError, OSError) as exc:
+            except (subprocess.CalledProcessError, OSError,
+                    LookupError, ValueError) as exc:
                 deps.notifier.send("status",
                                    lines=[f"#{ev.issue} boost failed: {exc}"])
         elif isinstance(ev, Command) and ev.name == "next":
             try:
                 _handle_next(cfg, deps, ev.issue, ev.force)
-            except (subprocess.CalledProcessError, OSError) as exc:
+            except (subprocess.CalledProcessError, OSError,
+                    LookupError, ValueError) as exc:
                 deps.notifier.send("status",
                                    lines=[f"#{ev.issue} next failed: {exc}"])
         elif isinstance(ev, Reply):
