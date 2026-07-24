@@ -54,8 +54,14 @@ def _now() -> str:
 _POLICY_STAGE = {Stage.QUEUED: "spec", Stage.AWAITING_SPEC_REVIEW: "spec"}
 
 
-def _model_for(cfg: Config, target: Target, task: TaskState, stage: Stage) -> str:
-    return resolve(policy_for(cfg, target), _POLICY_STAGE.get(stage, stage.value),
+def _model_for(cfg: Config, target: Target | None, task: TaskState,
+               stage: Stage) -> str:
+    """target is None for a task whose target has left the config — it still
+    resolves, against the global policy, since there is no per-target one to
+    look up. Every model resolution goes through here, so the stage mapping
+    above is applied exactly once."""
+    policy = policy_for(cfg, target) if target else cfg.models
+    return resolve(policy, _POLICY_STAGE.get(stage, stage.value),
                    task.effort, task.labels)
 
 
@@ -82,9 +88,7 @@ def _status_lines(cfg: Config) -> list[str]:
     tasks = [t for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
     lines = []
     for t in tasks:
-        target = by_name.get(t.target)
-        model = (_model_for(cfg, target, t, t.stage) if target
-                 else resolve(cfg.models, t.stage.value, t.effort, t.labels))
+        model = _model_for(cfg, by_name.get(t.target), t, t.stage)
         lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
                      + (f" [{t.park}]" if t.park else "") + f" (slot {t.slot})")
     lines = lines or ["(nothing in flight)"]

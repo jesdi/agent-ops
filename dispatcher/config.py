@@ -46,8 +46,9 @@ def _target(raw: dict) -> Target:
     models = fields.pop("models", None)
     # The key's PRESENCE decides override vs. inherit, not its truthiness —
     # `models: {}` must opt the target OUT of the global policy (empty rules,
-    # plain default), not silently inherit it. parse_policy validates
-    # whatever value is present, so `models: []`/`models: "x"` still raise.
+    # plain default), not silently inherit it. Any other falsy value (`[]`,
+    # `null`, `0`) means the same thing, since parse_policy maps them all to
+    # DEFAULT_POLICY; a non-empty malformed value (`models: "x"`) still raises.
     return Target(**fields, models=parse_policy(models) if has_models else None)
 
 

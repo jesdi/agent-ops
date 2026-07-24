@@ -656,6 +656,21 @@ def test_status_lines_survive_a_task_whose_target_is_gone(tmp_path):
     assert "[claude-sonnet-4-6]" in lines[0]   # falls back to the global policy
 
 
+def test_orphaned_task_at_the_spec_review_gate_still_maps_to_the_spec_model(
+        tmp_path):
+    # The global-policy fallback must go through the same stage mapping as the
+    # normal path, or a frontend task parked at the gate misreports as opus.
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=45, target="retired_target", stage=Stage.AWAITING_SPEC_REVIEW,
+        slot=0, worktree="/wt", branch="agent/task-45", title="Orphan chart",
+        updated_at="2026-07-24T00:00:00+00:00", effort=3,
+        labels=("auto", "frontend")))
+    lines = main._status_lines(c)
+    assert lines[0] == ("#45 Orphan chart — awaiting-spec-review "
+                        "[claude-fable-5] (slot 0)")
+
+
 def test_status_line_for_a_parked_task_puts_model_before_park(tmp_path):
     """Finding C: the format is
     '#{issue} {title} — {stage} [{model}] [{park}] (slot {slot})' — the
