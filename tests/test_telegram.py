@@ -58,3 +58,8 @@ def test_parked_question_mentions_reply_and_attach():
 def test_status_renders_lines():
     text = render("status", lines=["#1 x — implement [awaiting-ci run 9]"])
     assert "agent-ops status" in text and "#1 x" in text
+
+
+def test_queue_template_joins_lines():
+    text = render("queue", lines=["1. [5.00] #2 B", "Blocked: #4"])
+    assert text == "📊 agent-ops queue\n1. [5.00] #2 B\nBlocked: #4"
