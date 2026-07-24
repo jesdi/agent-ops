@@ -15,12 +15,34 @@ TARGET = Target(
 )
 
 RANKED = json.dumps([
-    {"number": 7, "title": "A", "url": "u7", "labels": ["auto"], "status": "Ready", "blocked": False},
-    {"number": 8, "title": "B", "url": "u8", "labels": [], "status": "Ready", "blocked": False},
-    {"number": 9, "title": "C", "url": "u9", "labels": ["auto"], "status": "Backlog", "blocked": False},
-    {"number": 10, "title": "D", "url": "u10", "labels": ["auto"], "status": "Ready", "blocked": True},
-    {"number": 11, "title": "E", "url": "u11", "labels": ["auto"], "status": "Ready", "blocked": False},
+    {"number": 7, "title": "A", "url": "u7", "labels": ["auto"], "status": "Ready",
+     "blocked": False, "effort": 1},
+    {"number": 8, "title": "B", "url": "u8", "labels": [], "status": "Ready",
+     "blocked": False, "effort": 2},
+    {"number": 9, "title": "C", "url": "u9", "labels": ["auto"], "status": "Backlog",
+     "blocked": False, "effort": 1},
+    {"number": 10, "title": "D", "url": "u10", "labels": ["auto"], "status": "Ready",
+     "blocked": True, "effort": 1},
+    {"number": 11, "title": "E", "url": "u11", "labels": ["auto", "frontend"],
+     "status": "Ready", "blocked": False, "effort": 3},
 ])
+
+
+def test_candidates_carry_effort_and_labels(monkeypatch):
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
+    got = {c.number: c for c in github.GitHubClient().candidates(TARGET)}
+    assert got[7].effort == 1
+    assert got[7].labels == ("auto",)
+    assert got[11].effort == 3
+    assert got[11].labels == ("auto", "frontend")
+
+
+def test_candidates_tolerate_missing_effort(monkeypatch):
+    unscored = json.dumps([{"number": 12, "title": "F", "url": "u12",
+                            "labels": ["auto"], "status": "Ready", "blocked": False}])
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None: unscored)
+    got = github.GitHubClient().candidates(TARGET)
+    assert got[0].effort is None
 
 
 def test_candidates_filters_and_keeps_rank_order(monkeypatch):

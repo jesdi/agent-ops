@@ -21,10 +21,10 @@ def session_name(issue: int) -> str:
     return f"task-{issue}"
 
 
-def podman_cmd(issue: int, worktree: str, memory: str, cpus: str,
+def podman_cmd(issue: int, worktree: str, memory: str, cpus: str, model: str,
                claude_args: str) -> str:
     return containers.session_cmd(session_name(issue), worktree, memory, cpus,
-                                  claude_args)
+                                  model, claude_args)
 
 
 class Sessions:
@@ -37,29 +37,31 @@ class Sessions:
     def is_alive(self, issue: int) -> bool:
         return _tmux(["tmux", "has-session", "-t", session_name(issue)]) == 0
 
-    def _launch(self, issue: int, worktree: str, claude_args: str) -> None:
+    def _launch(self, issue: int, worktree: str, model: str,
+                claude_args: str) -> None:
         name = session_name(issue)
         if _tmux(["tmux", "has-session", "-t", name]) != 0:
             _tmux(["tmux", "new-session", "-d", "-s", name, "-c", worktree])
-        cmd = podman_cmd(issue, worktree, self.memory, self.cpus, claude_args)
+        cmd = podman_cmd(issue, worktree, self.memory, self.cpus, model, claude_args)
         _tmux(["tmux", "send-keys", "-t", name, cmd, "Enter"])
 
     def spawn_stage(self, issue: int, worktree: str, prompt: str,
-                    stage_name: str) -> None:
+                    stage_name: str, model: str) -> None:
         if self.dry_run:
-            print(f"[dry-run] spawn stage '{stage_name}' in tmux "
+            print(f"[dry-run] spawn stage '{stage_name}' on {model} in tmux "
                   f"{session_name(issue)} at {worktree}")
             return
         agent_dir = Path(worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)
-        self._launch(issue, worktree, f'"$(cat .agent/prompt-{stage_name}.md)"')
+        self._launch(issue, worktree, model,
+                     f'"$(cat .agent/prompt-{stage_name}.md)"')
 
-    def resume(self, issue: int, worktree: str, message: str) -> None:
+    def resume(self, issue: int, worktree: str, message: str, model: str) -> None:
         if self.dry_run:
-            print(f"[dry-run] resume {session_name(issue)} at {worktree}")
+            print(f"[dry-run] resume {session_name(issue)} on {model} at {worktree}")
             return
-        self._launch(issue, worktree, f"--continue {shlex.quote(message)}")
+        self._launch(issue, worktree, model, f"--continue {shlex.quote(message)}")
 
     def capture_tail(self, issue: int, lines: int = 25) -> str:
         if self.dry_run:

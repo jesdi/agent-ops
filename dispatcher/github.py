@@ -33,6 +33,8 @@ class Candidate:
     number: int
     title: str
     url: str
+    effort: int | None = None
+    labels: tuple[str, ...] = ()
 
 
 class GitHubClient:
@@ -52,7 +54,8 @@ class GitHubClient:
         out = _run(shlex.split(target.rank_cmd), cwd=target.clone_path)
         items = json.loads(out)
         return [
-            Candidate(number=i["number"], title=i["title"], url=i["url"])
+            Candidate(number=i["number"], title=i["title"], url=i["url"],
+                      effort=i.get("effort"), labels=tuple(i.get("labels") or ()))
             for i in items
             if i["status"] == "Ready" and not i["blocked"] and "auto" in i["labels"]
         ]

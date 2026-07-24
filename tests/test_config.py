@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from dispatcher.config import load_config
+import pytest
+
+from dispatcher.config import load_config, policy_for
+from dispatcher.models import DEFAULT_POLICY
 
 SAMPLE = """\
 capacity: 3
@@ -87,3 +90,123 @@ def test_session_caps_overridable(tmp_path):
     p.write_text("state_dir: /tmp/s\nsession_memory: 1500m\nsession_cpus: '1'\ntargets: []\n")
     cfg = load_config(p)
     assert cfg.session_memory == "1500m" and cfg.session_cpus == "1"
+
+
+WITH_MODELS = """\
+state_dir: /tmp/s
+models:
+  default: claude-opus-4-8
+  rules:
+    - name: trivial-backend
+      when:
+        effort: {max: 1}
+        labels_exclude: [frontend]
+      use: claude-sonnet-4-6
+targets:
+  - name: portfolio_eval
+    repo: jesdi/portfolio_eval
+    clone_path: /home/agent/repos/portfolio_eval
+    worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+    rank_cmd: "rank"
+    setup_cmd: "setup"
+    verify_cmd: "make e2e-slot SLOT={slot}"
+    project_number: 1
+    project_owner: jesdi
+    status_field_id: F
+    status_ready_option_id: R
+    status_in_progress_option_id: I
+    models:
+      default: claude-fable-5
+      rules: []
+"""
+
+
+def test_global_policy_is_parsed(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(WITH_MODELS)
+    cfg = load_config(p)
+    assert cfg.models.default == "claude-opus-4-8"
+    assert [r.name for r in cfg.models.rules] == ["trivial-backend"]
+    assert cfg.models.rules[0].effort_max == 1
+    assert cfg.models.rules[0].labels_exclude == ("frontend",)
+
+
+def test_target_policy_replaces_the_global_one(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(WITH_MODELS)
+    cfg = load_config(p)
+    target = cfg.targets[0]
+    assert policy_for(cfg, target).default == "claude-fable-5"
+    assert policy_for(cfg, target).rules == ()   # replaced wholesale, not merged
+
+
+def test_target_without_models_inherits_the_global_policy(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE)          # the module-level sample has no models: block
+    cfg = load_config(p)
+    assert policy_for(cfg, cfg.targets[0]) is cfg.models
+
+
+def test_absent_models_block_defaults_to_opus(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    cfg = load_config(p)
+    assert cfg.models == DEFAULT_POLICY
+    assert cfg.models.default == "claude-opus-4-8"
+
+
+WITH_EMPTY_TARGET_MODELS = """\
+state_dir: /tmp/s
+models:
+  default: claude-opus-4-8
+  rules:
+    - name: trivial-backend
+      when:
+        effort: {max: 1}
+        labels_exclude: [frontend]
+      use: claude-sonnet-4-6
+targets:
+  - name: portfolio_eval
+    repo: jesdi/portfolio_eval
+    clone_path: /home/agent/repos/portfolio_eval
+    worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+    rank_cmd: "rank"
+    setup_cmd: "setup"
+    verify_cmd: "make e2e-slot SLOT={slot}"
+    project_number: 1
+    project_owner: jesdi
+    status_field_id: F
+    status_ready_option_id: R
+    status_in_progress_option_id: I
+    models: {}
+"""
+
+
+def test_target_with_empty_models_block_opts_out_of_global_policy(tmp_path: Path):
+    """An explicit `models: {}` on a target means "override with nothing",
+    not "inherit the global policy" — it's the natural way to opt one
+    target out of global rules (finding B)."""
+    p = tmp_path / "targets.yaml"
+    p.write_text(WITH_EMPTY_TARGET_MODELS)
+    cfg = load_config(p)
+    target = cfg.targets[0]
+    assert policy_for(cfg, target) == DEFAULT_POLICY
+    assert policy_for(cfg, target).rules == ()
+    assert policy_for(cfg, target).default == "claude-opus-4-8"
+    # the global policy still has its rule — only the target opted out
+    assert cfg.models.rules != ()
+
+
+def test_malformed_rule_fails_at_load(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(
+        "state_dir: /tmp/s\ntargets: []\n"
+        "models:\n"
+        "  default: claude-opus-4-8\n"
+        "  rules:\n"
+        "    - name: typo\n"
+        "      when: {label_include: [frontend]}\n"
+        "      use: claude-sonnet-4-6\n"
+    )
+    with pytest.raises(ValueError, match="label_include"):
+        load_config(p)
