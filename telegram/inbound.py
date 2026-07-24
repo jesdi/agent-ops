@@ -22,8 +22,10 @@ class Reply:
 
 @dataclass(frozen=True)
 class Command:
-    name: str  # "status" | "attach"
+    name: str  # "status" | "attach" | "queue" | "boost" | "next"
     issue: int = 0
+    amount: int = 0   # /boost +k, /demote -k
+    force: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,21 @@ def classify(text: str, reply_to_msg_id: int):
             return Command(name="status")
         if parts[0] == "/attach" and len(parts) == 2 and parts[1].isdigit():
             return Command(name="attach", issue=int(parts[1]))
+        if parts[0] == "/queue" and len(parts) == 1:
+            return Command(name="queue")
+        if parts[0] in ("/boost", "/demote") and len(parts) in (2, 3) \
+                and parts[1].isdigit():
+            step = 1
+            if len(parts) == 3:
+                if not parts[2].isdigit() or int(parts[2]) < 1:
+                    return None
+                step = int(parts[2])
+            sign = 1 if parts[0] == "/boost" else -1
+            return Command(name="boost", issue=int(parts[1]), amount=sign * step)
+        if parts[0] == "/next" and len(parts) in (2, 3) and parts[1].isdigit() \
+                and (len(parts) == 2 or parts[2] == "force"):
+            return Command(name="next", issue=int(parts[1]),
+                           force=len(parts) == 3)
         return None
     return Plain(text=text)
 

@@ -44,3 +44,30 @@ def test_fetch_events_classifies_and_advances_offset(tmp_path, monkeypatch):
 def test_fetch_events_without_env_is_empty(tmp_path, monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     assert fetch_events(tmp_path) == []
+
+
+def test_classify_queue():
+    assert classify("/queue", 0) == Command(name="queue")
+    assert classify("/queue extra", 0) is None
+
+
+def test_classify_boost_and_demote_signed_amount():
+    assert classify("/boost 42", 0) == Command(name="boost", issue=42, amount=1)
+    assert classify("/boost 42 3", 0) == Command(name="boost", issue=42, amount=3)
+    assert classify("/demote 42", 0) == Command(name="boost", issue=42, amount=-1)
+    assert classify("/demote 42 2", 0) == Command(name="boost", issue=42, amount=-2)
+
+
+def test_classify_boost_malformed():
+    assert classify("/boost", 0) is None
+    assert classify("/boost x", 0) is None
+    assert classify("/boost 42 0", 0) is None
+    assert classify("/boost 42 -1", 0) is None
+    assert classify("/boost 42 3 9", 0) is None
+
+
+def test_classify_next_and_force():
+    assert classify("/next 42", 0) == Command(name="next", issue=42)
+    assert classify("/next 42 force", 0) == Command(name="next", issue=42, force=True)
+    assert classify("/next", 0) is None
+    assert classify("/next 42 hard", 0) is None
