@@ -137,6 +137,14 @@ def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
             f"#{issue} is blocked — resolve its blockers first "
             "(blocked issues cannot be forced)"])
         return
+    if row.get("status") == "In progress":
+        # The board is the double-dispatch guard: flipping an In-progress
+        # issue back to Ready would let this pass claim work already in
+        # flight. Never forceable.
+        deps.notifier.send("status", lines=[
+            f"#{issue} is already In progress — work on it is already in "
+            "flight (in-progress issues cannot be forced)"])
+        return
     problems = []
     if row.get("status") != "Ready":
         problems.append(f"status is {row.get('status') or 'unset'}, not Ready")
@@ -147,11 +155,14 @@ def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
             f"#{issue} is not eligible: " + "; ".join(problems) + ".",
             f"Send /next {issue} force to make it eligible and enqueue."])
         return
+    # Boost FIRST: it is the mutation most likely to fail (the Boost field may
+    # not exist on the board yet), and failing before status/label keeps a
+    # failed /next a clean no-op rather than a half-eligible issue.
+    deps.github.set_boost(target, issue, NEXT_BOOST)
     if row.get("status") != "Ready":
         deps.github.set_status(target, issue, target.status_ready_option_id)
     if "auto" not in row.get("labels", []):
         deps.github.add_label(target, issue, "auto")
-    deps.github.set_boost(target, issue, NEXT_BOOST)
     deps.notifier.send("status", lines=[
         f"#{issue} enqueued at the head (boost {NEXT_BOOST})"])
 

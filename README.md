@@ -24,8 +24,8 @@ is no CI→VPS RPC. The box converges to `main` by pulling; merging (CI-gated)
   inbound replies that feed back into parked sessions. Queue control from
   the same chat: `/queue` shows the ranked backlog; `/boost N [k]` /
   `/demote N [k]` adjust an issue's Boost band; `/next N` enqueues an issue
-  at the head (`/next N force` also makes it Ready + `auto`; blocked issues
-  are never forceable).
+  at the head (`/next N force` also makes it Ready + `auto`; blocked and
+  In-progress issues are never forceable).
 - **Pull-based convergence** — an `agent-ops-update.timer` on the box does
   `git pull --ff-only` against `main` (~every minute), reinstalls the package
   when deps change, syncs systemd units, restarts changed services, and

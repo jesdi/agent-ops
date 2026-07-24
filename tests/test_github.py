@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace as dc_replace
 
 import dispatcher.github as github
 from dispatcher.config import Target
@@ -192,8 +193,6 @@ def test_project_commands_without_token_inherit_ambient_auth(monkeypatch):
     assert calls and all(env is None for _, env in calls)
 
 
-from dataclasses import replace as dc_replace
-
 BOOST_TARGET = dc_replace(TARGET, boost_field_id="FB")
 
 
@@ -257,3 +256,18 @@ def test_boost_dry_run_mutates_nothing(monkeypatch, capsys):
     cli.set_boost(BOOST_TARGET, 7, 99)
     cli.add_label(TARGET, 7, "auto")
     assert "[dry-run]" in capsys.readouterr().out
+
+
+def test_rank_rows_casts_string_boost_to_int(monkeypatch):
+    ranked = json.dumps([
+        {"number": 7, "title": "A", "url": "u7", "labels": ["auto"],
+         "status": "Ready", "blocked": False, "score": 2.0, "boost": "5"},
+        {"number": 8, "title": "B", "url": "u8", "labels": ["auto"],
+         "status": "Ready", "blocked": False, "score": 1.0, "boost": ""},
+        {"number": 9, "title": "C", "url": "u9", "labels": ["auto"],
+         "status": "Ready", "blocked": False, "score": 1.0, "boost": None},
+    ])
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None: ranked)
+    rows = github.GitHubClient().rank_rows(TARGET)
+    assert [r["boost"] for r in rows] == [5, 0, 0]
+    assert all(isinstance(r["boost"], int) for r in rows)

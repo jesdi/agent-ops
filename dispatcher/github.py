@@ -50,11 +50,12 @@ class GitHubClient:
 
     def rank_rows(self, target: Target) -> list[dict]:
         """rank_cmd --json rows in rank order; `boost` normalized to an int
-        (old vendored skills may not emit it yet)."""
+        (old vendored skills may not emit it yet, and the board can hand back
+        a string or an empty value for an unset field)."""
         out = _run(shlex.split(target.rank_cmd), cwd=target.clone_path)
         rows = json.loads(out)
         for row in rows:
-            row["boost"] = row.get("boost", 0)
+            row["boost"] = int(row.get("boost") or 0)
         return rows
 
     def candidates(self, target: Target) -> list[Candidate]:
