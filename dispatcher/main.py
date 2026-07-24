@@ -211,7 +211,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                budget_ok: bool) -> None:
+                budget_ok: bool, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.issue)
     waiting = has_waiting(cfg.state_dir, task.issue)
@@ -241,6 +241,26 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             deps.github.release(target, task.issue, "session crashed mid-stage")
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
                                         updated_at=_now()))
+            _report_session_crash(cfg, deps, target, task, dry_run)
+
+
+def _report_session_crash(cfg: Config, deps: Deps, target: Target,
+                          task: TaskState, dry_run: bool) -> None:
+    rep = failures.FailureReport(
+        klass="session-crash", target=target.name, issue=task.issue,
+        title=f"session crashed during {task.stage.value}: {task.title}",
+        error=(f"tmux session task-{task.issue} died during stage "
+               f"{task.stage.value}"),
+        log_tail=deps.sessions.capture_tail(task.issue, lines=30),
+        repro=f"cd {task.worktree} && claude --continue  # inside session image",
+        worktree=task.worktree)
+    blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
+    if blocker:
+        try:
+            deps.github.append_blocked_by(target, task.issue, blocker)
+        except Exception as exc:
+            print(f"[warn] append_blocked_by failed for #{task.issue}: {exc}",
+                  file=sys.stderr)
 
 
 def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
@@ -316,7 +336,7 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
-            _drive_task(cfg, deps, target, task, budget_ok)
+            _drive_task(cfg, deps, target, task, budget_ok, dry_run)
         _wake_ci(cfg, deps, target)
         _resume_woken(cfg, deps, target, budget_ok)
         if budget_ok:

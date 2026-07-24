@@ -240,6 +240,27 @@ def test_dead_session_is_crash(tmp_path, monkeypatch):
     assert wt.exists()  # worktree preserved
 
 
+def test_dead_session_files_diagnosis_issue_and_blocks(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    gh = FakeGitHub()
+    d = deps(gh, FakeSessions(alive=set()))
+    main.run_pass(c, d)
+
+    repo, title, body = gh.created_issues[0]
+    assert repo == "jesdi/portfolio_eval", "session crashes file on the TARGET repo"
+    assert "session-crash" in title and "implement" in title
+    assert "- class: session-crash" in body
+    assert "…pane tail…" in body  # FakeSessions.capture_tail
+    assert gh.blocked_by == [(42, 501)]
+    assert "task_failed" in d.notifier.sent
+    # existing crash handling still intact
+    assert gh.released == [(42, "session crashed mid-stage")]
+    assert load(c.state_dir, 42).stage is Stage.FAILED
+
+
 def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monkeypatch):
     """create_workspace failure: no claim, no state file, one issue + one
     ping, quarantine written, the NEXT candidate is still claimed, and the
