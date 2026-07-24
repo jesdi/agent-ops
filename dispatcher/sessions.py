@@ -6,10 +6,11 @@ transcripts from the mounted claude-home, keyed by the worktree cwd, which
 is mounted at the same path inside the container)."""
 from __future__ import annotations
 
-import os
 import shlex
 import subprocess
 from pathlib import Path
+
+from dispatcher import containers
 
 
 def _tmux(args: list[str]) -> int:
@@ -20,24 +21,10 @@ def session_name(issue: int) -> str:
     return f"task-{issue}"
 
 
-def _state_dir() -> str:
-    return os.environ.get("AGENT_OPS_STATE_DIR",
-                          str(Path.home() / "agent-ops-state"))
-
-
 def podman_cmd(issue: int, worktree: str, memory: str, cpus: str,
                claude_args: str) -> str:
-    image = os.environ.get("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    home = str(Path.home())
-    return (
-        f"podman run --rm -it --name {session_name(issue)} "
-        f"--memory {memory} --cpus {cpus} "
-        f"-v {worktree}:{worktree} -w {worktree} "
-        f"-v {_state_dir()}/claude-home:/root/.claude "
-        f"-v {home}/.config/gh:/root/.config/gh:ro "
-        f"-v {home}/.gitconfig:/root/.gitconfig:ro "
-        f"{image} claude --permission-mode acceptEdits {claude_args}"
-    )
+    return containers.session_cmd(session_name(issue), worktree, memory, cpus,
+                                  claude_args)
 
 
 class Sessions:
