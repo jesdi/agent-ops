@@ -56,6 +56,25 @@ def box(tmp_path):
     podman.write_text(f'#!/bin/sh\necho "podman $@" >> "{calls}"\n')
     podman.chmod(0o755)
 
+    # Seed + sync script + fake claude so the claude-home sync works.
+    prov_src = Path(__file__).resolve().parent.parent / "provision"
+    real_seed = prov_src / "claude-home"
+    subprocess.run(["cp", "-R", str(real_seed),
+                    str(origin / "provision" / "claude-home")], check=True)
+    subprocess.run(["cp", str(prov_src / "claude-home-sync.sh"),
+                    str(origin / "provision" / "claude-home-sync.sh")], check=True)
+    commit_all(origin, "add claude-home seed")
+    git(repo, "pull")
+
+    plugin_list = tmp_path / "plugins.json"
+    plugin_list.write_text(
+        '[{"id": "superpowers@claude-plugins-official", "version": "4.0.0"}]')
+    claude = bin_dir / "claude"
+    claude.write_text(
+        f'#!/bin/sh\necho "claude $@" >> "{calls}"\n'
+        f'[ "$1 $2" = "plugin list" ] && cat "{plugin_list}"\nexit 0\n')
+    claude.chmod(0o755)
+
     state = tmp_path / "state"
     units = tmp_path / "units"
     units.mkdir()
@@ -70,6 +89,7 @@ def box(tmp_path):
         AGENT_OPS_UNIT_DIR=str(units),
         AGENT_OPS_SYSTEMCTL=f"{sysctl} --user",
         AGENT_OPS_PODMAN=str(podman),
+        AGENT_OPS_CLAUDE=str(claude),
     )
     return SimpleNamespace(origin=origin, repo=repo, state=state,
                            units=units, calls=calls, env=env)
@@ -94,7 +114,8 @@ def head(repo):
 def test_noop_when_up_to_date(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
-    assert calls(box) == ""
+    assert [l for l in calls(box).splitlines()
+            if not l.startswith("claude")] == []
 
 
 def test_code_only_change_pulls_without_restart_or_reinstall(box):
@@ -103,7 +124,8 @@ def test_code_only_change_pulls_without_restart_or_reinstall(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
     assert head(box.repo) == head(box.origin)
-    assert calls(box) == ""
+    assert [l for l in calls(box).splitlines()
+            if not l.startswith("claude")] == []
 
 
 def test_dep_change_reinstalls_package(box):
@@ -182,3 +204,19 @@ def test_code_change_does_not_build_image(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
     assert "podman" not in calls(box)
+
+
+def test_claude_home_synced_every_pass(box):
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    home = box.state / "claude-home"
+    assert (home / "CLAUDE.md").exists()
+    assert (home / "hooks" / "block-dangerous-git.sh").exists()
+
+
+def test_claude_home_drift_heals_without_new_commits(box):
+    run_update(box)
+    (box.state / "claude-home" / "CLAUDE.md").write_text("# drifted\n")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "drifted" not in (box.state / "claude-home" / "CLAUDE.md").read_text()
