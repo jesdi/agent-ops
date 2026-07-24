@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy
+
 
 @dataclass(frozen=True)
 class Target:
@@ -22,6 +24,7 @@ class Target:
     status_field_id: str
     status_ready_option_id: str
     status_in_progress_option_id: str
+    models: ModelPolicy | None = None  # None = inherit the global policy
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,13 @@ class Config:
     session_memory: str
     session_cpus: str
     targets: list[Target]
+    models: ModelPolicy = DEFAULT_POLICY
+
+
+def _target(raw: dict) -> Target:
+    fields = dict(raw)
+    models = fields.pop("models", None)
+    return Target(**fields, models=parse_policy(models) if models else None)
 
 
 def load_config(path: str | Path) -> Config:
@@ -46,5 +56,12 @@ def load_config(path: str | Path) -> Config:
         racing_threshold=raw.get("racing_threshold", 0.95),
         session_memory=str(raw.get("session_memory", "2g")),
         session_cpus=str(raw.get("session_cpus", "2")),
-        targets=[Target(**t) for t in raw.get("targets", [])],
+        targets=[_target(t) for t in raw.get("targets", [])],
+        models=parse_policy(raw.get("models")),
     )
+
+
+def policy_for(cfg: Config, target: Target) -> ModelPolicy:
+    """A target's own policy replaces the global one wholesale — rule lists are
+    never merged, because merge order would make first-match-wins ambiguous."""
+    return target.models or cfg.models
