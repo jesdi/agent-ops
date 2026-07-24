@@ -92,6 +92,38 @@ def test_session_caps_overridable(tmp_path):
     assert cfg.session_memory == "1500m" and cfg.session_cpus == "1"
 
 
+_TARGET_YAML = """
+state_dir: /tmp/state
+targets:
+  - name: t
+    repo: o/r
+    clone_path: /c
+    worktrees_path: /w
+    rank_cmd: rank
+    setup_cmd: setup
+    verify_cmd: verify
+    project_number: 1
+    project_owner: o
+    status_field_id: F
+    status_ready_option_id: R
+    status_in_progress_option_id: I
+"""
+
+
+def test_target_boost_field_id_parsed(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    path = tmp_path / "targets.yaml"
+    path.write_text(_TARGET_YAML + "    boost_field_id: PVTF_B1\n")
+    assert load_config(path).targets[0].boost_field_id == "PVTF_B1"
+
+
+def test_target_boost_field_id_defaults_empty(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    path = tmp_path / "targets.yaml"
+    path.write_text(_TARGET_YAML)
+    assert load_config(path).targets[0].boost_field_id == ""
+
+
 WITH_MODELS = """\
 state_dir: /tmp/s
 models:

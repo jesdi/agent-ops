@@ -50,14 +50,22 @@ class GitHubClient:
         d = json.loads(out)
         return (d.get("conclusion") or "") if d.get("status") == "completed" else ""
 
-    def candidates(self, target: Target) -> list[Candidate]:
+    def rank_rows(self, target: Target) -> list[dict]:
+        """rank_cmd --json rows in rank order; `boost` normalized to an int
+        (old vendored skills may not emit it yet, and the board can hand back
+        a string or an empty value for an unset field)."""
         out = _run(shlex.split(target.rank_cmd), cwd=target.clone_path)
-        items = json.loads(out)
+        rows = json.loads(out)
+        for row in rows:
+            row["boost"] = int(row.get("boost") or 0)
+        return rows
+
+    def candidates(self, target: Target) -> list[Candidate]:
         return [
-            Candidate(number=i["number"], title=i["title"], url=i["url"],
-                      effort=i.get("effort"), labels=tuple(i.get("labels") or ()))
-            for i in items
-            if i["status"] == "Ready" and not i["blocked"] and "auto" in i["labels"]
+            Candidate(number=r["number"], title=r["title"], url=r["url"],
+                      effort=r.get("effort"), labels=tuple(r.get("labels") or ()))
+            for r in self.rank_rows(target)
+            if r["status"] == "Ready" and not r["blocked"] and "auto" in r["labels"]
         ]
 
     def _project_node_id(self, target: Target) -> str:
@@ -102,6 +110,23 @@ class GitHubClient:
               "--project-id", self._project_node_id(target),
               "--field-id", target.status_field_id,
               "--single-select-option-id", option_id], env=_project_env())
+
+    def set_boost(self, target: Target, issue: int, value: int) -> None:
+        if self.dry_run:
+            print(f"[dry-run] set_boost #{issue} -> {value}")
+            return
+        _run(["gh", "project", "item-edit",
+              "--id", self._item_id(target, issue),
+              "--project-id", self._project_node_id(target),
+              "--field-id", target.boost_field_id,
+              "--number", str(value)], env=_project_env())
+
+    def add_label(self, target: Target, issue: int, label: str) -> None:
+        if self.dry_run:
+            print(f"[dry-run] add_label #{issue} +{label}")
+            return
+        _run(["gh", "issue", "edit", str(issue),
+              "--repo", target.repo, "--add-label", label])
 
     def comment(self, target: Target, issue: int, body: str) -> None:
         if self.dry_run:

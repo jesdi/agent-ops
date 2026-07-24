@@ -44,3 +44,4 @@ targets:
     status_field_id: PVTSSF_xxx
     status_ready_option_id: abc123
     status_in_progress_option_id: def456
+    boost_field_id: PVTF_xxx

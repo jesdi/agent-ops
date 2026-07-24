@@ -28,11 +28,32 @@ POLICY = parse_policy({
 
 
 class FakeGitHub:
-    def __init__(self, cands=(), run_conclusion="", run_status_raises=False):
+    def __init__(self, cands=(), run_conclusion="", run_status_raises=False,
+                 rows=()):
         self.cands = list(cands)
         self.claimed, self.released = [], []
         self.run_conclusion = run_conclusion  # "" = still running
         self.run_status_raises = run_status_raises
+        self.rows = list(rows)
+        self.boosts, self.labeled, self.statused = [], [], []
+        self.boost_raises = False
+        self.lookup_raises = False
+
+    def rank_rows(self, target):
+        if self.boost_raises:
+            raise subprocess.CalledProcessError(1, ["rank"])
+        return self.rows
+
+    def set_boost(self, target, issue, value):
+        if self.lookup_raises:
+            raise LookupError(f"issue {issue} not found in project items")
+        self.boosts.append((issue, value))
+
+    def add_label(self, target, issue, label):
+        self.labeled.append((issue, label))
+
+    def set_status(self, target, issue, option_id):
+        self.statused.append((issue, option_id))
 
     def candidates(self, target):
         return self.cands
@@ -76,10 +97,12 @@ class FakeSessions:
 class FakeNotifier:
     def __init__(self):
         self.sent = []
+        self.contexts = []
         self.calls = []  # (template, ctx) — parallel record; sent stays template-only
 
     def send(self, template, **ctx):
         self.sent.append(template)
+        self.contexts.append((template, ctx))
         self.calls.append((template, ctx))
         return 77
 
@@ -107,6 +130,13 @@ def patch_usage(monkeypatch, util=0.2):
     monkeypatch.setattr(
         main, "fetch_usage",
         lambda state_dir: UsageSnapshot(util, 120.0, "oauth"))
+
+
+def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
+        score=1.0, boost=0):
+    return {"number": number, "title": title, "url": f"u{number}",
+            "status": status, "labels": list(labels), "blocked": blocked,
+            "score": score, "boost": boost}
 
 
 def patch_workspace(monkeypatch, tmp_path):
@@ -501,6 +531,220 @@ def test_run_status_error_does_not_abort_pass(tmp_path, monkeypatch):
     assert t.park == PARK_CI and t.ci_run_id == 4242
     # The rest of the pass continued: the fresh candidate was claimed
     assert gh.claimed == [99]
+
+
+def test_queue_command_sends_ranked_view(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(2, title="B", score=5.0, boost=1),
+                          row(1, title="A", score=1.0),
+                          row(3, title="C", score=None),
+                          row(4, title="D", blocked=True),
+                          row(5, title="E", status="In progress")])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="queue")])
+    main.run_pass(cfg(tmp_path), d)
+    template, ctx = d.notifier.contexts[0]
+    assert template == "queue"
+    lines = ctx["lines"]
+    assert lines[0] == "1. ↑1 [5.00] #2 B"
+    assert lines[1] == "2. [1.00] #1 A"
+    assert lines[2] == "3. [—] #3 C"
+    assert "In progress: #5" in lines
+    assert "Blocked: #4" in lines
+
+
+def test_boost_command_adjusts_and_confirms(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, boost=2)])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=7, amount=-3)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [(7, -1)]
+    assert any("#7 boost 2 → -1" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_boost_unknown_issue_replies_not_on_board(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=99, amount=1)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == []
+    assert any("#99 is not on the board" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_next_eligible_sets_head_boost(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [(7, 99)]
+    assert gh.statused == [] and gh.labeled == []
+
+
+def test_next_ineligible_refuses_with_reason_and_hint(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="Backlog", labels=())])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == []
+    joined = " ".join(l for _, ctx in d.notifier.contexts
+                      for l in ctx.get("lines", []))
+    assert "not eligible" in joined and "Backlog" in joined
+    assert "auto" in joined and "/next 7 force" in joined
+
+
+def test_next_force_flips_status_and_label_then_boosts(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="Backlog", labels=())])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.statused == [(7, "R")]   # status_ready_option_id in cfg() is "R"
+    assert gh.labeled == [(7, "auto")]
+    assert gh.boosts == [(7, 99)]
+
+
+def test_next_blocked_never_forced(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, blocked=True)])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [] and gh.statused == [] and gh.labeled == []
+    assert any("blocked" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_boost_ambiguous_across_targets_asks_to_disambiguate(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    c = dc_replace(c, targets=[c.targets[0],
+                               dc_replace(c.targets[0], name="other")])
+    gh = FakeGitHub(rows=[row(7)])   # rank_rows returns #7 for BOTH targets
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=7, amount=1)])
+    main.run_pass(c, d)
+    assert gh.boosts == []
+    assert any("multiple targets" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_gh_failure_reports_error_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    gh.boost_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=7, amount=1)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_lookup_error_boost_reports_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    gh.lookup_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=7, amount=1)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("boost failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_lookup_error_next_reports_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    gh.lookup_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("next failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_value_error_queue_reports_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+
+    def bad_rank_rows(target):
+        raise ValueError("malformed JSON from rank output")
+
+    gh = FakeGitHub(rows=[row(7)])
+    monkeypatch.setattr(gh, "rank_rows", bad_rank_rows)
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="queue")])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("/queue failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_next_in_progress_refused_without_force_hint(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="In progress")])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [] and gh.statused == [] and gh.labeled == []
+    joined = " ".join(l for _, ctx in d.notifier.contexts
+                      for l in ctx.get("lines", []))
+    assert "In progress" in joined
+    assert "force" not in joined.replace("cannot be forced", "")
+
+
+def test_next_in_progress_never_forced(tmp_path, monkeypatch):
+    """The board is the double-dispatch guard: /next force must never flip a
+    claimed issue back to Ready."""
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="In progress", labels=())])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [] and gh.statused == [] and gh.labeled == []
+    assert any("In progress" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_next_force_boost_failure_leaves_board_unmutated(tmp_path, monkeypatch):
+    """set_boost runs first, so a Boost-field failure is a clean no-op."""
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="Backlog", labels=())])
+    gh.lookup_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert gh.boosts == [] and gh.statused == [] and gh.labeled == []
+    assert any("#7 next failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_queue_shows_demote_marker_and_truncates(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    rows = [row(1, title="A", score=9.0, boost=-3)]
+    rows += [row(n, title=f"T{n}", score=1.0) for n in range(2, 14)]
+    d = deps(FakeGitHub(rows=rows))
+    patch_events(monkeypatch, [Command(name="queue")])
+    main.run_pass(cfg(tmp_path), d)
+    lines = d.notifier.contexts[0][1]["lines"]
+    assert lines[0] == "1. ↓3 [9.00] #1 A"
+    assert len([l for l in lines if l[0].isdigit()]) == 10
+    assert "… 3 more" in lines
+
+
+def test_queue_labels_each_target_and_reports_empty(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    c = dc_replace(c, targets=[c.targets[0],
+                               dc_replace(c.targets[0], name="other")])
+    d = deps(FakeGitHub(rows=[]))
+    patch_events(monkeypatch, [Command(name="queue")])
+    main.run_pass(c, d)
+    lines = d.notifier.contexts[0][1]["lines"]
+    assert lines == ["[portfolio_eval]", "(queue empty)",
+                     "[other]", "(queue empty)"]
 
 
 def valid_spec(wt: Path) -> Path:

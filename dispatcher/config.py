@@ -24,6 +24,7 @@ class Target:
     status_field_id: str
     status_ready_option_id: str
     status_in_progress_option_id: str
+    boost_field_id: str = ""
     models: ModelPolicy | None = None  # None = inherit the global policy
 
 
