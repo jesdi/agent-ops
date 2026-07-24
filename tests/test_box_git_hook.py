@@ -42,6 +42,9 @@ def test_allowed(cmd):
     "git push origin master",
     "git push origin HEAD:main",
     "git push upstream feature:master",
+    # +refspec force pushes (fix 3)
+    "git push origin +feature:other",
+    "git push origin +HEAD:main",
     "git reset --hard HEAD~1",
     "git clean -fd",
     "git clean -f",
@@ -64,3 +67,23 @@ def test_no_escape_hatch():
 
 def test_executable_bit():
     assert HOOK.stat().st_mode & 0o111, "hook must be executable"
+
+
+def test_blocks_without_jq(tmp_path):
+    """Hook must fail closed (exit 2) if jq is not on PATH (fix 2)."""
+    # Build a minimal PATH with bash, grep, cat but no jq.
+    import shutil
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("bash", "grep", "cat", "echo"):
+        src = shutil.which(tool)
+        if src:
+            (bin_dir / tool).symlink_to(src)
+    payload = json.dumps({"tool_input": {"command": "git status"}})
+    r = subprocess.run(
+        ["bash", str(HOOK)], input=payload,
+        capture_output=True, text=True, timeout=10,
+        env={"PATH": str(bin_dir)},
+    )
+    assert r.returncode == 2, f"expected block without jq, got {r.returncode}"
+    assert "BLOCKED" in r.stderr

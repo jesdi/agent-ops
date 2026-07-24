@@ -19,16 +19,19 @@ mkdir -p "$CLAUDE_HOME"
 # a pinned version ("1.2.3") — that is a seed-only convention consumed by
 # the plugin step; the runtime schema wants booleans, so normalize.
 python3 - "$SEED/settings.json" "$CLAUDE_HOME/settings.json" <<'PY'
-import json, sys
+import json, os, sys
 seed = json.load(open(sys.argv[1]))
 out = dict(seed)
 out["enabledPlugins"] = {k: True for k in seed.get("enabledPlugins", {})}
-with open(sys.argv[2], "w") as f:
+tmp = sys.argv[2] + ".tmp"
+with open(tmp, "w") as f:
     json.dump(out, f, indent=2)
     f.write("\n")
+os.replace(tmp, sys.argv[2])
 PY
 
-cp "$SEED/CLAUDE.md" "$CLAUDE_HOME/CLAUDE.md"
+cp "$SEED/CLAUDE.md" "$CLAUDE_HOME/CLAUDE.md.tmp"
+mv "$CLAUDE_HOME/CLAUDE.md.tmp" "$CLAUDE_HOME/CLAUDE.md"
 rsync -a --delete "$SEED/skills/" "$CLAUDE_HOME/skills/"
 rsync -a --delete "$SEED/hooks/" "$CLAUDE_HOME/hooks/"
 
@@ -45,7 +48,8 @@ CLAUDE="${AGENT_OPS_CLAUDE:-claude}"
 export CLAUDE_CONFIG_DIR="$CLAUDE_HOME"
 stamp_file="$STATE_DIR/claude-home-plugins.stamp"
 
-actions=$(AGENT_OPS_INSTALLED="$("$CLAUDE" plugin list --json)" \
+installed_json="$("$CLAUDE" plugin list --json)"
+actions=$(AGENT_OPS_INSTALLED="$installed_json" \
 python3 - "$SEED/settings.json" "$stamp_file" <<'PY'
 import hashlib, json, os, sys
 declared = json.load(open(sys.argv[1])).get("enabledPlugins", {})
@@ -81,7 +85,8 @@ while IFS=$'\t' read -r verb arg; do
   esac
 done <<< "$actions"
 
-AGENT_OPS_INSTALLED="$("$CLAUDE" plugin list --json)" \
+installed_json="$("$CLAUDE" plugin list --json)"
+AGENT_OPS_INSTALLED="$installed_json" \
 python3 - "$SEED/settings.json" <<'PY'
 import json, os, sys
 declared = json.load(open(sys.argv[1])).get("enabledPlugins", {})

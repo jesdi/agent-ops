@@ -216,6 +216,7 @@ def test_satisfied_state_only_lists(rig):
     rig.calls.write_text("")
     r = run_sync(rig)                   # second pass: nothing to do
     assert r.returncode == 0, r.stderr
+    assert calls(rig), "expected at least plugin list calls"
     for line in calls(rig).splitlines():
         assert "plugin list" in line, f"unexpected action: {line}"
 
