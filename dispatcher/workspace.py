@@ -45,9 +45,42 @@ def _branch_exists(clone_path: str, branch: str) -> bool:
         proc = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
             cwd=clone_path, capture_output=True, text=True, timeout=30)
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0
+
+
+def _worktree_health_issue(wt: str, branch: str) -> str | None:
+    """Cheap, read-only check for whether an existing worktree directory is
+    a complete, correctly-attached checkout rather than the wreckage of a
+    `git worktree add` killed mid-run (it runs under a 300s timeout). Reads
+    nothing but git metadata and deletes/modifies nothing. Returns None
+    when the worktree looks healthy, or a short description of what's
+    wrong otherwise."""
+    if not (Path(wt) / ".git").exists():
+        return "missing .git"
+    try:
+        head = subprocess.run(
+            ["git", "-C", wt, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"branch check failed to run: {exc}"
+    if head.returncode != 0:
+        return f"git rev-parse HEAD failed: {head.stderr.strip()}"
+    if head.stdout.strip() != branch:
+        return f"on branch {head.stdout.strip()!r}, expected {branch!r}"
+    try:
+        status = subprocess.run(
+            ["git", "-C", wt, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"status check failed to run: {exc}"
+    if status.returncode != 0:
+        return f"git status --porcelain failed: {status.stderr.strip()}"
+    for line in status.stdout.splitlines():
+        if "D" in line[:2]:
+            return f"deleted tracked file(s) present, e.g. {line.strip()!r}"
+    return None
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
@@ -61,15 +94,26 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
         # Retry after a partial provisioning failure: the worktree (and
         # branch) were already created and only the setup step below
         # failed. Re-running `git worktree add` here would die on "already
-        # exists" — reuse what's there and go straight to setup.
-        pass
+        # exists" — reuse what's there and go straight to setup, but only
+        # after confirming it's a complete checkout and not the wreckage
+        # of a `git worktree add` killed mid-run (e.g. by the 300s
+        # timeout), which would otherwise get silently claimed and
+        # produce a PR missing arbitrary tracked files.
+        problem = _worktree_health_issue(wt, branch)
+        if problem is not None:
+            raise RuntimeError(
+                f"worktree {wt} exists but failed its health check "
+                f"({problem}); refusing to reuse it — this needs manual "
+                f"inspection, not a silent retry")
     elif _branch_exists(target.clone_path, branch):
         # Worktree was removed (e.g. manual cleanup) but the branch
         # survived — attach a fresh worktree to it instead of trying to
         # (re)create the branch with -b, which would die on "already
-        # exists".
+        # exists". Use -f: if the directory was rm -rf'd but the worktree
+        # is still registered, a plain `add` dies on "missing but already
+        # registered worktree"; -f succeeds and deletes/prunes nothing.
         _sh(["git", "fetch", "origin"], cwd=target.clone_path)
-        _sh(["git", "worktree", "add", wt, branch], cwd=target.clone_path)
+        _sh(["git", "worktree", "add", "-f", wt, branch], cwd=target.clone_path)
     else:
         _sh(["git", "fetch", "origin"], cwd=target.clone_path)
         _sh(["git", "worktree", "add", "-b", branch, wt, "origin/main"],
