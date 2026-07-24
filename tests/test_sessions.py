@@ -16,6 +16,7 @@ def test_is_alive(monkeypatch):
 
 
 def test_spawn_stage_writes_prompt_and_sends_keys(tmp_path: Path, monkeypatch):
+    (tmp_path / ".git").write_text(f"gitdir: {tmp_path}/clone/.git/worktrees/task-42\n")
     calls = []
 
     def fake_tmux(args):
@@ -38,6 +39,7 @@ def test_spawn_stage_writes_prompt_and_sends_keys(tmp_path: Path, monkeypatch):
 
 
 def test_spawn_stage_reuses_existing_session(tmp_path: Path, monkeypatch):
+    (tmp_path / ".git").write_text(f"gitdir: {tmp_path}/clone/.git/worktrees/task-42\n")
     calls = []
 
     def fake_tmux(args):
@@ -77,15 +79,19 @@ def test_end_kills_session(monkeypatch):
     assert ["podman", "rm", "-f", "task-42"] in subprocess_calls
 
 
-def test_podman_cmd_mounts_and_caps(monkeypatch):
+def test_podman_cmd_mounts_and_caps(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    cmd = podman_cmd(42, "/repos/pe.worktrees/task-42", "2g", "2",
-                     '"$(cat .agent/prompt-spec.md)"')
+    clone = tmp_path / "repos" / "pe"
+    wt = tmp_path / "repos" / "pe.worktrees" / "task-42"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text(f"gitdir: {clone}/.git/worktrees/task-42\n")
+    cmd = podman_cmd(42, str(wt), "2g", "2", '"$(cat .agent/prompt-spec.md)"')
     assert cmd.startswith("podman run --rm -it --name task-42 ")
     assert "--memory 2g --cpus 2" in cmd
-    assert "-v /repos/pe.worktrees/task-42:/repos/pe.worktrees/task-42" in cmd
-    assert "-w /repos/pe.worktrees/task-42" in cmd
+    assert f"-v {wt}:{wt}" in cmd
+    assert f"-w {wt}" in cmd
+    assert f"-v {clone}:{clone}" in cmd
     assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
     assert cmd.endswith('claude --permission-mode acceptEdits "$(cat .agent/prompt-spec.md)"')
 

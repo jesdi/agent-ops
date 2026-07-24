@@ -1,7 +1,7 @@
 # Session image for agent-ops (built on the box by bootstrap.sh and by
 # update.sh whenever this file changes). Rootless: container root maps to
 # the unprivileged `agent` user on the host.
-FROM node:22-bookworm
+FROM node:24-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git python3 python3-venv pipenv jq curl ca-certificates make \
     && rm -rf /var/lib/apt/lists/*
