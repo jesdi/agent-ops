@@ -76,9 +76,11 @@ class FakeSessions:
 class FakeNotifier:
     def __init__(self):
         self.sent = []
+        self.calls = []  # (template, ctx) — parallel record; sent stays template-only
 
     def send(self, template, **ctx):
         self.sent.append(template)
+        self.calls.append((template, ctx))
         return 77
 
 
@@ -615,6 +617,35 @@ def test_status_lines_carry_the_resolved_model(tmp_path):
     assert lines[1] == "#43 New chart — spec [claude-fable-5] (slot 1)"
 
 
+def test_status_line_for_task_parked_at_spec_review_shows_the_spec_model(tmp_path):
+    """Finding A: a frontend task lingering at the spec-review gate is still
+    running its SPEC session — /status must show that stage's model, not
+    fall through the policy default because 'awaiting-spec-review' matches
+    no `use:` key."""
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=42, target="portfolio_eval", stage=Stage.AWAITING_SPEC_REVIEW,
+        slot=0, worktree="/wt", branch="agent/task-42", title="New chart",
+        updated_at="2026-07-24T00:00:00+00:00", effort=3,
+        labels=("auto", "frontend")))
+    lines = main._status_lines(c)
+    assert lines[0] == "#42 New chart — awaiting-spec-review [claude-fable-5] (slot 0)"
+
+
+def test_resume_at_spec_review_gate_uses_the_spec_model(tmp_path, monkeypatch):
+    """Finding A: resuming a task parked at the spec-review gate must run the
+    same model as the spec session that's actually alive, not the policy
+    default that `stage.value` ('awaiting-spec-review') falls through to."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_WAKE,
+              pending_reply="carry on", effort=3, labels=("auto", "frontend"))
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.resumed == [(42, "carry on", "claude-fable-5")]
+
+
 def test_status_lines_survive_a_task_whose_target_is_gone(tmp_path):
     c = cfg(tmp_path)
     save(c.state_dir, TaskState(
@@ -623,3 +654,63 @@ def test_status_lines_survive_a_task_whose_target_is_gone(tmp_path):
         updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",)))
     lines = main._status_lines(c)
     assert "[claude-sonnet-4-6]" in lines[0]   # falls back to the global policy
+
+
+def test_status_line_for_a_parked_task_puts_model_before_park(tmp_path):
+    """Finding C: the format is
+    '#{issue} {title} — {stage} [{model}] [{park}] (slot {slot})' — the
+    [model] segment must come before the pre-existing [park] segment."""
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
+        worktree="/wt", branch="agent/task-42", title="Fix rounding",
+        updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",),
+        park=PARK_HUMAN))
+    lines = main._status_lines(c)
+    assert lines[0] == ("#42 Fix rounding — implement [claude-sonnet-4-6] "
+                        f"[{PARK_HUMAN}] (slot 0)")
+
+
+def test_status_reply_content_carries_the_status_lines(tmp_path, monkeypatch):
+    """Finding C: FakeNotifier previously recorded only the template name, so
+    no test could assert on what a /status reply actually contains."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_CI, ci_run_id=7)
+    patch_events(monkeypatch, [Command(name="status")])
+    d = deps()
+    main.run_pass(c, d)
+    template, ctx = [call for call in d.notifier.calls if call[0] == "status"][-1]
+    assert any(line.startswith("#42 ") for line in ctx["lines"])
+
+
+def test_digest_content_carries_the_status_lines(tmp_path):
+    """Finding C: the digest's payload was likewise never asserted on."""
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+                                stage=Stage.AWAITING_SPEC_REVIEW, slot=0,
+                                worktree="/x", branch="b", title="t",
+                                updated_at="2026-07-14T00:00:00+00:00"))
+    d = deps()
+    main.send_digest(c, d)
+    template, ctx = d.notifier.calls[-1]
+    assert template == "daily_digest"
+    assert any(line.startswith("#42 ") for line in ctx["lines"])
+
+
+def test_target_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
+    """Finding D: a per-target `models:` override was only ever verified in
+    isolation against `policy_for` — never end-to-end through `_spawn_stage`.
+    The global POLICY's `trivial-backend` rule would resolve effort=1,
+    no-frontend to claude-sonnet-4-6; the target's OWN policy (no rules)
+    must win instead and resolve to its own default."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    target_policy = parse_policy({"default": "claude-fable-5", "rules": []})
+    c = dc_replace(c, targets=[dc_replace(c.targets[0], models=target_policy)])
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    assert sess.spawned == [(42, "spec", "claude-fable-5")]

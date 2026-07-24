@@ -155,6 +155,48 @@ def test_absent_models_block_defaults_to_opus(tmp_path: Path):
     assert cfg.models.default == "claude-opus-4-8"
 
 
+WITH_EMPTY_TARGET_MODELS = """\
+state_dir: /tmp/s
+models:
+  default: claude-opus-4-8
+  rules:
+    - name: trivial-backend
+      when:
+        effort: {max: 1}
+        labels_exclude: [frontend]
+      use: claude-sonnet-4-6
+targets:
+  - name: portfolio_eval
+    repo: jesdi/portfolio_eval
+    clone_path: /home/agent/repos/portfolio_eval
+    worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+    rank_cmd: "rank"
+    setup_cmd: "setup"
+    verify_cmd: "make e2e-slot SLOT={slot}"
+    project_number: 1
+    project_owner: jesdi
+    status_field_id: F
+    status_ready_option_id: R
+    status_in_progress_option_id: I
+    models: {}
+"""
+
+
+def test_target_with_empty_models_block_opts_out_of_global_policy(tmp_path: Path):
+    """An explicit `models: {}` on a target means "override with nothing",
+    not "inherit the global policy" — it's the natural way to opt one
+    target out of global rules (finding B)."""
+    p = tmp_path / "targets.yaml"
+    p.write_text(WITH_EMPTY_TARGET_MODELS)
+    cfg = load_config(p)
+    target = cfg.targets[0]
+    assert policy_for(cfg, target) == DEFAULT_POLICY
+    assert policy_for(cfg, target).rules == ()
+    assert policy_for(cfg, target).default == "claude-opus-4-8"
+    # the global policy still has its rule — only the target opted out
+    assert cfg.models.rules != ()
+
+
 def test_malformed_rule_fails_at_load(tmp_path: Path):
     p = tmp_path / "targets.yaml"
     p.write_text(

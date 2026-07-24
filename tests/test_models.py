@@ -207,3 +207,61 @@ def test_parse_rejects_non_string_default():
 def test_parse_rejects_non_list_rules():
     with pytest.raises(ValueError, match="rules"):
         parse_policy({"default": "d", "rules": {"name": "r"}})
+
+
+def test_parse_rejects_non_mapping_rule():
+    with pytest.raises(ValueError, match="mapping"):
+        parse_policy({"default": "d", "rules": ["foo"]})
+
+
+def test_parse_rejects_bare_string_labels_include():
+    with pytest.raises(ValueError, match="labels_include"):
+        parse_policy({"default": "d", "rules": [
+            {"name": "r", "when": {"labels_include": "frontend"}, "use": "m"}]})
+
+
+# -- model id validation (finding E: reject unusable model strings) ------
+
+def test_parse_rejects_empty_string_default():
+    with pytest.raises(ValueError, match="default"):
+        parse_policy({"default": "", "rules": []})
+
+
+def test_parse_rejects_empty_scalar_use():
+    with pytest.raises(ValueError, match="use"):
+        parse_policy({"default": "d", "rules": [
+            {"name": "r", "when": {}, "use": ""}]})
+
+
+def test_parse_rejects_whitespace_in_scalar_use():
+    with pytest.raises(ValueError, match="use"):
+        parse_policy({"default": "d", "rules": [
+            {"name": "r", "when": {}, "use": "model with space"}]})
+
+
+def test_parse_rejects_semicolon_bearing_use_is_still_flagged_by_whitespace_rule():
+    # A ';' alone isn't whitespace, but any real injection attempt in practice
+    # carries a space too (e.g. "model; rm -rf ." or "model;rm -rf"). Confirm
+    # the whitespace check catches the space-bearing form actually seen in
+    # shell-injection payloads handed to tmux send-keys.
+    with pytest.raises(ValueError, match="use"):
+        parse_policy({"default": "d", "rules": [
+            {"name": "r", "when": {}, "use": "model; rm -rf ."}]})
+
+
+def test_parse_rejects_non_string_value_in_use_map():
+    with pytest.raises(ValueError, match="use"):
+        parse_policy({"default": "d", "rules": [
+            {"name": "r", "when": {}, "use": {"spec": {"a": "b"}}}]})
+
+
+def test_parse_rejects_whitespace_in_use_map_value():
+    with pytest.raises(ValueError, match="use"):
+        parse_policy({"default": "d", "rules": [
+            {"name": "r", "when": {}, "use": {"spec": "model with space"}}]})
+
+
+def test_parse_rejects_empty_use_map_value():
+    with pytest.raises(ValueError, match="use"):
+        parse_policy({"default": "d", "rules": [
+            {"name": "r", "when": {}, "use": {"spec": ""}}]})

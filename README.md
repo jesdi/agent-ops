@@ -40,7 +40,7 @@ See [`docs/adr/`](docs/adr/) for the architecture decisions and
 | `docs/adr/`     | Architecture decision records                                |
 | `tests/`        | pytest suite                                                 |
 | `Containerfile` | The per-session sandbox image                                |
-| `targets.example.yaml` | Template for the box-local `targets.yaml` (capacity, thresholds) |
+| `targets.example.yaml` | Template for the box-local `targets.yaml` (capacity, thresholds, model policy) |
 
 ## Development
 

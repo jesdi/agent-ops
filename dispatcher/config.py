@@ -42,8 +42,13 @@ class Config:
 
 def _target(raw: dict) -> Target:
     fields = dict(raw)
+    has_models = "models" in fields
     models = fields.pop("models", None)
-    return Target(**fields, models=parse_policy(models) if models else None)
+    # The key's PRESENCE decides override vs. inherit, not its truthiness —
+    # `models: {}` must opt the target OUT of the global policy (empty rules,
+    # plain default), not silently inherit it. parse_policy validates
+    # whatever value is present, so `models: []`/`models: "x"` still raise.
+    return Target(**fields, models=parse_policy(models) if has_models else None)
 
 
 def load_config(path: str | Path) -> Config:

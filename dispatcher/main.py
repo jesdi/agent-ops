@@ -44,8 +44,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Stages that aren't policy stages but hold a live session from one: a
+# claimed task is about to spawn spec, and a task at the spec-review gate
+# still has its spec session running. Stage.BLOCKED and
+# Stage.STALLED_ON_BUDGET genuinely lose the originating stage in
+# TaskState (nothing in machine.py sets it), so they deliberately fall
+# through to stage.value, which matches no `use:` key and lands on the
+# policy default.
+_POLICY_STAGE = {Stage.QUEUED: "spec", Stage.AWAITING_SPEC_REVIEW: "spec"}
+
+
 def _model_for(cfg: Config, target: Target, task: TaskState, stage: Stage) -> str:
-    return resolve(policy_for(cfg, target), stage.value, task.effort, task.labels)
+    return resolve(policy_for(cfg, target), _POLICY_STAGE.get(stage, stage.value),
+                   task.effort, task.labels)
 
 
 def _log_model(worktree: str, stage: Stage, model: str) -> None:
