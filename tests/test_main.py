@@ -139,6 +139,18 @@ def test_new_candidate_claimed_and_spec_spawned(tmp_path, monkeypatch):
     assert sig == {"stage": "spec", "status": "working"}
 
 
+def test_claim_snapshots_effort_and_labels(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=3,
+                               labels=("auto", "frontend"))])
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(gh))
+    t = load(c.state_dir, 42)
+    assert t.effort == 3
+    assert t.labels == ("auto", "frontend")
+
+
 def test_capacity_blocks_new_claims(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)

@@ -260,7 +260,8 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         task = TaskState(issue=cand.number, target=target.name,
                          stage=Stage.QUEUED, slot=slot, worktree=wt,
                          branch=f"agent/task-{cand.number}",
-                         title=cand.title, updated_at=_now())
+                         title=cand.title, updated_at=_now(),
+                         effort=cand.effort, labels=cand.labels)
         save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
         try:
             deps.github.claim(target, cand)  # irreversible board mutation — last

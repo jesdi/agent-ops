@@ -57,6 +57,8 @@ class TaskState:
     park_msg_id: int = 0
     pending_reply: str = ""
     hold_for_attach: bool = False
+    effort: int | None = None            # board Effort at claim time
+    labels: tuple[str, ...] = ()         # board labels at claim time
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,7 @@ def load(state_dir: str | Path, issue: int) -> TaskState | None:
         return None
     d = json.loads(p.read_text())
     d["stage"] = Stage(d["stage"])
+    d["labels"] = tuple(d.get("labels", ()))
     return TaskState(**d)
 
 
