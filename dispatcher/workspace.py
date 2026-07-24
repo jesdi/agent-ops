@@ -15,8 +15,20 @@ HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
 
 def _sh(args: list[str], cwd: str, timeout: int = 300,
         log: Path | None = None) -> None:
-    proc = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
-                          timeout=timeout)
+    try:
+        proc = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if log is not None:
+            def _decode(v):
+                if v is None:
+                    return ""
+                if isinstance(v, bytes):
+                    return v.decode(errors="replace")
+                return v
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text(_decode(exc.stdout) + _decode(exc.stderr))
+        raise
     if log is not None:
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(proc.stdout + proc.stderr)

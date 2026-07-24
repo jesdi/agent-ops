@@ -89,3 +89,24 @@ def test_setup_output_written_to_setup_log(tmp_path: Path, monkeypatch):
         workspace.create_workspace(t, 42)
     log = Path(t.worktrees_path) / "task-42" / ".agent" / "setup.log"
     assert log.read_text() == "out line\npipenv: no 3.13\n"
+
+
+def test_setup_timeout_still_writes_partial_log(tmp_path: Path, monkeypatch):
+    def fake_run(args, cwd=None, capture_output=True, text=True,
+                 timeout=300, **kw):
+        if args[:2] == ["git", "worktree"]:
+            wt = Path(args[-2])
+            wt.mkdir(parents=True, exist_ok=True)
+            (wt / ".git").write_text(
+                f"gitdir: {tmp_path / 'repo'}/.git/worktrees/task-42\n")
+        if args[0] == "podman":
+            raise subprocess.TimeoutExpired(
+                args, timeout, output="partial out\n", stderr="partial err\n")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(workspace.subprocess, "run", fake_run)
+    t = target(tmp_path)
+    with pytest.raises(subprocess.TimeoutExpired):
+        workspace.create_workspace(t, 42)
+    log = Path(t.worktrees_path) / "task-42" / ".agent" / "setup.log"
+    assert log.read_text() == "partial out\npartial err\n"

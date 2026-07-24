@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from dispatcher import failures
 from dispatcher.failures import FailureReport
