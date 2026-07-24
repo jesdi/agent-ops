@@ -125,3 +125,15 @@ def report_failure(cfg: Config, deps, report: FailureReport,
         print(f"[warn] failure reporting itself failed: {exc}",
               file=sys.stderr)
         return 0
+
+
+def tail(text: str, lines: int = 30) -> str:
+    return "\n".join(text.rstrip().splitlines()[-lines:])
+
+
+def setup_log_tail(worktree: str) -> str:
+    p = Path(worktree) / ".agent" / "setup.log"
+    try:
+        return tail(p.read_text()) if p.exists() else ""
+    except OSError:
+        return ""

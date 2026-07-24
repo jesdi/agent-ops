@@ -183,3 +183,17 @@ def test_dry_run_files_nothing_writes_nothing(tmp_path, capsys):
     assert d.github.created == [] and d.notifier.sent == []
     assert not failures.reported(c.state_dir, report())
     assert "[dry-run]" in capsys.readouterr().out
+
+
+def test_tail_returns_last_lines():
+    text = "\n".join(f"l{i}" for i in range(100))
+    got = failures.tail(text)
+    assert got.splitlines()[0] == "l70" and got.splitlines()[-1] == "l99"
+
+
+def test_setup_log_tail_reads_worktree_log(tmp_path):
+    wt = tmp_path / "task-192"
+    (wt / ".agent").mkdir(parents=True)
+    (wt / ".agent" / "setup.log").write_text("a\nb\nc\n")
+    assert failures.setup_log_tail(str(wt)) == "a\nb\nc"
+    assert failures.setup_log_tail(str(tmp_path / "missing")) == ""

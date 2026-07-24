@@ -13,9 +13,16 @@ from dispatcher.config import Target
 HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
 
 
-def _sh(args: list[str], cwd: str, timeout: int = 300) -> None:
-    subprocess.run(args, cwd=cwd, capture_output=True, text=True,
-                   timeout=timeout, check=True)
+def _sh(args: list[str], cwd: str, timeout: int = 300,
+        log: Path | None = None) -> None:
+    proc = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
+                          timeout=timeout)
+    if log is not None:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(proc.stdout + proc.stderr)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, args,
+                                            proc.stdout, proc.stderr)
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
@@ -29,7 +36,7 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     _sh(["git", "worktree", "add", "-b", branch, wt, "origin/main"],
         cwd=target.clone_path)
     _sh(containers.setup_cmd(f"task-{issue}-setup", wt, target.setup_cmd),
-        cwd=wt, timeout=1800)
+        cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
 
     agent_dir = Path(wt) / ".agent"
     agent_dir.mkdir(exist_ok=True)
