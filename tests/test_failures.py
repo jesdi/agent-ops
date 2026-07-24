@@ -197,3 +197,64 @@ def test_setup_log_tail_reads_worktree_log(tmp_path):
     (wt / ".agent" / "setup.log").write_text("a\nb\nc\n")
     assert failures.setup_log_tail(str(wt)) == "a\nb\nc"
     assert failures.setup_log_tail(str(tmp_path / "missing")) == ""
+
+
+class StateGitHub:
+    def __init__(self, state="OPEN", raises=False):
+        self.state, self.raises, self.calls = state, raises, 0
+
+    def issue_state(self, repo, number):
+        self.calls += 1
+        if self.raises:
+            raise RuntimeError("gh down")
+        return self.state
+
+
+def test_no_record_is_not_quarantined(tmp_path):
+    assert failures.check_quarantine(
+        tmp_path, StateGitHub(), "portfolio_eval", 192) is False
+
+
+def test_open_blocker_stays_quarantined(tmp_path):
+    failures.write_quarantine(tmp_path, "portfolio_eval", 192,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = StateGitHub(state="OPEN")
+    assert failures.check_quarantine(tmp_path, gh, "portfolio_eval", 192) is True
+    assert gh.calls == 1
+    rec = json.loads(
+        failures.quarantine_path(tmp_path, "portfolio_eval", 192).read_text())
+    assert rec["task_issue"] == 192 and rec["blocker_repo"] == "jesdi/agent-ops"
+    assert rec["blocker_issue"] == 501 and rec["fingerprint"] == "abc"
+    assert "created_at" in rec
+
+
+def test_closed_blocker_deletes_record_and_unblocks(tmp_path):
+    failures.write_quarantine(tmp_path, "portfolio_eval", 192,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = StateGitHub(state="CLOSED")
+    assert failures.check_quarantine(tmp_path, gh, "portfolio_eval", 192) is False
+    assert not failures.quarantine_path(tmp_path, "portfolio_eval", 192).exists()
+
+
+def test_manually_deleted_record_unblocks(tmp_path):
+    failures.write_quarantine(tmp_path, "portfolio_eval", 192,
+                              "jesdi/agent-ops", 501, "abc")
+    failures.quarantine_path(tmp_path, "portfolio_eval", 192).unlink()
+    assert failures.check_quarantine(
+        tmp_path, StateGitHub(), "portfolio_eval", 192) is False
+
+
+def test_zero_blocker_stays_quarantined_without_gh_call(tmp_path, capsys):
+    failures.write_quarantine(tmp_path, "portfolio_eval", 192, "", 0, "abc")
+    gh = StateGitHub()
+    assert failures.check_quarantine(tmp_path, gh, "portfolio_eval", 192) is True
+    assert gh.calls == 0
+    assert "delete the record to retry" in capsys.readouterr().err
+
+
+def test_issue_state_error_treated_as_blocked(tmp_path, capsys):
+    failures.write_quarantine(tmp_path, "portfolio_eval", 192,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = StateGitHub(raises=True)
+    assert failures.check_quarantine(tmp_path, gh, "portfolio_eval", 192) is True
+    assert "still blocked" in capsys.readouterr().err

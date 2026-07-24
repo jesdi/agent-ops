@@ -137,3 +137,49 @@ def setup_log_tail(worktree: str) -> str:
         return tail(p.read_text()) if p.exists() else ""
     except OSError:
         return ""
+
+
+def quarantine_path(state_dir: str | Path, target_name: str,
+                    issue: int) -> Path:
+    return Path(state_dir) / "quarantine" / f"{target_name}-{issue}.json"
+
+
+def write_quarantine(state_dir: str | Path, target_name: str, issue: int,
+                     blocker_repo: str, blocker_issue: int, fp: str) -> None:
+    p = quarantine_path(state_dir, target_name, issue)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({
+        "task_issue": issue,
+        "blocker_repo": blocker_repo,
+        "blocker_issue": blocker_issue,
+        "fingerprint": fp,
+        "created_at": _now(),
+    }, indent=2))
+
+
+def check_quarantine(state_dir: str | Path, github, target_name: str,
+                     issue: int) -> bool:
+    """True = still quarantined (skip the candidate). Deleting the record
+    file manually force-retries; closing the blocker issue deletes it here,
+    making the candidate claimable in the same pass."""
+    p = quarantine_path(state_dir, target_name, issue)
+    if not p.exists():
+        return False
+    try:
+        rec = json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return True  # unreadable record: stay blocked; a human deletes it
+    if not rec.get("blocker_issue"):
+        print(f"[warn] quarantine {p.name} has no blocker issue; "
+              f"delete the record to retry", file=sys.stderr)
+        return True
+    try:
+        state = github.issue_state(rec["blocker_repo"], rec["blocker_issue"])
+    except Exception as exc:
+        print(f"[warn] issue_state failed for {p.name}: {exc} — "
+              f"treating as still blocked", file=sys.stderr)
+        return True
+    if str(state).upper() == "OPEN":
+        return True
+    p.unlink(missing_ok=True)
+    return False
