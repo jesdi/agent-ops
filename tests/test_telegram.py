@@ -58,3 +58,12 @@ def test_parked_question_mentions_reply_and_attach():
 def test_status_renders_lines():
     text = render("status", lines=["#1 x — implement [awaiting-ci run 9]"])
     assert "agent-ops status" in text and "#1 x" in text
+
+
+def test_task_failed_links_the_filed_issue():
+    msg = render("task_failed", issue=192,
+                 title="provisioning failed: Add widget",
+                 url="https://github.com/jesdi/agent-ops/issues/501",
+                 note="provisioning")
+    assert msg == ("🔥 #192 provisioning failed: Add widget — provisioning\n"
+                   "https://github.com/jesdi/agent-ops/issues/501")
