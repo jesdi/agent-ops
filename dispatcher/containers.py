@@ -1,0 +1,51 @@
+"""Podman command construction shared by session runs (sessions.py) and
+one-shot setup runs (workspace.py). Both mount the worktree AND the main
+clone at their host paths — a worktree's .git is a file pointing into
+<clone>/.git/worktrees/<name>, so git inside the container needs both."""
+from __future__ import annotations
+
+import os
+import shlex
+from pathlib import Path
+
+
+def clone_root(worktree: str) -> str:
+    gitdir = (Path(worktree) / ".git").read_text().split("gitdir:", 1)[1].strip()
+    return str(Path(gitdir).parents[2])
+
+
+def image() -> str:
+    return os.environ.get("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+
+
+def _state_dir() -> str:
+    return os.environ.get("AGENT_OPS_STATE_DIR",
+                          str(Path.home() / "agent-ops-state"))
+
+
+def session_cmd(name: str, worktree: str, memory: str, cpus: str,
+                claude_args: str) -> str:
+    clone = clone_root(worktree)
+    home = str(Path.home())
+    return (
+        f"podman run --rm -it --name {name} "
+        f"--memory {memory} --cpus {cpus} "
+        f"-v {worktree}:{worktree} -w {worktree} "
+        f"-v {clone}:{clone} "
+        f"-v {_state_dir()}/claude-home:/root/.claude "
+        f"-v {home}/.config/gh:/root/.config/gh:ro "
+        f"-v {home}/.gitconfig:/root/.gitconfig:ro "
+        f"{image()} claude --permission-mode acceptEdits {claude_args}"
+    )
+
+
+def setup_cmd(name: str, worktree: str, setup: str) -> list[str]:
+    clone = clone_root(worktree)
+    return [
+        "podman", "run", "--rm", "--name", name,
+        "-v", f"{worktree}:{worktree}", "-w", worktree,
+        "-v", f"{clone}:{clone}",
+        "-v", "agent-ops-npm-cache:/root/.npm",
+        "-v", "agent-ops-xdg-cache:/root/.cache",
+        image(),
+    ] + shlex.split(setup)
