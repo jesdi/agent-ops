@@ -190,3 +190,35 @@ def test_project_commands_without_token_inherit_ambient_auth(monkeypatch):
     monkeypatch.setattr(github, "_run", fake_run)
     github.GitHubClient().set_status(TARGET, 7, "READY")
     assert calls and all(env is None for _, env in calls)
+
+
+def test_create_issue_returns_number_from_url(monkeypatch):
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        return "https://github.com/jesdi/agent-ops/issues/501\n"
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    n = github.GitHubClient().create_issue("jesdi/agent-ops", "boom", "body")
+    assert n == 501
+    args = calls[0]
+    assert args[:3] == ["gh", "issue", "create"]
+    assert "jesdi/agent-ops" in args and "boom" in args and "body" in args
+
+
+def test_issue_state_parses_json(monkeypatch):
+    monkeypatch.setattr(github, "_run",
+                        lambda a, cwd=None, env=None: '{"state": "CLOSED"}')
+    assert github.GitHubClient().issue_state("jesdi/agent-ops", 501) == "CLOSED"
+
+
+def test_create_issue_and_issue_state_dry_run(monkeypatch, capsys):
+    def fake_run(args, cwd=None, env=None):
+        raise AssertionError(f"dry-run must not execute: {args}")
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    cli = github.GitHubClient(dry_run=True)
+    assert cli.create_issue("jesdi/agent-ops", "t", "b") == 0
+    assert cli.issue_state("jesdi/agent-ops", 501) == "OPEN"
+    assert "[dry-run]" in capsys.readouterr().out

@@ -88,7 +88,23 @@ class GitHubClient:
         raise LookupError(f"issue #{issue} not on project {target.project_number}"
                           f" (title join: {len(matches)} items match {title!r})")
 
+    def issue_state(self, repo: str, number: int) -> str:
+        if self.dry_run:
+            print(f"[dry-run] issue_state {repo}#{number} -> OPEN")
+            return "OPEN"  # safe default: quarantined tasks stay blocked
+        out = _run(["gh", "issue", "view", str(number), "--repo", repo,
+                    "--json", "state"])
+        return json.loads(out)["state"]
+
     # -- write side --------------------------------------------------------
+
+    def create_issue(self, repo: str, title: str, body: str) -> int:
+        if self.dry_run:
+            print(f"[dry-run] create_issue on {repo}: {title}")
+            return 0
+        out = _run(["gh", "issue", "create", "--repo", repo,
+                    "--title", title, "--body", body])
+        return int(out.strip().rstrip("/").rsplit("/", 1)[-1])
 
     def set_status(self, target: Target, issue: int, option_id: str) -> None:
         if self.dry_run:
