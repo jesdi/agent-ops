@@ -12,6 +12,38 @@ import pytest
 SCRIPT = Path(__file__).resolve().parent.parent / "provision" / "claude-home-sync.sh"
 REAL_SEED = Path(__file__).resolve().parent.parent / "provision" / "claude-home"
 
+FAKE_CLAUDE = r'''#!/bin/sh
+# Fake claude CLI: logs every call (with CLAUDE_CONFIG_DIR), serves `plugin
+# list --json` from $AGENT_OPS_FAKE_PLUGIN_LIST, and mutates that file on
+# install/uninstall so the sync script's verify step sees the effect.
+# AGENT_OPS_FAKE_IGNORE_PIN=1 simulates a CLI that cannot pin: installs
+# record version 9.9.9 regardless of a requested pin.
+echo "claude $* CONFIG=${CLAUDE_CONFIG_DIR:-}" >> "$AGENT_OPS_CALLS_LOG"
+case "$1 $2" in
+  "plugin list") cat "$AGENT_OPS_FAKE_PLUGIN_LIST" ;;
+  "plugin install") python3 - "$AGENT_OPS_FAKE_PLUGIN_LIST" "$3" <<'PYEOF'
+import json, os, sys
+path, arg = sys.argv[1], sys.argv[2]
+parts = arg.split("@")
+if len(parts) == 3 and os.environ.get("AGENT_OPS_FAKE_IGNORE_PIN") != "1":
+    pid, version = "@".join(parts[:2]), parts[2]
+else:
+    pid, version = "@".join(parts[:2]), "9.9.9"
+plugins = [p for p in json.load(open(path)) if p["id"] != pid]
+plugins.append({"id": pid, "version": version})
+json.dump(plugins, open(path, "w"))
+PYEOF
+  ;;
+  "plugin uninstall") python3 - "$AGENT_OPS_FAKE_PLUGIN_LIST" "$3" <<'PYEOF'
+import json, sys
+path, pid = sys.argv[1], sys.argv[2]
+json.dump([p for p in json.load(open(path)) if p["id"] != pid],
+          open(path, "w"))
+PYEOF
+  ;;
+esac
+'''
+
 
 @pytest.fixture
 def rig(tmp_path):
@@ -22,14 +54,28 @@ def rig(tmp_path):
     seed.parent.mkdir(parents=True)
     subprocess.run(["cp", "-R", str(REAL_SEED), str(seed)], check=True)
 
+    calls = tmp_path / "calls.log"
+    plugin_list = tmp_path / "plugins.json"
+    plugin_list.write_text(json.dumps(
+        [{"id": "superpowers@claude-plugins-official", "version": "4.0.0"}]))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude = bin_dir / "claude"
+    claude.write_text(FAKE_CLAUDE)
+    claude.chmod(0o755)
+
     state = tmp_path / "state"
     home = state / "claude-home"
     env = dict(
         os.environ,
         AGENT_OPS_REPO=str(repo),
         AGENT_OPS_STATE_DIR=str(state),
+        AGENT_OPS_CLAUDE=str(claude),
+        AGENT_OPS_CALLS_LOG=str(calls),
+        AGENT_OPS_FAKE_PLUGIN_LIST=str(plugin_list),
     )
-    return SimpleNamespace(repo=repo, seed=seed, state=state, home=home, env=env)
+    return SimpleNamespace(repo=repo, seed=seed, state=state, home=home,
+                           env=env, calls=calls, plugin_list=plugin_list)
 
 
 def run_sync(rig, **env_extra):
@@ -106,3 +152,88 @@ def test_respects_claude_home_override(rig):
     assert r.returncode == 0, r.stderr
     assert (other / "CLAUDE.md").exists()
     assert not (rig.home / "CLAUDE.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Plugin convergence tests (Task 4)
+# ---------------------------------------------------------------------------
+
+def calls(rig):
+    return rig.calls.read_text() if rig.calls.exists() else ""
+
+
+def declare(rig, plugins):
+    s = json.loads((rig.seed / "settings.json").read_text())
+    s["enabledPlugins"] = plugins
+    (rig.seed / "settings.json").write_text(json.dumps(s))
+
+
+def installed(rig):
+    return {p["id"]: p["version"]
+            for p in json.loads(rig.plugin_list.read_text())}
+
+
+def test_missing_declared_plugin_installed_into_claude_home(rig):
+    rig.plugin_list.write_text("[]")
+    r = run_sync(rig)
+    assert r.returncode == 0, r.stderr
+    log = calls(rig)
+    assert "plugin install superpowers@claude-plugins-official" in log
+    # Every claude call must target claude-home, not the agent user's ~/.claude.
+    for line in log.splitlines():
+        assert f"CONFIG={rig.home}" in line
+
+
+def test_undeclared_plugin_uninstalled(rig):
+    rig.plugin_list.write_text(json.dumps([
+        {"id": "superpowers@claude-plugins-official", "version": "4.0.0"},
+        {"id": "engram@engram", "version": "0.1.0"},
+    ]))
+    r = run_sync(rig)
+    assert r.returncode == 0, r.stderr
+    assert "plugin uninstall engram@engram" in calls(rig)
+    assert "engram@engram" not in installed(rig)
+
+
+def test_pinned_plugin_installs_exact_version(rig):
+    declare(rig, {"superpowers@claude-plugins-official": "5.0.0"})
+    r = run_sync(rig)
+    assert r.returncode == 0, r.stderr
+    assert "plugin install superpowers@claude-plugins-official@5.0.0" in calls(rig)
+    assert installed(rig)["superpowers@claude-plugins-official"] == "5.0.0"
+
+
+def test_pin_mismatch_fails_loudly(rig):
+    declare(rig, {"superpowers@claude-plugins-official": "5.0.0"})
+    r = run_sync(rig, AGENT_OPS_FAKE_IGNORE_PIN="1")
+    assert r.returncode != 0
+    assert "superpowers@claude-plugins-official" in r.stderr
+    assert "5.0.0" in r.stderr
+
+
+def test_satisfied_state_only_lists(rig):
+    run_sync(rig)                       # first pass writes the stamp
+    rig.calls.write_text("")
+    r = run_sync(rig)                   # second pass: nothing to do
+    assert r.returncode == 0, r.stderr
+    for line in calls(rig).splitlines():
+        assert "plugin list" in line, f"unexpected action: {line}"
+
+
+def test_declaration_change_updates_latest_plugins(rig):
+    run_sync(rig)                       # stamp written for current set
+    declare(rig, {"superpowers@claude-plugins-official": True,
+                  "extra@claude-plugins-official": True})
+    rig.calls.write_text("")
+    r = run_sync(rig)
+    assert r.returncode == 0, r.stderr
+    log = calls(rig)
+    assert "plugin install extra@claude-plugins-official" in log
+    # superpowers tracks latest and the declared set changed → update it.
+    assert "plugin update superpowers@claude-plugins-official" in log
+
+
+def test_stamp_written(rig):
+    r = run_sync(rig)
+    assert r.returncode == 0, r.stderr
+    assert (rig.state / "claude-home-plugins.stamp").read_text().strip()
