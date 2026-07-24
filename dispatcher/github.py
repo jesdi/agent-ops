@@ -33,6 +33,8 @@ class Candidate:
     number: int
     title: str
     url: str
+    effort: int | None = None
+    labels: tuple[str, ...] = ()
 
 
 class GitHubClient:
@@ -60,7 +62,8 @@ class GitHubClient:
 
     def candidates(self, target: Target) -> list[Candidate]:
         return [
-            Candidate(number=r["number"], title=r["title"], url=r["url"])
+            Candidate(number=r["number"], title=r["title"], url=r["url"],
+                      effort=r.get("effort"), labels=tuple(r.get("labels") or ()))
             for r in self.rank_rows(target)
             if r["status"] == "Ready" and not r["blocked"] and "auto" in r["labels"]
         ]

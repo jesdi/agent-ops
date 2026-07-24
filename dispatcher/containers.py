@@ -23,7 +23,7 @@ def _state_dir() -> str:
                           str(Path.home() / "agent-ops-state"))
 
 
-def session_cmd(name: str, worktree: str, memory: str, cpus: str,
+def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 claude_args: str) -> str:
     clone = clone_root(worktree)
     home = str(Path.home())
@@ -35,7 +35,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str,
         f"-v {_state_dir()}/claude-home:/root/.claude "
         f"-v {home}/.config/gh:/root/.config/gh:ro "
         f"-v {home}/.gitconfig:/root/.gitconfig:ro "
-        f"{image()} claude --permission-mode acceptEdits {claude_args}"
+        f"{image()} claude --permission-mode acceptEdits --model {model} {claude_args}"
     )
 
 
