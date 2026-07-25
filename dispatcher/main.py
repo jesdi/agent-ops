@@ -17,7 +17,7 @@ from pathlib import Path
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
-from dispatcher import eventlog, failures, queue_ops
+from dispatcher import eventlog, failures, intents, queue_ops
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, SetTaskStage, SpawnStage,
@@ -27,7 +27,7 @@ from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_WAKE,
                               Stage, TaskState, active, allocate_slot,
-                              clear_waiting, has_waiting, load_all,
+                              clear_waiting, has_waiting, load, load_all,
                               read_stage_signal, save)
 from dispatcher.workspace import create_workspace
 import telegram.inbound as inbound
@@ -488,7 +488,94 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         free -= 1
 
 
+def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
+                      intent: intents.Intent) -> None:
+    issue = intent.issue
+    task = load(cfg.state_dir, issue)
+    if intent.action == "reply":
+        if task is None or task.park != PARK_HUMAN:
+            print(f"[warn] reply intent for #{issue}: task not parked for "
+                  f"input — skipped", file=sys.stderr)
+            return
+        _wake(cfg, task, intent.payload.get("text", ""))
+    elif intent.action == "park":
+        if (task is None or task.stage not in IN_FLIGHT_STAGES or task.park
+                or not deps.sessions.is_alive(issue)):
+            print(f"[warn] park intent for #{issue}: no live unparked task "
+                  f"— skipped", file=sys.stderr)
+            return
+        target = by_name.get(task.target)
+        if target is None:
+            print(f"[warn] park intent for #{issue}: target "
+                  f"{task.target!r} left the config — skipped", file=sys.stderr)
+            return
+        _park_for_input(cfg, deps, target, task, note="parked by operator")
+    elif intent.action == "kill":
+        deps.sessions.end(issue)
+        if task is not None:
+            target = by_name.get(task.target)
+            if target is not None:
+                try:
+                    deps.github.release(target, issue, "abandoned by operator")
+                except Exception as exc:
+                    print(f"[warn] release failed while killing #{issue}: "
+                          f"{exc}", file=sys.stderr)
+        (Path(cfg.state_dir) / f"task-{issue}.json").unlink(missing_ok=True)
+        clear_waiting(cfg.state_dir, issue)
+        eventlog.append_event(cfg.state_dir, "failed",
+                              target=task.target if task else "", issue=issue,
+                              stage=task.stage.value if task else "",
+                              actor=intent.actor, detail="killed by operator")
+    elif intent.action == "retry":
+        # Mirror check_quarantine's clear path (failures.py:160): drop the
+        # fingerprint marker too, or the dedupe silently swallows the next
+        # report of the same failure.
+        for target in cfg.targets:
+            qp = failures.quarantine_path(cfg.state_dir, target.name, issue)
+            if not qp.exists():
+                continue
+            try:
+                fp = json.loads(qp.read_text()).get("fingerprint")
+            except (json.JSONDecodeError, OSError):
+                fp = None
+            if fp:
+                failures.fingerprint_path(cfg.state_dir, fp).unlink(
+                    missing_ok=True)
+            qp.unlink(missing_ok=True)
+    elif intent.action == "resume":
+        if task is None or not task.park:
+            print(f"[warn] resume intent for #{issue}: task not parked — "
+                  f"skipped", file=sys.stderr)
+            return
+        _wake(cfg, task,
+              intent.payload.get("text")
+              or "The operator resumed this task. Continue.", hold=False)
+    else:
+        print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
+              file=sys.stderr)
+
+
+def _apply_intents(cfg: Config, deps: Deps) -> None:
+    """Drain operator intents (web console writes) at the top of the pass.
+    Applied-then-deleted = at-most-once; a failed intent is deleted too,
+    noted to stderr, and never aborts the pass or the remaining intents."""
+    by_name = {t.name: t for t in cfg.targets}
+    for intent in intents.list_intents(cfg.state_dir):
+        try:
+            _apply_one_intent(cfg, deps, by_name, intent)
+            eventlog.append_event(cfg.state_dir, "intent-applied",
+                                  issue=intent.issue, actor=intent.actor,
+                                  detail=intent.action)
+        except Exception as exc:
+            print(f"[warn] intent {intent.path.name} failed: {exc}",
+                  file=sys.stderr)
+        finally:
+            intents.delete_intent(intent)
+
+
 def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+    if not dry_run:
+        _apply_intents(cfg, deps)
     _handle_telegram(cfg, deps, dry_run)
     usage = fetch_usage(cfg.state_dir)
     budget_ok = should_spawn(usage, cfg.budget_threshold,
