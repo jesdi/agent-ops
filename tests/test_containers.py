@@ -35,7 +35,7 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     assert f"-v {clone}:{clone}" in cmd
     assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
     assert cmd.endswith(
-        "claude --permission-mode acceptEdits --model claude-fable-5 --continue 'hi'")
+        "claude --permission-mode auto --model claude-fable-5 --continue 'hi'")
 
 
 def test_session_cmd_sets_claude_config_dir(tmp_path: Path, monkeypatch):

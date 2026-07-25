@@ -41,7 +41,11 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         f"-v {_state_dir()}/claude-home:/root/.claude "
         f"-v {home}/.config/gh:/root/.config/gh:ro "
         f"-v {home}/.gitconfig:/root/.gitconfig:ro "
-        f"{image()} claude --permission-mode acceptEdits --model {model} {claude_args}"
+        # auto: the classifier approves routine actions and stops only for
+        # genuinely risky ones — the stop then flows into the park/resume
+        # path (Stop hook → waitd → Telegram). acceptEdits still asked for
+        # every non-edit action, which no one is attached to answer.
+        f"{image()} claude --permission-mode auto --model {model} {claude_args}"
     )
 
 
