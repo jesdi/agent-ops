@@ -9,6 +9,7 @@ import argparse
 import json
 import subprocess
 import sys
+import traceback
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
+from dispatcher import failures
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, SetTaskStage, SpawnStage,
@@ -374,7 +376,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                budget_ok: bool) -> None:
+                budget_ok: bool, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.issue)
     waiting = has_waiting(cfg.state_dir, task.issue)
@@ -404,6 +406,48 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             deps.github.release(target, task.issue, "session crashed mid-stage")
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
                                         updated_at=_now()))
+            _report_session_crash(cfg, deps, target, task, dry_run)
+
+
+def _report_session_crash(cfg: Config, deps: Deps, target: Target,
+                          task: TaskState, dry_run: bool) -> None:
+    rep = failures.FailureReport(
+        klass="session-crash", target=target.name, issue=task.issue,
+        title=f"session crashed during {task.stage.value}: {task.title}",
+        error=(f"tmux session task-{task.issue} died during stage "
+               f"{task.stage.value}"),
+        log_tail=deps.sessions.capture_tail(task.issue, lines=30),
+        repro=f"cd {task.worktree} && claude --continue  # inside session image",
+        worktree=task.worktree)
+    blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
+    if blocker:
+        try:
+            deps.github.append_blocked_by(target, task.issue, blocker)
+        except Exception as exc:
+            print(f"[warn] append_blocked_by failed for #{task.issue}: {exc}",
+                  file=sys.stderr)
+
+
+def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
+                                 cand, dry_run: bool) -> None:
+    wt = str(Path(target.worktrees_path) / f"task-{cand.number}")
+    rep = failures.FailureReport(
+        klass="provisioning", target=target.name, issue=cand.number,
+        title=f"provisioning failed: {cand.title}",
+        error=traceback.format_exc(),
+        log_tail=failures.setup_log_tail(wt),
+        repro=f"podman run --rm -v {wt}:{wt} -w {wt} agent-ops-session "
+              f"{target.setup_cmd}",
+        worktree=wt)
+    blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
+    # Quarantine only once the report exists (marker written) — a gh outage
+    # leaves neither, so the next pass retries both. blocker may still be 0
+    # when infra_repo is unset; that record blocks until manually deleted.
+    if not dry_run and failures.reported(cfg.state_dir, rep):
+        failures.write_quarantine(cfg.state_dir, target.name, cand.number,
+                                  blocker_repo=cfg.infra_repo if blocker else "",
+                                  blocker_issue=blocker,
+                                  fp=failures.fingerprint(rep))
 
 
 def _claim_new(cfg: Config, deps: Deps, target: Target,
@@ -418,10 +462,27 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
             break
         if cand.number in known:
             continue
+        if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
+                                     cand.number):
+            continue
         slot = allocate_slot(load_all(cfg.state_dir))
         if slot is None:
             break
-        wt = create_workspace(target, cand.number, dry_run=dry_run)  # if this throws: board never claimed (still Ready), no state file → naturally retried next pass, no strand
+        try:
+            wt = create_workspace(target, cand.number, dry_run=dry_run)
+        except Exception:
+            # Board never claimed (claim is last, still Ready) → no release
+            # needed; report + quarantine, and the pass survives.
+            _report_provisioning_failure(cfg, deps, target, cand, dry_run)
+            # Cap at one provisioning failure per target per pass: a
+            # systemic fault (git remote down, podman down, worktrees
+            # volume full) would otherwise fail EVERY remaining Ready
+            # candidate in this loop, filing an issue + ping + quarantine
+            # record per candidate. A systemic cause is far likelier than a
+            # per-candidate one, so stop here — the next pass retries the
+            # remaining candidates. This `break` only exits this target's
+            # candidate loop; run_pass still processes other targets.
+            break
         task = TaskState(issue=cand.number, target=target.name,
                          stage=Stage.QUEUED, slot=slot, worktree=wt,
                          branch=f"agent/task-{cand.number}",
@@ -449,11 +510,25 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
-            _drive_task(cfg, deps, target, task, budget_ok)
+            _drive_task(cfg, deps, target, task, budget_ok, dry_run)
         _wake_ci(cfg, deps, target)
         _resume_woken(cfg, deps, target, budget_ok)
         if budget_ok:
             _claim_new(cfg, deps, target, dry_run)
+
+
+def guarded_pass(cfg: Config, deps: Deps, config_path: str,
+                 dry_run: bool = False) -> None:
+    try:
+        run_pass(cfg, deps, dry_run=dry_run)
+    except Exception:
+        rep = failures.FailureReport(
+            klass="pass-crash", target="", issue=0, title="(dispatcher)",
+            error=traceback.format_exc(), log_tail="",
+            repro=f"agent-ops-dispatcher --config {config_path}",
+            worktree="")
+        failures.report_failure(cfg, deps, rep, dry_run=dry_run)
+        raise  # systemd must still see the unit fail
 
 
 def send_digest(cfg: Config, deps: Deps) -> None:
@@ -474,7 +549,7 @@ def main() -> None:
         send_digest(cfg, deps)
     else:
         with pass_lock(cfg.state_dir):
-            run_pass(cfg, deps, dry_run=args.dry_run)
+            guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

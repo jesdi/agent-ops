@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher import failures
 from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
@@ -29,11 +30,16 @@ POLICY = parse_policy({
 
 class FakeGitHub:
     def __init__(self, cands=(), run_conclusion="", run_status_raises=False,
-                 rows=()):
+                 issue_states=None, issue_state_raises=False, rows=()):
         self.cands = list(cands)
         self.claimed, self.released = [], []
         self.run_conclusion = run_conclusion  # "" = still running
         self.run_status_raises = run_status_raises
+        self.created_issues = []              # (repo, title, body)
+        self.next_issue = 500
+        self.issue_states = issue_states or {}  # (repo, number) -> state
+        self.issue_state_raises = issue_state_raises
+        self.blocked_by = []                  # (issue, blocker)
         self.rows = list(rows)
         self.boosts, self.labeled, self.statused = [], [], []
         self.boost_raises = False
@@ -71,6 +77,19 @@ class FakeGitHub:
         if self.run_status_raises:
             raise subprocess.CalledProcessError(1, ["gh"])
         return self.run_conclusion
+
+    def create_issue(self, repo, title, body):
+        self.created_issues.append((repo, title, body))
+        self.next_issue += 1
+        return self.next_issue
+
+    def issue_state(self, repo, number):
+        if self.issue_state_raises:
+            raise subprocess.CalledProcessError(1, ["gh"])
+        return self.issue_states.get((repo, number), "OPEN")
+
+    def append_blocked_by(self, target, issue, blocker):
+        self.blocked_by.append((issue, blocker))
 
 
 class FakeSessions:
@@ -122,6 +141,7 @@ def cfg(tmp_path: Path) -> Config:
             status_field_id="F", status_ready_option_id="R",
             status_in_progress_option_id="I",
         )],
+        infra_repo="jesdi/agent-ops",
         models=POLICY,
     )
 
@@ -278,23 +298,120 @@ def test_dead_session_is_crash(tmp_path, monkeypatch):
     assert wt.exists()  # worktree preserved
 
 
-def test_claim_skipped_when_workspace_fails(tmp_path, monkeypatch):
-    """create_workspace failure must NOT leave the board claimed (regression: orphan-claim window)."""
+def test_dead_session_files_diagnosis_issue_and_blocks(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    gh = FakeGitHub()
+    d = deps(gh, FakeSessions(alive=set()))
+    main.run_pass(c, d)
+
+    repo, title, body = gh.created_issues[0]
+    assert repo == "jesdi/portfolio_eval", "session crashes file on the TARGET repo"
+    assert "session-crash" in title and "implement" in title
+    assert "- class: session-crash" in body
+    assert "…pane tail…" in body  # FakeSessions.capture_tail
+    assert gh.blocked_by == [(42, 501)]
+    assert "task_failed" in d.notifier.sent
+    # existing crash handling still intact
+    assert gh.released == [(42, "session crashed mid-stage")]
+    assert load(c.state_dir, 42).stage is Stage.FAILED
+
+
+def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monkeypatch):
+    """create_workspace failure: no claim, no state file, one issue + one
+    ping, quarantine written, and the pass exits cleanly (regression: one
+    bad candidate killed the pass). Capped at one provisioning failure per
+    target per pass, so the NEXT candidate (43) is NOT claimed this pass —
+    a systemic fault is far likelier than a per-candidate one, and the next
+    pass retries 43."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
+    gh = FakeGitHub([Candidate(42, "Bad", "u42"), Candidate(43, "Good", "u43")])
     sess = FakeSessions()
 
     def failing_workspace(target, issue, dry_run=False):
-        raise RuntimeError("git fetch failed")
+        if issue == 42:
+            raise RuntimeError("pipenv: no python 3.13")
+        wt = Path(target.worktrees_path) / f"task-{issue}"
+        (wt / ".agent").mkdir(parents=True, exist_ok=True)
+        return str(wt)
 
     monkeypatch.setattr(main, "create_workspace", failing_workspace)
+    d = deps(gh, sess)
+    main.run_pass(c, d)  # must NOT raise
 
-    with pytest.raises(RuntimeError):
-        main.run_pass(c, deps(gh, sess))
+    assert gh.claimed == [], "capped at one provisioning failure per pass; 43 not claimed this pass"
+    assert load(c.state_dir, 42) is None, "no state file for the failed candidate"
+    repo, title, body = gh.created_issues[0]
+    assert repo == "jesdi/agent-ops" and "provisioning" in title
+    assert "no python 3.13" in body
+    assert d.notifier.sent.count("task_failed") == 1
+    rec = json.loads(failures.quarantine_path(
+        c.state_dir, "portfolio_eval", 42).read_text())
+    assert rec["blocker_issue"] == 501 and rec["blocker_repo"] == "jesdi/agent-ops"
 
-    assert gh.claimed == [], "board must NOT be claimed when workspace creation fails"
-    assert load(c.state_dir, 42) is None, "no state file must exist for the stranded issue"
+
+def test_workspace_failure_second_pass_dedupes(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    gh = FakeGitHub([Candidate(42, "Bad", "u42")])
+
+    def failing_workspace(target, issue, dry_run=False):
+        raise RuntimeError("pipenv: no python 3.13")
+
+    monkeypatch.setattr(main, "create_workspace", failing_workspace)
+    d = deps(gh, FakeSessions())
+    main.run_pass(c, d)
+    # Simulate a force-retry (record deleted) with the same failure: the
+    # fingerprint dedupes, and the quarantine is rewritten with the
+    # ORIGINAL blocker number read back from the marker.
+    failures.quarantine_path(c.state_dir, "portfolio_eval", 42).unlink()
+    main.run_pass(c, d)
+    assert len(gh.created_issues) == 1
+    assert d.notifier.sent.count("task_failed") == 1
+    rec = json.loads(failures.quarantine_path(
+        c.state_dir, "portfolio_eval", 42).read_text())
+    assert rec["blocker_issue"] == 501
+
+
+def test_quarantined_candidate_with_open_blocker_skipped(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    failures.write_quarantine(c.state_dir, "portfolio_eval", 42,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = FakeGitHub([Candidate(42, "Bad", "u42")],
+                    issue_states={("jesdi/agent-ops", 501): "OPEN"})
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert gh.claimed == []
+
+
+def test_closed_blocker_unquarantines_same_pass(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    failures.write_quarantine(c.state_dir, "portfolio_eval", 42,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = FakeGitHub([Candidate(42, "Fixed now", "u42")],
+                    issue_states={("jesdi/agent-ops", 501): "CLOSED"})
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert gh.claimed == [42], "candidate claimable in the SAME pass"
+    assert not failures.quarantine_path(
+        c.state_dir, "portfolio_eval", 42).exists()
+
+
+def test_issue_state_error_keeps_candidate_quarantined(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    failures.write_quarantine(c.state_dir, "portfolio_eval", 42,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = FakeGitHub([Candidate(42, "Bad", "u42"), Candidate(43, "Good", "u43")],
+                    issue_state_raises=True)
+    main.run_pass(c, deps(gh, FakeSessions()))  # must not raise
+    assert gh.claimed == [43]
 
 
 def test_release_called_when_claim_fails(tmp_path, monkeypatch):
@@ -511,6 +628,40 @@ def test_status_command_reports(tmp_path, monkeypatch):
     d = deps()
     main.run_pass(c, d)
     assert "status" in d.notifier.sent
+
+
+def test_pass_crash_files_issue_and_reraises(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    gh = FakeGitHub()
+    d = deps(gh, FakeSessions())
+
+    def boom(cfg_, deps_, dry_run=False):
+        raise RuntimeError("rank.py exploded")
+
+    monkeypatch.setattr(main, "run_pass", boom)
+    with pytest.raises(RuntimeError):
+        main.guarded_pass(c, d, "targets.yaml")
+
+    repo, title, body = gh.created_issues[0]
+    assert repo == "jesdi/agent-ops"
+    assert "pass-crash" in title and "(dispatcher)" in title
+    assert "rank.py exploded" in body
+    assert "agent-ops-dispatcher --config targets.yaml" in body
+    assert "task_failed" in d.notifier.sent
+
+
+def test_pass_crash_recurring_dedupes_to_one_issue(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    gh = FakeGitHub()
+    d = deps(gh, FakeSessions())
+    monkeypatch.setattr(main, "run_pass",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("rank.py exploded")))
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            main.guarded_pass(c, d, "targets.yaml")
+    assert len(gh.created_issues) == 1
+    assert d.notifier.sent.count("task_failed") == 1
 
 
 def test_run_status_error_does_not_abort_pass(tmp_path, monkeypatch):

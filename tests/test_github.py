@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import replace as dc_replace
 
 import dispatcher.github as github
@@ -215,6 +216,27 @@ def test_project_commands_without_token_inherit_ambient_auth(monkeypatch):
     assert calls and all(env is None for _, env in calls)
 
 
+def test_create_issue_returns_number_from_url(monkeypatch):
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        return "https://github.com/jesdi/agent-ops/issues/501\n"
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    n = github.GitHubClient().create_issue("jesdi/agent-ops", "boom", "body")
+    assert n == 501
+    args = calls[0]
+    assert args[:3] == ["gh", "issue", "create"]
+    assert "jesdi/agent-ops" in args and "boom" in args and "body" in args
+
+
+def test_issue_state_parses_json(monkeypatch):
+    monkeypatch.setattr(github, "_run",
+                        lambda a, cwd=None, env=None: '{"state": "CLOSED"}')
+    assert github.GitHubClient().issue_state("jesdi/agent-ops", 501) == "CLOSED"
+
+
 BOOST_TARGET = dc_replace(TARGET, boost_field_id="FB")
 
 
@@ -277,6 +299,76 @@ def test_boost_dry_run_mutates_nothing(monkeypatch, capsys):
     cli = github.GitHubClient(dry_run=True)
     cli.set_boost(BOOST_TARGET, 7, 99)
     cli.add_label(TARGET, 7, "auto")
+    assert "[dry-run]" in capsys.readouterr().out
+
+
+def test_create_issue_and_issue_state_dry_run(monkeypatch, capsys):
+    def fake_run(args, cwd=None, env=None):
+        raise AssertionError(f"dry-run must not execute: {args}")
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    cli = github.GitHubClient(dry_run=True)
+    assert cli.create_issue("jesdi/agent-ops", "t", "b") == 0
+    assert cli.issue_state("jesdi/agent-ops", 501) == "OPEN"
+    assert "[dry-run]" in capsys.readouterr().out
+
+
+# rank.py's pattern, copied verbatim (portfolio_eval
+# .claude/skills/backlog/rank.py) — the appended line must parse with it.
+RANK_BLOCKED_RE = re.compile(r"^\s*Blocked by:\s*(.+)$", re.MULTILINE)
+
+
+def _blocked_by_rig(monkeypatch, body):
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        if "view" in args:
+            return json.dumps({"body": body})
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    return calls
+
+
+def test_append_blocked_by_appends_parseable_line(monkeypatch):
+    calls = _blocked_by_rig(monkeypatch, "Original body.")
+    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    edit = next(a for a in calls if "edit" in a)
+    new_body = edit[edit.index("--body") + 1]
+    m = RANK_BLOCKED_RE.search(new_body)
+    assert m and "#77" in m.group(1)
+    assert new_body.startswith("Original body.")
+
+
+def test_append_blocked_by_idempotent(monkeypatch):
+    calls = _blocked_by_rig(monkeypatch, "Body.\n\nBlocked by: #77\n")
+    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    assert not any("edit" in a for a in calls)
+
+
+def test_append_blocked_by_distinct_blocker_appended(monkeypatch):
+    # #7 referenced must not swallow #77, and a different blocker adds a line.
+    calls = _blocked_by_rig(monkeypatch, "Body.\n\nBlocked by: #7\n")
+    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    edit = next(a for a in calls if "edit" in a)
+    new_body = edit[edit.index("--body") + 1]
+    assert len(RANK_BLOCKED_RE.findall(new_body)) == 2
+
+
+def test_append_blocked_by_empty_body(monkeypatch):
+    calls = _blocked_by_rig(monkeypatch, "")
+    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    edit = next(a for a in calls if "edit" in a)
+    new_body = edit[edit.index("--body") + 1]
+    assert RANK_BLOCKED_RE.search(new_body)
+
+
+def test_append_blocked_by_dry_run(monkeypatch, capsys):
+    monkeypatch.setattr(
+        github, "_run",
+        lambda a, cwd=None, env=None: (_ for _ in ()).throw(AssertionError))
+    github.GitHubClient(dry_run=True).append_blocked_by(TARGET, 42, 77)
     assert "[dry-run]" in capsys.readouterr().out
 
 

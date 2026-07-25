@@ -38,6 +38,7 @@ class Config:
     session_memory: str
     session_cpus: str
     targets: list[Target]
+    infra_repo: str = ""  # repo for dispatcher-side failure issues; "" degrades to ping-only
     models: ModelPolicy = DEFAULT_POLICY
 
 
@@ -64,6 +65,7 @@ def load_config(path: str | Path) -> Config:
         session_memory=str(raw.get("session_memory", "2g")),
         session_cpus=str(raw.get("session_cpus", "2")),
         targets=[_target(t) for t in raw.get("targets", [])],
+        infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
     )
 

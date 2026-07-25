@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -99,7 +100,23 @@ class GitHubClient:
         raise LookupError(f"issue #{issue} not on project {target.project_number}"
                           f" (title join: {len(matches)} items match {title!r})")
 
+    def issue_state(self, repo: str, number: int) -> str:
+        if self.dry_run:
+            print(f"[dry-run] issue_state {repo}#{number} -> OPEN")
+            return "OPEN"  # safe default: quarantined tasks stay blocked
+        out = _run(["gh", "issue", "view", str(number), "--repo", repo,
+                    "--json", "state"])
+        return json.loads(out)["state"]
+
     # -- write side --------------------------------------------------------
+
+    def create_issue(self, repo: str, title: str, body: str) -> int:
+        if self.dry_run:
+            print(f"[dry-run] create_issue on {repo}: {title}")
+            return 0
+        out = _run(["gh", "issue", "create", "--repo", repo,
+                    "--title", title, "--body", body])
+        return int(out.strip().rstrip("/").rsplit("/", 1)[-1])
 
     def set_status(self, target: Target, issue: int, option_id: str) -> None:
         if self.dry_run:
@@ -150,3 +167,20 @@ class GitHubClient:
                      f"🤖 agent-ops released this task: {reason}. "
                      f"Worktree preserved for autopsy.")
         self.set_status(target, issue, target.status_ready_option_id)
+
+    def append_blocked_by(self, target: Target, issue: int,
+                          blocker: int) -> None:
+        if self.dry_run:
+            print(f"[dry-run] append_blocked_by #{issue} <- #{blocker}")
+            return
+        body = json.loads(_run(["gh", "issue", "view", str(issue),
+                                "--repo", target.repo,
+                                "--json", "body"]))["body"] or ""
+        # Idempotent: skip if a Blocked-by line already references this
+        # blocker. \b keeps #7 from matching inside #77.
+        if re.search(rf"^\s*Blocked by:.*#{blocker}\b", body, re.MULTILINE):
+            return
+        line = f"Blocked by: #{blocker}"
+        new_body = f"{body.rstrip()}\n\n{line}\n" if body.strip() else f"{line}\n"
+        _run(["gh", "issue", "edit", str(issue), "--repo", target.repo,
+              "--body", new_body])

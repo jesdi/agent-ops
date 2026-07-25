@@ -1,5 +1,8 @@
 capacity: 1
 state_dir: /home/agent/agent-ops-state
+# Optional: repo where provisioning/pass-crash failure issues are filed.
+# Unset -> those failures degrade to a Telegram ping + stderr log only.
+infra_repo: jesdi/agent-ops
 budget_threshold: 0.8
 racing_minutes: 30
 racing_threshold: 0.95

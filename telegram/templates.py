@@ -15,6 +15,7 @@ _TEMPLATES = {
     "implement_started": "🛠 #{issue} {title} — implement started. Plan: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "parked_question": "❓ #{issue} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
     "resumed_for_attach": "🎹 #{issue} {title} — session resumed and holding for you.\n{url}\n" + _ATTACH,
+    "task_failed": "🔥 #{issue} {title} — {note}\n{url}",
 }
 
 
