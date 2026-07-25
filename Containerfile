@@ -12,4 +12,8 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
          > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
+# uv-managed CPython: pipenv resolves python3.13 from PATH; a future
+# version bump is a one-line change.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+RUN uv python install 3.13 && ln -s "$(uv python find 3.13)" /usr/local/bin/python3.13
 RUN npm install -g @anthropic-ai/claude-code && corepack enable pnpm
