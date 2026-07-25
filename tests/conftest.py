@@ -10,6 +10,17 @@ to the tree the tests live in.
 import sys
 from pathlib import Path
 
+import pytest
+
 root = str(Path(__file__).resolve().parent.parent)
 if root not in sys.path:
     sys.path.insert(0, root)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_state_dir(tmp_path, monkeypatch):
+    """Point AGENT_OPS_STATE_DIR at a per-test tmp dir so no test can ever
+    read or write the box's real state (claude-home seeding in
+    create_workspace writes files there). Tests that care about the exact
+    value still override it explicitly."""
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))

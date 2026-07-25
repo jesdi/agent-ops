@@ -325,3 +325,48 @@ def test_setup_timeout_still_writes_partial_log(tmp_path: Path, monkeypatch):
         workspace.create_workspace(t, 42)
     log = Path(t.worktrees_path) / "task-42" / ".agent" / "setup.log"
     assert log.read_text() == "partial out\npartial err\n"
+
+
+def test_create_workspace_seeds_claude_trust(tmp_path: Path, monkeypatch):
+    """Provisioning must pre-trust the worktree (and complete onboarding) in
+    claude-home's .claude.json: stage containers run interactive `claude`
+    with nobody attached, so a first-run wizard or folder-trust dialog
+    stalls the task forever (task #192 sat on the theme picker for 1.5h)."""
+    def fake_sh(args, cwd, timeout=300, log=None):
+        if "worktree" in args:
+            wt = Path(args[-2])
+            wt.mkdir(parents=True, exist_ok=True)
+            (wt / ".git").write_text(
+                f"gitdir: {tmp_path / 'repo'}/.git/worktrees/task-42\n")
+
+    monkeypatch.setattr(workspace, "_sh", fake_sh)
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    state = tmp_path / "state"
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(state))
+    # Pre-existing machine state must be merged, never clobbered.
+    home = state / "claude-home"
+    home.mkdir(parents=True)
+    (home / ".claude.json").write_text(json.dumps(
+        {"machineID": "m1", "projects": {"/old": {"lastCost": 1}}}))
+
+    wt = workspace.create_workspace(target(tmp_path), 42)
+
+    data = json.loads((home / ".claude.json").read_text())
+    assert data["hasCompletedOnboarding"] is True
+    assert data["projects"][wt]["hasTrustDialogAccepted"] is True
+    assert data["machineID"] == "m1"
+    assert data["projects"]["/old"] == {"lastCost": 1}
+
+
+def test_seed_claude_state_survives_missing_or_corrupt_file(tmp_path: Path,
+                                                           monkeypatch):
+    state = tmp_path / "state"
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(state))
+    workspace._seed_claude_state("/wt/a")           # no claude-home at all
+    p = state / "claude-home" / ".claude.json"
+    assert json.loads(p.read_text())["projects"]["/wt/a"][
+        "hasTrustDialogAccepted"] is True
+    p.write_text("{corrupt")
+    workspace._seed_claude_state("/wt/b")           # unreadable → start fresh
+    assert json.loads(p.read_text())["projects"]["/wt/b"][
+        "hasTrustDialogAccepted"] is True

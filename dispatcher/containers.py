@@ -30,6 +30,12 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     return (
         f"podman run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
+        # Without this, Claude Code keeps onboarding/trust state in
+        # /root/.claude.json — a SIBLING of the claude-home mount — so every
+        # container boots as a fresh install and stalls on the first-run
+        # wizard with nobody attached. CLAUDE_CONFIG_DIR moves all of it
+        # inside the mounted claude-home.
+        f"-e CLAUDE_CONFIG_DIR=/root/.claude "
         f"-v {worktree}:{worktree} -w {worktree} "
         f"-v {clone}:{clone} "
         f"-v {_state_dir()}/claude-home:/root/.claude "
