@@ -9,3 +9,11 @@ docs/superpowers/
 
 node_modules/
 targets.yaml
+
+# @jesdi/skills store + agent symlinks (managed by `npx @jesdi/skills-cli sync`;
+# only .my-skills.json is committed)
+.my-skills/
+.claude/skills/backlog
+.claude/skills/branch-audit
+.claude/skills/ceo-review
+.claude/skills/file-bug-issue
