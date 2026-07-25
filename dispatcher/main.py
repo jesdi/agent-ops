@@ -17,7 +17,7 @@ from pathlib import Path
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
-from dispatcher import eventlog, failures
+from dispatcher import eventlog, failures, queue_ops
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, SetTaskStage, SpawnStage,
@@ -98,9 +98,6 @@ def _status_lines(cfg: Config) -> list[str]:
     return lines
 
 
-NEXT_BOOST = 99
-
-
 def _find_rows(cfg: Config, deps: Deps, issue: int) -> list[tuple]:
     return [(target, row)
             for target in cfg.targets
@@ -158,10 +155,9 @@ def _handle_boost(cfg: Config, deps: Deps, issue: int, amount: int) -> None:
     if not located:
         return
     target, row = located
-    current = row.get("boost", 0)
-    new = current + amount
-    deps.github.set_boost(target, issue, new)
-    deps.notifier.send("status", lines=[f"#{issue} boost {current} → {new}"])
+    plan = queue_ops.plan_boost(row, amount)
+    queue_ops.apply_plan(deps.github, target, issue, plan)
+    deps.notifier.send("status", lines=plan.reason.split("\n"))
 
 
 def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
@@ -169,39 +165,9 @@ def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
     if not located:
         return
     target, row = located
-    if row["blocked"]:
-        deps.notifier.send("status", lines=[
-            f"#{issue} is blocked — resolve its blockers first "
-            "(blocked issues cannot be forced)"])
-        return
-    if row.get("status") == "In progress":
-        # The board is the double-dispatch guard: flipping an In-progress
-        # issue back to Ready would let this pass claim work already in
-        # flight. Never forceable.
-        deps.notifier.send("status", lines=[
-            f"#{issue} is already In progress — work on it is already in "
-            "flight (in-progress issues cannot be forced)"])
-        return
-    problems = []
-    if row.get("status") != "Ready":
-        problems.append(f"status is {row.get('status') or 'unset'}, not Ready")
-    if "auto" not in row.get("labels", []):
-        problems.append("missing the auto label")
-    if problems and not force:
-        deps.notifier.send("status", lines=[
-            f"#{issue} is not eligible: " + "; ".join(problems) + ".",
-            f"Send /next {issue} force to make it eligible and enqueue."])
-        return
-    # Boost FIRST: it is the mutation most likely to fail (the Boost field may
-    # not exist on the board yet), and failing before status/label keeps a
-    # failed /next a clean no-op rather than a half-eligible issue.
-    deps.github.set_boost(target, issue, NEXT_BOOST)
-    if row.get("status") != "Ready":
-        deps.github.set_status(target, issue, target.status_ready_option_id)
-    if "auto" not in row.get("labels", []):
-        deps.github.add_label(target, issue, "auto")
-    deps.notifier.send("status", lines=[
-        f"#{issue} enqueued at the head (boost {NEXT_BOOST})"])
+    plan = queue_ops.plan_next(row, force)
+    queue_ops.apply_plan(deps.github, target, issue, plan)
+    deps.notifier.send("status", lines=plan.reason.split("\n"))
 
 
 def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
