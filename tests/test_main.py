@@ -279,6 +279,46 @@ def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
     assert load(c.state_dir, 42).stage is Stage.PLAN
 
 
+def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch):
+    """An interactive claude cannot exit itself, so on stage advance the
+    previous session is usually still alive. Spawning without ending it
+    first makes _launch type the next stage's podman command INTO the old
+    claude's input box (and the container name would collide anyway) —
+    task #192's plan stage was 'spawned' straight into the zombie spec
+    session. End first, then spawn."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = Path(c.targets[0].worktrees_path) / "task-42"
+    (wt / ".agent").mkdir(parents=True)
+    spec = wt / "spec.md"
+    spec.write_text("# t — design\n\n## Problem\n\n" + "x " * 400
+                    + "\n\n## Decisions\n\n" + "y " * 400)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+                                stage=Stage.SPEC, slot=0,
+                                worktree=str(wt), branch="agent/task-42",
+                                title="t", updated_at="2026-07-14T00:00:00+00:00"))
+
+    class OrderedSessions(FakeSessions):
+        def __init__(self, alive=()):
+            super().__init__(alive)
+            self.ops = []
+
+        def end(self, issue):
+            self.ops.append(("end", issue))
+            super().end(issue)
+
+        def spawn_stage(self, issue, worktree, prompt, stage_name, model):
+            self.ops.append(("spawn", stage_name))
+            super().spawn_stage(issue, worktree, prompt, stage_name, model)
+
+    sess = OrderedSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    assert sess.ops == [("end", 42), ("spawn", "plan")]
+
+
 def test_dead_session_is_crash(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)

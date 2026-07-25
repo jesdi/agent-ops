@@ -35,7 +35,19 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     assert f"-v {clone}:{clone}" in cmd
     assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
     assert cmd.endswith(
-        "claude --permission-mode acceptEdits --model claude-fable-5 --continue 'hi'")
+        "claude --permission-mode auto --model claude-fable-5 --continue 'hi'")
+
+
+def test_session_cmd_sets_claude_config_dir(tmp_path: Path, monkeypatch):
+    # Claude Code keeps onboarding/trust state in ~/.claude.json — a SIBLING
+    # of ~/.claude, so it falls outside the claude-home mount and every
+    # container boots as a fresh install (first-run wizard, login screen,
+    # trust dialog — task #192 sat on the theme picker for 1.5h).
+    # CLAUDE_CONFIG_DIR relocates all of it inside the mounted claude-home.
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    wt, _ = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    assert "-e CLAUDE_CONFIG_DIR=/root/.claude" in cmd
 
 
 def test_session_cmd_carries_the_model_flag(tmp_path: Path, monkeypatch):

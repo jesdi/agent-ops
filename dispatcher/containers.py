@@ -30,12 +30,22 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     return (
         f"podman run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
+        # Without this, Claude Code keeps onboarding/trust state in
+        # /root/.claude.json — a SIBLING of the claude-home mount — so every
+        # container boots as a fresh install and stalls on the first-run
+        # wizard with nobody attached. CLAUDE_CONFIG_DIR moves all of it
+        # inside the mounted claude-home.
+        f"-e CLAUDE_CONFIG_DIR=/root/.claude "
         f"-v {worktree}:{worktree} -w {worktree} "
         f"-v {clone}:{clone} "
         f"-v {_state_dir()}/claude-home:/root/.claude "
         f"-v {home}/.config/gh:/root/.config/gh:ro "
         f"-v {home}/.gitconfig:/root/.gitconfig:ro "
-        f"{image()} claude --permission-mode acceptEdits --model {model} {claude_args}"
+        # auto: the classifier approves routine actions and stops only for
+        # genuinely risky ones — the stop then flows into the park/resume
+        # path (Stop hook → waitd → Telegram). acceptEdits still asked for
+        # every non-edit action, which no one is attached to answer.
+        f"{image()} claude --permission-mode auto --model {model} {claude_args}"
     )
 
 

@@ -399,6 +399,11 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             if not budget_ok:
                 return  # signal persists; retried next pass
             clear_waiting(cfg.state_dir, task.issue)
+            # The previous stage's claude is usually still alive here — an
+            # interactive session cannot exit itself. _launch would type
+            # the next stage's podman command INTO it (and the container
+            # name would collide). End it first; no-op when already dead.
+            deps.sessions.end(task.issue)
             spec_path = signal.artifact if act.stage is Stage.PLAN else ""
             task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path)
         elif isinstance(act, HandleCrash):
