@@ -1,0 +1,20 @@
+{
+  "owner": "<owner>",
+  "repo": "<owner>/<repo>",
+  "projectNumber": 0,
+  "projectId": "PVT_REPLACE_ME",
+  "fields": {
+    "Status": {
+      "id": "PVTSSF_REPLACE",
+      "options": {"Inbox": "...", "Ready": "...", "In progress": "...", "Done": "..."}
+    },
+    "Impact": {"id": "PVTF_REPLACE"},
+    "Effort": {"id": "PVTF_REPLACE"},
+    "Score": {"id": "PVTF_REPLACE"},
+    "Boost": {"id": "PVTF_REPLACE"},
+    "Area": {
+      "id": "PVTSSF_REPLACE",
+      "options": {"feature": "...", "bug": "...", "infra": "...", "docs": "...", "research": "..."}
+    }
+  }
+}

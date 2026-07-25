@@ -1,0 +1,75 @@
+{
+  "owner": "jesdi",
+  "repo": "jesdi/agent-ops",
+  "projectNumber": 3,
+  "projectId": "PVT_kwHOAD7w4M4Bebka",
+  "fields": {
+    "Title": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12b4"
+    },
+    "Assignees": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12b8"
+    },
+    "Status": {
+      "id": "PVTSSF_lAHOAD7w4M4BebkazhY12cA",
+      "options": {
+        "Inbox": "1709ac25",
+        "Ready": "89e7db7c",
+        "In progress": "ca75ded8",
+        "Done": "d7243ba5"
+      }
+    },
+    "Labels": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12cE"
+    },
+    "Linked pull requests": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12cI"
+    },
+    "Milestone": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12cM"
+    },
+    "Repository": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12cQ"
+    },
+    "Reviewers": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12cU"
+    },
+    "Parent issue": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12cY"
+    },
+    "Sub-issues progress": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12cc"
+    },
+    "Created": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12cg"
+    },
+    "Updated": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12ck"
+    },
+    "Closed": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12co"
+    },
+    "Impact": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12gQ"
+    },
+    "Effort": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12gU"
+    },
+    "Score": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12gY"
+    },
+    "Boost": {
+      "id": "PVTF_lAHOAD7w4M4BebkazhY12hQ"
+    },
+    "Area": {
+      "id": "PVTSSF_lAHOAD7w4M4BebkazhY12iI",
+      "options": {
+        "feature": "f3255170",
+        "bug": "b53746f3",
+        "infra": "cfe58b60",
+        "docs": "3674dec3",
+        "research": "cffeb17b"
+      }
+    }
+  }
+}
