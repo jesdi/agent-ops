@@ -1164,3 +1164,82 @@ def test_target_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
     assert sess.spawned == [(42, "spec", "claude-fable-5")]
+
+
+from dispatcher import eventlog
+
+
+def test_claim_and_spawn_append_claimed_and_stage_started_events(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(FakeGitHub([Candidate(42, "Add widget", "u42")])))
+    events = eventlog.read_tail(c.state_dir)
+    assert [(e["event"], e["issue"]) for e in events] == [
+        ("claimed", 42), ("stage-started", 42)]
+    assert events[0]["target"] == "portfolio_eval"
+    assert events[1]["stage"] == "spec"
+    assert events[1]["model"] == "claude-opus-4-8"
+
+
+def test_park_for_input_appends_parked_event(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "blocked", "note": "need a decision"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    parked = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "parked"]
+    assert len(parked) == 1
+    assert parked[0]["issue"] == 42 and parked[0]["stage"] == "implement"
+    assert parked[0]["detail"] == "need a decision"
+
+
+def test_park_for_ci_appends_parked_event_with_run_id_detail(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "awaiting-ci", "run_id": 4242}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    parked = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "parked"]
+    assert parked[0]["detail"] == "awaiting CI run 4242"
+
+
+def test_resume_appends_resumed_event(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, park=PARK_WAKE, pending_reply="use oauth")
+    main.run_pass(c, deps(sess=FakeSessions()))
+    resumed = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "resumed"]
+    assert len(resumed) == 1
+    assert resumed[0]["issue"] == 42 and resumed[0]["stage"] == "implement"
+    assert resumed[0]["model"] == "claude-opus-4-8"
+
+
+def test_implement_done_appends_pr_opened_event(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "done", "note": "PR #9"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    assert load(c.state_dir, 42).stage is Stage.PR_OPEN
+    opened = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "pr-opened"]
+    assert len(opened) == 1 and opened[0]["issue"] == 42
+
+
+def test_crash_appends_failed_event(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT)
+    main.run_pass(c, deps(FakeGitHub(), FakeSessions(alive=set())))
+    failed = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["issue"] == 42
+    assert failed[0]["detail"] == "session crashed mid-stage"

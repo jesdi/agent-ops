@@ -17,7 +17,7 @@ from pathlib import Path
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
-from dispatcher import failures
+from dispatcher import eventlog, failures
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, SetTaskStage, SpawnStage,
@@ -283,6 +283,8 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     deps.sessions.spawn_stage(task.issue, task.worktree, prompt, stage.value, model)
     task = replace(task, stage=stage, updated_at=_now())
     save(cfg.state_dir, task)
+    eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
+                          issue=task.issue, stage=stage.value, model=model)
     return task
 
 
@@ -311,6 +313,8 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+                          issue=task.issue, stage=task.stage.value, detail=note)
 
 
 def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -319,6 +323,9 @@ def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_CI, ci_run_id=run_id,
                                 updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail=f"awaiting CI run {run_id}")
 
 
 def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
@@ -373,6 +380,9 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         save(cfg.state_dir, replace(task, park="", pending_reply="",
                                     hold_for_attach=False, park_msg_id=0,
                                     updated_at=_now()))
+        eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
+                              issue=task.issue, stage=task.stage.value,
+                              model=model)
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -393,6 +403,10 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             clear_waiting(cfg.state_dir, task.issue)
             task = replace(task, stage=act.stage, updated_at=_now())
             save(cfg.state_dir, task)
+            if act.stage is Stage.PR_OPEN:
+                eventlog.append_event(cfg.state_dir, "pr-opened",
+                                      target=target.name, issue=task.issue,
+                                      stage=act.stage.value)
         elif isinstance(act, Notify):
             _notify(deps, target, task, act.template, act.note)
         elif isinstance(act, SpawnStage):
@@ -411,6 +425,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             deps.github.release(target, task.issue, "session crashed mid-stage")
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
                                         updated_at=_now()))
+            eventlog.append_event(cfg.state_dir, "failed", target=target.name,
+                                  issue=task.issue, stage=task.stage.value,
+                                  detail="session crashed mid-stage")
             _report_session_crash(cfg, deps, target, task, dry_run)
 
 
@@ -494,6 +511,8 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
                          title=cand.title, updated_at=_now(),
                          effort=cand.effort, labels=cand.labels)
         save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
+        eventlog.append_event(cfg.state_dir, "claimed", target=target.name,
+                              issue=cand.number, stage=Stage.QUEUED.value)
         try:
             deps.github.claim(target, cand)  # irreversible board mutation — last
             _spawn_stage(cfg, deps, target, task, Stage.SPEC)
