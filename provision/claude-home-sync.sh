@@ -75,10 +75,28 @@ print(f"stamp\t{digest}")
 PY
 )
 
+# `plugin install name@marketplace` resolves against locally added
+# marketplaces, and a fresh claude-home has NONE — the official marketplace
+# is only auto-added by an interactive first run, which never happens on
+# the box (2026-07 outage: every pass died at install with "not found in
+# marketplace"). Ensure it lazily, only when an install is about to need
+# it: an unconditional check would break the list-only steady state. The
+# seed declares plugins from the official marketplace only; a new
+# marketplace in the seed means extending this (the verify step below
+# still fails loudly if an install cannot resolve).
+marketplace_ensured=""
+ensure_marketplace() {
+  [ -n "$marketplace_ensured" ] && return 0
+  marketplace_ensured=1
+  "$CLAUDE" plugin marketplace list 2>/dev/null \
+    | grep -q "claude-plugins-official" \
+    || "$CLAUDE" plugin marketplace add anthropics/claude-plugins-official
+}
+
 new_stamp=""
 while IFS=$'\t' read -r verb arg; do
   case "$verb" in
-    install)   "$CLAUDE" plugin install "$arg" ;;
+    install)   ensure_marketplace; "$CLAUDE" plugin install "$arg" ;;
     update)    "$CLAUDE" plugin update "$arg" ;;
     uninstall) "$CLAUDE" plugin uninstall "$arg" ;;
     stamp)     new_stamp="$arg" ;;
