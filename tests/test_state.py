@@ -159,3 +159,29 @@ def test_waiting_marker_lifecycle(tmp_path):
     clear_waiting(tmp_path, 9)
     assert not has_waiting(tmp_path, 9)
     clear_waiting(tmp_path, 9)  # idempotent
+
+
+def test_effort_and_labels_roundtrip(tmp_path: Path):
+    ts = TaskState(
+        issue=101, target="portfolio_eval", stage=Stage.SPEC, slot=0,
+        worktree="/wt", branch="agent/task-101", title="Add widget",
+        updated_at="2026-07-14T12:00:00+00:00",
+        effort=3, labels=("auto", "frontend"),
+    )
+    save(tmp_path, ts)
+    loaded = load(tmp_path, 101)
+    assert loaded.effort == 3
+    assert loaded.labels == ("auto", "frontend")   # tuple, not list
+    assert loaded == ts
+
+
+def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
+    (tmp_path / "task-55.json").write_text(json.dumps({
+        "issue": 55, "target": "portfolio_eval", "stage": "implement", "slot": 1,
+        "worktree": "/wt", "branch": "agent/task-55", "title": "Old task",
+        "updated_at": "2026-07-01T00:00:00+00:00", "park": "", "ci_run_id": 0,
+        "park_msg_id": 0, "pending_reply": "", "hold_for_attach": False,
+    }))
+    loaded = load(tmp_path, 55)
+    assert loaded.effort is None
+    assert loaded.labels == ()

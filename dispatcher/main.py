@@ -15,11 +15,12 @@ from pathlib import Path
 
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
-from dispatcher.config import Config, Target, load_config
+from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, SetTaskStage, SpawnStage,
                                 next_actions)
+from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_WAKE,
@@ -43,6 +44,36 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Stages that aren't policy stages but hold a live session from one: a
+# claimed task is about to spawn spec, and a task at the spec-review gate
+# still has its spec session running. Stage.BLOCKED and
+# Stage.STALLED_ON_BUDGET genuinely lose the originating stage in
+# TaskState (nothing in machine.py sets it), so they deliberately fall
+# through to stage.value, which matches no `use:` key and lands on the
+# policy default.
+_POLICY_STAGE = {Stage.QUEUED: "spec", Stage.AWAITING_SPEC_REVIEW: "spec"}
+
+
+def _model_for(cfg: Config, target: Target | None, task: TaskState,
+               stage: Stage) -> str:
+    """target is None for a task whose target has left the config — it still
+    resolves, against the global policy, since there is no per-target one to
+    look up. Every model resolution goes through here, so the stage mapping
+    above is applied exactly once."""
+    policy = policy_for(cfg, target) if target else cfg.models
+    return resolve(policy, _POLICY_STAGE.get(stage, stage.value),
+                   task.effort, task.labels)
+
+
+def _log_model(worktree: str, stage: Stage, model: str) -> None:
+    """Durable per-worktree breadcrumb. stage.json is co-owned — sessions
+    overwrite it when they signal — so the log is the record that survives."""
+    p = Path(worktree) / ".agent" / "models.log"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a") as fh:
+        fh.write(f"{_now()} {stage.value} {model}\n")
+
+
 def _url(target: Target, issue: int) -> str:
     return f"https://github.com/{target.repo}/issues/{issue}"
 
@@ -53,12 +84,122 @@ def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False) -> None:
 
 
 def _status_lines(cfg: Config) -> list[str]:
+    by_name = {t.name: t for t in cfg.targets}
     tasks = [t for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
-    lines = [f"#{t.issue} {t.title} — {t.stage.value}"
-             + (f" [{t.park}]" if t.park else "") + f" (slot {t.slot})"
-             for t in tasks] or ["(nothing in flight)"]
+    lines = []
+    for t in tasks:
+        model = _model_for(cfg, by_name.get(t.target), t, t.stage)
+        lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
+                     + (f" [{t.park}]" if t.park else "") + f" (slot {t.slot})")
+    lines = lines or ["(nothing in flight)"]
     lines.append(f"capacity {len(active(tasks))}/{cfg.capacity}")
     return lines
+
+
+NEXT_BOOST = 99
+
+
+def _find_rows(cfg: Config, deps: Deps, issue: int) -> list[tuple]:
+    return [(target, row)
+            for target in cfg.targets
+            for row in deps.github.rank_rows(target)
+            if row["number"] == issue]
+
+
+def _queue_lines(cfg: Config, deps: Deps) -> list[str]:
+    lines: list[str] = []
+    for target in cfg.targets:
+        rows = deps.github.rank_rows(target)
+        if len(cfg.targets) > 1:
+            lines.append(f"[{target.name}]")
+        available = [r for r in rows
+                     if not r["blocked"] and r.get("status") != "In progress"]
+        for idx, r in enumerate(available[:10], start=1):
+            boost = r.get("boost", 0)
+            marker = f" ↑{boost}" if boost > 0 else (f" ↓{-boost}" if boost < 0 else "")
+            value = r.get("score")
+            score = f"{value:.2f}" if value is not None else "—"
+            lines.append(f"{idx}.{marker} [{score}] #{r['number']} {r['title']}")
+        if len(available) > 10:
+            lines.append(f"… {len(available) - 10} more")
+        in_progress = [r for r in rows if r.get("status") == "In progress"]
+        if in_progress:
+            lines.append("In progress: "
+                         + ", ".join(f"#{r['number']}" for r in in_progress))
+        blocked = [r for r in rows if r["blocked"]]
+        if blocked:
+            lines.append("Blocked: "
+                         + ", ".join(f"#{r['number']}" for r in blocked))
+        if not rows:
+            lines.append("(queue empty)")
+    return lines
+
+
+def _locate(cfg: Config, deps: Deps, issue: int):
+    """Resolve an issue to (target, row); reports and returns None when it
+    can't."""
+    hits = _find_rows(cfg, deps, issue)
+    if not hits:
+        deps.notifier.send("status", lines=[f"#{issue} is not on the board"])
+        return None
+    if len(hits) > 1:
+        deps.notifier.send("status", lines=[
+            f"#{issue} exists in multiple targets ("
+            + ", ".join(t.name for t, _ in hits)
+            + ") — not yet supported, edit the board directly"])
+        return None
+    return hits[0]
+
+
+def _handle_boost(cfg: Config, deps: Deps, issue: int, amount: int) -> None:
+    located = _locate(cfg, deps, issue)
+    if not located:
+        return
+    target, row = located
+    current = row.get("boost", 0)
+    new = current + amount
+    deps.github.set_boost(target, issue, new)
+    deps.notifier.send("status", lines=[f"#{issue} boost {current} → {new}"])
+
+
+def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
+    located = _locate(cfg, deps, issue)
+    if not located:
+        return
+    target, row = located
+    if row["blocked"]:
+        deps.notifier.send("status", lines=[
+            f"#{issue} is blocked — resolve its blockers first "
+            "(blocked issues cannot be forced)"])
+        return
+    if row.get("status") == "In progress":
+        # The board is the double-dispatch guard: flipping an In-progress
+        # issue back to Ready would let this pass claim work already in
+        # flight. Never forceable.
+        deps.notifier.send("status", lines=[
+            f"#{issue} is already In progress — work on it is already in "
+            "flight (in-progress issues cannot be forced)"])
+        return
+    problems = []
+    if row.get("status") != "Ready":
+        problems.append(f"status is {row.get('status') or 'unset'}, not Ready")
+    if "auto" not in row.get("labels", []):
+        problems.append("missing the auto label")
+    if problems and not force:
+        deps.notifier.send("status", lines=[
+            f"#{issue} is not eligible: " + "; ".join(problems) + ".",
+            f"Send /next {issue} force to make it eligible and enqueue."])
+        return
+    # Boost FIRST: it is the mutation most likely to fail (the Boost field may
+    # not exist on the board yet), and failing before status/label keeps a
+    # failed /next a clean no-op rather than a half-eligible issue.
+    deps.github.set_boost(target, issue, NEXT_BOOST)
+    if row.get("status") != "Ready":
+        deps.github.set_status(target, issue, target.status_ready_option_id)
+    if "auto" not in row.get("labels", []):
+        deps.github.add_label(target, issue, "auto")
+    deps.notifier.send("status", lines=[
+        f"#{issue} enqueued at the head (boost {NEXT_BOOST})"])
 
 
 def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
@@ -76,6 +217,26 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
             else:
                 deps.notifier.send("status",
                                    lines=[f"#{ev.issue} is not parked"])
+        elif isinstance(ev, Command) and ev.name == "queue":
+            try:
+                deps.notifier.send("queue", lines=_queue_lines(cfg, deps))
+            except (subprocess.CalledProcessError, OSError,
+                    LookupError, ValueError) as exc:
+                deps.notifier.send("status", lines=[f"/queue failed: {exc}"])
+        elif isinstance(ev, Command) and ev.name == "boost":
+            try:
+                _handle_boost(cfg, deps, ev.issue, ev.amount)
+            except (subprocess.CalledProcessError, OSError,
+                    LookupError, ValueError) as exc:
+                deps.notifier.send("status",
+                                   lines=[f"#{ev.issue} boost failed: {exc}"])
+        elif isinstance(ev, Command) and ev.name == "next":
+            try:
+                _handle_next(cfg, deps, ev.issue, ev.force)
+            except (subprocess.CalledProcessError, OSError,
+                    LookupError, ValueError) as exc:
+                deps.notifier.send("status",
+                                   lines=[f"#{ev.issue} next failed: {exc}"])
         elif isinstance(ev, Reply):
             match = [t for t in human_parked if t.park_msg_id == ev.reply_to_msg_id]
             if match:
@@ -109,13 +270,15 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         spec_path=spec_path,
     )
     prompt = render_stage_prompt(stage, ctx)
+    model = _model_for(cfg, target, task, stage)
     # Reset the signal BEFORE spawning, or the next pass re-reads the
     # previous stage's `done` and advances again.
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": stage.value, "status": "working"}))
-    deps.sessions.spawn_stage(task.issue, task.worktree, prompt, stage.value)
+        {"stage": stage.value, "status": "working", "model": model}))
+    _log_model(task.worktree, stage, model)
+    deps.sessions.spawn_stage(task.issue, task.worktree, prompt, stage.value, model)
     task = replace(task, stage=stage, updated_at=_now())
     save(cfg.state_dir, task)
     return task
@@ -187,22 +350,24 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             return
+        model = _model_for(cfg, target, task, task.stage)
         agent_dir = Path(task.worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         # Rewrite stage.json BEFORE resuming, or the next pass re-reads
         # blocked/awaiting-ci and re-parks the freshly resumed session.
         (agent_dir / "stage.json").write_text(json.dumps(
-            {"stage": task.stage.value, "status": "working"}))
+            {"stage": task.stage.value, "status": "working", "model": model}))
+        _log_model(task.worktree, task.stage, model)
         if task.hold_for_attach:
             deps.sessions.resume(task.issue, task.worktree,
                                  "The operator is attaching to talk to you "
-                                 "directly. Wait for their input.")
+                                 "directly. Wait for their input.", model)
             deps.notifier.send("resumed_for_attach", issue=task.issue,
                                title=task.title, url=_url(target, task.issue),
                                note="")
         else:
             deps.sessions.resume(task.issue, task.worktree,
-                                 task.pending_reply or "Continue.")
+                                 task.pending_reply or "Continue.", model)
         save(cfg.state_dir, replace(task, park="", pending_reply="",
                                     hold_for_attach=False, park_msg_id=0,
                                     updated_at=_now()))
@@ -260,7 +425,8 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         task = TaskState(issue=cand.number, target=target.name,
                          stage=Stage.QUEUED, slot=slot, worktree=wt,
                          branch=f"agent/task-{cand.number}",
-                         title=cand.title, updated_at=_now())
+                         title=cand.title, updated_at=_now(),
+                         effort=cand.effort, labels=cand.labels)
         save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
         try:
             deps.github.claim(target, cand)  # irreversible board mutation — last

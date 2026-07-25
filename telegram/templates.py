@@ -23,4 +23,6 @@ def render(template: str, **ctx) -> str:
         return "📋 agent-ops daily digest\n" + "\n".join(ctx["lines"])
     if template == "status":
         return "📟 agent-ops status\n" + "\n".join(ctx["lines"])
+    if template == "queue":
+        return "📊 agent-ops queue\n" + "\n".join(ctx["lines"])
     return _TEMPLATES[template].format(**ctx)

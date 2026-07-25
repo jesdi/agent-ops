@@ -27,13 +27,23 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "--continue 'hi'")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
+                                 "--continue 'hi'")
     assert cmd.startswith("podman run --rm -it --name task-42 ")
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd and f"-w {wt}" in cmd
     assert f"-v {clone}:{clone}" in cmd
     assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
-    assert cmd.endswith("claude --permission-mode acceptEdits --continue 'hi'")
+    assert cmd.endswith(
+        "claude --permission-mode acceptEdits --model claude-fable-5 --continue 'hi'")
+
+
+def test_session_cmd_carries_the_model_flag(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    wt, _ = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-sonnet-4-6", "P")
+    assert "--model claude-sonnet-4-6" in cmd
 
 
 def test_setup_cmd_is_one_shot_with_cache_volumes(tmp_path: Path, monkeypatch):
