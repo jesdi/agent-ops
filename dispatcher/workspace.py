@@ -153,6 +153,29 @@ def _worktree_health_issue(wt: str, branch: str) -> str | None:
     return None
 
 
+def _seed_claude_state(wt: str) -> None:
+    """Merge-write claude-home/.claude.json so stage containers never stall
+    on an interactive dialog nobody is attached to answer: complete
+    onboarding once, and pre-trust this worktree (the folder-trust dialog
+    is per-directory, and every task gets a fresh worktree path).
+    .claude.json is machine state — only these keys are asserted, the rest
+    is preserved; an unreadable file starts fresh rather than failing
+    provisioning."""
+    home = Path(containers._state_dir()) / "claude-home"
+    home.mkdir(parents=True, exist_ok=True)
+    p = home / ".claude.json"
+    try:
+        data = json.loads(p.read_text()) if p.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        data = {}
+    data["hasCompletedOnboarding"] = True
+    data.setdefault("projects", {}).setdefault(wt, {})[
+        "hasTrustDialogAccepted"] = True
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(p)
+
+
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     wt = str(Path(target.worktrees_path) / f"task-{issue}")
     branch = f"agent/task-{issue}"
@@ -226,4 +249,6 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
             }]
         }
     }, indent=2))
+
+    _seed_claude_state(wt)
     return wt
