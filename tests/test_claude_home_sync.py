@@ -234,6 +234,30 @@ def test_declaration_change_updates_latest_plugins(rig):
     assert "plugin update superpowers@claude-plugins-official" in log
 
 
+def test_marketplace_added_before_first_install(rig):
+    # A fresh claude-home has no marketplaces (the official one is only
+    # auto-added by interactive first-run, which never happens on the box);
+    # `plugin install name@marketplace` then fails with "not found in
+    # marketplace". The sync must ensure the marketplace before installing.
+    rig.plugin_list.write_text("[]")
+    r = run_sync(rig)
+    assert r.returncode == 0, r.stderr
+    lines = calls(rig).splitlines()
+    adds = [i for i, l in enumerate(lines)
+            if "plugin marketplace add anthropics/claude-plugins-official" in l]
+    installs = [i for i, l in enumerate(lines) if "plugin install" in l]
+    assert adds, "expected a marketplace add before installing"
+    assert installs and adds[0] < installs[0]
+
+
+def test_marketplace_untouched_when_nothing_to_install(rig):
+    run_sync(rig)                       # converge + stamp
+    rig.calls.write_text("")
+    r = run_sync(rig)                   # steady state: list-only pass
+    assert r.returncode == 0, r.stderr
+    assert "plugin marketplace" not in calls(rig)
+
+
 def test_stamp_written(rig):
     r = run_sync(rig)
     assert r.returncode == 0, r.stderr
