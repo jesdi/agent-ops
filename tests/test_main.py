@@ -1406,3 +1406,54 @@ def test_dry_run_does_not_drain_intents(tmp_path, monkeypatch):
     intents_mod.write_intent(c.state_dir, "resume", 42, {}, "op", 1)
     main.run_pass(c, deps(sess=FakeSessions()), dry_run=True)
     assert len(intents_mod.list_intents(c.state_dir)) == 1  # untouched
+
+
+from dispatcher.state import clear_attached, mark_attached
+
+
+def test_attached_marker_holds_resume(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE, pending_reply="go")
+    mark_attached(c.state_dir, 42)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.resumed == []
+    assert load(c.state_dir, 42).park == PARK_WAKE  # still queued to wake
+
+
+def test_attached_marker_holds_drive_no_crash_no_park(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    # Session dead AND a blocked signal: without the marker this pass would
+    # crash-handle or park. With it: nothing happens.
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "blocked", "note": "q"}))
+    mark_attached(c.state_dir, 42)
+    gh = FakeGitHub()
+    sess = FakeSessions(alive=set())
+    d = deps(gh, sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.stage is Stage.IMPLEMENT and t.park == ""  # untouched
+    assert gh.released == [] and sess.ended == []
+    assert "session_crashed" not in d.notifier.sent
+    assert "parked_question" not in d.notifier.sent
+
+
+def test_clearing_attached_marker_releases_the_hold(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE, pending_reply="go")
+    mark_attached(c.state_dir, 42)
+    sess = FakeSessions()
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    assert sess.resumed == []
+    clear_attached(c.state_dir, 42)
+    main.run_pass(c, d)
+    assert sess.resumed == [(42, "go", "claude-opus-4-8")]

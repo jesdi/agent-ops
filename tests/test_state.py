@@ -185,3 +185,23 @@ def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
     loaded = load(tmp_path, 55)
     assert loaded.effort is None
     assert loaded.labels == ()
+
+
+from dispatcher.state import clear_attached, has_attached, mark_attached
+
+
+def test_attached_marker_roundtrip(tmp_path):
+    assert not has_attached(tmp_path, 42)
+    mark_attached(tmp_path, 42)
+    assert has_attached(tmp_path, 42)
+    assert (tmp_path / "attached-42").exists()
+    assert not has_attached(tmp_path, 43)  # per-issue
+    clear_attached(tmp_path, 42)
+    assert not has_attached(tmp_path, 42)
+    clear_attached(tmp_path, 42)  # idempotent
+
+
+def test_mark_attached_creates_state_dir(tmp_path):
+    sd = tmp_path / "fresh"
+    mark_attached(sd, 7)
+    assert has_attached(sd, 7)

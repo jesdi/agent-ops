@@ -27,8 +27,8 @@ from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_WAKE,
                               Stage, TaskState, active, allocate_slot,
-                              clear_waiting, has_waiting, load, load_all,
-                              read_stage_signal, save)
+                              clear_waiting, has_attached, has_waiting, load,
+                              load_all, read_stage_signal, save)
 from dispatcher.workspace import create_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
@@ -322,6 +322,8 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         key=lambda t: t.updated_at,
     )
     for task in woken:
+        if has_attached(cfg.state_dir, task.issue):
+            continue  # a human is typing in this session — do not resume over them
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             return
@@ -353,6 +355,8 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 budget_ok: bool, dry_run: bool = False) -> None:
+    if has_attached(cfg.state_dir, task.issue):
+        return  # held for a live human attach: no park, no reap, no spawn
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.issue)
     waiting = has_waiting(cfg.state_dir, task.issue)
