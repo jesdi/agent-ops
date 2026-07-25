@@ -10,13 +10,27 @@ from dispatcher import failures
 from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
+from dispatcher.models import parse_policy
 from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_WAKE, Stage, TaskState,
                                clear_waiting, has_waiting, load, mark_waiting, save)
+
+POLICY = parse_policy({
+    "default": "claude-opus-4-8",
+    "rules": [
+        {"name": "trivial-backend",
+         "when": {"effort": {"max": 1}, "labels_exclude": ["frontend"]},
+         "use": "claude-sonnet-4-6"},
+        {"name": "frontend-substantial",
+         "when": {"effort": {"min": 2}, "labels_include": ["frontend"]},
+         "use": {"spec": "claude-fable-5", "plan": "claude-fable-5",
+                 "implement": "claude-opus-4-8"}},
+    ],
+})
 
 
 class FakeGitHub:
     def __init__(self, cands=(), run_conclusion="", run_status_raises=False,
-                 issue_states=None, issue_state_raises=False):
+                 issue_states=None, issue_state_raises=False, rows=()):
         self.cands = list(cands)
         self.claimed, self.released = [], []
         self.run_conclusion = run_conclusion  # "" = still running
@@ -26,6 +40,26 @@ class FakeGitHub:
         self.issue_states = issue_states or {}  # (repo, number) -> state
         self.issue_state_raises = issue_state_raises
         self.blocked_by = []                  # (issue, blocker)
+        self.rows = list(rows)
+        self.boosts, self.labeled, self.statused = [], [], []
+        self.boost_raises = False
+        self.lookup_raises = False
+
+    def rank_rows(self, target):
+        if self.boost_raises:
+            raise subprocess.CalledProcessError(1, ["rank"])
+        return self.rows
+
+    def set_boost(self, target, issue, value):
+        if self.lookup_raises:
+            raise LookupError(f"issue {issue} not found in project items")
+        self.boosts.append((issue, value))
+
+    def add_label(self, target, issue, label):
+        self.labeled.append((issue, label))
+
+    def set_status(self, target, issue, option_id):
+        self.statused.append((issue, option_id))
 
     def candidates(self, target):
         return self.cands
@@ -66,11 +100,11 @@ class FakeSessions:
     def is_alive(self, issue):
         return issue in self.alive_set
 
-    def spawn_stage(self, issue, worktree, prompt, stage_name):
-        self.spawned.append((issue, stage_name))
+    def spawn_stage(self, issue, worktree, prompt, stage_name, model):
+        self.spawned.append((issue, stage_name, model))
 
-    def resume(self, issue, worktree, message):
-        self.resumed.append((issue, message))
+    def resume(self, issue, worktree, message, model):
+        self.resumed.append((issue, message, model))
 
     def capture_tail(self, issue, lines=25):
         return "…pane tail…"
@@ -82,9 +116,13 @@ class FakeSessions:
 class FakeNotifier:
     def __init__(self):
         self.sent = []
+        self.contexts = []
+        self.calls = []  # (template, ctx) — parallel record; sent stays template-only
 
     def send(self, template, **ctx):
         self.sent.append(template)
+        self.contexts.append((template, ctx))
+        self.calls.append((template, ctx))
         return 77
 
 
@@ -104,6 +142,7 @@ def cfg(tmp_path: Path) -> Config:
             status_in_progress_option_id="I",
         )],
         infra_repo="jesdi/agent-ops",
+        models=POLICY,
     )
 
 
@@ -111,6 +150,13 @@ def patch_usage(monkeypatch, util=0.2):
     monkeypatch.setattr(
         main, "fetch_usage",
         lambda state_dir: UsageSnapshot(util, 120.0, "oauth"))
+
+
+def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
+        score=1.0, boost=0):
+    return {"number": number, "title": title, "url": f"u{number}",
+            "status": status, "labels": list(labels), "blocked": blocked,
+            "score": score, "boost": boost}
 
 
 def patch_workspace(monkeypatch, tmp_path):
@@ -151,13 +197,25 @@ def test_new_candidate_claimed_and_spec_spawned(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess))
 
     assert gh.claimed == [42]
-    assert sess.spawned == [(42, "spec")]
+    assert sess.spawned == [(42, "spec", "claude-opus-4-8")]
     ts = load(c.state_dir, 42)
     assert ts.stage is Stage.SPEC and ts.slot == 0 and ts.title == "Add widget"
     sig = json.loads(
         (Path(c.targets[0].worktrees_path) / "task-42" / ".agent" / "stage.json")
         .read_text())
-    assert sig == {"stage": "spec", "status": "working"}
+    assert sig == {"stage": "spec", "status": "working", "model": "claude-opus-4-8"}
+
+
+def test_claim_snapshots_effort_and_labels(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=3,
+                               labels=("auto", "frontend"))])
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(gh))
+    t = load(c.state_dir, 42)
+    assert t.effort == 3
+    assert t.labels == ("auto", "frontend")
 
 
 def test_capacity_blocks_new_claims(tmp_path, monkeypatch):
@@ -217,7 +275,7 @@ def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
                                 title="t", updated_at="2026-07-14T00:00:00+00:00"))
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
-    assert sess.spawned == [(42, "plan")]
+    assert sess.spawned == [(42, "plan", "claude-opus-4-8")]
     assert load(c.state_dir, 42).stage is Stage.PLAN
 
 
@@ -461,7 +519,7 @@ def test_woken_task_resumes_before_new_claims(tmp_path, monkeypatch):
     gh = FakeGitHub([Candidate(99, "fresh", "u")])
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
-    assert sess.resumed == [(42, "use oauth")]
+    assert sess.resumed == [(42, "use oauth", "claude-opus-4-8")]
     assert gh.claimed == []  # head-of-queue: resume consumed the only slot
     t = load(c.state_dir, 42)
     assert t.park == "" and t.pending_reply == "" and t.park_msg_id == 0
@@ -624,3 +682,445 @@ def test_run_status_error_does_not_abort_pass(tmp_path, monkeypatch):
     assert t.park == PARK_CI and t.ci_run_id == 4242
     # The rest of the pass continued: the fresh candidate was claimed
     assert gh.claimed == [99]
+
+
+def test_queue_command_sends_ranked_view(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(2, title="B", score=5.0, boost=1),
+                          row(1, title="A", score=1.0),
+                          row(3, title="C", score=None),
+                          row(4, title="D", blocked=True),
+                          row(5, title="E", status="In progress")])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="queue")])
+    main.run_pass(cfg(tmp_path), d)
+    template, ctx = d.notifier.contexts[0]
+    assert template == "queue"
+    lines = ctx["lines"]
+    assert lines[0] == "1. ↑1 [5.00] #2 B"
+    assert lines[1] == "2. [1.00] #1 A"
+    assert lines[2] == "3. [—] #3 C"
+    assert "In progress: #5" in lines
+    assert "Blocked: #4" in lines
+
+
+def test_boost_command_adjusts_and_confirms(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, boost=2)])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=7, amount=-3)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [(7, -1)]
+    assert any("#7 boost 2 → -1" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_boost_unknown_issue_replies_not_on_board(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=99, amount=1)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == []
+    assert any("#99 is not on the board" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_next_eligible_sets_head_boost(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [(7, 99)]
+    assert gh.statused == [] and gh.labeled == []
+
+
+def test_next_ineligible_refuses_with_reason_and_hint(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="Backlog", labels=())])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == []
+    joined = " ".join(l for _, ctx in d.notifier.contexts
+                      for l in ctx.get("lines", []))
+    assert "not eligible" in joined and "Backlog" in joined
+    assert "auto" in joined and "/next 7 force" in joined
+
+
+def test_next_force_flips_status_and_label_then_boosts(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="Backlog", labels=())])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.statused == [(7, "R")]   # status_ready_option_id in cfg() is "R"
+    assert gh.labeled == [(7, "auto")]
+    assert gh.boosts == [(7, 99)]
+
+
+def test_next_blocked_never_forced(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, blocked=True)])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [] and gh.statused == [] and gh.labeled == []
+    assert any("blocked" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_boost_ambiguous_across_targets_asks_to_disambiguate(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    c = dc_replace(c, targets=[c.targets[0],
+                               dc_replace(c.targets[0], name="other")])
+    gh = FakeGitHub(rows=[row(7)])   # rank_rows returns #7 for BOTH targets
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=7, amount=1)])
+    main.run_pass(c, d)
+    assert gh.boosts == []
+    assert any("multiple targets" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_gh_failure_reports_error_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    gh.boost_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=7, amount=1)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_lookup_error_boost_reports_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    gh.lookup_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="boost", issue=7, amount=1)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("boost failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_lookup_error_next_reports_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7)])
+    gh.lookup_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("next failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_value_error_queue_reports_and_pass_survives(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+
+    def bad_rank_rows(target):
+        raise ValueError("malformed JSON from rank output")
+
+    gh = FakeGitHub(rows=[row(7)])
+    monkeypatch.setattr(gh, "rank_rows", bad_rank_rows)
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="queue")])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("/queue failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_next_in_progress_refused_without_force_hint(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="In progress")])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [] and gh.statused == [] and gh.labeled == []
+    joined = " ".join(l for _, ctx in d.notifier.contexts
+                      for l in ctx.get("lines", []))
+    assert "In progress" in joined
+    assert "force" not in joined.replace("cannot be forced", "")
+
+
+def test_next_in_progress_never_forced(tmp_path, monkeypatch):
+    """The board is the double-dispatch guard: /next force must never flip a
+    claimed issue back to Ready."""
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="In progress", labels=())])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
+    main.run_pass(cfg(tmp_path), d)
+    assert gh.boosts == [] and gh.statused == [] and gh.labeled == []
+    assert any("In progress" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_next_force_boost_failure_leaves_board_unmutated(tmp_path, monkeypatch):
+    """set_boost runs first, so a Boost-field failure is a clean no-op."""
+    patch_usage(monkeypatch)
+    gh = FakeGitHub(rows=[row(7, status="Backlog", labels=())])
+    gh.lookup_raises = True
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert gh.boosts == [] and gh.statused == [] and gh.labeled == []
+    assert any("#7 next failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_queue_shows_demote_marker_and_truncates(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    rows = [row(1, title="A", score=9.0, boost=-3)]
+    rows += [row(n, title=f"T{n}", score=1.0) for n in range(2, 14)]
+    d = deps(FakeGitHub(rows=rows))
+    patch_events(monkeypatch, [Command(name="queue")])
+    main.run_pass(cfg(tmp_path), d)
+    lines = d.notifier.contexts[0][1]["lines"]
+    assert lines[0] == "1. ↓3 [9.00] #1 A"
+    assert len([l for l in lines if l[0].isdigit()]) == 10
+    assert "… 3 more" in lines
+
+
+def test_queue_labels_each_target_and_reports_empty(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    c = dc_replace(c, targets=[c.targets[0],
+                               dc_replace(c.targets[0], name="other")])
+    d = deps(FakeGitHub(rows=[]))
+    patch_events(monkeypatch, [Command(name="queue")])
+    main.run_pass(c, d)
+    lines = d.notifier.contexts[0][1]["lines"]
+    assert lines == ["[portfolio_eval]", "(queue empty)",
+                     "[other]", "(queue empty)"]
+
+
+def valid_spec(wt: Path) -> Path:
+    """A spec draft that satisfies check_spec (title + 2 H2s + >=1500B)."""
+    p = wt / "spec.md"
+    p.write_text("# t — design\n\n## Problem\n\n" + "x " * 400
+                 + "\n\n## Decisions\n\n" + "y " * 400)
+    return p
+
+
+def test_spawn_uses_the_rule_matched_model(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
+    sess = FakeSessions()
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(gh, sess))
+    assert sess.spawned == [(42, "spec", "claude-sonnet-4-6")]
+
+
+def test_unmatched_task_spawns_on_the_default_model(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=None, labels=("auto",))])
+    sess = FakeSessions()
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(gh, sess))
+    assert sess.spawned == [(42, "spec", "claude-opus-4-8")]
+
+
+def test_frontend_task_spawns_spec_on_fable(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=3,
+                               labels=("auto", "frontend"))])
+    sess = FakeSessions()
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(gh, sess))
+    assert sess.spawned == [(42, "spec", "claude-fable-5")]
+
+
+def test_frontend_task_spawns_plan_on_fable_and_implement_on_opus(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+                   effort=3, labels=("auto", "frontend"))
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    assert sess.spawned == [(42, "plan", "claude-fable-5")]
+
+    # …and the implement stage of the same task drops to opus
+    t = load(c.state_dir, 42)
+    assert main._model_for(c, c.targets[0], t, Stage.IMPLEMENT) == "claude-opus-4-8"
+
+
+def test_resume_uses_the_model_for_the_parked_stage(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT, park=PARK_WAKE,
+              pending_reply="carry on", effort=1, labels=("auto",))
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.resumed == [(42, "carry on", "claude-sonnet-4-6")]
+
+
+def test_spawn_writes_model_into_stage_json_and_models_log(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(gh))
+    agent_dir = Path(c.targets[0].worktrees_path) / "task-42" / ".agent"
+    sig = json.loads((agent_dir / "stage.json").read_text())
+    assert sig["model"] == "claude-sonnet-4-6"
+    log = (agent_dir / "models.log").read_text().strip().splitlines()
+    assert len(log) == 1
+    assert log[0].endswith(" spec claude-sonnet-4-6")
+
+
+def test_models_log_appends_one_line_per_spawn(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+                   effort=1, labels=("auto",))
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    log = (wt / ".agent" / "models.log").read_text().strip().splitlines()
+    assert len(log) == 1
+    assert log[0].endswith(" plan claude-sonnet-4-6")
+
+
+def test_status_lines_carry_the_resolved_model(tmp_path):
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
+        worktree="/wt", branch="agent/task-42", title="Fix rounding",
+        updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",)))
+    save(c.state_dir, TaskState(
+        issue=43, target="portfolio_eval", stage=Stage.SPEC, slot=1,
+        worktree="/wt2", branch="agent/task-43", title="New chart",
+        updated_at="2026-07-24T00:00:00+00:00", effort=3,
+        labels=("auto", "frontend")))
+    lines = main._status_lines(c)
+    assert lines[0] == "#42 Fix rounding — implement [claude-sonnet-4-6] (slot 0)"
+    assert lines[1] == "#43 New chart — spec [claude-fable-5] (slot 1)"
+
+
+def test_status_line_for_task_parked_at_spec_review_shows_the_spec_model(tmp_path):
+    """Finding A: a frontend task lingering at the spec-review gate is still
+    running its SPEC session — /status must show that stage's model, not
+    fall through the policy default because 'awaiting-spec-review' matches
+    no `use:` key."""
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=42, target="portfolio_eval", stage=Stage.AWAITING_SPEC_REVIEW,
+        slot=0, worktree="/wt", branch="agent/task-42", title="New chart",
+        updated_at="2026-07-24T00:00:00+00:00", effort=3,
+        labels=("auto", "frontend")))
+    lines = main._status_lines(c)
+    assert lines[0] == "#42 New chart — awaiting-spec-review [claude-fable-5] (slot 0)"
+
+
+def test_resume_at_spec_review_gate_uses_the_spec_model(tmp_path, monkeypatch):
+    """Finding A: resuming a task parked at the spec-review gate must run the
+    same model as the spec session that's actually alive, not the policy
+    default that `stage.value` ('awaiting-spec-review') falls through to."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_WAKE,
+              pending_reply="carry on", effort=3, labels=("auto", "frontend"))
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.resumed == [(42, "carry on", "claude-fable-5")]
+
+
+def test_status_lines_survive_a_task_whose_target_is_gone(tmp_path):
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=44, target="retired_target", stage=Stage.PLAN, slot=0,
+        worktree="/wt", branch="agent/task-44", title="Orphan",
+        updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",)))
+    lines = main._status_lines(c)
+    assert "[claude-sonnet-4-6]" in lines[0]   # falls back to the global policy
+
+
+def test_orphaned_task_at_the_spec_review_gate_still_maps_to_the_spec_model(
+        tmp_path):
+    # The global-policy fallback must go through the same stage mapping as the
+    # normal path, or a frontend task parked at the gate misreports as opus.
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=45, target="retired_target", stage=Stage.AWAITING_SPEC_REVIEW,
+        slot=0, worktree="/wt", branch="agent/task-45", title="Orphan chart",
+        updated_at="2026-07-24T00:00:00+00:00", effort=3,
+        labels=("auto", "frontend")))
+    lines = main._status_lines(c)
+    assert lines[0] == ("#45 Orphan chart — awaiting-spec-review "
+                        "[claude-fable-5] (slot 0)")
+
+
+def test_status_line_for_a_parked_task_puts_model_before_park(tmp_path):
+    """Finding C: the format is
+    '#{issue} {title} — {stage} [{model}] [{park}] (slot {slot})' — the
+    [model] segment must come before the pre-existing [park] segment."""
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
+        worktree="/wt", branch="agent/task-42", title="Fix rounding",
+        updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",),
+        park=PARK_HUMAN))
+    lines = main._status_lines(c)
+    assert lines[0] == ("#42 Fix rounding — implement [claude-sonnet-4-6] "
+                        f"[{PARK_HUMAN}] (slot 0)")
+
+
+def test_status_reply_content_carries_the_status_lines(tmp_path, monkeypatch):
+    """Finding C: FakeNotifier previously recorded only the template name, so
+    no test could assert on what a /status reply actually contains."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_CI, ci_run_id=7)
+    patch_events(monkeypatch, [Command(name="status")])
+    d = deps()
+    main.run_pass(c, d)
+    template, ctx = [call for call in d.notifier.calls if call[0] == "status"][-1]
+    assert any(line.startswith("#42 ") for line in ctx["lines"])
+
+
+def test_digest_content_carries_the_status_lines(tmp_path):
+    """Finding C: the digest's payload was likewise never asserted on."""
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+                                stage=Stage.AWAITING_SPEC_REVIEW, slot=0,
+                                worktree="/x", branch="b", title="t",
+                                updated_at="2026-07-14T00:00:00+00:00"))
+    d = deps()
+    main.send_digest(c, d)
+    template, ctx = d.notifier.calls[-1]
+    assert template == "daily_digest"
+    assert any(line.startswith("#42 ") for line in ctx["lines"])
+
+
+def test_target_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
+    """Finding D: a per-target `models:` override was only ever verified in
+    isolation against `policy_for` — never end-to-end through `_spawn_stage`.
+    The global POLICY's `trivial-backend` rule would resolve effort=1,
+    no-frontend to claude-sonnet-4-6; the target's OWN policy (no rules)
+    must win instead and resolve to its own default."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    target_policy = parse_policy({"default": "claude-fable-5", "rules": []})
+    c = dc_replace(c, targets=[dc_replace(c.targets[0], models=target_policy)])
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    assert sess.spawned == [(42, "spec", "claude-fable-5")]

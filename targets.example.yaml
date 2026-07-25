@@ -8,6 +8,28 @@ racing_minutes: 30
 racing_threshold: 0.95
 session_memory: 2g   # capacity-2 experiment: 1500m
 session_cpus: "2"
+# Which model runs which stage. First matching rule wins; anything unmatched
+# gets `default`. An unset Effort on the board never matches an `effort:`
+# constraint (fail closed to `default`). A target may carry its own `models:`
+# block, which REPLACES this one for that target — rule lists are not merged.
+models:
+  default: claude-opus-4-8
+  rules:
+    - name: trivial-backend
+      when:
+        effort: {max: 1}
+        labels_exclude: [frontend]
+      use: claude-sonnet-4-6
+
+    - name: frontend-substantial
+      when:
+        effort: {min: 2}
+        labels_include: [frontend]
+      use:
+        spec:      claude-fable-5
+        plan:      claude-fable-5
+        implement: claude-opus-4-8
+
 targets:
   - name: portfolio_eval
     repo: jesdi/portfolio_eval
@@ -25,3 +47,4 @@ targets:
     status_field_id: PVTSSF_xxx
     status_ready_option_id: abc123
     status_in_progress_option_id: def456
+    boost_field_id: PVTF_xxx

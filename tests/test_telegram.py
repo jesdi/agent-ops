@@ -67,3 +67,8 @@ def test_task_failed_links_the_filed_issue():
                  note="provisioning")
     assert msg == ("🔥 #192 provisioning failed: Add widget — provisioning\n"
                    "https://github.com/jesdi/agent-ops/issues/501")
+
+
+def test_queue_template_joins_lines():
+    text = render("queue", lines=["1. [5.00] #2 B", "Blocked: #4"])
+    assert text == "📊 agent-ops queue\n1. [5.00] #2 B\nBlocked: #4"

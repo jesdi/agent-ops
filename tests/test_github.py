@@ -1,5 +1,6 @@
 import json
 import re
+from dataclasses import replace as dc_replace
 
 import dispatcher.github as github
 from dispatcher.config import Target
@@ -16,12 +17,34 @@ TARGET = Target(
 )
 
 RANKED = json.dumps([
-    {"number": 7, "title": "A", "url": "u7", "labels": ["auto"], "status": "Ready", "blocked": False},
-    {"number": 8, "title": "B", "url": "u8", "labels": [], "status": "Ready", "blocked": False},
-    {"number": 9, "title": "C", "url": "u9", "labels": ["auto"], "status": "Backlog", "blocked": False},
-    {"number": 10, "title": "D", "url": "u10", "labels": ["auto"], "status": "Ready", "blocked": True},
-    {"number": 11, "title": "E", "url": "u11", "labels": ["auto"], "status": "Ready", "blocked": False},
+    {"number": 7, "title": "A", "url": "u7", "labels": ["auto"], "status": "Ready",
+     "blocked": False, "effort": 1},
+    {"number": 8, "title": "B", "url": "u8", "labels": [], "status": "Ready",
+     "blocked": False, "effort": 2},
+    {"number": 9, "title": "C", "url": "u9", "labels": ["auto"], "status": "Backlog",
+     "blocked": False, "effort": 1},
+    {"number": 10, "title": "D", "url": "u10", "labels": ["auto"], "status": "Ready",
+     "blocked": True, "effort": 1},
+    {"number": 11, "title": "E", "url": "u11", "labels": ["auto", "frontend"],
+     "status": "Ready", "blocked": False, "effort": 3},
 ])
+
+
+def test_candidates_carry_effort_and_labels(monkeypatch):
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
+    got = {c.number: c for c in github.GitHubClient().candidates(TARGET)}
+    assert got[7].effort == 1
+    assert got[7].labels == ("auto",)
+    assert got[11].effort == 3
+    assert got[11].labels == ("auto", "frontend")
+
+
+def test_candidates_tolerate_missing_effort(monkeypatch):
+    unscored = json.dumps([{"number": 12, "title": "F", "url": "u12",
+                            "labels": ["auto"], "status": "Ready", "blocked": False}])
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None: unscored)
+    got = github.GitHubClient().candidates(TARGET)
+    assert got[0].effort is None
 
 
 def test_candidates_filters_and_keeps_rank_order(monkeypatch):
@@ -214,6 +237,71 @@ def test_issue_state_parses_json(monkeypatch):
     assert github.GitHubClient().issue_state("jesdi/agent-ops", 501) == "CLOSED"
 
 
+BOOST_TARGET = dc_replace(TARGET, boost_field_id="FB")
+
+
+def test_rank_rows_normalizes_missing_boost(monkeypatch):
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
+    rows = github.GitHubClient().rank_rows(TARGET)
+    assert [r["number"] for r in rows] == [7, 8, 9, 10, 11]
+    assert all(r["boost"] == 0 for r in rows)
+
+
+def test_rank_rows_keeps_boost_when_present(monkeypatch):
+    ranked = json.dumps([{"number": 7, "title": "A", "url": "u7",
+                          "labels": ["auto"], "status": "Ready",
+                          "blocked": False, "score": 2.0, "boost": 99}])
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None: ranked)
+    assert github.GitHubClient().rank_rows(TARGET)[0]["boost"] == 99
+
+
+def test_set_boost_edits_number_field_with_project_token(monkeypatch):
+    monkeypatch.setenv("GH_PROJECT_TOKEN", "classic-tok")
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append((args, env))
+        joined = " ".join(args)
+        if "project view" in joined:
+            return json.dumps({"id": "PROJ_NODE"})
+        if "item-list" in joined:
+            return json.dumps({"items": [{"id": "ITEM7", "content": {"number": 7}}]})
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    github.GitHubClient().set_boost(BOOST_TARGET, 7, -2)
+    edit, env = next((a, e) for a, e in calls if "item-edit" in a)
+    assert "ITEM7" in edit and "FB" in edit
+    assert edit[edit.index("--number") + 1] == "-2"
+    assert env["GH_TOKEN"] == "classic-tok"
+
+
+def test_add_label_uses_repo_auth(monkeypatch):
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append((args, env))
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    github.GitHubClient().add_label(TARGET, 7, "auto")
+    args, env = calls[0]
+    assert args[:4] == ["gh", "issue", "edit", "7"]
+    assert "--add-label" in args and "auto" in args
+    assert env is None  # stored fine-grained auth, not the project token
+
+
+def test_boost_dry_run_mutates_nothing(monkeypatch, capsys):
+    def fake_run(args, cwd=None, env=None):
+        raise AssertionError(f"dry-run must not execute: {args}")
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    cli = github.GitHubClient(dry_run=True)
+    cli.set_boost(BOOST_TARGET, 7, 99)
+    cli.add_label(TARGET, 7, "auto")
+    assert "[dry-run]" in capsys.readouterr().out
+
+
 def test_create_issue_and_issue_state_dry_run(monkeypatch, capsys):
     def fake_run(args, cwd=None, env=None):
         raise AssertionError(f"dry-run must not execute: {args}")
@@ -282,3 +370,18 @@ def test_append_blocked_by_dry_run(monkeypatch, capsys):
         lambda a, cwd=None, env=None: (_ for _ in ()).throw(AssertionError))
     github.GitHubClient(dry_run=True).append_blocked_by(TARGET, 42, 77)
     assert "[dry-run]" in capsys.readouterr().out
+
+
+def test_rank_rows_casts_string_boost_to_int(monkeypatch):
+    ranked = json.dumps([
+        {"number": 7, "title": "A", "url": "u7", "labels": ["auto"],
+         "status": "Ready", "blocked": False, "score": 2.0, "boost": "5"},
+        {"number": 8, "title": "B", "url": "u8", "labels": ["auto"],
+         "status": "Ready", "blocked": False, "score": 1.0, "boost": ""},
+        {"number": 9, "title": "C", "url": "u9", "labels": ["auto"],
+         "status": "Ready", "blocked": False, "score": 1.0, "boost": None},
+    ])
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None: ranked)
+    rows = github.GitHubClient().rank_rows(TARGET)
+    assert [r["boost"] for r in rows] == [5, 0, 0]
+    assert all(isinstance(r["boost"], int) for r in rows)
