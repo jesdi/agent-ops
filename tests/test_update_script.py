@@ -247,3 +247,19 @@ def test_unrelated_code_change_does_not_restart_web(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
     assert "agent-ops-web" not in calls(box)
+
+
+def test_dep_and_web_change_installs_before_restart(box):
+    (box.origin / "pyproject.toml").write_text(
+        "[project]\nname = 'agent-ops'\ndependencies = ['pyyaml']\n")
+    (box.origin / "web").mkdir()
+    (box.origin / "web" / "app.py").write_text("x = 1\n")
+    commit_all(box.origin, "dep and web change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    log = calls(box)
+    pip_pos = log.find("pip install")
+    restart_pos = log.find("try-restart agent-ops-web.service")
+    assert pip_pos != -1, "pip install not called"
+    assert restart_pos != -1, "try-restart not called"
+    assert pip_pos < restart_pos, "pip install must precede try-restart"

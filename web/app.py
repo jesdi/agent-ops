@@ -27,14 +27,11 @@ class SPAStaticFiles(StaticFiles):
 
     async def get_response(self, path, scope):
         try:
-            response = await super().get_response(path, scope)
+            return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404:
                 return await super().get_response("index.html", scope)
             raise
-        if response.status_code == 404:
-            return await super().get_response("index.html", scope)
-        return response
 
 SSE_KEYS = ("board", "queue", "budget", "failures", "history")
 HEARTBEAT_SECONDS = 15.0
