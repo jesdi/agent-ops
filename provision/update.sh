@@ -47,6 +47,13 @@ if [ "$old" != "$new" ]; then
   if ! git diff --quiet "$old" "$new" -- Containerfile; then
     $PODMAN build -t agent-ops-session -f Containerfile .
   fi
+
+  # The web console is a long-running service on an editable install: new
+  # code goes live only on restart. Restart whenever the code it imports
+  # changed (web/ itself, dispatcher/ and telegram/ it imports, or deps).
+  if ! git diff --quiet "$old" "$new" -- web/ dispatcher/ telegram/ pyproject.toml; then
+    $SYSTEMCTL try-restart agent-ops-web.service
+  fi
 fi
 
 # Unit sync runs even when HEAD is already at origin/main: convergence

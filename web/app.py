@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, StreamingResponse
+from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket
 
 from dispatcher import queue_ops
@@ -15,6 +18,23 @@ from dispatcher.models import resolve
 from web import read_model
 from web.auth import Operator, TailscaleAuthMiddleware, current_operator
 from web.terminal import run_terminal
+
+DEFAULT_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+
+class SPAStaticFiles(StaticFiles):
+    """404s on non-file paths fall back to index.html (client routing)."""
+
+    async def get_response(self, path, scope):
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+        if response.status_code == 404:
+            return await super().get_response("index.html", scope)
+        return response
 
 SSE_KEYS = ("board", "queue", "budget", "failures", "history")
 HEARTBEAT_SECONDS = 15.0
@@ -43,7 +63,8 @@ class ReadyReq(BaseModel):
 
 
 def create_app(cfg: Config, sources, sse_interval: float = 1.0,
-               heartbeat_seconds: float = HEARTBEAT_SECONDS) -> FastAPI:
+               heartbeat_seconds: float = HEARTBEAT_SECONDS,
+               frontend_dist: Path | None = None) -> FastAPI:
     app = FastAPI(title="agent-ops web console")
     app.add_middleware(TailscaleAuthMiddleware)
 
@@ -237,5 +258,13 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     async def terminal(ws: WebSocket, issue: int):
         # auth already enforced by TailscaleAuthMiddleware (4401 close)
         await run_terminal(ws, issue, sources)
+
+    dist = frontend_dist if frontend_dist is not None else DEFAULT_DIST
+    if dist.is_dir():
+        app.mount("/", SPAStaticFiles(directory=dist, html=True), name="spa")
+    else:
+        @app.get("/")
+        def root(op: Operator = Depends(current_operator)):
+            return {"service": "agent-ops-web", "ui": "not built"}
 
     return app

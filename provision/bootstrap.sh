@@ -134,6 +134,7 @@ as_agent cp provision/agent-ops-dispatcher.service \
    provision/agent-ops-digest.timer \
    provision/agent-ops-update.service \
    provision/agent-ops-update.timer \
+   provision/agent-ops-web.service \
    $AGENT_HOME/.config/systemd/user/
 as_agent systemctl --user daemon-reload
 # Timers first: they must be up even though the services they trigger
@@ -147,6 +148,9 @@ as_agent systemctl --user enable --now agent-ops-digest.timer
 as_agent systemctl --user enable --now agent-ops-waitd.service \
   || echo "waitd not up yet (expected before credentials): after follow-ups, run
   systemctl --user restart agent-ops-waitd  (as agent)"
+as_agent systemctl --user enable --now agent-ops-web.service \
+  || echo "web console not up yet (expected before credentials): after follow-ups, run
+  systemctl --user restart agent-ops-web  (as agent)"
 
 cat <<'EOF'
 bootstrap done. Manual follow-ups (interactive, once):
@@ -187,4 +191,14 @@ bootstrap done. Manual follow-ups (interactive, once):
      (gh project field-list <n> --owner <owner> --format json)
   6. start with capacity: 1 in ~/agent-ops-state/targets.yaml for the
      single-lane rollout
+  7. tailscale serve --bg 8481
+     # publishes the web console at https://<box>.<tailnet>.ts.net/
+     # (modern serve syntax, Tailscale >= 1.56: HTTPS on 443 with a
+     # tailnet cert, proxying to http://127.0.0.1:8481 and injecting the
+     # Whois identity headers the app's auth requires; the older
+     # path-based form was `tailscale serve https / http://127.0.0.1:8481`).
+     # Then verify SSE end-to-end THROUGH serve (not localhost):
+     #   curl -N https://<box>.<tailnet>.ts.net/api/events
+     # from another tailnet device — a heartbeat comment must arrive
+     # within ~15 s (proxy buffering is the classic failure mode).
 EOF

@@ -220,3 +220,30 @@ def test_claude_home_drift_heals_without_new_commits(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
     assert "drifted" not in (box.state / "claude-home" / "CLAUDE.md").read_text()
+
+
+def test_web_code_change_restarts_web_service(box):
+    (box.origin / "web").mkdir()
+    (box.origin / "web" / "app.py").write_text("x = 1\n")
+    commit_all(box.origin, "web change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "try-restart agent-ops-web.service" in calls(box)
+    assert "pip install" not in calls(box)
+
+
+def test_dispatcher_change_restarts_web_service(box):
+    (box.origin / "dispatcher").mkdir()
+    (box.origin / "dispatcher" / "state.py").write_text("x = 1\n")
+    commit_all(box.origin, "dispatcher change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "try-restart agent-ops-web.service" in calls(box)
+
+
+def test_unrelated_code_change_does_not_restart_web(box):
+    (box.origin / "notes.md").write_text("x\n")
+    commit_all(box.origin, "docs change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "agent-ops-web" not in calls(box)

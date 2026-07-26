@@ -57,6 +57,28 @@ one is box-local — deliberately outside CI so ops knobs (capacity,
 thresholds) are tunable without a merge cycle and the checkout stays clean
 for ff-only pulls.
 
+## Web console
+
+`agent-ops-web.service` runs `python -m web` bound to **127.0.0.1:8481
+only** — loopback is bypass prevention, not the access boundary. The
+boundary is `tailscale serve --bg 8481`, which publishes
+`https://<box>.<tailnet>.ts.net/` with a tailnet certificate and injects
+the Whois identity headers (`Tailscale-User-Login`, …) on every proxied
+request. The app 401s any request without that header, so nothing that
+bypasses the proxy is served, and the header value is recorded as the
+actor on every write. UFW stays deny-all on the public interface; Funnel
+is never enabled.
+
+After changing serve config or upgrading tailscale, re-verify the SSE
+stream end to end from another tailnet device (NOT localhost):
+`curl -N https://<box>.<tailnet>.ts.net/api/events` must show a comment
+line within ~15 s. Buffering proxies silently break SSE; localhost tests
+cannot catch it.
+
+Deploys: update.sh try-restarts the service whenever pulled commits touch
+`web/`, `dispatcher/`, `telegram/` or `pyproject.toml` (editable install —
+new code is live on restart).
+
 ## Claude-home seed (ADR 0003)
 
 `provision/claude-home/` is the versioned source of the box's Claude
