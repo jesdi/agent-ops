@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from dispatcher.budget import UsageSnapshot, should_spawn
 from dispatcher.state import (IN_FLIGHT_STAGES, MAX_SLOTS, PARK_CI,
                               PARK_HUMAN, PARK_WAKE, Stage, TaskState)
 
@@ -100,3 +101,84 @@ def build_board(tasks: list[TaskState], *, capacity: int,
             capacity=capacity,
             slots_used=len(in_flight),
             max_slots=MAX_SLOTS))
+
+
+class TaskDetail(BaseModel):
+    card: TaskCard
+    pane_tail: str
+    session_alive: bool
+    worktree: str
+    pending_reply: str
+    ci_run_id: int
+    effort: int | None
+    labels: list[str]
+
+
+def task_detail(t: TaskState, *, model: str, attached: bool,
+                pane_tail: str, session_alive: bool) -> TaskDetail:
+    return TaskDetail(
+        card=task_card(t, model=model, attached=attached),
+        pane_tail=pane_tail, session_alive=session_alive,
+        worktree=t.worktree, pending_reply=t.pending_reply,
+        ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels))
+
+
+class BudgetView(BaseModel):
+    utilization: float
+    minutes_to_reset: float
+    source: str
+    would_spawn: bool
+    threshold_applied: str
+
+
+def budget_view(u: UsageSnapshot, threshold: float, racing_minutes: int,
+                racing_threshold: float) -> BudgetView:
+    if u.source == "unavailable":
+        applied = "n/a"
+    elif u.minutes_to_reset <= racing_minutes:
+        applied = "reset-racing"
+    else:
+        applied = "base"
+    return BudgetView(
+        utilization=u.utilization, minutes_to_reset=u.minutes_to_reset,
+        source=u.source,
+        would_spawn=should_spawn(u, threshold, racing_minutes,
+                                 racing_threshold),
+        threshold_applied=applied)
+
+
+class QuarantineEntry(BaseModel):
+    target: str
+    task_issue: int
+    blocker_repo: str
+    blocker_issue: int
+    fingerprint: str
+    created_at: str
+    blocker_open: bool | None
+
+
+class FingerprintEntry(BaseModel):
+    fingerprint: str
+    repo: str
+    issue: int
+    when: str
+
+
+class FailuresView(BaseModel):
+    quarantined: list[QuarantineEntry]
+    fingerprints: list[FingerprintEntry]
+
+
+class EventEntry(BaseModel):
+    ts: str
+    event: str
+    target: str
+    issue: int
+    stage: str
+    model: str
+    actor: str
+    detail: str
+
+
+class HistoryView(BaseModel):
+    events: list[EventEntry]
