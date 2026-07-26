@@ -2,11 +2,27 @@
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel
 
+from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve
 from web import read_model
 from web.auth import Operator, TailscaleAuthMiddleware, current_operator
+
+
+class BoostReq(BaseModel):
+    issue: int
+    amount: int
+
+
+class NextReq(BaseModel):
+    issue: int
+    force: bool = False
+
+
+class ReadyReq(BaseModel):
+    issue: int
 
 
 def create_app(cfg: Config, sources) -> FastAPI:
@@ -70,5 +86,57 @@ def create_app(cfg: Config, sources) -> FastAPI:
         return read_model.HistoryView(
             events=[read_model.EventEntry(**e)
                     for e in sources.events_tail(limit)])
+
+    def _locate_row(issue: int):
+        hits = [(target, row)
+                for target in cfg.targets
+                for row in sources.rank_rows(target)[0]
+                if row["number"] == issue]
+        if not hits:
+            raise HTTPException(404, f"issue {issue} not on any queue")
+        if len(hits) > 1:
+            raise HTTPException(
+                409, f"issue {issue} is ambiguous across targets")
+        return hits[0]
+
+    def _apply(event: str, issue: int, plan, op: Operator, detail: str,
+               target):
+        if not plan.ok:
+            raise HTTPException(422, plan.reason)
+        sources.apply_queue_plan(target, issue, plan)
+        sources.append_event(event, target=target.name, issue=issue,
+                             actor=op.login, detail=detail)
+        return {"ok": True, "reason": plan.reason}
+
+    @app.post("/api/queue/boost")
+    def queue_boost(req: BoostReq,
+                    op: Operator = Depends(current_operator)):
+        target, row = _locate_row(req.issue)
+        return _apply("queue-boost", req.issue,
+                      queue_ops.plan_boost(row, req.amount), op,
+                      f"amount={req.amount}", target)
+
+    @app.post("/api/queue/next")
+    def queue_next(req: NextReq,
+                   op: Operator = Depends(current_operator)):
+        target, row = _locate_row(req.issue)
+        return _apply("queue-next", req.issue,
+                      queue_ops.plan_next(row, req.force), op,
+                      f"force={req.force}", target)
+
+    @app.post("/api/queue/ready")
+    def queue_ready(req: ReadyReq,
+                    op: Operator = Depends(current_operator)):
+        target, row = _locate_row(req.issue)
+        return _apply("queue-ready", req.issue,
+                      queue_ops.plan_ready(row), op, "", target)
+
+    @app.get("/api/queue", response_model=read_model.QueueView)
+    def queue_view(op: Operator = Depends(current_operator)):
+        in_flight = {t.issue for t in sources.tasks()}
+        return read_model.QueueView(targets=[
+            read_model.target_queue(target.name, *sources.rank_rows(target),
+                                    in_flight=in_flight)
+            for target in cfg.targets])
 
     return app

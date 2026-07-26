@@ -182,3 +182,39 @@ class EventEntry(BaseModel):
 
 class HistoryView(BaseModel):
     events: list[EventEntry]
+
+
+class QueueRow(BaseModel):
+    number: int
+    title: str
+    url: str
+    status: str
+    labels: list[str]
+    blocked: bool
+    score: float | None
+    boost: int
+    in_flight: bool
+
+
+class TargetQueue(BaseModel):
+    target: str
+    as_of: str
+    stale: bool
+    rows: list[QueueRow]
+
+
+class QueueView(BaseModel):
+    targets: list[TargetQueue]
+
+
+def target_queue(name: str, rows: list[dict], as_of: str, stale: bool,
+                 in_flight: set[int]) -> TargetQueue:
+    return TargetQueue(
+        target=name, as_of=as_of, stale=stale,
+        rows=[QueueRow(
+            number=r["number"], title=r.get("title", ""),
+            url=r.get("url", ""), status=r.get("status", ""),
+            labels=list(r.get("labels") or []),
+            blocked=bool(r.get("blocked", False)),
+            score=r.get("score"), boost=int(r.get("boost") or 0),
+            in_flight=r["number"] in in_flight) for r in rows])
