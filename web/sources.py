@@ -71,7 +71,7 @@ class Sources:
         for p in sorted(root.glob("*.json")) if root.exists() else []:
             try:
                 d = json.loads(p.read_text())
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, OSError):
                 continue
             d["target"] = p.stem.rsplit("-", 1)[0]
             entries.append(d)
@@ -109,7 +109,7 @@ class Sources:
         for p in sorted(root.glob("*.json")) if root.exists() else []:
             try:
                 d = json.loads(p.read_text())
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, OSError):
                 continue
             out.append({"action": d.get("action", ""),
                         "issue": d.get("issue", 0),

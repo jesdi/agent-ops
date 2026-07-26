@@ -206,3 +206,35 @@ def test_attached_markers_roundtrip(tmp_path):
     assert src.has_attached(7) is True
     src.clear_attached(7)
     assert src.has_attached(7) is False
+
+
+def test_quarantine_and_intent_entries_tolerate_oserror(tmp_path):
+    """If a file is deleted or becomes unreadable after glob() but before
+    read_text() (race condition during dispatcher processing), OSError
+    should be caught silently. We simulate this by creating a directory
+    with .json extension."""
+    _, src = make_sources(tmp_path)
+
+    # Add a valid quarantine entry
+    (tmp_path / "quarantine").mkdir()
+    (tmp_path / "quarantine" / "valid.json").write_text(json.dumps(
+        {"task_issue": 1, "blocker_issue": 2}))
+
+    # Add a "file" that's actually a directory (will raise IsADirectoryError
+    # when read_text() is called, which is a subclass of OSError)
+    (tmp_path / "quarantine" / "broken.json").mkdir()
+
+    # Should skip the broken directory but include the valid entry
+    qs = src.quarantine_entries()
+    assert len(qs) == 1
+    assert qs[0]["task_issue"] == 1
+
+    # Same for intents
+    (tmp_path / "intents").mkdir()
+    (tmp_path / "intents" / "valid.json").write_text(json.dumps(
+        {"action": "reply", "issue": 5}))
+    (tmp_path / "intents" / "broken.json").mkdir()
+
+    pend = src.pending_intents()
+    assert len(pend) == 1
+    assert pend[0]["action"] == "reply"
