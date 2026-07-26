@@ -1,4 +1,5 @@
 """Terminal bridge against a stubbed tmux executable."""
+import concurrent.futures
 import json
 import os
 import time
@@ -19,6 +20,28 @@ case "$*" in
   *) exit 0 ;;
 esac
 """
+
+# Hard wall-clock deadline per ws.receive_bytes() call.  The sync TestClient
+# blocks indefinitely inside the anyio portal — a bare iteration count does not
+# bound wall time if the server never sends.  _recv_bounded() wraps the call in
+# a thread and fails with a clear message if it exceeds the deadline.
+_RECV_TIMEOUT = 5.0
+
+
+def _recv_bounded(ws, timeout=_RECV_TIMEOUT):
+    """Receive bytes from ws with a hard wall-clock deadline."""
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = executor.submit(ws.receive_bytes)
+    try:
+        result = fut.result(timeout=timeout)
+        executor.shutdown(wait=False)
+        return result
+    except concurrent.futures.TimeoutError:
+        executor.shutdown(wait=False, cancel_futures=True)
+        pytest.fail(
+            f"ws.receive_bytes() did not return within {timeout}s — "
+            "stub tmux likely failed to exec or produce output"
+        )
 
 
 def stub_tmux(tmp_path, monkeypatch):
@@ -53,6 +76,13 @@ def test_dead_session_sends_tail_and_closes(tmp_path):
     assert 7 not in fake.attached
 
 
+# forkpty() in a multi-threaded process emits a DeprecationWarning in
+# Python 3.13.  The child branch does nothing but exec (or os._exit(127) on
+# failure), which is the only safe pattern post-fork in a threaded process.
+# The warning is narrowly suppressed here; it must not be silenced globally.
+@pytest.mark.filterwarnings(
+    "ignore:This process.*is multi-threaded.*:DeprecationWarning"
+)
 def test_live_session_echo_and_attach_markers(tmp_path, monkeypatch):
     stub_tmux(tmp_path, monkeypatch)
     fake, client = rig(tmp_path)
@@ -60,24 +90,26 @@ def test_live_session_echo_and_attach_markers(tmp_path, monkeypatch):
     with client.websocket_connect("/api/task/7/terminal",
                                   headers=HEADERS) as ws:
         buf = b""
-        for _ in range(200):
-            buf += ws.receive_bytes()
+        for _ in range(50):
+            buf += _recv_bounded(ws)
             if b"FAKE-TMUX-READY" in buf:
                 break
         else:
             pytest.fail(
-                f"FAKE-TMUX-READY never arrived after 200 reads; got {buf!r}"
+                f"FAKE-TMUX-READY never arrived after 50 bounded reads; "
+                f"got {buf!r}"
             )
         assert 7 in fake.attached
         ws.send_bytes(b"hello-terminal\n")
         buf = b""
-        for _ in range(200):
-            buf += ws.receive_bytes()
+        for _ in range(50):
+            buf += _recv_bounded(ws)
             if b"hello-terminal" in buf:
                 break
         else:
             pytest.fail(
-                f"echo of hello-terminal never arrived after 200 reads; got {buf!r}"
+                f"echo of hello-terminal never arrived after 50 bounded reads; "
+                f"got {buf!r}"
             )
         # resize must not kill the bridge
         ws.send_text(json.dumps({"type": "resize",
