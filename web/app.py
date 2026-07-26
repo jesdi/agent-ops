@@ -7,12 +7,14 @@ import json as _json
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, StreamingResponse
+from starlette.websockets import WebSocket
 
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve
 from web import read_model
 from web.auth import Operator, TailscaleAuthMiddleware, current_operator
+from web.terminal import run_terminal
 
 SSE_KEYS = ("board", "queue", "budget", "failures", "history")
 HEARTBEAT_SECONDS = 15.0
@@ -230,5 +232,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             headers={"Cache-Control": "no-cache",
                      "X-Accel-Buffering": "no"},
         )
+
+    @app.websocket("/api/task/{issue}/terminal")
+    async def terminal(ws: WebSocket, issue: int):
+        # auth already enforced by TailscaleAuthMiddleware (4401 close)
+        await run_terminal(ws, issue, sources)
 
     return app
