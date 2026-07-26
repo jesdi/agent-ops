@@ -3,4 +3,11 @@ Description=agent-ops claude token keepalive
 
 [Service]
 Type=oneshot
+# The session containers read Claude's OAuth from the claude-home store
+# (mounted as /root/.claude via CLAUDE_CONFIG_DIR). Without this, the
+# keepalive refreshes the host's SEPARATE ~/.claude store instead, so the
+# token the containers actually use is never renewed — it lapses and a
+# failed refresh zeroes it, stranding every session at the login prompt.
+# Point the keepalive at the same store the containers mount.
+Environment=CLAUDE_CONFIG_DIR=%h/agent-ops-state/claude-home
 ExecStart=/usr/bin/tmux new-session -d -s keepalive "claude --permission-mode plan 'Reply with exactly: ok. Then exit.'; sleep 2"
