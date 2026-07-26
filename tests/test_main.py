@@ -1294,7 +1294,7 @@ def test_park_intent_parks_a_live_task(tmp_path, monkeypatch):
     assert intents_mod.list_intents(c.state_dir) == []
 
 
-def test_kill_intent_ends_releases_and_deletes_state(tmp_path, monkeypatch):
+def test_kill_intent_ends_releases_and_tombstones_state(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
@@ -1306,7 +1306,7 @@ def test_kill_intent_ends_releases_and_deletes_state(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess))
     assert sess.ended == [42]
     assert gh.released == [(42, "abandoned by operator")]
-    assert load(c.state_dir, 42) is None
+    assert load(c.state_dir, 42).stage is Stage.FAILED
     assert not has_waiting(c.state_dir, 42)
     failed = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "failed"]
     assert failed[0]["detail"] == "killed by operator"
@@ -1326,7 +1326,22 @@ def test_kill_intent_survives_release_failure(tmp_path, monkeypatch):
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(ReleaseFailsGitHub(), sess))  # must not raise
     assert sess.ended == [42]
-    assert load(c.state_dir, 42) is None  # kill best-effort past the release
+    assert load(c.state_dir, 42).stage is Stage.FAILED  # tombstone written even when release raises
+
+
+def test_kill_intent_does_not_reclaim_released_issue_same_pass(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42)
+    intents_mod.write_intent(c.state_dir, "kill", 42, {}, "op", 1)
+    # release() flips #42 back to Ready+auto, so it is still a live board
+    # candidate this pass; the FAILED tombstone must stop _claim_new from
+    # re-claiming the issue the operator just killed.
+    gh = FakeGitHub([Candidate(42, "Killed but still on board", "u42")])
+    main.run_pass(c, deps(gh, FakeSessions(alive={42})))
+    assert gh.claimed == []
+    assert load(c.state_dir, 42).stage is Stage.FAILED
 
 
 def test_retry_intent_clears_quarantine_and_fingerprint(tmp_path, monkeypatch):

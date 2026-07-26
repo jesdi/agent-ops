@@ -524,7 +524,13 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
                 except Exception as exc:
                     print(f"[warn] release failed while killing #{issue}: "
                           f"{exc}", file=sys.stderr)
-        (Path(cfg.state_dir) / f"task-{issue}.json").unlink(missing_ok=True)
+            # Write a FAILED tombstone instead of deleting the state file.
+            # github.release() flips the board status back to Ready+auto, so
+            # the issue becomes a live candidate again. Without a tombstone,
+            # _claim_new's guard (known = {t.issue for t in tasks}) would not
+            # contain it and would re-claim the just-killed issue the same pass.
+            save(cfg.state_dir, replace(task, stage=Stage.FAILED,
+                                        updated_at=_now()))
         clear_waiting(cfg.state_dir, issue)
         eventlog.append_event(cfg.state_dir, "failed",
                               target=task.target if task else "", issue=issue,
