@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.responses import JSONResponse
 
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
@@ -14,6 +15,14 @@ from web.auth import Operator, TailscaleAuthMiddleware, current_operator
 class BoostReq(BaseModel):
     issue: int
     amount: int
+
+
+class ReplyReq(BaseModel):
+    text: str = Field(min_length=1)
+
+
+class ResumeReq(BaseModel):
+    text: str = ""
 
 
 class NextReq(BaseModel):
@@ -138,5 +147,51 @@ def create_app(cfg: Config, sources) -> FastAPI:
             read_model.target_queue(target.name, *sources.rank_rows(target),
                                     in_flight=in_flight)
             for target in cfg.targets])
+
+    def _require_task(issue: int) -> None:
+        if not any(t.issue == issue for t in sources.tasks()):
+            raise HTTPException(404, f"no task {issue}")
+
+    def _accepted(action: str, issue: int, payload: dict, op: Operator):
+        name = sources.submit_intent(action, issue, payload, op.login)
+        return JSONResponse({"status": "pending", "intent": name},
+                            status_code=202)
+
+    @app.post("/api/task/{issue}/reply", status_code=202)
+    def intent_reply(issue: int, req: ReplyReq,
+                     op: Operator = Depends(current_operator)):
+        _require_task(issue)
+        return _accepted("reply", issue, {"text": req.text}, op)
+
+    @app.post("/api/task/{issue}/park", status_code=202)
+    def intent_park(issue: int,
+                    op: Operator = Depends(current_operator)):
+        _require_task(issue)
+        return _accepted("park", issue, {}, op)
+
+    @app.post("/api/task/{issue}/kill", status_code=202)
+    def intent_kill(issue: int,
+                    op: Operator = Depends(current_operator)):
+        _require_task(issue)
+        return _accepted("kill", issue, {}, op)
+
+    @app.post("/api/task/{issue}/retry", status_code=202)
+    def intent_retry(issue: int,
+                     op: Operator = Depends(current_operator)):
+        if not any(q.get("task_issue") == issue
+                   for q in sources.quarantine_entries()):
+            raise HTTPException(404, f"issue {issue} is not quarantined")
+        return _accepted("retry", issue, {}, op)
+
+    @app.post("/api/task/{issue}/resume", status_code=202)
+    def intent_resume(issue: int, req: ResumeReq,
+                      op: Operator = Depends(current_operator)):
+        _require_task(issue)
+        payload = {"text": req.text} if req.text else {}
+        return _accepted("resume", issue, payload, op)
+
+    @app.get("/api/pending-intents")
+    def pending_intents(op: Operator = Depends(current_operator)):
+        return {"intents": sources.pending_intents()}
 
     return app
