@@ -1,15 +1,21 @@
 """FastAPI app factory: route wiring only. All I/O is behind `sources`."""
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException
+import asyncio
+import json as _json
+
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve
 from web import read_model
 from web.auth import Operator, TailscaleAuthMiddleware, current_operator
+
+SSE_KEYS = ("board", "queue", "budget", "failures", "history")
+HEARTBEAT_SECONDS = 15.0
 
 
 class BoostReq(BaseModel):
@@ -34,7 +40,9 @@ class ReadyReq(BaseModel):
     issue: int
 
 
-def create_app(cfg: Config, sources) -> FastAPI:
+def create_app(cfg: Config, sources, sse_interval: float = 1.0,
+               heartbeat_seconds: float = HEARTBEAT_SECONDS,
+               sse_max_events: int | None = None) -> FastAPI:
     app = FastAPI(title="agent-ops web console")
     app.add_middleware(TailscaleAuthMiddleware)
 
@@ -193,5 +201,37 @@ def create_app(cfg: Config, sources) -> FastAPI:
     @app.get("/api/pending-intents")
     def pending_intents(op: Operator = Depends(current_operator)):
         return {"intents": sources.pending_intents()}
+
+    @app.get("/api/events")
+    async def events(request: Request,
+                     op: Operator = Depends(current_operator)):
+        async def stream():
+            last = _json.loads(sources.state_fingerprint())
+            quiet = 0.0
+            yield ": connected\n\n"
+            polls = 0
+            while sse_max_events is None or polls < sse_max_events:
+                polls += 1
+                if await request.is_disconnected():
+                    return
+                await asyncio.sleep(sse_interval)
+                cur = _json.loads(sources.state_fingerprint())
+                changed = [k for k in SSE_KEYS if cur.get(k) != last.get(k)]
+                if changed:
+                    last = cur
+                    quiet = 0.0
+                    yield "data: " + _json.dumps({"changed": changed}) + "\n\n"
+                    continue
+                quiet += sse_interval
+                if quiet >= heartbeat_seconds:
+                    quiet = 0.0
+                    yield ": heartbeat\n\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache",
+                     "X-Accel-Buffering": "no"},
+        )
 
     return app
