@@ -1,0 +1,77 @@
+"""Pure view-model tests: every (stage, park) combination, board grouping."""
+import pytest
+
+from dispatcher.state import PARK_CI, PARK_HUMAN, PARK_WAKE, Stage
+from tests.webfakes import make_task
+from web.read_model import build_board, column_for, task_card
+
+STAGE_COLUMNS = {
+    Stage.QUEUED: "queued",
+    Stage.SPEC: "in-progress",
+    Stage.PLAN: "in-progress",
+    Stage.IMPLEMENT: "in-progress",
+    Stage.AWAITING_SPEC_REVIEW: "needs-review",
+    Stage.PR_OPEN: "pr-open",
+    Stage.FAILED: "failed",
+    Stage.BLOCKED: "failed",         # legacy stage: surfaced, not hidden
+    Stage.STALLED_ON_BUDGET: "stalled",
+}
+
+
+@pytest.mark.parametrize("stage", list(Stage))
+def test_park_overrides_stage(stage):
+    assert column_for(stage.value, PARK_HUMAN) == "parked"
+    assert column_for(stage.value, PARK_CI) == "awaiting-ci"
+    assert column_for(stage.value, PARK_WAKE) == "resuming"
+
+
+@pytest.mark.parametrize("stage", list(Stage))
+def test_unparked_column_per_stage(stage):
+    assert column_for(stage.value, "") == STAGE_COLUMNS[stage]
+
+
+def test_task_card_fields():
+    t = make_task(issue=7, stage=Stage.SPEC, slot=1, park=PARK_HUMAN,
+                  park_msg_id=0)
+    card = task_card(t, model="claude-sonnet-4-5", attached=True)
+    assert card.issue == 7
+    assert card.stage == "spec"
+    assert card.park == "parked"
+    assert card.column == "parked"
+    assert card.model == "claude-sonnet-4-5"
+    assert card.attached is True
+    # parked-for-human with no Telegram message id yet -> note pending
+    assert card.park_note_pending is True
+
+
+def test_park_note_not_pending_once_notified():
+    t = make_task(park=PARK_HUMAN, park_msg_id=123)
+    assert task_card(t, model="m", attached=False).park_note_pending is False
+
+
+def test_build_board_groups_and_counts():
+    tasks = [
+        make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
+        make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN),
+        make_task(issue=3, stage=Stage.PR_OPEN, slot=0),
+    ]
+    board = build_board(tasks, capacity=2,
+                        models={1: "a", 2: "b", 3: "c"}, attached={1})
+    by_key = {c.key: c for c in board.columns}
+    assert [c.issue for c in by_key["in-progress"].cards] == [1]
+    assert [c.issue for c in by_key["parked"].cards] == [2]
+    assert [c.issue for c in by_key["pr-open"].cards] == [3]
+    assert by_key["in-progress"].cards[0].attached is True
+    # capacity: parked releases capacity but keeps its slot;
+    # pr-open is not in-flight at all.
+    assert board.capacity.active == 1
+    assert board.capacity.slots_used == 2
+    assert board.capacity.capacity == 2
+    assert board.capacity.max_slots == 3
+
+
+def test_board_column_order_is_stable():
+    board = build_board([], capacity=2, models={}, attached=set())
+    assert [c.key for c in board.columns] == [
+        "queued", "in-progress", "needs-review", "pr-open", "parked",
+        "awaiting-ci", "resuming", "stalled", "failed"]
