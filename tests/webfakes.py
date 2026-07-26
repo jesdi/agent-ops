@@ -51,8 +51,6 @@ class FakeSources:
         self.appended = []        # (event, target, issue, actor, detail)
         self.fingerprint = ('{"board": "a", "budget": "a", "failures": "a",'
                             ' "history": "0", "queue": "a"}')
-        self._fp_seq: list | None = None  # pre-sequenced fingerprints for SSE tests
-        self._fp_idx = 0
 
     def tasks(self):
         return list(self.tasks_list)
@@ -97,10 +95,6 @@ class FakeSources:
         self.appended.append((event, target, issue, actor, detail))
 
     def state_fingerprint(self):
-        if self._fp_seq is not None:
-            fp = self._fp_seq[min(self._fp_idx, len(self._fp_seq) - 1)]
-            self._fp_idx += 1
-            return fp
         return self.fingerprint
 
     def mark_attached(self, issue):

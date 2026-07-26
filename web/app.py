@@ -41,8 +41,7 @@ class ReadyReq(BaseModel):
 
 
 def create_app(cfg: Config, sources, sse_interval: float = 1.0,
-               heartbeat_seconds: float = HEARTBEAT_SECONDS,
-               sse_max_events: int | None = None) -> FastAPI:
+               heartbeat_seconds: float = HEARTBEAT_SECONDS) -> FastAPI:
     app = FastAPI(title="agent-ops web console")
     app.add_middleware(TailscaleAuthMiddleware)
 
@@ -209,9 +208,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             last = _json.loads(sources.state_fingerprint())
             quiet = 0.0
             yield ": connected\n\n"
-            polls = 0
-            while sse_max_events is None or polls < sse_max_events:
-                polls += 1
+            while True:
                 if await request.is_disconnected():
                     return
                 await asyncio.sleep(sse_interval)
