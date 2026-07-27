@@ -74,3 +74,23 @@ it('retry posts the intent for the quarantined task', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(retried).toBe(true))
 })
+
+it('a failing retry surfaces the API detail inline instead of looking like success', async () => {
+  server.use(
+    http.post('/api/task/38/retry', () =>
+      HttpResponse.json(
+        { detail: 'issue 38 is not quarantined' }, { status: 404 },
+      ),
+    ),
+  )
+  renderWithProviders(<FailuresPage />)
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument(),
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() =>
+    expect(screen.getByTestId('retry-error-38')).toHaveTextContent(
+      'issue 38 is not quarantined',
+    ),
+  )
+})

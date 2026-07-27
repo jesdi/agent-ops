@@ -1,9 +1,12 @@
 import type { FailuresView } from '../lib/api'
 import { relativeTime } from '../lib/format'
 
-export function FailureList({ failures, onRetry }: {
+export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
   failures: FailuresView
   onRetry: (issue: number) => void
+  /** Per-task inline retry errors, same convention as QueueTable. */
+  errors?: Readonly<Record<number, string | null>>
+  busy?: boolean
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -13,7 +16,9 @@ export function FailureList({ failures, onRetry }: {
           <p className="text-sm text-gray-500">nothing quarantined</p>
         )}
         <ul className="mt-2 flex flex-col gap-2">
-          {failures.quarantined.map((q) => (
+          {failures.quarantined.map((q) => {
+            const error = errors[q.task_issue] ?? null
+            return (
             <li
               key={`${q.target}-${q.task_issue}`}
               className="flex flex-wrap items-center gap-2 rounded border border-gray-200 bg-white p-3 text-sm"
@@ -34,13 +39,23 @@ export function FailureList({ failures, onRetry }: {
               <span className="text-xs text-gray-400">{relativeTime(q.created_at)}</span>
               <button
                 type="button"
-                className="ml-auto rounded border px-2 py-0.5 text-xs"
+                className="ml-auto rounded border px-2 py-0.5 text-xs disabled:opacity-50"
+                disabled={busy}
                 onClick={() => onRetry(q.task_issue)}
               >
                 Retry
               </button>
+              {error && (
+                <p
+                  data-testid={`retry-error-${q.task_issue}`}
+                  className="w-full text-xs text-red-600"
+                >
+                  {error}
+                </p>
+              )}
             </li>
-          ))}
+            )
+          })}
         </ul>
       </section>
       <section>

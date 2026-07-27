@@ -26,6 +26,32 @@ it('surfaces 422 detail as ApiError', async () => {
   await expect(api.queueNext(7, true)).rejects.toThrow('issue 7 is blocked')
 })
 
+it('coerces an array-shaped 422 detail to a renderable string', async () => {
+  // FastAPI returns `detail` as an array of validation-error objects for 422.
+  // ApiError.detail is rendered directly as a React child, where an array of
+  // objects throws "Objects are not valid as a React child".
+  server.use(
+    http.post('/api/queue/boost', () =>
+      HttpResponse.json(
+        {
+          detail: [
+            { loc: ['body', 'amount'], msg: 'Input should be a valid integer',
+              type: 'int_parsing' },
+            { loc: ['body', 'issue'], msg: 'Field required', type: 'missing' },
+          ],
+        },
+        { status: 422 },
+      ),
+    ),
+  )
+  const err = await api.queueBoost(7, 1).catch((e: unknown) => e)
+  expect(err).toBeInstanceOf(ApiError)
+  expect(typeof (err as ApiError).detail).toBe('string')
+  expect((err as ApiError).detail).toBe(
+    'Input should be a valid integer; Field required',
+  )
+})
+
 it('POST intent action returns 202 pending', async () => {
   server.use(
     http.post('/api/task/42/reply', () =>

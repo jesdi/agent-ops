@@ -5,28 +5,59 @@ import { PendingBadge } from '../components/PendingBadge'
 import { Terminal } from '../components/Terminal'
 import { queryKeys } from '../hooks/queryKeys'
 import { usePendingIntents, useTaskDetail } from '../hooks/useResources'
-import { api } from '../lib/api'
+import { api, ApiError } from '../lib/api'
 import { relativeTime, stageLabel } from '../lib/format'
 import { useUiStore } from '../store/ui'
 
 export function TaskPage() {
-  const issue = Number(useParams().issue)
+  const raw = useParams().issue
+  const issue = Number(raw)
+  // /task/abc would otherwise request /api/task/NaN.
+  if (!Number.isInteger(issue) || issue <= 0) {
+    return (
+      <p className="p-4 text-red-600">
+        not found — “{raw}” is not a task number
+      </p>
+    )
+  }
+  return <TaskView issue={issue} />
+}
+
+function TaskView({ issue }: { issue: number }) {
   const detailQuery = useTaskDetail(issue)
   const intentsQuery = usePendingIntents()
   const queryClient = useQueryClient()
   const [replyText, setReplyText] = useState('')
-  const terminalOpen = useUiStore((s) => s.terminalOpen)
-  const setTerminalOpen = useUiStore((s) => s.setTerminalOpen)
+  // Inline error channel, same convention as QueuePage/QueueTable: park/kill/
+  // retry/reply return real 404s and 5xx, and a swallowed failure is
+  // pixel-identical to success — no badge, no error, operator misled.
+  const [actionError, setActionError] = useState<string | null>(null)
+  // Kill terminates a live agent, so it is two-step. Not window.confirm: a
+  // native modal blocks the page (and the polling console behind it).
+  const [killArmed, setKillArmed] = useState(false)
+  const terminalOpenFor = useUiStore((s) => s.terminalOpenFor)
+  const setTerminalOpenFor = useUiStore((s) => s.setTerminalOpenFor)
+  const terminalOpen = terminalOpenFor === issue
 
   const intent = useMutation({
-    mutationFn: (fn: () => Promise<unknown>) => fn(),
-    onSuccess: () => {
-      setReplyText('')
+    mutationFn: ({ run }: { run: () => Promise<unknown>; isReply?: boolean }) => run(),
+    onSuccess: (_data, { isReply }) => {
+      setActionError(null)
+      // Only the reply action owns the textarea — park/kill/retry must not
+      // wipe text the operator already typed.
+      if (isReply) setReplyText('')
       // Only refetch pending intents; task state changes when the
       // dispatcher applies the intent — never optimistically.
       void queryClient.invalidateQueries({ queryKey: queryKeys.pendingIntents })
     },
+    onError: (err) =>
+      setActionError(err instanceof ApiError ? err.detail : String(err)),
   })
+
+  const runIntent = (run: () => Promise<unknown>, isReply = false) => {
+    setKillArmed(false)
+    intent.mutate({ run, isReply })
+  }
 
   if (detailQuery.isPending) return <p className="p-4 text-gray-500">loading task…</p>
   if (detailQuery.isError) {
@@ -37,6 +68,7 @@ export function TaskPage() {
   const myIntents = (intentsQuery.data?.intents ?? []).filter(
     (i) => i.issue === issue,
   )
+  const busy = intent.isPending
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -58,6 +90,17 @@ export function TaskPage() {
 
       <p className="font-mono text-xs text-gray-500">{worktree}</p>
 
+      {/* Terminal.tsx's dead overlay only fires when a session dies WHILE
+          attached; on the load path the page owns this state. */}
+      {!session_alive && (
+        <p
+          data-testid="session-dead"
+          className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800"
+        >
+          session task-{issue} is not running
+        </p>
+      )}
+
       {terminalOpen && session_alive ? (
         <Terminal issue={issue} />
       ) : (
@@ -67,6 +110,12 @@ export function TaskPage() {
         >
           {pane_tail}
         </pre>
+      )}
+
+      {actionError && (
+        <p data-testid="action-error" className="text-sm text-red-600">
+          {actionError}
+        </p>
       )}
 
       <div className="flex flex-wrap items-end gap-2">
@@ -83,23 +132,47 @@ export function TaskPage() {
         <button
           type="button"
           className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
-          disabled={replyText.trim() === '' || intent.isPending}
-          onClick={() => intent.mutate(() => api.reply(issue, replyText))}
+          disabled={replyText.trim() === '' || busy}
+          onClick={() => runIntent(() => api.reply(issue, replyText), true)}
         >
           Send reply
         </button>
-        <button type="button" className="rounded border px-3 py-1.5 text-sm"
-          onClick={() => setTerminalOpen(!terminalOpen)}>
+        <button
+          type="button"
+          className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={!session_alive && !terminalOpen}
+          onClick={() => setTerminalOpenFor(terminalOpen ? null : issue)}
+        >
           {terminalOpen ? 'Detach terminal' : 'Attach terminal'}
         </button>
-        <button type="button" className="rounded border px-3 py-1.5 text-sm"
-          onClick={() => intent.mutate(() => api.park(issue))}>Park now</button>
-        <button type="button" className="rounded border px-3 py-1.5 text-sm"
-          onClick={() => intent.mutate(() => api.resume(issue))}>Resume now</button>
-        <button type="button" className="rounded border px-3 py-1.5 text-sm"
-          onClick={() => intent.mutate(() => api.retry(issue))}>Retry</button>
-        <button type="button" className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700"
-          onClick={() => intent.mutate(() => api.kill(issue))}>Kill</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={busy}
+          onClick={() => runIntent(() => api.park(issue))}>Park now</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={busy}
+          onClick={() => runIntent(() => api.resume(issue))}>Resume now</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={busy}
+          onClick={() => runIntent(() => api.retry(issue))}>Retry</button>
+        <button
+          type="button"
+          className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
+          disabled={busy}
+          onClick={() =>
+            killArmed ? runIntent(() => api.kill(issue)) : setKillArmed(true)
+          }
+        >
+          {killArmed ? 'Confirm kill?' : 'Kill'}
+        </button>
+        {killArmed && (
+          <button
+            type="button"
+            className="rounded border px-3 py-1.5 text-sm"
+            onClick={() => setKillArmed(false)}
+          >
+            Cancel kill
+          </button>
+        )}
       </div>
     </div>
   )

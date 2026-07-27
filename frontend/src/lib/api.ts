@@ -35,6 +35,25 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * FastAPI's `detail` is a string for HTTPException but an ARRAY of
+ * validation-error objects for 422. `ApiError.detail` is rendered directly as
+ * a React child, where an array of objects throws "Objects are not valid as a
+ * React child" and blanks the page — so always normalise to a string here.
+ */
+export function formatDetail(detail: unknown): string {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        const msg = (item as { msg?: unknown } | null)?.msg
+        return typeof msg === 'string' ? msg : JSON.stringify(item)
+      })
+      .join('; ')
+  }
+  return JSON.stringify(detail)
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
@@ -43,8 +62,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText
     try {
-      const body = (await res.json()) as { detail?: string }
-      if (body.detail) detail = body.detail
+      const body = (await res.json()) as { detail?: unknown }
+      if (body.detail !== undefined && body.detail !== null) {
+        const formatted = formatDetail(body.detail)
+        if (formatted !== '') detail = formatted
+      }
     } catch { /* non-JSON error body */ }
     throw new ApiError(res.status, detail)
   }

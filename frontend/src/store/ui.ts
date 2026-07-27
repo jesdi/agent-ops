@@ -1,20 +1,23 @@
 import { create } from 'zustand'
 
 interface UiState {
-  selectedIssue: number | null
-  terminalOpen: boolean
+  /**
+   * Issue whose terminal is attached, or null. Issue-scoped rather than a
+   * global boolean: attaching writes the `attached-<N>` marker and the
+   * dispatcher declines to drive a task while that marker exists, so a global
+   * flag would silently attach to — and therefore stall — every task the
+   * operator browses to after their first attach.
+   */
+  terminalOpenFor: number | null
   collapsedColumns: Record<string, boolean>
-  selectIssue: (issue: number | null) => void
-  setTerminalOpen: (open: boolean) => void
+  setTerminalOpenFor: (issue: number | null) => void
   toggleColumn: (key: string) => void
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  selectedIssue: null,
-  terminalOpen: false,
+  terminalOpenFor: null,
   collapsedColumns: {},
-  selectIssue: (selectedIssue) => set({ selectedIssue }),
-  setTerminalOpen: (terminalOpen) => set({ terminalOpen }),
+  setTerminalOpenFor: (terminalOpenFor) => set({ terminalOpenFor }),
   toggleColumn: (key) =>
     set((s) => ({
       collapsedColumns: { ...s.collapsedColumns, [key]: !s.collapsedColumns[key] },
