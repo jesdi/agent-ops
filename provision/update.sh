@@ -37,6 +37,7 @@ cd "$REPO_DIR"
 git fetch origin main
 old=$(git rev-parse HEAD)
 new=$(git rev-parse origin/main)
+frontend_changed=0
 
 if [ "$old" != "$new" ]; then
   git merge --ff-only origin/main
@@ -50,8 +51,7 @@ if [ "$old" != "$new" ]; then
   fi
 
   if ! git diff --quiet "$old" "$new" -- frontend/; then
-    (cd frontend && $PNPM install --frozen-lockfile && $PNPM build)
-    $SYSTEMCTL try-restart agent-ops-web.service
+    frontend_changed=1
   fi
 
   # The web console is a long-running service on an editable install: new
@@ -59,6 +59,26 @@ if [ "$old" != "$new" ]; then
   # changed (web/ itself, dispatcher/ and telegram/ it imports, or deps).
   if ! git diff --quiet "$old" "$new" -- web/ dispatcher/ telegram/ pyproject.toml; then
     $SYSTEMCTL try-restart agent-ops-web.service
+  fi
+fi
+
+# Frontend build runs outside the rev-delta block for the same reason unit
+# sync does: convergence repairs actual state. `frontend/dist` missing means
+# web/app.py is serving the "ui": "not built" stub — a host cloned at HEAD
+# (old==new on its very first pass) or one whose dist was cleared by hand
+# would otherwise never get a UI. Build on a pulled frontend/ change OR on a
+# missing dist.
+if [ -d frontend ] && { [ "$frontend_changed" = 1 ] || [ ! -d frontend/dist ]; }; then
+  # pnpm arrives via bootstrap.sh (corepack), which is one-shot: hosts
+  # provisioned before the frontend existed have none. `set -e` would make a
+  # missing pnpm abort the whole pass — taking unit sync and claude-home sync
+  # with it, every timer firing, until someone SSHes in. Skip loudly instead.
+  if command -v "$PNPM" >/dev/null 2>&1; then
+    (cd frontend && $PNPM install --frozen-lockfile && $PNPM build)
+    $SYSTEMCTL try-restart agent-ops-web.service
+  else
+    echo "agent-ops update: pnpm not found ($PNPM) — skipping frontend build;" \
+         "run 'corepack enable pnpm' or re-run provision/bootstrap.sh" >&2
   fi
 fi
 
