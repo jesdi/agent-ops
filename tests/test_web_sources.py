@@ -1,5 +1,6 @@
 """Sources against tmp_path state dirs and hand-written github/session fakes."""
 import json
+import subprocess
 
 from dispatcher import eventlog, state
 from dispatcher.queue_ops import QueuePlan
@@ -238,3 +239,17 @@ def test_quarantine_and_intent_entries_tolerate_oserror(tmp_path):
     pend = src.pending_intents()
     assert len(pend) == 1
     assert pend[0]["action"] == "reply"
+
+
+class WedgedSessions(FakeSessions):
+    """tmux server that never answers: capture_tail RAISES TimeoutExpired."""
+
+    def capture_tail(self, issue, lines=25):
+        raise subprocess.TimeoutExpired(["tmux", "capture-pane"], 30)
+
+
+def test_pane_tail_degrades_to_empty_when_tmux_is_wedged(tmp_path):
+    """sessions.capture_tail uses subprocess.run(timeout=30), which raises.
+    Unhandled it turns GET /api/task/{issue} into a 500 after 30 s."""
+    _, src = make_sources(tmp_path, sessions=WedgedSessions())
+    assert src.pane_tail(7) == ""

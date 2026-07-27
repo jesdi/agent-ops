@@ -30,8 +30,12 @@ class SPAStaticFiles(StaticFiles):
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code == 404:
+            if exc.status_code == 404 and not path.lstrip("/").startswith(
+                    "api/"):
                 return await super().get_response("index.html", scope)
+            # An unmatched /api/* path is a missing route, not a client-side
+            # one: answering it with the SPA shell surfaces in the frontend
+            # as a JSON parse error instead of a 404.
             raise
 
 SSE_KEYS = ("board", "queue", "budget", "failures", "history")

@@ -98,7 +98,13 @@ class Sources:
         return eventlog.read_tail(self._cfg.state_dir, limit=limit)
 
     def pane_tail(self, issue: int) -> str:
-        return self._sessions.capture_tail(issue)
+        try:
+            return self._sessions.capture_tail(issue)
+        except Exception:
+            # capture_tail runs tmux with timeout=30, which RAISES on a
+            # wedged server.  A missing tail degrades the task view; it must
+            # never 500 it (cf. issue_open degrading to None).
+            return ""
 
     def session_alive(self, issue: int) -> bool:
         return self._sessions.is_alive(issue)
