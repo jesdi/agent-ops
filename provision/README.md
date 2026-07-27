@@ -69,6 +69,14 @@ bypasses the proxy is served, and the header value is recorded as the
 actor on every write. UFW stays deny-all on the public interface; Funnel
 is never enabled.
 
+Because the proxy injects that header on *every* request the operator's
+browser makes — including ones a third-party page triggers — identity
+alone does not prove first-party intent. Unsafe methods (anything but
+GET/HEAD/OPTIONS) and WebSocket handshakes additionally require that any
+`Origin` header match the request's `Host`; a mismatch is 403 (WS close
+4403). Requests with no `Origin` at all — curl, and the SSE check below —
+are unaffected.
+
 After changing serve config or upgrading tailscale, re-verify the SSE
 stream end to end from another tailnet device (NOT localhost):
 `curl -N https://<box>.<tailnet>.ts.net/api/events` must show a comment
