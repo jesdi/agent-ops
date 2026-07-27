@@ -10,6 +10,8 @@ export default defineConfig({
   webServer: {
     command: 'node e2e/fake-api.mjs',
     url: 'http://127.0.0.1:8481',
-    reuseExistingServer: !process.env.CI,
+    // The fake server holds mutable seed state — reuse would leave a drained
+    // board across runs. Always start fresh.
+    reuseExistingServer: false,
   },
 })

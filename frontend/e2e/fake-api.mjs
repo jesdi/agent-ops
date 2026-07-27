@@ -114,6 +114,18 @@ const server = createServer(async (req, res) => {
     })
     return json(202, { status: 'pending', intent: `${Date.now()}-${issue}-${action}` })
   }
+  if (url.pathname === '/api/queue/boost' && req.method === 'POST') {
+    return json(200, { ok: true, reason: 'boosted' })
+  }
+  if (url.pathname === '/api/queue/next' && req.method === 'POST') {
+    return json(200, { ok: true, reason: 'queued next' })
+  }
+  if (url.pathname === '/api/queue/ready' && req.method === 'POST') {
+    return json(200, { ok: true, reason: 'marked ready' })
+  }
+  if (url.pathname.startsWith('/api/')) {
+    return json(404, { detail: 'not found' })
+  }
   if (url.pathname === '/__control__/apply-intents' && req.method === 'POST') {
     state.intents = []
     const parked = state.board.columns.find((c) => c.key === 'parked')

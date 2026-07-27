@@ -46,6 +46,7 @@ jobs:
       - run: pnpm test -- --run
 
   e2e:
+    needs: frontend
     runs-on: ubuntu-latest
     defaults:
       run:
