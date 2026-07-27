@@ -15,6 +15,7 @@ STATE_DIR="${AGENT_OPS_STATE_DIR:-$HOME/agent-ops-state}"
 UNIT_DIR="${AGENT_OPS_UNIT_DIR:-$HOME/.config/systemd/user}"
 SYSTEMCTL="${AGENT_OPS_SYSTEMCTL:-systemctl --user}"
 PODMAN="${AGENT_OPS_PODMAN:-podman}"
+PNPM="${AGENT_OPS_PNPM:-pnpm}"
 
 mkdir -p "$STATE_DIR" "$UNIT_DIR"
 
@@ -46,6 +47,11 @@ if [ "$old" != "$new" ]; then
 
   if ! git diff --quiet "$old" "$new" -- Containerfile; then
     $PODMAN build -t agent-ops-session -f Containerfile .
+  fi
+
+  if ! git diff --quiet "$old" "$new" -- frontend/; then
+    (cd frontend && $PNPM install --frozen-lockfile && $PNPM build)
+    $SYSTEMCTL try-restart agent-ops-web.service
   fi
 
   # The web console is a long-running service on an editable install: new

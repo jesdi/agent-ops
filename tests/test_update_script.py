@@ -55,6 +55,9 @@ def box(tmp_path):
     podman = bin_dir / "podman"
     podman.write_text(f'#!/bin/sh\necho "podman $@" >> "{calls}"\n')
     podman.chmod(0o755)
+    pnpm = bin_dir / "pnpm"
+    pnpm.write_text(f'#!/bin/sh\necho "pnpm $@" >> "{calls}"\n')
+    pnpm.chmod(0o755)
 
     # Seed + sync script + fake claude so the claude-home sync works.
     prov_src = Path(__file__).resolve().parent.parent / "provision"
@@ -89,6 +92,7 @@ def box(tmp_path):
         AGENT_OPS_UNIT_DIR=str(units),
         AGENT_OPS_SYSTEMCTL=f"{sysctl} --user",
         AGENT_OPS_PODMAN=str(podman),
+        AGENT_OPS_PNPM=str(pnpm),
         AGENT_OPS_CLAUDE=str(claude),
     )
     return SimpleNamespace(origin=origin, repo=repo, state=state,
@@ -204,6 +208,27 @@ def test_code_change_does_not_build_image(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
     assert "podman" not in calls(box)
+
+
+def test_frontend_change_triggers_pnpm_build(box):
+    fe = box.origin / "frontend"
+    fe.mkdir()
+    (fe / "package.json").write_text('{"name": "frontend"}\n')
+    commit_all(box.origin, "frontend change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    log = calls(box)
+    assert "pnpm install --frozen-lockfile" in log
+    assert "pnpm build" in log
+    assert "try-restart agent-ops-web.service" in log
+
+
+def test_python_change_does_not_build_frontend(box):
+    (box.origin / "app.py").write_text("x = 1\n")
+    commit_all(box.origin, "code change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "pnpm" not in calls(box)
 
 
 def test_claude_home_synced_every_pass(box):
