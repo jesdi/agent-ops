@@ -6,6 +6,8 @@ import './index.css'
 import { AppShell } from './components/AppShell'
 import { LiveUpdatesProvider } from './hooks/useLiveUpdates'
 import { BoardPage } from './pages/BoardPage'
+import { FailuresPage } from './pages/FailuresPage'
+import { HistoryPage } from './pages/HistoryPage'
 import { QueuePage } from './pages/QueuePage'
 import { TaskPage } from './pages/TaskPage'
 
@@ -23,6 +25,8 @@ createRoot(document.getElementById('root')!).render(
               <Route path="/" element={<BoardPage />} />
               <Route path="/queue" element={<QueuePage />} />
               <Route path="/task/:issue" element={<TaskPage />} />
+              <Route path="/failures" element={<FailuresPage />} />
+              <Route path="/history" element={<HistoryPage />} />
             </Routes>
           </AppShell>
         </BrowserRouter>
