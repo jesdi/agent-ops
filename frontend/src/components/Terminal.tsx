@@ -29,8 +29,15 @@ export function Terminal({ issue }: { issue: number }) {
     }
     ws.onmessage = (e) => {
       if (typeof e.data === 'string') {
-        const msg = JSON.parse(e.data) as { type: string; tail?: string }
-        if (msg.type === 'dead') setDead({ tail: msg.tail ?? '' })
+        try {
+          const msg = JSON.parse(e.data) as { type: string; tail?: string }
+          if (msg.type === 'dead') {
+            setDead({ tail: msg.tail ?? '' })
+            ws.close()
+          }
+        } catch {
+          // ignore unparseable text frames
+        }
         return
       }
       term.write(new Uint8Array(e.data as ArrayBuffer))
@@ -58,26 +65,31 @@ export function Terminal({ issue }: { issue: number }) {
     }
   }, [issue])
 
-  if (dead) {
-    return (
-      <div
-        data-testid="terminal-dead"
-        className="rounded border border-amber-300 bg-amber-50 p-3"
-      >
-        <p className="text-sm font-medium text-amber-800">
-          session task-{issue} is not running
-        </p>
-        <pre className="mt-2 max-h-64 overflow-auto rounded bg-gray-900 p-2 font-mono text-xs text-gray-100">
-          {dead.tail}
-        </pre>
-      </div>
-    )
-  }
+  // The container div is always mounted so containerRef.current is never null
+  // when the effect runs after an issue change. The dead fallback is rendered
+  // as an absolute overlay on top of the (stale) terminal rather than replacing
+  // the container — prevents a blank/unconnected terminal when navigating from
+  // a dead session to a live one.
   return (
-    <div
-      ref={containerRef}
-      data-testid="terminal"
-      className="h-96 w-full overflow-hidden rounded bg-black p-1"
-    />
+    <div className="relative">
+      <div
+        ref={containerRef}
+        data-testid="terminal"
+        className="h-96 w-full overflow-hidden rounded bg-black p-1"
+      />
+      {dead && (
+        <div
+          data-testid="terminal-dead"
+          className="absolute inset-0 rounded border border-amber-300 bg-amber-50 p-3"
+        >
+          <p className="text-sm font-medium text-amber-800">
+            session task-{issue} is not running
+          </p>
+          <pre className="mt-2 max-h-64 overflow-auto rounded bg-gray-900 p-2 font-mono text-xs text-gray-100">
+            {dead.tail}
+          </pre>
+        </div>
+      )}
+    </div>
   )
 }

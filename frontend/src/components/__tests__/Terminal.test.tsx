@@ -40,6 +40,8 @@ class FakeWebSocket {
 
 beforeEach(() => {
   FakeWebSocket.instances = []
+  write.mockClear()
+  dispose.mockClear()
   vi.stubGlobal('WebSocket', FakeWebSocket)
   // vitest 4: vi.fn used as constructor must use function/class, not arrow
   vi.stubGlobal('ResizeObserver', vi.fn(function () {
@@ -81,4 +83,24 @@ it('AWKWARD: dead message renders the fallback with the pane tail', async () => 
   expect(screen.getByTestId('terminal-dead').textContent).toContain(
     'last output line',
   )
+})
+
+it('dead → live navigation: re-render with new issue connects new WS and clears fallback', async () => {
+  const { Terminal } = await import('../Terminal')
+  const { rerender } = render(<Terminal issue={42} />)
+  const ws42 = FakeWebSocket.instances[0]!
+  // drive the dead frame on issue 42
+  act(() => {
+    ws42.onmessage?.({
+      data: JSON.stringify({ type: 'dead', tail: 'done\n' }),
+    })
+  })
+  expect(screen.getByText('session task-42 is not running')).toBeInTheDocument()
+  // navigate to issue 43
+  act(() => { rerender(<Terminal issue={43} />) })
+  // a second WebSocket must have been created for task 43
+  expect(FakeWebSocket.instances).toHaveLength(2)
+  expect(FakeWebSocket.instances[1]!.url).toContain('/api/task/43/terminal')
+  // dead fallback must be gone
+  expect(screen.queryByTestId('terminal-dead')).not.toBeInTheDocument()
 })
