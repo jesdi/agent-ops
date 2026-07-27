@@ -6,9 +6,14 @@ import { useEffect, useRef, useState } from 'react'
 export function Terminal({ issue }: { issue: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dead, setDead] = useState<{ tail: string } | null>(null)
+  // A dropped *connection* is not a dead *session*: the tmux session may well
+  // still be running (roaming Tailscale, agent-ops-web.service restarting, a
+  // 4401/4403 auth close). Tracked separately so the copy can say so.
+  const [disconnected, setDisconnected] = useState(false)
 
   useEffect(() => {
     setDead(null)
+    setDisconnected(false)
     const el = containerRef.current
     if (!el) return
 
@@ -24,6 +29,22 @@ export function Terminal({ issue }: { issue: number }) {
     )
     ws.binaryType = 'arraybuffer'
 
+    // `disposed` — this effect was torn down (unmount or issue change); its
+    // own ws.close() must not paint a disconnect banner over the next issue.
+    // `sessionDead` — the server told us the session is gone and we closed on
+    // purpose; that is the dead state, not a dropped connection.
+    // `closed` — the socket is no longer usable; stop forwarding keystrokes.
+    let disposed = false
+    let sessionDead = false
+    let closed = false
+
+    const handleClose = () => {
+      closed = true
+      if (!disposed && !sessionDead) setDisconnected(true)
+    }
+    ws.onclose = handleClose
+    ws.onerror = handleClose
+
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
     }
@@ -32,6 +53,7 @@ export function Terminal({ issue }: { issue: number }) {
         try {
           const msg = JSON.parse(e.data) as { type: string; tail?: string }
           if (msg.type === 'dead') {
+            sessionDead = true
             setDead({ tail: msg.tail ?? '' })
             ws.close()
           }
@@ -44,12 +66,12 @@ export function Terminal({ issue }: { issue: number }) {
     }
 
     const dataSub = term.onData((d) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (!closed && ws.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(d))
       }
     })
     const resizeSub = term.onResize(({ cols, rows }) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (!closed && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resize', cols, rows }))
       }
     })
@@ -57,6 +79,7 @@ export function Terminal({ issue }: { issue: number }) {
     observer.observe(el)
 
     return () => {
+      disposed = true
       observer.disconnect()
       dataSub.dispose()
       resizeSub.dispose()
@@ -88,6 +111,20 @@ export function Terminal({ issue }: { issue: number }) {
           <pre className="mt-2 max-h-64 overflow-auto rounded bg-gray-900 p-2 font-mono text-xs text-gray-100">
             {dead.tail}
           </pre>
+        </div>
+      )}
+      {!dead && disconnected && (
+        <div
+          data-testid="terminal-disconnected"
+          className="absolute inset-0 rounded border border-red-300 bg-red-50 p-3"
+        >
+          <p className="text-sm font-medium text-red-800">
+            terminal disconnected — reattach to continue
+          </p>
+          <p className="mt-2 text-xs text-red-700">
+            the connection to task-{issue} dropped. The session may still be
+            running; detach and attach again to reconnect.
+          </p>
         </div>
       )}
     </div>
