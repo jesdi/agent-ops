@@ -45,7 +45,15 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         # genuinely risky ones — the stop then flows into the park/resume
         # path (Stop hook → waitd → Telegram). acceptEdits still asked for
         # every non-edit action, which no one is attached to answer.
-        f"{image()} claude --permission-mode auto --model {model} {claude_args}"
+        #
+        # --remote-control <name>: every box session is reachable from
+        # claude.ai / the Claude app, named after its task (task-<N>) so it
+        # is identifiable there. Remote Control is interactive-only (the
+        # headless -p keepalive cannot and need not use it) and needs the
+        # claude-home OAuth login, which the mounted store provides. It is a
+        # session-config flag, orthogonal to --continue on the resume path.
+        f"{image()} claude --remote-control {name} "
+        f"--permission-mode auto --model {model} {claude_args}"
     )
 
 
