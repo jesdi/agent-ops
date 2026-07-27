@@ -1164,3 +1164,311 @@ def test_target_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
     assert sess.spawned == [(42, "spec", "claude-fable-5")]
+
+
+from dispatcher import eventlog
+
+
+def test_claim_and_spawn_append_claimed_and_stage_started_events(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(FakeGitHub([Candidate(42, "Add widget", "u42")])))
+    events = eventlog.read_tail(c.state_dir)
+    assert [(e["event"], e["issue"]) for e in events] == [
+        ("claimed", 42), ("stage-started", 42)]
+    assert events[0]["target"] == "portfolio_eval"
+    assert events[1]["stage"] == "spec"
+    assert events[1]["model"] == "claude-opus-4-8"
+
+
+def test_park_for_input_appends_parked_event(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "blocked", "note": "need a decision"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    parked = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "parked"]
+    assert len(parked) == 1
+    assert parked[0]["issue"] == 42 and parked[0]["stage"] == "implement"
+    assert parked[0]["detail"] == "need a decision"
+
+
+def test_park_for_ci_appends_parked_event_with_run_id_detail(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "awaiting-ci", "run_id": 4242}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    parked = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "parked"]
+    assert parked[0]["detail"] == "awaiting CI run 4242"
+
+
+def test_resume_appends_resumed_event(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, park=PARK_WAKE, pending_reply="use oauth")
+    main.run_pass(c, deps(sess=FakeSessions()))
+    resumed = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "resumed"]
+    assert len(resumed) == 1
+    assert resumed[0]["issue"] == 42 and resumed[0]["stage"] == "implement"
+    assert resumed[0]["model"] == "claude-opus-4-8"
+
+
+def test_implement_done_appends_pr_opened_event(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "done", "note": "PR #9"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    assert load(c.state_dir, 42).stage is Stage.PR_OPEN
+    opened = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "pr-opened"]
+    assert len(opened) == 1 and opened[0]["issue"] == 42
+
+
+def test_crash_appends_failed_event(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT)
+    main.run_pass(c, deps(FakeGitHub(), FakeSessions(alive=set())))
+    failed = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["issue"] == 42
+    assert failed[0]["detail"] == "session crashed mid-stage"
+
+
+from dispatcher import intents as intents_mod
+
+
+def test_reply_intent_wakes_parked_task_and_is_deleted(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = replace_capacity(c, 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43)  # active task occupies the only slot → 42 stays PARK_WAKE
+    intents_mod.write_intent(c.state_dir, "reply", 42, {"text": "use oauth"},
+                             actor="jesdi@github", epoch_ms=1)
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE and t.pending_reply == "use oauth"
+    assert intents_mod.list_intents(c.state_dir) == []
+    applied = [e for e in eventlog.read_tail(c.state_dir)
+               if e["event"] == "intent-applied"]
+    assert applied[0]["actor"] == "jesdi@github"
+    assert applied[0]["detail"] == "reply" and applied[0]["issue"] == 42
+
+
+def test_reply_intent_for_unparked_task_is_skipped_and_deleted(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42)  # not parked
+    intents_mod.write_intent(c.state_dir, "reply", 42, {"text": "hi"}, "op", 1)
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    assert load(c.state_dir, 42).park == ""  # untouched
+    assert intents_mod.list_intents(c.state_dir) == []  # still deleted
+
+
+def test_park_intent_parks_a_live_task(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42)
+    intents_mod.write_intent(c.state_dir, "park", 42, {}, "op", 1)
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_HUMAN and t.park_msg_id == 77
+    assert sess.ended == [42]
+    assert "parked_question" in d.notifier.sent
+    assert intents_mod.list_intents(c.state_dir) == []
+
+
+def test_kill_intent_ends_releases_and_tombstones_state(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42)
+    mark_waiting(c.state_dir, 42)
+    intents_mod.write_intent(c.state_dir, "kill", 42, {}, "op", 1)
+    gh = FakeGitHub()
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(gh, sess))
+    assert sess.ended == [42]
+    assert gh.released == [(42, "abandoned by operator")]
+    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert not has_waiting(c.state_dir, 42)
+    failed = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "failed"]
+    assert failed[0]["detail"] == "killed by operator"
+
+
+def test_kill_intent_survives_release_failure(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42)
+
+    class ReleaseFailsGitHub(FakeGitHub):
+        def release(self, target, issue, reason):
+            raise RuntimeError("gh outage")
+
+    intents_mod.write_intent(c.state_dir, "kill", 42, {}, "op", 1)
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(ReleaseFailsGitHub(), sess))  # must not raise
+    assert sess.ended == [42]
+    assert load(c.state_dir, 42).stage is Stage.FAILED  # tombstone written even when release raises
+
+
+def test_kill_intent_does_not_reclaim_released_issue_same_pass(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42)
+    intents_mod.write_intent(c.state_dir, "kill", 42, {}, "op", 1)
+    # release() flips #42 back to Ready+auto, so it is still a live board
+    # candidate this pass; the FAILED tombstone must stop _claim_new from
+    # re-claiming the issue the operator just killed.
+    gh = FakeGitHub([Candidate(42, "Killed but still on board", "u42")])
+    main.run_pass(c, deps(gh, FakeSessions(alive={42})))
+    assert gh.claimed == []
+    assert load(c.state_dir, 42).stage is Stage.FAILED
+
+
+def test_retry_intent_clears_quarantine_and_fingerprint(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    failures.write_quarantine(c.state_dir, "portfolio_eval", 42,
+                              "jesdi/agent-ops", 501, "abc")
+    failures.fingerprint_path(c.state_dir, "abc").parent.mkdir(
+        parents=True, exist_ok=True)
+    failures.fingerprint_path(c.state_dir, "abc").write_text(
+        json.dumps({"repo": "jesdi/agent-ops", "issue": 501, "when": "w"}))
+    intents_mod.write_intent(c.state_dir, "retry", 42, {}, "op", 1)
+    gh = FakeGitHub([Candidate(42, "Retry me", "u42")],
+                    issue_states={("jesdi/agent-ops", 501): "OPEN"})
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert not failures.quarantine_path(
+        c.state_dir, "portfolio_eval", 42).exists()
+    assert not failures.fingerprint_path(c.state_dir, "abc").exists()
+    assert gh.claimed == [42], "cleared before _claim_new → claimable same pass"
+
+
+def test_resume_intent_wakes_with_default_text(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    intents_mod.write_intent(c.state_dir, "resume", 42, {}, "op", 1)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.resumed == [
+        (42, "The operator resumed this task. Continue.", "claude-opus-4-8")]
+
+
+def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    intents_mod.write_intent(c.state_dir, "resume", 42, {"text": "ship it"},
+                             "op", 1)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.resumed == [(42, "ship it", "claude-opus-4-8")]
+
+
+def test_failed_intent_does_not_abort_pass_or_remaining_intents(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = replace_capacity(c, 2)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43, park=PARK_HUMAN, park_msg_id=56)
+    make_task(c, issue=44)  # active; keeps 42/43 at PARK_WAKE... capacity 2 → one resumes
+
+    real_wake = main._wake
+
+    def wake_or_boom(cfg_, task, text, hold=False):
+        if task.issue == 42:
+            raise RuntimeError("disk full")
+        real_wake(cfg_, task, text, hold=hold)
+
+    monkeypatch.setattr(main, "_wake", wake_or_boom)
+    intents_mod.write_intent(c.state_dir, "resume", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "resume", 43, {}, "op", 2)
+    main.run_pass(c, deps(sess=FakeSessions(alive={44})))  # must not raise
+    assert load(c.state_dir, 42).park == PARK_HUMAN  # failed intent: unchanged
+    assert load(c.state_dir, 43).park in (PARK_WAKE, "")  # later intent applied
+    assert intents_mod.list_intents(c.state_dir) == []  # both files deleted
+
+
+def test_dry_run_does_not_drain_intents(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    intents_mod.write_intent(c.state_dir, "resume", 42, {}, "op", 1)
+    main.run_pass(c, deps(sess=FakeSessions()), dry_run=True)
+    assert len(intents_mod.list_intents(c.state_dir)) == 1  # untouched
+
+
+from dispatcher.state import clear_attached, mark_attached
+
+
+def test_attached_marker_holds_resume(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE, pending_reply="go")
+    mark_attached(c.state_dir, 42)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.resumed == []
+    assert load(c.state_dir, 42).park == PARK_WAKE  # still queued to wake
+
+
+def test_attached_marker_holds_drive_no_crash_no_park(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    # Session dead AND a blocked signal: without the marker this pass would
+    # crash-handle or park. With it: nothing happens.
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "blocked", "note": "q"}))
+    mark_attached(c.state_dir, 42)
+    gh = FakeGitHub()
+    sess = FakeSessions(alive=set())
+    d = deps(gh, sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.stage is Stage.IMPLEMENT and t.park == ""  # untouched
+    assert gh.released == [] and sess.ended == []
+    assert "session_crashed" not in d.notifier.sent
+    assert "parked_question" not in d.notifier.sent
+
+
+def test_clearing_attached_marker_releases_the_hold(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE, pending_reply="go")
+    mark_attached(c.state_dir, 42)
+    sess = FakeSessions()
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    assert sess.resumed == []
+    clear_attached(c.state_dir, 42)
+    main.run_pass(c, d)
+    assert sess.resumed == [(42, "go", "claude-opus-4-8")]
