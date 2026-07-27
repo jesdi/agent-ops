@@ -6,7 +6,8 @@ from web.app import create_app
 
 
 def test_json_stub_without_dist(tmp_path):
-    client = TestClient(create_app(make_config(tmp_path), FakeSources()))
+    client = TestClient(create_app(make_config(tmp_path), FakeSources(),
+                                   frontend_dist=tmp_path / "nonexistent"))
     r = client.get("/", headers=HEADERS)
     assert r.status_code == 200
     assert r.json()["service"] == "agent-ops-web"

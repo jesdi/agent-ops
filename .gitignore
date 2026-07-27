@@ -17,3 +17,4 @@ targets.yaml
 .claude/skills/branch-audit
 .claude/skills/ceo-review
 .claude/skills/file-bug-issue
+frontend/dist/

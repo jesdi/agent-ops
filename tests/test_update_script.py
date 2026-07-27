@@ -1,5 +1,6 @@
 """E2E tests for provision/update.sh in a sandboxed git + fake-systemctl rig."""
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,6 +56,9 @@ def box(tmp_path):
     podman = bin_dir / "podman"
     podman.write_text(f'#!/bin/sh\necho "podman $@" >> "{calls}"\n')
     podman.chmod(0o755)
+    pnpm = bin_dir / "pnpm"
+    pnpm.write_text(f'#!/bin/sh\necho "pnpm $@" >> "{calls}"\n')
+    pnpm.chmod(0o755)
 
     # Seed + sync script + fake claude so the claude-home sync works.
     prov_src = Path(__file__).resolve().parent.parent / "provision"
@@ -89,6 +93,7 @@ def box(tmp_path):
         AGENT_OPS_UNIT_DIR=str(units),
         AGENT_OPS_SYSTEMCTL=f"{sysctl} --user",
         AGENT_OPS_PODMAN=str(podman),
+        AGENT_OPS_PNPM=str(pnpm),
         AGENT_OPS_CLAUDE=str(claude),
     )
     return SimpleNamespace(origin=origin, repo=repo, state=state,
@@ -204,6 +209,78 @@ def test_code_change_does_not_build_image(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
     assert "podman" not in calls(box)
+
+
+def test_frontend_change_triggers_pnpm_build(box):
+    fe = box.origin / "frontend"
+    fe.mkdir()
+    (fe / "package.json").write_text('{"name": "frontend"}\n')
+    commit_all(box.origin, "frontend change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    log = calls(box)
+    assert "pnpm install --frozen-lockfile" in log
+    assert "pnpm build" in log
+    assert "try-restart agent-ops-web.service" in log
+
+
+def seed_frontend(box):
+    """Commit a frontend/ dir upstream and pull it into the box checkout."""
+    fe = box.origin / "frontend"
+    fe.mkdir()
+    (fe / "package.json").write_text('{"name": "frontend"}\n')
+    commit_all(box.origin, "add frontend")
+
+
+def test_missing_frontend_dist_builds_without_new_commits(box):
+    # Like unit sync and claude-home sync, the frontend build repairs actual
+    # drift: a host cloned at HEAD never sees a rev delta, and a cleared dist
+    # must heal. Otherwise web/app.py serves the "ui": "not built" stub forever.
+    seed_frontend(box)
+    r = run_update(box)  # rev delta: builds
+    assert r.returncode == 0, r.stderr
+    assert "pnpm build" in calls(box)
+
+    # dist now present, no new commits — must NOT rebuild.
+    (box.repo / "frontend" / "dist").mkdir(parents=True)
+    box.calls.unlink()
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "pnpm" not in calls(box)
+
+    # dist cleared by hand, still no new commits — must heal.
+    shutil.rmtree(box.repo / "frontend" / "dist")
+    box.calls.unlink()
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    log = calls(box)
+    assert "pnpm install --frozen-lockfile" in log
+    assert "pnpm build" in log
+    assert "try-restart agent-ops-web.service" in log
+
+
+def test_missing_pnpm_skips_build_without_failing_the_pass(box):
+    # bootstrap.sh is one-shot: a box provisioned before the frontend existed
+    # has no pnpm. `set -euo pipefail` would abort the pass at the build line
+    # and take unit sync + claude-home sync down with it on every firing.
+    seed_frontend(box)
+    (box.units / "agent-ops-waitd.service").write_text(
+        "[Unit]\nDescription=stale ExecStart\n")
+    r = run_update(box, AGENT_OPS_PNPM="agent-ops-nonexistent-pnpm")
+    assert r.returncode == 0, r.stderr
+    assert "pnpm" not in calls(box)
+    assert "pnpm not found" in r.stderr
+    # Everything downstream of the build still ran.
+    assert "waitd v1" in (box.units / "agent-ops-waitd.service").read_text()
+    assert (box.state / "claude-home" / "CLAUDE.md").exists()
+
+
+def test_python_change_does_not_build_frontend(box):
+    (box.origin / "app.py").write_text("x = 1\n")
+    commit_all(box.origin, "code change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "pnpm" not in calls(box)
 
 
 def test_claude_home_synced_every_pass(box):
