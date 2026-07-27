@@ -83,3 +83,74 @@ def test_next_and_ready_happy_paths(tmp_path):
                     json={"issue": 9})
     assert r.status_code == 200
     assert [e[0] for e in fake.appended] == ["queue-next", "queue-ready"]
+
+
+# -- stale-backed writes ---------------------------------------------------
+# When GitHub is unreachable the rank cache keeps serving rows so the queue
+# VIEW stays useful, but a write evaluates a row whose real state may have
+# moved on and then performs a synchronous GitHub write on that basis.
+
+STALE_MSG = "queue data is stale (as of 2026-07-25T10:00:00+00:00); retry"
+
+
+def test_boost_on_stale_rows_is_409_and_writes_nothing(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.rank["alpha"] = ([dict(ROW)], "2026-07-25T10:00:00+00:00", True)
+    r = client.post("/api/queue/boost", headers=HEADERS,
+                    json={"issue": 9, "amount": 3})
+    assert r.status_code == 409
+    assert r.json()["detail"].startswith(STALE_MSG)
+    assert "GitHub is reachable" in r.json()["detail"]
+    assert fake.applied_plans == [] and fake.appended == []
+
+
+def test_next_and_ready_also_refuse_stale_rows(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.rank["alpha"] = ([dict(ROW, status="Backlog", labels=[])],
+                          "2026-07-25T10:00:00+00:00", True)
+    assert client.post("/api/queue/next", headers=HEADERS,
+                       json={"issue": 9, "force": True}).status_code == 409
+    assert client.post("/api/queue/ready", headers=HEADERS,
+                       json={"issue": 9}).status_code == 409
+    assert fake.applied_plans == []
+
+
+def test_cold_cache_and_unreachable_github_reports_staleness_not_404(tmp_path):
+    """rank_rows returns [] with stale=True on a cold cache, which used to
+    read as 'issue not on any queue' — indistinguishable from a genuinely
+    unknown issue."""
+    fake, client = rig(tmp_path)
+    fake.rank["alpha"] = ([], "2026-07-25T10:00:00+00:00", True)
+    r = client.post("/api/queue/boost", headers=HEADERS,
+                    json={"issue": 9, "amount": 1})
+    assert r.status_code == 409
+    assert r.json()["detail"].startswith(STALE_MSG)
+
+
+def test_unknown_issue_on_fresh_data_is_still_404(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.rank["alpha"] = ([dict(ROW)], "t", False)
+    r = client.post("/api/queue/boost", headers=HEADERS,
+                    json={"issue": 999, "amount": 1})
+    assert r.status_code == 404
+    assert "not on any queue" in r.json()["detail"]
+
+
+def test_queue_view_still_serves_stale_rows(tmp_path):
+    """Refusing WRITES must not stop the read model from showing the cache."""
+    fake, client = rig(tmp_path)
+    fake.rank["alpha"] = ([dict(ROW)], "2026-07-25T10:00:00+00:00", True)
+    body = client.get("/api/queue", headers=HEADERS).json()
+    assert body["targets"][0]["stale"] is True
+    assert body["targets"][0]["rows"][0]["number"] == 9
+
+
+def test_fresh_target_write_is_unaffected_by_another_stale_target(tmp_path):
+    targets = [make_target("alpha"), make_target("beta", "jesdi/beta")]
+    fake, client = rig(tmp_path, targets=targets)
+    fake.rank["alpha"] = ([dict(ROW)], "t", False)
+    fake.rank["beta"] = ([], "2026-07-25T10:00:00+00:00", True)
+    r = client.post("/api/queue/boost", headers=HEADERS,
+                    json={"issue": 9, "amount": 2})
+    assert r.status_code == 200
+    assert fake.applied_plans[0][0] == "alpha"

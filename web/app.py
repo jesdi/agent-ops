@@ -128,17 +128,39 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             events=[read_model.EventEntry(**e)
                     for e in sources.events_tail(limit)])
 
+    def _stale(as_of: str) -> HTTPException:
+        return HTTPException(
+            409, f"queue data is stale (as of {as_of}); "
+                 "retry when GitHub is reachable")
+
     def _locate_row(issue: int):
-        hits = [(target, row)
-                for target in cfg.targets
-                for row in sources.rank_rows(target)[0]
-                if row["number"] == issue]
+        """Find the row a queue write targets, refusing stale-backed writes.
+
+        When GitHub is unreachable the rank cache keeps the VIEW useful, but
+        a write would evaluate a row whose real state may have moved on and
+        then push a synchronous GitHub change on that basis.  A cold cache
+        additionally yields no rows at all, which must report staleness
+        rather than masquerade as an unknown issue.
+        """
+        hits = []
+        stale_as_of = None
+        for target in cfg.targets:
+            rows, as_of, stale = sources.rank_rows(target)
+            if stale and stale_as_of is None:
+                stale_as_of = as_of
+            hits += [(target, row, stale, as_of)
+                     for row in rows if row["number"] == issue]
         if not hits:
+            if stale_as_of is not None:
+                raise _stale(stale_as_of)
             raise HTTPException(404, f"issue {issue} not on any queue")
         if len(hits) > 1:
             raise HTTPException(
                 409, f"issue {issue} is ambiguous across targets")
-        return hits[0]
+        target, row, stale, as_of = hits[0]
+        if stale:
+            raise _stale(as_of)
+        return target, row
 
     def _apply(event: str, issue: int, plan, op: Operator, detail: str,
                target):
