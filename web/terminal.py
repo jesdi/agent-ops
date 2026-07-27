@@ -113,8 +113,11 @@ async def run_terminal(ws: WebSocket, issue: int, sources,
             os._exit(127)
 
     viewers.attach(issue)
-    sources.append_event("terminal-attach", issue=issue, actor=actor,
-                         detail=view)
+    # Guarded: this runs before the try/finally, so a raising event log here
+    # would leak both the marker and the child process.
+    with contextlib.suppress(Exception):
+        sources.append_event("terminal-attach", issue=issue, actor=actor,
+                             detail=view)
     loop = asyncio.get_running_loop()
 
     async def pump_pty() -> None:
