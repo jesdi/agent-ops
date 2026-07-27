@@ -54,6 +54,24 @@ it('invalidates exactly the changed query keys on message', () => {
   expect(keys).not.toContain(JSON.stringify(['failures']))
 })
 
+it('a malformed frame is ignored, and the next good frame still invalidates', () => {
+  const spy = vi.spyOn(qc, 'invalidateQueries')
+  setup()
+  const es = FakeEventSource.instances[0]!
+  act(() => { es.onopen?.() })
+  expect(() => {
+    act(() => { es.onmessage?.({ data: 'not json at all' }) })
+  }).not.toThrow()
+  expect(() => {
+    act(() => { es.onmessage?.({ data: '{"changed": "queue"}' }) })
+  }).not.toThrow()
+  expect(spy).not.toHaveBeenCalled()
+  act(() => { es.onmessage?.({ data: '{"changed": ["queue"]}' }) })
+  expect(spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))).toContain(
+    JSON.stringify(['queue']),
+  )
+})
+
 it('flips to polling on error and reconnects with backoff', () => {
   const { getByTestId } = setup()
   const first = FakeEventSource.instances[0]!

@@ -16,9 +16,13 @@ export function BoardPage() {
   }
 
   const { columns, capacity } = boardQuery.data
-  const pendingByIssue = new Map(
-    (intentsQuery.data?.intents ?? []).map((i) => [i.issue, i.action]),
-  )
+  // An issue can carry several pending intents at once (park then kill).
+  // Collapsing to one would silently drop the rest — and TaskPage renders
+  // all of them, so the board must too.
+  const pendingByIssue = new Map<number, string[]>()
+  for (const i of intentsQuery.data?.intents ?? []) {
+    pendingByIssue.set(i.issue, [...(pendingByIssue.get(i.issue) ?? []), i.action])
+  }
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -26,7 +30,18 @@ export function BoardPage() {
         <span className="text-sm text-gray-600">
           {capacity.active}/{capacity.capacity} active · slots {capacity.slots_used}/{capacity.max_slots}
         </span>
-        {budgetQuery.data && <BudgetBar budget={budgetQuery.data} />}
+        {/* A failed /api/budget must not silently vanish the gauge — the
+            operator would read "no gauge" as "nothing to worry about". */}
+        {budgetQuery.isError ? (
+          <span
+            data-testid="budget-error"
+            className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+          >
+            usage unknown — budget unavailable: {budgetQuery.error.message}
+          </span>
+        ) : (
+          budgetQuery.data && <BudgetBar budget={budgetQuery.data} />
+        )}
       </div>
       <div className="flex gap-4 overflow-x-auto pb-4">
         {columns.map((column) => (

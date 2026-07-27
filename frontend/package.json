@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
+    "test:e2e": "pnpm build && playwright test",
     "gen:api": "PYTHONPATH=.. python -m web.openapi > /tmp/openapi.json && openapi-typescript /tmp/openapi.json -o src/lib/api-types.ts"
   },
   "dependencies": {

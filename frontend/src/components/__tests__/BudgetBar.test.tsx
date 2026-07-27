@@ -9,6 +9,15 @@ it('shows utilization, reset countdown, and spawn verdict', () => {
   expect(screen.getByText(/will spawn/)).toBeInTheDocument()
 })
 
+it('the progressbar role carries a complete accessible range', () => {
+  render(<BudgetBar budget={budget} />)
+  const bar = screen.getByRole('progressbar')
+  expect(bar).toHaveAttribute('aria-valuemin', '0')
+  expect(bar).toHaveAttribute('aria-valuemax', '100')
+  expect(bar).toHaveAttribute('aria-valuenow', '62')
+  expect(bar).toHaveAccessibleName('usage budget utilization')
+})
+
 it('unavailable source states the consequence, not an empty gauge', () => {
   render(<BudgetBar budget={budgetUnavailable} />)
   expect(

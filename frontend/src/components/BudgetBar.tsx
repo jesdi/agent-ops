@@ -16,7 +16,11 @@ export function BudgetBar({ budget }: { budget: BudgetView }) {
     <div className="flex items-center gap-3 text-sm">
       <div
         role="progressbar"
+        aria-label="usage budget utilization"
+        aria-valuemin={0}
+        aria-valuemax={100}
         aria-valuenow={Math.round(budget.utilization * 100)}
+        aria-valuetext={pct}
         className="h-2 w-40 overflow-hidden rounded bg-gray-200"
       >
         <div

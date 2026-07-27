@@ -3,7 +3,7 @@ import { TaskCardView } from './TaskCard'
 
 export interface ColumnProps {
   column: { key: string; title: string; cards: TaskCard[] }
-  pendingByIssue: ReadonlyMap<number, string>
+  pendingByIssue: ReadonlyMap<number, readonly string[]>
   collapsed: boolean
   onToggle: () => void
 }
@@ -25,7 +25,7 @@ export function BoardColumn({ column, pendingByIssue, collapsed, onToggle }: Col
             <TaskCardView
               key={card.issue}
               card={card}
-              pendingAction={pendingByIssue.get(card.issue)}
+              pendingActions={pendingByIssue.get(card.issue)}
             />
           ))}
         </div>

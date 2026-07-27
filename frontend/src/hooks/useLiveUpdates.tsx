@@ -35,8 +35,16 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         setConnected(true)
       }
       source.onmessage = (e) => {
-        const { changed } = JSON.parse(e.data) as { changed: string[] }
-        for (const resource of changed) {
+        // A malformed frame must not throw out of the handler — that would
+        // drop this message's invalidations and leave the console stale.
+        let changed: unknown
+        try {
+          changed = (JSON.parse(e.data as string) as { changed?: unknown }).changed
+        } catch {
+          return
+        }
+        if (!Array.isArray(changed)) return
+        for (const resource of changed as string[]) {
           for (const key of CHANGED_TO_KEYS[resource] ?? []) {
             void queryClient.invalidateQueries({ queryKey: key })
           }
