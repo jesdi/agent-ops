@@ -157,3 +157,24 @@ def has_waiting(state_dir: str | Path, issue: int) -> bool:
 
 def clear_waiting(state_dir: str | Path, issue: int) -> None:
     _waiting_path(state_dir, issue).unlink(missing_ok=True)
+
+
+def _attached_path(state_dir: str | Path, issue: int) -> Path:
+    return Path(state_dir) / f"attached-{issue}"
+
+
+def mark_attached(state_dir: str | Path, issue: int) -> None:
+    """A human is attached to this task's tmux (web terminal, Plan 2).
+    While the marker exists the dispatcher holds the task: no resume, no
+    park, no reap — the meaning hold_for_attach already carries."""
+    p = _attached_path(state_dir, issue)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.touch()
+
+
+def has_attached(state_dir: str | Path, issue: int) -> bool:
+    return _attached_path(state_dir, issue).exists()
+
+
+def clear_attached(state_dir: str | Path, issue: int) -> None:
+    _attached_path(state_dir, issue).unlink(missing_ok=True)

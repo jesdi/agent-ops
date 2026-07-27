@@ -17,7 +17,7 @@ from pathlib import Path
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
-from dispatcher import failures
+from dispatcher import eventlog, failures, intents, queue_ops
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, RetryStage, SetTaskStage,
@@ -27,8 +27,8 @@ from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_WAKE,
                               Stage, TaskState, active, allocate_slot,
-                              clear_waiting, has_waiting, load_all,
-                              read_stage_signal, save)
+                              clear_waiting, has_attached, has_waiting, load,
+                              load_all, read_stage_signal, save)
 from dispatcher.workspace import create_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
@@ -98,9 +98,6 @@ def _status_lines(cfg: Config) -> list[str]:
     return lines
 
 
-NEXT_BOOST = 99
-
-
 def _find_rows(cfg: Config, deps: Deps, issue: int) -> list[tuple]:
     return [(target, row)
             for target in cfg.targets
@@ -158,10 +155,9 @@ def _handle_boost(cfg: Config, deps: Deps, issue: int, amount: int) -> None:
     if not located:
         return
     target, row = located
-    current = row.get("boost", 0)
-    new = current + amount
-    deps.github.set_boost(target, issue, new)
-    deps.notifier.send("status", lines=[f"#{issue} boost {current} → {new}"])
+    plan = queue_ops.plan_boost(row, amount)
+    queue_ops.apply_plan(deps.github, target, issue, plan)
+    deps.notifier.send("status", lines=plan.reason.split("\n"))
 
 
 def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
@@ -169,39 +165,9 @@ def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
     if not located:
         return
     target, row = located
-    if row["blocked"]:
-        deps.notifier.send("status", lines=[
-            f"#{issue} is blocked — resolve its blockers first "
-            "(blocked issues cannot be forced)"])
-        return
-    if row.get("status") == "In progress":
-        # The board is the double-dispatch guard: flipping an In-progress
-        # issue back to Ready would let this pass claim work already in
-        # flight. Never forceable.
-        deps.notifier.send("status", lines=[
-            f"#{issue} is already In progress — work on it is already in "
-            "flight (in-progress issues cannot be forced)"])
-        return
-    problems = []
-    if row.get("status") != "Ready":
-        problems.append(f"status is {row.get('status') or 'unset'}, not Ready")
-    if "auto" not in row.get("labels", []):
-        problems.append("missing the auto label")
-    if problems and not force:
-        deps.notifier.send("status", lines=[
-            f"#{issue} is not eligible: " + "; ".join(problems) + ".",
-            f"Send /next {issue} force to make it eligible and enqueue."])
-        return
-    # Boost FIRST: it is the mutation most likely to fail (the Boost field may
-    # not exist on the board yet), and failing before status/label keeps a
-    # failed /next a clean no-op rather than a half-eligible issue.
-    deps.github.set_boost(target, issue, NEXT_BOOST)
-    if row.get("status") != "Ready":
-        deps.github.set_status(target, issue, target.status_ready_option_id)
-    if "auto" not in row.get("labels", []):
-        deps.github.add_label(target, issue, "auto")
-    deps.notifier.send("status", lines=[
-        f"#{issue} enqueued at the head (boost {NEXT_BOOST})"])
+    plan = queue_ops.plan_next(row, force)
+    queue_ops.apply_plan(deps.github, target, issue, plan)
+    deps.notifier.send("status", lines=plan.reason.split("\n"))
 
 
 def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
@@ -283,6 +249,8 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     deps.sessions.spawn_stage(task.issue, task.worktree, prompt, stage.value, model)
     task = replace(task, stage=stage, updated_at=_now())
     save(cfg.state_dir, task)
+    eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
+                          issue=task.issue, stage=stage.value, model=model)
     return task
 
 
@@ -311,6 +279,8 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+                          issue=task.issue, stage=task.stage.value, detail=note)
 
 
 def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -349,6 +319,9 @@ def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_CI, ci_run_id=run_id,
                                 updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail=f"awaiting CI run {run_id}")
 
 
 def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
@@ -379,6 +352,8 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         key=lambda t: t.updated_at,
     )
     for task in woken:
+        if has_attached(cfg.state_dir, task.issue):
+            continue  # a human is typing in this session — do not resume over them
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             return
@@ -403,10 +378,15 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         save(cfg.state_dir, replace(task, park="", pending_reply="",
                                     hold_for_attach=False, park_msg_id=0,
                                     updated_at=_now()))
+        eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
+                              issue=task.issue, stage=task.stage.value,
+                              model=model)
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 budget_ok: bool, dry_run: bool = False) -> None:
+    if has_attached(cfg.state_dir, task.issue):
+        return  # held for a live human attach: no park, no reap, no spawn
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.issue)
     waiting = has_waiting(cfg.state_dir, task.issue)
@@ -428,6 +408,10 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             clear_waiting(cfg.state_dir, task.issue)
             task = replace(task, stage=act.stage, updated_at=_now())
             save(cfg.state_dir, task)
+            if act.stage is Stage.PR_OPEN:
+                eventlog.append_event(cfg.state_dir, "pr-opened",
+                                      target=target.name, issue=task.issue,
+                                      stage=act.stage.value)
         elif isinstance(act, Notify):
             _notify(deps, target, task, act.template, act.note)
         elif isinstance(act, SpawnStage):
@@ -446,6 +430,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             deps.github.release(target, task.issue, "session crashed mid-stage")
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
                                         updated_at=_now()))
+            eventlog.append_event(cfg.state_dir, "failed", target=target.name,
+                                  issue=task.issue, stage=task.stage.value,
+                                  detail="session crashed mid-stage")
             _report_session_crash(cfg, deps, target, task, dry_run)
 
 
@@ -529,6 +516,8 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
                          title=cand.title, updated_at=_now(),
                          effort=cand.effort, labels=cand.labels)
         save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
+        eventlog.append_event(cfg.state_dir, "claimed", target=target.name,
+                              issue=cand.number, stage=Stage.QUEUED.value)
         try:
             deps.github.claim(target, cand)  # irreversible board mutation — last
             _spawn_stage(cfg, deps, target, task, Stage.SPEC)
@@ -538,7 +527,100 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         free -= 1
 
 
+def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
+                      intent: intents.Intent) -> None:
+    issue = intent.issue
+    task = load(cfg.state_dir, issue)
+    if intent.action == "reply":
+        if task is None or task.park != PARK_HUMAN:
+            print(f"[warn] reply intent for #{issue}: task not parked for "
+                  f"input — skipped", file=sys.stderr)
+            return
+        _wake(cfg, task, intent.payload.get("text", ""))
+    elif intent.action == "park":
+        if (task is None or task.stage not in IN_FLIGHT_STAGES or task.park
+                or not deps.sessions.is_alive(issue)):
+            print(f"[warn] park intent for #{issue}: no live unparked task "
+                  f"— skipped", file=sys.stderr)
+            return
+        target = by_name.get(task.target)
+        if target is None:
+            print(f"[warn] park intent for #{issue}: target "
+                  f"{task.target!r} left the config — skipped", file=sys.stderr)
+            return
+        _park_for_input(cfg, deps, target, task, note="parked by operator")
+    elif intent.action == "kill":
+        deps.sessions.end(issue)
+        if task is not None:
+            target = by_name.get(task.target)
+            if target is not None:
+                try:
+                    deps.github.release(target, issue, "abandoned by operator")
+                except Exception as exc:
+                    print(f"[warn] release failed while killing #{issue}: "
+                          f"{exc}", file=sys.stderr)
+            # Write a FAILED tombstone instead of deleting the state file.
+            # github.release() flips the board status back to Ready+auto, so
+            # the issue becomes a live candidate again. Without a tombstone,
+            # _claim_new's guard (known = {t.issue for t in tasks}) would not
+            # contain it and would re-claim the just-killed issue the same pass.
+            save(cfg.state_dir, replace(task, stage=Stage.FAILED,
+                                        updated_at=_now()))
+        clear_waiting(cfg.state_dir, issue)
+        eventlog.append_event(cfg.state_dir, "failed",
+                              target=task.target if task else "", issue=issue,
+                              stage=task.stage.value if task else "",
+                              actor=intent.actor, detail="killed by operator")
+    elif intent.action == "retry":
+        # Mirror check_quarantine's clear path (failures.py:160): drop the
+        # fingerprint marker too, or the dedupe silently swallows the next
+        # report of the same failure.
+        for target in cfg.targets:
+            qp = failures.quarantine_path(cfg.state_dir, target.name, issue)
+            if not qp.exists():
+                continue
+            try:
+                fp = json.loads(qp.read_text()).get("fingerprint")
+            except (json.JSONDecodeError, OSError):
+                fp = None
+            if fp:
+                failures.fingerprint_path(cfg.state_dir, fp).unlink(
+                    missing_ok=True)
+            qp.unlink(missing_ok=True)
+    elif intent.action == "resume":
+        if task is None or not task.park:
+            print(f"[warn] resume intent for #{issue}: task not parked — "
+                  f"skipped", file=sys.stderr)
+            return
+        _wake(cfg, task,
+              intent.payload.get("text")
+              or "The operator resumed this task. Continue.", hold=False)
+    else:
+        print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
+              file=sys.stderr)
+
+
+def _apply_intents(cfg: Config, deps: Deps) -> None:
+    """Drain operator intents (web console writes) at the top of the pass.
+    Applied-then-deleted = at-most-once; a failed intent is deleted too,
+    noted to stderr, and never aborts the pass or the remaining intents."""
+    by_name = {t.name: t for t in cfg.targets}
+    for intent in intents.list_intents(cfg.state_dir):
+        try:
+            _apply_one_intent(cfg, deps, by_name, intent)
+            eventlog.append_event(cfg.state_dir, "intent-applied",
+                                  issue=intent.issue, actor=intent.actor,
+                                  detail=intent.action)
+        except Exception as exc:
+            print(f"[warn] intent {intent.path.name} failed: {exc}",
+                  file=sys.stderr)
+        finally:
+            intents.delete_intent(intent)
+
+
 def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+    if not dry_run:
+        _apply_intents(cfg, deps)
     _handle_telegram(cfg, deps, dry_run)
     usage = fetch_usage(cfg.state_dir)
     budget_ok = should_spawn(usage, cfg.budget_threshold,
