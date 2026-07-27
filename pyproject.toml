@@ -3,17 +3,17 @@ name = "agent-ops"
 version = "0.1.0"
 description = "Autonomous backlog pipeline dispatcher"
 requires-python = ">=3.11"
-dependencies = ["pyyaml>=6.0"]
+dependencies = ["pyyaml>=6.0", "fastapi", "uvicorn[standard]"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "httpx"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["dispatcher", "telegram"]
+packages = ["dispatcher", "telegram", "web"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
