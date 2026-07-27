@@ -6,6 +6,7 @@ import './index.css'
 import { AppShell } from './components/AppShell'
 import { LiveUpdatesProvider } from './hooks/useLiveUpdates'
 import { BoardPage } from './pages/BoardPage'
+import { QueuePage } from './pages/QueuePage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 1000, retry: 1 } },
@@ -19,6 +20,7 @@ createRoot(document.getElementById('root')!).render(
           <AppShell>
             <Routes>
               <Route path="/" element={<BoardPage />} />
+              <Route path="/queue" element={<QueuePage />} />
             </Routes>
           </AppShell>
         </BrowserRouter>
