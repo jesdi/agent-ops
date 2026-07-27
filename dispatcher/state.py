@@ -59,6 +59,7 @@ class TaskState:
     hold_for_attach: bool = False
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time
+    plan_retries: int = 0                # in-session plan-format retries used
 
 
 @dataclass(frozen=True)
