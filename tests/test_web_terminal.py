@@ -215,6 +215,44 @@ def test_malformed_resize_frames_do_not_drop_the_terminal(tmp_path,
             pytest.fail(f"bridge died on a malformed frame; got {buf!r}")
 
 
+TERM_STUB = """#!/bin/sh
+case "$*" in
+  *new-session*) echo "STUB-TERM=${TERM:-unset}"; exec cat ;;
+  *kill-session*) exit 0 ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+@pytest.mark.filterwarnings(
+    "ignore:This process.*is multi-threaded.*:DeprecationWarning"
+)
+def test_child_gets_a_term_even_when_service_env_has_none(tmp_path,
+                                                          monkeypatch):
+    """Under systemd the web service has no TERM; real tmux then dies with
+    'open terminal failed: terminal does not support clear'. The bridge must
+    hand the pty child a usable TERM regardless of the parent env."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    tmux = bin_dir / "tmux"
+    tmux.write_text(TERM_STUB)
+    tmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.delenv("TERM", raising=False)
+    fake, client = rig(tmp_path)
+    fake.alive.add(7)
+    with client.websocket_connect("/api/task/7/terminal",
+                                  headers=HEADERS) as ws:
+        buf = b""
+        for _ in range(50):
+            buf += _recv_bounded(ws)
+            if b"STUB-TERM=" in buf:
+                break
+        else:
+            pytest.fail(f"stub never reported TERM; got {buf!r}")
+    assert b"STUB-TERM=xterm-256color" in buf
+
+
 class FakeWS:
     """Minimal WebSocket stand-in so run_terminal can be driven directly,
     outside the TestClient portal (which cancels the handler at teardown and

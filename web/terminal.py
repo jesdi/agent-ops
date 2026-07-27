@@ -107,8 +107,11 @@ async def run_terminal(ws: WebSocket, issue: int, sources,
         # exec immediately; on any failure _exit so the forked child never
         # continues past this point (it must not touch shared async state).
         try:
-            os.execvp("tmux", ["tmux", "-u", "new-session",
-                               "-t", f"task-{issue}", "-s", view])
+            # systemd services have no TERM; tmux refuses to start without
+            # one ("open terminal failed: terminal does not support clear").
+            os.execvpe("tmux", ["tmux", "-u", "new-session",
+                                "-t", f"task-{issue}", "-s", view],
+                       {**os.environ, "TERM": "xterm-256color"})
         finally:
             os._exit(127)
 
