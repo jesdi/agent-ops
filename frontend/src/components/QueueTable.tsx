@@ -11,7 +11,10 @@ export interface QueueTableProps {
 
 export function QueueTable({ target, onBoost, onNext, onReady, error }: QueueTableProps) {
   return (
-    <div className="rounded border border-gray-200 bg-white">
+    <div
+      data-testid={`queue-${target.target}`}
+      className="rounded border border-gray-200 bg-white"
+    >
       <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
         <h2 className="text-sm font-semibold">{target.target}</h2>
         {target.stale && (
@@ -27,12 +30,12 @@ export function QueueTable({ target, onBoost, onNext, onReady, error }: QueueTab
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left text-xs text-gray-500">
-            <th className="px-3 py-1">#</th>
-            <th className="px-3 py-1">Title</th>
-            <th className="px-3 py-1">Status</th>
-            <th className="px-3 py-1">Score</th>
-            <th className="px-3 py-1">Boost</th>
-            <th className="px-3 py-1">Actions</th>
+            <th scope="col" className="px-3 py-1">#</th>
+            <th scope="col" className="px-3 py-1">Title</th>
+            <th scope="col" className="px-3 py-1">Status</th>
+            <th scope="col" className="px-3 py-1">Score</th>
+            <th scope="col" className="px-3 py-1">Boost</th>
+            <th scope="col" className="px-3 py-1">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -55,11 +58,13 @@ export function QueueTable({ target, onBoost, onNext, onReady, error }: QueueTab
               <td className="px-3 py-1.5 text-gray-500">{row.status}</td>
               <td className="px-3 py-1.5">{row.score ?? '—'}</td>
               <td className="px-3 py-1.5">{row.boost !== 0 ? row.boost : ''}</td>
-              <td className="flex gap-1 px-3 py-1.5">
-                <button type="button" className="rounded border px-2 text-xs" onClick={() => onBoost(row.number, 1)}>Boost</button>
-                <button type="button" className="rounded border px-2 text-xs" onClick={() => onBoost(row.number, -1)}>Demote</button>
-                <button type="button" className="rounded border px-2 text-xs" onClick={() => onNext(row.number)}>Next</button>
-                <button type="button" className="rounded border px-2 text-xs" onClick={() => onReady(row.number)}>Ready</button>
+              <td className="px-3 py-1.5">
+                <div className="flex gap-1">
+                  <button type="button" className="rounded border px-2 text-xs" onClick={() => onBoost(row.number, 1)}>Boost</button>
+                  <button type="button" className="rounded border px-2 text-xs" onClick={() => onBoost(row.number, -1)}>Demote</button>
+                  <button type="button" className="rounded border px-2 text-xs" onClick={() => onNext(row.number)}>Next</button>
+                  <button type="button" className="rounded border px-2 text-xs" onClick={() => onReady(row.number)}>Ready</button>
+                </div>
               </td>
             </tr>
           ))}

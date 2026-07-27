@@ -8,16 +8,19 @@ import { api, ApiError } from '../lib/api'
 export function QueuePage() {
   const queueQuery = useQueue()
   const queryClient = useQueryClient()
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [errors, setErrors] = useState<Record<string, string | null>>({})
 
   const run = useMutation({
-    mutationFn: (fn: () => Promise<unknown>) => fn(),
-    onSuccess: () => {
-      setActionError(null)
+    mutationFn: ({ run: fn }: { target: string; run: () => Promise<unknown> }) => fn(),
+    onSuccess: (_data, { target }) => {
+      setErrors((prev) => ({ ...prev, [target]: null }))
       void queryClient.invalidateQueries({ queryKey: queryKeys.queue })
     },
-    onError: (err) =>
-      setActionError(err instanceof ApiError ? err.detail : String(err)),
+    onError: (err, { target }) =>
+      setErrors((prev) => ({
+        ...prev,
+        [target]: err instanceof ApiError ? err.detail : String(err),
+      })),
   })
 
   if (queueQuery.isPending) return <p className="p-4 text-gray-500">loading queue…</p>
@@ -31,10 +34,16 @@ export function QueuePage() {
         <QueueTable
           key={target.target}
           target={target}
-          error={actionError}
-          onBoost={(issue, amount) => run.mutate(() => api.queueBoost(issue, amount))}
-          onNext={(issue) => run.mutate(() => api.queueNext(issue, false))}
-          onReady={(issue) => run.mutate(() => api.queueReady(issue))}
+          error={errors[target.target] ?? null}
+          onBoost={(issue, amount) =>
+            run.mutate({ target: target.target, run: () => api.queueBoost(issue, amount) })
+          }
+          onNext={(issue) =>
+            run.mutate({ target: target.target, run: () => api.queueNext(issue, false) })
+          }
+          onReady={(issue) =>
+            run.mutate({ target: target.target, run: () => api.queueReady(issue) })
+          }
         />
       ))}
     </div>
