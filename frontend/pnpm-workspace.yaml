@@ -1,0 +1,4 @@
+allowBuilds:
+  # msw's postinstall is optional by design (wrapped in catch -> void 0);
+  # denying it keeps pnpm >=11 installs non-interactive on the box.
+  msw: false
