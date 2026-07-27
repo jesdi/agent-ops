@@ -2,12 +2,15 @@ from pathlib import Path
 
 import pytest
 
+from dataclasses import replace
+
 from dispatcher.machine import (
     HandleCrash,
     NoOp,
     Notify,
     ParkForCI,
     ParkForInput,
+    RetryStage,
     SetTaskStage,
     SpawnStage,
     next_actions,
@@ -89,6 +92,27 @@ def test_plan_done_valid_spawns_implement_and_notifies(tmp_path):
                         sig("plan", "done", str(p)), True)
     assert SpawnStage(Stage.IMPLEMENT) in acts
     assert any(isinstance(a, Notify) and a.template == "implement_started" for a in acts)
+
+
+def test_plan_done_bad_format_retries_in_session_first(tmp_path):
+    # Well-sized plan but H2 task headings / no Goal → format check fails.
+    # First failure resumes the session rather than failing the task.
+    plan = tmp_path / ".agent"; plan.mkdir()
+    p = plan / "plan.md"; p.write_text("# t\n\n## Task 1: a\n\n" + ("z " * 900))
+    acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)),
+                        sig("plan", "done", str(p)), True)
+    assert len(acts) == 1 and isinstance(acts[0], RetryStage)
+    assert acts[0].stage is Stage.PLAN and acts[0].reason
+
+
+def test_plan_done_bad_format_fails_after_retry_exhausted(tmp_path):
+    plan = tmp_path / ".agent"; plan.mkdir()
+    p = plan / "plan.md"; p.write_text("# t\n\n## Task 1: a\n\n" + ("z " * 900))
+    t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_retries=1)
+    acts = next_actions(t, sig("plan", "done", str(p)), True)
+    assert SetTaskStage(Stage.FAILED) in acts
+    assert any(isinstance(a, Notify) and a.template == "artifact_failed"
+               for a in acts)
 
 
 def test_implement_done_is_pr_open():
