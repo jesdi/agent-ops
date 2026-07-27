@@ -19,6 +19,40 @@ import time
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 READ_CHUNK = 65536
+TMUX_TIMEOUT = 10
+REAP_TIMEOUT = 10.0
+
+
+class AttachRegistry:
+    """Refcounts terminal viewers per issue.
+
+    Grouped tmux sessions make concurrent viewers the designed case, and an
+    SPA reload routinely overlaps the new socket with the old one. The
+    attached-<N> marker is NOT advisory — the dispatcher declines to drive a
+    task while it exists — so it may only be cleared when the LAST viewer
+    goes. One uvicorn worker, one event loop: a plain dict is sufficient.
+    """
+
+    def __init__(self, sources):
+        self._sources = sources
+        self._counts: dict[int, int] = {}
+
+    def attach(self, issue: int) -> None:
+        count = self._counts.get(issue, 0) + 1
+        self._counts[issue] = count
+        if count == 1:
+            self._sources.mark_attached(issue)
+
+    def detach(self, issue: int) -> None:
+        count = self._counts.get(issue, 0) - 1
+        if count > 0:
+            self._counts[issue] = count
+            return
+        self._counts.pop(issue, None)
+        self._sources.clear_attached(issue)
+
+    def viewers(self, issue: int) -> int:
+        return self._counts.get(issue, 0)
 
 
 def _resize(fd: int, cols: int, rows: int) -> None:
@@ -27,8 +61,12 @@ def _resize(fd: int, cols: int, rows: int) -> None:
 
 
 def _kill_session(view: str) -> None:
-    subprocess.run(["tmux", "kill-session", "-t", view],
-                   capture_output=True)
+    # timeout= is what actually bounds the subprocess: asyncio.wait_for only
+    # bounds the await, leaving a hung tmux parked on a default-executor
+    # thread (~6 of them on a 2-vCPU box) forever.
+    with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+        subprocess.run(["tmux", "kill-session", "-t", view],
+                       capture_output=True, timeout=TMUX_TIMEOUT)
 
 
 def _reap(pid: int) -> None:
@@ -54,7 +92,8 @@ def _reap(pid: int) -> None:
         os.waitpid(pid, 0)  # blocking — child cannot ignore SIGKILL
 
 
-async def run_terminal(ws: WebSocket, issue: int, sources) -> None:
+async def run_terminal(ws: WebSocket, issue: int, sources,
+                       viewers: AttachRegistry, actor: str = "") -> None:
     await ws.accept()
     if not sources.session_alive(issue):
         await ws.send_text(json.dumps(
@@ -73,7 +112,9 @@ async def run_terminal(ws: WebSocket, issue: int, sources) -> None:
         finally:
             os._exit(127)
 
-    sources.mark_attached(issue)
+    viewers.attach(issue)
+    sources.append_event("terminal-attach", issue=issue, actor=actor,
+                         detail=view)
     loop = asyncio.get_running_loop()
 
     async def pump_pty() -> None:
@@ -100,14 +141,24 @@ async def run_terminal(ws: WebSocket, issue: int, sources) -> None:
                     d = json.loads(msg["text"])
                     if d.get("type") == "resize":
                         _resize(fd, int(d["cols"]), int(d["rows"]))
-                except (ValueError, KeyError):
-                    pass  # malformed frame — ignore rather than tear down session
+                except (ValueError, KeyError, AttributeError, TypeError,
+                        OSError):
+                    # Malformed frame ('"3"' -> AttributeError from .get,
+                    # bad dimensions -> TypeError/OSError from ioctl):
+                    # ignore rather than tear down a live session.
+                    pass
     except WebSocketDisconnect:
         pass
     finally:
-        # Clear marker FIRST so the dispatcher slot is never wedged by a crash
-        # anywhere in the subsequent cleanup steps.
-        sources.clear_attached(issue)
+        # Release this viewer FIRST so the dispatcher slot is never wedged by
+        # a crash anywhere in the subsequent cleanup steps.  The marker itself
+        # only clears when the last viewer leaves.
+        viewers.detach(issue)
+        # Log the detach before any await: a disconnect can cancel this
+        # coroutine, and a cancelled await would skip everything after it.
+        with contextlib.suppress(Exception):
+            sources.append_event("terminal-detach", issue=issue, actor=actor,
+                                 detail=view)
         pump.cancel()
         # Kill the child first: closing the slave PTY causes os.read on the
         # master to return EIO, which lets the executor thread exit promptly.
@@ -129,4 +180,9 @@ async def run_terminal(ws: WebSocket, issue: int, sources) -> None:
             os.close(fd)
         # Reap the child in an executor so the retry loop does not block the
         # event loop.  By now the slave PTY is closed, so the child exits fast.
-        await loop.run_in_executor(None, _reap, pid)
+        # Guarded: this runs during loop teardown, and an unguarded raise here
+        # would mask any in-flight exception and skip the remaining cleanup.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                loop.run_in_executor(None, _reap, pid),
+                timeout=REAP_TIMEOUT)

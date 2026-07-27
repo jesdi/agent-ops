@@ -16,8 +16,9 @@ from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve
 from web import read_model
-from web.auth import Operator, TailscaleAuthMiddleware, current_operator
-from web.terminal import run_terminal
+from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
+                      current_operator)
+from web.terminal import AttachRegistry, run_terminal
 
 DEFAULT_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
@@ -251,10 +252,14 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                      "X-Accel-Buffering": "no"},
         )
 
+    viewers = AttachRegistry(sources)
+
     @app.websocket("/api/task/{issue}/terminal")
     async def terminal(ws: WebSocket, issue: int):
-        # auth already enforced by TailscaleAuthMiddleware (4401 close)
-        await run_terminal(ws, issue, sources)
+        # auth and same-origin already enforced by TailscaleAuthMiddleware
+        # (4401 / 4403 close); the header is present by that point.
+        await run_terminal(ws, issue, sources, viewers,
+                           actor=ws.headers.get(HEADER, ""))
 
     dist = frontend_dist if frontend_dist is not None else DEFAULT_DIST
     if dist.is_dir():
