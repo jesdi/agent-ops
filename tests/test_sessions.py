@@ -34,7 +34,8 @@ def test_spawn_stage_writes_prompt_and_sends_keys(tmp_path: Path, monkeypatch):
     assert ["-c", str(tmp_path)] == new[new.index("-c"): new.index("-c") + 2]
     send = next(c for c in calls if "send-keys" in c)
     cmd = send[-2]
-    assert 'claude --permission-mode auto --model claude-fable-5' in cmd
+    assert ('claude --remote-control task-42 --permission-mode auto '
+            '--model claude-fable-5') in cmd
     assert '.agent/prompt-spec.md' in cmd
     assert send[-1] == "Enter"
 
@@ -95,8 +96,8 @@ def test_podman_cmd_mounts_and_caps(tmp_path, monkeypatch):
     assert f"-w {wt}" in cmd
     assert f"-v {clone}:{clone}" in cmd
     assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
-    assert cmd.endswith('claude --permission-mode auto --model claude-opus-4-8 '
-                        '"$(cat .agent/prompt-spec.md)"')
+    assert cmd.endswith('claude --remote-control task-42 --permission-mode auto '
+                        '--model claude-opus-4-8 "$(cat .agent/prompt-spec.md)"')
 
 
 def test_resume_quotes_message(capsys):

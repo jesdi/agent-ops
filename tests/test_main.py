@@ -279,6 +279,38 @@ def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
     assert load(c.state_dir, 42).stage is Stage.PLAN
 
 
+def test_plan_format_failure_retries_in_session_then_fails(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = Path(c.targets[0].worktrees_path) / "task-42"
+    (wt / ".agent").mkdir(parents=True)
+    (wt / ".agent" / "plan.md").write_text("# t\n\n## Task 1: a\n\n" + "z " * 900)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "done", "note": "", "artifact": ".agent/plan.md"}))
+    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+                                stage=Stage.PLAN, slot=0, worktree=str(wt),
+                                branch="agent/task-42", title="t",
+                                updated_at="2026-07-14T00:00:00+00:00"))
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    # First pass: resumed in place (zombie ended first), not failed.
+    assert 42 in sess.ended
+    assert len(sess.resumed) == 1 and sess.resumed[0][0] == 42
+    assert "plan_retry" in d.notifier.sent
+    t = load(c.state_dir, 42)
+    assert t.stage is Stage.PLAN and t.plan_retries == 1
+    assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
+
+    # Session re-signals done but the plan is still malformed → retry exhausted.
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "done", "note": "", "artifact": ".agent/plan.md"}))
+    d2 = deps(sess=FakeSessions(alive={42}))
+    main.run_pass(c, d2)
+    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert "artifact_failed" in d2.notifier.sent
+
+
 def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch):
     """An interactive claude cannot exit itself, so on stage advance the
     previous session is usually still alive. Spawning without ending it
