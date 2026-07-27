@@ -3,4 +3,18 @@ Description=agent-ops claude token keepalive
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/tmux new-session -d -s keepalive "claude --permission-mode plan 'Reply with exactly: ok. Then exit.'; sleep 2"
+# The session containers read Claude's OAuth from the claude-home store
+# (mounted as /root/.claude via CLAUDE_CONFIG_DIR). Point the keepalive at
+# the SAME store so the token the containers actually use gets refreshed —
+# otherwise the keepalive only renews the host's separate ~/.claude store,
+# claude-home lapses, and a failed refresh zeroes it, stranding every
+# session at the login prompt.
+Environment=CLAUDE_CONFIG_DIR=%h/agent-ops-state/claude-home
+# -p (print/headless): skips the workspace-trust dialog — the host cwd is
+# not a trusted project inside claude-home, so an interactive run blocks
+# there forever and never reaches the API call that refreshes the token —
+# and EXITS cleanly after one call. The previous `tmux new-session -d …
+# claude '<prompt>'` form started an INTERACTIVE claude that never exited:
+# the session lingered and the next day's run failed on the duplicate
+# `keepalive` session name.
+ExecStart=/usr/bin/claude -p --permission-mode plan "Reply with exactly: ok."
