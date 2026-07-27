@@ -19,6 +19,15 @@ class SpawnStage:
 
 
 @dataclass(frozen=True)
+class RetryStage:
+    """Re-run an in-flight stage in-session (via --continue) with corrective
+    feedback, instead of failing the task outright. Used when an artifact
+    fails its mechanical format check but the content is likely salvageable."""
+    stage: Stage
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class Notify:
     template: str
     note: str = ""
@@ -61,6 +70,11 @@ _CHECKERS = {
     Stage.AWAITING_SPEC_REVIEW: check_spec,
     Stage.PLAN: check_plan,
 }
+
+# A plan that fails the mechanical format check is usually a heading-level
+# slip, not a bad plan — resume the session with the reason this many times
+# before giving up and failing the task.
+PLAN_RETRY_LIMIT = 1
 
 
 def _artifact_path(task: TaskState, signal: StageSignal) -> Path:
@@ -121,6 +135,9 @@ def next_actions(
         if checker is not None:
             result: CheckResult = checker(_artifact_path(task, signal))
             if not result.ok:
+                if (task.stage == Stage.PLAN
+                        and task.plan_retries < PLAN_RETRY_LIMIT):
+                    return [RetryStage(Stage.PLAN, result.reason)]
                 return [SetTaskStage(Stage.FAILED),
                         Notify("artifact_failed", result.reason)]
         nxt = NEXT_STAGE.get(task.stage)

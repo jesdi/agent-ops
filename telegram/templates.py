@@ -9,6 +9,7 @@ _TEMPLATES = {
     "stage_blocked": "🚧 #{issue} {title} — stage blocked: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "pr_opened": "✅ #{issue} {title} — PR opened: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "artifact_failed": "❌ #{issue} {title} — artifact sanity check failed: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
+    "plan_retry": "🔁 #{issue} {title} — plan format check failed; resuming the session to fix it: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "session_crashed": "💀 #{issue} {title} — session died mid-stage. Worktree preserved for autopsy.\n{url}\nsession task-{issue}\n" + _ATTACH,
     "budget_stall": "⏳ #{issue} {title} — usage window exhausted; stalled until reset. {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "budget_resume": "▶️ #{issue} {title} — usage window reset; resuming. {note}\n{url}\nsession task-{issue}\n" + _ATTACH,

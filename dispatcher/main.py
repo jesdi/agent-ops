@@ -20,8 +20,8 @@ from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher import eventlog, failures, intents, queue_ops
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
-                                ParkForInput, SetTaskStage, SpawnStage,
-                                next_actions)
+                                ParkForInput, RetryStage, SetTaskStage,
+                                SpawnStage, next_actions)
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
@@ -283,6 +283,36 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                           issue=task.issue, stage=task.stage.value, detail=note)
 
 
+def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                reason: str) -> None:
+    """Resume the plan session with the format-check failure, in place, rather
+    than failing the task. --continue reads the transcript from claude-home, so
+    context survives ending the (zombie) session first — which we must do, or
+    _launch would type `claude --continue` INTO the stopped claude's input box
+    (same failure mode as spawning over a live session)."""
+    model = _model_for(cfg, target, task, Stage.PLAN)
+    agent_dir = Path(task.worktree) / ".agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    # Rewrite the signal to working BEFORE resuming, or the next pass re-reads
+    # `done`, re-checks the still-unfixed plan, and burns the retry immediately.
+    (agent_dir / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "working", "model": model}))
+    _log_model(task.worktree, Stage.PLAN, model)
+    clear_waiting(cfg.state_dir, task.issue)
+    deps.sessions.end(task.issue)
+    deps.sessions.resume(
+        task.issue, task.worktree,
+        f"Your .agent/plan.md failed the pipeline's mechanical format check: "
+        f"{reason}. Fix it in place — every task needs an H3 heading of exactly "
+        f"`### Task N:` (not `## Task N:`) and the plan must contain a "
+        f"`**Goal:**` line — then re-write .agent/stage.json with "
+        f'status "done". Do not re-plan from scratch; only fix the formatting.',
+        model)
+    save(cfg.state_dir, replace(task, plan_retries=task.plan_retries + 1,
+                                updated_at=_now()))
+    _notify(deps, target, task, "plan_retry", reason)
+
+
 def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  run_id: int) -> None:
     deps.sessions.end(task.issue)
@@ -368,6 +398,11 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             return
         if isinstance(act, ParkForCI):
             _park_for_ci(cfg, deps, target, task, act.run_id)
+            return
+        if isinstance(act, RetryStage):
+            if not budget_ok:
+                return  # signal persists; retried next pass once budget clears
+            _retry_plan(cfg, deps, target, task, act.reason)
             return
         if isinstance(act, SetTaskStage):
             clear_waiting(cfg.state_dir, task.issue)
