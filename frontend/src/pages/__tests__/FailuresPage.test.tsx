@@ -37,6 +37,26 @@ it('blocker_open null renders "blocker state unknown"', async () => {
   )
 })
 
+it('blocker_open false renders "blocker closed" and not "blocker state unknown"', async () => {
+  server.use(
+    http.get('/api/failures', () =>
+      HttpResponse.json({
+        quarantined: [{
+          target: 'jesdi/widget', task_issue: 38, blocker_repo: 'jesdi/widget',
+          blocker_issue: 39, fingerprint: 'f', created_at: '2026-07-24T22:10:00Z',
+          blocker_open: false,
+        }],
+        fingerprints: [],
+      }),
+    ),
+  )
+  renderWithProviders(<FailuresPage />)
+  await waitFor(() =>
+    expect(screen.getByText('blocker closed')).toBeInTheDocument(),
+  )
+  expect(screen.queryByText('blocker state unknown')).not.toBeInTheDocument()
+})
+
 it('retry posts the intent for the quarantined task', async () => {
   let retried = false
   server.use(
