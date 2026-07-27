@@ -291,7 +291,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     if dist.is_dir():
         app.mount("/", SPAStaticFiles(directory=dist, html=True), name="spa")
     else:
-        @app.get("/")
+        # include_in_schema=False: this stub stands in for the SPA shell, not
+        # for an API endpoint. Keeping it out of the schema makes `pnpm gen:api`
+        # output identical whether or not frontend/dist has been built.
+        @app.get("/", include_in_schema=False)
         def root(op: Operator = Depends(current_operator)):
             return {"service": "agent-ops-web", "ui": "not built"}
 
