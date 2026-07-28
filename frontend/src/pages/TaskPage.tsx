@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useParams } from 'react-router'
 import { PendingBadge } from '../components/PendingBadge'
+import { SpecPanel } from '../components/SpecPanel'
 import { Terminal } from '../components/Terminal'
 import { queryKeys } from '../hooks/queryKeys'
 import { usePendingIntents, useTaskDetail } from '../hooks/useResources'
@@ -89,6 +90,16 @@ function TaskView({ issue }: { issue: number }) {
       </header>
 
       <p className="font-mono text-xs text-gray-500">{worktree}</p>
+
+      {card.stage === 'awaiting-spec-review' && (
+        <SpecPanel
+          issue={issue}
+          busy={busy}
+          onApprove={() =>
+            runIntent(() => api.reply(issue, 'Approved — proceed.'))
+          }
+        />
+      )}
 
       {/* Terminal.tsx's dead overlay only fires when a session dies WHILE
           attached; on the load path the page owns this state. */}

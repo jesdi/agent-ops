@@ -213,3 +213,64 @@ it('unknown issue renders a not-found message', async () => {
     expect(screen.getByText(/unknown task/)).toBeInTheDocument(),
   )
 })
+
+const reviewDetail = {
+  ...taskDetail,
+  card: { ...taskDetail.card, stage: 'awaiting-spec-review' },
+}
+
+it('shows the spec panel at the review gate and approves in two taps', async () => {
+  let replied: unknown = null
+  server.use(
+    http.get('/api/task/42', () => HttpResponse.json(reviewDetail)),
+    http.get('/api/task/42/spec', () =>
+      HttpResponse.json({
+        path: 'docs/superpowers/specs/x-design.md',
+        markdown: '# Widget spec\n\nSpec body here.',
+      }),
+    ),
+    http.post('/api/task/42/reply', async ({ request }) => {
+      replied = await request.json()
+      return HttpResponse.json(
+        { status: 'pending', intent: '175-42-reply' }, { status: 202 },
+      )
+    }),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByText('Spec body here.')).toBeInTheDocument(),
+  )
+  const approve = screen.getByRole('button', { name: 'approve spec' })
+  await userEvent.click(approve)
+  expect(replied).toBeNull() // first tap only arms
+  await userEvent.click(screen.getByRole('button', { name: 'tap again to approve' }))
+  await waitFor(() =>
+    expect(replied).toEqual({ text: 'Approved — proceed.' }),
+  )
+})
+
+it('hides the spec panel off the review gate', async () => {
+  renderTask() // defaultHandlers: stage is not awaiting-spec-review
+  await waitFor(() =>
+    expect(screen.getByTestId('pane-tail')).toBeInTheDocument(),
+  )
+  expect(screen.queryByTestId('spec-panel')).not.toBeInTheDocument()
+})
+
+it('shows the attach fallback when the spec 404s', async () => {
+  server.use(
+    http.get('/api/task/42', () => HttpResponse.json(reviewDetail)),
+    http.get('/api/task/42/spec', () =>
+      HttpResponse.json({ detail: 'no spec recorded for task 42' }, { status: 404 }),
+    ),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByTestId('spec-panel').textContent).toContain(
+      'no spec recorded for task 42',
+    ),
+  )
+  expect(screen.getByTestId('spec-panel').textContent).toContain(
+    'mosh agent-vps -- tmux attach -t task-42',
+  )
+})

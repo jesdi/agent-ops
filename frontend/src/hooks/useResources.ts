@@ -45,6 +45,15 @@ export function useTaskDetail(issue: number) {
   })
 }
 
+/** retry:false — a 404 means "no spec recorded", not a transient failure. */
+export function useTaskSpec(issue: number) {
+  return useQuery({
+    queryKey: queryKeys.spec(issue),
+    queryFn: () => api.taskSpec(issue),
+    retry: false,
+  })
+}
+
 /** Pending intents always poll: they clear only when a dispatcher pass runs. */
 export function usePendingIntents() {
   return useQuery({
