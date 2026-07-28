@@ -40,6 +40,7 @@ MAX_SLOTS = 3
 PARK_HUMAN = "parked"            # waiting for operator input
 PARK_CI = "awaiting-ci"          # waiting for a GitHub Actions run
 PARK_WAKE = "unpark-requested"   # wake event arrived; resume when slot free
+PARK_LOGIN = "parked-login"      # live session sitting at a /login prompt
 
 
 @dataclass(frozen=True)

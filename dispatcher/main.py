@@ -17,7 +17,7 @@ from pathlib import Path
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
-from dispatcher import eventlog, failures, intents, queue_ops
+from dispatcher import eventlog, failures, intents, queue_ops, relogin
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, RetryStage, SetTaskStage,
@@ -25,7 +25,8 @@ from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
-from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_WAKE,
+from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_LOGIN,
+                              PARK_WAKE,
                               Stage, TaskState, active, allocate_slot,
                               clear_waiting, has_attached, has_waiting, load,
                               load_all, read_stage_signal, save)
@@ -271,6 +272,10 @@ def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str) -> None:
 def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     note: str) -> None:
     tail = deps.sessions.capture_tail(task.issue)
+    login = relogin.classify_login(tail)
+    if login is not None:
+        _park_for_login(cfg, deps, target, task, note, tail, login)
+        return
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
         url=_url(target, task.issue),
@@ -281,6 +286,24 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
+
+
+def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                    note: str, tail: str, login: relogin.LoginPrompt) -> None:
+    """Unlike every other park, the session is NOT ended: the reply path
+    types the OAuth code into this exact pane. Only this task is parked;
+    other sessions hitting the shared-claude-home prompt are caught by
+    their own stall timers."""
+    msg_id = deps.notifier.send(
+        "needs_relogin", issue=task.issue, title=task.title,
+        url=_url(target, task.issue),
+        login_url=login.url or "(attach to the session to see the URL)",
+        note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
+    save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
+                                updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail="needs re-login: " + note)
 
 
 def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,

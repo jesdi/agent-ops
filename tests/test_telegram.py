@@ -99,3 +99,14 @@ def test_notifier_injects_console_url(monkeypatch):
     notify.Notifier(console_url="https://box.tail.ts.net").send(
         "awaiting_spec_review", issue=42, title="t", url="u", note="")
     assert "read & approve: https://box.tail.ts.net/task/42" in seen["payload"]["text"]
+
+
+def test_needs_relogin_template():
+    text = render("needs_relogin", issue=42, title="t",
+                  url="https://github.com/o/r/issues/42",
+                  login_url="https://claude.ai/oauth/authorize?x=1",
+                  note="(no session output for 10m)")
+    assert "https://claude.ai/oauth/authorize?x=1" in text
+    assert "task-42" in text
+    assert "claude-home" in text
+    assert "Reply to THIS message" in text

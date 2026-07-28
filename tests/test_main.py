@@ -11,8 +11,9 @@ from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
-from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_WAKE, Stage, TaskState,
-                               clear_waiting, has_waiting, load, mark_waiting, save)
+from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_WAKE, Stage,
+                               TaskState, clear_waiting, has_waiting, load,
+                               mark_waiting, save)
 
 POLICY = parse_policy({
     "default": "claude-opus-4-8",
@@ -1588,3 +1589,51 @@ def test_dead_session_never_queries_idle(tmp_path, monkeypatch):
     sess = FakeSessions(alive=[], idle={42: 999999.0})
     main.run_pass(c, deps(sess=sess))
     assert sess.idle_queried == []
+
+
+LOGIN_TAIL = ("Browser didn't open? Use the url below to sign in:\n"
+              "https://claude.ai/oauth/authorize?code=true&client_id=abc\n"
+              "Paste code here if prompted >")
+
+
+def test_stall_with_login_tail_parks_login_and_keeps_session(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC)  # no stage.json — startup login prompt
+    sess = FakeSessions(alive=[42], idle={42: 999999.0}, tail=LOGIN_TAIL)
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_LOGIN
+    assert t.park_msg_id == 77          # FakeNotifier.send returns 77
+    assert sess.ended == []             # pane must stay ALIVE
+    assert d.notifier.sent == ["needs_relogin"]
+    _, ctx = d.notifier.calls[0]
+    assert ctx["login_url"] == ("https://claude.ai/oauth/authorize"
+                                "?code=true&client_id=abc")
+    assert LOGIN_TAIL.splitlines()[0] in ctx["note"]
+
+
+def test_blocked_park_with_login_tail_also_classifies(tmp_path, monkeypatch):
+    # classification happens at park time regardless of what triggered it
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT)
+    (wt / ".agent" / "stage.json").write_text(
+        json.dumps({"stage": "implement", "status": "blocked", "note": "x"}))
+    sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
+    main.run_pass(c, deps(sess=sess))
+    assert load(c.state_dir, 42).park == PARK_LOGIN
+    assert sess.ended == []
+
+
+def test_stall_without_login_tail_stays_generic(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC)
+    sess = FakeSessions(alive=[42], idle={42: 999999.0})  # default tail
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    assert load(c.state_dir, 42).park == PARK_HUMAN
+    assert sess.ended == [42]
+    assert "parked_question" in d.notifier.sent
