@@ -1637,3 +1637,44 @@ def test_stall_without_login_tail_stays_generic(tmp_path, monkeypatch):
     assert load(c.state_dir, 42).park == PARK_HUMAN
     assert sess.ended == [42]
     assert "parked_question" in d.notifier.sent
+
+
+def test_reply_to_login_park_injects_code(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC, park=PARK_LOGIN, park_msg_id=77)
+    monkeypatch.setattr(main.inbound, "fetch_events",
+                        lambda sd: [main.Reply(reply_to_msg_id=77,
+                                               text="oauth-code-abc#123")])
+    sess = FakeSessions(alive=[42])
+    main.run_pass(c, deps(sess=sess))
+    assert sess.sent_text == [(42, "oauth-code-abc#123")]
+    assert sess.resumed == []          # must NOT go through resume
+    t = load(c.state_dir, 42)
+    assert t.park == "" and t.park_msg_id == 0
+
+
+def test_reply_to_human_park_still_wakes(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT, park=PARK_HUMAN, park_msg_id=88)
+    monkeypatch.setattr(main.inbound, "fetch_events",
+                        lambda sd: [main.Reply(reply_to_msg_id=88, text="hi")])
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, 42)
+    assert sess.sent_text == []
+    # _wake marks PARK_WAKE, then _resume_woken resumes it the same pass
+    assert sess.resumed and sess.resumed[0][1] == "hi"
+
+
+def test_unmatched_reply_still_reports(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC, park=PARK_LOGIN, park_msg_id=77)
+    monkeypatch.setattr(main.inbound, "fetch_events",
+                        lambda sd: [main.Reply(reply_to_msg_id=999, text="x")])
+    d = deps()
+    main.run_pass(c, d)
+    assert "status" in d.notifier.sent
+    assert load(c.state_dir, 42).park == PARK_LOGIN  # untouched

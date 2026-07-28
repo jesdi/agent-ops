@@ -86,6 +86,21 @@ def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False) -> None:
                                 hold_for_attach=hold, updated_at=_now()))
 
 
+def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
+                       code: str) -> None:
+    """Reply to a login park = the OAuth authorization code. Raw keystrokes
+    into the still-alive pane — NOT the wake/resume path, which would spawn
+    `claude --continue` over the live login prompt. Park cleared; stage
+    signals, the Stop hook, and the stall timer take over. A wrong code
+    leaves the screen static and the stall detector simply re-fires."""
+    deps.sessions.send_text(task.issue, code.strip())
+    save(cfg.state_dir, replace(task, park="", park_msg_id=0,
+                                updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "resumed", target=task.target,
+                          issue=task.issue, stage=task.stage.value,
+                          detail="login code injected")
+
+
 def _status_lines(cfg: Config) -> list[str]:
     by_name = {t.name: t for t in cfg.targets}
     tasks = [t for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
@@ -176,6 +191,7 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
         return
     tasks = load_all(cfg.state_dir)
     human_parked = [t for t in tasks if t.park == PARK_HUMAN]
+    login_parked = [t for t in tasks if t.park == PARK_LOGIN]
     for ev in inbound.fetch_events(cfg.state_dir):
         if isinstance(ev, Command) and ev.name == "status":
             deps.notifier.send("status", lines=_status_lines(cfg))
@@ -207,8 +223,13 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
                 deps.notifier.send("status",
                                    lines=[f"#{ev.issue} next failed: {exc}"])
         elif isinstance(ev, Reply):
-            match = [t for t in human_parked if t.park_msg_id == ev.reply_to_msg_id]
-            if match:
+            login = [t for t in login_parked
+                     if t.park_msg_id == ev.reply_to_msg_id]
+            match = [t for t in human_parked
+                     if t.park_msg_id == ev.reply_to_msg_id]
+            if login:
+                _inject_login_code(cfg, deps, login[0], ev.text)
+            elif match:
                 _wake(cfg, match[0], ev.text)
             else:
                 deps.notifier.send("status",
