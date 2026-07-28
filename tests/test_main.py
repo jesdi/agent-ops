@@ -1,6 +1,7 @@
 import json
 import subprocess
 from dataclasses import replace as dc_replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -11,9 +12,10 @@ from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
-from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_WAKE, Stage,
+from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
+                               PARK_REVIEW, PARK_WAKE, Stage,
                                TaskState, clear_waiting, has_waiting, load,
-                               mark_waiting, save)
+                               load_all, mark_attached, mark_waiting, save)
 
 POLICY = parse_policy({
     "default": "claude-opus-4-8",
@@ -187,12 +189,13 @@ def deps(gh=None, sess=None, notifier=None):
                      notifier=notifier or FakeNotifier())
 
 
-def make_task(c, issue=42, stage=Stage.IMPLEMENT, **kw):
+def make_task(c, issue=42, stage=Stage.IMPLEMENT, slot=0,
+              updated_at="2026-07-21T00:00:00+00:00", **kw):
     wt = Path(c.targets[0].worktrees_path) / f"task-{issue}"
     (wt / ".agent").mkdir(parents=True, exist_ok=True)
-    ts = TaskState(issue=issue, target="portfolio_eval", stage=stage, slot=0,
+    ts = TaskState(issue=issue, target="portfolio_eval", stage=stage, slot=slot,
                    worktree=str(wt), branch=f"agent/task-{issue}", title="t",
-                   updated_at="2026-07-21T00:00:00+00:00", **kw)
+                   updated_at=updated_at, **kw)
     save(c.state_dir, ts)
     return wt
 
@@ -1351,6 +1354,25 @@ def test_reply_intent_for_unparked_task_is_skipped_and_deleted(tmp_path, monkeyp
     assert intents_mod.list_intents(c.state_dir) == []  # still deleted
 
 
+def test_reply_intent_on_gate_parked_task_wakes_it(tmp_path, monkeypatch):
+    # The console SpecPanel "approve" button sends a `reply` intent; the task
+    # is PARK_REVIEW (not PARK_HUMAN), so _apply_one_intent must accept it.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = replace_capacity(c, 1)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=55)
+    make_task(c, issue=43)  # active task occupies the only slot → 42 stays PARK_WAKE
+    intents_mod.write_intent(c.state_dir, "reply", 42,
+                             {"text": "Approved — proceed."}, actor="jesdi@github",
+                             epoch_ms=1)
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE and t.pending_reply == "Approved — proceed."
+    assert intents_mod.list_intents(c.state_dir) == []
+
+
 def test_park_intent_parks_a_live_task(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -1783,3 +1805,299 @@ def test_injection_logs_a_distinct_event(tmp_path, monkeypatch):
     events = [e["event"] for e in eventlog.read_tail(c.state_dir)]
     assert "login-code-injected" in events
     assert "resumed" not in events
+
+
+def gate_signal(wt: Path, artifact: str = "spec.md") -> None:
+    """The spec session's 'draft ready, review it' signal."""
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
+         "artifact": artifact}))
+
+
+def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=1)
+    gate_signal(wt)
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_REVIEW
+    assert t.slot == NO_SLOT
+    assert t.stage is Stage.AWAITING_SPEC_REVIEW   # stage preserved
+    assert t.park_msg_id == 77                     # reply-to-wake target
+    assert sess.ended == [42]
+    assert "spec_parked" in d.notifier.sent
+
+
+def test_gate_park_is_event_logged(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW)
+    gate_signal(wt)
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    parked = [e for e in eventlog.read_tail(c.state_dir)
+              if e["event"] == "parked"]
+    assert len(parked) == 1
+    assert parked[0]["issue"] == 42
+    assert parked[0]["stage"] == "awaiting-spec-review"
+    assert parked[0]["detail"] == "spec review grace expired"
+
+
+def test_gate_holds_inside_the_grace_period(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    fresh = datetime.now(timezone.utc).isoformat()
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+                   updated_at=fresh)
+    gate_signal(wt)
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.park == "" and t.slot == 0
+    assert sess.ended == []
+    assert "spec_parked" not in d.notifier.sent
+
+
+def test_attached_operator_suspends_the_grace_timer(tmp_path, monkeypatch):
+    # A human reviewing in the live session must never be parked out from
+    # under; has_attached blocks _drive_task entirely.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW)
+    gate_signal(wt)
+    mark_attached(c.state_dir, 42)
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    assert load(c.state_dir, 42).park == ""
+    assert sess.ended == []
+
+
+def test_gate_parked_task_does_not_block_new_claims(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=77)
+    gh = FakeGitHub([Candidate(99, "fresh", "u")])
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert gh.claimed == [99]
+
+
+def test_zero_grace_parks_on_the_next_pass(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+                   updated_at=datetime.now(timezone.utc).isoformat())
+    gate_signal(wt)
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    assert load(c.state_dir, 42).park == PARK_REVIEW
+
+
+def test_unparseable_timestamp_never_expires(tmp_path, monkeypatch):
+    # Fail closed: a corrupt updated_at must not silently park everything.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+                   updated_at="not-a-timestamp")
+    gate_signal(wt)
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    assert load(c.state_dir, 42).park == ""
+
+
+def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, pending_reply="tighten the scope section")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, 42)
+    assert t.park == ""
+    assert t.slot in range(3)   # a real slot, not NO_SLOT
+    assert sess.resumed == [(42, "tighten the scope section", "claude-opus-4-8")]
+
+
+def test_woken_gate_parked_task_waits_when_every_slot_is_taken(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), capacity=9)  # capacity is not the binding limit
+    for issue, slot in ((1, 0), (2, 1), (3, 2)):
+        make_task(c, issue=issue, stage=Stage.IMPLEMENT, slot=slot)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, pending_reply="looks good")
+    sess = FakeSessions(alive={1, 2, 3})
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE and t.slot == NO_SLOT  # still parked, retried next pass
+    assert 42 not in [issue for issue, _msg, _model in sess.resumed]
+
+
+def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, monkeypatch):
+    # Skipping a slot-less task must not abandon the rest of the wake queue:
+    # a task that already holds a slot resumes in the same pass.
+    # Issues 1 and 2 occupy slots 0 and 1; issue 43 uniquely holds slot 2
+    # (all three MAX_SLOTS are taken, so slot-less issue 42 must wait).
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), capacity=9)
+    for issue, slot in ((1, 0), (2, 1)):
+        make_task(c, issue=issue, stage=Stage.IMPLEMENT, slot=slot)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, updated_at="2026-07-21T00:00:00+00:00")
+    make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=2, park=PARK_WAKE,
+              pending_reply="carry on", updated_at="2026-07-21T00:00:01+00:00")
+    sess = FakeSessions(alive={1, 2})
+    main.run_pass(c, deps(sess=sess))
+    assert 43 in [issue for issue, _msg, _model in sess.resumed]
+
+
+def test_reply_to_the_spec_parked_message_wakes_the_task(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=55)
+    make_task(c, issue=43)  # active task consumes the only capacity unit
+    patch_events(monkeypatch, [Reply(reply_to_msg_id=55,
+                                     text="drop the caching section")])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE
+    assert t.pending_reply == "drop the caching section"
+
+
+def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=55)
+    make_task(c, issue=43)
+    patch_events(monkeypatch, [Plain(text="ok")])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE
+    assert t.pending_reply == "ok"
+
+
+def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=56)
+    patch_events(monkeypatch, [Plain(text="yes")])
+    d = deps()
+    main.run_pass(c, d)
+    assert load(c.state_dir, 42).park == PARK_HUMAN
+    assert load(c.state_dir, 43).park == PARK_REVIEW
+    assert "status" in d.notifier.sent  # the "Which task?" prompt lists both
+
+
+def test_two_slot_less_woken_tasks_get_distinct_slots(tmp_path, monkeypatch):
+    # Regression: two PARK_WAKE tasks with slot=NO_SLOT must not collide —
+    # _resume_woken re-reads load_all per iteration and saves each new slot
+    # before the next iteration allocates, so both should get distinct slots.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), capacity=9)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, pending_reply="good spec",
+              updated_at="2026-07-21T00:00:00+00:00")
+    make_task(c, issue=43, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, pending_reply="also good",
+              updated_at="2026-07-21T00:00:01+00:00")
+    main.run_pass(c, deps(sess=FakeSessions()))
+    t42 = load(c.state_dir, 42)
+    t43 = load(c.state_dir, 43)
+    assert t42.slot in range(3)
+    assert t43.slot in range(3)
+    assert t42.slot != t43.slot
+
+
+def test_status_line_says_no_slot_for_a_gate_parked_task(tmp_path):
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=42, target="portfolio_eval", stage=Stage.AWAITING_SPEC_REVIEW,
+        slot=NO_SLOT, worktree="/wt", branch="agent/task-42", title="Add widget",
+        updated_at="2026-07-28T00:00:00+00:00", park=PARK_REVIEW,
+        effort=1, labels=("auto",)))
+    lines = main._status_lines(c)
+    assert lines[0].endswith("[awaiting-review] (no slot)")
+    assert "(slot -1)" not in lines[0]
+    assert lines[-1] == "capacity 0/3"   # gate-parked holds no capacity
+
+
+class LiveUntilEnded(FakeSessions):
+    """A session is alive from spawn/resume until the dispatcher ends it —
+    the property the gate-park path depends on (ending the session is what
+    frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
+    express across a dozen passes."""
+
+    def spawn_stage(self, issue, worktree, prompt, stage_name, model):
+        super().spawn_stage(issue, worktree, prompt, stage_name, model)
+        self.alive_set.add(issue)
+
+    def resume(self, issue, worktree, message, model):
+        super().resume(issue, worktree, message, model)
+        self.alive_set.add(issue)
+
+    def end(self, issue):
+        super().end(issue)
+        self.alive_set.discard(issue)
+
+
+def test_overnight_drain_parks_every_ready_spec_then_one_reply_advances_one(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), capacity=2, spec_review_grace_minutes=0)
+    gh = FakeGitHub([Candidate(n, f"task {n}", f"u{n}") for n in range(1, 6)])
+    sess = LiveUntilEnded()
+    d = deps(gh, sess)
+
+    # Each pass: every spec session that has been spawned reports its draft
+    # ready, then the dispatcher runs. With grace 0 a task parks on the pass
+    # after its stage flips to the gate, freeing capacity AND its slot for
+    # the next Ready candidate.
+    for _ in range(12):
+        for t in load_all(c.state_dir):
+            if t.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW) and not t.park:
+                gate_signal(Path(t.worktree), artifact="spec.md")
+        main.run_pass(c, d)
+
+    tasks = load_all(c.state_dir)
+    assert sorted(t.issue for t in tasks) == [1, 2, 3, 4, 5]
+    assert all(t.park == PARK_REVIEW for t in tasks), \
+        [(t.issue, t.stage.value, t.park) for t in tasks]
+    assert all(t.slot == NO_SLOT for t in tasks)
+    assert sorted(gh.claimed) == [1, 2, 3, 4, 5]   # capacity 2 did NOT cap it
+
+    # Morning: one reply resumes exactly one task, onto a real slot, and it
+    # advances to PLAN once the session signals the approved spec is done.
+    patch_events(monkeypatch, [Reply(reply_to_msg_id=77, text="ship it")])
+    main.run_pass(c, d)
+    resumed = [t for t in load_all(c.state_dir) if t.park == ""]
+    assert len(resumed) == 1
+    woken = resumed[0]
+    assert woken.slot in range(3)
+
+    valid_spec(Path(woken.worktree))
+    (Path(woken.worktree) / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+    patch_events(monkeypatch, [])
+    main.run_pass(c, d)
+    assert load(c.state_dir, woken.issue).stage is Stage.PLAN
+    assert (woken.issue, "plan") in [(i, s) for i, s, _m in sess.spawned]

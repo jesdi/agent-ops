@@ -42,6 +42,10 @@ class Config:
     models: ModelPolicy = DEFAULT_POLICY
     console_url: str = ""  # web console base URL for Telegram deep links; "" = no link line
     stall_after_seconds: int = 600  # 0 disables stall detection entirely
+    # Minutes a finished spec waits at the review gate before the task parks:
+    # session ended, capacity AND slot freed, so the dispatcher can keep
+    # speccing the rest of the Ready queue overnight. 0 parks on the next pass.
+    spec_review_grace_minutes: int = 15
 
 
 def _target(raw: dict) -> Target:
@@ -71,6 +75,7 @@ def load_config(path: str | Path) -> Config:
         models=parse_policy(raw.get("models")),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
+        spec_review_grace_minutes=int(raw.get("spec_review_grace_minutes", 15)),
     )
 
 

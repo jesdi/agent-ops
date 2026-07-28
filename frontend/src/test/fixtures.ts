@@ -10,6 +10,14 @@ export const parkedCard: TaskCard = {
   updated_at: '2026-07-25T10:00:00Z', attached: false,
 }
 
+export const reviewCard: TaskCard = {
+  issue: 44, target: 'jesdi/widget', title: 'Add search feature',
+  stage: 'awaiting-spec-review', park: 'awaiting-review', column: 'needs-review',
+  slot: -1,
+  branch: 'feat/search', model: 'opus', park_note_pending: false,
+  updated_at: '2026-07-25T09:00:00Z', attached: false,
+}
+
 export const inProgressCard: TaskCard = {
   issue: 41, target: 'jesdi/widget', title: 'Add CSV export',
   stage: 'implement', park: '', column: 'in-progress', slot: 2,

@@ -34,15 +34,23 @@ IN_FLIGHT_STAGES = frozenset({
 
 MAX_SLOTS = 3
 
+# A task that holds no E2E slot. Only the spec-review park releases its slot:
+# the spec stage never used the slot's ports, and worktrees are per-issue, so
+# a fresh slot on resume is safe — and freeing it is what lets the whole Ready
+# queue be specced overnight instead of three tasks at a time.
+NO_SLOT = -1
+
 # Park lifecycle (orthogonal to stage — the stage is preserved while parked).
 # "" = not parked. Parked tasks release CAPACITY but keep their SLOT
 # (ports/worktree stay reserved until the task truly ends). PARK_LOGIN is the
 # exception on both counts: it keeps its container and tmux session running,
-# so it keeps consuming capacity too (see active()).
+# so it keeps consuming capacity too (see active()). PARK_REVIEW is the
+# opposite exception: it releases the slot as well (see NO_SLOT).
 PARK_HUMAN = "parked"            # waiting for operator input
 PARK_CI = "awaiting-ci"          # waiting for a GitHub Actions run
 PARK_WAKE = "unpark-requested"   # wake event arrived; resume when slot free
 PARK_LOGIN = "parked-login"      # live session sitting at a /login prompt
+PARK_REVIEW = "awaiting-review"  # spec done, parked for review at leisure
 
 
 @dataclass(frozen=True)
@@ -54,7 +62,7 @@ class TaskState:
     worktree: str
     branch: str
     title: str
-    updated_at: str
+    updated_at: str  # read by main._grace_elapsed; touching this on a gate-parked task restarts its review clock
     park: str = ""
     ci_run_id: int = 0
     park_msg_id: int = 0
@@ -113,7 +121,8 @@ def load_all(state_dir: str | Path) -> list[TaskState]:
 
 
 def allocate_slot(existing: list[TaskState]) -> int | None:
-    held = {t.slot for t in existing if t.stage in IN_FLIGHT_STAGES}
+    held = {t.slot for t in existing
+            if t.stage in IN_FLIGHT_STAGES and t.slot != NO_SLOT}
     for slot in range(MAX_SLOTS):
         if slot not in held:
             return slot

@@ -110,3 +110,17 @@ def test_needs_relogin_template():
     assert "task-42" in text
     assert "claude-home" in text
     assert "Reply to THIS message" in text
+
+
+def test_spec_parked_message_explains_the_park_and_the_way_back():
+    msg = render("spec_parked", issue=42, title="Add widget",
+                 url="https://github.com/x/y/issues/42", note="…pane tail…")
+    assert "#42" in msg and "https://github.com/x/y/issues/42" in msg
+    assert "Reply to THIS message" in msg   # the wake path
+    assert "task-42" in msg                 # /attach hint carries the session
+
+
+def test_spec_parked_carries_the_console_deep_link_when_configured():
+    msg = render("spec_parked", issue=42, title="t", url="u", note="n",
+                 console="https://box.ts.net")
+    assert "https://box.ts.net/task/42" in msg

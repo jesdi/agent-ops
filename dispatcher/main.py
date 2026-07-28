@@ -20,13 +20,13 @@ from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher import eventlog, failures, intents, queue_ops, relogin
 from dispatcher.github import GitHubClient
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
-                                ParkForInput, RetryStage, SetTaskStage,
-                                SpawnStage, next_actions)
+                                ParkForInput, ParkForReview, RetryStage,
+                                SetTaskStage, SpawnStage, next_actions)
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
-from dispatcher.state import (IN_FLIGHT_STAGES, PARK_CI, PARK_HUMAN, PARK_LOGIN,
-                              PARK_WAKE,
+from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
+                              PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, allocate_slot,
                               clear_waiting, has_attached, has_waiting, load,
                               load_all, read_stage_signal, save)
@@ -132,8 +132,9 @@ def _status_lines(cfg: Config) -> list[str]:
     lines = []
     for t in tasks:
         model = _model_for(cfg, by_name.get(t.target), t, t.stage)
+        slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
         lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
-                     + (f" [{t.park}]" if t.park else "") + f" (slot {t.slot})")
+                     + (f" [{t.park}]" if t.park else "") + f" {slot}")
     lines = lines or ["(nothing in flight)"]
     lines.append(f"capacity {len(active(tasks))}/{cfg.capacity}")
     return lines
@@ -215,7 +216,10 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
     if dry_run:
         return
     tasks = load_all(cfg.state_dir)
-    human_parked = [t for t in tasks if t.park == PARK_HUMAN]
+    # Both parks answer the same way — a reply is text for the session. They
+    # stay distinct kinds so /status and the board can say "needs input
+    # mid-stage" vs "spec ready, review at leisure".
+    reply_parked = [t for t in tasks if t.park in (PARK_HUMAN, PARK_REVIEW)]
     login_parked = [t for t in tasks if t.park == PARK_LOGIN]
     for ev in inbound.fetch_events(cfg.state_dir):
         if isinstance(ev, Command) and ev.name == "status":
@@ -250,7 +254,7 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
         elif isinstance(ev, Reply):
             login = [t for t in login_parked
                      if t.park_msg_id == ev.reply_to_msg_id]
-            match = [t for t in human_parked
+            match = [t for t in reply_parked
                      if t.park_msg_id == ev.reply_to_msg_id]
             if login:
                 _inject_login_code(cfg, deps, login[0], ev.text)
@@ -260,12 +264,12 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
                 deps.notifier.send("status",
                                    lines=["(reply didn't match any parked task)"])
         elif isinstance(ev, Plain):
-            if len(human_parked) == 1:
-                _wake(cfg, human_parked[0], ev.text)
+            if len(reply_parked) == 1:
+                _wake(cfg, reply_parked[0], ev.text)
             else:
                 deps.notifier.send("status", lines=(
                     ["Which task? Reply directly to its parked message:"]
-                    + [f"#{t.issue} {t.title}" for t in human_parked]))
+                    + [f"#{t.issue} {t.title}" for t in reply_parked]))
 
 
 def _notify(deps: Deps, target: Target, task: TaskState, template: str,
@@ -407,6 +411,46 @@ def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
                           detail=f"awaiting CI run {run_id}")
 
 
+def _grace_elapsed(cfg: Config, task: TaskState) -> bool:
+    """Has the spec-review gate gone unanswered past the grace period?
+    `updated_at` was stamped when the stage flipped to AWAITING_SPEC_REVIEW,
+    so no extra timer field is needed and the pass stays stateless. An
+    unparseable timestamp never expires — failing closed keeps a corrupt state
+    file from parking the whole queue."""
+    try:
+        since = datetime.fromisoformat(task.updated_at)
+    except (TypeError, ValueError):
+        return False
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - since).total_seconds()
+    return age >= cfg.spec_review_grace_minutes * 60
+
+
+def _park_for_review(cfg: Config, deps: Deps, target: Target,
+                     task: TaskState) -> None:
+    """Park a finished spec for a human to read whenever they wake up. The
+    only park that also releases the SLOT: the spec stage never used the
+    slot's ports and worktrees are per-issue, so resume can take any free
+    slot — and freeing it is the whole point, since a held slot would cap the
+    overnight run at MAX_SLOTS specs."""
+    tail = deps.sessions.capture_tail(task.issue)
+    # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
+    # the task is not stranded — the session is ended and the operator can still
+    # reach it via /attach, the console `resume` intent, or plain-text wakes.
+    # This matches the same reasoning in _park_for_input.
+    msg_id = deps.notifier.send(
+        "spec_parked", issue=task.issue, title=task.title,
+        url=_url(target, task.issue), note=tail.strip() or "(no detail)")
+    deps.sessions.end(task.issue)
+    clear_waiting(cfg.state_dir, task.issue)
+    save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,
+                                slot=NO_SLOT, updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail="spec review grace expired")
+
+
 def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
     for task in load_all(cfg.state_dir):
         if task.target != target.name or task.park != PARK_CI:
@@ -440,6 +484,14 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             return
+        if task.slot == NO_SLOT:
+            # Gate-parked tasks gave their slot back. Take any free one —
+            # worktrees are per-issue and the spec stage never bound the
+            # slot's ports, so the number need not be the original.
+            slot = allocate_slot(load_all(cfg.state_dir))
+            if slot is None:
+                continue  # no free slot: stays parked, retried next pass
+            task = replace(task, slot=slot)
         model = _model_for(cfg, target, task, task.stage)
         agent_dir = Path(task.worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
@@ -484,11 +536,15 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             if alive and cfg.stall_after_seconds > 0 else None)
     for act in next_actions(task, signal, alive, waiting=waiting,
                             idle_seconds=idle,
-                            stall_after=cfg.stall_after_seconds):
+                            stall_after=cfg.stall_after_seconds,
+                            grace_elapsed=_grace_elapsed(cfg, task)):
         if isinstance(act, NoOp):
             continue
         if isinstance(act, ParkForInput):
             _park_for_input(cfg, deps, target, task, act.note)
+            return
+        if isinstance(act, ParkForReview):
+            _park_for_review(cfg, deps, target, task)
             return
         if isinstance(act, ParkForCI):
             _park_for_ci(cfg, deps, target, task, act.run_id)
@@ -628,7 +684,7 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
     issue = intent.issue
     task = load(cfg.state_dir, issue)
     if intent.action == "reply":
-        if task is None or task.park != PARK_HUMAN:
+        if task is None or task.park not in (PARK_HUMAN, PARK_REVIEW):
             print(f"[warn] reply intent for #{issue}: task not parked for "
                   f"input — skipped", file=sys.stderr)
             return

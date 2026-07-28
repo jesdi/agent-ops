@@ -5,9 +5,9 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from dispatcher.budget import UsageSnapshot, should_spawn
-from dispatcher.state import (IN_FLIGHT_STAGES, MAX_SLOTS, PARK_CI,
-                              PARK_HUMAN, PARK_LOGIN, PARK_WAKE, Stage,
-                              TaskState, active)
+from dispatcher.state import (IN_FLIGHT_STAGES, MAX_SLOTS, NO_SLOT, PARK_CI,
+                              PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
+                              Stage, TaskState, active)
 
 # (key, title) in display order — the single place column semantics live.
 COLUMNS: tuple[tuple[str, str], ...] = (
@@ -26,8 +26,11 @@ COLUMNS: tuple[tuple[str, str], ...] = (
 # and the card keeps the exact park kind so the board can tell them apart.
 # Without the mapping it fell through to the stage column and a session stuck
 # at a /login prompt rendered as healthy "In progress" work.
+# PARK_REVIEW maps to Needs review — a finished spec waiting for a human is
+# exactly that column's meaning, parked or not.
 _PARK_COLUMN = {PARK_HUMAN: "parked", PARK_CI: "awaiting-ci",
-                PARK_WAKE: "resuming", PARK_LOGIN: "parked"}
+                PARK_WAKE: "resuming", PARK_LOGIN: "parked",
+                PARK_REVIEW: "needs-review"}
 _STAGE_COLUMN = {
     Stage.QUEUED.value: "queued",
     Stage.SPEC.value: "in-progress",
@@ -110,7 +113,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
             # different capacity than the one the dispatcher enforces
             active=len(active(in_flight)),
             capacity=capacity,
-            slots_used=len(in_flight),
+            slots_used=len([t for t in in_flight if t.slot != NO_SLOT]),
             max_slots=MAX_SLOTS))
 
 

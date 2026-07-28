@@ -10,6 +10,7 @@ from dispatcher.machine import (
     Notify,
     ParkForCI,
     ParkForInput,
+    ParkForReview,
     RetryStage,
     SetTaskStage,
     SpawnStage,
@@ -264,3 +265,54 @@ def test_stall_parked_task_still_noop():
 def test_stall_dead_session_is_still_crash():
     acts = next_actions(task(Stage.SPEC), None, False, idle_seconds=1e9)
     assert acts == [HandleCrash()]
+
+
+def test_gate_parks_once_the_grace_period_elapses():
+    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+                        sig("spec", "awaiting-review"), session_alive=True,
+                        grace_elapsed=True)
+    assert acts == [ParkForReview()]
+
+
+def test_gate_waits_inside_the_grace_period():
+    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+                        sig("spec", "awaiting-review"), session_alive=True,
+                        grace_elapsed=False)
+    assert acts == [NoOp()]
+
+
+def test_gate_parked_task_is_never_re_parked():
+    # park short-circuit wins over the grace rule: wake/resume is
+    # dispatcher-side, and re-parking would re-send the ping every pass.
+    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, park="awaiting-review"),
+                        sig("spec", "awaiting-review"), session_alive=True,
+                        grace_elapsed=True)
+    assert acts == [NoOp()]
+
+
+def test_dead_session_at_gate_still_respawns_even_after_grace():
+    # Crash-during-grace: reboot recovery wins; a dead session has nothing
+    # to park.
+    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+                        sig("spec", "awaiting-review"), session_alive=False,
+                        grace_elapsed=True)
+    assert acts == [SpawnStage(Stage.SPEC)]
+
+
+def test_approved_spec_advances_instead_of_parking(tmp_path):
+    # The operator approved in-session just as the grace expired: a `done`
+    # signal must still advance to PLAN, never park.
+    spec = tmp_path / "spec.md"; spec.write_text(GOOD_SPEC)
+    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)),
+                        sig("spec", "done", str(spec)), session_alive=True,
+                        grace_elapsed=True)
+    assert acts == [SpawnStage(Stage.PLAN)]
+
+
+def test_grace_does_not_park_a_task_still_in_the_spec_stage():
+    # Before the gate flip there is nothing to review — the first pass must
+    # flip the stage and notify, not park.
+    acts = next_actions(task(Stage.SPEC), sig("spec", "awaiting-review"),
+                        session_alive=True, grace_elapsed=True)
+    assert SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact="") in acts
+    assert not any(isinstance(a, ParkForReview) for a in acts)

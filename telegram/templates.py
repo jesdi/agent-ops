@@ -15,6 +15,10 @@ _TEMPLATES = {
     "budget_resume": "▶️ #{issue} {title} — usage window reset; resuming. {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "implement_started": "🛠 #{issue} {title} — implement started. Plan: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "parked_question": "❓ #{issue} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
+    "spec_parked": ("🌙 #{issue} {title} — spec ready and parked for review. "
+                    "Session ended; capacity and slot released.\n{note}\n{url}\n"
+                    "Reply to THIS message with review feedback (or `ok` to "
+                    "continue to plan), or /attach {issue}.\n" + _ATTACH),
     "needs_relogin": ("🔐 #{issue} {title} — Claude Code needs re-login. "
                       "Session task-{issue} is parked but still LIVE.\n"
                       "Authorize here:\n{login_url}\n\n{note}\n{url}\n"
@@ -35,6 +39,6 @@ def render(template: str, **ctx) -> str:
     if template == "queue":
         return "📊 agent-ops queue\n" + "\n".join(ctx["lines"])
     text = _TEMPLATES[template].format(**ctx)
-    if template == "awaiting_spec_review" and ctx.get("console"):
+    if template in ("awaiting_spec_review", "spec_parked") and ctx.get("console"):
         text += f"\nread & approve: {ctx['console']}/task/{ctx['issue']}"
     return text

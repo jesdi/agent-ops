@@ -15,6 +15,13 @@ session_cpus: "2"
 # tmux output for this long is stuck (login/trust prompt, or a hung turn) and
 # gets parked for the operator. 0 disables stall detection entirely.
 stall_after_seconds: 600
+# How long a finished spec waits at the review gate for the operator. Once it
+# expires the task parks: the spec session ends and BOTH its capacity unit and
+# its E2E slot are freed, so the dispatcher keeps claiming and speccing the
+# rest of the Ready queue overnight. Reply to the Telegram park message (or
+# resume from the web console) to pick the review back up. 0 = park on the
+# next pass; attaching holds the task — it will not park while you are attached.
+spec_review_grace_minutes: 15
 # Which model runs which stage. First matching rule wins; anything unmatched
 # gets `default`. An unset Effort on the board never matches an `effort:`
 # constraint (fail closed to `default`). A target may carry its own `models:`
