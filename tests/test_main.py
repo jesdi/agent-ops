@@ -1,6 +1,7 @@
 import json
 import subprocess
 from dataclasses import replace as dc_replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -11,9 +12,10 @@ from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
-from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_WAKE, Stage,
+from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
+                               PARK_REVIEW, PARK_WAKE, Stage,
                                TaskState, clear_waiting, has_waiting, load,
-                               mark_waiting, save)
+                               mark_attached, mark_waiting, save)
 
 POLICY = parse_policy({
     "default": "claude-opus-4-8",
@@ -187,12 +189,13 @@ def deps(gh=None, sess=None, notifier=None):
                      notifier=notifier or FakeNotifier())
 
 
-def make_task(c, issue=42, stage=Stage.IMPLEMENT, **kw):
+def make_task(c, issue=42, stage=Stage.IMPLEMENT, slot=0,
+              updated_at="2026-07-21T00:00:00+00:00", **kw):
     wt = Path(c.targets[0].worktrees_path) / f"task-{issue}"
     (wt / ".agent").mkdir(parents=True, exist_ok=True)
-    ts = TaskState(issue=issue, target="portfolio_eval", stage=stage, slot=0,
+    ts = TaskState(issue=issue, target="portfolio_eval", stage=stage, slot=slot,
                    worktree=str(wt), branch=f"agent/task-{issue}", title="t",
-                   updated_at="2026-07-21T00:00:00+00:00", **kw)
+                   updated_at=updated_at, **kw)
     save(c.state_dir, ts)
     return wt
 
@@ -1783,3 +1786,109 @@ def test_injection_logs_a_distinct_event(tmp_path, monkeypatch):
     events = [e["event"] for e in eventlog.read_tail(c.state_dir)]
     assert "login-code-injected" in events
     assert "resumed" not in events
+
+
+def gate_signal(wt: Path, artifact: str = "spec.md") -> None:
+    """The spec session's 'draft ready, review it' signal."""
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
+         "artifact": artifact}))
+
+
+def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=1)
+    gate_signal(wt)
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_REVIEW
+    assert t.slot == NO_SLOT
+    assert t.stage is Stage.AWAITING_SPEC_REVIEW   # stage preserved
+    assert t.park_msg_id == 77                     # reply-to-wake target
+    assert sess.ended == [42]
+    assert "spec_parked" in d.notifier.sent
+
+
+def test_gate_park_is_event_logged(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW)
+    gate_signal(wt)
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    parked = [e for e in eventlog.read_tail(c.state_dir)
+              if e["event"] == "parked"]
+    assert len(parked) == 1
+    assert parked[0]["issue"] == 42
+    assert parked[0]["stage"] == "awaiting-spec-review"
+    assert parked[0]["detail"] == "spec review grace expired"
+
+
+def test_gate_holds_inside_the_grace_period(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    fresh = datetime.now(timezone.utc).isoformat()
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+                   updated_at=fresh)
+    gate_signal(wt)
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.park == "" and t.slot == 0
+    assert sess.ended == []
+    assert "spec_parked" not in d.notifier.sent
+
+
+def test_attached_operator_suspends_the_grace_timer(tmp_path, monkeypatch):
+    # A human reviewing in the live session must never be parked out from
+    # under; has_attached blocks _drive_task entirely.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW)
+    gate_signal(wt)
+    mark_attached(c.state_dir, 42)
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    assert load(c.state_dir, 42).park == ""
+    assert sess.ended == []
+
+
+def test_gate_parked_task_does_not_block_new_claims(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=0,
+              park=PARK_REVIEW, park_msg_id=77)
+    gh = FakeGitHub([Candidate(99, "fresh", "u")])
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert gh.claimed == [99]
+
+
+def test_zero_grace_parks_on_the_next_pass(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+                   updated_at=datetime.now(timezone.utc).isoformat())
+    gate_signal(wt)
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    assert load(c.state_dir, 42).park == PARK_REVIEW
+
+
+def test_unparseable_timestamp_never_expires(tmp_path, monkeypatch):
+    # Fail closed: a corrupt updated_at must not silently park everything.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+                   updated_at="not-a-timestamp")
+    gate_signal(wt)
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    assert load(c.state_dir, 42).park == ""
