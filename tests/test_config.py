@@ -266,3 +266,15 @@ def test_malformed_rule_fails_at_load(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="label_include"):
         load_config(p)
+
+
+def test_stall_after_seconds_defaults_to_600(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    assert load_config(p).stall_after_seconds == 600
+
+
+def test_stall_after_seconds_configurable_and_zero_disables(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\nstall_after_seconds: 0\ntargets: []\n")
+    assert load_config(p).stall_after_seconds == 0

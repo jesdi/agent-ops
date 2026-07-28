@@ -119,3 +119,54 @@ def test_resume_passes_the_model(tmp_path: Path, monkeypatch):
 
 def test_capture_tail_dry_run_empty():
     assert Sessions(dry_run=True).capture_tail(42) == ""
+
+
+def test_idle_seconds_queries_window_activity(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        return type("R", (), {"returncode": 0, "stdout": "1000\n"})()
+
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run)
+    monkeypatch.setattr(sessions.time, "time", lambda: 1600.0)
+    assert Sessions().idle_seconds(42) == 600.0
+    assert calls == [["tmux", "display-message", "-p", "-t", "task-42",
+                      "#{window_activity}"]]
+
+
+def test_idle_seconds_none_on_failure_and_garbage(monkeypatch):
+    fail = type("R", (), {"returncode": 1, "stdout": ""})()
+    monkeypatch.setattr(sessions.subprocess, "run", lambda *a, **k: fail)
+    assert Sessions().idle_seconds(42) is None
+    garbage = type("R", (), {"returncode": 0, "stdout": "not-a-number"})()
+    monkeypatch.setattr(sessions.subprocess, "run", lambda *a, **k: garbage)
+    assert Sessions().idle_seconds(42) is None
+
+
+def test_idle_seconds_dry_run_is_none():
+    assert Sessions(dry_run=True).idle_seconds(42) is None
+
+
+def test_idle_seconds_clamps_clock_skew_to_zero(monkeypatch):
+    ok = type("R", (), {"returncode": 0, "stdout": "2000\n"})()
+    monkeypatch.setattr(sessions.subprocess, "run", lambda *a, **k: ok)
+    monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
+    assert Sessions().idle_seconds(42) == 0.0
+
+
+def test_send_text_sends_literal_text_then_enter(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sessions, "_tmux", lambda args: calls.append(args) or 0)
+    Sessions().send_text(42, "abc#123-code")
+    assert calls == [
+        ["tmux", "send-keys", "-t", "task-42", "-l", "abc#123-code"],
+        ["tmux", "send-keys", "-t", "task-42", "Enter"],
+    ]
+
+
+def test_send_text_dry_run_touches_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(sessions, "_tmux",
+                        lambda args: (_ for _ in ()).throw(AssertionError))
+    Sessions(dry_run=True).send_text(42, "code")
+    assert "[dry-run] send text to task-42" in capsys.readouterr().out

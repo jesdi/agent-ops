@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import time
 from pathlib import Path
 
 from dispatcher import containers
@@ -72,6 +73,36 @@ class Sessions:
         if out.returncode != 0:
             return ""
         return "\n".join(out.stdout.rstrip().splitlines()[-lines:])
+
+    def idle_seconds(self, issue: int) -> float | None:
+        """Seconds since the task's tmux window last changed. Claude Code's
+        status line redraws every second while working, so a live session
+        reads near zero; only a truly static screen accumulates idle time.
+        None = unknown (dry-run, tmux error) — callers must not treat it
+        as stalled."""
+        if self.dry_run:
+            return None
+        out = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", session_name(issue),
+             "#{window_activity}"],
+            capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            return None
+        try:
+            return max(0.0, time.time() - int(out.stdout.strip()))
+        except ValueError:
+            return None
+
+    def send_text(self, issue: int, text: str) -> None:
+        """Type text into the live pane as-is (login-code injection). -l
+        stops tmux interpreting the text as key names; Enter goes separately
+        because -l would type the word 'Enter' literally."""
+        if self.dry_run:
+            print(f"[dry-run] send text to {session_name(issue)}")
+            return
+        name = session_name(issue)
+        _tmux(["tmux", "send-keys", "-t", name, "-l", text])
+        _tmux(["tmux", "send-keys", "-t", name, "Enter"])
 
     def end(self, issue: int) -> None:
         if self.dry_run:

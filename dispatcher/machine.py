@@ -88,6 +88,8 @@ def next_actions(
     signal: StageSignal | None,
     session_alive: bool,
     waiting: bool = False,
+    idle_seconds: float | None = None,
+    stall_after: float = 600.0,
 ) -> list[object]:
     if task.park:
         return [NoOp()]  # wake/resume is dispatcher-side; never re-park
@@ -101,6 +103,22 @@ def next_actions(
             return [SpawnStage(Stage.SPEC)]
         if task.stage in IN_FLIGHT_STAGES:
             return [HandleCrash()]
+
+    # Time-based liveness: a live claude redraws its status line every
+    # second, so real work never accumulates idle time. A static screen
+    # with no signal (login/trust prompt at startup) or a "working" signal
+    # that never ends its turn (mid-session /login, hang) is a stall.
+    # Gated statuses (awaiting-review/-ci, blocked) are idle by design: they
+    # reach this rule and never satisfy it, falling through to their own
+    # rules below. None idle (query failure) is unknown, not stalled, and
+    # the threshold is strict — idle_seconds == stall_after does not park.
+    stalled = (session_alive and stall_after > 0
+               and idle_seconds is not None and idle_seconds > stall_after)
+    if stalled and (signal is None
+                    or (signal.status == "working" and not waiting)):
+        return [ParkForInput(
+            f"(no session output for {int(stall_after) // 60}m — "
+            f"likely login/trust prompt or hang)")]
 
     if signal is None:
         return [NoOp()]

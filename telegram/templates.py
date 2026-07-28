@@ -15,6 +15,13 @@ _TEMPLATES = {
     "budget_resume": "▶️ #{issue} {title} — usage window reset; resuming. {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "implement_started": "🛠 #{issue} {title} — implement started. Plan: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "parked_question": "❓ #{issue} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
+    "needs_relogin": ("🔐 #{issue} {title} — Claude Code needs re-login. "
+                      "Session task-{issue} is parked but still LIVE.\n"
+                      "Authorize here:\n{login_url}\n\n{note}\n{url}\n"
+                      "Shared claude-home: one re-login likely fixes every "
+                      "session on this box.\n"
+                      "Reply to THIS message with the authorization code.\n"
+                      + _ATTACH),
     "resumed_for_attach": "🎹 #{issue} {title} — session resumed and holding for you.\n{url}\n" + _ATTACH,
     "task_failed": "🔥 #{issue} {title} — {note}\n{url}",
 }

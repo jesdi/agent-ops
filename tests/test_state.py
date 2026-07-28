@@ -95,7 +95,8 @@ def test_read_stage_signal_missing_or_corrupt(tmp_path: Path):
     assert read_stage_signal(tmp_path) is None
 
 
-from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_WAKE, Stage, TaskState,
+from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_WAKE,
+                              Stage, TaskState,
                               active, clear_waiting, has_waiting, load,
                               mark_waiting, parked, read_stage_signal, save)
 
@@ -134,8 +135,16 @@ def test_active_excludes_parked_but_parked_holds_slot():
 
 def test_parked_helper_covers_all_park_values():
     ts = [_task(issue=1, park=PARK_HUMAN), _task(issue=2, park=PARK_CI),
-          _task(issue=3, park=PARK_WAKE)]
-    assert len(parked(ts)) == 3 and active(ts) == []
+          _task(issue=3, park=PARK_WAKE), _task(issue=4, park=PARK_LOGIN)]
+    assert len(parked(ts)) == 4
+
+
+def test_login_park_still_counts_as_active():
+    # PARK_LOGIN is the one park that keeps its container and tmux session
+    # alive, so it must keep consuming capacity too.
+    ts = [_task(issue=1, park=PARK_LOGIN), _task(issue=2, park=PARK_HUMAN)]
+    assert [t.issue for t in active(ts)] == [1]
+    assert [t.issue for t in parked(ts)] == [1, 2]
 
 
 def test_stage_signal_run_id(tmp_path):

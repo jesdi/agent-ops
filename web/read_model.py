@@ -6,7 +6,8 @@ from pydantic import BaseModel
 
 from dispatcher.budget import UsageSnapshot, should_spawn
 from dispatcher.state import (IN_FLIGHT_STAGES, MAX_SLOTS, PARK_CI,
-                              PARK_HUMAN, PARK_WAKE, Stage, TaskState)
+                              PARK_HUMAN, PARK_LOGIN, PARK_WAKE, Stage,
+                              TaskState, active)
 
 # (key, title) in display order — the single place column semantics live.
 COLUMNS: tuple[tuple[str, str], ...] = (
@@ -21,8 +22,12 @@ COLUMNS: tuple[tuple[str, str], ...] = (
     ("failed", "Failed"),
 )
 
+# PARK_LOGIN shares the Parked column: it is a task waiting on the operator,
+# and the card keeps the exact park kind so the board can tell them apart.
+# Without the mapping it fell through to the stage column and a session stuck
+# at a /login prompt rendered as healthy "In progress" work.
 _PARK_COLUMN = {PARK_HUMAN: "parked", PARK_CI: "awaiting-ci",
-                PARK_WAKE: "resuming"}
+                PARK_WAKE: "resuming", PARK_LOGIN: "parked"}
 _STAGE_COLUMN = {
     Stage.QUEUED.value: "queued",
     Stage.SPEC.value: "in-progress",
@@ -81,6 +86,10 @@ def task_card(t: TaskState, *, model: str, attached: bool) -> TaskCard:
         stage=t.stage.value, park=t.park,
         column=column_for(t.stage.value, t.park),
         slot=t.slot, branch=t.branch, model=model,
+        # PARK_HUMAN only: it is the one park whose Telegram ping may be
+        # missing, and the console is then the only way to answer it. A login
+        # park always has a message id (a failed send degrades to PARK_HUMAN),
+        # and CI/wake parks ask the operator nothing.
         park_note_pending=(t.park == PARK_HUMAN and t.park_msg_id == 0),
         updated_at=t.updated_at, attached=attached)
 
@@ -97,7 +106,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
         columns=[Column(key=key, title=title, cards=by_column[key])
                  for key, title in COLUMNS],
         capacity=CapacityView(
-            active=len([t for t in in_flight if not t.park]),
+            # via dispatcher.state.active so the console never shows a
+            # different capacity than the one the dispatcher enforces
+            active=len(active(in_flight)),
             capacity=capacity,
             slots_used=len(in_flight),
             max_slots=MAX_SLOTS))

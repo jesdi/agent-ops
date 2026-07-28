@@ -199,3 +199,68 @@ def test_awaiting_review_carries_spec_artifact():
     gate = [a for a in acts if isinstance(a, SetTaskStage)][0]
     assert gate.stage is Stage.AWAITING_SPEC_REVIEW
     assert gate.artifact == "/tmp/wt/docs/superpowers/specs/x-design.md"
+
+
+def test_stall_no_signal_parks():
+    acts = next_actions(task(Stage.SPEC), None, True, idle_seconds=601.0)
+    assert len(acts) == 1 and isinstance(acts[0], ParkForInput)
+    assert "no session output for 10m" in acts[0].note
+
+
+def test_stall_working_without_waiting_parks():
+    acts = next_actions(task(Stage.PLAN), sig("plan", "working"), True,
+                        idle_seconds=601.0)
+    assert len(acts) == 1 and isinstance(acts[0], ParkForInput)
+
+
+def test_stall_under_threshold_is_noop():
+    assert next_actions(task(Stage.SPEC), None, True,
+                        idle_seconds=599.0) == [NoOp()]
+    assert next_actions(task(Stage.PLAN), sig("plan", "working"), True,
+                        idle_seconds=599.0) == [NoOp()]
+
+
+def test_stall_at_exact_threshold_is_noop():
+    # strictly greater-than: the boundary second itself does not park
+    assert next_actions(task(Stage.SPEC), None, True,
+                        idle_seconds=600.0) == [NoOp()]
+    assert next_actions(task(Stage.SPEC), None, True,
+                        idle_seconds=30.0, stall_after=30.0) == [NoOp()]
+
+
+def test_stall_none_idle_never_parks():
+    # query failure / dry-run — unknown is not stalled
+    assert next_actions(task(Stage.SPEC), None, True,
+                        idle_seconds=None) == [NoOp()]
+
+
+def test_stall_zero_threshold_disables():
+    assert next_actions(task(Stage.SPEC), None, True,
+                        idle_seconds=1e9, stall_after=0) == [NoOp()]
+
+
+def test_stall_ignores_gated_statuses():
+    # idle-by-design states never stall-park
+    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+                        sig("spec", "awaiting-review"), True, idle_seconds=1e9)
+    assert acts == [NoOp()]
+    acts = next_actions(task(Stage.IMPLEMENT),
+                        sig("implement", "awaiting-ci", run_id=7), True,
+                        idle_seconds=1e9)
+    assert acts == [ParkForCI(7)]  # CI rule, not the stall rule
+
+
+def test_stall_working_with_waiting_uses_waiting_park():
+    acts = next_actions(task(Stage.SPEC), sig("spec", "working"), True,
+                        waiting=True, idle_seconds=1e9)
+    assert acts == [ParkForInput("(session stopped mid-stage waiting for input)")]
+
+
+def test_stall_parked_task_still_noop():
+    t = task(Stage.IMPLEMENT, park="parked")
+    assert next_actions(t, None, True, idle_seconds=1e9) == [NoOp()]
+
+
+def test_stall_dead_session_is_still_crash():
+    acts = next_actions(task(Stage.SPEC), None, False, idle_seconds=1e9)
+    assert acts == [HandleCrash()]
