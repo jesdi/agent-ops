@@ -93,12 +93,23 @@ class FakeGitHub:
 
 
 class FakeSessions:
-    def __init__(self, alive=()):
+    def __init__(self, alive=(), idle=None, tail="…pane tail…"):
         self.alive_set = set(alive)
+        self.idle = dict(idle or {})
+        self.idle_queried = []
+        self.tail = tail
         self.spawned, self.resumed, self.ended = [], [], []
+        self.sent_text = []
 
     def is_alive(self, issue):
         return issue in self.alive_set
+
+    def idle_seconds(self, issue):
+        self.idle_queried.append(issue)
+        return self.idle.get(issue)
+
+    def send_text(self, issue, text):
+        self.sent_text.append((issue, text))
 
     def spawn_stage(self, issue, worktree, prompt, stage_name, model):
         self.spawned.append((issue, stage_name, model))
@@ -107,7 +118,7 @@ class FakeSessions:
         self.resumed.append((issue, message, model))
 
     def capture_tail(self, issue, lines=25):
-        return "…pane tail…"
+        return self.tail
 
     def end(self, issue):
         self.ended.append(issue)
@@ -1532,3 +1543,48 @@ def test_clearing_attached_marker_releases_the_hold(tmp_path, monkeypatch):
     clear_attached(c.state_dir, 42)
     main.run_pass(c, d)
     assert sess.resumed == [(42, "go", "claude-opus-4-8")]
+
+
+def test_stalled_working_session_parks(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT)
+    (wt / ".agent" / "stage.json").write_text(
+        json.dumps({"stage": "implement", "status": "working"}))
+    sess = FakeSessions(alive=[42], idle={42: 999999.0})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_HUMAN
+    assert sess.ended == [42]
+    assert "parked_question" in d.notifier.sent
+
+
+def test_no_signal_stalled_session_parks(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC)  # no stage.json written
+    sess = FakeSessions(alive=[42], idle={42: 999999.0})
+    main.run_pass(c, deps(sess=sess))
+    assert load(c.state_dir, 42).park == PARK_HUMAN
+
+
+def test_stall_disabled_never_queries_idle(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), stall_after_seconds=0)
+    wt = make_task(c, stage=Stage.IMPLEMENT)
+    (wt / ".agent" / "stage.json").write_text(
+        json.dumps({"stage": "implement", "status": "working"}))
+    sess = FakeSessions(alive=[42], idle={42: 999999.0})
+    main.run_pass(c, deps(sess=sess))
+    assert sess.idle_queried == []
+    assert load(c.state_dir, 42).park == ""
+
+
+def test_dead_session_never_queries_idle(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT)
+    sess = FakeSessions(alive=[], idle={42: 999999.0})
+    main.run_pass(c, deps(sess=sess))
+    assert sess.idle_queried == []

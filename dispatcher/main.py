@@ -390,7 +390,13 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.issue)
     waiting = has_waiting(cfg.state_dir, task.issue)
-    for act in next_actions(task, signal, alive, waiting=waiting):
+    # Query tmux idle only when it can matter: detection enabled and the
+    # session alive (the crash path owns dead sessions).
+    idle = (deps.sessions.idle_seconds(task.issue)
+            if alive and cfg.stall_after_seconds > 0 else None)
+    for act in next_actions(task, signal, alive, waiting=waiting,
+                            idle_seconds=idle,
+                            stall_after=cfg.stall_after_seconds):
         if isinstance(act, NoOp):
             continue
         if isinstance(act, ParkForInput):
