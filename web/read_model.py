@@ -123,6 +123,11 @@ def task_detail(t: TaskState, *, model: str, attached: bool,
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels))
 
 
+class SpecView(BaseModel):
+    path: str      # worktree-relative
+    markdown: str
+
+
 class BudgetView(BaseModel):
     utilization: float
     minutes_to_reset: float
