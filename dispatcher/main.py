@@ -435,6 +435,10 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     slot — and freeing it is the whole point, since a held slot would cap the
     overnight run at MAX_SLOTS specs."""
     tail = deps.sessions.capture_tail(task.issue)
+    # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
+    # the task is not stranded — the session is ended and the operator can still
+    # reach it via /attach, the console `resume` intent, or plain-text wakes.
+    # This matches the same reasoning in _park_for_input.
     msg_id = deps.notifier.send(
         "spec_parked", issue=task.issue, title=task.title,
         url=_url(target, task.issue), note=tail.strip() or "(no detail)")
@@ -680,7 +684,7 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
     issue = intent.issue
     task = load(cfg.state_dir, issue)
     if intent.action == "reply":
-        if task is None or task.park != PARK_HUMAN:
+        if task is None or task.park not in (PARK_HUMAN, PARK_REVIEW):
             print(f"[warn] reply intent for #{issue}: task not parked for "
                   f"input — skipped", file=sys.stderr)
             return

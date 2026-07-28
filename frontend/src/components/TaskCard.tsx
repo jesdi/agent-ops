@@ -26,7 +26,7 @@ export function TaskCardView({ card, pendingActions }: {
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
         <span>{stageLabel(card.stage)}</span>
         <span>{card.model}</span>
-        <span>slot {card.slot}</span>
+        {card.slot >= 0 && <span>slot {card.slot}</span>}
         {card.park !== '' && (
           <span className="rounded bg-purple-100 px-1.5 text-purple-700">
             parked: {card.park}
