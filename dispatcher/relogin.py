@@ -8,10 +8,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# The authorize URL as printed by `claude /login`. When a line is hard-wrapped
-# by tmux (fills the pane width), we rejoin it with the next line if that line
-# starts with a URL-parameter character (digit, lowercase, or %). This avoids
-# false joins with prose text like "Paste code here" that starts with uppercase.
+# The authorize URL as printed by `claude /login`. tmux hard-wraps it at the
+# pane width, so the tail is un-wrapped first (see _rejoin_wrapped_lines).
 _OAUTH_URL_RE = re.compile(r"https://claude\.ai/oauth/authorize[^\s\"'<>]*")
 _PASTE_RE = re.compile(r"paste code here", re.IGNORECASE)
 
@@ -24,49 +22,51 @@ class LoginPrompt:
 def _rejoin_wrapped_lines(tail: str) -> str:
     """Rejoin hard-wrapped lines caused by tmux pane width limits.
 
-    A line is hard-wrapped if its length equals the maximum line length
-    (approximating the pane width). We rejoin it with the next line only if
-    the next line starts with a URL-parameter character (digit, lowercase
-    letter, or %), not prose text (uppercase letter). This prevents false
-    joins with following paragraphs like "Paste code here if prompted >".
+    The pane width is inferred as the longest row in the tail — nothing can
+    exceed it, and a wrapped URL always reaches it. A row of exactly that
+    length continues into the next row, repeatedly, so a URL split across
+    three or more segments is rejoined too.
+
+    The only guard against gluing prose onto the URL is that a continuation
+    row must be a single unbroken token: it is non-empty and contains no
+    whitespace. "Paste code here if prompted >" therefore never joins, while
+    a wrap landing on any character at all (uppercase, '-', '_', '&', '=')
+    does — the first-character heuristic this replaces silently truncated
+    the URL for roughly half of all pane widths.
     """
     lines = tail.split("\n")
     if len(lines) <= 1:
         return tail
 
-    # Find the maximum line length (approximates pane width for hard-wrapped lines)
-    max_len = max(len(line) for line in lines) if lines else 0
+    width = max(len(line) for line in lines)
+    if width == 0:
+        return tail
 
-    result = []
+    result: list[str] = []
     i = 0
     while i < len(lines):
-        line = lines[i]
-        # Join this line with the next if it's hard-wrapped and the next line
-        # looks like a URL continuation (starts with digit, lowercase, or %)
-        while i < len(lines) - 1 and len(line) == max_len and len(lines[i + 1]) > 0:
-            next_line = lines[i + 1]
-            # URL parameters typically start with a digit, lowercase letter, or %
-            # (for percent-encoding). This avoids joining with prose that starts
-            # with an uppercase letter (e.g., "Paste code here").
-            if next_line[0] in "0123456789abcdefghijklmnopqrstuvwxyz%":
-                line += next_line
-                i += 1
-            else:
-                break
-        result.append(line)
+        joined = lines[i]
+        while (len(lines[i]) == width and i + 1 < len(lines)
+               and lines[i + 1] and not any(c.isspace() for c in lines[i + 1])):
+            joined += lines[i + 1]
+            i += 1
+        result.append(joined)
         i += 1
 
     return "\n".join(result)
 
 
 def classify_login(tail: str) -> LoginPrompt | None:
-    # Rejoin hard-wrapped lines first, then search for the URL in the
-    # reconstructed text. Fall back to searching the raw tail.
-    unwrapped = _rejoin_wrapped_lines(tail)
-    for text in (unwrapped, tail):
-        m = _OAUTH_URL_RE.search(text)
-        if m:
-            return LoginPrompt(url=m.group(0))
+    # Search both the raw tail and the un-wrapped one and keep the LONGEST
+    # match: un-wrapping can only ever add characters to a wrapped URL, and
+    # taking whichever text yields more is what makes a 3+ segment wrap come
+    # back whole instead of silently truncated at the first segment boundary.
+    candidates = [m.group(0)
+                  for m in (_OAUTH_URL_RE.search(text)
+                            for text in (tail, _rejoin_wrapped_lines(tail)))
+                  if m]
+    if candidates:
+        return LoginPrompt(url=max(candidates, key=len))
     if _PASTE_RE.search(tail):
         return LoginPrompt(url="")
     return None

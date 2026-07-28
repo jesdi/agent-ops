@@ -1,3 +1,5 @@
+import pytest
+
 from dispatcher.relogin import LoginPrompt, classify_login
 
 # Full OAuth URL expected in all tests
@@ -26,6 +28,20 @@ TIGHT_TAIL = f"""{OAUTH_URL}
 Paste code here if prompted >
 """
 
+def hard_wrap(text: str, width: int) -> str:
+    """What tmux capture-pane does to a pane of this width: every line is
+    chopped into `width`-char rows, blanks preserved."""
+    rows: list[str] = []
+    for line in text.split("\n"):
+        if not line:
+            rows.append("")
+            continue
+        while line:
+            rows.append(line[:width])
+            line = line[width:]
+    return "\n".join(rows)
+
+
 WORKING_TAIL = """\
 ● Running tests…
   ⎿ python -m pytest -q
@@ -51,6 +67,23 @@ def test_tight_tail_url_not_contaminated():
     """URL immediately followed by Paste line (no blank line) should not
     include the Paste text as part of the URL."""
     got = classify_login(TIGHT_TAIL)
+    assert got is not None
+    assert got.url == OAUTH_URL
+
+
+@pytest.mark.parametrize("width", [50, 60, 72, 80, 100, 120])
+def test_wrapped_url_is_reassembled_at_any_pane_width(width):
+    """The URL survives 2, 3 and 4 segment wraps, whatever character the
+    wrap happens to land on (uppercase, '-', '_', '&', '=', '?', '.')."""
+    got = classify_login(hard_wrap(LOGIN_TAIL, width))
+    assert got is not None
+    assert got.url == OAUTH_URL
+
+
+@pytest.mark.parametrize("width", [50, 60, 72, 80])
+def test_wrapped_tight_tail_is_not_contaminated_by_prose(width):
+    """Even wrapped, the paste prompt must never be glued onto the URL."""
+    got = classify_login(hard_wrap(TIGHT_TAIL, width))
     assert got is not None
     assert got.url == OAUTH_URL
 
