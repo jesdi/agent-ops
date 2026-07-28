@@ -258,6 +258,34 @@ def test_budget_resume_pings_once(tmp_path, monkeypatch):
     assert d.notifier.sent.count("budget_resume") == 1
 
 
+def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.SPEC)
+    spec_path = str(wt / "docs" / "x-design.md")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
+         "artifact": spec_path}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, 42)
+    assert t.stage is Stage.AWAITING_SPEC_REVIEW
+    assert t.artifact == spec_path
+
+
+def test_gate_respawn_clears_stale_artifact(tmp_path, monkeypatch):
+    # Reboot recovery: gate-parked task with a dead session re-spawns SPEC;
+    # the stale artifact path must not survive into the fresh attempt.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+              artifact=str(tmp_path / "old-spec.md"))
+    sess = FakeSessions()  # session not alive
+    main.run_pass(c, deps(sess=sess))
+    assert [(i, s) for i, s, _m in sess.spawned] == [(42, "spec")]
+    assert load(c.state_dir, 42).artifact == ""
+
+
 def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)

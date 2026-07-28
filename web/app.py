@@ -103,6 +103,27 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             pane_tail=sources.pane_tail(issue),
             session_alive=sources.session_alive(issue))
 
+    @app.get("/api/task/{issue}/spec", response_model=read_model.SpecView)
+    def task_spec(issue: int,
+                  op: Operator = Depends(current_operator)):
+        match = [t for t in sources.tasks() if t.issue == issue]
+        if not match:
+            raise HTTPException(404, f"no task {issue}")
+        t = match[0]
+        wt = Path(t.worktree).resolve()
+        p = Path(t.artifact).resolve() if t.artifact else None
+        # Anything short of a readable file inside the worktree is "no spec":
+        # the artifact path is dispatcher-written state, not user input, but
+        # the worktree check keeps a corrupted state file from reading /etc.
+        if p is None or not p.is_relative_to(wt):
+            raise HTTPException(404, f"no spec recorded for task {issue}")
+        try:
+            markdown = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            raise HTTPException(404, f"spec file missing for task {issue}")
+        return read_model.SpecView(path=str(p.relative_to(wt)),
+                                   markdown=markdown)
+
     @app.get("/api/budget", response_model=read_model.BudgetView)
     def budget_route(op: Operator = Depends(current_operator)):
         return read_model.budget_view(

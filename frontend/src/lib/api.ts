@@ -13,6 +13,7 @@ export type QuarantineEntry = components['schemas']['QuarantineEntry']
 export type FingerprintEntry = components['schemas']['FingerprintEntry']
 export type HistoryView = components['schemas']['HistoryView']
 export type EventEntry = components['schemas']['EventEntry']
+export type SpecView = components['schemas']['SpecView']
 
 export interface PendingIntent {
   action: string
@@ -80,6 +81,7 @@ export const api = {
   board: () => request<BoardView>('/board'),
   queue: () => request<QueueView>('/queue'),
   taskDetail: (issue: number) => request<TaskDetail>(`/task/${issue}`),
+  taskSpec: (issue: number) => request<SpecView>(`/task/${issue}/spec`),
   budget: () => request<BudgetView>('/budget'),
   failures: () => request<FailuresView>('/failures'),
   history: (limit = 200) => request<HistoryView>(`/history?limit=${limit}`),

@@ -104,6 +104,18 @@ def test_infra_repo_loaded(tmp_path: Path):
     assert load_config(p).infra_repo == "jesdi/agent-ops"
 
 
+def test_console_url_defaults_to_empty(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE)
+    assert load_config(p).console_url == ""
+
+
+def test_console_url_loaded_and_trailing_slash_stripped(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("console_url: https://box.tail.ts.net/\n" + SAMPLE)
+    assert load_config(p).console_url == "https://box.tail.ts.net"
+
+
 _TARGET_YAML = """
 state_dir: /tmp/state
 targets:

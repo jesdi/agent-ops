@@ -72,3 +72,30 @@ def test_task_failed_links_the_filed_issue():
 def test_queue_template_joins_lines():
     text = render("queue", lines=["1. [5.00] #2 B", "Blocked: #4"])
     assert text == "📊 agent-ops queue\n1. [5.00] #2 B\nBlocked: #4"
+
+
+def test_awaiting_spec_review_includes_console_link_when_configured():
+    msg = render("awaiting_spec_review", issue=42, title="Add widget",
+                 url="https://github.com/x/y/issues/42", note="n",
+                 console="https://box.tail.ts.net")
+    assert "read & approve: https://box.tail.ts.net/task/42" in msg
+
+
+def test_awaiting_spec_review_unchanged_without_console():
+    with_empty = render("awaiting_spec_review", issue=42, title="t",
+                        url="u", note="n", console="")
+    without = render("awaiting_spec_review", issue=42, title="t",
+                     url="u", note="n")
+    assert with_empty == without
+    assert "read & approve" not in with_empty
+
+
+def test_notifier_injects_console_url(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TOK")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "CHAT")
+    seen = {}
+    monkeypatch.setattr(notify, "_http_post",
+                        lambda url, payload: seen.update(payload=payload) or {})
+    notify.Notifier(console_url="https://box.tail.ts.net").send(
+        "awaiting_spec_review", issue=42, title="t", url="u", note="")
+    assert "read & approve: https://box.tail.ts.net/task/42" in seen["payload"]["text"]

@@ -36,6 +36,7 @@ class Notify:
 @dataclass(frozen=True)
 class SetTaskStage:
     stage: Stage
+    artifact: str = ""
 
 
 @dataclass(frozen=True)
@@ -125,7 +126,8 @@ def next_actions(
             return [NoOp()]  # already notified on a previous pass
         if task.stage != Stage.SPEC:
             return [NoOp()]  # only the SPEC stage emits awaiting-review; ignore stale/misrouted
-        return [SetTaskStage(Stage.AWAITING_SPEC_REVIEW),
+        return [SetTaskStage(Stage.AWAITING_SPEC_REVIEW,
+                             artifact=signal.artifact),
                 Notify("awaiting_spec_review", signal.note)]
 
     if done:

@@ -205,3 +205,25 @@ def test_mark_attached_creates_state_dir(tmp_path):
     sd = tmp_path / "fresh"
     mark_attached(sd, 7)
     assert has_attached(sd, 7)
+
+
+def test_artifact_round_trips(tmp_path):
+    ts = TaskState(issue=7, target="alpha", stage=Stage.AWAITING_SPEC_REVIEW,
+                   slot=0, worktree="/tmp/wt", branch="task/7", title="t",
+                   updated_at="2026-07-28T10:00:00+00:00",
+                   artifact="/tmp/wt/docs/superpowers/specs/x-design.md")
+    save(tmp_path, ts)
+    assert load(tmp_path, 7).artifact == ts.artifact
+
+
+def test_legacy_state_file_without_artifact_loads(tmp_path):
+    ts = TaskState(issue=8, target="alpha", stage=Stage.SPEC, slot=0,
+                   worktree="/tmp/wt", branch="task/8", title="t",
+                   updated_at="2026-07-28T10:00:00+00:00")
+    save(tmp_path, ts)
+    # Simulate a state file written before the field existed.
+    p = tmp_path / "task-8.json"
+    d = json.loads(p.read_text())
+    del d["artifact"]
+    p.write_text(json.dumps(d))
+    assert load(tmp_path, 8).artifact == ""

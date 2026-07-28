@@ -247,7 +247,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         {"stage": stage.value, "status": "working", "model": model}))
     _log_model(task.worktree, stage, model)
     deps.sessions.spawn_stage(task.issue, task.worktree, prompt, stage.value, model)
-    task = replace(task, stage=stage, updated_at=_now())
+    task = replace(task, stage=stage, artifact="", updated_at=_now())
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
                           issue=task.issue, stage=stage.value, model=model)
@@ -406,7 +406,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             return
         if isinstance(act, SetTaskStage):
             clear_waiting(cfg.state_dir, task.issue)
-            task = replace(task, stage=act.stage, updated_at=_now())
+            task = replace(task, stage=act.stage,
+                           artifact=act.artifact or task.artifact,
+                           updated_at=_now())
             save(cfg.state_dir, task)
             if act.stage is Stage.PR_OPEN:
                 eventlog.append_event(cfg.state_dir, "pr-opened",
@@ -666,7 +668,8 @@ def main() -> None:
     cfg = load_config(args.config)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory, cpus=cfg.session_cpus),
-                notifier=Notifier(dry_run=args.dry_run))
+                notifier=Notifier(dry_run=args.dry_run,
+                                  console_url=cfg.console_url))
     if args.digest:
         send_digest(cfg, deps)
     else:
