@@ -15,7 +15,7 @@ from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                PARK_REVIEW, PARK_WAKE, Stage,
                                TaskState, clear_waiting, has_waiting, load,
-                               mark_attached, mark_waiting, save)
+                               load_all, mark_attached, mark_waiting, save)
 
 POLICY = parse_policy({
     "default": "claude-opus-4-8",
@@ -1994,3 +1994,66 @@ def test_status_line_says_no_slot_for_a_gate_parked_task(tmp_path):
     assert lines[0].endswith("[awaiting-review] (no slot)")
     assert "(slot -1)" not in lines[0]
     assert lines[-1] == "capacity 0/3"   # gate-parked holds no capacity
+
+
+class LiveUntilEnded(FakeSessions):
+    """A session is alive from spawn/resume until the dispatcher ends it —
+    the property the gate-park path depends on (ending the session is what
+    frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
+    express across a dozen passes."""
+
+    def spawn_stage(self, issue, worktree, prompt, stage_name, model):
+        super().spawn_stage(issue, worktree, prompt, stage_name, model)
+        self.alive_set.add(issue)
+
+    def resume(self, issue, worktree, message, model):
+        super().resume(issue, worktree, message, model)
+        self.alive_set.add(issue)
+
+    def end(self, issue):
+        super().end(issue)
+        self.alive_set.discard(issue)
+
+
+def test_overnight_drain_parks_every_ready_spec_then_one_reply_advances_one(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), capacity=2, spec_review_grace_minutes=0)
+    gh = FakeGitHub([Candidate(n, f"task {n}", f"u{n}") for n in range(1, 6)])
+    sess = LiveUntilEnded()
+    d = deps(gh, sess)
+
+    # Each pass: every spec session that has been spawned reports its draft
+    # ready, then the dispatcher runs. With grace 0 a task parks on the pass
+    # after its stage flips to the gate, freeing capacity AND its slot for
+    # the next Ready candidate.
+    for _ in range(12):
+        for t in load_all(c.state_dir):
+            if t.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW) and not t.park:
+                gate_signal(Path(t.worktree), artifact="spec.md")
+        main.run_pass(c, d)
+
+    tasks = load_all(c.state_dir)
+    assert sorted(t.issue for t in tasks) == [1, 2, 3, 4, 5]
+    assert all(t.park == PARK_REVIEW for t in tasks), \
+        [(t.issue, t.stage.value, t.park) for t in tasks]
+    assert all(t.slot == NO_SLOT for t in tasks)
+    assert sorted(gh.claimed) == [1, 2, 3, 4, 5]   # capacity 2 did NOT cap it
+
+    # Morning: one reply resumes exactly one task, onto a real slot, and it
+    # advances to PLAN once the session signals the approved spec is done.
+    patch_events(monkeypatch, [Reply(reply_to_msg_id=77, text="ship it")])
+    main.run_pass(c, d)
+    resumed = [t for t in load_all(c.state_dir) if t.park == ""]
+    assert len(resumed) == 1
+    woken = resumed[0]
+    assert woken.slot in range(3)
+
+    valid_spec(Path(woken.worktree))
+    (Path(woken.worktree) / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+    patch_events(monkeypatch, [])
+    main.run_pass(c, d)
+    assert load(c.state_dir, woken.issue).stage is Stage.PLAN
+    assert (woken.issue, "plan") in [(i, s) for i, s, _m in sess.spawned]
