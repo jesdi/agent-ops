@@ -92,13 +92,38 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     into the still-alive pane — NOT the wake/resume path, which would spawn
     `claude --continue` over the live login prompt. Park cleared; stage
     signals, the Stop hook, and the stall timer take over. A wrong code
-    leaves the screen static and the stall detector simply re-fires."""
+    leaves the screen static and the stall detector simply re-fires.
+
+    The reply may arrive hours later, so the prompt is re-verified first: the
+    tmux session is a HOST one (is_alive only means `has-session`), and once
+    claude has exited the pane is back at the host shell, where send_text
+    would execute the operator's text as a shell command outside the sandbox.
+
+    Un-parking then restores the same invariant _resume_woken and _retry_plan
+    enforce — no waiting marker, a `working` signal — or the very next pass
+    re-reads blocked/awaiting-ci, re-parks, and ENDS the session that was
+    just re-authenticated."""
+    if relogin.classify_login(deps.sessions.capture_tail(task.issue)) is None:
+        deps.notifier.send("status", lines=[
+            f"#{task.issue} is no longer at a login prompt — code NOT typed "
+            f"(the pane would have run it as a shell command). Still parked; "
+            f"attach to the session to sort it out."])
+        return
     deps.sessions.send_text(task.issue, code.strip())
+    clear_waiting(cfg.state_dir, task.issue)
+    signal = read_stage_signal(task.worktree)
+    if signal is not None and signal.status != "working":
+        by_name = {t.name: t for t in cfg.targets}
+        model = _model_for(cfg, by_name.get(task.target), task, task.stage)
+        agent_dir = Path(task.worktree) / ".agent"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        (agent_dir / "stage.json").write_text(json.dumps(
+            {"stage": task.stage.value, "status": "working", "model": model}))
     save(cfg.state_dir, replace(task, park="", park_msg_id=0,
                                 updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "resumed", target=task.target,
-                          issue=task.issue, stage=task.stage.value,
-                          detail="login code injected")
+    eventlog.append_event(cfg.state_dir, "login-code-injected",
+                          target=task.target, issue=task.issue,
+                          stage=task.stage.value, detail="login code injected")
 
 
 def _status_lines(cfg: Config) -> list[str]:
@@ -294,8 +319,8 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     note: str) -> None:
     tail = deps.sessions.capture_tail(task.issue)
     login = relogin.classify_login(tail)
-    if login is not None:
-        _park_for_login(cfg, deps, target, task, note, tail, login)
+    if login is not None and _park_for_login(cfg, deps, target, task, note,
+                                             tail, login):
         return
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
@@ -310,21 +335,35 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 
 def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                    note: str, tail: str, login: relogin.LoginPrompt) -> None:
+                    note: str, tail: str, login: relogin.LoginPrompt) -> bool:
     """Unlike every other park, the session is NOT ended: the reply path
     types the OAuth code into this exact pane. Only this task is parked;
     other sessions hitting the shared-claude-home prompt are caught by
-    their own stall timers."""
+    their own stall timers.
+
+    Returns False when the ping could not be delivered (Notifier.send yields
+    0 on any send error). A park_msg_id of 0 matches no reply, so the task
+    would hold a live container forever with no way back in — the caller
+    falls through to the generic park, which at least releases it.
+
+    The waiting marker is cleared like in every other park: it says "the
+    session stopped mid-stage", and leaving it set makes the pass after the
+    un-park re-park (and END) the freshly re-authenticated session. Pane
+    liveness is what this park protects, and the marker has no part in it."""
     msg_id = deps.notifier.send(
         "needs_relogin", issue=task.issue, title=task.title,
         url=_url(target, task.issue),
         login_url=login.url or "(attach to the session to see the URL)",
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
+    if msg_id == 0:
+        return False
+    clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="needs re-login: " + note)
+    return True
 
 
 def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -409,6 +448,11 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         (agent_dir / "stage.json").write_text(json.dumps(
             {"stage": task.stage.value, "status": "working", "model": model}))
         _log_model(task.worktree, task.stage, model)
+        # End first, unconditionally. Most parks already stopped the session,
+        # but /attach on a PARK_LOGIN task reaches here with the pane still
+        # LIVE, and _launch would then type the podman command INTO the
+        # running claude (the failure _retry_plan and SpawnStage guard).
+        deps.sessions.end(task.issue)
         if task.hold_for_attach:
             deps.sessions.resume(task.issue, task.worktree,
                                  "The operator is attaching to talk to you "

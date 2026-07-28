@@ -126,7 +126,8 @@ class FakeSessions:
 
 
 class FakeNotifier:
-    def __init__(self):
+    def __init__(self, msg_id=77):
+        self.msg_id = msg_id  # telegram/notify.Notifier returns 0 on send failure
         self.sent = []
         self.contexts = []
         self.calls = []  # (template, ctx) — parallel record; sent stays template-only
@@ -135,7 +136,7 @@ class FakeNotifier:
         self.sent.append(template)
         self.contexts.append((template, ctx))
         self.calls.append((template, ctx))
-        return 77
+        return self.msg_id
 
 
 def cfg(tmp_path: Path) -> Config:
@@ -180,10 +181,10 @@ def patch_workspace(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "create_workspace", fake_create)
 
 
-def deps(gh=None, sess=None):
+def deps(gh=None, sess=None, notifier=None):
     return main.Deps(github=gh or FakeGitHub(),
                      sessions=sess or FakeSessions(),
-                     notifier=FakeNotifier())
+                     notifier=notifier or FakeNotifier())
 
 
 def make_task(c, issue=42, stage=Stage.IMPLEMENT, **kw):
@@ -1639,6 +1640,48 @@ def test_stall_without_login_tail_stays_generic(tmp_path, monkeypatch):
     assert "parked_question" in d.notifier.sent
 
 
+def test_login_park_when_ping_fails_falls_back_to_generic_park(tmp_path,
+                                                               monkeypatch):
+    # msg_id 0 = the Telegram send failed, so no reply can ever reach this
+    # task. Holding a live container for an unreachable park is worse than a
+    # plain park: release it.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC)
+    sess = FakeSessions(alive=[42], idle={42: 999999.0}, tail=LOGIN_TAIL)
+    d = deps(sess=sess, notifier=FakeNotifier(msg_id=0))
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_HUMAN
+    assert sess.ended == [42]           # container released
+    assert d.notifier.sent == ["needs_relogin", "parked_question"]
+
+
+def test_login_park_holds_capacity_against_new_claims(tmp_path, monkeypatch):
+    # A login park keeps its container running, so it must NOT free a slot
+    # for a new claim — a box-wide auth expiry would otherwise spawn a fresh
+    # doomed session on every pass.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, stage=Stage.SPEC, park=PARK_LOGIN, park_msg_id=77)
+    gh = FakeGitHub([Candidate(99, "X", "u")])
+    main.run_pass(c, deps(gh, FakeSessions(alive=[42], tail=LOGIN_TAIL)))
+    assert gh.claimed == []
+
+
+def test_resume_woken_ends_session_before_resuming(tmp_path, monkeypatch):
+    # /attach on a login park reaches resume with the pane still LIVE;
+    # _launch would type the podman command into the running claude.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT, park=PARK_WAKE, pending_reply="go")
+    sess = FakeSessions(alive=[42])
+    main.run_pass(c, deps(sess=sess))
+    assert sess.ended == [42]
+    assert sess.resumed == [(42, "go", "claude-opus-4-8")]
+
+
 def test_reply_to_login_park_injects_code(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -1646,7 +1689,7 @@ def test_reply_to_login_park_injects_code(tmp_path, monkeypatch):
     monkeypatch.setattr(main.inbound, "fetch_events",
                         lambda sd: [main.Reply(reply_to_msg_id=77,
                                                text="oauth-code-abc#123")])
-    sess = FakeSessions(alive=[42])
+    sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
     main.run_pass(c, deps(sess=sess))
     assert sess.sent_text == [(42, "oauth-code-abc#123")]
     assert sess.resumed == []          # must NOT go through resume
@@ -1678,3 +1721,65 @@ def test_unmatched_reply_still_reports(tmp_path, monkeypatch):
     main.run_pass(c, d)
     assert "status" in d.notifier.sent
     assert load(c.state_dir, 42).park == PARK_LOGIN  # untouched
+
+
+def test_injection_refused_when_pane_left_the_login_prompt(tmp_path, monkeypatch):
+    # The pane is a HOST tmux session: once claude exits, `has-session` still
+    # says alive and send_text would run the operator's code as a shell
+    # command outside the sandbox.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC, park=PARK_LOGIN, park_msg_id=77)
+    monkeypatch.setattr(main.inbound, "fetch_events",
+                        lambda sd: [main.Reply(reply_to_msg_id=77, text="code")])
+    sess = FakeSessions(alive=[42], tail="agent@box:~$ ")
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    assert sess.sent_text == []
+    assert load(c.state_dir, 42).park == PARK_LOGIN  # park kept, not cleared
+    assert "status" in d.notifier.sent
+
+
+def test_injection_restores_the_unpark_invariant(tmp_path, monkeypatch):
+    # Same invariant _resume_woken/_retry_plan enforce: a stale blocked signal
+    # or waiting marker would re-park (and END) the freshly re-authed session.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT, park=PARK_LOGIN, park_msg_id=77)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "blocked", "note": "x"}))
+    mark_waiting(c.state_dir, 42)
+    monkeypatch.setattr(main.inbound, "fetch_events",
+                        lambda sd: [main.Reply(reply_to_msg_id=77, text="code")])
+    sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, 42)
+    assert t.park == ""
+    assert not has_waiting(c.state_dir, 42)
+    assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
+    assert sess.ended == []             # NOT re-parked over the live session
+
+
+def test_login_park_clears_the_waiting_marker(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "working"}))
+    mark_waiting(c.state_dir, 42)
+    sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
+    main.run_pass(c, deps(sess=sess))
+    assert load(c.state_dir, 42).park == PARK_LOGIN
+    assert not has_waiting(c.state_dir, 42)
+
+
+def test_injection_logs_a_distinct_event(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC, park=PARK_LOGIN, park_msg_id=77)
+    monkeypatch.setattr(main.inbound, "fetch_events",
+                        lambda sd: [main.Reply(reply_to_msg_id=77, text="code")])
+    main.run_pass(c, deps(sess=FakeSessions(alive=[42], tail=LOGIN_TAIL)))
+    events = [e["event"] for e in eventlog.read_tail(c.state_dir)]
+    assert "login-code-injected" in events
+    assert "resumed" not in events

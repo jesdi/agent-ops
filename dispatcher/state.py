@@ -36,7 +36,9 @@ MAX_SLOTS = 3
 
 # Park lifecycle (orthogonal to stage — the stage is preserved while parked).
 # "" = not parked. Parked tasks release CAPACITY but keep their SLOT
-# (ports/worktree stay reserved until the task truly ends).
+# (ports/worktree stay reserved until the task truly ends). PARK_LOGIN is the
+# exception on both counts: it keeps its container and tmux session running,
+# so it keeps consuming capacity too (see active()).
 PARK_HUMAN = "parked"            # waiting for operator input
 PARK_CI = "awaiting-ci"          # waiting for a GitHub Actions run
 PARK_WAKE = "unpark-requested"   # wake event arrived; resume when slot free
@@ -136,7 +138,15 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
 
 
 def active(tasks: list[TaskState]) -> list[TaskState]:
-    return [t for t in tasks if t.stage in IN_FLIGHT_STAGES and not t.park]
+    """Tasks consuming capacity: unparked ones, plus login-parked ones —
+    "parked ⇒ container stopped" holds for every park except PARK_LOGIN,
+    whose whole point is a session left running at the /login prompt.
+    Counting it frees the dispatcher from claiming new work during a
+    box-wide auth expiry, when every fresh session would hit the same
+    prompt."""
+    return [t for t in tasks
+            if t.stage in IN_FLIGHT_STAGES
+            and (not t.park or t.park == PARK_LOGIN)]
 
 
 def parked(tasks: list[TaskState]) -> list[TaskState]:
