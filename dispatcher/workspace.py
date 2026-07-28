@@ -245,7 +245,15 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     (claude_dir / "settings.local.json").write_text(json.dumps({
         "hooks": {
             "Stop": [{
-                "hooks": [{"type": "command", "command": ".agent/stop-hook.sh"}]
+                # Anchor to $CLAUDE_PROJECT_DIR, not a bare relative path:
+                # Claude fires the Stop hook with the session's current cwd,
+                # which need not be the worktree root. A relative command
+                # 404s from any subdir ("/bin/sh: .agent/stop-hook.sh: not
+                # found"), the waiting ping never fires, and the task hangs
+                # unparked forever. Claude exports CLAUDE_PROJECT_DIR (the
+                # worktree root) into every hook's env for exactly this.
+                "hooks": [{"type": "command",
+                           "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]
             }]
         }
     }, indent=2))

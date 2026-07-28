@@ -58,6 +58,12 @@ def test_create_workspace(tmp_path: Path, monkeypatch):
     settings = json.loads((Path(wt) / ".claude" / "settings.local.json").read_text())
     stop = settings["hooks"]["Stop"][0]["hooks"][0]
     assert stop["type"] == "command" and ".agent/stop-hook.sh" in stop["command"]
+    # The command must be cwd-independent: Claude fires the Stop hook with
+    # whatever cwd the session currently holds, which is not guaranteed to be
+    # the worktree root. A bare relative path silently 404s from any subdir,
+    # the "waiting" ping never fires, and the task hangs unparked. Anchor it
+    # to $CLAUDE_PROJECT_DIR so it resolves from anywhere.
+    assert stop["command"].startswith("$CLAUDE_PROJECT_DIR/"), stop["command"]
 
 
 def _make_healthy_worktree(wt_path: Path, branch: str) -> None:
