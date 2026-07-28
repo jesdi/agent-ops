@@ -476,6 +476,14 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             return
+        if task.slot == NO_SLOT:
+            # Gate-parked tasks gave their slot back. Take any free one —
+            # worktrees are per-issue and the spec stage never bound the
+            # slot's ports, so the number need not be the original.
+            slot = allocate_slot(load_all(cfg.state_dir))
+            if slot is None:
+                continue  # no free slot: stays parked, retried next pass
+            task = replace(task, slot=slot)
         model = _model_for(cfg, target, task, task.stage)
         agent_dir = Path(task.worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)

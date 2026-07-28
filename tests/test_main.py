@@ -1892,3 +1892,49 @@ def test_unparseable_timestamp_never_expires(tmp_path, monkeypatch):
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, 42).park == ""
+
+
+def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, pending_reply="tighten the scope section")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, 42)
+    assert t.park == ""
+    assert t.slot in range(3)   # a real slot, not NO_SLOT
+    assert sess.resumed == [(42, "tighten the scope section", "claude-opus-4-8")]
+
+
+def test_woken_gate_parked_task_waits_when_every_slot_is_taken(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), capacity=9)  # capacity is not the binding limit
+    for issue, slot in ((1, 0), (2, 1), (3, 2)):
+        make_task(c, issue=issue, stage=Stage.IMPLEMENT, slot=slot)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, pending_reply="looks good")
+    sess = FakeSessions(alive={1, 2, 3})
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE and t.slot == NO_SLOT  # still parked, retried next pass
+    assert 42 not in [issue for issue, _msg, _model in sess.resumed]
+
+
+def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, monkeypatch):
+    # Skipping a slot-less task must not abandon the rest of the wake queue:
+    # a task that already holds a slot resumes in the same pass.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), capacity=9)
+    for issue, slot in ((1, 0), (2, 1), (3, 2)):
+        make_task(c, issue=issue, stage=Stage.IMPLEMENT, slot=slot)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, updated_at="2026-07-21T00:00:00+00:00")
+    make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=2, park=PARK_WAKE,
+              pending_reply="carry on", updated_at="2026-07-21T00:00:01+00:00")
+    sess = FakeSessions(alive={1, 2, 3})
+    main.run_pass(c, deps(sess=sess))
+    assert 43 in [issue for issue, _msg, _model in sess.resumed]
