@@ -1938,3 +1938,46 @@ def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, mon
     sess = FakeSessions(alive={1, 2, 3})
     main.run_pass(c, deps(sess=sess))
     assert 43 in [issue for issue, _msg, _model in sess.resumed]
+
+
+def test_reply_to_the_spec_parked_message_wakes_the_task(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=55)
+    make_task(c, issue=43)  # active task consumes the only capacity unit
+    patch_events(monkeypatch, [Reply(reply_to_msg_id=55,
+                                     text="drop the caching section")])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE
+    assert t.pending_reply == "drop the caching section"
+
+
+def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=55)
+    make_task(c, issue=43)
+    patch_events(monkeypatch, [Plain(text="ok")])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    assert load(c.state_dir, 42).park == PARK_WAKE
+
+
+def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=56)
+    patch_events(monkeypatch, [Plain(text="yes")])
+    d = deps()
+    main.run_pass(c, d)
+    assert load(c.state_dir, 42).park == PARK_HUMAN
+    assert load(c.state_dir, 43).park == PARK_REVIEW
+    assert "status" in d.notifier.sent  # the "Which task?" prompt lists both

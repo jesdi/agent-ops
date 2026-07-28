@@ -215,7 +215,10 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
     if dry_run:
         return
     tasks = load_all(cfg.state_dir)
-    human_parked = [t for t in tasks if t.park == PARK_HUMAN]
+    # Both parks answer the same way — a reply is text for the session. They
+    # stay distinct kinds so /status and the board can say "needs input
+    # mid-stage" vs "spec ready, review at leisure".
+    reply_parked = [t for t in tasks if t.park in (PARK_HUMAN, PARK_REVIEW)]
     login_parked = [t for t in tasks if t.park == PARK_LOGIN]
     for ev in inbound.fetch_events(cfg.state_dir):
         if isinstance(ev, Command) and ev.name == "status":
@@ -250,7 +253,7 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
         elif isinstance(ev, Reply):
             login = [t for t in login_parked
                      if t.park_msg_id == ev.reply_to_msg_id]
-            match = [t for t in human_parked
+            match = [t for t in reply_parked
                      if t.park_msg_id == ev.reply_to_msg_id]
             if login:
                 _inject_login_code(cfg, deps, login[0], ev.text)
@@ -260,12 +263,12 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
                 deps.notifier.send("status",
                                    lines=["(reply didn't match any parked task)"])
         elif isinstance(ev, Plain):
-            if len(human_parked) == 1:
-                _wake(cfg, human_parked[0], ev.text)
+            if len(reply_parked) == 1:
+                _wake(cfg, reply_parked[0], ev.text)
             else:
                 deps.notifier.send("status", lines=(
                     ["Which task? Reply directly to its parked message:"]
-                    + [f"#{t.issue} {t.title}" for t in human_parked]))
+                    + [f"#{t.issue} {t.title}" for t in reply_parked]))
 
 
 def _notify(deps: Deps, target: Target, task: TaskState, template: str,
