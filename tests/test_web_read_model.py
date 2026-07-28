@@ -1,7 +1,7 @@
 """Pure view-model tests: every (stage, park) combination, board grouping."""
 import pytest
 
-from dispatcher.state import PARK_CI, PARK_HUMAN, PARK_WAKE, Stage
+from dispatcher.state import PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_WAKE, Stage
 from tests.webfakes import make_task
 from web.read_model import build_board, column_for, task_card
 
@@ -23,6 +23,9 @@ def test_park_overrides_stage(stage):
     assert column_for(stage.value, PARK_HUMAN) == "parked"
     assert column_for(stage.value, PARK_CI) == "awaiting-ci"
     assert column_for(stage.value, PARK_WAKE) == "resuming"
+    # a login park is the state that most needs an operator — never let it
+    # render as healthy in-progress work
+    assert column_for(stage.value, PARK_LOGIN) == "parked"
 
 
 @pytest.mark.parametrize("stage", list(Stage))
@@ -47,6 +50,25 @@ def test_task_card_fields():
 def test_park_note_not_pending_once_notified():
     t = make_task(park=PARK_HUMAN, park_msg_id=123)
     assert task_card(t, model="m", attached=False).park_note_pending is False
+
+
+def test_login_park_card_shows_its_park_kind_in_the_parked_column():
+    t = make_task(issue=9, stage=Stage.IMPLEMENT, park=PARK_LOGIN,
+                  park_msg_id=77)
+    card = task_card(t, model="m", attached=False)
+    assert card.column == "parked"
+    assert card.park == PARK_LOGIN  # the card still distinguishes the kind
+    # a login park always has a Telegram message to reply to (a failed send
+    # degrades to a plain park), so it is never a "note pending" card
+    assert card.park_note_pending is False
+
+
+def test_login_park_counts_towards_active_capacity():
+    tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0, park=PARK_LOGIN),
+             make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
+    board = build_board(tasks, capacity=2, models={}, attached=set())
+    assert board.capacity.active == 1   # matches dispatcher.state.active()
+    assert board.capacity.slots_used == 2
 
 
 def test_build_board_groups_and_counts():
