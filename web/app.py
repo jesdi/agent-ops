@@ -118,8 +118,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if p is None or not p.is_relative_to(wt):
             raise HTTPException(404, f"no spec recorded for task {issue}")
         try:
-            markdown = p.read_text()
-        except OSError:
+            markdown = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
             raise HTTPException(404, f"spec file missing for task {issue}")
         return read_model.SpecView(path=str(p.relative_to(wt)),
                                    markdown=markdown)

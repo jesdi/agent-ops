@@ -134,3 +134,16 @@ def test_task_spec_404s(tmp_path):
     for issue in (1, 2, 3, 999):                                    # 999: unknown task
         assert client.get(f"/api/task/{issue}/spec",
                           headers=HEADERS).status_code == 404
+
+
+def test_task_spec_non_utf8_is_404(tmp_path):
+    fake, client = rig(tmp_path)
+    wt = tmp_path / "wt"
+    spec = wt / "docs" / "superpowers" / "specs" / "bad-encoding.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_bytes(b"\xff\xfe bad")
+    fake.tasks_list = [make_task(issue=7, worktree=str(wt),
+                                 stage=Stage.AWAITING_SPEC_REVIEW,
+                                 artifact=str(spec))]
+    assert client.get("/api/task/7/spec",
+                      headers=HEADERS).status_code == 404
