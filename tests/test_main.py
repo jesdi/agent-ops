@@ -1354,6 +1354,25 @@ def test_reply_intent_for_unparked_task_is_skipped_and_deleted(tmp_path, monkeyp
     assert intents_mod.list_intents(c.state_dir) == []  # still deleted
 
 
+def test_reply_intent_on_gate_parked_task_wakes_it(tmp_path, monkeypatch):
+    # The console SpecPanel "approve" button sends a `reply` intent; the task
+    # is PARK_REVIEW (not PARK_HUMAN), so _apply_one_intent must accept it.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = replace_capacity(c, 1)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=55)
+    make_task(c, issue=43)  # active task occupies the only slot → 42 stays PARK_WAKE
+    intents_mod.write_intent(c.state_dir, "reply", 42,
+                             {"text": "Approved — proceed."}, actor="jesdi@github",
+                             epoch_ms=1)
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE and t.pending_reply == "Approved — proceed."
+    assert intents_mod.list_intents(c.state_dir) == []
+
+
 def test_park_intent_parks_a_live_task(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -1864,7 +1883,7 @@ def test_gate_parked_task_does_not_block_new_claims(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = replace_capacity(cfg(tmp_path), 1)
-    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=0,
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
               park=PARK_REVIEW, park_msg_id=77)
     gh = FakeGitHub([Candidate(99, "fresh", "u")])
     main.run_pass(c, deps(gh, FakeSessions()))
@@ -1926,16 +1945,18 @@ def test_woken_gate_parked_task_waits_when_every_slot_is_taken(tmp_path, monkeyp
 def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, monkeypatch):
     # Skipping a slot-less task must not abandon the rest of the wake queue:
     # a task that already holds a slot resumes in the same pass.
+    # Issues 1 and 2 occupy slots 0 and 1; issue 43 uniquely holds slot 2
+    # (all three MAX_SLOTS are taken, so slot-less issue 42 must wait).
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = dc_replace(cfg(tmp_path), capacity=9)
-    for issue, slot in ((1, 0), (2, 1), (3, 2)):
+    for issue, slot in ((1, 0), (2, 1)):
         make_task(c, issue=issue, stage=Stage.IMPLEMENT, slot=slot)
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
               park=PARK_WAKE, updated_at="2026-07-21T00:00:00+00:00")
     make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=2, park=PARK_WAKE,
               pending_reply="carry on", updated_at="2026-07-21T00:00:01+00:00")
-    sess = FakeSessions(alive={1, 2, 3})
+    sess = FakeSessions(alive={1, 2})
     main.run_pass(c, deps(sess=sess))
     assert 43 in [issue for issue, _msg, _model in sess.resumed]
 
@@ -1964,7 +1985,9 @@ def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
     make_task(c, issue=43)
     patch_events(monkeypatch, [Plain(text="ok")])
     main.run_pass(c, deps(sess=FakeSessions(alive={43})))
-    assert load(c.state_dir, 42).park == PARK_WAKE
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE
+    assert t.pending_reply == "ok"
 
 
 def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
@@ -1981,6 +2004,27 @@ def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
     assert load(c.state_dir, 42).park == PARK_HUMAN
     assert load(c.state_dir, 43).park == PARK_REVIEW
     assert "status" in d.notifier.sent  # the "Which task?" prompt lists both
+
+
+def test_two_slot_less_woken_tasks_get_distinct_slots(tmp_path, monkeypatch):
+    # Regression: two PARK_WAKE tasks with slot=NO_SLOT must not collide —
+    # _resume_woken re-reads load_all per iteration and saves each new slot
+    # before the next iteration allocates, so both should get distinct slots.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), capacity=9)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, pending_reply="good spec",
+              updated_at="2026-07-21T00:00:00+00:00")
+    make_task(c, issue=43, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_WAKE, pending_reply="also good",
+              updated_at="2026-07-21T00:00:01+00:00")
+    main.run_pass(c, deps(sess=FakeSessions()))
+    t42 = load(c.state_dir, 42)
+    t43 = load(c.state_dir, 43)
+    assert t42.slot in range(3)
+    assert t43.slot in range(3)
+    assert t42.slot != t43.slot
 
 
 def test_status_line_says_no_slot_for_a_gate_parked_task(tmp_path):

@@ -62,7 +62,7 @@ class TaskState:
     worktree: str
     branch: str
     title: str
-    updated_at: str
+    updated_at: str  # read by main._grace_elapsed; touching this on a gate-parked task restarts its review clock
     park: str = ""
     ci_run_id: int = 0
     park_msg_id: int = 0

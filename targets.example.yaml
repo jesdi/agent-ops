@@ -20,7 +20,7 @@ stall_after_seconds: 600
 # its E2E slot are freed, so the dispatcher keeps claiming and speccing the
 # rest of the Ready queue overnight. Reply to the Telegram park message (or
 # resume from the web console) to pick the review back up. 0 = park on the
-# next pass; attaching to the session suspends the timer.
+# next pass; attaching holds the task — it will not park while you are attached.
 spec_review_grace_minutes: 15
 # Which model runs which stage. First matching rule wins; anything unmatched
 # gets `default`. An unset Effort on the board never matches an `effort:`
