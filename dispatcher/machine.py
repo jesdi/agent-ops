@@ -108,9 +108,10 @@ def next_actions(
     # second, so real work never accumulates idle time. A static screen
     # with no signal (login/trust prompt at startup) or a "working" signal
     # that never ends its turn (mid-session /login, hang) is a stall.
-    # Gated statuses (awaiting-review/-ci, blocked) are idle by design and
-    # never reach this rule; None idle (query failure) is unknown, not
-    # stalled.
+    # Gated statuses (awaiting-review/-ci, blocked) are idle by design: they
+    # reach this rule and never satisfy it, falling through to their own
+    # rules below. None idle (query failure) is unknown, not stalled, and
+    # the threshold is strict — idle_seconds == stall_after does not park.
     stalled = (session_alive and stall_after > 0
                and idle_seconds is not None and idle_seconds > stall_after)
     if stalled and (signal is None

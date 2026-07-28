@@ -220,6 +220,14 @@ def test_stall_under_threshold_is_noop():
                         idle_seconds=599.0) == [NoOp()]
 
 
+def test_stall_at_exact_threshold_is_noop():
+    # strictly greater-than: the boundary second itself does not park
+    assert next_actions(task(Stage.SPEC), None, True,
+                        idle_seconds=600.0) == [NoOp()]
+    assert next_actions(task(Stage.SPEC), None, True,
+                        idle_seconds=30.0, stall_after=30.0) == [NoOp()]
+
+
 def test_stall_none_idle_never_parks():
     # query failure / dry-run — unknown is not stalled
     assert next_actions(task(Stage.SPEC), None, True,

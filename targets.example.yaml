@@ -11,6 +11,10 @@ racing_minutes: 30
 racing_threshold: 0.95
 session_memory: 2g   # capacity-2 experiment: 1500m
 session_cpus: "2"
+# A live claude redraws its status line every second, so a session with no
+# tmux output for this long is stuck (login/trust prompt, or a hung turn) and
+# gets parked for the operator. 0 disables stall detection entirely.
+stall_after_seconds: 600
 # Which model runs which stage. First matching rule wins; anything unmatched
 # gets `default`. An unset Effort on the board never matches an `effort:`
 # constraint (fail closed to `default`). A target may carry its own `models:`
