@@ -153,3 +153,20 @@ def test_idle_seconds_clamps_clock_skew_to_zero(monkeypatch):
     monkeypatch.setattr(sessions.subprocess, "run", lambda *a, **k: ok)
     monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
     assert Sessions().idle_seconds(42) == 0.0
+
+
+def test_send_text_sends_literal_text_then_enter(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sessions, "_tmux", lambda args: calls.append(args) or 0)
+    Sessions().send_text(42, "abc#123-code")
+    assert calls == [
+        ["tmux", "send-keys", "-t", "task-42", "-l", "abc#123-code"],
+        ["tmux", "send-keys", "-t", "task-42", "Enter"],
+    ]
+
+
+def test_send_text_dry_run_touches_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(sessions, "_tmux",
+                        lambda args: (_ for _ in ()).throw(AssertionError))
+    Sessions(dry_run=True).send_text(42, "code")
+    assert "[dry-run] send text to task-42" in capsys.readouterr().out

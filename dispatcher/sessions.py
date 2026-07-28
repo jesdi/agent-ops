@@ -93,6 +93,17 @@ class Sessions:
         except ValueError:
             return None
 
+    def send_text(self, issue: int, text: str) -> None:
+        """Type text into the live pane as-is (login-code injection). -l
+        stops tmux interpreting the text as key names; Enter goes separately
+        because -l would type the word 'Enter' literally."""
+        if self.dry_run:
+            print(f"[dry-run] send text to {session_name(issue)}")
+            return
+        name = session_name(issue)
+        _tmux(["tmux", "send-keys", "-t", name, "-l", text])
+        _tmux(["tmux", "send-keys", "-t", name, "Enter"])
+
     def end(self, issue: int) -> None:
         if self.dry_run:
             print(f"[dry-run] end tmux {session_name(issue)}")
