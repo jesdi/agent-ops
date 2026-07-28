@@ -189,3 +189,13 @@ def test_parked_task_is_noop_even_with_dead_session():
     from dispatcher.state import PARK_CI
     t = replace(task(Stage.IMPLEMENT), park=PARK_CI)
     assert next_actions(t, sig("implement", "awaiting-ci", run_id=1), False) == [NoOp()]
+
+
+def test_awaiting_review_carries_spec_artifact():
+    acts = next_actions(
+        task(Stage.SPEC),
+        sig("spec", "awaiting-review",
+            artifact="/tmp/wt/docs/superpowers/specs/x-design.md"), True)
+    gate = [a for a in acts if isinstance(a, SetTaskStage)][0]
+    assert gate.stage is Stage.AWAITING_SPEC_REVIEW
+    assert gate.artifact == "/tmp/wt/docs/superpowers/specs/x-design.md"
