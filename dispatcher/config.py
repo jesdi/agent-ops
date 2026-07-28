@@ -40,6 +40,7 @@ class Config:
     targets: list[Target]
     infra_repo: str = ""  # repo for dispatcher-side failure issues; "" degrades to ping-only
     models: ModelPolicy = DEFAULT_POLICY
+    console_url: str = ""  # web console base URL for Telegram deep links; "" = no link line
 
 
 def _target(raw: dict) -> Target:
@@ -67,6 +68,7 @@ def load_config(path: str | Path) -> Config:
         targets=[_target(t) for t in raw.get("targets", [])],
         infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
+        console_url=str(raw.get("console_url") or "").rstrip("/"),
     )
 
 

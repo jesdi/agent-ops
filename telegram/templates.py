@@ -27,4 +27,7 @@ def render(template: str, **ctx) -> str:
         return "📟 agent-ops status\n" + "\n".join(ctx["lines"])
     if template == "queue":
         return "📊 agent-ops queue\n" + "\n".join(ctx["lines"])
-    return _TEMPLATES[template].format(**ctx)
+    text = _TEMPLATES[template].format(**ctx)
+    if template == "awaiting_spec_review" and ctx.get("console"):
+        text += f"\nread & approve: {ctx['console']}/task/{ctx['issue']}"
+    return text
