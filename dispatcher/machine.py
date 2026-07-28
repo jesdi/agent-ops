@@ -59,6 +59,13 @@ class ParkForCI:
     run_id: int
 
 
+@dataclass(frozen=True)
+class ParkForReview:
+    """Grace expired at the spec-review gate. Unlike every other park this
+    one releases the E2E slot too, so the dispatcher can spend it on the next
+    Ready task instead of holding it for a human who is asleep."""
+
+
 NEXT_STAGE = {
     Stage.SPEC: Stage.PLAN,
     Stage.AWAITING_SPEC_REVIEW: Stage.PLAN,
@@ -90,6 +97,7 @@ def next_actions(
     waiting: bool = False,
     idle_seconds: float | None = None,
     stall_after: float = 600.0,
+    grace_elapsed: bool = False,
 ) -> list[object]:
     if task.park:
         return [NoOp()]  # wake/resume is dispatcher-side; never re-park
@@ -141,6 +149,10 @@ def next_actions(
 
     if signal.status == "awaiting-review":
         if task.stage == Stage.AWAITING_SPEC_REVIEW:
+            # session_alive is guaranteed here: a dead session at the gate
+            # returned SpawnStage(SPEC) above (reboot recovery).
+            if grace_elapsed:
+                return [ParkForReview()]
             return [NoOp()]  # already notified on a previous pass
         if task.stage != Stage.SPEC:
             return [NoOp()]  # only the SPEC stage emits awaiting-review; ignore stale/misrouted
