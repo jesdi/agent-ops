@@ -278,3 +278,16 @@ def test_stall_after_seconds_configurable_and_zero_disables(tmp_path):
     p = tmp_path / "targets.yaml"
     p.write_text("state_dir: /tmp/s\nstall_after_seconds: 0\ntargets: []\n")
     assert load_config(p).stall_after_seconds == 0
+
+
+def test_spec_review_grace_minutes_defaults_to_15(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    assert load_config(p).spec_review_grace_minutes == 15
+
+
+def test_spec_review_grace_minutes_is_read_from_yaml(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\nspec_review_grace_minutes: 0\ntargets: []\n")
+    # 0 is a real value (park immediately), not "unset" — it must survive.
+    assert load_config(p).spec_review_grace_minutes == 0

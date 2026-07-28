@@ -1,8 +1,11 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from dispatcher.state import (
     IN_FLIGHT_STAGES,
+    NO_SLOT,
+    PARK_REVIEW,
     Stage,
     StageSignal,
     TaskState,
@@ -236,3 +239,29 @@ def test_legacy_state_file_without_artifact_loads(tmp_path):
     del d["artifact"]
     p.write_text(json.dumps(d))
     assert load(tmp_path, 8).artifact == ""
+
+
+def test_allocate_slot_ignores_slot_less_holders():
+    # A gate-parked task holds no slot; slot 0 must stay allocatable.
+    existing = [make(issue=1, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT)]
+    assert allocate_slot(existing) == 0
+
+
+def test_all_slots_free_when_every_holder_is_gate_parked():
+    existing = [make(issue=i, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT)
+                for i in range(5)]
+    assert allocate_slot(existing) == 0
+
+
+def test_review_park_frees_capacity_and_counts_as_parked():
+    ts = [_task(issue=1, park=PARK_REVIEW)]
+    from dispatcher.state import parked, active
+    assert parked(ts) == ts
+    assert active(ts) == []   # unlike PARK_LOGIN, it does NOT hold capacity
+
+
+def test_slot_less_state_round_trips(tmp_path):
+    ts = replace(make(issue=77, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT),
+                 park=PARK_REVIEW)
+    save(tmp_path, ts)
+    assert load(tmp_path, 77) == ts
