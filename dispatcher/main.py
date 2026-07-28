@@ -132,8 +132,9 @@ def _status_lines(cfg: Config) -> list[str]:
     lines = []
     for t in tasks:
         model = _model_for(cfg, by_name.get(t.target), t, t.stage)
+        slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
         lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
-                     + (f" [{t.park}]" if t.park else "") + f" (slot {t.slot})")
+                     + (f" [{t.park}]" if t.park else "") + f" {slot}")
     lines = lines or ["(nothing in flight)"]
     lines.append(f"capacity {len(active(tasks))}/{cfg.capacity}")
     return lines

@@ -1981,3 +1981,16 @@ def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
     assert load(c.state_dir, 42).park == PARK_HUMAN
     assert load(c.state_dir, 43).park == PARK_REVIEW
     assert "status" in d.notifier.sent  # the "Which task?" prompt lists both
+
+
+def test_status_line_says_no_slot_for_a_gate_parked_task(tmp_path):
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=42, target="portfolio_eval", stage=Stage.AWAITING_SPEC_REVIEW,
+        slot=NO_SLOT, worktree="/wt", branch="agent/task-42", title="Add widget",
+        updated_at="2026-07-28T00:00:00+00:00", park=PARK_REVIEW,
+        effort=1, labels=("auto",)))
+    lines = main._status_lines(c)
+    assert lines[0].endswith("[awaiting-review] (no slot)")
+    assert "(slot -1)" not in lines[0]
+    assert lines[-1] == "capacity 0/3"   # gate-parked holds no capacity

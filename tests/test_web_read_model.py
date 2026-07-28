@@ -1,7 +1,8 @@
 """Pure view-model tests: every (stage, park) combination, board grouping."""
 import pytest
 
-from dispatcher.state import PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_WAKE, Stage
+from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
+                              PARK_REVIEW, PARK_WAKE, Stage)
 from tests.webfakes import make_task
 from web.read_model import build_board, column_for, task_card
 
@@ -26,6 +27,7 @@ def test_park_overrides_stage(stage):
     # a login park is the state that most needs an operator — never let it
     # render as healthy in-progress work
     assert column_for(stage.value, PARK_LOGIN) == "parked"
+    assert column_for(stage.value, PARK_REVIEW) == "needs-review"
 
 
 @pytest.mark.parametrize("stage", list(Stage))
@@ -97,3 +99,21 @@ def test_board_column_order_is_stable():
     assert [c.key for c in board.columns] == [
         "queued", "in-progress", "needs-review", "pr-open", "parked",
         "awaiting-ci", "resuming", "stalled", "failed"]
+
+
+def test_review_park_shows_in_the_needs_review_column():
+    t = make_task(issue=9, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+                  park=PARK_REVIEW, park_msg_id=77)
+    card = task_card(t, model="m", attached=False)
+    assert card.column == "needs-review"
+    assert card.park == PARK_REVIEW   # the card still distinguishes the kind
+    assert card.park_note_pending is False
+
+
+def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
+    tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
+             make_task(issue=2, stage=Stage.AWAITING_SPEC_REVIEW,
+                       slot=NO_SLOT, park=PARK_REVIEW)]
+    board = build_board(tasks, capacity=2, models={}, attached=set())
+    assert board.capacity.active == 1
+    assert board.capacity.slots_used == 1   # not 2 — #2 gave its slot back
