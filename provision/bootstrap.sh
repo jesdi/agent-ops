@@ -51,8 +51,13 @@ if ! command -v op >/dev/null; then
   apt-get update && apt-get install -y 1password-cli
 fi
 
-# Claude Code
-command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code
+# Claude Code is installed per-user via the native installer AFTER the agent
+# user exists (see below). Never `npm install -g` it as root: the npm prefix
+# is /usr, the agent user can't write there, and auto-update fails forever
+# ("no write permission to npm prefix"), pinning the box to a stale version.
+# Clean up the root npm copy on boxes bootstrapped before this rule.
+npm ls -g @anthropic-ai/claude-code >/dev/null 2>&1 \
+  && npm uninstall -g @anthropic-ai/claude-code
 
 # Tailscale
 if ! command -v tailscale >/dev/null; then
@@ -95,6 +100,14 @@ as_agent mkdir -p \
   $AGENT_HOME/repos \
   $AGENT_HOME/agent-ops-state \
   $AGENT_HOME/.config/systemd/user
+
+# Claude Code: native per-user install into ~/.local/bin, owned by agent so
+# auto-update works. Login shells pick it up via Ubuntu's default ~/.profile;
+# systemd user units and scripts must use the absolute path (the user
+# manager's PATH does not include ~/.local/bin).
+if [ ! -x $AGENT_HOME/.local/bin/claude ]; then
+  as_agent bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+fi
 
 if [ ! -d $AGENT_HOME/agent-ops ]; then
   as_agent git clone https://github.com/jesdi/agent-ops $AGENT_HOME/agent-ops
