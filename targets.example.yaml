@@ -26,19 +26,62 @@ spec_review_grace_minutes: 15
 # gets `default`. An unset Effort on the board never matches an `effort:`
 # constraint (fail closed to `default`). A target may carry its own `models:`
 # block, which REPLACES this one for that target — rule lists are not merged.
+# Labels come from the backlog skill's taxonomy (type: bug/enhancement/
+# documentation/question; area: frontend/backend/infra/...), applied at
+# capture and confirmed at triage.
 models:
   default: claude-opus-4-8
   rules:
+    # Research / exploration: the work IS the judgment — Fable end to end.
+    # Two rules because labels_include is AND, and repos differ on which
+    # label they carry (`research` on portfolio_eval, `question` from the
+    # backlog taxonomy).
+    - name: research
+      when:
+        labels_include: [research]
+      use: claude-fable-5
+    - name: question
+      when:
+        labels_include: [question]
+      use: claude-fable-5
+
+    # Mechanical chores at low effort: dependency bumps, doc edits, CI
+    # plumbing — no Fable anywhere. Security-tagged work never takes a
+    # cheap exit, whatever its effort score.
+    - name: deps-chore
+      when:
+        effort: {max: 2}
+        labels_include: [dependencies]
+        labels_exclude: [security]
+      use: claude-opus-4-8
+    - name: docs-chore
+      when:
+        effort: {max: 2}
+        labels_include: [documentation]
+        labels_exclude: [security]
+      use: claude-opus-4-8
+    - name: ci-chore
+      when:
+        effort: {max: 2}
+        labels_include: [ci]
+        labels_exclude: [security]
+      use: claude-opus-4-8
+
+    # Very low effort, backend-only change: Opus everywhere. Anything
+    # touching frontend/infra, security, or needing a product decision
+    # stays on the standard track.
     - name: trivial-backend
       when:
         effort: {max: 1}
-        labels_exclude: [frontend]
-      use: claude-sonnet-4-6
+        labels_include: [backend]
+        labels_exclude: [frontend, infra, security, product]
+      use: claude-opus-4-8
 
-    - name: frontend-substantial
-      when:
-        effort: {min: 2}
-        labels_include: [frontend]
+    # Everything else — including unscored tasks (unset Effort never
+    # matches an effort: rule, so they fail closed to here): Fable writes
+    # the spec and the plan (the leverage stages); the multiagent
+    # implement stage always runs on Opus.
+    - name: standard
       use:
         spec:      claude-fable-5
         plan:      claude-fable-5
