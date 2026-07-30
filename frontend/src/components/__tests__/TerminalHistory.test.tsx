@@ -121,7 +121,19 @@ it('refetch while reading history does not close the overlay', async () => {
     expect(pane.textContent).toContain('even more'),
   )
 
-  // programmatic scroll to bottom must NOT trigger auto-return
-  // (user is still reading, just the history got longer)
+  // the effect runs programmatic scroll to bottom, which in a real browser
+  // dispatches a scroll event. jsdom doesn't auto-dispatch, so we simulate it.
+  // WITHOUT the disarm, armedRef would still be true, so this would call onClose().
+  pane.scrollTop = 800 // effect set this to scrollHeight
+  fireEvent.scroll(pane)
   expect(onClose).not.toHaveBeenCalled()
+
+  // verify auto-return is not permanently disabled: scroll up and back down
+  pane.scrollTop = 300
+  fireEvent.scroll(pane)
+  expect(onClose).not.toHaveBeenCalled()
+
+  pane.scrollTop = 800
+  fireEvent.scroll(pane)
+  expect(onClose).toHaveBeenCalledTimes(1)
 })
