@@ -49,6 +49,11 @@ class FakeGitHub:
         self.boosts, self.labeled, self.statused = [], [], []
         self.boost_raises = False
         self.lookup_raises = False
+        self.pr_payloads = {}        # pr_number -> gh pr view payload
+        self.pr_view_raises = False
+        self.branch_prs = {}         # branch -> pr number
+        self.deleted_branches = []   # (repo, branch)
+        self.login = "agent-bot"
 
     def rank_rows(self, target):
         if self.boost_raises:
@@ -95,6 +100,24 @@ class FakeGitHub:
 
     def append_blocked_by(self, target, issue, blocker):
         self.blocked_by.append((issue, blocker))
+
+    def viewer_login(self):
+        return self.login
+
+    def pr_view(self, target, pr_number):
+        if self.pr_view_raises:
+            raise subprocess.CalledProcessError(1, ["gh"])
+        # Unknown PRs read as quiet/open, so tests that merely pass through
+        # a pr-open task (e.g. the capture test) never crash the pass.
+        return self.pr_payloads.get(pr_number, {
+            "state": "OPEN", "mergedAt": None, "reviewDecision": "",
+            "reviews": [], "comments": []})
+
+    def pr_number_for_branch(self, target, branch):
+        return self.branch_prs.get(branch, 0)
+
+    def delete_branch(self, target, branch):
+        self.deleted_branches.append((target.repo, branch))
 
 
 class FakeSessions:
@@ -2185,3 +2208,149 @@ def test_prune_snapshots_corrupt_state_file_does_not_abort_sweep(tmp_path, monke
 
     # sweep continued past the corrupt file and pruned the eligible one
     assert not (snaps / "task-51.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# PR lifecycle tests (Task 8)
+# ---------------------------------------------------------------------------
+
+def payload(state="OPEN", merged_at=None, reviews=(), comments=()):
+    return {"state": state, "mergedAt": merged_at, "reviewDecision": "",
+            "reviews": list(reviews), "comments": list(comments)}
+
+
+def patch_teardown(monkeypatch):
+    removed = []
+    monkeypatch.setattr(main, "remove_workspace",
+                        lambda target, wt, branch: removed.append((wt, branch)))
+    return removed
+
+
+def pr_open_task(c, issue=42, pr_number=12, **kw):
+    make_task(c, issue=issue, stage=Stage.PR_OPEN, slot=NO_SLOT,
+              pr_number=pr_number, **kw)
+    return load(c.state_dir, issue)
+
+
+def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    base = cfg(tmp_path)
+    c = dc_replace(base, targets=[dc_replace(
+        base.targets[0], status_done_option_id="D0")])
+    t = pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-07-30T10:00:00Z")
+    notif = FakeNotifier()
+    main.run_pass(c, deps(gh, notifier=notif))
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.DONE and got.done_at
+    assert (42, "D0") in gh.statused
+    assert removed == [(t.worktree, t.branch)]
+    assert (c.targets[0].repo, t.branch) in gh.deleted_branches
+    assert "task_done" in notif.sent
+
+
+def test_merged_without_done_option_id_still_completes(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = cfg(tmp_path)  # status_done_option_id == ""
+    pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-07-30T10:00:00Z")
+    main.run_pass(c, deps(gh))
+    assert load(c.state_dir, 42).stage is Stage.DONE
+    assert gh.statused == []
+
+
+def test_closed_unmerged_pr_fails_task_preserving_worktree(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="CLOSED")
+    notif = FakeNotifier()
+    main.run_pass(c, deps(gh, notifier=notif))
+    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert removed == [] and "pr_closed" in notif.sent
+
+
+def test_feedback_sets_pending_flag_and_notifies_once(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = replace_capacity(cfg(tmp_path), 0)  # full: spawn deferred
+    pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(comments=[{
+        "createdAt": "2026-07-30T09:00:00Z", "author": {"login": "alice"}}])
+    notif = FakeNotifier()
+    main.run_pass(c, deps(gh, notifier=notif))
+    got = load(c.state_dir, 42)
+    assert got.feedback_pending is True and got.stage is Stage.PR_OPEN
+    assert notif.sent.count("pr_feedback") == 1
+    main.run_pass(c, deps(gh, notifier=notif))   # second pass: no re-notify
+    assert notif.sent.count("pr_feedback") == 1
+
+
+def test_own_and_bot_comments_do_not_reopen(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(comments=[
+        {"createdAt": "2026-07-30T09:00:00Z", "author": {"login": "agent-bot"}},
+        {"createdAt": "2026-07-30T09:01:00Z",
+         "author": {"login": "github-actions[bot]"}}])
+    main.run_pass(c, deps(gh))
+    assert load(c.state_dir, 42).feedback_pending is False
+
+
+def test_pr_number_resolved_from_branch_when_missing(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, pr_number=0)
+    gh = FakeGitHub()
+    gh.branch_prs["agent/task-42"] = 12
+    gh.pr_payloads[12] = payload()
+    main.run_pass(c, deps(gh))
+    assert load(c.state_dir, 42).pr_number == 12
+
+
+def test_poll_failure_leaves_task_untouched(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_view_raises = True
+    main.run_pass(c, deps(gh))
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.PR_OPEN and got.feedback_pending is False
+
+
+def test_implement_done_captures_pr_number(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "implement", "status": "done",
+        "note": "https://github.com/jesdi/portfolio_eval/pull/77",
+        "artifact": "https://github.com/jesdi/portfolio_eval/pull/77"}))
+    main.run_pass(c, deps(FakeGitHub()))
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.PR_OPEN and got.pr_number == 77
+
+
+def test_flush_deletes_only_old_done_tasks(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, issue=1, stage=Stage.DONE, slot=NO_SLOT,
+              done_at="2026-07-01T00:00:00+00:00")   # ancient
+    fresh = datetime.now(timezone.utc).isoformat()
+    make_task(c, issue=2, stage=Stage.DONE, slot=NO_SLOT, done_at=fresh)
+    make_task(c, issue=3, stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=0)
+    main.run_pass(c, deps(FakeGitHub()))
+    assert load(c.state_dir, 1) is None
+    assert load(c.state_dir, 2) is not None
+    assert load(c.state_dir, 3) is not None
