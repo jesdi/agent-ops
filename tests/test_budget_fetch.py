@@ -83,3 +83,38 @@ def test_missing_credentials_is_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(budget, "_ccusage_json", lambda: None)
     u = budget.fetch_usage(tmp_path, credentials_path=tmp_path / "nope.json")
     assert u.source == "unavailable"
+
+
+def test_default_prefers_claude_home_store(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_get(url, headers):
+        seen["headers"] = headers
+        return oauth_response()
+
+    monkeypatch.setattr(budget, "_http_get_json", fake_get)
+    home_store = tmp_path / "claude-home" / ".credentials.json"
+    home_store.parent.mkdir()
+    home_store.write_text(json.dumps(
+        {"claudeAiOauth": {"accessToken": "tok-home"}}))
+    u = budget.fetch_usage(tmp_path)
+    assert u.source == "oauth"
+    assert seen["headers"]["Authorization"] == "Bearer tok-home"
+
+
+def test_default_falls_back_to_host_store(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_get(url, headers):
+        seen["headers"] = headers
+        return oauth_response()
+
+    monkeypatch.setattr(budget, "_http_get_json", fake_get)
+    host_store = tmp_path / "host-credentials.json"
+    host_store.write_text(json.dumps(
+        {"claudeAiOauth": {"accessToken": "tok-host"}}))
+    monkeypatch.setattr(budget, "HOST_CREDENTIALS", str(host_store),
+                        raising=False)
+    u = budget.fetch_usage(tmp_path)  # no claude-home store in state_dir
+    assert u.source == "oauth"
+    assert seen["headers"]["Authorization"] == "Bearer tok-host"
