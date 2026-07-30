@@ -49,6 +49,9 @@ class FakeSessions:
     def is_alive(self, issue):
         return issue in self.alive
 
+    def capture_history(self, issue, lines=2000):
+        return getattr(self, "histories", {}).get(issue, "")
+
 
 class FakeClock:
     def __init__(self, t=1_000_000.0):
@@ -253,3 +256,18 @@ def test_pane_tail_degrades_to_empty_when_tmux_is_wedged(tmp_path):
     Unhandled it turns GET /api/task/{issue} into a 500 after 30 s."""
     _, src = make_sources(tmp_path, sessions=WedgedSessions())
     assert src.pane_tail(7) == ""
+
+
+def test_pane_history_delegates_to_capture_history(tmp_path):
+    sessions = FakeSessions()
+    sessions.histories = {7: "old\nnew"}
+    _, src = make_sources(tmp_path, sessions=sessions)
+    assert src.pane_history(7) == "old\nnew"
+
+
+def test_pane_history_degrades_to_empty_on_tmux_error(tmp_path):
+    class BoomSessions(FakeSessions):
+        def capture_history(self, issue, lines=2000):
+            raise TimeoutError("tmux wedged")
+    _, src = make_sources(tmp_path, sessions=BoomSessions())
+    assert src.pane_history(7) == ""

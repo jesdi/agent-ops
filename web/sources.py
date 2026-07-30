@@ -106,6 +106,15 @@ class Sources:
             # never 500 it (cf. issue_open degrading to None).
             return ""
 
+    def pane_history(self, issue: int, lines: int = 2000) -> str:
+        try:
+            return self._sessions.capture_history(issue, lines)
+        except Exception:
+            # Same degrade contract as pane_tail: a wedged tmux server
+            # (capture_history runs with timeout=30 and RAISES) must never
+            # 500 the history view.
+            return ""
+
     def session_alive(self, issue: int) -> bool:
         return self._sessions.is_alive(issue)
 
