@@ -47,3 +47,14 @@ def test_implement_prompt_uses_ci_protocol():
     assert "awaiting-ci" in text and "run_id" in text
     assert "gh workflow run" in text
     assert "e2e-slot" not in text
+
+
+def test_address_review_prompt_renders():
+    text = render_stage_prompt(Stage.ADDRESS_REVIEW, dict(
+        issue_number=7, issue_title="Add widget", issue_url="u",
+        repo="o/r", branch="agent/task-7", slot=0, backend_port=8100,
+        frontend_port=5200, verify_cmd="make e2e", spec_path="",
+        pr_number=12))
+    assert "PR #12" in text or "pull request #12" in text
+    assert '"stage": "address-review"' in text
+    assert "awaiting-ci" in text and '"status": "done"' in text

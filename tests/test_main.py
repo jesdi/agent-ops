@@ -2383,3 +2383,45 @@ def test_flush_deletes_only_old_done_tasks(tmp_path, monkeypatch):
     assert load(c.state_dir, 1) is None
     assert load(c.state_dir, 2) is not None
     assert load(c.state_dir, 3) is not None
+
+
+def test_pending_feedback_spawns_address_review_when_capacity_frees(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, feedback_pending=True)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload()  # quiet now; pending flag drives the spawn
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.ADDRESS_REVIEW
+    assert got.feedback_pending is False
+    assert got.feedback_cursor != ""      # cursor = spawn time
+    assert got.slot != NO_SLOT
+    assert [s for s in sess.spawned if s[1] == "address-review"]
+
+
+def test_pending_feedback_not_spawned_over_capacity(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=1, stage=Stage.IMPLEMENT, slot=0)  # eats the capacity
+    pr_open_task(c, feedback_pending=True)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload()
+    sess = FakeSessions(alive=(1,))
+    main.run_pass(c, deps(gh, sess))
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.PR_OPEN and got.feedback_pending is True
+
+
+def test_pending_feedback_not_spawned_when_budget_low(tmp_path, monkeypatch):
+    patch_usage(monkeypatch, util=0.99)
+    c = cfg(tmp_path)
+    pr_open_task(c, feedback_pending=True)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload()
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    assert load(c.state_dir, 42).stage is Stage.PR_OPEN
+    assert sess.spawned == []

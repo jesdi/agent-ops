@@ -289,6 +289,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         backend_port=8100 + task.slot, frontend_port=5200 + task.slot,
         verify_cmd=target.verify_cmd.format(slot=task.slot),
         spec_path=spec_path,
+        pr_number=task.pr_number,
     )
     prompt = render_stage_prompt(stage, ctx)
     model = _model_for(cfg, target, task, stage)
@@ -617,6 +618,34 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
                               model=model)
 
 
+def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
+                    budget_ok: bool) -> None:
+    """Spawn address-review for tasks whose PR got feedback — same gates
+    as claiming new work (capacity, budget, slot); a denied spawn just
+    stays pr-open+pending and retries next pass, badge showing."""
+    if not budget_ok:
+        return
+    pending = sorted(
+        [t for t in load_all(cfg.state_dir)
+         if t.target == target.name and t.stage is Stage.PR_OPEN
+         and t.feedback_pending],
+        key=lambda t: t.updated_at)
+    for task in pending:
+        tasks = [t for t in load_all(cfg.state_dir)
+                 if t.target == target.name]
+        if len(active(tasks)) >= cfg.capacity:
+            return
+        slot = allocate_slot(load_all(cfg.state_dir))
+        if slot is None:
+            return
+        # Cursor := spawn time: everything the session can read live is
+        # now "seen"; anything arriving after this moment re-triggers a
+        # round (conservative — a redundant round beats a lost comment).
+        task = replace(task, slot=slot, feedback_pending=False,
+                       feedback_cursor=_now())
+        _spawn_stage(cfg, deps, target, task, Stage.ADDRESS_REVIEW)
+
+
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 budget_ok: bool, dry_run: bool = False) -> None:
     if has_attached(cfg.state_dir, task.issue):
@@ -917,6 +946,7 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
         _wake_ci(cfg, deps, target)
         _poll_prs(cfg, deps, target)
         _resume_woken(cfg, deps, target, budget_ok)
+        _spawn_feedback(cfg, deps, target, budget_ok)
         if budget_ok:
             _claim_new(cfg, deps, target, dry_run)
     _flush_done(cfg)
