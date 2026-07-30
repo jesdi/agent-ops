@@ -99,20 +99,33 @@ class Sources:
 
     def pane_tail(self, issue: int) -> str:
         try:
-            return self._sessions.capture_tail(issue)
+            if self._sessions.is_alive(issue):
+                return self._sessions.capture_tail(issue)
         except Exception:
-            # capture_tail runs tmux with timeout=30, which RAISES on a
-            # wedged server.  A missing tail degrades the task view; it must
-            # never 500 it (cf. issue_open degrading to None).
+            # capture runs tmux with timeout=30, which RAISES on a wedged
+            # server. A missing tail degrades the task view; it must never
+            # 500 it (cf. issue_open degrading to None).
             return ""
+        return self._read_snapshot(issue)
 
     def pane_history(self, issue: int, lines: int = 2000) -> str:
         try:
-            return self._sessions.capture_history(issue, lines)
+            if self._sessions.is_alive(issue):
+                return self._sessions.capture_history(issue, lines)
         except Exception:
             # Same degrade contract as pane_tail: a wedged tmux server
             # (capture_history runs with timeout=30 and RAISES) must never
             # 500 the history view.
+            return ""
+        return self._read_snapshot(issue)
+
+    def _read_snapshot(self, issue: int) -> str:
+        """Dead session: serve the scrollback Sessions.end() persisted.
+        Missing/unreadable file (pre-feature parks) degrades to ''."""
+        try:
+            return (self.state_dir / "snapshots"
+                    / f"task-{issue}.txt").read_text()
+        except OSError:
             return ""
 
     def session_alive(self, issue: int) -> bool:
