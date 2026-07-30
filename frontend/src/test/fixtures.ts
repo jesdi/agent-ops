@@ -7,6 +7,7 @@ export const parkedCard: TaskCard = {
   issue: 42, target: 'jesdi/widget', title: 'Fix login redirect',
   stage: 'implement', park: 'question', column: 'parked', slot: 1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
+  park_note: 'Should I use the staging redirect URL or prod?',
   updated_at: '2026-07-25T10:00:00Z', attached: false,
 }
 
@@ -15,6 +16,7 @@ export const reviewCard: TaskCard = {
   stage: 'awaiting-spec-review', park: 'awaiting-review', column: 'needs-review',
   slot: -1,
   branch: 'feat/search', model: 'opus', park_note_pending: false,
+  park_note: 'spec ready for review',
   updated_at: '2026-07-25T09:00:00Z', attached: false,
 }
 
@@ -22,6 +24,7 @@ export const inProgressCard: TaskCard = {
   issue: 41, target: 'jesdi/widget', title: 'Add CSV export',
   stage: 'implement', park: '', column: 'in-progress', slot: 2,
   branch: 'feat/csv-export', model: 'opus', park_note_pending: false,
+  park_note: '',
   updated_at: '2026-07-25T11:30:00Z', attached: false,
 }
 

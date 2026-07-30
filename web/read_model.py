@@ -56,6 +56,7 @@ class TaskCard(BaseModel):
     title: str
     stage: str
     park: str
+    park_note: str
     column: str
     slot: int
     branch: str
@@ -87,6 +88,7 @@ def task_card(t: TaskState, *, model: str, attached: bool) -> TaskCard:
     return TaskCard(
         issue=t.issue, target=t.target, title=t.title,
         stage=t.stage.value, park=t.park,
+        park_note=t.park_note,
         column=column_for(t.stage.value, t.park),
         slot=t.slot, branch=t.branch, model=model,
         # PARK_HUMAN only: it is the one park whose Telegram ping may be
