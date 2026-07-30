@@ -105,13 +105,27 @@ function TaskView({ issue }: { issue: number }) {
 
       {/* Terminal.tsx's dead overlay only fires when a session dies WHILE
           attached; on the load path the page owns this state. */}
-      {!session_alive && (
-        <p
-          data-testid="session-dead"
-          className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800"
+      {card.park !== '' ? (
+        <div
+          data-testid="parked-panel"
+          className="rounded border border-purple-300 bg-purple-50 px-3 py-2 text-sm text-purple-800"
         >
-          session task-{issue} is not running
-        </p>
+          <p className="font-medium">
+            parked ({card.park}) — reply below to wake this task
+          </p>
+          {card.park_note !== '' && (
+            <p className="mt-1 whitespace-pre-wrap">{card.park_note}</p>
+          )}
+        </div>
+      ) : (
+        !session_alive && (
+          <p
+            data-testid="session-dead"
+            className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800"
+          >
+            session task-{issue} is not running
+          </p>
+        )
       )}
 
       {terminalOpen && session_alive ? (
@@ -155,7 +169,7 @@ function TaskView({ issue }: { issue: number }) {
           disabled={replyText.trim() === '' || busy}
           onClick={() => runIntent(() => api.reply(issue, replyText), true)}
         >
-          Send reply
+          {card.park !== '' ? 'Send reply & wake' : 'Send reply'}
         </button>
         <button
           type="button"
