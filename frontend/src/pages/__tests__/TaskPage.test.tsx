@@ -257,6 +257,16 @@ it('hides the spec panel off the review gate', async () => {
   expect(screen.queryByTestId('spec-panel')).not.toBeInTheDocument()
 })
 
+it('the unattached tail renders at the persisted terminal height', async () => {
+  useUiStore.setState({ terminalHeight: 560 })
+  renderTask()
+  const tail = await screen.findByTestId('pane-tail')
+  // height comes from the store, not a hardcoded max-h-80
+  expect(tail.closest('[data-testid="terminal-pane-wrap"]')).toHaveStyle({
+    height: '560px',
+  })
+})
+
 it('shows the attach fallback when the spec 404s', async () => {
   server.use(
     http.get('/api/task/42', () => HttpResponse.json(reviewDetail)),

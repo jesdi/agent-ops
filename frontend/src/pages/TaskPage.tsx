@@ -38,6 +38,7 @@ function TaskView({ issue }: { issue: number }) {
   const [killArmed, setKillArmed] = useState(false)
   const terminalOpenFor = useUiStore((s) => s.terminalOpenFor)
   const setTerminalOpenFor = useUiStore((s) => s.setTerminalOpenFor)
+  const terminalHeight = useUiStore((s) => s.terminalHeight)
   const terminalOpen = terminalOpenFor === issue
 
   const intent = useMutation({
@@ -115,12 +116,18 @@ function TaskView({ issue }: { issue: number }) {
       {terminalOpen && session_alive ? (
         <Terminal issue={issue} />
       ) : (
-        <pre
-          data-testid="pane-tail"
-          className="max-h-80 overflow-auto rounded bg-gray-900 p-3 font-mono text-xs text-gray-100"
+        <div
+          data-testid="terminal-pane-wrap"
+          className="w-full resize-y overflow-auto"
+          style={{ height: terminalHeight }}
         >
-          {pane_tail}
-        </pre>
+          <pre
+            data-testid="pane-tail"
+            className="h-full overflow-auto rounded bg-gray-900 p-3 font-mono text-xs text-gray-100"
+          >
+            {pane_tail}
+          </pre>
+        </div>
       )}
 
       {actionError && (
