@@ -2,6 +2,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
+import { TerminalHistory } from './TerminalHistory'
 
 export function Terminal({ issue }: { issue: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -10,10 +11,12 @@ export function Terminal({ issue }: { issue: number }) {
   // still be running (roaming Tailscale, agent-ops-web.service restarting, a
   // 4401/4403 auth close). Tracked separately so the copy can say so.
   const [disconnected, setDisconnected] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
 
   useEffect(() => {
     setDead(null)
     setDisconnected(false)
+    setShowHistory(false)
     const el = containerRef.current
     if (!el) return
 
@@ -78,6 +81,15 @@ export function Terminal({ issue }: { issue: number }) {
     const observer = new ResizeObserver(() => fit.fit())
     observer.observe(el)
 
+    // Own the wheel: returning false makes xterm apply NEITHER default —
+    // no SGR mouse reports (whose magnitude it discards) and no arrow keys
+    // injected into the app. Scrolling up opens our own history view, which
+    // scrolls natively (full trackpad precision, correct momentum).
+    term.attachCustomWheelEventHandler((e) => {
+      if (e.deltaY < 0) setShowHistory(true)
+      return false
+    })
+
     return () => {
       disposed = true
       observer.disconnect()
@@ -111,6 +123,14 @@ export function Terminal({ issue }: { issue: number }) {
           <pre className="mt-2 max-h-64 overflow-auto rounded bg-gray-900 p-2 font-mono text-xs text-gray-100">
             {dead.tail}
           </pre>
+        </div>
+      )}
+      {showHistory && (
+        <div className="absolute inset-0">
+          <TerminalHistory
+            issue={issue}
+            onClose={() => setShowHistory(false)}
+          />
         </div>
       )}
       {!dead && disconnected && (
