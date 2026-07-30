@@ -120,7 +120,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
         (agent_dir / "stage.json").write_text(json.dumps(
             {"stage": task.stage.value, "status": "working", "model": model}))
     save(cfg.state_dir, replace(task, park="", park_msg_id=0,
-                                updated_at=_now()))
+                                park_note="", updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "login-code-injected",
                           target=task.target, issue=task.issue,
                           stage=task.stage.value, detail="login code injected")
@@ -333,7 +333,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     deps.sessions.end(task.issue)
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
-                                updated_at=_now()))
+                                park_note=note, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
 
@@ -363,7 +363,7 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
         return False
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
-                                updated_at=_now()))
+                                park_note=note, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="needs re-login: " + note)
@@ -445,6 +445,7 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     deps.sessions.end(task.issue)
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,
+                                park_note="spec ready for review",
                                 slot=NO_SLOT, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
@@ -517,7 +518,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
                                  task.pending_reply or "Continue.", model)
         save(cfg.state_dir, replace(task, park="", pending_reply="",
                                     hold_for_attach=False, park_msg_id=0,
-                                    updated_at=_now()))
+                                    park_note="", updated_at=_now()))
         eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                               issue=task.issue, stage=task.stage.value,
                               model=model)

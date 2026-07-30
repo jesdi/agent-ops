@@ -2101,3 +2101,35 @@ def test_overnight_drain_parks_every_ready_spec_then_one_reply_advances_one(
     main.run_pass(c, d)
     assert load(c.state_dir, woken.issue).stage is Stage.PLAN
     assert (woken.issue, "plan") in [(i, s) for i, s, _m in sess.spawned]
+
+
+def test_park_for_input_saves_park_note(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "blocked", "note": "need a decision"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    assert load(c.state_dir, 42).park_note == "need a decision"
+
+
+def test_park_for_review_saves_park_note(tmp_path, monkeypatch):
+    # Same arrangement as test_gate_park_ends_session_and_frees_capacity_and_slot
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=1)
+    gate_signal(wt)
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    assert load(c.state_dir, 42).park_note == "spec ready for review"
+
+
+def test_resume_clears_park_note(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, park=PARK_WAKE, pending_reply="use oauth",
+              park_note="stale question")
+    main.run_pass(c, deps(sess=FakeSessions()))
+    assert load(c.state_dir, 42).park_note == ""
