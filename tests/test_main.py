@@ -3,7 +3,7 @@ import os
 import subprocess
 import time
 from dataclasses import replace as dc_replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -2568,11 +2568,26 @@ def test_spawned_cursor_still_sees_a_comment_from_the_spawn_second(
     pr_open_task(c, feedback_pending=True)
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload()
-    spawn_second = datetime.now(timezone.utc).replace(microsecond=0)
     main.run_pass(c, deps(gh))
     got = load(c.state_dir, 42)
     assert got.stage is Stage.ADDRESS_REVIEW and got.feedback_cursor
 
+    # Derive the spawn second from the cursor the pass actually wrote.
+    # _cursor_now() returns floor(now) - 1s, so the second a comment posted
+    # during the spawn can carry is cursor + 1s.  Sampling the clock before
+    # run_pass is racy: if the wall-clock second ticks over between the sample
+    # and the _cursor_now() call, the derived stamp can be one second off.
+    #
+    # Non-tautology guard: assert spawn_second is not in the future.
+    # If _cursor_now() stops subtracting, cursor = floor(now), making
+    # spawn_second = floor(now) + 1s — a future second — and this assert fires.
+    # (run_pass completes in <1 ms in tests; a 1-second gap is impossible.)
+    cursor_dt = datetime.fromisoformat(got.feedback_cursor)
+    spawn_second = cursor_dt + timedelta(seconds=1)
+    assert spawn_second <= datetime.now(timezone.utc).replace(microsecond=0), (
+        f"feedback_cursor {got.feedback_cursor!r} looks like floor(now), not "
+        f"floor(now)-1s — _cursor_now() may have stopped subtracting"
+    )
     stamp = spawn_second.strftime("%Y-%m-%dT%H:%M:%SZ")
     res = main.pr_poll.classify(
         payload(comments=[{"createdAt": stamp,
