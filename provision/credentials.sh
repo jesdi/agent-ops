@@ -38,3 +38,22 @@ else
   echo "no claude credentials in 1P — run 'claude' interactively once, then:"
   echo "  cp -r ~/.claude/. $STATE_DIR/claude-home/"
 fi
+
+# --- git: SSH commit signing ------------------------------------------------
+# Signing is only enabled once the key materializes; setting commit.gpgsign
+# with no key on disk would break every commit on the box.
+if key=$($OP read \
+    "op://agent-ops/agent-ops-git-signing/private key?ssh-format=openssh" \
+    2>/dev/null); then
+  umask 077
+  printf '%s\n' "$key" > "$STATE_DIR/git-signing-key"
+  $OP read "op://agent-ops/agent-ops-git-signing/public key" \
+    > "$STATE_DIR/git-signing-key.pub"
+  git config --global gpg.format ssh
+  git config --global user.signingkey "$STATE_DIR/git-signing-key"
+  git config --global commit.gpgsign true
+  git config --global tag.gpgsign true
+  echo "git signing key restored to $STATE_DIR/git-signing-key"
+else
+  echo "no git-signing key in 1P (item agent-ops-git-signing) — commits stay unsigned"
+fi
