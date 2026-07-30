@@ -72,7 +72,8 @@ def box(tmp_path):
 
     plugin_list = tmp_path / "plugins.json"
     plugin_list.write_text(
-        '[{"id": "superpowers@claude-plugins-official", "version": "4.0.0"}]')
+        '[{"id": "superpowers@claude-plugins-official", "version": "4.0.0"}, '
+        '{"id": "frontend-design@claude-plugins-official", "version": "1.0.0"}]')
     claude = bin_dir / "claude"
     claude.write_text(
         f'#!/bin/sh\necho "claude $@" >> "{calls}"\n'
