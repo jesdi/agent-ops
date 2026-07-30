@@ -526,6 +526,8 @@ export interface components {
             branch: string;
             /** Column */
             column: string;
+            /** Feedback Pending */
+            feedback_pending: boolean;
             /** Issue */
             issue: number;
             /** Model */

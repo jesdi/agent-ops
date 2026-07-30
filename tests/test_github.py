@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 from dataclasses import replace as dc_replace
 
 import dispatcher.github as github
@@ -385,3 +386,85 @@ def test_rank_rows_casts_string_boost_to_int(monkeypatch):
     rows = github.GitHubClient().rank_rows(TARGET)
     assert [r["boost"] for r in rows] == [5, 0, 0]
     assert all(isinstance(r["boost"], int) for r in rows)
+
+
+def test_viewer_login_fetched_once_and_cached(monkeypatch):
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        return "agent-bot\n"
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    gh = github.GitHubClient()
+    assert gh.viewer_login() == "agent-bot"
+    assert gh.viewer_login() == "agent-bot"
+    assert len(calls) == 1
+    assert calls[0] == ["gh", "api", "user", "--jq", ".login"]
+
+
+def test_viewer_login_failure_reads_as_empty_not_cached(monkeypatch):
+    def boom(args, cwd=None, env=None):
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(github, "_run", boom)
+    gh = github.GitHubClient()
+    assert gh.viewer_login() == ""
+
+
+def test_pr_view_fetches_expected_fields(monkeypatch):
+    seen = []
+
+    def fake_run(args, cwd=None, env=None):
+        seen.append(args)
+        return json.dumps({"state": "OPEN", "mergedAt": None,
+                           "reviewDecision": "", "reviews": [], "comments": []})
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    gh = github.GitHubClient()
+    d = gh.pr_view(TARGET, 12)
+    assert d["state"] == "OPEN"
+    assert seen[0] == ["gh", "pr", "view", "12", "--repo", TARGET.repo,
+                       "--json", "state,mergedAt,reviewDecision,reviews,comments"]
+
+
+def test_pr_number_for_branch(monkeypatch):
+    monkeypatch.setattr(github, "_run",
+                        lambda args, cwd=None, env=None: json.dumps([{"number": 34}]))
+    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+    monkeypatch.setattr(github, "_run",
+                        lambda args, cwd=None, env=None: "[]")
+    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 0
+
+
+def test_pr_number_for_branch_prefers_the_open_pr(monkeypatch):
+    """`gh pr list --state all` guarantees no ordering, so a branch with an
+    earlier closed PR and a newer open one must not leave gh to decide which
+    PR the dispatcher watches forever."""
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None, env=None: json.dumps(
+        [{"number": 12, "state": "CLOSED"}, {"number": 34, "state": "OPEN"}]))
+    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+    # Same rows in the opposite order resolve identically.
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None, env=None: json.dumps(
+        [{"number": 34, "state": "OPEN"}, {"number": 12, "state": "CLOSED"}]))
+    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+
+
+def test_pr_number_for_branch_falls_back_to_the_newest_closed(monkeypatch):
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None, env=None: json.dumps(
+        [{"number": 34, "state": "MERGED"}, {"number": 12, "state": "CLOSED"}]))
+    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+
+
+def test_delete_branch_swallows_gh_errors(monkeypatch):
+    def boom(args, cwd=None, env=None):
+        raise subprocess.CalledProcessError(1, args)
+
+    monkeypatch.setattr(github, "_run", boom)
+    github.GitHubClient().delete_branch(TARGET, "agent/task-7")  # no raise
+
+
+def test_delete_branch_dry_run_calls_nothing(monkeypatch):
+    monkeypatch.setattr(github, "_run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    github.GitHubClient(dry_run=True).delete_branch(TARGET, "agent/task-7")

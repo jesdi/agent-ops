@@ -37,6 +37,11 @@ export function TaskCardView({ card, pendingActions }: {
             notify pending
           </span>
         )}
+        {card.feedback_pending && (
+          <span className="rounded bg-amber-100 px-1.5 text-amber-700">
+            feedback queued
+          </span>
+        )}
         {card.attached && (
           <span className="rounded bg-emerald-100 px-1.5 text-emerald-700">
             attached

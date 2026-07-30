@@ -1,5 +1,4 @@
-"""Per-task worktree provisioning. Worktrees are never auto-deleted —
-crashed ones are preserved for autopsy."""
+"""Per-task worktree provisioning and merged-task teardown. Worktrees of crashed/failed tasks are never auto-deleted — preserved for autopsy."""
 from __future__ import annotations
 
 import json
@@ -260,3 +259,29 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
 
     _seed_claude_state(wt)
     return wt
+
+
+def remove_workspace(target: Target, wt: str, branch: str,
+                     dry_run: bool = False) -> None:
+    """Merged-task teardown — the ONE sanctioned worktree deletion (the
+    module rule "worktrees are never auto-deleted" still holds for crashed
+    and failed tasks, which keep theirs for autopsy). Best-effort at every
+    step: the branch is merged, so nothing here is load-bearing, and a
+    failure must not abort the done path."""
+    if dry_run:
+        print(f"[dry-run] remove worktree {wt} and local branch {branch}")
+        return
+
+    try:
+        _sh(["git", "worktree", "remove", "--force", wt],
+            cwd=target.clone_path)
+    except (OSError, subprocess.SubprocessError):
+        shutil.rmtree(wt, ignore_errors=True)
+        try:
+            _sh(["git", "worktree", "prune"], cwd=target.clone_path)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        _sh(["git", "branch", "-D", branch], cwd=target.clone_path)
+    except (OSError, subprocess.SubprocessError):
+        pass  # already gone, or never created locally

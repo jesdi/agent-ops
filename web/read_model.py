@@ -14,7 +14,8 @@ COLUMNS: tuple[tuple[str, str], ...] = (
     ("queued", "Queued"),
     ("in-progress", "In progress"),
     ("needs-review", "Needs review"),
-    ("pr-open", "PR open"),
+    ("pr-open", "PR review"),
+    ("done", "Done"),
     ("parked", "Parked"),
     ("awaiting-ci", "Awaiting CI"),
     ("resuming", "Resuming"),
@@ -38,6 +39,8 @@ _STAGE_COLUMN = {
     Stage.IMPLEMENT.value: "in-progress",
     Stage.AWAITING_SPEC_REVIEW.value: "needs-review",
     Stage.PR_OPEN.value: "pr-open",
+    Stage.ADDRESS_REVIEW.value: "in-progress",
+    Stage.DONE.value: "done",
     Stage.FAILED.value: "failed",
     Stage.BLOCKED.value: "failed",  # legacy stage, surfaced not hidden
     Stage.STALLED_ON_BUDGET.value: "stalled",
@@ -62,6 +65,7 @@ class TaskCard(BaseModel):
     branch: str
     model: str
     park_note_pending: bool
+    feedback_pending: bool
     updated_at: str
     attached: bool
 
@@ -96,6 +100,7 @@ def task_card(t: TaskState, *, model: str, attached: bool) -> TaskCard:
         # park always has a message id (a failed send degrades to PARK_HUMAN),
         # and CI/wake parks ask the operator nothing.
         park_note_pending=(t.park == PARK_HUMAN and t.park_msg_id == 0),
+        feedback_pending=t.feedback_pending,
         updated_at=t.updated_at, attached=attached)
 
 

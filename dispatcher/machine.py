@@ -1,8 +1,9 @@
 """Pure per-task state machine: (state, stage signal, tmux liveness) → actions.
 
 queued → spec → awaiting-spec-review → plan → implement → pr-open
-                                    ↘ blocked (any stage) ↗
+                                    ↘ blocked (any stage) ↗    ⇅
                                     ↘ failed / stalled-on-budget
+                       pr-open ⇄ address-review, pr-open → done|failed
 """
 from __future__ import annotations
 
@@ -163,6 +164,10 @@ def next_actions(
     if done:
         if task.stage == Stage.IMPLEMENT:
             return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]
+        if task.stage == Stage.ADDRESS_REVIEW:
+            # The PR is the artifact — nothing to format-check. Back to
+            # watching; the next poll decides whether the reviewer is happy.
+            return [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", signal.note)]
         checker = _CHECKERS.get(task.stage)
         if checker is not None:
             result: CheckResult = checker(_artifact_path(task, signal))

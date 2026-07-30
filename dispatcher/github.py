@@ -42,8 +42,43 @@ class GitHubClient:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
         self._project_node_ids: dict[str, str] = {}
+        self._viewer_login: str | None = None
 
     # -- read side ---------------------------------------------------------
+
+    def viewer_login(self) -> str:
+        """The box's own GitHub login — poll classification excludes its
+        comments. Cached per process; a failed fetch reads as "" (matches
+        no author) and is retried on the next call rather than cached."""
+        if self._viewer_login is None:
+            try:
+                self._viewer_login = _run(
+                    ["gh", "api", "user", "--jq", ".login"]).strip()
+            except (subprocess.CalledProcessError, OSError):
+                return ""
+        return self._viewer_login
+
+    def pr_view(self, target: Target, pr_number: int) -> dict:
+        out = _run(["gh", "pr", "view", str(pr_number), "--repo", target.repo,
+                    "--json",
+                    "state,mergedAt,reviewDecision,reviews,comments"])
+        return json.loads(out)
+
+    def pr_number_for_branch(self, target: Target, branch: str) -> int:
+        """The task's PR for `branch`, resolved deterministically: `gh pr
+        list` gives no ordering guarantee, so a branch that had an earlier
+        closed PR and a newer open one would otherwise leave gh to decide
+        which PR the dispatcher watches forever. Prefer the open one; among
+        equals take the highest number (the most recent)."""
+        out = _run(["gh", "pr", "list", "--repo", target.repo,
+                    "--head", branch, "--state", "all",
+                    "--json", "number,state", "--limit", "50"])
+        rows = json.loads(out)
+        if not rows:
+            return 0
+        best = max(rows, key=lambda r: ((r.get("state") or "").upper() == "OPEN",
+                                        r.get("number") or 0))
+        return best["number"]
 
     def run_status(self, target: Target, run_id: int) -> str:
         out = _run(["gh", "run", "view", str(run_id), "--repo", target.repo,
@@ -167,6 +202,18 @@ class GitHubClient:
                      f"🤖 agent-ops released this task: {reason}. "
                      f"Worktree preserved for autopsy.")
         self.set_status(target, issue, target.status_ready_option_id)
+
+    def delete_branch(self, target: Target, branch: str) -> None:
+        """Best-effort: repos with delete-branch-on-merge already removed
+        it, and a 422/404 must not abort the done path."""
+        if self.dry_run:
+            print(f"[dry-run] delete_branch {target.repo}:{branch}")
+            return
+        try:
+            _run(["gh", "api", "-X", "DELETE",
+                  f"repos/{target.repo}/git/refs/heads/{branch}"])
+        except (subprocess.CalledProcessError, OSError):
+            pass
 
     def append_blocked_by(self, target: Target, issue: int,
                           blocker: int) -> None:
