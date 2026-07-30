@@ -2243,10 +2243,12 @@ def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
     gh.pr_payloads[12] = payload(state="MERGED",
                                  merged_at="2026-07-30T10:00:00Z")
     notif = FakeNotifier()
-    main.run_pass(c, deps(gh, notifier=notif))
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess=sess, notifier=notif))
     got = load(c.state_dir, 42)
     assert got.stage is Stage.DONE and got.done_at
     assert (42, "D0") in gh.statused
+    assert 42 in sess.ended
     assert removed == [(t.worktree, t.branch)]
     assert (c.targets[0].repo, t.branch) in gh.deleted_branches
     assert "task_done" in notif.sent
@@ -2289,6 +2291,7 @@ def test_feedback_sets_pending_flag_and_notifies_once(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, notifier=notif))
     got = load(c.state_dir, 42)
     assert got.feedback_pending is True and got.stage is Stage.PR_OPEN
+    assert got.feedback_cursor == ""  # cursor NOT advanced here; that is Task 9's job
     assert notif.sent.count("pr_feedback") == 1
     main.run_pass(c, deps(gh, notifier=notif))   # second pass: no re-notify
     assert notif.sent.count("pr_feedback") == 1
@@ -2327,6 +2330,32 @@ def test_poll_failure_leaves_task_untouched(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh))
     got = load(c.state_dir, 42)
     assert got.stage is Stage.PR_OPEN and got.feedback_pending is False
+
+
+def test_finish_merged_gh_failure_leaves_task_pr_open_and_pass_survives(
+        tmp_path, monkeypatch):
+    """set_status raising mid-_finish_merged must be caught per-task: the pass
+    continues (no exception escapes run_pass), the task stays PR_OPEN (state
+    flip never reached), and the worktree was NOT removed (teardown runs after
+    the raising step so it too was never reached)."""
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    base = cfg(tmp_path)
+    c = dc_replace(base, targets=[dc_replace(
+        base.targets[0], status_done_option_id="D0")])
+    pr_open_task(c)
+
+    class SetStatusFails(FakeGitHub):
+        def set_status(self, target, issue, option_id):
+            raise subprocess.CalledProcessError(1, ["gh"])
+
+    gh = SetStatusFails()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-07-30T10:00:00Z")
+    main.run_pass(c, deps(gh))  # must not raise
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.PR_OPEN  # state flip never reached
+    assert removed == []               # teardown never reached (board runs first)
 
 
 def test_implement_done_captures_pr_number(tmp_path, monkeypatch):

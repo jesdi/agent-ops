@@ -496,7 +496,12 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target) -> None:
                   file=sys.stderr)
             continue
         if res.kind == "merged":
-            _finish_merged(cfg, deps, target, task)
+            try:
+                _finish_merged(cfg, deps, target, task)
+            except (subprocess.CalledProcessError, OSError) as exc:
+                print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
+                      file=sys.stderr)
+                continue
         elif res.kind == "closed":
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
                                         updated_at=_now()))
