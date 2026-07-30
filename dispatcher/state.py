@@ -15,9 +15,11 @@ class Stage(str, Enum):
     PLAN = "plan"
     IMPLEMENT = "implement"
     PR_OPEN = "pr-open"
+    ADDRESS_REVIEW = "address-review"
     BLOCKED = "blocked"
     FAILED = "failed"
     STALLED_ON_BUDGET = "stalled-on-budget"
+    DONE = "done"
 
 
 # Stages that occupy capacity and an E2E slot. BLOCKED and
@@ -28,6 +30,7 @@ IN_FLIGHT_STAGES = frozenset({
     Stage.AWAITING_SPEC_REVIEW,
     Stage.PLAN,
     Stage.IMPLEMENT,
+    Stage.ADDRESS_REVIEW,
     Stage.BLOCKED,
     Stage.STALLED_ON_BUDGET,
 })
@@ -73,6 +76,10 @@ class TaskState:
     labels: tuple[str, ...] = ()         # board labels at claim time
     plan_retries: int = 0                # in-session plan-format retries used
     artifact: str = ""                   # spec path while at the review gate
+    pr_number: int = 0                   # the task's PR; 0 = not yet resolved
+    feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
+    feedback_pending: bool = False       # feedback seen, address-review deferred
+    done_at: str = ""                    # merge-detection time; drives the flush
 
 
 @dataclass(frozen=True)
@@ -119,6 +126,11 @@ def load_all(state_dir: str | Path) -> list[TaskState]:
         if ts is not None:
             tasks.append(ts)
     return sorted(tasks, key=lambda t: t.issue)
+
+
+def delete(state_dir: str | Path, issue: int) -> None:
+    """Remove a task's state file (Done-column flush). Idempotent."""
+    _path(state_dir, issue).unlink(missing_ok=True)
 
 
 def allocate_slot(existing: list[TaskState]) -> int | None:

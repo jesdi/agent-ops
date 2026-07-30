@@ -10,6 +10,7 @@ from dispatcher.state import (
     StageSignal,
     TaskState,
     allocate_slot,
+    delete,
     load,
     load_all,
     read_stage_signal,
@@ -287,3 +288,49 @@ def test_load_tolerates_state_files_without_park_note(tmp_path):
     del d["park_note"]
     p.write_text(json.dumps(d))
     assert load(tmp_path, 9).park_note == ""
+
+
+def test_new_stages_exist_and_flight_membership():
+    assert Stage.ADDRESS_REVIEW.value == "address-review"
+    assert Stage.DONE.value == "done"
+    assert Stage.ADDRESS_REVIEW in IN_FLIGHT_STAGES
+    assert Stage.DONE not in IN_FLIGHT_STAGES
+    assert Stage.PR_OPEN not in IN_FLIGHT_STAGES
+
+
+def test_pr_fields_default_and_roundtrip(tmp_path):
+    ts = TaskState(issue=7, target="t", stage=Stage.PR_OPEN, slot=0,
+                   worktree="w", branch="b", title="x",
+                   updated_at="2026-07-30T00:00:00+00:00")
+    assert (ts.pr_number, ts.feedback_cursor, ts.feedback_pending,
+            ts.done_at) == (0, "", False, "")
+    save(tmp_path, replace(ts, pr_number=12, feedback_pending=True,
+                           feedback_cursor="2026-07-30T01:00:00+00:00",
+                           done_at="2026-07-30T02:00:00+00:00"))
+    got = load(tmp_path, 7)
+    assert got.pr_number == 12 and got.feedback_pending is True
+    assert got.feedback_cursor == "2026-07-30T01:00:00+00:00"
+    assert got.done_at == "2026-07-30T02:00:00+00:00"
+
+
+def test_old_state_file_without_pr_fields_loads(tmp_path):
+    ts = TaskState(issue=8, target="t", stage=Stage.PR_OPEN, slot=0,
+                   worktree="w", branch="b", title="x",
+                   updated_at="2026-07-30T00:00:00+00:00")
+    save(tmp_path, ts)
+    p = tmp_path / "task-8.json"
+    d = json.loads(p.read_text())
+    for k in ("pr_number", "feedback_cursor", "feedback_pending", "done_at"):
+        d.pop(k)
+    p.write_text(json.dumps(d))
+    assert load(tmp_path, 8).pr_number == 0
+
+
+def test_delete_removes_state_file_and_is_idempotent(tmp_path):
+    ts = TaskState(issue=9, target="t", stage=Stage.DONE, slot=-1,
+                   worktree="w", branch="b", title="x",
+                   updated_at="2026-07-30T00:00:00+00:00")
+    save(tmp_path, ts)
+    delete(tmp_path, 9)
+    assert load(tmp_path, 9) is None
+    delete(tmp_path, 9)  # no raise
