@@ -320,3 +320,22 @@ def test_pane_tail_wedged_is_alive_degrades_to_empty(tmp_path):
     _write_snapshot(tmp_path, 7, "snapshot")
     _, src = make_sources(tmp_path, sessions=WedgedSessions())
     assert src.pane_tail(7) == ""
+
+
+def test_pane_tail_corrupt_snapshot_degrades_to_empty(tmp_path):
+    """Snapshot truncated mid-UTF-8 (e.g. by dispatcher kill) raises
+    UnicodeDecodeError; must degrade to "" not 500 the task view."""
+    snap = tmp_path / "snapshots" / "task-7.txt"
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_bytes(b"\xff\xfe\xff")  # Invalid UTF-8 sequence
+    _, src = make_sources(tmp_path)
+    assert src.pane_tail(7) == ""
+
+
+def test_pane_history_corrupt_snapshot_degrades_to_empty(tmp_path):
+    """Same as pane_tail: corrupt snapshot with invalid UTF-8 degrades."""
+    snap = tmp_path / "snapshots" / "task-7.txt"
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_bytes(b"\x80\x81\x82")  # Invalid UTF-8 sequence
+    _, src = make_sources(tmp_path)
+    assert src.pane_history(7) == ""

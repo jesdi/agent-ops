@@ -125,7 +125,9 @@ class Sources:
         try:
             return (self.state_dir / "snapshots"
                     / f"task-{issue}.txt").read_text()
-        except OSError:
+        except (OSError, ValueError):
+            # OSError: file missing or unreadable.
+            # ValueError: includes UnicodeDecodeError when snapshot is corrupt/truncated mid-UTF-8.
             return ""
 
     def session_alive(self, issue: int) -> bool:
