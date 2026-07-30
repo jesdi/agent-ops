@@ -31,6 +31,12 @@ case "$*" in
   *agent-ops-claude*)
     [ -f "{tmp_path}/CLAUDE_CREDS" ] || exit 1
     echo '{{"fake": "claude-creds"}}' ;;
+  *agent-ops-git-signing/public*)
+    [ -f "{tmp_path}/SIGNING_KEY" ] || exit 1
+    echo "ssh-ed25519 AAAAFAKE agent-ops-box" ;;
+  *agent-ops-git-signing/private*)
+    [ -f "{tmp_path}/SIGNING_KEY" ] || exit 1
+    echo "FAKE_OPENSSH_PRIVATE_KEY" ;;
   *) exit 1 ;;
 esac
 """)
@@ -43,15 +49,19 @@ echo "gh $@" >> "{calls}"
 """)
     gh.chmod(0o755)
 
+    home = tmp_path / "home"
+    home.mkdir()
+
     env = dict(
         os.environ,
         AGENT_OPS_STATE_DIR=str(state),
         AGENT_OPS_OP=str(op),
         AGENT_OPS_GH=str(gh),
+        HOME=str(home),
     )
     env.pop("OP_SERVICE_ACCOUNT_TOKEN", None)
     return SimpleNamespace(tmp=tmp_path, state=state, calls=calls,
-                           stdin=stdin_log, env=env)
+                           stdin=stdin_log, home=home, env=env)
 
 
 def run(rig):
@@ -99,3 +109,36 @@ def test_claude_credentials_absent_is_not_fatal(rig):
     assert r.returncode == 0, r.stderr
     assert not (rig.state / "claude-home" / ".credentials.json").exists()
     assert "claude" in (r.stdout + r.stderr).lower()
+
+
+def git_config(rig, key):
+    r = subprocess.run(["git", "config", "--global", "--get", key],
+                       env=rig.env, capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def test_git_signing_key_materialized_and_git_configured(rig):
+    (rig.tmp / "SIGNING_KEY").write_text("")
+    r = run(rig)
+    assert r.returncode == 0, r.stderr
+
+    key = rig.state / "git-signing-key"
+    assert key.read_text().strip() == "FAKE_OPENSSH_PRIVATE_KEY"
+    assert (key.stat().st_mode & 0o777) == 0o600
+    pub = rig.state / "git-signing-key.pub"
+    assert pub.read_text().strip() == "ssh-ed25519 AAAAFAKE agent-ops-box"
+
+    assert ("op read op://agent-ops/agent-ops-git-signing/private key"
+            "?ssh-format=openssh") in calls(rig)
+    assert git_config(rig, "gpg.format") == "ssh"
+    assert git_config(rig, "user.signingkey") == str(key)
+    assert git_config(rig, "commit.gpgsign") == "true"
+    assert git_config(rig, "tag.gpgsign") == "true"
+
+
+def test_git_signing_key_absent_skips_signing_config_not_fatal(rig):
+    r = run(rig)
+    assert r.returncode == 0, r.stderr
+    assert not (rig.state / "git-signing-key").exists()
+    assert git_config(rig, "commit.gpgsign") == ""
+    assert "git-signing" in (r.stdout + r.stderr).lower()
