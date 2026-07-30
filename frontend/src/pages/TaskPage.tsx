@@ -6,6 +6,7 @@ import { SpecPanel } from '../components/SpecPanel'
 import { Terminal } from '../components/Terminal'
 import { queryKeys } from '../hooks/queryKeys'
 import { usePendingIntents, useTaskDetail } from '../hooks/useResources'
+import { usePersistedTerminalHeight } from '../hooks/usePersistedTerminalHeight'
 import { api, ApiError } from '../lib/api'
 import { relativeTime, stageLabel } from '../lib/format'
 import { useUiStore } from '../store/ui'
@@ -38,7 +39,7 @@ function TaskView({ issue }: { issue: number }) {
   const [killArmed, setKillArmed] = useState(false)
   const terminalOpenFor = useUiStore((s) => s.terminalOpenFor)
   const setTerminalOpenFor = useUiStore((s) => s.setTerminalOpenFor)
-  const terminalHeight = useUiStore((s) => s.terminalHeight)
+  const { ref: paneWrapRef, height: terminalHeight } = usePersistedTerminalHeight()
   const terminalOpen = terminalOpenFor === issue
 
   const intent = useMutation({
@@ -117,6 +118,7 @@ function TaskView({ issue }: { issue: number }) {
         <Terminal issue={issue} />
       ) : (
         <div
+          ref={paneWrapRef}
           data-testid="terminal-pane-wrap"
           className="w-full resize-y overflow-auto"
           style={{ height: terminalHeight }}

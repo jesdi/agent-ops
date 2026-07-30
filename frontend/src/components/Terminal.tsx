@@ -3,12 +3,12 @@ import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
 import { TerminalHistory } from './TerminalHistory'
-import { useUiStore } from '../store/ui'
+import { usePersistedTerminalHeight } from '../hooks/usePersistedTerminalHeight'
 
 export function Terminal({ issue }: { issue: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dead, setDead] = useState<{ tail: string } | null>(null)
-  const terminalHeight = useUiStore((s) => s.terminalHeight)
+  const { ref: paneWrapRef, height: terminalHeight } = usePersistedTerminalHeight()
   // A dropped *connection* is not a dead *session*: the tmux session may well
   // still be running (roaming Tailscale, agent-ops-web.service restarting, a
   // 4401/4403 auth close). Tracked separately so the copy can say so.
@@ -109,6 +109,7 @@ export function Terminal({ issue }: { issue: number }) {
   // a dead session to a live one.
   return (
     <div
+      ref={paneWrapRef}
       data-testid="terminal-pane-wrap"
       className="relative w-full resize-y overflow-auto rounded bg-black"
       style={{ height: terminalHeight }}
