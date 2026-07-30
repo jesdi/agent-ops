@@ -147,3 +147,26 @@ def test_task_spec_non_utf8_is_404(tmp_path):
                                  artifact=str(spec))]
     assert client.get("/api/task/7/spec",
                       headers=HEADERS).status_code == 404
+
+
+def test_task_history_returns_pane_history(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7)]
+    fake.pane_histories[7] = "old line\nnewer line"
+    body = client.get("/api/task/7/history", headers=HEADERS).json()
+    assert body == {"text": "old line\nnewer line"}
+    assert fake.history_calls == [(7, 2000)]  # default lines
+
+
+def test_task_history_honours_lines_and_clamps(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7)]
+    client.get("/api/task/7/history?lines=500", headers=HEADERS)
+    client.get("/api/task/7/history?lines=99999", headers=HEADERS)
+    assert fake.history_calls == [(7, 500), (7, 10000)]  # clamped to max
+
+
+def test_task_history_404_for_unknown_task(tmp_path):
+    fake, client = rig(tmp_path)
+    assert client.get("/api/task/999/history",
+                      headers=HEADERS).status_code == 404

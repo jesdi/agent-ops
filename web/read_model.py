@@ -142,6 +142,10 @@ class SpecView(BaseModel):
     markdown: str
 
 
+class PaneHistory(BaseModel):
+    text: str
+
+
 class BudgetView(BaseModel):
     utilization: float
     minutes_to_reset: float
