@@ -86,3 +86,42 @@ it('stays open while scrolled up reading history', async () => {
   fireEvent.scroll(pane)
   expect(onClose).not.toHaveBeenCalled()
 })
+
+it('refetch while reading history does not close the overlay', async () => {
+  const onClose = vi.fn()
+  const { queryClient } = renderWithProviders(
+    <TerminalHistory issue={42} onClose={onClose} />,
+  )
+  const pane = screen.getByTestId('terminal-history-pane')
+  makeScrollable(pane)
+
+  // wait for initial content to load
+  await waitFor(() =>
+    expect(pane.textContent).toContain('last line'),
+  )
+
+  // scroll up to arm the auto-return
+  pane.scrollTop = 300
+  fireEvent.scroll(pane)
+  expect(onClose).not.toHaveBeenCalled()
+
+  // simulate new session output: change the MSW handler and refetch
+  server.use(
+    http.get('/api/task/42/history', () =>
+      HttpResponse.json({
+        text: 'first line\nmore output\neven more\nlast line',
+      }),
+    ),
+  )
+  const { queryKeys } = await import('../../hooks/queryKeys')
+  await queryClient.invalidateQueries({ queryKey: queryKeys.taskHistory(42) })
+
+  // wait for new content to load
+  await waitFor(() =>
+    expect(pane.textContent).toContain('even more'),
+  )
+
+  // programmatic scroll to bottom must NOT trigger auto-return
+  // (user is still reading, just the history got longer)
+  expect(onClose).not.toHaveBeenCalled()
+})

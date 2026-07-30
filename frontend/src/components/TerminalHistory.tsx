@@ -33,11 +33,18 @@ export function TerminalHistory({
       onClose()
     }
   }
+
   const query = useTaskHistory(issue, true)
 
   useEffect(() => {
     const el = paneRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el) {
+      el.scrollTop = el.scrollHeight
+      // Disarm auto-return after programmatic scroll: the pane is now at the
+      // bottom, so armedRef must be false to reflect the true state. The next
+      // manual scroll up will re-arm it.
+      armedRef.current = false
+    }
   }, [query.data])
 
   useEffect(() => {
