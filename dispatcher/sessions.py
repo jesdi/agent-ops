@@ -30,10 +30,11 @@ def podman_cmd(issue: int, worktree: str, memory: str, cpus: str, model: str,
 
 class Sessions:
     def __init__(self, dry_run: bool = False, memory: str = "2g",
-                 cpus: str = "2"):
+                 cpus: str = "2", state_dir: str | Path | None = None):
         self.dry_run = dry_run
         self.memory = memory
         self.cpus = cpus
+        self.state_dir = Path(state_dir) if state_dir else None
 
     def is_alive(self, issue: int) -> bool:
         return _tmux(["tmux", "has-session", "-t", session_name(issue)]) == 0
@@ -120,10 +121,29 @@ class Sessions:
         _tmux(["tmux", "send-keys", "-t", name, "-l", text])
         _tmux(["tmux", "send-keys", "-t", name, "Enter"])
 
+    def _snapshot(self, issue: int) -> None:
+        """Last words: persist the pane scrollback before the kill so the
+        console can still show a dead session's output. An empty capture
+        (already-dead session, wedged tmux) writes nothing — end() runs
+        again on dead sessions and must not truncate the snapshot the park
+        wrote. A failed write must never keep the session alive."""
+        if self.state_dir is None:
+            return
+        try:
+            history = self.capture_history(issue)
+            if not history:
+                return
+            path = self.state_dir / "snapshots" / f"task-{issue}.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(history)
+        except (OSError, subprocess.SubprocessError):
+            return
+
     def end(self, issue: int) -> None:
         if self.dry_run:
             print(f"[dry-run] end tmux {session_name(issue)}")
             return
+        self._snapshot(issue)
         _tmux(["tmux", "kill-session", "-t", session_name(issue)])
         subprocess.run(["podman", "rm", "-f", session_name(issue)],
                        capture_output=True, timeout=60)

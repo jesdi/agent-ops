@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> None:
     from web.sources import Sources
 
     cfg = load_config(args.config)
-    sessions = Sessions(memory=cfg.session_memory, cpus=cfg.session_cpus)
+    sessions = Sessions(memory=cfg.session_memory, cpus=cfg.session_cpus, state_dir=cfg.state_dir)
     sources = Sources(cfg, sessions, GitHubClient())
     sweep_stale_terminals(cfg.state_dir)
     # The console always has live streams open (SSE, terminal WebSocket).

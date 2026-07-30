@@ -211,3 +211,76 @@ def test_capture_tail_visible_pane_only_and_trims(monkeypatch):
     assert calls == [["tmux", "capture-pane", "-p", "-t", "task-42"]]
     assert "-S" not in calls[0]
     assert out.splitlines() == [str(n) for n in range(15, 40)]  # last 25
+
+
+def _fake_run_factory(calls, history="line1\nline2\n"):
+    def fake_run(args, **kw):
+        calls.append(args)
+        if args[:2] == ["tmux", "capture-pane"]:
+            return type("R", (), {"returncode": 0, "stdout": history})()
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+    return fake_run
+
+
+def test_end_snapshots_history_before_kill(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(sessions, "_tmux", lambda args: calls.append(args) or 0)
+    monkeypatch.setattr(sessions.subprocess, "run", _fake_run_factory(calls))
+    sessions.Sessions(state_dir=tmp_path).end(42)
+    snap = tmp_path / "snapshots" / "task-42.txt"
+    assert snap.read_text() == "line1\nline2"  # capture_history rstrips
+    capture_i = next(i for i, c in enumerate(calls)
+                     if c[:2] == ["tmux", "capture-pane"])
+    kill_i = calls.index(["tmux", "kill-session", "-t", "task-42"])
+    assert capture_i < kill_i
+
+
+def test_end_empty_capture_keeps_existing_snapshot(tmp_path, monkeypatch):
+    # end() runs again on already-dead sessions (e.g. _resume_woken ends
+    # before resuming) — an empty capture must not truncate the park's snapshot.
+    snap = tmp_path / "snapshots" / "task-42.txt"
+    snap.parent.mkdir(parents=True)
+    snap.write_text("the parked question")
+    calls = []
+    monkeypatch.setattr(sessions, "_tmux", lambda args: 0)
+    monkeypatch.setattr(sessions.subprocess, "run",
+                        _fake_run_factory(calls, history=""))
+    sessions.Sessions(state_dir=tmp_path).end(42)
+    assert snap.read_text() == "the parked question"
+
+
+def test_end_without_state_dir_writes_nothing(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(sessions, "_tmux", lambda args: 0)
+    monkeypatch.setattr(sessions.subprocess, "run", _fake_run_factory(calls))
+    sessions.Sessions().end(42)
+    assert not (tmp_path / "snapshots").exists()
+
+
+def test_end_snapshot_write_failure_still_kills(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(sessions, "_tmux", lambda args: calls.append(args) or 0)
+    monkeypatch.setattr(sessions.subprocess, "run", _fake_run_factory(calls))
+    # state_dir/snapshots exists as a FILE -> mkdir/write raises OSError
+    (tmp_path / "snapshots").write_text("not a dir")
+    sessions.Sessions(state_dir=tmp_path).end(42)
+    assert ["tmux", "kill-session", "-t", "task-42"] in calls
+
+
+def test_end_wedged_tmux_still_kills(tmp_path, monkeypatch):
+    """Regression guard: capture_history can raise subprocess.TimeoutExpired
+    on a wedged tmux server. This must not propagate out of end() — the
+    session must still be killed."""
+    calls = []
+    monkeypatch.setattr(sessions, "_tmux", lambda args: calls.append(args) or 0)
+
+    def fake_run_with_timeout(args, **kw):
+        calls.append(args)
+        if args[:2] == ["tmux", "capture-pane"]:
+            raise sessions.subprocess.TimeoutExpired(cmd="tmux", timeout=30)
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run_with_timeout)
+    sessions.Sessions(state_dir=tmp_path).end(42)
+    assert ["tmux", "kill-session", "-t", "task-42"] in calls
+    assert not (tmp_path / "snapshots").exists()
