@@ -1100,6 +1100,7 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--digest", action="store_true")
     ap.add_argument("--triage", action="store_true")
+    ap.add_argument("--triage-run", action="store_true")
     args = ap.parse_args()
     cfg = load_config(args.config)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
@@ -1113,6 +1114,8 @@ def main() -> None:
             print("triage request enqueued")
         else:
             print("triage already pending or running; not enqueued")
+    elif args.triage_run:
+        triage.guarded_sweep(cfg, deps)
     else:
         with pass_lock(cfg.state_dir):
             guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)
