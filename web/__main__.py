@@ -70,9 +70,13 @@ def main(argv: list[str] | None = None) -> None:
     sessions = Sessions(memory=cfg.session_memory, cpus=cfg.session_cpus)
     sources = Sources(cfg, sessions, GitHubClient())
     sweep_stale_terminals(cfg.state_dir)
+    # The console always has live streams open (SSE, terminal WebSocket).
+    # Unbounded graceful shutdown waits on them forever, so SIGTERM would
+    # burn systemd's full stop timeout and end in SIGKILL — a ~90 s 502
+    # window on every deploy.  Bound the drain instead.
     uvicorn.run(create_app(cfg, sources), host=args.host,
                 port=int(os.environ.get("AGENT_OPS_WEB_PORT", "8481")),
-                log_level="warning")
+                log_level="warning", timeout_graceful_shutdown=5)
 
 
 if __name__ == "__main__":
