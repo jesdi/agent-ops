@@ -11,7 +11,7 @@ have no memory of earlier sessions.
    (TDD, frequent commits, repo commit style). If you disagree with a
    point, do NOT silently ignore it — reply in that thread with your
    reasoning instead of changing the code.
-3. Verification ladder before pushing — all must pass:
+3. Verification ladder (the E2E rung requires a push — see (a) below):
    - `pytest`
    - `tsc -b --noEmit` and `vitest run`
    - Full E2E on GitHub Actions, not on this machine:

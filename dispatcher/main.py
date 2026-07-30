@@ -643,6 +643,10 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
         # round (conservative — a redundant round beats a lost comment).
         task = replace(task, slot=slot, feedback_pending=False,
                        feedback_cursor=_now())
+        # The implement session is still alive at pr-open (the pr-open
+        # transition never ends it). End first so _launch doesn't type
+        # the podman command into the live claude's input box.
+        deps.sessions.end(task.issue)
         _spawn_stage(cfg, deps, target, task, Stage.ADDRESS_REVIEW)
 
 

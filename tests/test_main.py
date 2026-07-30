@@ -2400,6 +2400,7 @@ def test_pending_feedback_spawns_address_review_when_capacity_frees(
     assert got.feedback_cursor != ""      # cursor = spawn time
     assert got.slot != NO_SLOT
     assert [s for s in sess.spawned if s[1] == "address-review"]
+    assert 42 in sess.ended  # previous session ended before spawning
 
 
 def test_pending_feedback_not_spawned_over_capacity(tmp_path, monkeypatch):
