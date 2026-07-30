@@ -68,8 +68,9 @@ load unchanged):
 
 **PR number capture.** On the implement `done` transition the dispatcher
 parses the PR number from `signal.artifact` (the PR URL the implement
-prompt writes into `stage.json`) and stores it, setting
-`feedback_cursor` to now. If parsing fails, the first poll resolves it via
+prompt writes into `stage.json`) and stores it; `feedback_cursor` stays
+empty (= any human feedback counts). If parsing fails, the first poll
+resolves it via
 `gh pr list --head <branch> --json number`; a task whose PR cannot be
 resolved after that logs a warning each pass and stays in `pr-open`.
 
@@ -131,23 +132,24 @@ PR, closed issue, board item) and the event log.
 
 Two decoupled steps, so detection is never blocked by capacity:
 
-**Detect (always):** set `feedback_pending = true`, advance
-`feedback_cursor` to the newest feedback timestamp, event `pr-feedback`,
-Telegram notify. Idempotent across passes — already-pending feedback
-doesn't re-notify.
+**Detect (always):** set `feedback_pending = true`, event `pr-feedback`,
+Telegram notify. Idempotent across passes — the flag (not the cursor)
+suppresses re-detection, so already-pending feedback doesn't re-notify.
 
 **React (gated):** on any pass where the task has `feedback_pending` and
 capacity, budget, and a free slot allow (same gates as claiming new work):
-allocate a slot, spawn an `address-review` session in the existing
-worktree with the new prompt, clear `feedback_pending`. If gates deny,
-the task stays `pr-open` with the badge showing; retried next pass.
+allocate a slot, advance `feedback_cursor` to now (the spawn moment),
+spawn an `address-review` session in the existing worktree with the new
+prompt, clear `feedback_pending`. If gates deny, the task stays `pr-open`
+with the badge showing; retried next pass.
 
-**Cursor on completion.** When `address-review` signals `done` and the task
-returns to `pr-open`, set `feedback_cursor` to the session's **spawn
-time**. Comments posted while the session ran were visible to it live (the
-prompt reads the PR threads at run time), but conservatively re-trigger
-one more round rather than risk missing feedback; a redundant round on a
-mid-rework comment is the accepted cost of never losing one.
+**Cursor semantics.** The cursor is only ever written at spawn time; empty
+means "any human feedback counts" (correct for a fresh PR — the implement
+transition never sets it). Comments posted while a rework session ran were
+visible to it live (the prompt reads the PR threads at run time), but
+being after the cursor they conservatively re-trigger one more round
+rather than risk missing feedback; a redundant round on a mid-rework
+comment is the accepted cost of never losing one.
 
 ## Prompt: `prompts/address_review.md`
 
