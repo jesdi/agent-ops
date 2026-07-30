@@ -65,11 +65,20 @@ class GitHubClient:
         return json.loads(out)
 
     def pr_number_for_branch(self, target: Target, branch: str) -> int:
+        """The task's PR for `branch`, resolved deterministically: `gh pr
+        list` gives no ordering guarantee, so a branch that had an earlier
+        closed PR and a newer open one would otherwise leave gh to decide
+        which PR the dispatcher watches forever. Prefer the open one; among
+        equals take the highest number (the most recent)."""
         out = _run(["gh", "pr", "list", "--repo", target.repo,
                     "--head", branch, "--state", "all",
-                    "--json", "number", "--limit", "1"])
+                    "--json", "number,state", "--limit", "50"])
         rows = json.loads(out)
-        return rows[0]["number"] if rows else 0
+        if not rows:
+            return 0
+        best = max(rows, key=lambda r: ((r.get("state") or "").upper() == "OPEN",
+                                        r.get("number") or 0))
+        return best["number"]
 
     def run_status(self, target: Target, run_id: int) -> str:
         out = _run(["gh", "run", "view", str(run_id), "--repo", target.repo,

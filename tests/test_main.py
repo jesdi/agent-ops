@@ -2220,9 +2220,14 @@ def payload(state="OPEN", merged_at=None, reviews=(), comments=()):
 
 
 def patch_teardown(monkeypatch):
+    """Records (wt, branch, dry_run) — dry_run included so the dry-run
+    threading is asserted on what the callee actually received, not merely
+    on the pass surviving."""
     removed = []
-    monkeypatch.setattr(main, "remove_workspace",
-                        lambda target, wt, branch: removed.append((wt, branch)))
+    monkeypatch.setattr(
+        main, "remove_workspace",
+        lambda target, wt, branch, dry_run=False: removed.append(
+            (wt, branch, dry_run)))
     return removed
 
 
@@ -2249,7 +2254,7 @@ def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
     assert got.stage is Stage.DONE and got.done_at
     assert (42, "D0") in gh.statused
     assert 42 in sess.ended
-    assert removed == [(t.worktree, t.branch)]
+    assert removed == [(t.worktree, t.branch, False)]
     assert (c.targets[0].repo, t.branch) in gh.deleted_branches
     assert "task_done" in notif.sent
 
@@ -2275,9 +2280,14 @@ def test_closed_unmerged_pr_fails_task_preserving_worktree(tmp_path, monkeypatch
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(state="CLOSED")
     notif = FakeNotifier()
-    main.run_pass(c, deps(gh, notifier=notif))
+    sess = FakeSessions(alive=(42,))
+    main.run_pass(c, deps(gh, sess, notifier=notif))
     assert load(c.state_dir, 42).stage is Stage.FAILED
     assert removed == [] and "pr_closed" in notif.sent
+    # The implement session is still alive at pr-open and nothing will ever
+    # drive a FAILED task again — the tmux session and its container must be
+    # ended here or they hold their reservation until the box reboots.
+    assert sess.ended == [42]
 
 
 def test_feedback_sets_pending_flag_and_notifies_once(tmp_path, monkeypatch):
@@ -2426,3 +2436,176 @@ def test_pending_feedback_not_spawned_when_budget_low(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess))
     assert load(c.state_dir, 42).stage is Stage.PR_OPEN
     assert sess.spawned == []
+
+
+# ---------------------------------------------------------------------------
+# PR lifecycle — final-review fixes
+# ---------------------------------------------------------------------------
+
+def merged_cfg(tmp_path):
+    base = cfg(tmp_path)
+    return dc_replace(base, targets=[dc_replace(
+        base.targets[0], status_done_option_id="D0")])
+
+
+def test_dry_run_pass_does_not_tear_down_a_merged_task(tmp_path, monkeypatch):
+    """--dry-run must reach remove_workspace as a dry run, not as a real
+    deletion: GitHubClient and Sessions already no-op under dry_run, so the
+    worktree/branch removal was the one side effect that still executed for
+    real while the operator watched `[dry-run] delete_branch …` scroll by."""
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    c = merged_cfg(tmp_path)
+    t = pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-07-30T10:00:00Z")
+    main.run_pass(c, deps(gh), dry_run=True)
+    assert removed == [(t.worktree, t.branch, True)]
+
+
+def test_remove_workspace_dry_run_flag_reaches_the_real_teardown(
+        tmp_path, monkeypatch):
+    """Same path with the real workspace module in place: nothing shells
+    out. Guards the signature itself — a remove_workspace that ignored
+    dry_run would still run git here."""
+    patch_usage(monkeypatch)
+    from dispatcher import workspace as workspace_mod
+    monkeypatch.setattr(
+        workspace_mod, "_sh",
+        lambda *a, **k: pytest.fail("git ran under --dry-run"))
+    c = merged_cfg(tmp_path)
+    pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-07-30T10:00:00Z")
+    main.run_pass(c, deps(gh), dry_run=True)
+    assert load(c.state_dir, 42).stage is Stage.DONE
+
+
+def test_merged_task_with_a_human_attached_is_left_alone(tmp_path, monkeypatch):
+    """attached-<N> is not advisory. A teammate merging while the operator
+    sits in #42's web terminal must not kill the session and delete the
+    worktree out from under the live pty — skip, retry next pass (a merged
+    PR still reads merged)."""
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    c = merged_cfg(tmp_path)
+    pr_open_task(c)
+    mark_attached(c.state_dir, 42)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-07-30T10:00:00Z")
+    sess = FakeSessions(alive=(42,))
+    notif = FakeNotifier()
+    main.run_pass(c, deps(gh, sess, notifier=notif))
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.PR_OPEN          # still polled next pass
+    assert removed == []                       # worktree intact
+    assert sess.ended == []                    # pty untouched
+    assert gh.statused == [] and gh.deleted_branches == []
+    assert "task_done" not in notif.sent
+
+
+def test_pending_feedback_not_spawned_while_a_human_is_attached(
+        tmp_path, monkeypatch):
+    """Feedback arriving while the operator is in the web terminal must not
+    end their session and spawn address-review into the same worktree.
+    feedback_pending persists on disk, so the round happens after detach."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, feedback_pending=True)
+    mark_attached(c.state_dir, 42)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload()
+    sess = FakeSessions(alive=(42,))
+    main.run_pass(c, deps(gh, sess))
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.PR_OPEN and got.feedback_pending is True
+    assert got.feedback_cursor == ""   # cursor NOT advanced by a skipped spawn
+    assert sess.spawned == [] and sess.ended == []
+
+
+def test_address_review_resolves_the_implement_model(tmp_path, monkeypatch):
+    """address-review writes production code and pushes it to the PR, so it
+    resolves against the policy's `implement:` key — not the cheap default
+    it silently fell through to."""
+    patch_usage(monkeypatch)
+    policy = parse_policy({
+        "default": "claude-fable-5",
+        "rules": [{"name": "everything", "when": {"effort": {"min": 0}},
+                   "use": {"spec": "claude-fable-5",
+                           "implement": "claude-opus-4-8"}}],
+    })
+    c = dc_replace(cfg(tmp_path), models=policy)
+    pr_open_task(c, feedback_pending=True, effort=1)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload()
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    assert sess.spawned == [(42, "address-review", "claude-opus-4-8")]
+
+
+def test_cursor_now_never_seals_the_second_it_was_taken_in():
+    """GitHub stamps comments to the second, and pr_poll's trigger is a
+    strict `>`. A cursor whose own second is already sealed hides every
+    comment GitHub reports in that second — including ones posted after the
+    session started. The cursor must be strictly below the second any
+    comment written from now on can carry."""
+    cursor = datetime.fromisoformat(main._cursor_now())
+    now_second = datetime.now(timezone.utc).replace(microsecond=0)
+    assert cursor.microsecond == 0          # no sub-second precision
+    assert cursor < now_second
+
+
+def test_spawned_cursor_still_sees_a_comment_from_the_spawn_second(
+        tmp_path, monkeypatch):
+    """End to end: spawn address-review, then post a comment stamped with
+    the whole second the spawn happened in. The next poll must classify it
+    as fresh feedback (a redundant round beats a lost comment)."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, feedback_pending=True)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload()
+    spawn_second = datetime.now(timezone.utc).replace(microsecond=0)
+    main.run_pass(c, deps(gh))
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.ADDRESS_REVIEW and got.feedback_cursor
+
+    stamp = spawn_second.strftime("%Y-%m-%dT%H:%M:%SZ")
+    res = main.pr_poll.classify(
+        payload(comments=[{"createdAt": stamp,
+                           "author": {"login": "alice"}}]),
+        got.feedback_cursor, "agent-bot")
+    assert res.kind == "feedback"
+
+
+def test_address_review_done_returns_task_to_pr_open(tmp_path, monkeypatch):
+    """The return leg, at run_pass level: a task that STARTS the pass at
+    address-review with a `done` signal must land back at pr-open with its
+    PR number intact, and _poll_prs — which re-reads it later in the same
+    pass, now against the freshly-advanced cursor — must not re-flag
+    feedback for a comment older than that cursor or spawn a second round."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    cursor = "2026-07-30T09:30:00+00:00"
+    wt = make_task(c, issue=42, stage=Stage.ADDRESS_REVIEW, slot=0,
+                   pr_number=12, feedback_cursor=cursor)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "address-review", "status": "done",
+        "note": "pushed review fixes", "artifact": ""}))
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(comments=[{
+        "createdAt": "2026-07-30T09:00:00Z", "author": {"login": "alice"}}])
+    sess = FakeSessions(alive=(42,))
+    notif = FakeNotifier()
+    main.run_pass(c, deps(gh, sess, notifier=notif))
+
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.PR_OPEN
+    assert got.pr_number == 12              # regex found nothing; not clobbered
+    assert got.feedback_pending is False    # comment predates the cursor
+    assert got.feedback_cursor == cursor    # only a spawn moves it
+    assert sess.spawned == []               # no second address-review round
+    assert "pr_updated" in notif.sent

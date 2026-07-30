@@ -13,7 +13,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dispatcher.budget import fetch_usage, should_spawn
@@ -49,14 +49,34 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _cursor_now() -> str:
+    """Now, truncated to whole seconds and stepped back one, for
+    feedback_cursor only (same ISO shape as _now() otherwise).
+
+    GitHub reports comment/review timestamps at second granularity: a
+    comment posted at 10:00:00.9 comes back as "10:00:00Z". pr_poll's
+    trigger is a strict `dt > cursor`, so a cursor of 10:00:00.5 — or of
+    10:00:00, truncation alone changes nothing here — hides that comment
+    from every future round even though it was posted AFTER the session
+    that was supposed to see it started. Whole seconds minus one make the
+    whole second the spawn happened in still readable, which is the side
+    the spec picks: a redundant round beats a lost comment."""
+    return (datetime.now(timezone.utc).replace(microsecond=0)
+            - timedelta(seconds=1)).isoformat()
+
+
 # Stages that aren't policy stages but hold a live session from one: a
 # claimed task is about to spawn spec, and a task at the spec-review gate
-# still has its spec session running. Stage.BLOCKED and
+# still has its spec session running. ADDRESS_REVIEW is an implement-shaped
+# stage — it writes production code and pushes it to the PR — so it resolves
+# against the `implement:` key rather than falling through to the policy
+# default. Stage.BLOCKED and
 # Stage.STALLED_ON_BUDGET genuinely lose the originating stage in
 # TaskState (nothing in machine.py sets it), so they deliberately fall
 # through to stage.value, which matches no `use:` key and lands on the
 # policy default.
-_POLICY_STAGE = {Stage.QUEUED: "spec", Stage.AWAITING_SPEC_REVIEW: "spec"}
+_POLICY_STAGE = {Stage.QUEUED: "spec", Stage.AWAITING_SPEC_REVIEW: "spec",
+                 Stage.ADDRESS_REVIEW: "implement"}
 
 
 def _model_for(cfg: Config, target: Target | None, task: TaskState,
@@ -473,7 +493,8 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
                                     ci_run_id=0, updated_at=_now()))
 
 
-def _poll_prs(cfg: Config, deps: Deps, target: Target) -> None:
+def _poll_prs(cfg: Config, deps: Deps, target: Target,
+              dry_run: bool = False) -> None:
     """Watch every pr-open task's PR — unconditionally: one gh read per
     task, no capacity involved. Reaction (address-review spawn) is gated
     separately in _spawn_feedback."""
@@ -498,12 +519,18 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target) -> None:
             continue
         if res.kind == "merged":
             try:
-                _finish_merged(cfg, deps, target, task)
+                _finish_merged(cfg, deps, target, task, dry_run)
             except (subprocess.CalledProcessError, OSError) as exc:
                 print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
                       file=sys.stderr)
                 continue
         elif res.kind == "closed":
+            # End the session too: the implement session is still alive at
+            # pr-open, and nothing will ever drive this task again (FAILED
+            # isn't in IN_FLIGHT_STAGES), so its tmux session and container
+            # would otherwise hold their memory/cpu reservation until the box
+            # reboots. The worktree stays for autopsy.
+            deps.sessions.end(task.issue)
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
                                         updated_at=_now()))
             eventlog.append_event(cfg.state_dir, "pr-closed",
@@ -524,17 +551,25 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target) -> None:
 
 
 def _finish_merged(cfg: Config, deps: Deps, target: Target,
-                   task: TaskState) -> None:
+                   task: TaskState, dry_run: bool = False) -> None:
     """Ordered so a mid-sequence gh failure retries next pass (a merged PR
     still reads merged): board first (the raising step), then teardown
     (best-effort by construction), then the state flip that stops polling."""
+    if has_attached(cfg.state_dir, task.issue):
+        # A human is in this task's web terminal. `attached-<N>` is not
+        # advisory (web/terminal.py): the dispatcher declines to drive the
+        # task while it exists, and AttachRegistry puts no stage restriction
+        # on pr-open. Ending the session and deleting the worktree out from
+        # under a live pty is exactly what the marker exists to prevent —
+        # skip and retry next pass, a merged PR still reads merged.
+        return
     if target.status_done_option_id:
         deps.github.set_status(target, task.issue, target.status_done_option_id)
     else:
         print(f"[warn] {target.name}: status_done_option_id unset — board "
               f"not updated for #{task.issue}", file=sys.stderr)
     deps.sessions.end(task.issue)
-    remove_workspace(target, task.worktree, task.branch)
+    remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
     deps.github.delete_branch(target, task.branch)
     save(cfg.state_dir, replace(task, stage=Stage.DONE, park="",
                                 feedback_pending=False, done_at=_now(),
@@ -631,6 +666,13 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
          and t.feedback_pending],
         key=lambda t: t.updated_at)
     for task in pending:
+        if has_attached(cfg.state_dir, task.issue):
+            # A human is in this task's web terminal (attach carries no
+            # stage restriction, and the implement session is still alive at
+            # pr-open). Ending it and spawning address-review into the same
+            # worktree mid-investigation is what the marker forbids —
+            # feedback_pending persists on disk, so this retries next pass.
+            continue
         tasks = [t for t in load_all(cfg.state_dir)
                  if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
@@ -641,8 +683,11 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
         # Cursor := spawn time: everything the session can read live is
         # now "seen"; anything arriving after this moment re-triggers a
         # round (conservative — a redundant round beats a lost comment).
+        # _cursor_now(), not _now(): GitHub timestamps are second-granular
+        # and pr_poll's trigger is a strict `>`, so the cursor has to be
+        # quantised to seconds or a comment from the spawn second is lost.
         task = replace(task, slot=slot, feedback_pending=False,
-                       feedback_cursor=_now())
+                       feedback_cursor=_cursor_now())
         # The implement session is still alive at pr-open (the pr-open
         # transition never ends it). End first so _launch doesn't type
         # the podman command into the live claude's input box.
@@ -948,7 +993,7 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
                      and t.stage in IN_FLIGHT_STAGES]:
             _drive_task(cfg, deps, target, task, budget_ok, dry_run)
         _wake_ci(cfg, deps, target)
-        _poll_prs(cfg, deps, target)
+        _poll_prs(cfg, deps, target, dry_run)
         _resume_woken(cfg, deps, target, budget_ok)
         _spawn_feedback(cfg, deps, target, budget_ok)
         if budget_ok:

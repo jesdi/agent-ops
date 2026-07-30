@@ -418,6 +418,19 @@ def test_remove_workspace_removes_worktree_and_local_branch(tmp_path: Path):
     assert branches.strip() == ""
 
 
+def test_remove_workspace_dry_run_deletes_nothing(tmp_path: Path):
+    """--dry-run must not destroy anything: the real git commands here are
+    the only side effect of a merged-task teardown that isn't already
+    no-opped by GitHubClient/Sessions under dry_run."""
+    t, wt = _make_real_worktree_in_clone(tmp_path, 57)
+    workspace.remove_workspace(t, wt, "agent/task-57", dry_run=True)
+    assert Path(wt).exists()
+    branches = subprocess.run(
+        ["git", "branch", "--list", "agent/task-57"],
+        cwd=t.clone_path, capture_output=True, text=True).stdout
+    assert branches.strip() != ""
+
+
 def test_remove_workspace_survives_already_gone(tmp_path: Path):
     t = target(tmp_path)
     # clone_path doesn't exist; nope/ doesn't exist; branch never created —

@@ -261,12 +261,17 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     return wt
 
 
-def remove_workspace(target: Target, wt: str, branch: str) -> None:
+def remove_workspace(target: Target, wt: str, branch: str,
+                     dry_run: bool = False) -> None:
     """Merged-task teardown — the ONE sanctioned worktree deletion (the
     module rule "worktrees are never auto-deleted" still holds for crashed
     and failed tasks, which keep theirs for autopsy). Best-effort at every
     step: the branch is merged, so nothing here is load-bearing, and a
     failure must not abort the done path."""
+    if dry_run:
+        print(f"[dry-run] remove worktree {wt} and local branch {branch}")
+        return
+
     try:
         _sh(["git", "worktree", "remove", "--force", wt],
             cwd=target.clone_path)

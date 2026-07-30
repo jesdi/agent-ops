@@ -437,6 +437,25 @@ def test_pr_number_for_branch(monkeypatch):
     assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 0
 
 
+def test_pr_number_for_branch_prefers_the_open_pr(monkeypatch):
+    """`gh pr list --state all` guarantees no ordering, so a branch with an
+    earlier closed PR and a newer open one must not leave gh to decide which
+    PR the dispatcher watches forever."""
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None, env=None: json.dumps(
+        [{"number": 12, "state": "CLOSED"}, {"number": 34, "state": "OPEN"}]))
+    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+    # Same rows in the opposite order resolve identically.
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None, env=None: json.dumps(
+        [{"number": 34, "state": "OPEN"}, {"number": 12, "state": "CLOSED"}]))
+    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+
+
+def test_pr_number_for_branch_falls_back_to_the_newest_closed(monkeypatch):
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None, env=None: json.dumps(
+        [{"number": 34, "state": "MERGED"}, {"number": 12, "state": "CLOSED"}]))
+    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+
+
 def test_delete_branch_swallows_gh_errors(monkeypatch):
     def boom(args, cwd=None, env=None):
         raise subprocess.CalledProcessError(1, args)
