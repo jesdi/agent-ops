@@ -5,7 +5,8 @@ import { useTaskHistory } from '../hooks/useResources'
  * Explicit, natively-scrollable pane history. The live terminal has no
  * scrollback (tmux holds the alternate screen); this is where "scroll up"
  * goes. Opens scrolled to the bottom so the transition from the live screen
- * reads as continuous upward scrolling. Native scroll = trackpad precision
+ * reads as continuous upward scrolling; scrolling back down to the bottom
+ * auto-returns to the live terminal. Native scroll = trackpad precision
  * and momentum for free.
  */
 export function TerminalHistory({
@@ -16,6 +17,22 @@ export function TerminalHistory({
   onClose: () => void
 }) {
   const paneRef = useRef<HTMLPreElement>(null)
+  // Auto-return to live when the user scrolls back down to the bottom —
+  // native-scrollback behavior (iTerm/tmux). Armed only after the user has
+  // actually been above the bottom: the pane OPENS scrolled to the bottom,
+  // so an unarmed close would dismiss the overlay on mount.
+  const armedRef = useRef(false)
+
+  const handleScroll = () => {
+    const el = paneRef.current
+    if (!el) return
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 4
+    if (!atBottom) {
+      armedRef.current = true
+    } else if (armedRef.current) {
+      onClose()
+    }
+  }
   const query = useTaskHistory(issue, true)
 
   useEffect(() => {
@@ -45,6 +62,7 @@ export function TerminalHistory({
       <pre
         ref={paneRef}
         data-testid="terminal-history-pane"
+        onScroll={handleScroll}
         className="h-full w-full overflow-auto rounded bg-gray-900 p-3 font-mono text-xs text-gray-100"
       >
         {query.isPending ? 'loading history…' : (query.data?.text ?? '')}
