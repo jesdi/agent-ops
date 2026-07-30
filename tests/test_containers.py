@@ -117,3 +117,22 @@ def test_setup_cmd_splits_multiword_commands(tmp_path: Path, monkeypatch):
     wt, _ = make_worktree(tmp_path)
     argv = containers.setup_cmd("task-7-setup", wt, "bash scripts/provision.sh --fast")
     assert argv[-3:] == ["bash", "scripts/provision.sh", "--fast"]
+
+
+def test_triage_cmd_read_only_clone_and_report_mount(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    from dispatcher import containers
+    cmd = containers.triage_cmd(
+        "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+        "claude-opus-4-8", "PROMPT TEXT")
+    assert cmd[:3] == ["podman", "run", "--rm"]
+    assert "-it" not in cmd
+    assert "/repos/r:/repos/r:ro" in cmd
+    assert "/state/triage:/triage" in cmd
+    assert f"{tmp_path / 'state'}/claude-home:/root/.claude" in cmd
+    i = cmd.index("-w")
+    assert cmd[i + 1] == "/repos/r"
+    assert cmd[cmd.index("-p") + 1] == "PROMPT TEXT"
+    assert cmd[cmd.index("--model") + 1] == "claude-opus-4-8"
+    assert "--permission-mode" in cmd and "auto" in cmd
+    assert cmd[cmd.index("--memory") + 1] == "1500m"

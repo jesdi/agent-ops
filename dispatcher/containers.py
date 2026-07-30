@@ -72,6 +72,26 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     )
 
 
+def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
+               cpus: str, model: str, prompt: str) -> list[str]:
+    """Headless read-only triage session: argv for subprocess.run (no tmux,
+    no -it). The clone is :ro — the session decides, it never writes; its
+    only writable surface is /triage, where the decisions file lands."""
+    home = str(Path.home())
+    return [
+        "podman", "run", "--rm", "--name", name,
+        "--memory", memory, "--cpus", cpus,
+        "-e", "CLAUDE_CONFIG_DIR=/root/.claude",
+        "-v", f"{clone}:{clone}:ro", "-w", clone,
+        "-v", f"{_state_dir()}/claude-home:/root/.claude",
+        "-v", f"{home}/.config/gh:/root/.config/gh:ro",
+        "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
+        "-v", f"{triage_dir}:/triage",
+        image(), "claude", "-p", prompt,
+        "--permission-mode", "auto", "--model", model,
+    ]
+
+
 def setup_cmd(name: str, worktree: str, setup: str) -> list[str]:
     clone = clone_root(worktree)
     return [
