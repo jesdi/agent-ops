@@ -44,7 +44,16 @@ rsync -a --delete "$SEED/hooks/" "$CLAUDE_HOME/hooks/"
 # pass loudly (pinned installs use the `id@version` argument, whose CLI
 # support is unverified — if it is ignored, verify catches it; the ADR's
 # fallback is then vendoring skills into the seed).
-CLAUDE="${AGENT_OPS_CLAUDE:-claude}"
+# Default to the native per-user install: the systemd user manager's PATH
+# does not include ~/.local/bin, so a bare `claude` would miss it (or hit a
+# stale root-owned copy) when update.sh runs us from a unit.
+if [ -n "${AGENT_OPS_CLAUDE:-}" ]; then
+  CLAUDE="$AGENT_OPS_CLAUDE"
+elif [ -x "$HOME/.local/bin/claude" ]; then
+  CLAUDE="$HOME/.local/bin/claude"
+else
+  CLAUDE=claude
+fi
 export CLAUDE_CONFIG_DIR="$CLAUDE_HOME"
 stamp_file="$STATE_DIR/claude-home-plugins.stamp"
 
