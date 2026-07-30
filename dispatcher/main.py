@@ -22,7 +22,7 @@ from pathlib import Path
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
-from dispatcher import eventlog, failures, intents, pr_poll, queue_ops, relogin
+from dispatcher import eventlog, failures, intents, pr_poll, queue_ops, relogin, triage
 from dispatcher.github import GitHubClient
 from dispatcher import spec_publish
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
@@ -1099,6 +1099,7 @@ def main() -> None:
     ap.add_argument("--config", default="targets.yaml")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--digest", action="store_true")
+    ap.add_argument("--triage", action="store_true")
     args = ap.parse_args()
     cfg = load_config(args.config)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
@@ -1107,6 +1108,11 @@ def main() -> None:
                                   console_url=cfg.console_url))
     if args.digest:
         send_digest(cfg, deps)
+    elif args.triage:
+        if triage.enqueue(cfg.state_dir):
+            print("triage request enqueued")
+        else:
+            print("triage already pending or running; not enqueued")
     else:
         with pass_lock(cfg.state_dir):
             guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)

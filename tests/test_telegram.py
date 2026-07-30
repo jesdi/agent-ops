@@ -136,3 +136,9 @@ def test_spec_parked_carries_the_console_deep_link_when_configured():
 def test_pr_lifecycle_templates_render(template, frag):
     text = render(template, issue=7, title="Add widget", url="u", note="n")
     assert "#7" in text and "Add widget" in text and frag in text
+
+
+def test_triage_report_template():
+    from telegram.templates import render
+    text = render("triage_report", lines=["o/a: 2 labeled", "o/b: FAILED"])
+    assert text == "🧹 agent-ops triage\no/a: 2 labeled\no/b: FAILED"
