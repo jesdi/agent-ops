@@ -45,8 +45,16 @@ class _Handler(BaseHTTPRequestHandler):
         return "unix"
 
 
-def serve(sock_path: str | Path, state_dir: str | Path) -> None:
-    p = Path(sock_path)
+def sock_path(state_dir: str | Path) -> Path:
+    """Socket lives in a dedicated subdir so session containers can
+    bind-mount just that dir: a file bind goes stale when waitd recreates
+    the socket, and mounting the whole state dir would expose secrets
+    (op-token.env) to every session."""
+    return Path(state_dir) / "wait" / "wait.sock"
+
+
+def serve(path: str | Path, state_dir: str | Path) -> None:
+    p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     if p.exists():
         p.unlink()
@@ -56,7 +64,7 @@ def serve(sock_path: str | Path, state_dir: str | Path) -> None:
 def main() -> None:
     state_dir = Path(os.environ.get("AGENT_OPS_STATE_DIR",
                                     Path.home() / "agent-ops-state"))
-    serve(state_dir / "wait.sock", state_dir)
+    serve(sock_path(state_dir), state_dir)
 
 
 if __name__ == "__main__":

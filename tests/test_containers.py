@@ -61,6 +61,31 @@ def test_session_cmd_sets_claude_config_dir(tmp_path: Path, monkeypatch):
     assert "-e CLAUDE_CONFIG_DIR=/root/.claude" in cmd
 
 
+def test_session_cmd_exposes_waitd_socket(tmp_path: Path, monkeypatch):
+    # The Stop hook runs INSIDE the container; without the wait-dir mount
+    # and AGENT_OPS_STATE_DIR it resolves the socket to a path that does
+    # not exist there and every waiting ping is silently lost (task #187).
+    # Only the wait dir is mounted — the state dir also holds op-token.env.
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    wt, _ = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    assert ("-v /home/agent/agent-ops-state/wait"
+            ":/home/agent/agent-ops-state/wait" in cmd)
+    assert "-e AGENT_OPS_STATE_DIR=/home/agent/agent-ops-state" in cmd
+
+
+def test_session_cmd_creates_wait_dir_mount_source(tmp_path: Path, monkeypatch):
+    # podman errors on a missing bind source. waitd creates the dir when it
+    # (re)starts with the new path, but a dispatcher spawn can race a
+    # not-yet-restarted waitd right after deploy — ensure the source here.
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    wt, _ = make_worktree(tmp_path)
+    containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    assert (tmp_path / "state" / "wait").is_dir()
+
+
 def test_session_cmd_carries_the_model_flag(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
