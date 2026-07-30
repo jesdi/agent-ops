@@ -17,4 +17,7 @@ Environment=CLAUDE_CONFIG_DIR=%h/agent-ops-state/claude-home
 # claude '<prompt>'` form started an INTERACTIVE claude that never exited:
 # the session lingered and the next day's run failed on the duplicate
 # `keepalive` session name.
-ExecStart=/usr/bin/claude -p --permission-mode plan "Reply with exactly: ok."
+# Absolute path to the native per-user install (bootstrap.sh): the user
+# manager's PATH excludes ~/.local/bin, and the old root-owned
+# /usr/bin/claude could never auto-update (npm prefix /usr not writable).
+ExecStart=%h/.local/bin/claude -p --permission-mode plan "Reply with exactly: ok."
