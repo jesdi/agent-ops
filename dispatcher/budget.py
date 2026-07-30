@@ -40,6 +40,7 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 # Mandatory per community findings: requests without this UA get 429'd.
 USER_AGENT = "claude-code/2.0.0"
 MIN_POLL_SECONDS = 180
+HOST_CREDENTIALS = "~/.claude/.credentials.json"
 
 
 class UsageFetchError(Exception):
@@ -101,9 +102,22 @@ def _parse_ccusage(data: dict) -> UsageSnapshot | None:
     )
 
 
+def _resolve_credentials(state_dir: str | Path,
+                         credentials_path: str | Path | None) -> str | Path:
+    # The claude-home store (mounted into every session container, renewed
+    # by the keepalive) is the only one the fleet keeps fresh; the host's
+    # ~/.claude lapses ~8h after the last host-side claude run and would
+    # take the budget check dark with it. Prefer claude-home, fall back to
+    # the host store for dev machines without one.
+    if credentials_path is not None:
+        return credentials_path
+    claude_home = Path(state_dir) / "claude-home" / ".credentials.json"
+    return claude_home if claude_home.exists() else HOST_CREDENTIALS
+
+
 def fetch_usage(
     state_dir: str | Path,
-    credentials_path: str | Path = "~/.claude/.credentials.json",
+    credentials_path: str | Path | None = None,
     now: Callable[[], float] = time.time,
 ) -> UsageSnapshot:
     """OAuth endpoint (cached, ≥180s between polls) → ccusage → unavailable."""
@@ -116,7 +130,7 @@ def fetch_usage(
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
-    token = _read_token(credentials_path)
+    token = _read_token(_resolve_credentials(state_dir, credentials_path))
     if token is not None:
         try:
             data = _http_get_json(USAGE_URL, {
