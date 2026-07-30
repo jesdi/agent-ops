@@ -79,3 +79,37 @@ it('does not write when the observed height is 0 (jsdom / layout-less environmen
   // Store must remain at the default 384 — zero is a layout artifact, not a drag
   expect(useUiStore.getState().terminalHeight).toBe(384)
 })
+
+/**
+ * Regression: when the resizable element is CONDITIONALLY rendered (e.g. the
+ * tail pane that only shows while the terminal is detached), the hook's host
+ * may first mount with the element absent.  The observer must still attach
+ * once the element appears (detach-within-session flow).
+ */
+function ConditionalWrapper({ show }: { show: boolean }) {
+  const { ref, height } = usePersistedTerminalHeight()
+  return show ? (
+    <div ref={ref} style={{ height }} data-testid="pane-wrap" />
+  ) : (
+    <div data-testid="placeholder" />
+  )
+}
+
+it('attaches the observer when the node appears AFTER the hook host already mounted (conditional-render / detach-within-session flow)', () => {
+  // Start with element hidden (simulates TaskPage mounted while terminal is open)
+  const { rerender } = render(<ConditionalWrapper show={false} />)
+  // No element → no observer created yet
+  expect(capturedCallback).toBeNull()
+
+  // Simulate detaching the terminal: tail div now mounts
+  rerender(<ConditionalWrapper show={true} />)
+  // Observer must now be attached
+  expect(capturedCallback).not.toBeNull()
+
+  const el = screen.getByTestId('pane-wrap')
+  fireResize(el, 650)
+
+  expect(useUiStore.getState().terminalHeight).toBe(650)
+  const stored = JSON.parse(localStorage.getItem('agent-ops-ui') ?? '{}')
+  expect(stored.state.terminalHeight).toBe(650)
+})
