@@ -1,9 +1,10 @@
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
+import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
-import { useTasks, useTaskDetail } from '../useResources'
+import { useTasks, useTaskDetail, useTaskHistory } from '../useResources'
 
 const wrapper = ({ children }: { children: ReactNode }) => (
   <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -25,4 +26,21 @@ it('useTaskDetail(42) resolves the parked task', async () => {
   await waitFor(() => expect(result.current.isSuccess).toBe(true))
   expect(result.current.data?.card.issue).toBe(42)
   expect(result.current.data?.session_alive).toBe(true)
+})
+
+it('useTaskHistory fetches only when enabled', async () => {
+  server.use(
+    http.get('/api/task/42/history', () =>
+      HttpResponse.json({ text: 'scrollback body' }),
+    ),
+  )
+  const { result, rerender } = renderHook(
+    ({ on }: { on: boolean }) => useTaskHistory(42, on),
+    { wrapper, initialProps: { on: false } },
+  )
+  expect(result.current.fetchStatus).toBe('idle') // disabled: no fetch
+  rerender({ on: true })
+  await waitFor(() =>
+    expect(result.current.data).toEqual({ text: 'scrollback body' }),
+  )
 })
