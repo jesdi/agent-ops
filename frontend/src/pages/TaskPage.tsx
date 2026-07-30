@@ -179,6 +179,19 @@ function TaskView({ issue }: { issue: number }) {
         >
           {terminalOpen ? 'Detach terminal' : 'Attach terminal'}
         </button>
+        {/* Sessions are launched with --remote-control task-<N>, so they are
+            reachable from claude.ai/code and the Claude mobile app by name.
+            This is the mobile interaction path — the embedded terminal is the
+            desktop escape hatch. Not gated on session_alive: the conversation
+            stays readable there after the tmux session dies. */}
+        <a
+          href="https://claude.ai/code"
+          target="_blank"
+          rel="noreferrer"
+          className="rounded border px-3 py-1.5 text-sm text-blue-700"
+        >
+          Open in Claude ↗
+        </a>
         <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={busy}
           onClick={() => runIntent(() => api.park(issue))}>Park now</button>
