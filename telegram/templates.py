@@ -28,6 +28,10 @@ _TEMPLATES = {
                       + _ATTACH),
     "resumed_for_attach": "🎹 #{issue} {title} — session resumed and holding for you.\n{url}\n" + _ATTACH,
     "task_failed": "🔥 #{issue} {title} — {note}\n{url}",
+    "pr_feedback": "💬 #{issue} {title} — review feedback on the PR; queued for rework.\n{note}\n{url}",
+    "pr_updated": "🔁 #{issue} {title} — feedback addressed, PR updated: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
+    "task_done": "🎉 #{issue} {title} — PR merged; task done. {note}\n{url}",
+    "pr_closed": "🚫 #{issue} {title} — PR closed without merge: {note}\n{url}",
 }
 
 

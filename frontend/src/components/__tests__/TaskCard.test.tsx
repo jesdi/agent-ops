@@ -25,3 +25,13 @@ it('shows parked badge when park is set', () => {
   renderCard(reviewCard)
   expect(screen.getByText('parked: awaiting-review')).toBeInTheDocument()
 })
+
+it('shows the feedback-queued badge when feedback_pending', () => {
+  renderCard({ ...parkedCard, feedback_pending: true })
+  expect(screen.getByText('feedback queued')).toBeInTheDocument()
+})
+
+it('hides the badge otherwise', () => {
+  renderCard({ ...parkedCard, feedback_pending: false })
+  expect(screen.queryByText('feedback queued')).not.toBeInTheDocument()
+})

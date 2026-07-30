@@ -25,6 +25,7 @@ class Target:
     status_ready_option_id: str
     status_in_progress_option_id: str
     boost_field_id: str = ""
+    status_done_option_id: str = ""  # "" = never write Done to the board
     models: ModelPolicy | None = None  # None = inherit the global policy
 
 
@@ -46,6 +47,10 @@ class Config:
     # session ended, capacity AND slot freed, so the dispatcher can keep
     # speccing the rest of the Ready queue overnight. 0 parks on the next pass.
     spec_review_grace_minutes: int = 15
+    # Days a merged task's Done card stays on the console before its state
+    # file is flushed. The durable record (merged PR, closed issue, board
+    # item, event log) outlives the card.
+    done_retention_days: int = 7
 
 
 def _target(raw: dict) -> Target:
@@ -76,6 +81,7 @@ def load_config(path: str | Path) -> Config:
         console_url=str(raw.get("console_url") or "").rstrip("/"),
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
         spec_review_grace_minutes=int(raw.get("spec_review_grace_minutes", 15)),
+        done_retention_days=int(raw.get("done_retention_days", 7)),
     )
 
 
