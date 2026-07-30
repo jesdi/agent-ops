@@ -16,8 +16,8 @@ ADR 0001 is closed (Podman, not Docker, is used; no Docker daemon exists
 on the box).
 
 Bootstrap installs **Podman** and tmux; enables **zram swap (~2 GB)** for
-the memory cushion that absorbs session RSS spikes and makes the
-capacity-2 experiment survivable.
+the memory cushion that absorbs session RSS spikes and makes capacity 2
+(the seeded default) survivable on 4 GB.
 
 **Claude Code on the host is a native per-user install** (`claude.ai/install.sh`
 run as `agent`, lands in `~/.local/bin/claude`), never a root `npm install -g`:
@@ -43,7 +43,8 @@ Claude sessions run in rootless Podman containers: the `agent-ops-session`
 image (node + Claude Code CLI, git, gh, python/pipenv, pnpm) is launched
 per task with the task worktree, `~/agent-ops-state/claude-home`
 (Claude auth + transcripts), and gh credentials (read-only) mounted;
-`--memory 2g --cpus 2`. A tmux
+`--memory 1500m --cpus 2` (the memory cap comes from `session_memory`,
+sized so two active sessions fit the 4 GB box). A tmux
 session wraps each container for TTY persistence and reply-injection. E2E
 runs off-box on GitHub Actions (`e2e.yml` in portfolio_eval, dispatched via
 `gh workflow run`); there is no nested-container machinery on the box.
@@ -119,11 +120,11 @@ the box by hand — declare them in the seed and merge.
 Rollout order (from the design spec §9):
 1. bootstrap.sh + the manual follow-ups it prints
 2. dispatcher --dry-run against the live board
-3. single live task (capacity: 1) on one small `auto` task
+3. single live task (temporarily set capacity: 1) on one small `auto` task
 4. park/resume drill — trigger a human-input park, reply from Telegram,
    verify context and reply arrive correctly
 5. E2E drill — companion e2e.yml merged into portfolio_eval; dispatch a
    real run, verify awaiting-ci park → CI completion → resume with verdict
 6. steady state
-7. capacity-2 experiment (optional, box-local edit): set `capacity: 2`,
-   per-session `--memory 1500m`; retreat on OOM kills or slow stages
+7. restore `capacity: 2` / `session_memory: 1500m` (the seeded defaults);
+   retreat to capacity 1 on OOM kills or slow stages

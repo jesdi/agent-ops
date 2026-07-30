@@ -1,4 +1,4 @@
-capacity: 1
+capacity: 2
 state_dir: /home/agent/agent-ops-state
 # Optional: repo where provisioning/pass-crash failure issues are filed.
 # Unset -> those failures degrade to a Telegram ping + stderr log only.
@@ -9,7 +9,10 @@ infra_repo: jesdi/agent-ops
 budget_threshold: 0.8
 racing_minutes: 30
 racing_threshold: 0.95
-session_memory: 2g   # capacity-2 experiment: 1500m
+# Sized for capacity 2 on the 4 GB box: 2 active sessions x 1500m + ~1 GB
+# system baseline fits 3.8 GB RAM with the zram cushion absorbing spikes.
+# A session that overruns the cap OOMs inside its own container only.
+session_memory: 1500m
 session_cpus: "2"
 # A live claude redraws its status line every second, so a session with no
 # tmux output for this long is stuck (login/trust prompt, or a hung turn) and
