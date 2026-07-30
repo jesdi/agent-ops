@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import time
 from dataclasses import replace as dc_replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2133,3 +2135,53 @@ def test_resume_clears_park_note(tmp_path, monkeypatch):
               park_note="stale question")
     main.run_pass(c, deps(sess=FakeSessions()))
     assert load(c.state_dir, 42).park_note == ""
+
+
+def test_prune_snapshots_removes_only_old_finished(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    snaps = Path(c.state_dir) / "snapshots"
+    snaps.mkdir(parents=True)
+    old = time.time() - 8 * 24 * 3600
+    # old + finished (PR_OPEN is not in IN_FLIGHT_STAGES) -> pruned
+    make_task(c, issue=41, stage=Stage.PR_OPEN)
+    (snaps / "task-41.txt").write_text("done long ago")
+    os.utime(snaps / "task-41.txt", (old, old))
+    # old + absent state file -> pruned
+    (snaps / "task-40.txt").write_text("state gone")
+    os.utime(snaps / "task-40.txt", (old, old))
+    # old + still in flight (parked implement) -> kept
+    make_task(c, issue=42, park="parked")
+    (snaps / "task-42.txt").write_text("still parked")
+    os.utime(snaps / "task-42.txt", (old, old))
+    # fresh + finished -> kept (within the 7-day window)
+    make_task(c, issue=43, stage=Stage.FAILED)
+    (snaps / "task-43.txt").write_text("just failed")
+
+    main._prune_snapshots(c)
+
+    assert not (snaps / "task-41.txt").exists()
+    assert not (snaps / "task-40.txt").exists()
+    assert (snaps / "task-42.txt").exists()
+    assert (snaps / "task-43.txt").exists()
+
+
+def test_prune_snapshots_corrupt_state_file_does_not_abort_sweep(tmp_path, monkeypatch):
+    """A corrupt state file must not raise out of _prune_snapshots; the sweep
+    continues and still prunes any other eligible snapshots."""
+    c = cfg(tmp_path)
+    snaps = Path(c.state_dir) / "snapshots"
+    snaps.mkdir(parents=True)
+    old = time.time() - 8 * 24 * 3600
+    # corrupt state file — write invalid JSON directly
+    Path(c.state_dir, "task-50.json").write_text("{not json")
+    (snaps / "task-50.txt").write_text("corrupt task snap")
+    os.utime(snaps / "task-50.txt", (old, old))
+    # separate old+finished snapshot in the same dir (absent state file) -> must still be pruned
+    (snaps / "task-51.txt").write_text("old finished")
+    os.utime(snaps / "task-51.txt", (old, old))
+
+    # must not raise
+    main._prune_snapshots(c)
+
+    # sweep continued past the corrupt file and pruned the eligible one
+    assert not (snaps / "task-51.txt").exists()

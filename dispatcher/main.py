@@ -9,6 +9,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 import traceback
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -771,9 +772,39 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
             intents.delete_intent(intent)
 
 
+SNAPSHOT_TTL_SECONDS = 7 * 24 * 3600
+
+
+def _prune_snapshots(cfg: Config) -> None:
+    """A snapshot outlives its task by at most a week. In-flight tasks keep
+    theirs regardless of age — the console may need it while they are
+    parked. Every pass checks; ~200 KB per file makes eagerness cheap."""
+    root = Path(cfg.state_dir) / "snapshots"
+    if not root.exists():
+        return
+    now = time.time()
+    for p in root.glob("task-*.txt"):
+        try:
+            issue = int(p.stem.removeprefix("task-"))
+        except ValueError:
+            continue
+        try:
+            t = load(cfg.state_dir, issue)
+        except Exception:
+            continue  # unreadable/corrupt state file: skip, never abort the sweep
+        if t is not None and t.stage in IN_FLIGHT_STAGES:
+            continue
+        try:
+            if now - p.stat().st_mtime > SNAPSHOT_TTL_SECONDS:
+                p.unlink()
+        except OSError:
+            continue
+
+
 def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
     if not dry_run:
         _apply_intents(cfg, deps)
+        _prune_snapshots(cfg)
     _handle_telegram(cfg, deps, dry_run)
     usage = fetch_usage(cfg.state_dir)
     budget_ok = should_spawn(usage, cfg.budget_threshold,
