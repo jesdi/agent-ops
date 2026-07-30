@@ -18,6 +18,8 @@ const STAGE_LABELS: Record<string, string> = {
   review: 'Review',
   ci: 'Awaiting CI',
   pr: 'PR open',
+  'address-review': 'Addressing review',
+  done: 'Done',
 }
 
 export function stageLabel(stage: string): string {
