@@ -2465,7 +2465,7 @@ def test_dry_run_pass_does_not_tear_down_a_merged_task(tmp_path, monkeypatch):
 
 
 def test_remove_workspace_dry_run_flag_reaches_the_real_teardown(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, capsys):
     """Same path with the real workspace module in place: nothing shells
     out. Guards the signature itself — a remove_workspace that ignored
     dry_run would still run git here."""
@@ -2480,7 +2480,11 @@ def test_remove_workspace_dry_run_flag_reaches_the_real_teardown(
     gh.pr_payloads[12] = payload(state="MERGED",
                                  merged_at="2026-07-30T10:00:00Z")
     main.run_pass(c, deps(gh), dry_run=True)
-    assert load(c.state_dir, 42).stage is Stage.DONE
+    # The merged branch really was taken (so _sh had its chance to run),
+    # and the task stayed put — a dry run reports the teardown, never
+    # performs it and never records it as performed.
+    assert "[dry-run] remove worktree" in capsys.readouterr().out
+    assert load(c.state_dir, 42).stage is Stage.PR_OPEN
 
 
 def test_merged_task_with_a_human_attached_is_left_alone(tmp_path, monkeypatch):
@@ -2624,3 +2628,83 @@ def test_address_review_done_returns_task_to_pr_open(tmp_path, monkeypatch):
     assert got.feedback_cursor == cursor    # only a spawn moves it
     assert sess.spawned == []               # no second address-review round
     assert "pr_updated" in notif.sent
+
+
+# ---------------------------------------------------------------------------
+# --dry-run must not touch local state
+#
+# Every I/O *dependency* was already stubbed under --dry-run (GitHubClient,
+# Sessions, Notifier, remove_workspace), but the local writes — state files,
+# events.jsonl, and the markers/caches that live beside them — ran for real.
+# A dry run therefore advanced tasks to a terminal stage and wrote history
+# while every visible side effect printed "[dry-run] …" and was skipped.
+# ---------------------------------------------------------------------------
+
+def test_dry_run_over_a_merged_pr_leaves_state_and_events_untouched(
+        tmp_path, monkeypatch):
+    """The reproduced production bug: a dry run over four merged PRs flipped
+    them pr-open → done and appended four `merged` events, so the real pass
+    that follows never performs the teardown (_poll_prs only sees PR_OPEN)."""
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = merged_cfg(tmp_path)
+    pr_open_task(c, pr_number=0)          # forces the pr_number backfill too
+    gh = FakeGitHub()
+    gh.branch_prs["agent/task-42"] = 12
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-07-30T10:00:00Z")
+    main.run_pass(c, deps(gh), dry_run=True)
+
+    got = load(c.state_dir, 42)
+    assert got.stage is Stage.PR_OPEN
+    assert got.done_at == ""
+    assert got.pr_number == 0             # not even the benign backfill
+    assert eventlog.read_tail(c.state_dir) == []
+
+
+def test_dry_run_does_not_write_state_for_a_newly_claimed_task(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
+    main.run_pass(c, deps(gh), dry_run=True)
+
+    assert load(c.state_dir, 42) is None
+    assert eventlog.read_tail(c.state_dir) == []
+
+
+def test_dry_run_does_not_flush_expired_done_tasks(tmp_path, monkeypatch):
+    """_flush_done deletes state files outright and takes no dry_run
+    parameter at all — the leak is not confined to the paths that thread
+    one."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, issue=1, stage=Stage.DONE, slot=NO_SLOT,
+              done_at="2026-07-01T00:00:00+00:00")   # ancient
+    main.run_pass(c, deps(FakeGitHub()), dry_run=True)
+
+    assert load(c.state_dir, 1) is not None
+
+
+def test_dry_run_leaves_the_real_state_dir_alone_entirely(
+        tmp_path, monkeypatch):
+    """Belt-and-braces over the whole directory: no file under state_dir may
+    change during a dry run, whatever the pass decides to do."""
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = merged_cfg(tmp_path)
+    pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-07-30T10:00:00Z")
+
+    def snapshot():
+        root = Path(c.state_dir)
+        return {p.relative_to(root): p.read_bytes()
+                for p in sorted(root.rglob("*")) if p.is_file()
+                and p.name != "convergence.lock"}
+
+    before = snapshot()
+    main.run_pass(c, deps(gh), dry_run=True)
+    assert snapshot() == before

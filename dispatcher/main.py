@@ -8,10 +8,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -976,7 +979,41 @@ def _prune_snapshots(cfg: Config) -> None:
             continue
 
 
+@contextmanager
+def _sandboxed_state(cfg: Config):
+    """Yield `cfg` with state_dir rebound to a throwaway copy of the real one.
+
+    --dry-run stubs every I/O *dependency* (GitHubClient, Sessions, Notifier,
+    remove_workspace), but the pass also writes locally — state files, the
+    event log, waiting/attached markers, failure reports, the intent queue,
+    the usage cache — and those writes were unguarded, so a dry run advanced
+    tasks to terminal stages and wrote history for real. Guarding each call
+    site is what already rotted: `dry_run` is threaded by hand into some
+    functions and was never added to _flush_done or _resume_woken.
+
+    Redirecting the one directory they all write through is the guard that
+    cannot be forgotten, and it covers write sites added later for free. The
+    pass still reads a faithful copy, so its decisions — and the [dry-run]
+    lines it prints — are exactly the ones a real pass would make."""
+    real = Path(cfg.state_dir)
+    with tempfile.TemporaryDirectory(prefix="agent-ops-dry-run-") as tmp:
+        sandbox = Path(tmp) / "state"
+        if real.is_dir():
+            shutil.copytree(real, sandbox)
+        else:
+            sandbox.mkdir(parents=True)
+        yield replace(cfg, state_dir=str(sandbox))
+
+
 def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+    if dry_run:
+        with _sandboxed_state(cfg) as sandboxed:
+            _run_pass(sandboxed, deps, dry_run)
+        return
+    _run_pass(cfg, deps, dry_run)
+
+
+def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
     if not dry_run:
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
