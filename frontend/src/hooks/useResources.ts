@@ -54,6 +54,20 @@ export function useTaskSpec(issue: number) {
   })
 }
 
+/**
+ * On-demand pane history. `enabled` gates the fetch so it never fires on the
+ * polled task-detail path — a 2000-line tail is ~150KB. staleTime:0 because
+ * the live screen has moved on every time the view is reopened.
+ */
+export function useTaskHistory(issue: number, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.taskHistory(issue),
+    queryFn: () => api.taskHistory(issue),
+    enabled,
+    staleTime: 0,
+  })
+}
+
 /** Pending intents always poll: they clear only when a dispatcher pass runs. */
 export function usePendingIntents() {
   return useQuery({

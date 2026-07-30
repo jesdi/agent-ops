@@ -2,18 +2,23 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import { useEffect, useRef, useState } from 'react'
+import { TerminalHistory } from './TerminalHistory'
+import { usePersistedTerminalHeight } from '../hooks/usePersistedTerminalHeight'
 
 export function Terminal({ issue }: { issue: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [dead, setDead] = useState<{ tail: string } | null>(null)
+  const { ref: paneWrapRef, height: terminalHeight } = usePersistedTerminalHeight()
   // A dropped *connection* is not a dead *session*: the tmux session may well
   // still be running (roaming Tailscale, agent-ops-web.service restarting, a
   // 4401/4403 auth close). Tracked separately so the copy can say so.
   const [disconnected, setDisconnected] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
 
   useEffect(() => {
     setDead(null)
     setDisconnected(false)
+    setShowHistory(false)
     const el = containerRef.current
     if (!el) return
 
@@ -78,6 +83,15 @@ export function Terminal({ issue }: { issue: number }) {
     const observer = new ResizeObserver(() => fit.fit())
     observer.observe(el)
 
+    // Own the wheel: returning false makes xterm apply NEITHER default —
+    // no SGR mouse reports (whose magnitude it discards) and no arrow keys
+    // injected into the app. Scrolling up opens our own history view, which
+    // scrolls natively (full trackpad precision, correct momentum).
+    term.attachCustomWheelEventHandler((e) => {
+      if (e.deltaY < 0) setShowHistory(true)
+      return false
+    })
+
     return () => {
       disposed = true
       observer.disconnect()
@@ -94,11 +108,16 @@ export function Terminal({ issue }: { issue: number }) {
   // the container — prevents a blank/unconnected terminal when navigating from
   // a dead session to a live one.
   return (
-    <div className="relative">
+    <div
+      ref={paneWrapRef}
+      data-testid="terminal-pane-wrap"
+      className="relative w-full resize-y overflow-auto rounded bg-black"
+      style={{ height: terminalHeight }}
+    >
       <div
         ref={containerRef}
         data-testid="terminal"
-        className="h-96 w-full overflow-hidden rounded bg-black p-1"
+        className="h-full w-full overflow-hidden rounded bg-black p-1"
       />
       {dead && (
         <div
@@ -111,6 +130,14 @@ export function Terminal({ issue }: { issue: number }) {
           <pre className="mt-2 max-h-64 overflow-auto rounded bg-gray-900 p-2 font-mono text-xs text-gray-100">
             {dead.tail}
           </pre>
+        </div>
+      )}
+      {showHistory && (
+        <div className="absolute inset-0">
+          <TerminalHistory
+            issue={issue}
+            onClose={() => setShowHistory(false)}
+          />
         </div>
       )}
       {!dead && disconnected && (

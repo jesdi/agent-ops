@@ -124,6 +124,20 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.SpecView(path=str(p.relative_to(wt)),
                                    markdown=markdown)
 
+    HISTORY_MAX_LINES = 10000
+
+    @app.get("/api/task/{issue}/history",
+             response_model=read_model.PaneHistory)
+    def task_history(issue: int, lines: int = 2000,
+                     op: Operator = Depends(current_operator)):
+        if not any(t.issue == issue for t in sources.tasks()):
+            raise HTTPException(404, f"no task {issue}")
+        # Unbounded `lines` would let one request pull an entire pane history
+        # into memory and over the wire; clamp before hitting tmux.
+        clamped = max(1, min(lines, HISTORY_MAX_LINES))
+        return read_model.PaneHistory(
+            text=sources.pane_history(issue, clamped))
+
     @app.get("/api/budget", response_model=read_model.BudgetView)
     def budget_route(op: Operator = Depends(current_operator)):
         return read_model.budget_view(

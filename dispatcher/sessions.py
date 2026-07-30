@@ -74,6 +74,22 @@ class Sessions:
             return ""
         return "\n".join(out.stdout.rstrip().splitlines()[-lines:])
 
+    def capture_history(self, issue: int, lines: int = 2000) -> str:
+        """Console-owned pane history. Unlike capture_tail (visible pane
+        only — the dispatcher's stall/login classification input), this
+        pulls scrollback via -S so the web console can render true history.
+        Degrades to '' on tmux failure exactly as capture_tail does, so a
+        wedged tmux server never 500s the history view."""
+        if self.dry_run:
+            return ""
+        out = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-S", f"-{lines}",
+             "-t", session_name(issue)],
+            capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            return ""
+        return out.stdout.rstrip()
+
     def idle_seconds(self, issue: int) -> float | None:
         """Seconds since the task's tmux window last changed. Claude Code's
         status line redraws every second while working, so a live session

@@ -11,6 +11,10 @@ ExecStart=/usr/bin/env OP_SERVICE_ACCOUNT_TOKEN=${OP_SERVICE_ACCOUNT_AGENT_OPS_T
 WorkingDirectory=%h/agent-ops
 Restart=on-failure
 RestartSec=5
+# uvicorn drains live streams for at most 5 s (timeout_graceful_shutdown in
+# web/__main__.py); anything slower is a hang.  The default 90 s stop timeout
+# turned every deploy restart into a ~90 s 502 window (2026-07-30).
+TimeoutStopSec=10
 
 [Install]
 WantedBy=default.target

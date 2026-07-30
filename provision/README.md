@@ -19,6 +19,17 @@ Bootstrap installs **Podman** and tmux; enables **zram swap (~2 GB)** for
 the memory cushion that absorbs session RSS spikes and makes the
 capacity-2 experiment survivable.
 
+**Claude Code on the host is a native per-user install** (`claude.ai/install.sh`
+run as `agent`, lands in `~/.local/bin/claude`), never a root `npm install -g`:
+with the npm prefix at `/usr` the agent user can't write there, auto-update
+fails ("no write permission to npm prefix") and the box silently pins to a
+stale version. Login shells find it via `~/.profile`; systemd user units and
+convergence scripts must reference `%h/.local/bin/claude` /
+`$HOME/.local/bin/claude` explicitly — the user manager's PATH excludes
+`~/.local/bin`. Bootstrap uninstalls any leftover root npm copy on re-run.
+(The npm install inside the `agent-ops-session` container image is fine: the
+image is rebuilt by the updater, nothing auto-updates in-place there.)
+
 Deploys are pull-based convergence: an `agent-ops-update.timer` on the box
 (every ~1 min) does `git pull --ff-only` against `main`, reinstalls the
 package if deps changed, syncs systemd units, and restarts changed

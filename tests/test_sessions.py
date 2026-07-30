@@ -170,3 +170,44 @@ def test_send_text_dry_run_touches_nothing(monkeypatch, capsys):
                         lambda args: (_ for _ in ()).throw(AssertionError))
     Sessions(dry_run=True).send_text(42, "code")
     assert "[dry-run] send text to task-42" in capsys.readouterr().out
+
+
+def test_capture_history_uses_S_flag_and_returns_output(monkeypatch):
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        return type("R", (), {"returncode": 0, "stdout": "line1\nline2\n"})()
+
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run)
+    out = Sessions().capture_history(42, lines=2000)
+    assert out == "line1\nline2"
+    assert calls == [["tmux", "capture-pane", "-p", "-S", "-2000",
+                      "-t", "task-42"]]
+
+
+def test_capture_history_empty_on_tmux_failure(monkeypatch):
+    fail = type("R", (), {"returncode": 1, "stdout": ""})()
+    monkeypatch.setattr(sessions.subprocess, "run", lambda *a, **k: fail)
+    assert Sessions().capture_history(42) == ""
+
+
+def test_capture_history_dry_run_empty():
+    assert Sessions(dry_run=True).capture_history(42) == ""
+
+
+def test_capture_tail_visible_pane_only_and_trims(monkeypatch):
+    """Regression guard: capture_tail is the dispatcher's classification input.
+    It must NOT grow an -S flag and must still trim to `lines` (default 25)."""
+    body = "\n".join(str(n) for n in range(40)) + "\n"
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append(args)
+        return type("R", (), {"returncode": 0, "stdout": body})()
+
+    monkeypatch.setattr(sessions.subprocess, "run", fake_run)
+    out = Sessions().capture_tail(42)
+    assert calls == [["tmux", "capture-pane", "-p", "-t", "task-42"]]
+    assert "-S" not in calls[0]
+    assert out.splitlines() == [str(n) for n in range(15, 40)]  # last 25

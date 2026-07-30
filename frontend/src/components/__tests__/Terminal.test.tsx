@@ -3,6 +3,7 @@ import { act, render, screen } from '@testing-library/react'
 const write = vi.fn()
 const dispose = vi.fn()
 const onData = vi.fn((_cb: (d: string) => void) => ({ dispose: vi.fn() }))
+const attachCustomWheelEventHandler = vi.fn()
 vi.mock('@xterm/xterm', () => ({
   // vitest 4: vi.fn used as constructor must use function/class, not arrow
   Terminal: vi.fn(function () {
@@ -14,6 +15,7 @@ vi.mock('@xterm/xterm', () => ({
       write,
       onData,
       onResize: vi.fn(() => ({ dispose: vi.fn() })),
+      attachCustomWheelEventHandler,
       dispose,
     }
   }),
@@ -23,6 +25,11 @@ vi.mock('@xterm/addon-fit', () => ({
   FitAddon: vi.fn(function () { return { fit: vi.fn() } }),
 }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
+vi.mock('../TerminalHistory', () => ({
+  TerminalHistory: ({ issue }: { issue: number }) => (
+    <div data-testid="terminal-history" data-issue={issue} />
+  ),
+}))
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
@@ -45,6 +52,7 @@ beforeEach(() => {
   write.mockClear()
   dispose.mockClear()
   onData.mockClear()
+  attachCustomWheelEventHandler.mockClear()
   vi.stubGlobal('WebSocket', FakeWebSocket)
   // vitest 4: vi.fn used as constructor must use function/class, not arrow
   vi.stubGlobal('ResizeObserver', vi.fn(function () {
@@ -145,4 +153,30 @@ it('dead → live navigation: re-render with new issue connects new WS and clear
   expect(FakeWebSocket.instances[1]!.url).toContain('/api/task/43/terminal')
   // dead fallback must be gone
   expect(screen.queryByTestId('terminal-dead')).not.toBeInTheDocument()
+})
+
+it('MOST IMPORTANT: the wheel handler emits nothing to the socket', async () => {
+  const { Terminal } = await import('../Terminal')
+  render(<Terminal issue={42} />)
+  const ws = FakeWebSocket.instances[0]!
+  act(() => { ws.onopen?.() })
+  const sentAfterOpen = ws.sent.length // just the initial resize
+  const handler = attachCustomWheelEventHandler.mock.calls[0]![0] as (
+    e: WheelEvent,
+  ) => boolean
+  // returning false = xterm applies NEITHER default (no SGR report, no
+  // injected arrow keys). Our handler itself must send no frame either.
+  const ret = handler({ deltaY: -120 } as WheelEvent)
+  expect(ret).toBe(false)
+  expect(ws.sent).toHaveLength(sentAfterOpen)
+})
+
+it('an upward wheel opens the history view', async () => {
+  const { Terminal } = await import('../Terminal')
+  render(<Terminal issue={42} />)
+  const handler = attachCustomWheelEventHandler.mock.calls[0]![0] as (
+    e: WheelEvent,
+  ) => boolean
+  act(() => { handler({ deltaY: -120 } as WheelEvent) })
+  expect(screen.getByTestId('terminal-history')).toBeInTheDocument()
 })

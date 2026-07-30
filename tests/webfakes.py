@@ -43,6 +43,8 @@ class FakeSources:
         self.open_issues = {}     # (repo, number) -> bool | None
         self.events = []
         self.pane_tails = {}
+        self.pane_histories = {}
+        self.history_calls = []   # (issue, lines) recorded for clamp tests
         self.alive = set()
         self.attached = set()
         self.intents = []         # (action, issue, payload, actor)
@@ -76,6 +78,10 @@ class FakeSources:
 
     def pane_tail(self, issue):
         return self.pane_tails.get(issue, "")
+
+    def pane_history(self, issue, lines=2000):
+        self.history_calls.append((issue, lines))
+        return self.pane_histories.get(issue, "")
 
     def session_alive(self, issue):
         return issue in self.alive
