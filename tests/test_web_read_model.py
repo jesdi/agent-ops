@@ -117,3 +117,9 @@ def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
     board = build_board(tasks, capacity=2, models={}, attached=set())
     assert board.capacity.active == 1
     assert board.capacity.slots_used == 1   # not 2 — #2 gave its slot back
+
+
+def test_task_card_carries_park_note():
+    t = make_task(park="parked", park_note="which URL?")
+    card = task_card(t, model="opus", attached=False)
+    assert card.park_note == "which URL?"

@@ -9,6 +9,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 import traceback
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -120,7 +121,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
         (agent_dir / "stage.json").write_text(json.dumps(
             {"stage": task.stage.value, "status": "working", "model": model}))
     save(cfg.state_dir, replace(task, park="", park_msg_id=0,
-                                updated_at=_now()))
+                                park_note="", updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "login-code-injected",
                           target=task.target, issue=task.issue,
                           stage=task.stage.value, detail="login code injected")
@@ -333,7 +334,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     deps.sessions.end(task.issue)
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
-                                updated_at=_now()))
+                                park_note=note, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
 
@@ -363,7 +364,7 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
         return False
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
-                                updated_at=_now()))
+                                park_note=note, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="needs re-login: " + note)
@@ -445,6 +446,7 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     deps.sessions.end(task.issue)
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,
+                                park_note="spec ready for review",
                                 slot=NO_SLOT, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
@@ -517,7 +519,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
                                  task.pending_reply or "Continue.", model)
         save(cfg.state_dir, replace(task, park="", pending_reply="",
                                     hold_for_attach=False, park_msg_id=0,
-                                    updated_at=_now()))
+                                    park_note="", updated_at=_now()))
         eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                               issue=task.issue, stage=task.stage.value,
                               model=model)
@@ -770,9 +772,39 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
             intents.delete_intent(intent)
 
 
+SNAPSHOT_TTL_SECONDS = 7 * 24 * 3600
+
+
+def _prune_snapshots(cfg: Config) -> None:
+    """A snapshot outlives its task by at most a week. In-flight tasks keep
+    theirs regardless of age — the console may need it while they are
+    parked. Every pass checks; ~200 KB per file makes eagerness cheap."""
+    root = Path(cfg.state_dir) / "snapshots"
+    if not root.exists():
+        return
+    now = time.time()
+    for p in root.glob("task-*.txt"):
+        try:
+            issue = int(p.stem.removeprefix("task-"))
+        except ValueError:
+            continue
+        try:
+            t = load(cfg.state_dir, issue)
+        except Exception:
+            continue  # unreadable/corrupt state file: skip, never abort the sweep
+        if t is not None and t.stage in IN_FLIGHT_STAGES:
+            continue
+        try:
+            if now - p.stat().st_mtime > SNAPSHOT_TTL_SECONDS:
+                p.unlink()
+        except OSError:
+            continue
+
+
 def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
     if not dry_run:
         _apply_intents(cfg, deps)
+        _prune_snapshots(cfg)
     _handle_telegram(cfg, deps, dry_run)
     usage = fetch_usage(cfg.state_dir)
     budget_ok = should_spawn(usage, cfg.budget_threshold,
@@ -817,7 +849,7 @@ def main() -> None:
     args = ap.parse_args()
     cfg = load_config(args.config)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
-                sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory, cpus=cfg.session_cpus),
+                sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory, cpus=cfg.session_cpus, state_dir=cfg.state_dir),
                 notifier=Notifier(dry_run=args.dry_run,
                                   console_url=cfg.console_url))
     if args.digest:

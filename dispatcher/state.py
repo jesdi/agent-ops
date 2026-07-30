@@ -67,6 +67,7 @@ class TaskState:
     ci_run_id: int = 0
     park_msg_id: int = 0
     pending_reply: str = ""
+    park_note: str = ""                  # the question shown while parked
     hold_for_attach: bool = False
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time

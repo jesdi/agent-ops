@@ -41,16 +41,17 @@ class FakeGitHub:
 class FakeSessions:
     def __init__(self):
         self.tails = {}
+        self.histories = {}
         self.alive = set()
 
     def capture_tail(self, issue, lines=25):
         return self.tails.get(issue, "")
 
+    def capture_history(self, issue, lines=2000):
+        return self.histories.get(issue, "")
+
     def is_alive(self, issue):
         return issue in self.alive
-
-    def capture_history(self, issue, lines=2000):
-        return getattr(self, "histories", {}).get(issue, "")
 
 
 class FakeClock:
@@ -254,12 +255,15 @@ class WedgedSessions(FakeSessions):
 def test_pane_tail_degrades_to_empty_when_tmux_is_wedged(tmp_path):
     """sessions.capture_tail uses subprocess.run(timeout=30), which raises.
     Unhandled it turns GET /api/task/{issue} into a 500 after 30 s."""
-    _, src = make_sources(tmp_path, sessions=WedgedSessions())
+    sess = WedgedSessions()
+    sess.alive.add(7)
+    _, src = make_sources(tmp_path, sessions=sess)
     assert src.pane_tail(7) == ""
 
 
 def test_pane_history_delegates_to_capture_history(tmp_path):
     sessions = FakeSessions()
+    sessions.alive.add(7)
     sessions.histories = {7: "old\nnew"}
     _, src = make_sources(tmp_path, sessions=sessions)
     assert src.pane_history(7) == "old\nnew"
@@ -269,5 +273,69 @@ def test_pane_history_degrades_to_empty_on_tmux_error(tmp_path):
     class BoomSessions(FakeSessions):
         def capture_history(self, issue, lines=2000):
             raise TimeoutError("tmux wedged")
-    _, src = make_sources(tmp_path, sessions=BoomSessions())
+    sess = BoomSessions()
+    sess.alive.add(7)
+    _, src = make_sources(tmp_path, sessions=sess)
+    assert src.pane_history(7) == ""
+
+
+def _write_snapshot(tmp_path, issue, text):
+    snap = tmp_path / "snapshots" / f"task-{issue}.txt"
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_text(text)
+    return snap
+
+
+def test_pane_tail_falls_back_to_snapshot_when_dead(tmp_path):
+    _write_snapshot(tmp_path, 7, "old output\nlast line")
+    _, src = make_sources(tmp_path)  # 7 not in alive set
+    assert src.pane_tail(7) == "old output\nlast line"
+
+
+def test_pane_tail_prefers_live_capture(tmp_path):
+    _write_snapshot(tmp_path, 7, "stale snapshot")
+    sess = FakeSessions()
+    sess.alive.add(7)
+    sess.tails[7] = "live output"
+    _, src = make_sources(tmp_path, sessions=sess)
+    assert src.pane_tail(7) == "live output"
+
+
+def test_pane_tail_dead_and_no_snapshot_degrades_to_empty(tmp_path):
+    _, src = make_sources(tmp_path)
+    assert src.pane_tail(7) == ""
+
+
+def test_pane_history_falls_back_to_snapshot_when_dead(tmp_path):
+    _write_snapshot(tmp_path, 7, "l1\nl2\nl3")
+    _, src = make_sources(tmp_path)
+    assert src.pane_history(7) == "l1\nl2\nl3"
+
+
+def test_pane_tail_wedged_is_alive_degrades_to_empty(tmp_path):
+    class WedgedSessions(FakeSessions):
+        def is_alive(self, issue):
+            raise subprocess.TimeoutExpired(cmd="tmux", timeout=30)
+
+    _write_snapshot(tmp_path, 7, "snapshot")
+    _, src = make_sources(tmp_path, sessions=WedgedSessions())
+    assert src.pane_tail(7) == ""
+
+
+def test_pane_tail_corrupt_snapshot_degrades_to_empty(tmp_path):
+    """Snapshot truncated mid-UTF-8 (e.g. by dispatcher kill) raises
+    UnicodeDecodeError; must degrade to "" not 500 the task view."""
+    snap = tmp_path / "snapshots" / "task-7.txt"
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_bytes(b"\xff\xfe\xff")  # Invalid UTF-8 sequence
+    _, src = make_sources(tmp_path)
+    assert src.pane_tail(7) == ""
+
+
+def test_pane_history_corrupt_snapshot_degrades_to_empty(tmp_path):
+    """Same as pane_tail: corrupt snapshot with invalid UTF-8 degrades."""
+    snap = tmp_path / "snapshots" / "task-7.txt"
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_bytes(b"\x80\x81\x82")  # Invalid UTF-8 sequence
+    _, src = make_sources(tmp_path)
     assert src.pane_history(7) == ""

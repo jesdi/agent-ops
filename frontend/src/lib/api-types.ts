@@ -532,6 +532,8 @@ export interface components {
             model: string;
             /** Park */
             park: string;
+            /** Park Note */
+            park_note: string;
             /** Park Note Pending */
             park_note_pending: boolean;
             /** Slot */

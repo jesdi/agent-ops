@@ -265,3 +265,25 @@ def test_slot_less_state_round_trips(tmp_path):
                  park=PARK_REVIEW)
     save(tmp_path, ts)
     assert load(tmp_path, 77) == ts
+
+
+def test_park_note_roundtrips_and_defaults_empty(tmp_path):
+    t = TaskState(issue=9, target="alpha", stage=Stage.IMPLEMENT, slot=0,
+                  worktree="/w", branch="b", title="t",
+                  updated_at="2026-07-30T00:00:00+00:00")
+    assert t.park_note == ""
+    save(tmp_path, replace(t, park_note="need a decision"))
+    assert load(tmp_path, 9).park_note == "need a decision"
+
+
+def test_load_tolerates_state_files_without_park_note(tmp_path):
+    # Pre-feature task-<N>.json files have no park_note key.
+    t = TaskState(issue=9, target="alpha", stage=Stage.IMPLEMENT, slot=0,
+                  worktree="/w", branch="b", title="t",
+                  updated_at="2026-07-30T00:00:00+00:00")
+    save(tmp_path, t)
+    p = tmp_path / "task-9.json"
+    d = json.loads(p.read_text())
+    del d["park_note"]
+    p.write_text(json.dumps(d))
+    assert load(tmp_path, 9).park_note == ""

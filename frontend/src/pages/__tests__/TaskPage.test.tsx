@@ -67,7 +67,7 @@ it('reply POSTs the text and refetches pending intents — no optimistic state f
     expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),
   )
   await userEvent.type(screen.getByLabelText('Reply'), 'use staging')
-  await userEvent.click(screen.getByRole('button', { name: 'Send reply' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Send reply & wake' }))
   await waitFor(() => expect(posted).toEqual({ text: 'use staging' }))
   // AWKWARD: pending badge appears; the card still reads parked (server truth)
   await waitFor(() =>
@@ -163,7 +163,11 @@ it('an attached terminal does not carry over to the next task navigated to', asy
 it('a dead session explains itself on load and disables the attach button', async () => {
   server.use(
     http.get('/api/task/:issue', () =>
-      HttpResponse.json({ ...taskDetail, session_alive: false }),
+      HttpResponse.json({
+        ...taskDetail,
+        session_alive: false,
+        card: { ...taskDetail.card, park: '', park_note: '' },
+      }),
     ),
   )
   renderTask()
@@ -265,6 +269,53 @@ it('the unattached tail renders at the persisted terminal height', async () => {
   expect(tail.closest('[data-testid="terminal-pane-wrap"]')).toHaveStyle({
     height: '560px',
   })
+})
+
+it('a parked task shows the parked panel with the note, not the dead banner', async () => {
+  server.use(
+    http.get('/api/task/:issue', () =>
+      HttpResponse.json({
+        ...taskDetail,
+        session_alive: false,
+        pane_tail: 'snapshot line 1\nsnapshot line 2',
+      }),
+    ),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByTestId('parked-panel')).toBeInTheDocument(),
+  )
+  expect(screen.getByTestId('parked-panel').textContent).toContain(
+    'Should I use the staging redirect URL or prod?',
+  )
+  expect(screen.queryByText('session task-42 is not running')).not.toBeInTheDocument()
+  // the end-of-session snapshot is still shown in the scrollable pane
+  expect(screen.getByTestId('pane-tail').textContent).toContain('snapshot line 2')
+})
+
+it('the reply button says it wakes a parked task', async () => {
+  renderTask() // default fixture: parked
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Send reply & wake' }),
+    ).toBeInTheDocument(),
+  )
+})
+
+it('an unparked task keeps the plain reply label and no parked panel', async () => {
+  server.use(
+    http.get('/api/task/:issue', () =>
+      HttpResponse.json({
+        ...taskDetail,
+        card: { ...taskDetail.card, park: '', park_note: '' },
+      }),
+    ),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Send reply' })).toBeInTheDocument(),
+  )
+  expect(screen.queryByTestId('parked-panel')).not.toBeInTheDocument()
 })
 
 it('shows the attach fallback when the spec 404s', async () => {
