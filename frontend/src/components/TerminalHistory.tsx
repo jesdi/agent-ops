@@ -30,6 +30,7 @@ export function TerminalHistory({
     if (!atBottom) {
       armedRef.current = true
     } else if (armedRef.current) {
+      armedRef.current = false
       onClose()
     }
   }

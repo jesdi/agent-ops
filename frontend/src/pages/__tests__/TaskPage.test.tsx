@@ -344,6 +344,7 @@ it('links to claude.ai/code so mobile can use the Claude app instead of xterm', 
   const link = screen.getByRole('link', { name: 'Open in Claude ↗' })
   expect(link).toHaveAttribute('href', 'https://claude.ai/code')
   expect(link).toHaveAttribute('target', '_blank')
+  expect(link).toHaveAttribute('rel', 'noreferrer')
 })
 
 it('keeps the Open in Claude link when the session is dead', async () => {

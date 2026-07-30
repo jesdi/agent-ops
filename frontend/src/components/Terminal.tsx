@@ -1,12 +1,15 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as XTerm } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { TerminalHistory } from './TerminalHistory'
 import { usePersistedTerminalHeight } from '../hooks/usePersistedTerminalHeight'
 
 export function Terminal({ issue }: { issue: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
+  // Held in a ref so closeHistory can restore keyboard focus after the overlay
+  // closes without capturing a stale instance from the setup effect's closure.
+  const termRef = useRef<XTerm | null>(null)
   const [dead, setDead] = useState<{ tail: string } | null>(null)
   const { ref: paneWrapRef, height: terminalHeight } = usePersistedTerminalHeight()
   // A dropped *connection* is not a dead *session*: the tmux session may well
@@ -14,6 +17,14 @@ export function Terminal({ issue }: { issue: number }) {
   // 4401/4403 auth close). Tracked separately so the copy can say so.
   const [disconnected, setDisconnected] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
+
+  // Stable callback used by BOTH close paths (scroll auto-return and "Back to
+  // live" button). Restores keyboard focus so the user can type immediately
+  // without clicking the terminal first.
+  const closeHistory = useCallback(() => {
+    setShowHistory(false)
+    termRef.current?.focus()
+  }, [])
 
   useEffect(() => {
     setDead(null)
@@ -23,6 +34,7 @@ export function Terminal({ issue }: { issue: number }) {
     if (!el) return
 
     const term = new XTerm({ fontSize: 13, scrollback: 5000 })
+    termRef.current = term
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(el)
@@ -94,6 +106,7 @@ export function Terminal({ issue }: { issue: number }) {
 
     return () => {
       disposed = true
+      termRef.current = null
       observer.disconnect()
       dataSub.dispose()
       resizeSub.dispose()
@@ -136,7 +149,7 @@ export function Terminal({ issue }: { issue: number }) {
         <div className="absolute inset-0">
           <TerminalHistory
             issue={issue}
-            onClose={() => setShowHistory(false)}
+            onClose={closeHistory}
           />
         </div>
       )}

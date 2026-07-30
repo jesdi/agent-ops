@@ -1,7 +1,9 @@
 import { act, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 const write = vi.fn()
 const dispose = vi.fn()
+const focus = vi.fn()
 const onData = vi.fn((_cb: (d: string) => void) => ({ dispose: vi.fn() }))
 const attachCustomWheelEventHandler = vi.fn()
 vi.mock('@xterm/xterm', () => ({
@@ -13,6 +15,7 @@ vi.mock('@xterm/xterm', () => ({
       loadAddon: vi.fn(),
       open: vi.fn(),
       write,
+      focus,
       onData,
       onResize: vi.fn(() => ({ dispose: vi.fn() })),
       attachCustomWheelEventHandler,
@@ -26,8 +29,11 @@ vi.mock('@xterm/addon-fit', () => ({
 }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
 vi.mock('../TerminalHistory', () => ({
-  TerminalHistory: ({ issue }: { issue: number }) => (
-    <div data-testid="terminal-history" data-issue={issue} />
+  // Expose onClose so tests can trigger both close paths and verify focus.
+  TerminalHistory: ({ issue, onClose }: { issue: number; onClose: () => void }) => (
+    <div data-testid="terminal-history" data-issue={issue}>
+      <button data-testid="terminal-history-close" onClick={onClose}>close</button>
+    </div>
   ),
 }))
 
@@ -51,6 +57,7 @@ beforeEach(() => {
   FakeWebSocket.instances = []
   write.mockClear()
   dispose.mockClear()
+  focus.mockClear()
   onData.mockClear()
   attachCustomWheelEventHandler.mockClear()
   vi.stubGlobal('WebSocket', FakeWebSocket)
@@ -179,4 +186,26 @@ it('an upward wheel opens the history view', async () => {
   ) => boolean
   act(() => { handler({ deltaY: -120 } as WheelEvent) })
   expect(screen.getByTestId('terminal-history')).toBeInTheDocument()
+})
+
+it('closing the history overlay re-focuses the xterm terminal', async () => {
+  const { Terminal } = await import('../Terminal')
+  render(<Terminal issue={42} />)
+
+  // Open the history overlay via an upward wheel event.
+  const handler = attachCustomWheelEventHandler.mock.calls[0]![0] as (
+    e: WheelEvent,
+  ) => boolean
+  act(() => { handler({ deltaY: -120 } as WheelEvent) })
+  expect(screen.getByTestId('terminal-history')).toBeInTheDocument()
+
+  // Close via the button exposed by the TerminalHistory mock (covers both the
+  // "Back to live" button path and the scroll auto-return path since both call
+  // the same onClose callback).
+  await userEvent.click(screen.getByTestId('terminal-history-close'))
+  expect(screen.queryByTestId('terminal-history')).not.toBeInTheDocument()
+
+  // Keyboard focus must be returned to the xterm instance so the user can
+  // type immediately without having to click the terminal first.
+  expect(focus).toHaveBeenCalledTimes(1)
 })

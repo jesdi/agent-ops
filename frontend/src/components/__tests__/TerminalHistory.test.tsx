@@ -74,6 +74,30 @@ it('does not close from scroll events while still at the bottom', async () => {
   expect(onClose).not.toHaveBeenCalled()
 })
 
+it('onClose fires exactly once even if multiple scroll events hit the bottom after a single arm', async () => {
+  const onClose = vi.fn()
+  renderWithProviders(<TerminalHistory issue={42} onClose={onClose} />)
+  const pane = screen.getByTestId('terminal-history-pane')
+  makeScrollable(pane)
+
+  // arm the auto-return by scrolling up
+  pane.scrollTop = 300
+  fireEvent.scroll(pane)
+
+  // reach the bottom — fires onClose
+  pane.scrollTop = 796
+  fireEvent.scroll(pane)
+  expect(onClose).toHaveBeenCalledTimes(1)
+
+  // additional scroll events at the bottom (bounce, momentum, etc.) must NOT
+  // call onClose again — armedRef must have been cleared on the first fire
+  pane.scrollTop = 798
+  fireEvent.scroll(pane)
+  pane.scrollTop = 796
+  fireEvent.scroll(pane)
+  expect(onClose).toHaveBeenCalledTimes(1)
+})
+
 it('stays open while scrolled up reading history', async () => {
   const onClose = vi.fn()
   renderWithProviders(<TerminalHistory issue={42} onClose={onClose} />)
