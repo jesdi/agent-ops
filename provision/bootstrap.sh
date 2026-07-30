@@ -71,7 +71,7 @@ ufw allow in on tailscale0
 ufw allow 41641/udp   # tailscale
 ufw --force enable
 
-# --- zram swap (~2 GB): cushion for session RSS spikes / capacity-2 experiment
+# --- zram swap (~2 GB): cushion for session RSS spikes at capacity 2
 cat > /etc/systemd/zram-generator.conf <<'ZRAM'
 [zram0]
 zram-size = 2048
@@ -202,8 +202,9 @@ bootstrap done. Manual follow-ups (interactive, once):
   5. clone target repos into /home/agent/repos/ and fill the real project
      field/option IDs into /home/agent/agent-ops-state/targets.yaml
      (gh project field-list <n> --owner <owner> --format json)
-  6. start with capacity: 1 in ~/agent-ops-state/targets.yaml for the
-     single-lane rollout
+  6. for the initial single-lane rollout, temporarily set capacity: 1 in
+     ~/agent-ops-state/targets.yaml; restore the seeded capacity: 2 once
+     the park/resume and E2E drills pass
   7. tailscale serve --bg 8481
      # publishes the web console at https://<box>.<tailnet>.ts.net/
      # (modern serve syntax, Tailscale >= 1.56: HTTPS on 443 with a
