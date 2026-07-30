@@ -291,3 +291,56 @@ def test_spec_review_grace_minutes_is_read_from_yaml(tmp_path: Path):
     p.write_text("state_dir: /tmp/s\nspec_review_grace_minutes: 0\ntargets: []\n")
     # 0 is a real value (park immediately), not "unset" — it must survive.
     assert load_config(p).spec_review_grace_minutes == 0
+
+
+def write_yaml(tmp_path: Path, target_extra: dict | None = None, top_extra: dict | None = None) -> Path:
+    """Helper to write a minimal targets.yaml with optional target and top-level extras.
+
+    Returns the path to the written YAML file.
+    """
+    target_extra = target_extra or {}
+    top_extra = top_extra or {}
+
+    # Base target configuration
+    target = {
+        "name": "t",
+        "repo": "o/r",
+        "clone_path": "/c",
+        "worktrees_path": "/w",
+        "rank_cmd": "rank",
+        "setup_cmd": "setup",
+        "verify_cmd": "verify",
+        "project_number": 1,
+        "project_owner": "o",
+        "status_field_id": "F",
+        "status_ready_option_id": "R",
+        "status_in_progress_option_id": "I",
+    }
+    target.update(target_extra)
+
+    # Build YAML content
+    yaml_dict = {
+        "state_dir": "/tmp/state",
+        "targets": [target],
+    }
+    yaml_dict.update(top_extra)
+
+    # Convert dict to YAML-like text (simple approach)
+    import yaml
+    p = tmp_path / "targets.yaml"
+    p.write_text(yaml.dump(yaml_dict, default_flow_style=False))
+    return p
+
+
+def test_status_done_option_id_loaded_and_defaults_empty(tmp_path):
+    cfg = load_config(write_yaml(tmp_path, target_extra={
+        "status_done_option_id": "d0ne"}))
+    assert cfg.targets[0].status_done_option_id == "d0ne"
+    cfg = load_config(write_yaml(tmp_path))
+    assert cfg.targets[0].status_done_option_id == ""
+
+
+def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
+    cfg = load_config(write_yaml(tmp_path, top_extra={"done_retention_days": 3}))
+    assert cfg.done_retention_days == 3
+    assert load_config(write_yaml(tmp_path)).done_retention_days == 7

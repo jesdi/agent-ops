@@ -1,3 +1,4 @@
+import pytest
 import telegram.notify as notify
 from telegram.templates import render
 
@@ -124,3 +125,14 @@ def test_spec_parked_carries_the_console_deep_link_when_configured():
     msg = render("spec_parked", issue=42, title="t", url="u", note="n",
                  console="https://box.ts.net")
     assert "https://box.ts.net/task/42" in msg
+
+
+@pytest.mark.parametrize("template,frag", [
+    ("pr_feedback", "review feedback"),
+    ("pr_updated", "feedback addressed"),
+    ("task_done", "merged"),
+    ("pr_closed", "closed without merge"),
+])
+def test_pr_lifecycle_templates_render(template, frag):
+    text = render(template, issue=7, title="Add widget", url="u", note="n")
+    assert "#7" in text and "Add widget" in text and frag in text

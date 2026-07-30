@@ -4,7 +4,7 @@ import pytest
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                               PARK_REVIEW, PARK_WAKE, Stage)
 from tests.webfakes import make_task
-from web.read_model import build_board, column_for, task_card
+from web.read_model import COLUMNS, build_board, column_for, task_card
 
 STAGE_COLUMNS = {
     Stage.QUEUED: "queued",
@@ -13,6 +13,8 @@ STAGE_COLUMNS = {
     Stage.IMPLEMENT: "in-progress",
     Stage.AWAITING_SPEC_REVIEW: "needs-review",
     Stage.PR_OPEN: "pr-open",
+    Stage.ADDRESS_REVIEW: "in-progress",
+    Stage.DONE: "done",
     Stage.FAILED: "failed",
     Stage.BLOCKED: "failed",         # legacy stage: surfaced, not hidden
     Stage.STALLED_ON_BUDGET: "stalled",
@@ -97,8 +99,25 @@ def test_build_board_groups_and_counts():
 def test_board_column_order_is_stable():
     board = build_board([], capacity=2, models={}, attached=set())
     assert [c.key for c in board.columns] == [
-        "queued", "in-progress", "needs-review", "pr-open", "parked",
+        "queued", "in-progress", "needs-review", "pr-open", "done", "parked",
         "awaiting-ci", "resuming", "stalled", "failed"]
+
+
+def test_new_stage_columns():
+    assert column_for("address-review", "") == "in-progress"
+    assert column_for("done", "") == "done"
+
+
+def test_done_column_present_after_pr_review():
+    keys = [k for k, _ in COLUMNS]
+    assert keys.index("done") == keys.index("pr-open") + 1
+    titles = dict(COLUMNS)
+    assert titles["pr-open"] == "PR review" and titles["done"] == "Done"
+
+
+def test_task_card_carries_feedback_pending():
+    t = make_task(stage=Stage.PR_OPEN, feedback_pending=True)
+    assert task_card(t, model="", attached=False).feedback_pending is True
 
 
 def test_review_park_shows_in_the_needs_review_column():

@@ -376,3 +376,63 @@ def test_seed_claude_state_survives_missing_or_corrupt_file(tmp_path: Path,
     workspace._seed_claude_state("/wt/b")           # unreadable → start fresh
     assert json.loads(p.read_text())["projects"]["/wt/b"][
         "hasTrustDialogAccepted"] is True
+
+
+# ---------------------------------------------------------------------------
+# remove_workspace tests
+# ---------------------------------------------------------------------------
+
+def _make_real_worktree_in_clone(tmp_path: Path, issue_num: int):
+    """Build a real git repo at target.clone_path and add a worktree for
+    agent/task-{issue_num}, returning (target, wt_path_str).  Matches the
+    pattern of _make_healthy_worktree but roots the base repo at
+    target.clone_path so git worktree commands run there correctly."""
+    import subprocess as sp
+    t = target(tmp_path)
+    clone = Path(t.clone_path)
+    clone.mkdir(parents=True, exist_ok=True)
+    sp.run(["git", "init", "-q", str(clone)], check=True)
+    sp.run(["git", "-C", str(clone), "config", "user.email", "t@example.com"],
+           check=True)
+    sp.run(["git", "-C", str(clone), "config", "user.name", "test"], check=True)
+    (clone / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(clone), "add", "README.md"], check=True)
+    sp.run(["git", "-c", "commit.gpgsign=false", "-C", str(clone), "commit",
+            "-q", "-m", "init"], check=True)
+    wt_path = Path(t.worktrees_path) / f"task-{issue_num}"
+    wt_path.parent.mkdir(parents=True, exist_ok=True)
+    branch = f"agent/task-{issue_num}"
+    sp.run(["git", "-C", str(clone), "worktree", "add", "-q", "-b", branch,
+            str(wt_path)], check=True)
+    return t, str(wt_path)
+
+
+def test_remove_workspace_removes_worktree_and_local_branch(tmp_path: Path):
+    t, wt = _make_real_worktree_in_clone(tmp_path, 55)
+    assert Path(wt).exists()
+    workspace.remove_workspace(t, wt, "agent/task-55")
+    assert not Path(wt).exists()
+    branches = subprocess.run(
+        ["git", "branch", "--list", "agent/task-55"],
+        cwd=t.clone_path, capture_output=True, text=True).stdout
+    assert branches.strip() == ""
+
+
+def test_remove_workspace_dry_run_deletes_nothing(tmp_path: Path):
+    """--dry-run must not destroy anything: the real git commands here are
+    the only side effect of a merged-task teardown that isn't already
+    no-opped by GitHubClient/Sessions under dry_run."""
+    t, wt = _make_real_worktree_in_clone(tmp_path, 57)
+    workspace.remove_workspace(t, wt, "agent/task-57", dry_run=True)
+    assert Path(wt).exists()
+    branches = subprocess.run(
+        ["git", "branch", "--list", "agent/task-57"],
+        cwd=t.clone_path, capture_output=True, text=True).stdout
+    assert branches.strip() != ""
+
+
+def test_remove_workspace_survives_already_gone(tmp_path: Path):
+    t = target(tmp_path)
+    # clone_path doesn't exist; nope/ doesn't exist; branch never created —
+    # remove_workspace must swallow all errors and return normally.
+    workspace.remove_workspace(t, str(tmp_path / "nope"), "agent/task-56")

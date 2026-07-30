@@ -8,12 +8,12 @@ import { BoardPage } from '../BoardPage'
 
 beforeEach(() => server.use(...defaultHandlers))
 
-it('renders all nine columns with cards and capacity', async () => {
+it('renders all ten columns with cards and capacity', async () => {
   renderWithProviders(<BoardPage />)
   await waitFor(() =>
     expect(screen.getByTestId('column-parked')).toBeInTheDocument(),
   )
-  expect(screen.getAllByTestId(/^column-/)).toHaveLength(9)
+  expect(screen.getAllByTestId(/^column-/)).toHaveLength(10)
   expect(screen.getByText('Fix login redirect')).toBeInTheDocument()
   expect(screen.getByText('Add CSV export')).toBeInTheDocument()
   expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()

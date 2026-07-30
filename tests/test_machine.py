@@ -316,3 +316,23 @@ def test_grace_does_not_park_a_task_still_in_the_spec_stage():
                         session_alive=True, grace_elapsed=True)
     assert SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact="") in acts
     assert not any(isinstance(a, ParkForReview) for a in acts)
+
+
+def test_address_review_done_returns_to_pr_open():
+    acts = next_actions(task(Stage.ADDRESS_REVIEW), StageSignal("address-review", "done", note="fixed nits"), True)
+    assert acts == [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", "fixed nits")]
+
+
+def test_address_review_awaiting_ci_parks():
+    acts = next_actions(task(Stage.ADDRESS_REVIEW), sig("address-review", "awaiting-ci", run_id=99), True)
+    assert acts == [ParkForCI(99)]
+
+
+def test_address_review_blocked_parks_for_input():
+    acts = next_actions(task(Stage.ADDRESS_REVIEW), StageSignal("address-review", "blocked", note="need key"), True)
+    assert acts == [ParkForInput("need key")]
+
+
+def test_address_review_dead_session_is_crash():
+    acts = next_actions(task(Stage.ADDRESS_REVIEW), None, False)
+    assert acts == [HandleCrash()]

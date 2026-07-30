@@ -7,7 +7,7 @@ export const parkedCard: TaskCard = {
   issue: 42, target: 'jesdi/widget', title: 'Fix login redirect',
   stage: 'implement', park: 'question', column: 'parked', slot: 1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
-  park_note: 'Should I use the staging redirect URL or prod?',
+  park_note: 'Should I use the staging redirect URL or prod?', feedback_pending: false,
   updated_at: '2026-07-25T10:00:00Z', attached: false,
 }
 
@@ -16,7 +16,7 @@ export const reviewCard: TaskCard = {
   stage: 'awaiting-spec-review', park: 'awaiting-review', column: 'needs-review',
   slot: -1,
   branch: 'feat/search', model: 'opus', park_note_pending: false,
-  park_note: 'spec ready for review',
+  park_note: 'spec ready for review', feedback_pending: false,
   updated_at: '2026-07-25T09:00:00Z', attached: false,
 }
 
@@ -24,7 +24,7 @@ export const inProgressCard: TaskCard = {
   issue: 41, target: 'jesdi/widget', title: 'Add CSV export',
   stage: 'implement', park: '', column: 'in-progress', slot: 2,
   branch: 'feat/csv-export', model: 'opus', park_note_pending: false,
-  park_note: '',
+  park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T11:30:00Z', attached: false,
 }
 
@@ -33,12 +33,13 @@ export const board: BoardView = {
     { key: 'queued', title: 'Queued', cards: [] },
     { key: 'in-progress', title: 'In progress', cards: [inProgressCard] },
     { key: 'needs-review', title: 'Needs review', cards: [] },
+    { key: 'pr-open', title: 'PR review', cards: [] },
+    { key: 'done', title: 'Done', cards: [] },
     { key: 'parked', title: 'Parked', cards: [parkedCard] },
     { key: 'awaiting-ci', title: 'Awaiting CI', cards: [] },
     { key: 'resuming', title: 'Resuming', cards: [] },
     { key: 'stalled', title: 'Stalled', cards: [] },
     { key: 'failed', title: 'Failed', cards: [] },
-    { key: 'pr-open', title: 'PR open', cards: [] },
   ],
   capacity: { active: 2, capacity: 3, slots_used: 2, max_slots: 3 },
 }
