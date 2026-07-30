@@ -335,3 +335,34 @@ it('shows the attach fallback when the spec 404s', async () => {
     'mosh agent-vps -- tmux attach -t task-42',
   )
 })
+
+it('links to claude.ai/code so mobile can use the Claude app instead of xterm', async () => {
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),
+  )
+  const link = screen.getByRole('link', { name: 'Open in Claude ↗' })
+  expect(link).toHaveAttribute('href', 'https://claude.ai/code')
+  expect(link).toHaveAttribute('target', '_blank')
+})
+
+it('keeps the Open in Claude link when the session is dead', async () => {
+  server.use(
+    http.get('/api/task/:issue', () =>
+      HttpResponse.json({
+        ...taskDetail,
+        session_alive: false,
+        card: { ...taskDetail.card, park: '', park_note: '' },
+      }),
+    ),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByText('session task-42 is not running')).toBeInTheDocument(),
+  )
+  // the conversation remains readable on claude.ai/code even when the tmux
+  // session is gone, so the link must not disappear with session_alive
+  expect(
+    screen.getByRole('link', { name: 'Open in Claude ↗' }),
+  ).toHaveAttribute('href', 'https://claude.ai/code')
+})
