@@ -344,3 +344,16 @@ def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
     cfg = load_config(write_yaml(tmp_path, top_extra={"done_retention_days": 3}))
     assert cfg.done_retention_days == 3
     assert load_config(write_yaml(tmp_path)).done_retention_days == 7
+
+
+def test_triage_model_defaults_empty(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    assert load_config(p).triage_model == ""
+
+
+def test_triage_model_loaded(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(
+        "state_dir: /tmp/s\ntriage_model: claude-opus-4-8\ntargets: []\n")
+    assert load_config(p).triage_model == "claude-opus-4-8"
