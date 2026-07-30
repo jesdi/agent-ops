@@ -1,5 +1,8 @@
 [Unit]
 Description=agent-ops waitd (stop-hook ping -> Telegram)
+# Serves $AGENT_OPS_STATE_DIR/wait/wait.sock — the wait dir is what session
+# containers bind-mount so their Stop hooks can reach it. (Comment doubles
+# as a unit-file change so update.sh restarts waitd onto the new path.)
 After=network-online.target
 
 [Service]

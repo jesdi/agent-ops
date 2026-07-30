@@ -27,6 +27,14 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 claude_args: str) -> str:
     clone = clone_root(worktree)
     home = str(Path.home())
+    # podman errors on a missing bind source; waitd only creates the dir
+    # when it (re)starts with the new socket path, which a spawn can race
+    # right after deploy. Best-effort: if the dir really can't exist,
+    # podman fails loudly on the mount anyway.
+    try:
+        Path(_state_dir(), "wait").mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     return (
         f"podman run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
@@ -36,6 +44,13 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         # wizard with nobody attached. CLAUDE_CONFIG_DIR moves all of it
         # inside the mounted claude-home.
         f"-e CLAUDE_CONFIG_DIR=/root/.claude "
+        # The Stop hook fires inside the container and resolves waitd's
+        # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its
+        # curl dies against a nonexistent path and the `|| true` swallows
+        # it, so waiting parks only ever happened via the stall timer.
+        # Mount only the wait dir: the state dir also holds op-token.env.
+        f"-e AGENT_OPS_STATE_DIR={_state_dir()} "
+        f"-v {_state_dir()}/wait:{_state_dir()}/wait "
         f"-v {worktree}:{worktree} -w {worktree} "
         f"-v {clone}:{clone} "
         f"-v {_state_dir()}/claude-home:/root/.claude "
