@@ -8,7 +8,7 @@ CTX = dict(
     repo="jesdi/portfolio_eval", branch="agent/task-42", slot=1,
     backend_port=8101, frontend_port=5201,
     verify_cmd="make e2e-slot SLOT=1",
-    spec_path="docs/superpowers/specs/2026-07-14-widget-design.md",
+    spec_path="docs/specs/2026-07-14-widget-design.md",
 )
 
 

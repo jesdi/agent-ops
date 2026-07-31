@@ -6,7 +6,7 @@ Your worktree is already set up on branch $branch. Work only inside it.
    `gh issue view $issue_number --repo $repo --comments`.
 2. Use this repo's brainstorming/SDD skill to develop a design spec. Follow
    the repo's conventions. Write the draft to
-   `docs/superpowers/specs/<today>-<topic>-design.md`.
+   `docs/specs/<today>-<topic>-design.md`.
    If a draft for this issue already exists (committed on $branch, or
    uncommitted in the worktree — e.g. this session was restarted), read it
    and resume from it instead of starting over.
