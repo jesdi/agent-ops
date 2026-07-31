@@ -126,9 +126,10 @@ if [ -f "$HOST_CREDS" ] \
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
-except (OSError, json.JSONDecodeError):
-    sys.exit(1)
-sys.exit(0 if d.get("claudeAiOauth", {}).get("accessToken") else 1)
+    ok = isinstance(d, dict) and bool(d.get("claudeAiOauth", {}).get("accessToken"))
+except Exception:
+    ok = False
+sys.exit(0 if ok else 1)
 PY
 then
   mkdir -p "$STATE_DIR/claude-home"

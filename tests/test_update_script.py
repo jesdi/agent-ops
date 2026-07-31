@@ -97,6 +97,11 @@ def box(tmp_path):
         AGENT_OPS_PODMAN=str(podman),
         AGENT_OPS_PNPM=str(pnpm),
         AGENT_OPS_CLAUDE=str(claude),
+        # Point the creds-convergence step at a non-existent path so
+        # pre-existing tests are a clean no-op regardless of the developer's
+        # real ~/.claude store. Tests that need a host file override this via
+        # _creds_setup or by setting box.env["AGENT_OPS_HOST_CREDS"] directly.
+        AGENT_OPS_HOST_CREDS=str(tmp_path / "nohost" / ".credentials.json"),
     )
     return SimpleNamespace(origin=origin, repo=repo, state=state,
                            units=units, calls=calls, env=env)
@@ -466,3 +471,33 @@ def test_missing_host_creds_is_a_noop(box, tmp_path):
     box.env["AGENT_OPS_HOST_CREDS"] = str(tmp_path / "nope" / "creds.json")
     r = run_update(box)
     assert r.returncode == 0, r.stderr  # must not fail under set -e
+
+
+def test_array_host_creds_never_copied_and_no_traceback(box, tmp_path):
+    # A valid JSON non-dict (e.g. []) must be silently skipped — no copy, no
+    # Python traceback noise in the updater log (AttributeError from .get()).
+    _, ch = _creds_setup(box, tmp_path, "[]", host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-stale" in ch.read_text()
+    assert "Traceback" not in r.stderr
+    assert "AttributeError" not in r.stderr
+
+
+def test_first_ever_convergence_creates_dir_and_sets_mode(box, tmp_path):
+    # claude-home/.credentials.json does not yet exist (and its parent dir may
+    # not exist either). A valid, newer host file must be copied in and land
+    # with mode 0600, exercising the `mkdir -p` and the `[ ! -f "$CH_CREDS" ]`
+    # branch.
+    host = tmp_path / "hostclaude" / ".credentials.json"
+    host.parent.mkdir(parents=True, exist_ok=True)
+    host.write_text(VALID_CREDS)
+    # Do NOT pre-create claude-home or the credentials file.
+    ch = box.state / "claude-home" / ".credentials.json"
+    assert not ch.exists(), "precondition: ch must not exist before the run"
+    box.env["AGENT_OPS_HOST_CREDS"] = str(host)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert ch.exists(), "claude-home/.credentials.json was not created"
+    assert "sk-live" in ch.read_text()
+    assert (ch.stat().st_mode & 0o777) == 0o600
