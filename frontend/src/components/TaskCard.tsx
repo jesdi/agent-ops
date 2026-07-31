@@ -17,7 +17,7 @@ export function TaskCardView({ card, pendingActions, accent = 'blue' }: {
       to={`/task/${card.issue}`}
       data-testid={`card-${card.issue}`}
       className={`block rounded border border-gray-200 bg-white p-3 shadow-sm hover:border-gray-400 border-l-4 ${
-        card.consuming_capacity ? ACCENT_BORDER[accent] : 'border-l-transparent'
+        card.consuming_capacity ? ACCENT_BORDER[accent] : 'border-l-transparent hover:border-l-transparent'
       }`}
     >
       {/* Colour is never the only signal — and this must not be an aria-label

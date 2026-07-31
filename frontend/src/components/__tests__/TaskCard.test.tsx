@@ -61,11 +61,15 @@ it('accent: consuming card gets blue border classes by default', () => {
   expect(screen.getByTestId('card-41')).toHaveClass('border-l-4', 'border-l-blue-500')
 })
 
-it('accent: non-consuming card has no accent colour (transparent left border)', () => {
+it('accent: non-consuming card has no accent colour (transparent left border, pinned on hover)', () => {
   renderCard({ ...parkedCard, consuming_capacity: false })
   expect(screen.getByTestId('card-42')).not.toHaveClass('border-l-blue-500')
   expect(screen.getByTestId('card-42')).not.toHaveClass('border-l-amber-500')
+  // hover:border-l-transparent must be present to pin the left border against
+  // hover:border-gray-400 (shorthand), which would otherwise expand to
+  // border-left-color and override the transparent baseline on hover.
   expect(screen.getByTestId('card-42')).toHaveClass('border-l-transparent')
+  expect(screen.getByTestId('card-42')).toHaveClass('hover:border-l-transparent')
 })
 
 it('accent: amber accent is applied when passed explicitly', () => {
