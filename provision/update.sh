@@ -143,7 +143,16 @@ sys.exit(0 if ok else 1)
 PY
 then
   mkdir -p "$STATE_DIR/claude-home"
-  install -m 600 "$HOST_CREDS" "$CH_CREDS"
+  # Temp-then-rename on the same filesystem (same pattern as
+  # claude-home-sync.sh): the dispatcher, the keepalive and every session
+  # container may be reading this file right now, and an in-place copy lets
+  # a reader observe it truncated. `install -m 600` creates the temp with
+  # the final mode, so the rename publishes a complete 600 file atomically.
+  # A temp left behind by a failed install is harmless — the next pass
+  # overwrites it — and `rm -f` clears it on the way out either way.
+  install -m 600 "$HOST_CREDS" "$CH_CREDS.tmp" \
+    && mv -f "$CH_CREDS.tmp" "$CH_CREDS"
+  rm -f "$CH_CREDS.tmp"
   echo "agent-ops update: converged fresher host credentials into claude-home"
 fi
 

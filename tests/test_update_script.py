@@ -491,6 +491,17 @@ def test_newer_valid_host_creds_converge_into_claude_home(box, tmp_path):
     assert (ch.stat().st_mode & 0o777) == 0o600
 
 
+def test_convergence_is_atomic_and_leaves_no_temp_file(box, tmp_path):
+    # Readers (dispatcher, keepalive, session containers) must never see a
+    # truncated credentials file, so the copy lands via temp-then-rename —
+    # and the temp must not survive the pass.
+    _, ch = _creds_setup(box, tmp_path, VALID_CREDS, host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-live" in ch.read_text()
+    assert not Path(str(ch) + ".tmp").exists()
+
+
 def test_older_host_creds_left_alone(box, tmp_path):
     _, ch = _creds_setup(box, tmp_path, VALID_CREDS, host_newer=False)
     r = run_update(box)
