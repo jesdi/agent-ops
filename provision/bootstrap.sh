@@ -117,6 +117,16 @@ fi
 type as_agent >/dev/null 2>&1 || as_agent() { "$@"; }
 PROFILE_LINE='export CLAUDE_CONFIG_DIR="$HOME/agent-ops-state/claude-home"'
 as_agent touch "$AGENT_HOME/.profile"
+# Terminate an unterminated last line first. Appending to a .profile whose
+# last byte is not a newline would join the export onto the previous line —
+# corrupting both, and leaving `grep -qxF` (whole-line match) unable to see
+# it, so EVERY re-run would append again and the file would grow without
+# bound. Ubuntu's skel .profile ends in a newline, but the guard is cheap
+# and idempotence is documented.
+if [ -s "$AGENT_HOME/.profile" ] \
+   && [ -n "$(tail -c 1 "$AGENT_HOME/.profile")" ]; then
+  printf '\n' | as_agent tee -a "$AGENT_HOME/.profile" >/dev/null
+fi
 grep -qxF "$PROFILE_LINE" "$AGENT_HOME/.profile" \
   || printf '%s\n' "$PROFILE_LINE" | as_agent tee -a "$AGENT_HOME/.profile" >/dev/null
 # <<< agent-ops claude-config <<<

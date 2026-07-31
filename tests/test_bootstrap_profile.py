@@ -32,3 +32,21 @@ def test_profile_export_is_added_once_across_reruns(tmp_path):
     profile = (tmp_path / ".profile").read_text()
     line = 'export CLAUDE_CONFIG_DIR="$HOME/agent-ops-state/claude-home"'
     assert profile.count(line) == 1
+
+
+def test_profile_without_trailing_newline_is_not_corrupted(tmp_path):
+    """A .profile whose last byte is not a newline would swallow the export
+    onto the previous line: the joined line breaks the pre-existing command
+    AND defeats grep -qxF's whole-line match, so every re-run appends again."""
+    snippet = _snippet()
+    (tmp_path / ".profile").write_text('umask 022\nexport PATH="$HOME/bin:$PATH"')
+    _run(snippet, tmp_path)
+    _run(snippet, tmp_path)  # idempotent even on the unterminated file
+    profile = (tmp_path / ".profile").read_text()
+    line = 'export CLAUDE_CONFIG_DIR="$HOME/agent-ops-state/claude-home"'
+    assert profile.count(line) == 1
+    # On its own line, and the pre-existing content survived intact.
+    lines = profile.splitlines()
+    assert line in lines
+    assert 'umask 022' in lines
+    assert 'export PATH="$HOME/bin:$PATH"' in lines
