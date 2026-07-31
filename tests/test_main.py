@@ -2940,6 +2940,35 @@ def test_budget_full_with_live_source_never_touches_auth_dark(
     assert "auth_dark" not in d.notifier.sent
 
 
+def test_unavailable_usage_sends_no_budget_stall(tmp_path, monkeypatch):
+    """An auth outage fail-safes to no-spawns, but it is not a budget stall:
+    "usage window exhausted; stalled until reset" would send the operator to
+    wait out an outage only a re-login ends, 30 minutes before the accurate
+    auth_dark alert. auth-dark owns the unavailable case."""
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)
+    main.run_pass(c, d)
+    assert "budget_stall" not in d.notifier.sent
+    assert not (Path(c.state_dir) / "budget-stalled").exists()
+
+
+def test_full_window_with_readable_usage_still_sends_budget_stall(
+        tmp_path, monkeypatch):
+    """Guard on the other side of the suppression: a genuinely exhausted
+    window with a live source keeps its stall ping (and its resume)."""
+    patch_usage(monkeypatch, util=0.95)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_stall") == 1
+    assert (Path(c.state_dir) / "budget-stalled").exists()
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_resume") == 1
+
+
 def test_auth_dark_corrupt_marker_is_repaired(tmp_path, monkeypatch):
     """Non-JSON marker must not crash the pass; it is reset to fresh state."""
     patch_usage_dark(monkeypatch)

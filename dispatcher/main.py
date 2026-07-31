@@ -341,8 +341,18 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     return task
 
 
-def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str) -> None:
-    """Edge-triggered stall/resume pings via a marker file."""
+def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str,
+                 usage: UsageSnapshot) -> None:
+    """Edge-triggered stall/resume pings via a marker file.
+
+    Unknowable usage also fail-safes to `budget_ok=False`, but it is not a
+    budget stall: there is no window and nothing will reset, so the
+    "stalled until reset" ping would send an operator off to wait out an
+    outage that only a re-login ends — 30 minutes before the accurate
+    auth_dark alert. _auth_dark_edge owns that case; stay silent for it and
+    leave every readable-usage case exactly as it was."""
+    if usage.source == "unavailable":
+        return
     marker = Path(cfg.state_dir) / "budget-stalled"
     marker.parent.mkdir(parents=True, exist_ok=True)
     if not budget_ok and not marker.exists():
@@ -1113,7 +1123,8 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
                              cfg.racing_minutes, cfg.racing_threshold)
     _budget_edge(cfg, deps, budget_ok,
                  note=f"{usage.source}: {usage.utilization:.0%}, "
-                      f"reset in {usage.minutes_to_reset:.0f}m")
+                      f"reset in {usage.minutes_to_reset:.0f}m",
+                 usage=usage)
     _auth_dark_edge(cfg, deps, usage)
     for target in eff.targets:
         for task in [t for t in load_all(cfg.state_dir)
