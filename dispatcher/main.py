@@ -9,6 +9,7 @@ import argparse
 import json
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher.budget import fetch_usage, should_spawn
+from dispatcher.budget import UsageSnapshot, fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher import eventlog, failures, intents, pr_poll, queue_ops, relogin, triage
@@ -352,6 +353,39 @@ def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str) -> None:
         marker.unlink()
         deps.notifier.send("budget_resume", issue=0, title="(all tasks)",
                            url="", note=note)
+
+
+AUTH_DARK_GRACE_MINUTES = 30
+
+
+def _auth_dark_edge(cfg: Config, deps: Deps, usage: UsageSnapshot) -> None:
+    """One alert per unknowable-usage incident (auth likely dead).
+
+    Companion to _budget_edge: budget_stall covers "window full, will
+    reset on its own"; this covers "we cannot even tell", which
+    fail-safes every spawn indefinitely and therefore needs a human.
+    30-minute grace absorbs transient API blips."""
+    marker = Path(cfg.state_dir) / "auth-dark"
+    if usage.source != "unavailable":
+        if marker.exists():
+            marker.unlink()
+        return
+    if not marker.exists():
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"since": _now(), "alerted": False}))
+        return
+    try:
+        st = json.loads(marker.read_text())
+    except (json.JSONDecodeError, KeyError):
+        st = {"since": _now(), "alerted": False}
+    if st.get("alerted"):
+        return
+    age_min = (datetime.now(timezone.utc)
+               - datetime.fromisoformat(st["since"])).total_seconds() / 60
+    if age_min >= AUTH_DARK_GRACE_MINUTES:
+        deps.notifier.send("auth_dark", minutes=int(age_min),
+                           host=socket.gethostname())
+        marker.write_text(json.dumps({"since": st["since"], "alerted": True}))
 
 
 def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -1080,6 +1114,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _budget_edge(cfg, deps, budget_ok,
                  note=f"{usage.source}: {usage.utilization:.0%}, "
                       f"reset in {usage.minutes_to_reset:.0f}m")
+    _auth_dark_edge(cfg, deps, usage)
     for target in eff.targets:
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park

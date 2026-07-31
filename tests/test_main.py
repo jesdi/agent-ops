@@ -2863,3 +2863,63 @@ def test_dry_run_leaves_the_real_state_dir_alone_entirely(
     before = snapshot()
     main.run_pass(c, deps(gh), dry_run=True)
     assert snapshot() == before
+
+
+# ---------------------------------------------------------------------------
+# auth-dark edge tests (Task 3)
+# ---------------------------------------------------------------------------
+
+def patch_usage_dark(monkeypatch):
+    monkeypatch.setattr(
+        main, "fetch_usage",
+        lambda state_dir: UsageSnapshot(0.0, 0.0, "unavailable"))
+
+
+def _dark_marker(c):
+    return Path(c.state_dir) / "auth-dark"
+
+
+def test_auth_dark_first_pass_marks_but_does_not_alert(tmp_path, monkeypatch):
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)
+    st = json.loads(_dark_marker(c).read_text())
+    assert st["alerted"] is False
+    assert "auth_dark" not in d.notifier.sent
+
+
+def test_auth_dark_alerts_once_after_grace(tmp_path, monkeypatch):
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)                       # creates the marker
+    old = (datetime.now(timezone.utc)
+           - timedelta(minutes=main.AUTH_DARK_GRACE_MINUTES + 1)).isoformat()
+    _dark_marker(c).write_text(json.dumps({"since": old, "alerted": False}))
+    main.run_pass(c, d)                       # past grace -> alert
+    main.run_pass(c, d)                       # already alerted -> silent
+    assert d.notifier.sent.count("auth_dark") == 1
+    assert json.loads(_dark_marker(c).read_text())["alerted"] is True
+
+
+def test_auth_dark_clears_on_recovery(tmp_path, monkeypatch):
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    patch_usage_dark(monkeypatch)
+    main.run_pass(c, d)
+    assert _dark_marker(c).exists()
+    patch_usage(monkeypatch, util=0.2)        # usage readable again
+    main.run_pass(c, d)
+    assert not _dark_marker(c).exists()
+    assert "auth_dark" not in d.notifier.sent
+
+
+def test_budget_full_with_live_source_never_touches_auth_dark(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch, util=0.95)       # full window, oauth source
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)
+    assert not _dark_marker(c).exists()
+    assert "auth_dark" not in d.notifier.sent
