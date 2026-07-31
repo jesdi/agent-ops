@@ -108,6 +108,16 @@ if [ -n "$changed" ]; then
     # verbatim): the next timer firing will see old==new for those units and
     # skip them, so a co-changed service may run stale code for one deploy
     # cycle until its own file changes again.  No units are filtered here.
+    #
+    # Template units (`foo@.service`) are the one exception, and only in this
+    # RESTART loop — they are still copied above and picked up by the
+    # daemon-reload. systemd rejects `try-restart foo@.service` ("missing the
+    # instance name") with a non-zero exit, which under `set -euo pipefail`
+    # would abort the pass. The glob sorts agent-ops-alert@.service first, so
+    # the deploy pass would die before the keepalive timer restart, the
+    # credential convergence and claude-home sync — silently, since the
+    # updater unit has no OnFailure of its own.
+    case "$unit" in *@.service) continue ;; esac
     $SYSTEMCTL try-restart "$unit"
   done
 fi

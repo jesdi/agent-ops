@@ -31,6 +31,13 @@ def box(tmp_path):
     git(origin, "config", "user.name", "t")
     (origin / "pyproject.toml").write_text("[project]\nname = 'agent-ops'\n")
     (origin / "provision").mkdir()
+    # The real units ship in the fake origin so the sync loop sees what the
+    # box sees — notably the `agent-ops-alert@.service` TEMPLATE unit, which
+    # systemd cannot try-restart without an instance name. Two of them are
+    # then replaced by cheap stubs the change/drift tests mutate by hand.
+    prov_repo = Path(__file__).resolve().parent.parent / "provision"
+    for real in sorted(prov_repo.glob("agent-ops-*")):
+        (origin / "provision" / real.name).write_text(real.read_text())
     (origin / "provision" / "agent-ops-waitd.service").write_text(
         "[Unit]\nDescription=waitd v1\n")
     (origin / "provision" / "agent-ops-dispatcher.timer").write_text(
@@ -47,7 +54,21 @@ def box(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     sysctl = bin_dir / "systemctl"
-    sysctl.write_text(f'#!/bin/sh\necho "systemctl $@" >> "{calls}"\n')
+    # Mimics real systemd: `try-restart` on a template unit with no instance
+    # is rejected ("missing the instance name") with a non-zero exit, which
+    # under `set -euo pipefail` would abort the whole update pass.
+    sysctl.write_text(
+        f'#!/bin/sh\n'
+        f'echo "systemctl $*" >> "{calls}"\n'
+        f'case " $* " in\n'
+        f'  *" try-restart "*)\n'
+        f'    case "$*" in\n'
+        f'      *@.service*)\n'
+        f'        echo "Unit name is missing the instance name." >&2\n'
+        f'        exit 1 ;;\n'
+        f'    esac ;;\n'
+        f'esac\n'
+        f'exit 0\n')
     sysctl.chmod(0o755)
     venv_bin = repo / ".venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -160,6 +181,32 @@ def test_unit_change_syncs_and_restarts_only_changed_unit(box):
     assert "systemctl --user daemon-reload" in log
     assert "try-restart agent-ops-waitd.service" in log
     assert "agent-ops-dispatcher.timer" not in log
+
+
+def test_template_unit_change_syncs_without_aborting_the_pass(box):
+    # `systemctl try-restart agent-ops-alert@.service` is rejected by systemd
+    # (no instance name) and, under `set -euo pipefail`, would kill the pass —
+    # on the very pass that deploys the template unit, before the keepalive
+    # timer restart, credential convergence and claude-home sync. The template
+    # must still be copied and daemon-reloaded, just never try-restarted.
+    tmpl = "agent-ops-alert@.service"
+    assert (box.origin / "provision" / tmpl).exists(), "fixture must ship it"
+    (box.origin / "provision" / tmpl).write_text(
+        "[Unit]\nDescription=alert v2 for %i\n")
+    (box.origin / "provision" / "agent-ops-waitd.service").write_text(
+        "[Unit]\nDescription=waitd v2\n")
+    commit_all(box.origin, "template + regular unit change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    # Copied and daemon-reloaded...
+    assert "alert v2" in (box.units / tmpl).read_text()
+    log = calls(box)
+    assert "systemctl --user daemon-reload" in log
+    # ...but never try-restarted...
+    assert f"try-restart {tmpl}" not in log
+    # ...and everything downstream of the restart loop still ran.
+    assert "try-restart agent-ops-waitd.service" in log
+    assert (box.state / "claude-home" / "CLAUDE.md").exists()
 
 
 def test_unit_drift_heals_without_new_commits(box):
