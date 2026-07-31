@@ -25,6 +25,8 @@ export function BoardPage() {
   for (const i of intentsQuery.data?.intents ?? []) {
     pendingByIssue.set(i.issue, [...(pendingByIssue.get(i.issue) ?? []), i.action])
   }
+  // Computed once so every column and every accented card agree on the colour.
+  const accent = capacityAccent(capacity)
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -51,7 +53,7 @@ export function BoardPage() {
             pendingByIssue={pendingByIssue}
             collapsed={collapsedColumns[column.key] ?? false}
             onToggle={() => toggleColumn(column.key)}
-            accent={capacityAccent(capacity)}
+            accent={accent}
           />
         ))}
       </div>

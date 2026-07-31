@@ -51,3 +51,26 @@ it('AWKWARD: a login-parked card is marked — parked, yet still consuming', () 
   expect(screen.getByText('parked: parked-login')).toBeInTheDocument()
   expect(screen.getByText('holding a capacity unit')).toBeInTheDocument()
 })
+
+// The accent border is purely visual with no accessible surface of its own;
+// its text counterpart ('holding a capacity unit') is asserted separately above.
+// These class assertions exist specifically to catch a regressed ACCENT_BORDER
+// application — the sr-only span is gated independently and would pass without it.
+it('accent: consuming card gets blue border classes by default', () => {
+  renderCard({ ...inProgressCard, consuming_capacity: true })
+  expect(screen.getByTestId('card-41')).toHaveClass('border-l-4', 'border-l-blue-500')
+})
+
+it('accent: non-consuming card has no accent border', () => {
+  renderCard({ ...parkedCard, consuming_capacity: false })
+  expect(screen.getByTestId('card-42')).not.toHaveClass('border-l-4')
+})
+
+it('accent: amber accent is applied when passed explicitly', () => {
+  render(
+    <MemoryRouter>
+      <TaskCardView card={{ ...inProgressCard, consuming_capacity: true }} accent="amber" />
+    </MemoryRouter>,
+  )
+  expect(screen.getByTestId('card-41')).toHaveClass('border-l-4', 'border-l-amber-500')
+})
