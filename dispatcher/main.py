@@ -463,13 +463,17 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     slot — and freeing it is the whole point, since a held slot would cap the
     overnight run at MAX_SLOTS specs."""
     tail = deps.sessions.capture_tail(task.issue)
+    note = tail.strip() or "(no detail)"
+    rel = spec_publish.relative_artifact(task.worktree, task.artifact)
+    if rel:
+        note += f"\nspec: {spec_publish.spec_url(target.repo, task.branch, rel)}"
     # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
     # the task is not stranded — the session is ended and the operator can still
     # reach it via /attach, the console `resume` intent, or plain-text wakes.
     # This matches the same reasoning in _park_for_input.
     msg_id = deps.notifier.send(
         "spec_parked", issue=task.issue, title=task.title,
-        url=_url(target, task.issue), note=tail.strip() or "(no detail)")
+        url=_url(target, task.issue), note=note)
     deps.sessions.end(task.issue)
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,

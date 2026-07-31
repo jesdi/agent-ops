@@ -2058,6 +2058,21 @@ def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, mon
     assert 43 in [issue for issue, _msg, _model in sess.resumed]
 
 
+def test_spec_parked_ping_links_spec(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
+    wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+                   artifact="docs/superpowers/specs/x-design.md")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "ready",
+         "artifact": "docs/superpowers/specs/x-design.md"}))
+    d = deps(sess=FakeSessions(alive={42}))
+    main.run_pass(c, d)
+    (tmpl, ctx), = [x for x in d.notifier.contexts if x[0] == "spec_parked"]
+    assert ("spec: https://github.com/jesdi/portfolio_eval/blob/"
+            "agent/task-42/docs/superpowers/specs/x-design.md") in ctx["note"]
+
+
 def test_reply_to_the_spec_parked_message_wakes_the_task(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
