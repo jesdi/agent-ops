@@ -107,7 +107,8 @@ if [ -n "$changed" ]; then
     # not be restarted this pass.  This is accepted behaviour (plan-mandated
     # verbatim): the next timer firing will see old==new for those units and
     # skip them, so a co-changed service may run stale code for one deploy
-    # cycle until its own file changes again.  No units are filtered here.
+    # cycle until its own file changes again.  Template units are filtered
+    # from this loop (see below) but no other filtering applies.
     #
     # Template units (`foo@.service`) are the one exception, and only in this
     # RESTART loop — they are still copied above and picked up by the
@@ -116,7 +117,8 @@ if [ -n "$changed" ]; then
     # would abort the pass. The glob sorts agent-ops-alert@.service first, so
     # the deploy pass would die before the keepalive timer restart, the
     # credential convergence and claude-home sync — silently, since the
-    # updater unit has no OnFailure of its own.
+    # updater unit has no OnFailure of its own.  Template units are skipped
+    # here with `continue`.
     case "$unit" in *@.service) continue ;; esac
     $SYSTEMCTL try-restart "$unit"
   done
@@ -148,11 +150,11 @@ then
   # container may be reading this file right now, and an in-place copy lets
   # a reader observe it truncated. `install -m 600` creates the temp with
   # the final mode, so the rename publishes a complete 600 file atomically.
-  # A temp left behind by a failed install is harmless — the next pass
-  # overwrites it — and `rm -f` clears it on the way out either way.
-  install -m 600 "$HOST_CREDS" "$CH_CREDS.tmp" \
-    && mv -f "$CH_CREDS.tmp" "$CH_CREDS"
-  rm -f "$CH_CREDS.tmp"
+  # Two plain statements so a failed `install` aborts the pass under set -e
+  # (an AND-list silences non-final failures). A temp left behind by a
+  # failed `mv` is harmless — the next pass overwrites it.
+  install -m 600 "$HOST_CREDS" "$CH_CREDS.tmp"
+  mv -f "$CH_CREDS.tmp" "$CH_CREDS"
   echo "agent-ops update: converged fresher host credentials into claude-home"
 fi
 

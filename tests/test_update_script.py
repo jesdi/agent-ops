@@ -542,6 +542,29 @@ def test_array_host_creds_never_copied_and_no_traceback(box, tmp_path):
     assert "AttributeError" not in r.stderr
 
 
+def test_failed_install_aborts_pass_and_does_not_print_converged(box, tmp_path):
+    # Regression: the former `install … && mv` AND-list swallowed install
+    # failures under `set -e`, letting the pass continue and print the
+    # "converged" success line when nothing was actually written.  With two
+    # plain statements the first failure must abort immediately.
+    host, ch = _creds_setup(box, tmp_path, VALID_CREDS, host_newer=True)
+    # Make the claude-home dir unwritable so `install` cannot create the temp.
+    ch_dir = box.state / "claude-home"
+    ch_dir.mkdir(parents=True, exist_ok=True)
+    ch_dir.chmod(0o555)
+    try:
+        r = run_update(box)
+        assert r.returncode != 0, (
+            "update pass must exit non-zero when install fails; got 0\n"
+            f"stdout: {r.stdout}\nstderr: {r.stderr}"
+        )
+        assert "converged fresher host credentials" not in r.stdout, (
+            "success line must not appear when install failed"
+        )
+    finally:
+        ch_dir.chmod(0o755)
+
+
 def test_first_ever_convergence_creates_dir_and_sets_mode(box, tmp_path):
     # claude-home/.credentials.json does not yet exist (and its parent dir may
     # not exist either). A valid, newer host file must be copied in and land
