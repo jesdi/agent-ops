@@ -131,3 +131,32 @@ def test_dry_run_runs_no_git(wt, origin):
     proc = subprocess.run(["git", "-C", str(origin), "show-ref"],
                           capture_output=True, text=True)
     assert proc.stdout == ""
+
+
+def test_missing_artifact_file_returns_error_not_success(wt, origin):
+    """Artifact path does not exist at all — must return error, never a URL."""
+    # Do NOT write the file; the directory exists but the file does not.
+    res = _publish(wt)
+    assert res.url == ""
+    assert res.error != ""
+    # Nothing pushed — origin must still be empty.
+    proc = subprocess.run(["git", "-C", str(origin), "show-ref"],
+                          capture_output=True, text=True)
+    assert proc.stdout == ""
+
+
+def test_gitignored_artifact_returns_error_not_success(wt, origin):
+    """Artifact covered by .gitignore — git add silently ignores it, so
+    ensure_published must detect the file is untracked and return an error
+    rather than claiming a URL for a path that does not exist on GitHub."""
+    # Write a .gitignore that covers the spec directory.
+    (wt / ".gitignore").write_text("docs/superpowers/\n")
+    _git(wt, "add", ".gitignore")
+    _git(wt, "commit", "-m", "chore: ignore spec dir")
+    # Write the file — git will ignore it.
+    (wt / SPEC_REL).write_text("# design\n")
+    res = _publish(wt)
+    assert res.url == ""
+    assert res.error != ""
+    # The gitignored file is not committed and origin stays behind.
+    assert _git(wt, "log", "-1", "--pretty=%s") == "chore: ignore spec dir"

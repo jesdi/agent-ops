@@ -76,6 +76,9 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
             if commit.returncode != 0:
                 return PublishResult(
                     error=f"git commit failed: {commit.stderr.strip()}")
+        tracked = _git(worktree, "ls-files", "--error-unmatch", "--", rel)
+        if tracked.returncode != 0:
+            return PublishResult(error=f"spec not tracked in git: {rel}")
         head = _git(worktree, "rev-parse", "HEAD")
         if head.returncode != 0:
             return PublishResult(
