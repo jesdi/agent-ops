@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from dispatcher.triage_apply import ApplyError, ApplyResult, apply
+from dispatcher.triage_apply import ApplyError, ApplyResult, _gh, apply
 
 
 class FakeRun:
@@ -14,6 +14,20 @@ class FakeRun:
     def __call__(self, args, capture_output=True, text=True, timeout=120):
         self.calls.append(args)
         return subprocess.CompletedProcess(args, self.rc, "", "")
+
+
+class FailingRun(FakeRun):
+    """Fails only the gh calls whose argv contains `fail_for`."""
+
+    def __init__(self, fail_for):
+        super().__init__()
+        self.fail_for = fail_for
+
+    def __call__(self, args, capture_output=True, text=True, timeout=120):
+        self.calls.append(args)
+        rc = 1 if self.fail_for in args else 0
+        return subprocess.CompletedProcess(
+            args, rc, "", "no such label\n" if rc else "")
 
 
 INV = frozenset({"bug", "enhancement", "documentation", "question",
@@ -77,9 +91,44 @@ def test_not_planned_close_line():
     assert res.closes == ("close #7 as not planned — spam",)
 
 
-def test_gh_failure_raises():
-    with pytest.raises(ApplyError):
-        apply("o/r", _d(add_labels=["bug"]), INV, run=FakeRun(rc=1))
+def test_gh_failure_recorded_against_its_issue_and_loop_completes():
+    """A failing gh call must not abort the repo: aborting left earlier writes
+    done but unreported, so the report never said what had been mutated."""
+    run = FailingRun(fail_for="1")
+    decisions = {"issues": [{"number": 1, "add_labels": ["bug"]},
+                            {"number": 2, "add_labels": ["enhancement"]}]}
+    res = apply("o/r", decisions, INV, run=run)
+    assert res.labeled == 1  # #2 still applied
+    assert len(res.rejected) == 1
+    assert res.rejected[0].startswith("#1: gh issue edit failed")
+    assert "no such label" in res.rejected[0]
+
+
+def test_partial_writes_for_one_issue_are_still_counted():
+    # labels land, the comment call fails: the result must show the label
+    run = FailingRun(fail_for="comment")
+    res = apply("o/r", _d(add_labels=["bug"], comment="hi"), INV, run=run)
+    assert res.labeled == 1 and res.comments == 0
+    assert res.rejected[0].startswith("#7: gh issue comment failed")
+
+
+def test_malformed_entry_isolated_with_its_number():
+    run = FakeRun()
+    decisions = {"issues": [{"add_labels": ["bug"]},           # no number
+                            {"number": "abc"},                 # unparseable
+                            "nonsense",                        # not a dict
+                            {"number": 3, "add_labels": ["bug"]}]}
+    res = apply("o/r", decisions, INV, run=run)
+    assert res.labeled == 1  # #3 still applied
+    assert len(res.rejected) == 3
+    assert res.rejected[0].startswith("#?: malformed decision entry")
+    assert all("malformed decision entry" in r for r in res.rejected)
+
+
+def test_apply_error_names_the_issue():
+    with pytest.raises(ApplyError) as exc:
+        _gh(FakeRun(rc=1), 7, ["issue", "edit", "7", "--repo", "o/r"])
+    assert str(exc.value).startswith("#7: gh issue edit failed")
 
 
 def test_rejection_isolated_per_issue():

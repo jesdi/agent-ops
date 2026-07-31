@@ -2,8 +2,10 @@
 read-only; this module is the only GitHub write path. Labels are checked
 against the pre-fetched inventory and the backlog taxonomy caps (one type
 label, two area labels) — an invalid decision is rejected and reported,
-never posted. Closes are never executed, only passed through as
-suggestions for the Telegram report."""
+never posted. A malformed entry or a failing `gh` call is likewise recorded
+against its own issue and the loop continues, so the result is always an
+accurate account of what was written. Closes are never executed, only passed
+through as suggestions for the Telegram report."""
 from __future__ import annotations
 
 import subprocess
@@ -39,11 +41,12 @@ def _validate(number: int, add: list[str], remove: list[str],
     return None
 
 
-def _gh(run, args: list[str]) -> None:
+def _gh(run, number: int | str, args: list[str]) -> None:
     out = run(["gh"] + args, capture_output=True, text=True,
               timeout=GH_TIMEOUT)
     if out.returncode != 0:
-        raise ApplyError(f"gh {' '.join(args[:3])} failed: {out.stderr}")
+        raise ApplyError(f"#{number}: gh {' '.join(args[:2])} failed: "
+                         f"{(out.stderr or '').strip()}")
 
 
 def _close_line(number: int, close: dict) -> str:
@@ -60,27 +63,42 @@ def apply(repo: str, decisions: dict, inventory: frozenset[str],
     closes: list[str] = []
     rejected: list[str] = []
     for issue in decisions.get("issues", []):
-        number = int(issue["number"])
-        add = [str(l) for l in issue.get("add_labels") or []]
-        remove = [str(l) for l in issue.get("remove_labels") or []]
-        if add or remove:
-            problem = _validate(number, add, remove, inventory)
-            if problem is not None:
-                rejected.append(problem)
-            else:
-                args = ["issue", "edit", str(number), "--repo", repo]
-                for l in add:
-                    args += ["--add-label", l]
-                for l in remove:
-                    args += ["--remove-label", l]
-                _gh(run, args)
-                labeled += 1
-        comment = str(issue.get("comment") or "").strip()
-        if comment:
-            _gh(run, ["issue", "comment", str(number), "--repo", repo,
-                      "--body", comment])
-            comments += 1
-        if issue.get("close"):
-            closes.append(_close_line(number, issue["close"]))
+        # One issue's malformed entry or failed `gh` call must not abort the
+        # repo: the result is the record of what was actually written, and
+        # aborting mid-loop would leave earlier writes done but unreported.
+        # The counters are bumped as each write lands, so a failure part-way
+        # through an issue keeps whatever already succeeded.
+        number: int | str = "?"
+        try:
+            number = int(issue["number"])
+            add = [str(l) for l in issue.get("add_labels") or []]
+            remove = [str(l) for l in issue.get("remove_labels") or []]
+            if add or remove:
+                problem = _validate(number, add, remove, inventory)
+                if problem is not None:
+                    rejected.append(problem)
+                else:
+                    args = ["issue", "edit", str(number), "--repo", repo]
+                    for l in add:
+                        args += ["--add-label", l]
+                    for l in remove:
+                        args += ["--remove-label", l]
+                    _gh(run, number, args)
+                    labeled += 1
+            comment = str(issue.get("comment") or "").strip()
+            if comment:
+                _gh(run, number, ["issue", "comment", str(number),
+                                  "--repo", repo, "--body", comment])
+                comments += 1
+            if issue.get("close"):
+                closes.append(_close_line(number, issue["close"]))
+        except ApplyError as e:
+            rejected.append(str(e))  # already names the issue
+        except subprocess.SubprocessError as e:
+            rejected.append(f"#{number}: gh call failed "
+                            f"({type(e).__name__}: {e})")
+        except (KeyError, TypeError, ValueError) as e:
+            rejected.append(f"#{number}: malformed decision entry "
+                            f"({type(e).__name__}: {e})")
     return ApplyResult(labeled=labeled, comments=comments,
                        closes=tuple(closes), rejected=tuple(rejected))
