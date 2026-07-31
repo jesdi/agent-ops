@@ -1,6 +1,7 @@
 """Triage request/cursor state and repo enumeration."""
 import json
 import subprocess as _subprocess
+import sys
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -274,9 +275,6 @@ def test_guarded_sweep_notifies_and_reraises(tmp_path):
     assert "sweep crashed" in "\n".join(deps.notifier.sent[0][1]["lines"])
 
 
-import sys
-
-
 def test_tick_noop_while_running(tmp_path, monkeypatch):
     cfg = _sweep_cfg(tmp_path)
     deps = FakeDeps()
@@ -323,6 +321,21 @@ def test_tick_launches_runner_when_capacity_free(tmp_path, monkeypatch):
     assert triage.load_request(tmp_path) is not None
 
 
+def test_tick_launch_failure_clears_and_notifies(tmp_path, monkeypatch):
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: False)
+    monkeypatch.setattr(
+        triage.subprocess, "run",
+        lambda args, **k: _subprocess.CompletedProcess(args, 1, "", "tmux: server error"))
+    triage.enqueue(tmp_path)
+    triage.tick(cfg, deps, "targets.yaml")
+    assert triage.load_request(tmp_path) is None
+    [(template, ctx)] = deps.notifier.sent
+    assert template == "triage_report"
+    assert ctx["lines"] == ["launch failed: tmux: server error"]
+
+
 def test_tick_waits_when_capacity_full(tmp_path, monkeypatch):
     from dispatcher.state import Stage, TaskState, save
     cfg = _sweep_cfg(tmp_path)  # capacity=2
@@ -350,18 +363,28 @@ def test_pass_skips_claims_and_reduces_capacity_while_triage(tmp_path,
     monkeypatch.setattr(triage, "tick", lambda *a, **k: None)
     monkeypatch.setattr(dmain, "fetch_usage", lambda *a, **k: OK_USAGE)
     for fn in ("_handle_telegram", "_budget_edge", "_wake_ci", "_poll_prs",
-               "_resume_woken", "_spawn_feedback", "_flush_done",
+               "_spawn_feedback", "_flush_done",
                "_prune_snapshots", "_apply_intents"):
         monkeypatch.setattr(dmain, fn, lambda *a, **k: None)
-    seen = {}
+    seen_claim = {}
+    seen_resume = {}
 
     def spy_claim(cfg_seen, *a, **k):
-        seen["capacity"] = cfg_seen.capacity
+        seen_claim["capacity"] = cfg_seen.capacity
+
+    def spy_resume(cfg_seen, *a, **k):
+        seen_resume["capacity"] = cfg_seen.capacity
 
     monkeypatch.setattr(dmain, "_claim_new", spy_claim)
-    dmain.run_pass(cfg, deps)          # running → pending → no claim at all
-    assert seen == {}
+    monkeypatch.setattr(dmain, "_resume_woken", spy_resume)
+    # running → pending → no claim; _resume_woken sees the reduced capacity
+    dmain.run_pass(cfg, deps)
+    assert seen_claim == {}
+    assert seen_resume["capacity"] == cfg.capacity - 1
 
+    seen_resume.clear()
     monkeypatch.setattr(triage, "running", lambda: False)
-    dmain.run_pass(cfg, deps)          # idle → claims run at full capacity
-    assert seen["capacity"] == cfg.capacity
+    # idle → claims run at full capacity; _resume_woken also sees full capacity
+    dmain.run_pass(cfg, deps)
+    assert seen_claim["capacity"] == cfg.capacity
+    assert seen_resume["capacity"] == cfg.capacity

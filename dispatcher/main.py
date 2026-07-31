@@ -1057,12 +1057,15 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not dry_run:
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
-    if not dry_run:
         triage.tick(cfg, deps, config_path)
-    # While the sweep runs it holds a real capacity unit that active()
-    # cannot see (it is not a task session): every capacity comparison in
-    # this pass must use the reduced figure.
-    eff = replace(cfg, capacity=cfg.capacity - 1) if triage.running() else cfg
+    # Evaluate each triage signal once — triage.running() is a real tmux
+    # subprocess; calling it per target would spawn (1 + len(targets)) processes
+    # each pass. The two signals are semantically distinct: eff is reduced when
+    # the sweep is running (it holds a real capacity unit active() cannot see);
+    # claims are paused when any request is in flight (pending = file OR running).
+    sweep_running = triage.running()
+    eff = replace(cfg, capacity=max(0, cfg.capacity - 1)) if sweep_running else cfg
+    claims_paused = triage.pending(cfg.state_dir)
     _handle_telegram(cfg, deps, dry_run)
     usage = fetch_usage(cfg.state_dir)
     budget_ok = should_spawn(usage, cfg.budget_threshold,
@@ -1079,7 +1082,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         _poll_prs(eff, deps, target, dry_run)
         _resume_woken(eff, deps, target, budget_ok)
         _spawn_feedback(eff, deps, target, budget_ok)
-        if budget_ok and not triage.pending(cfg.state_dir):
+        if budget_ok and not claims_paused:
             _claim_new(eff, deps, target, dry_run)
     _flush_done(cfg)
 

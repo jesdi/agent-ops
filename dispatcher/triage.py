@@ -222,8 +222,12 @@ def tick(cfg: Config, deps, config_path: str) -> None:
         return
     if len(active(load_all(cfg.state_dir))) >= cfg.capacity:
         return  # wait for a natural release; never preempt
-    subprocess.run(
+    res = subprocess.run(
         ["tmux", "new-session", "-d", "-s", TMUX_SESSION,
-         f"{sys.executable} -m dispatcher.main "
+         f"{shlex.quote(sys.executable)} -m dispatcher.main "
          f"--config {shlex.quote(config_path)} --triage-run"],
         capture_output=True, timeout=30)
+    if res.returncode != 0:
+        clear_request(cfg.state_dir)
+        deps.notifier.send("triage_report",
+                           lines=[f"launch failed: {res.stderr.strip()}"])
