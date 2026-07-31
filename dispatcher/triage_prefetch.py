@@ -11,6 +11,21 @@ MAX_COMMENTS = 20
 MAX_COMMENT_CHARS = 1000
 GH_TIMEOUT = 120
 
+# Context budget for one session, measured on the serialization that actually
+# reaches the prompt (_size). Per-comment caps alone leave the blob unbounded:
+# uncapped bodies, up to 100 issues per window, 500 number+title pairs. Two
+# things need this bound. Cost and attention — an unbounded blob drowns the
+# session. And execve: `claude -p "$(cat …)"` still passes the prompt as ONE
+# argument inside the container, and Linux caps a single argv element at
+# MAX_ARG_STRLEN = 128 KiB. The prompt file (containers.triage_cmd) keeps the
+# dispatcher's own podman argv small; this budget is what keeps the container's
+# argv under the ceiling, with room for the prompt template around the blob.
+MAX_BODY_CHARS = 4000
+MIN_BODY_CHARS = 500
+MAX_OPEN_ISSUES = 300
+MAX_CONTEXT_BYTES = 60_000
+TRUNC_MARK = "\n… [truncated]"
+
 
 class PrefetchError(Exception):
     pass
@@ -40,6 +55,64 @@ def _comments(run, repo: str, number: int) -> list[dict]:
             "author": (c.get("author") or {}).get("login", ""),
             "body": str(c.get("body", ""))[:MAX_COMMENT_CHARS],
         })
+    return out
+
+
+def _truncate_bodies(issues: list[dict], limit: int) -> list[str]:
+    notes = []
+    for i in issues:
+        body = str(i.get("body") or "")
+        if len(body) > limit:
+            i["body"] = body[:limit] + TRUNC_MARK
+            notes.append(f"#{i.get('number', '?')}: body truncated to "
+                         f"{limit} chars")
+    return notes
+
+
+def _size(blob: dict) -> int:
+    # indent=2, exactly as triage._run_session serializes it into the prompt:
+    # indentation is most of the difference between 60 KB and >128 KB, and
+    # 128 KiB is the ceiling on the `claude -p "$(cat …)"` argument.
+    return len(json.dumps(blob, indent=2))
+
+
+def bound(blob: dict) -> dict:
+    """A copy of the blob trimmed to the context budget, carrying a
+    `truncated` list that names every reduction so the session knows its
+    context is incomplete (and can say so rather than, say, ruling out a
+    duplicate it was never shown).
+
+    Sheds in increasing order of value — the open-issue list, then comments,
+    then issue bodies. Issues themselves are never dropped: a successful sweep
+    advances the cursor past this window, so a dropped issue would never be
+    triaged again."""
+    out = json.loads(json.dumps(blob))  # never mutate the caller's blob
+    issues = out.get("issues") or []
+    notes = _truncate_bodies(issues, MAX_BODY_CHARS)
+    open_issues = out.get("open_issues") or []
+    if len(open_issues) > MAX_OPEN_ISSUES:
+        notes.append(f"open_issues: {len(open_issues)} open, showing the "
+                     f"first {MAX_OPEN_ISSUES} — duplicate detection is "
+                     f"incomplete")
+        out["open_issues"] = open_issues[:MAX_OPEN_ISSUES]
+    if _size(out) > MAX_CONTEXT_BYTES and out.get("open_issues"):
+        notes.append(f"open_issues: all {len(out['open_issues'])} dropped to "
+                     f"fit the context budget — no duplicate detection")
+        out["open_issues"] = []
+    if _size(out) > MAX_CONTEXT_BYTES and any(i.get("comments") for i in issues):
+        notes.append("comments: dropped from every issue to fit the context "
+                     "budget")
+        for i in issues:
+            i["comments"] = []
+    if _size(out) > MAX_CONTEXT_BYTES:
+        _truncate_bodies(issues, MIN_BODY_CHARS)
+        notes = [n for n in notes if "body truncated" not in n]
+        notes.append(f"bodies: truncated to {MIN_BODY_CHARS} chars to fit the "
+                     f"context budget")
+    if _size(out) > MAX_CONTEXT_BYTES:
+        notes.append(f"context is {_size(out)} bytes, still over the "
+                     f"{MAX_CONTEXT_BYTES}-byte budget after shedding")
+    out["truncated"] = notes
     return out
 
 

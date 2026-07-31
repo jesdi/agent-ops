@@ -1,11 +1,14 @@
 """Deterministic gh pre-fetch for triage sessions."""
 import json
+import re
 import subprocess
 
 import pytest
 
-from dispatcher.triage_prefetch import (MAX_COMMENT_CHARS, MAX_COMMENTS,
-                                        PrefetchError, prefetch)
+from dispatcher.triage_prefetch import (MAX_BODY_CHARS, MAX_COMMENT_CHARS,
+                                        MAX_COMMENTS, MAX_CONTEXT_BYTES,
+                                        MAX_OPEN_ISSUES, TRUNC_MARK,
+                                        PrefetchError, bound, prefetch)
 
 
 class FakeRun:
@@ -87,3 +90,65 @@ def test_gh_failure_raises():
     run = FakeRun([(["issue", "list", "--search"], 1, "")])
     with pytest.raises(PrefetchError):
         prefetch("o/r", CURSOR, run=run)
+
+
+def test_search_qualifier_is_a_shape_github_accepts():
+    """GitHub's search date grammar takes no fractional seconds, and an
+    unparseable date qualifier is not an error — it degrades to free text and
+    matches ~nothing, so the sweep would silently report "nothing new" for
+    every repo, forever."""
+    run = _fake([])
+    prefetch("o/r", "2026-07-29T05:30:00Z", run=run)
+    [args] = run.calls
+    qualifier = args[args.index("--search") + 1]
+    assert re.fullmatch(r"updated:>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+                        qualifier)
+
+
+def test_bound_truncates_long_bodies_and_says_so():
+    blob = {"repo": "o/r", "issues": [{"number": 7, "body": "x" * 9000,
+                                       "comments": []}],
+            "open_issues": [], "labels": []}
+    out = bound(blob)
+    body = out["issues"][0]["body"]
+    assert len(body) == MAX_BODY_CHARS + len(TRUNC_MARK)
+    assert body.endswith(TRUNC_MARK)
+    assert any("#7" in n and "body truncated" in n for n in out["truncated"])
+    assert blob["issues"][0]["body"] == "x" * 9000  # caller's blob untouched
+
+
+def test_bound_caps_open_issue_list():
+    blob = {"repo": "o/r", "issues": [{"number": 1, "body": "b",
+                                       "comments": []}],
+            "open_issues": [{"number": n, "title": "t"} for n in range(400)],
+            "labels": []}
+    out = bound(blob)
+    assert len(out["open_issues"]) == MAX_OPEN_ISSUES
+    assert any("open_issues" in n for n in out["truncated"])
+
+
+def test_bound_sheds_until_under_the_budget_without_dropping_issues():
+    issues = [{"number": n, "title": "t", "body": "y" * 3000,
+               "comments": [{"author": "a", "body": "c" * 900}
+                            for _ in range(20)]}
+              for n in range(60)]
+    blob = {"repo": "o/r", "issues": issues, "labels": [],
+            "open_issues": [{"number": n, "title": "t" * 40}
+                            for n in range(500)]}
+    out = bound(blob)
+    assert len(json.dumps(out)) <= MAX_CONTEXT_BYTES
+    # every issue in the window survives — the cursor advances past them
+    assert [i["number"] for i in out["issues"]] == list(range(60))
+    joined = " ".join(out["truncated"])
+    assert "open_issues" in joined and "comments" in joined and "bodies" in joined
+
+
+def test_bound_leaves_a_small_blob_alone():
+    blob = {"repo": "o/r", "cursor": CURSOR,
+            "issues": [{"number": 7, "title": "T", "body": "B",
+                        "comments": [{"author": "b", "body": "hi"}]}],
+            "labels": [{"name": "bug", "description": ""}],
+            "issue_types": [], "open_issues": [{"number": 7, "title": "T"}]}
+    out = bound(blob)
+    assert out["truncated"] == []
+    assert {k: v for k, v in out.items() if k != "truncated"} == blob

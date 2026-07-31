@@ -1,5 +1,6 @@
 """Triage request/cursor state and repo enumeration."""
 import json
+import re
 import subprocess as _subprocess
 import sys
 from dataclasses import replace
@@ -61,10 +62,54 @@ def test_expired():
         "2026-07-30T05:30:00+00:00", "2026-07-30T07:29:59+00:00") is False
 
 
+def test_expired_fails_closed_on_unparseable_timestamp():
+    # A corrupt request file must expire (tick then clears it), not raise out
+    # of every dispatcher pass.
+    assert triage.expired("x", "2026-07-30T07:30:01+00:00") is True
+    assert triage.expired("", "2026-07-30T07:30:01+00:00") is True
+
+
+def test_tick_clears_corrupt_request_instead_of_raising(tmp_path, monkeypatch):
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: False)
+    (tmp_path / triage.REQUEST_FILE).write_text('{"requested_at": "x"}')
+    calls = []
+    monkeypatch.setattr(triage.subprocess, "run",
+                        lambda args, **k: calls.append(args))
+    triage.tick(cfg, deps, "targets.yaml")  # no raise
+    assert triage.load_request(tmp_path) is None
+    assert calls == []
+    assert deps.notifier.sent[0][1]["lines"] == [
+        "skipped — no capacity within 2 h"]
+
+
 def test_cursors_roundtrip(tmp_path):
     assert triage.load_cursors(tmp_path) == {}
-    triage.save_cursors(tmp_path, {"o/r": "2026-07-30T05:30:00+00:00"})
-    assert triage.load_cursors(tmp_path) == {"o/r": "2026-07-30T05:30:00+00:00"}
+    triage.save_cursors(tmp_path, {"o/r": "2026-07-30T05:30:00Z"})
+    assert triage.load_cursors(tmp_path) == {"o/r": "2026-07-30T05:30:00Z"}
+
+
+def test_cursor_now_is_second_granular_z_form():
+    # GitHub's search date grammar has no fractional seconds; a cursor that
+    # carries them degrades the qualifier to free text and matches nothing.
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+                        triage._cursor_now())
+
+
+def test_load_cursors_rewrites_stale_microsecond_cursors(tmp_path):
+    triage.save_cursors(tmp_path, {"o/r": "2026-07-30T05:30:00.123456+00:00",
+                                   "o/s": "2026-07-30T07:30:00+02:00"})
+    assert triage.load_cursors(tmp_path) == {"o/r": "2026-07-30T05:30:00Z",
+                                             "o/s": "2026-07-30T05:30:00Z"}
+
+
+def test_load_cursors_drops_uninterpretable_cursor(tmp_path):
+    triage.save_cursors(tmp_path, {"o/r": "yesterday",
+                                   "o/s": "2026-07-30T05:30:00Z"})
+    # dropped, not passed through: the repo re-seeds instead of querying with
+    # a qualifier GitHub silently ignores forever
+    assert triage.load_cursors(tmp_path) == {"o/s": "2026-07-30T05:30:00Z"}
 
 
 def test_triage_repos_targets_then_infra_deduped(tmp_path):
@@ -102,6 +147,7 @@ class FakeDeps:
         self.notifier = SpyNotifier()
 
 
+OLD = "2026-07-29T00:00:00Z"
 OK_USAGE = UsageSnapshot(utilization=0.1, minutes_to_reset=100, source="oauth")
 HOT_USAGE = UsageSnapshot(utilization=0.9, minutes_to_reset=100, source="oauth")
 BLOB = {"repo": "o/a", "cursor": "c", "issues": [{"number": 1}],
@@ -118,7 +164,7 @@ def _sweep_cfg(tmp_path):
 def test_sweep_happy_path_advances_cursor_and_reports(tmp_path):
     cfg = _sweep_cfg(tmp_path)
     deps = FakeDeps()
-    triage.save_cursors(tmp_path, {"o/a": "2026-07-29T00:00:00+00:00"})
+    triage.save_cursors(tmp_path, {"o/a": OLD})
     (tmp_path / triage.REQUEST_FILE).write_text('{"requested_at": "x"}')
     with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
@@ -126,7 +172,7 @@ def test_sweep_happy_path_advances_cursor_and_reports(tmp_path):
          patch.object(triage.triage_apply, "apply", return_value=RESULT):
         triage.run_sweep(cfg, deps)
     assert triage.load_request(tmp_path) is None
-    assert triage.load_cursors(tmp_path)["o/a"] != "2026-07-29T00:00:00+00:00"
+    assert triage.load_cursors(tmp_path)["o/a"] != OLD
     [(template, ctx)] = deps.notifier.sent
     assert template == "triage_report"
     joined = "\n".join(ctx["lines"])
@@ -146,20 +192,20 @@ def test_sweep_seeds_cursor_first_sight_no_session(tmp_path):
 def test_sweep_empty_window_advances_cursor_no_session(tmp_path):
     cfg = _sweep_cfg(tmp_path)
     deps = FakeDeps()
-    triage.save_cursors(tmp_path, {"o/a": "2026-07-29T00:00:00+00:00"})
+    triage.save_cursors(tmp_path, {"o/a": OLD})
     empty = dict(BLOB, issues=[])
     with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", return_value=empty), \
          patch.object(triage, "_run_session") as session:
         triage.run_sweep(cfg, deps)
     session.assert_not_called()
-    assert triage.load_cursors(tmp_path)["o/a"] != "2026-07-29T00:00:00+00:00"
+    assert triage.load_cursors(tmp_path)["o/a"] != OLD
 
 
 def test_sweep_failure_isolated_cursor_untouched(tmp_path):
     cfg = _cfg(tmp_path, targets=[_target("a", "o/a"), _target("b", "o/b")])
     deps = FakeDeps()
-    triage.save_cursors(tmp_path, {"o/a": "OLD", "o/b": "OLD"})
+    triage.save_cursors(tmp_path, {"o/a": OLD, "o/b": OLD})
 
     def prefetch(repo, cursor, run=None):
         if repo == "o/a":
@@ -172,7 +218,7 @@ def test_sweep_failure_isolated_cursor_untouched(tmp_path):
          patch.object(triage.triage_apply, "apply", return_value=RESULT):
         triage.run_sweep(cfg, deps)
     cursors = triage.load_cursors(tmp_path)
-    assert cursors["o/a"] == "OLD" and cursors["o/b"] != "OLD"
+    assert cursors["o/a"] == OLD and cursors["o/b"] != OLD
     joined = "\n".join(deps.notifier.sent[0][1]["lines"])
     assert "o/a: FAILED" in joined
 
@@ -180,19 +226,19 @@ def test_sweep_failure_isolated_cursor_untouched(tmp_path):
 def test_sweep_budget_gate_skips_everything(tmp_path):
     cfg = _sweep_cfg(tmp_path)
     deps = FakeDeps()
-    triage.save_cursors(tmp_path, {"o/a": "OLD"})
+    triage.save_cursors(tmp_path, {"o/a": OLD})
     with patch.object(triage, "fetch_usage", return_value=HOT_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch") as prefetch:
         triage.run_sweep(cfg, deps)
     prefetch.assert_not_called()
-    assert triage.load_cursors(tmp_path)["o/a"] == "OLD"
+    assert triage.load_cursors(tmp_path)["o/a"] == OLD
     assert "budget" in "\n".join(deps.notifier.sent[0][1]["lines"])
 
 
 def test_sweep_rejected_decisions_reported(tmp_path):
     cfg = _sweep_cfg(tmp_path)
     deps = FakeDeps()
-    triage.save_cursors(tmp_path, {"o/a": "OLD"})
+    triage.save_cursors(tmp_path, {"o/a": OLD})
     rej = ApplyResult(labeled=0, comments=0, closes=(),
                       rejected=("#1: unknown label(s) ['zzz']",))
     with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
@@ -249,8 +295,35 @@ def test_run_session_reads_decisions(tmp_path):
     assert got == {"issues": []}
     argv = captured[0]
     assert f"{tdir}:/triage" in argv
-    prompt = argv[argv.index("-p") + 1]
+    # The prompt travels as a file on the /triage mount, not as an argv string
+    prompt = (tdir / "o-a-2026-07-30-prompt.md").read_text()
     assert "/triage/o-a-2026-07-30.json" in prompt
+    assert "o/a" in prompt
+    assert "/triage/o-a-2026-07-30-prompt.md" in argv[-1]
+    assert not any(prompt in a for a in argv)
+
+
+def test_run_session_prompt_never_in_argv_for_a_huge_blob(tmp_path):
+    """MAX_ARG_STRLEN is 128 KiB per argv element; a blob past it used to make
+    subprocess.run raise E2BIG, failing the repo every morning forever."""
+    cfg = _sweep_cfg(tmp_path)
+    tdir = tmp_path / "triage"
+    tdir.mkdir()
+    huge = dict(BLOB, issues=[{"number": n, "title": "t", "body": "x" * 20000,
+                               "comments": []} for n in range(50)])
+    captured = []
+
+    def fake_run(args, capture_output=True, text=True, timeout=None):
+        captured.append(args)
+        (tdir / "o-a-2026-07-30.json").write_text('{"issues": []}')
+        return _subprocess.CompletedProcess(args, 0, "", "")
+
+    triage._run_session(cfg, "o/a", huge, "2026-07-30", run=fake_run)
+    assert max(len(a) for a in captured[0]) < 4096
+    prompt = (tdir / "o-a-2026-07-30-prompt.md").read_text()
+    # bounded, and the session is told the context was cut
+    assert len(prompt) < 100_000
+    assert "truncated" in prompt
 
 
 def test_run_session_nonzero_rc_surfaces_rc_and_stderr(tmp_path):
@@ -301,15 +374,22 @@ def test_tick_expired_clears_and_notifies(tmp_path, monkeypatch):
     assert ctx["lines"] == ["skipped — no capacity within 2 h"]
 
 
-def test_tick_launches_runner_when_capacity_free(tmp_path, monkeypatch):
-    cfg = _sweep_cfg(tmp_path)
-    deps = FakeDeps()
-    monkeypatch.setattr(triage, "running", lambda: False)
+def _spy_launch(monkeypatch):
     calls = []
     monkeypatch.setattr(
         triage.subprocess, "run",
         lambda args, **k: calls.append(args) or
         _subprocess.CompletedProcess(args, 0, "", ""))
+    return calls
+
+
+def test_tick_launches_runner_when_capacity_free(tmp_path, monkeypatch):
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: False)
+    for var in triage.LAUNCH_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    calls = _spy_launch(monkeypatch)
     triage.enqueue(tmp_path)
     triage.tick(cfg, deps, "/etc/targets.yaml")
     [launch] = calls
@@ -319,6 +399,42 @@ def test_tick_launches_runner_when_capacity_free(tmp_path, monkeypatch):
     assert sys.executable in launch[5]
     # request stays until the runner consumes it → claims stay paused
     assert triage.load_request(tmp_path) is not None
+
+
+def test_tick_forwards_dispatcher_env_to_the_runner(tmp_path, monkeypatch):
+    """tmux copies the tmux *server's* environment into a new session, not the
+    caller's — without -e the runner has no Telegram credentials whenever the
+    server was started by anything but a dispatcher pass under `op run`."""
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path))
+    calls = _spy_launch(monkeypatch)
+    triage.enqueue(tmp_path)
+    triage.tick(cfg, deps, "targets.yaml")
+    [launch] = calls
+    assert launch[:3] == ["tmux", "new-session", "-d"]
+    env = [launch[i + 1] for i, a in enumerate(launch) if a == "-e"]
+    assert env == ["TELEGRAM_BOT_TOKEN=tok", "TELEGRAM_CHAT_ID=42",
+                   f"AGENT_OPS_STATE_DIR={tmp_path}"]
+    assert launch[-3] == "-s" and launch[-2] == triage.TMUX_SESSION
+
+
+def test_tick_launch_omits_unset_env_vars(tmp_path, monkeypatch):
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    calls = _spy_launch(monkeypatch)
+    triage.enqueue(tmp_path)
+    triage.tick(cfg, deps, "targets.yaml")  # no crash on the unset ones
+    [launch] = calls
+    assert [launch[i + 1] for i, a in enumerate(launch) if a == "-e"] == [
+        "TELEGRAM_BOT_TOKEN=tok"]
 
 
 def test_tick_launch_failure_clears_and_notifies(tmp_path, monkeypatch):

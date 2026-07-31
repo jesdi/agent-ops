@@ -26,8 +26,14 @@ Rules:
 - If the evidence does not support a change, record nothing for that
   issue.
 
+The context below is size-bounded. Its `truncated` list names every
+reduction that was applied (shortened bodies, a partial or missing
+open-issue list, dropped comments). Treat anything it names as evidence you
+do NOT have: never suggest a close — least of all as a duplicate — on the
+strength of context that list says is incomplete.
+
 Context (issues in this batch, label inventory, issue types, open-issue
-list):
+list, truncation notes):
 
 $context_json
 
