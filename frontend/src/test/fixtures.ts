@@ -58,7 +58,7 @@ export const board: BoardView = {
     { key: 'stalled', title: 'Stalled', cards: [] },
     { key: 'failed', title: 'Failed', cards: [] },
   ],
-  capacity: { active: 2, capacity: 3, slots_used: 2, max_slots: 3 },
+  capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3 },
 }
 
 export const queue: QueueView = {

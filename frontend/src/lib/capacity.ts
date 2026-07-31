@@ -8,9 +8,11 @@ export function capacityAccent(c: { active: number; capacity: number }): Accent 
 
 // Full literal class strings: Tailwind scans source text, so a class built by
 // interpolation would never make it into the stylesheet.
+// hover: variants are required because hover:border-gray-400 (shorthand) has
+// higher specificity than border-l-blue-500 and would erase the accent on hover.
 export const ACCENT_BORDER: Record<Accent, string> = {
-  amber: 'border-l-4 border-l-amber-500',
-  blue: 'border-l-4 border-l-blue-500',
+  amber: 'border-l-amber-500 hover:border-l-amber-500',
+  blue: 'border-l-blue-500 hover:border-l-blue-500',
 }
 
 export const ACCENT_PIP: Record<Accent, string> = {

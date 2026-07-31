@@ -126,9 +126,11 @@ The meter carries `role="progressbar"` with `aria-valuemin`/`aria-valuemax`/
 - **`active > capacity`** (capacity lowered while tasks are in flight): render
   `capacity` pips, all filled, amber; the text still reads the true `3/2`. The
   text is the truth, the pips are the picture.
-- **Done / failed / merged columns** never accent — `consumes_capacity` is false
-  for those stages. This falls out of the predicate; no special-casing in the
-  view.
+- **Done / merged columns** never accent — `consumes_capacity` is false for
+  those stages. The `failed` column is an exception: `Stage.BLOCKED` is in
+  `IN_FLIGHT_STAGES` and maps to `failed`, so a blocked task correctly renders
+  there carrying the accent. This falls out of the predicate; no
+  special-casing in the view.
 
 ## Testing
 
