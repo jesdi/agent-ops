@@ -41,6 +41,15 @@ class SetTaskStage:
 
 
 @dataclass(frozen=True)
+class PublishSpec:
+    """Deterministic backstop at the spec-review gate: the executor makes
+    sure the spec is committed+pushed and surfaces the GitHub link (or a
+    local-only warning) in the review ping. Emitted between SetTaskStage
+    and Notify so the publish outcome can shape the notification."""
+    artifact: str = ""
+
+
+@dataclass(frozen=True)
 class HandleCrash:
     pass
 
@@ -159,6 +168,7 @@ def next_actions(
             return [NoOp()]  # only the SPEC stage emits awaiting-review; ignore stale/misrouted
         return [SetTaskStage(Stage.AWAITING_SPEC_REVIEW,
                              artifact=signal.artifact),
+                PublishSpec(artifact=signal.artifact),
                 Notify("awaiting_spec_review", signal.note)]
 
     if done:

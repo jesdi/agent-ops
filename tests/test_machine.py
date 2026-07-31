@@ -11,6 +11,7 @@ from dispatcher.machine import (
     ParkForCI,
     ParkForInput,
     ParkForReview,
+    PublishSpec,
     RetryStage,
     SetTaskStage,
     SpawnStage,
@@ -64,11 +65,36 @@ def test_no_signal_yet_alive_is_noop():
 def test_awaiting_review_notifies_once():
     acts = next_actions(task(Stage.SPEC), sig("spec", "awaiting-review"), True)
     assert SetTaskStage(Stage.AWAITING_SPEC_REVIEW) in acts
+    assert PublishSpec() in acts
     assert any(isinstance(a, Notify) and a.template == "awaiting_spec_review" for a in acts)
     # second pass, stage already updated → no re-notify
     again = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
                          sig("spec", "awaiting-review"), True)
     assert again == [NoOp()]
+
+
+def test_spec_awaiting_review_publishes_between_stage_and_notify():
+    acts = next_actions(task(Stage.SPEC),
+                        sig("spec", "awaiting-review",
+                            artifact="docs/superpowers/specs/x-design.md"),
+                        session_alive=True)
+    assert acts == [
+        SetTaskStage(Stage.AWAITING_SPEC_REVIEW,
+                     artifact="docs/superpowers/specs/x-design.md"),
+        PublishSpec(artifact="docs/superpowers/specs/x-design.md"),
+        Notify("awaiting_spec_review", ""),
+    ]
+
+
+def test_gate_and_non_spec_stages_do_not_publish():
+    # already at the gate: no re-publish on every pass
+    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+                        sig("spec", "awaiting-review"), session_alive=True)
+    assert PublishSpec() not in acts and acts == [NoOp()]
+    # misrouted awaiting-review from a non-SPEC stage: still ignored
+    acts = next_actions(task(Stage.PLAN),
+                        sig("plan", "awaiting-review"), session_alive=True)
+    assert acts == [NoOp()]
 
 
 def test_spec_done_valid_spawns_plan(tmp_path):
