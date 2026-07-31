@@ -243,8 +243,17 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
             decisions = _run_session(cfg, repo, blob, started_date, run=run)
             inventory = frozenset(l["name"] for l in blob["labels"])
             result = triage_apply.apply(repo, decisions, inventory, run=run)
-            cursors[repo] = started
             lines.extend(_summary(repo, result))
+            # apply() no longer raises on a failed write, so a repo whose every
+            # write GitHub refused (expired token, rate limit) would otherwise
+            # advance its cursor and never see this window again. Nothing
+            # written + at least one gh failure = retry tomorrow. Partial
+            # success still advances: re-running would duplicate what landed.
+            if result.write_failures and result.nothing_written():
+                lines.append("  cursor held — every write failed; "
+                             "this window is retried tomorrow")
+                continue
+            cursors[repo] = started
         except Exception as e:  # noqa: BLE001 — isolate repos from each other
             lines.append(f"{repo}: FAILED — {e}")
     save_cursors(cfg.state_dir, cursors)

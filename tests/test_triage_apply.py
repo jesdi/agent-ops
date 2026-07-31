@@ -125,6 +125,38 @@ def test_malformed_entry_isolated_with_its_number():
     assert all("malformed decision entry" in r for r in res.rejected)
 
 
+def test_non_dict_close_isolated_and_later_issue_still_written():
+    """`close` comes from free-form agent JSON. A string value used to reach
+    _close_line's .get() and raise AttributeError, which escaped all three
+    per-issue handlers and aborted the repo — defeating the isolation."""
+    run = FakeRun()
+    decisions = {"issues": [{"number": 1, "close": "yes"},
+                            {"number": 2, "add_labels": ["bug"]}]}
+    res = apply("o/r", decisions, INV, run=run)
+    assert res.closes == ()
+    assert len(res.rejected) == 1 and res.rejected[0].startswith("#1: ")
+    assert res.labeled == 1  # the loop completed and #2 was written
+    assert ["gh", "issue", "edit", "2", "--repo", "o/r",
+            "--add-label", "bug"] in run.calls
+
+
+def test_write_failures_are_tracked_apart_from_validation_rejections():
+    """The sweep needs to tell 'the agent proposed something invalid' (nothing
+    to retry) from 'GitHub refused the write' (retry tomorrow)."""
+    run = FailingRun(fail_for="2")
+    decisions = {"issues": [{"number": 1, "add_labels": ["made-up"]},
+                            {"number": 2, "add_labels": ["bug"]}]}
+    res = apply("o/r", decisions, INV, run=run)
+    assert len(res.rejected) == 2
+    assert len(res.write_failures) == 1
+    assert res.write_failures[0].startswith("#2: gh issue edit failed")
+
+
+def test_validation_rejections_are_not_write_failures():
+    res = apply("o/r", _d(add_labels=["made-up"]), INV, run=FakeRun())
+    assert res.rejected and res.write_failures == ()
+
+
 def test_apply_error_names_the_issue():
     with pytest.raises(ApplyError) as exc:
         _gh(FakeRun(rc=1), 7, ["issue", "edit", "7", "--repo", "o/r"])

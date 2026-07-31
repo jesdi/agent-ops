@@ -27,6 +27,14 @@ class ApplyResult:
     comments: int
     closes: tuple[str, ...]
     rejected: tuple[str, ...]
+    # The subset of `rejected` that GitHub refused rather than the session
+    # getting wrong (a failing/timing-out `gh` write). `rejected` still carries
+    # them, so the report is unchanged; the split exists because only these are
+    # worth retrying — run_sweep holds the cursor when they are all there is.
+    write_failures: tuple[str, ...] = ()
+
+    def nothing_written(self) -> bool:
+        return self.labeled == 0 and self.comments == 0
 
 
 def _validate(number: int, add: list[str], remove: list[str],
@@ -62,6 +70,7 @@ def apply(repo: str, decisions: dict, inventory: frozenset[str],
     labeled = comments = 0
     closes: list[str] = []
     rejected: list[str] = []
+    write_failures: list[str] = []
     for issue in decisions.get("issues", []):
         # One issue's malformed entry or failed `gh` call must not abort the
         # repo: the result is the record of what was actually written, and
@@ -90,15 +99,27 @@ def apply(repo: str, decisions: dict, inventory: frozenset[str],
                 _gh(run, number, ["issue", "comment", str(number),
                                   "--repo", repo, "--body", comment])
                 comments += 1
-            if issue.get("close"):
-                closes.append(_close_line(number, issue["close"]))
+            close = issue.get("close")
+            if close:
+                # Free-form agent JSON: a bare string here would reach
+                # _close_line's .get() and raise AttributeError past every
+                # handler below, aborting the repo the isolation exists to
+                # protect. AttributeError is caught too, as a backstop.
+                if not isinstance(close, dict):
+                    raise TypeError(f"close must be an object, got "
+                                    f"{type(close).__name__}")
+                closes.append(_close_line(number, close))
         except ApplyError as e:
             rejected.append(str(e))  # already names the issue
+            write_failures.append(str(e))
         except subprocess.SubprocessError as e:
-            rejected.append(f"#{number}: gh call failed "
-                            f"({type(e).__name__}: {e})")
-        except (KeyError, TypeError, ValueError) as e:
+            problem = (f"#{number}: gh call failed "
+                       f"({type(e).__name__}: {e})")
+            rejected.append(problem)
+            write_failures.append(problem)
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
             rejected.append(f"#{number}: malformed decision entry "
                             f"({type(e).__name__}: {e})")
     return ApplyResult(labeled=labeled, comments=comments,
-                       closes=tuple(closes), rejected=tuple(rejected))
+                       closes=tuple(closes), rejected=tuple(rejected),
+                       write_failures=tuple(write_failures))
