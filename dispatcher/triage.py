@@ -5,7 +5,9 @@ dispatcher pass launches the sweep in a detached tmux session named
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from dispatcher import containers, triage_apply, triage_prefetch
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.config import Config
 from dispatcher.prompts import render_triage_prompt
+from dispatcher.state import active, load_all
 
 REQUEST_FILE = "triage-request.json"
 CURSORS_FILE = "triage_cursors.json"
@@ -200,3 +203,27 @@ def guarded_sweep(cfg: Config, deps) -> None:
     except Exception as e:  # noqa: BLE001 — notify, then let systemd see it
         deps.notifier.send("triage_report", lines=[f"sweep crashed: {e}"])
         raise
+
+
+def tick(cfg: Config, deps, config_path: str) -> None:
+    """Once per dispatcher pass: expire or launch a pending request. The
+    request file survives until the runner consumes it, so claims stay
+    paused across the launch gap; tmux-session liveness is the running
+    signal (no separate marker to leak on a crash)."""
+    if running():
+        return
+    requested = load_request(cfg.state_dir)
+    if requested is None:
+        return
+    if expired(requested, _now()):
+        clear_request(cfg.state_dir)
+        deps.notifier.send("triage_report",
+                           lines=["skipped — no capacity within 2 h"])
+        return
+    if len(active(load_all(cfg.state_dir))) >= cfg.capacity:
+        return  # wait for a natural release; never preempt
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", TMUX_SESSION,
+         f"{sys.executable} -m dispatcher.main "
+         f"--config {shlex.quote(config_path)} --triage-run"],
+        capture_output=True, timeout=30)

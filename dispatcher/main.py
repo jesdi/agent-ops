@@ -1043,18 +1043,26 @@ def _sandboxed_state(cfg: Config):
         yield replace(cfg, state_dir=str(sandbox))
 
 
-def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
+             config_path: str = "targets.yaml") -> None:
     if dry_run:
         with _sandboxed_state(cfg) as sandboxed:
-            _run_pass(sandboxed, deps, dry_run)
+            _run_pass(sandboxed, deps, dry_run, config_path)
         return
-    _run_pass(cfg, deps, dry_run)
+    _run_pass(cfg, deps, dry_run, config_path)
 
 
-def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
+              config_path: str = "targets.yaml") -> None:
     if not dry_run:
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
+    if not dry_run:
+        triage.tick(cfg, deps, config_path)
+    # While the sweep runs it holds a real capacity unit that active()
+    # cannot see (it is not a task session): every capacity comparison in
+    # this pass must use the reduced figure.
+    eff = replace(cfg, capacity=cfg.capacity - 1) if triage.running() else cfg
     _handle_telegram(cfg, deps, dry_run)
     usage = fetch_usage(cfg.state_dir)
     budget_ok = should_spawn(usage, cfg.budget_threshold,
@@ -1062,24 +1070,24 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
     _budget_edge(cfg, deps, budget_ok,
                  note=f"{usage.source}: {usage.utilization:.0%}, "
                       f"reset in {usage.minutes_to_reset:.0f}m")
-    for target in cfg.targets:
+    for target in eff.targets:
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
-            _drive_task(cfg, deps, target, task, budget_ok, dry_run)
-        _wake_ci(cfg, deps, target)
-        _poll_prs(cfg, deps, target, dry_run)
-        _resume_woken(cfg, deps, target, budget_ok)
-        _spawn_feedback(cfg, deps, target, budget_ok)
-        if budget_ok:
-            _claim_new(cfg, deps, target, dry_run)
+            _drive_task(eff, deps, target, task, budget_ok, dry_run)
+        _wake_ci(eff, deps, target)
+        _poll_prs(eff, deps, target, dry_run)
+        _resume_woken(eff, deps, target, budget_ok)
+        _spawn_feedback(eff, deps, target, budget_ok)
+        if budget_ok and not triage.pending(cfg.state_dir):
+            _claim_new(eff, deps, target, dry_run)
     _flush_done(cfg)
 
 
 def guarded_pass(cfg: Config, deps: Deps, config_path: str,
                  dry_run: bool = False) -> None:
     try:
-        run_pass(cfg, deps, dry_run=dry_run)
+        run_pass(cfg, deps, dry_run=dry_run, config_path=config_path)
     except Exception:
         rep = failures.FailureReport(
             klass="pass-crash", target="", issue=0, title="(dispatcher)",

@@ -272,3 +272,96 @@ def test_guarded_sweep_notifies_and_reraises(tmp_path):
         with pytest.raises(RuntimeError):
             triage.guarded_sweep(cfg, deps)
     assert "sweep crashed" in "\n".join(deps.notifier.sent[0][1]["lines"])
+
+
+import sys
+
+
+def test_tick_noop_while_running(tmp_path, monkeypatch):
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: True)
+    launched = []
+    monkeypatch.setattr(triage.subprocess, "run",
+                        lambda *a, **k: launched.append(a))
+    (tmp_path / triage.REQUEST_FILE).write_text(
+        '{"requested_at": "2020-01-01T00:00:00+00:00"}')
+    triage.tick(cfg, deps, "targets.yaml")
+    assert launched == [] and deps.notifier.sent == []
+
+
+def test_tick_expired_clears_and_notifies(tmp_path, monkeypatch):
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: False)
+    (tmp_path / triage.REQUEST_FILE).write_text(
+        '{"requested_at": "2020-01-01T00:00:00+00:00"}')
+    triage.tick(cfg, deps, "targets.yaml")
+    assert triage.load_request(tmp_path) is None
+    [(template, ctx)] = deps.notifier.sent
+    assert template == "triage_report"
+    assert ctx["lines"] == ["skipped — no capacity within 2 h"]
+
+
+def test_tick_launches_runner_when_capacity_free(tmp_path, monkeypatch):
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: False)
+    calls = []
+    monkeypatch.setattr(
+        triage.subprocess, "run",
+        lambda args, **k: calls.append(args) or
+        _subprocess.CompletedProcess(args, 0, "", ""))
+    triage.enqueue(tmp_path)
+    triage.tick(cfg, deps, "/etc/targets.yaml")
+    [launch] = calls
+    assert launch[:5] == ["tmux", "new-session", "-d", "-s", "triage"]
+    assert "--triage-run" in launch[5]
+    assert "/etc/targets.yaml" in launch[5]
+    assert sys.executable in launch[5]
+    # request stays until the runner consumes it → claims stay paused
+    assert triage.load_request(tmp_path) is not None
+
+
+def test_tick_waits_when_capacity_full(tmp_path, monkeypatch):
+    from dispatcher.state import Stage, TaskState, save
+    cfg = _sweep_cfg(tmp_path)  # capacity=2
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: False)
+    for issue in (1, 2):
+        save(tmp_path, TaskState(
+            issue=issue, target="a", stage=Stage.IMPLEMENT, slot=issue - 1,
+            worktree="/w", branch="b", title="t", updated_at="now"))
+    calls = []
+    monkeypatch.setattr(triage.subprocess, "run",
+                        lambda args, **k: calls.append(args))
+    triage.enqueue(tmp_path)
+    triage.tick(cfg, deps, "targets.yaml")
+    assert calls == []
+    assert triage.load_request(tmp_path) is not None
+
+
+def test_pass_skips_claims_and_reduces_capacity_while_triage(tmp_path,
+                                                             monkeypatch):
+    from dispatcher import main as dmain
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    monkeypatch.setattr(triage, "running", lambda: True)
+    monkeypatch.setattr(triage, "tick", lambda *a, **k: None)
+    monkeypatch.setattr(dmain, "fetch_usage", lambda *a, **k: OK_USAGE)
+    for fn in ("_handle_telegram", "_budget_edge", "_wake_ci", "_poll_prs",
+               "_resume_woken", "_spawn_feedback", "_flush_done",
+               "_prune_snapshots", "_apply_intents"):
+        monkeypatch.setattr(dmain, fn, lambda *a, **k: None)
+    seen = {}
+
+    def spy_claim(cfg_seen, *a, **k):
+        seen["capacity"] = cfg_seen.capacity
+
+    monkeypatch.setattr(dmain, "_claim_new", spy_claim)
+    dmain.run_pass(cfg, deps)          # running → pending → no claim at all
+    assert seen == {}
+
+    monkeypatch.setattr(triage, "running", lambda: False)
+    dmain.run_pass(cfg, deps)          # idle → claims run at full capacity
+    assert seen["capacity"] == cfg.capacity

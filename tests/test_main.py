@@ -851,7 +851,7 @@ def test_pass_crash_files_issue_and_reraises(tmp_path, monkeypatch):
     gh = FakeGitHub()
     d = deps(gh, FakeSessions())
 
-    def boom(cfg_, deps_, dry_run=False):
+    def boom(cfg_, deps_, dry_run=False, config_path="targets.yaml"):
         raise RuntimeError("rank.py exploded")
 
     monkeypatch.setattr(main, "run_pass", boom)
