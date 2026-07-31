@@ -117,6 +117,23 @@ unhittable:
 
 ## Rollout
 
-Seed-converged like everything else: merge to main, the box's updater pulls,
-`systemctl --user daemon-reload` + timer re-enable happen via the existing
-unit-convergence path. No manual box steps.
+Four of the five changes are seed-converged: merge to main, the box's updater
+pulls, and `systemctl --user daemon-reload` + timer re-enable happen via the
+existing unit-convergence path. The hourly keepalive timer, the alert units,
+the dispatcher auth-dark edge and the update.sh credential convergence all
+land on the next updater pass with no manual box steps.
+
+The fifth — the `CLAUDE_CONFIG_DIR` export in `~/.profile` (§4, second half)
+— does **not** converge. `provision/bootstrap.sh` runs once at provision time
+and is never re-invoked by `update.sh`, so it applies to newly provisioned
+boxes only. An existing box keeps the wrong-store trap for interactive
+logins until it is rebuilt, and gets only the update.sh half of §4 (a
+wrong-store login still self-heals within one updater pass, just after the
+fact). To close it now, run once per existing box:
+
+```
+ssh agent@<box> 'grep -qxF '\''export CLAUDE_CONFIG_DIR="$HOME/agent-ops-state/claude-home"'\'' ~/.profile || printf "\nexport CLAUDE_CONFIG_DIR=\"\$HOME/agent-ops-state/claude-home\"\n" >> ~/.profile'
+```
+
+(Moving the block into `update.sh` would make it converge, but that is a
+design change and is deliberately not done here.)
