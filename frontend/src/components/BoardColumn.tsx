@@ -1,4 +1,5 @@
 import type { TaskCard } from '../lib/api'
+import type { Accent } from '../lib/capacity'
 import { TaskCardView } from './TaskCard'
 
 export interface ColumnProps {
@@ -6,9 +7,10 @@ export interface ColumnProps {
   pendingByIssue: ReadonlyMap<number, readonly string[]>
   collapsed: boolean
   onToggle: () => void
+  accent: Accent
 }
 
-export function BoardColumn({ column, pendingByIssue, collapsed, onToggle }: ColumnProps) {
+export function BoardColumn({ column, pendingByIssue, collapsed, onToggle, accent }: ColumnProps) {
   return (
     <section data-testid={`column-${column.key}`} className="w-64 shrink-0">
       <button
@@ -26,6 +28,7 @@ export function BoardColumn({ column, pendingByIssue, collapsed, onToggle }: Col
               key={card.issue}
               card={card}
               pendingActions={pendingByIssue.get(card.issue)}
+              accent={accent}
             />
           ))}
         </div>

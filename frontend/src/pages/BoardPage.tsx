@@ -1,5 +1,7 @@
 import { BoardColumn } from '../components/BoardColumn'
 import { BudgetBar } from '../components/BudgetBar'
+import { CapacityMeter } from '../components/CapacityMeter'
+import { capacityAccent } from '../lib/capacity'
 import { useBudget, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useUiStore } from '../store/ui'
 
@@ -27,9 +29,7 @@ export function BoardPage() {
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <span className="text-sm text-gray-600">
-          {capacity.active}/{capacity.capacity} active · slots {capacity.slots_used}/{capacity.max_slots}
-        </span>
+        <CapacityMeter capacity={capacity} />
         {/* A failed /api/budget must not silently vanish the gauge — the
             operator would read "no gauge" as "nothing to worry about". */}
         {budgetQuery.isError ? (
@@ -51,6 +51,7 @@ export function BoardPage() {
             pendingByIssue={pendingByIssue}
             collapsed={collapsedColumns[column.key] ?? false}
             onToggle={() => toggleColumn(column.key)}
+            accent={capacityAccent(capacity)}
           />
         ))}
       </div>

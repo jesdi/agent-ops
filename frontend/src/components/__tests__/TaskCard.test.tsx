@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { TaskCardView } from '../TaskCard'
-import { parkedCard, reviewCard } from '../../test/fixtures'
+import { inProgressCard, loginParkedCard, parkedCard, reviewCard } from '../../test/fixtures'
 
 function renderCard(card: typeof parkedCard, pendingActions?: string[]) {
   return render(
@@ -34,4 +34,20 @@ it('shows the feedback-queued badge when feedback_pending', () => {
 it('hides the badge otherwise', () => {
   renderCard({ ...parkedCard, feedback_pending: false })
   expect(screen.queryByText('feedback queued')).not.toBeInTheDocument()
+})
+
+it('marks a card that holds a capacity unit, in text and not only colour', () => {
+  renderCard({ ...inProgressCard, consuming_capacity: true })
+  expect(screen.getByText('holding a capacity unit')).toBeInTheDocument()
+})
+
+it('leaves a card that holds no unit unmarked', () => {
+  renderCard({ ...parkedCard, consuming_capacity: false })
+  expect(screen.queryByText('holding a capacity unit')).not.toBeInTheDocument()
+})
+
+it('AWKWARD: a login-parked card is marked — parked, yet still consuming', () => {
+  renderCard(loginParkedCard)
+  expect(screen.getByText('parked: parked-login')).toBeInTheDocument()
+  expect(screen.getByText('holding a capacity unit')).toBeInTheDocument()
 })
