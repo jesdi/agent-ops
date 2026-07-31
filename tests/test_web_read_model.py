@@ -142,3 +142,42 @@ def test_task_card_carries_park_note():
     t = make_task(park="parked", park_note="which URL?")
     card = task_card(t, model="opus", attached=False)
     assert card.park_note == "which URL?"
+
+
+def test_task_card_flags_an_unparked_in_flight_task():
+    card = task_card(make_task(stage=Stage.IMPLEMENT), model="opus",
+                     attached=False)
+    assert card.consuming_capacity is True
+
+
+def test_task_card_does_not_flag_a_ci_parked_task():
+    card = task_card(make_task(stage=Stage.IMPLEMENT, park=PARK_CI),
+                     model="opus", attached=False)
+    assert card.consuming_capacity is False
+
+
+def test_task_card_flags_a_login_parked_task():
+    """The card the operator most needs to spot: parked, yet still holding a
+    unit, which is why the dispatcher has stopped claiming."""
+    card = task_card(make_task(stage=Stage.SPEC, park=PARK_LOGIN),
+                     model="opus", attached=False)
+    assert card.consuming_capacity is True
+
+
+def test_flagged_cards_reconcile_with_the_capacity_count():
+    """What the operator does by eye: count the accented cards, compare to the
+    header. The two must never disagree."""
+    tasks = [
+        make_task(issue=1, stage=Stage.IMPLEMENT),
+        make_task(issue=2, stage=Stage.SPEC, park=PARK_LOGIN),
+        make_task(issue=3, stage=Stage.IMPLEMENT, park=PARK_CI),
+        make_task(issue=4, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_REVIEW),
+        make_task(issue=5, stage=Stage.DONE),
+        make_task(issue=6, stage=Stage.FAILED),
+        make_task(issue=7, stage=Stage.QUEUED),
+    ]
+    board = build_board(tasks, capacity=3, models={}, attached=set())
+    flagged = [c for col in board.columns for c in col.cards
+               if c.consuming_capacity]
+    assert len(flagged) == board.capacity.active
+    assert sorted(c.issue for c in flagged) == [1, 2, 7]

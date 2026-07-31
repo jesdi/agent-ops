@@ -159,6 +159,11 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
         return None
 
 
+def consumes_capacity(t: TaskState) -> bool:
+    """One task's answer to "does this hold a capacity unit?" — see active()."""
+    return t.stage in IN_FLIGHT_STAGES and (not t.park or t.park == PARK_LOGIN)
+
+
 def active(tasks: list[TaskState]) -> list[TaskState]:
     """Tasks consuming capacity: unparked ones, plus login-parked ones —
     "parked ⇒ container stopped" holds for every park except PARK_LOGIN,
@@ -166,9 +171,7 @@ def active(tasks: list[TaskState]) -> list[TaskState]:
     Counting it frees the dispatcher from claiming new work during a
     box-wide auth expiry, when every fresh session would hit the same
     prompt."""
-    return [t for t in tasks
-            if t.stage in IN_FLIGHT_STAGES
-            and (not t.park or t.park == PARK_LOGIN)]
+    return [t for t in tasks if consumes_capacity(t)]
 
 
 def parked(tasks: list[TaskState]) -> list[TaskState]:

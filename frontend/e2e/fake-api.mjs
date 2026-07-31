@@ -18,6 +18,8 @@ const parkedCard = {
   stage: 'implement', park: 'question', column: 'parked', slot: 1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
   updated_at: '2026-07-25T10:00:00Z', attached: false,
+  // question-parked: container stopped, unit released
+  consuming_capacity: false,
 }
 
 const state = {
@@ -33,7 +35,7 @@ const state = {
       { key: 'failed', title: 'Failed', cards: [] },
       { key: 'pr-open', title: 'PR open', cards: [] },
     ],
-    capacity: { active: 1, capacity: 3, slots_used: 1, max_slots: 3 },
+    capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 3 },
   },
   queue: { targets: [] },
   budget: {
@@ -131,9 +133,12 @@ const server = createServer(async (req, res) => {
     const parked = state.board.columns.find((c) => c.key === 'parked')
     const inProgress = state.board.columns.find((c) => c.key === 'in-progress')
     inProgress.cards.push(
-      ...parked.cards.map((c) => ({ ...c, column: 'in-progress', park: '' })),
+      ...parked.cards.map((c) => ({
+        ...c, column: 'in-progress', park: '', consuming_capacity: true,
+      })),
     )
     parked.cards = []
+    state.board.capacity = { ...state.board.capacity, active: inProgress.cards.length }
     push(['board', 'history'])
     return json(200, { ok: true })
   }
