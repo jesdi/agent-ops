@@ -2,14 +2,22 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from dispatcher.state import (
     IN_FLIGHT_STAGES,
     NO_SLOT,
+    PARK_CI,
+    PARK_HUMAN,
+    PARK_LOGIN,
     PARK_REVIEW,
+    PARK_WAKE,
     Stage,
     StageSignal,
     TaskState,
+    active,
     allocate_slot,
+    consumes_capacity,
     delete,
     load,
     load_all,
@@ -99,10 +107,8 @@ def test_read_stage_signal_missing_or_corrupt(tmp_path: Path):
     assert read_stage_signal(tmp_path) is None
 
 
-from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_WAKE,
-                              Stage, TaskState,
-                              active, clear_waiting, has_waiting, load,
-                              mark_waiting, parked, read_stage_signal, save)
+from dispatcher.state import (clear_waiting, has_waiting, mark_waiting,
+                              parked)
 
 
 def _task(issue=1, stage=Stage.IMPLEMENT, park=""):
@@ -334,3 +340,47 @@ def test_delete_removes_state_file_and_is_idempotent(tmp_path):
     delete(tmp_path, 9)
     assert load(tmp_path, 9) is None
     delete(tmp_path, 9)  # no raise
+
+
+def test_consumes_capacity_unparked_in_flight_task():
+    assert consumes_capacity(make(stage=Stage.IMPLEMENT))
+
+
+@pytest.mark.parametrize("stage", sorted(IN_FLIGHT_STAGES, key=lambda s: s.value))
+def test_consumes_capacity_true_for_every_in_flight_stage(stage):
+    assert consumes_capacity(make(stage=stage))
+
+
+@pytest.mark.parametrize("stage", [s for s in Stage if s not in IN_FLIGHT_STAGES])
+def test_consumes_capacity_false_for_terminal_stages(stage):
+    assert not consumes_capacity(make(stage=stage))
+
+
+@pytest.mark.parametrize("park,expected", [
+    ("", True),
+    # the one park that keeps a live container: it must keep counting, or the
+    # dispatcher would claim fresh work during a box-wide auth expiry
+    (PARK_LOGIN, True),
+    (PARK_HUMAN, False),
+    (PARK_CI, False),
+    (PARK_WAKE, False),
+    (PARK_REVIEW, False),
+])
+def test_consumes_capacity_park_truth_table(park, expected):
+    t = replace(make(stage=Stage.IMPLEMENT), park=park)
+    assert consumes_capacity(t) is expected
+
+
+def test_active_is_exactly_the_predicate_over_a_mixed_fixture():
+    """The extraction must not let active() and the predicate drift apart."""
+    tasks = [
+        make(issue=1, stage=Stage.IMPLEMENT),
+        replace(make(issue=2, stage=Stage.SPEC), park=PARK_LOGIN),
+        replace(make(issue=3, stage=Stage.IMPLEMENT), park=PARK_CI),
+        replace(make(issue=4, stage=Stage.AWAITING_SPEC_REVIEW), park=PARK_REVIEW),
+        make(issue=5, stage=Stage.DONE),
+        make(issue=6, stage=Stage.FAILED),
+        make(issue=7, stage=Stage.QUEUED),
+    ]
+    assert active(tasks) == [t for t in tasks if consumes_capacity(t)]
+    assert [t.issue for t in active(tasks)] == [1, 2, 7]
