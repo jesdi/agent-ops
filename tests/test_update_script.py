@@ -2,6 +2,7 @@
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -407,3 +408,61 @@ def test_failed_credentials_fails_pass_and_retries_next_pass(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
     assert "credentials ran" in calls(box)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: credential convergence — freshest valid host login -> claude-home
+# ---------------------------------------------------------------------------
+
+VALID_CREDS = '{"claudeAiOauth": {"accessToken": "sk-live", "expiresAt": 1}}'
+
+
+def _creds_setup(box, tmp_path, host_body, host_newer=True):
+    """Write a host credentials file and seed claude-home with a stale copy."""
+    host = tmp_path / "hostclaude" / ".credentials.json"
+    host.parent.mkdir(parents=True, exist_ok=True)
+    host.write_text(host_body)
+    ch = box.state / "claude-home" / ".credentials.json"
+    ch.parent.mkdir(parents=True, exist_ok=True)
+    ch.write_text('{"claudeAiOauth": {"accessToken": "sk-stale"}}')
+    stamp = time.time() + (60 if host_newer else -60)
+    os.utime(host, (stamp, stamp))
+    box.env["AGENT_OPS_HOST_CREDS"] = str(host)
+    return host, ch
+
+
+def test_newer_valid_host_creds_converge_into_claude_home(box, tmp_path):
+    _, ch = _creds_setup(box, tmp_path, VALID_CREDS, host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-live" in ch.read_text()
+    assert (ch.stat().st_mode & 0o777) == 0o600
+
+
+def test_older_host_creds_left_alone(box, tmp_path):
+    _, ch = _creds_setup(box, tmp_path, VALID_CREDS, host_newer=False)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-stale" in ch.read_text()
+
+
+def test_corrupt_host_creds_never_copied(box, tmp_path):
+    _, ch = _creds_setup(box, tmp_path, "not json {", host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-stale" in ch.read_text()
+
+
+def test_tokenless_host_creds_never_copied(box, tmp_path):
+    _, ch = _creds_setup(box, tmp_path,
+                         '{"claudeAiOauth": {"accessToken": ""}}',
+                         host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-stale" in ch.read_text()
+
+
+def test_missing_host_creds_is_a_noop(box, tmp_path):
+    box.env["AGENT_OPS_HOST_CREDS"] = str(tmp_path / "nope" / "creds.json")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr  # must not fail under set -e

@@ -112,6 +112,30 @@ if [ -n "$changed" ]; then
   done
 fi
 
+# --- credentials: converge freshest login into claude-home -------------------
+# Spec 2026-07-31-auth-resilience §4: a manual `claude` login defaults to
+# ~/.claude, but the fleet (containers, budget check, keepalive) reads
+# claude-home. Copy the host store over claude-home's when it is strictly
+# newer AND carries a token — a wrong-store login self-heals within one
+# updater pass. Corrupt or tokenless files are never copied.
+HOST_CREDS="${AGENT_OPS_HOST_CREDS:-$HOME/.claude/.credentials.json}"
+CH_CREDS="$STATE_DIR/claude-home/.credentials.json"
+if [ -f "$HOST_CREDS" ] \
+   && { [ ! -f "$CH_CREDS" ] || [ "$HOST_CREDS" -nt "$CH_CREDS" ]; } \
+   && python3 - "$HOST_CREDS" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, json.JSONDecodeError):
+    sys.exit(1)
+sys.exit(0 if d.get("claudeAiOauth", {}).get("accessToken") else 1)
+PY
+then
+  mkdir -p "$STATE_DIR/claude-home"
+  install -m 600 "$HOST_CREDS" "$CH_CREDS"
+  echo "agent-ops update: converged fresher host credentials into claude-home"
+fi
+
 # Claude-home convergence (ADR 0003): like unit sync, runs every pass to
 # heal drift, not just on rev deltas. A failure fails the pass (set -e) —
 # that is the loud surfacing channel for e.g. a pin mismatch.
