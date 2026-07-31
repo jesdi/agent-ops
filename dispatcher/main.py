@@ -455,8 +455,21 @@ def _grace_elapsed(cfg: Config, task: TaskState) -> bool:
     return age >= cfg.spec_review_grace_minutes * 60
 
 
+def _redact_git_error(msg: str) -> str:
+    """First line of a git error message, with embedded credentials removed."""
+    first = msg.split("\n")[0]
+    return re.sub(r"://[^@\s]*@", "://<redacted>@", first)
+
+
+def _spec_note(pub: "spec_publish.PublishResult") -> str:
+    """Format a PublishResult into the one-line string added to Telegram notes."""
+    if pub.error:
+        return f"⚠️ spec is local only: {_redact_git_error(pub.error)}"
+    return f"spec: {pub.url}"
+
+
 def _park_for_review(cfg: Config, deps: Deps, target: Target,
-                     task: TaskState) -> None:
+                     task: TaskState, dry_run: bool = False) -> None:
     """Park a finished spec for a human to read whenever they wake up. The
     only park that also releases the SLOT: the spec stage never used the
     slot's ports and worktrees are per-issue, so resume can take any free
@@ -464,9 +477,12 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     overnight run at MAX_SLOTS specs."""
     tail = deps.sessions.capture_tail(task.issue)
     note = tail.strip() or "(no detail)"
-    rel = spec_publish.relative_artifact(task.worktree, task.artifact)
-    if rel:
-        note += f"\nspec: {spec_publish.spec_url(target.repo, task.branch, rel)}"
+    if task.artifact:
+        pub = spec_publish.ensure_published(
+            worktree=task.worktree, branch=task.branch,
+            repo=target.repo, issue=task.issue,
+            artifact=task.artifact, dry_run=dry_run)
+        note += f"\n{_spec_note(pub)}"
     # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
     # the task is not stranded — the session is ended and the operator can still
     # reach it via /attach, the console `resume` intent, or plain-text wakes.
@@ -726,7 +742,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             _park_for_input(cfg, deps, target, task, act.note)
             return
         if isinstance(act, ParkForReview):
-            _park_for_review(cfg, deps, target, task)
+            _park_for_review(cfg, deps, target, task, dry_run=dry_run)
             return
         if isinstance(act, ParkForCI):
             _park_for_ci(cfg, deps, target, task, act.run_id)
@@ -756,10 +772,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 worktree=task.worktree, branch=task.branch,
                 repo=target.repo, issue=task.issue,
                 artifact=act.artifact, dry_run=dry_run)
-            if pub.error:
-                spec_line = f"⚠️ spec is local only: {pub.error}"
-            else:
-                spec_line = f"spec: {pub.url}"
+            spec_line = _spec_note(pub)
+            if not pub.error:
                 try:
                     deps.github.comment(
                         target, task.issue,
@@ -767,7 +781,6 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 except Exception as exc:
                     print(f"[warn] spec link comment failed for "
                           f"#{task.issue}: {exc}", file=sys.stderr)
-            continue
         elif isinstance(act, Notify):
             note = act.note + (f"\n{spec_line}" if spec_line else "")
             _notify(deps, target, task, act.template, note)

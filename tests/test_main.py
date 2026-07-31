@@ -383,6 +383,9 @@ def test_comment_failure_is_best_effort(tmp_path, monkeypatch):
     main.run_pass(c, d)  # must not raise
     assert load(c.state_dir, 42).stage is Stage.AWAITING_SPEC_REVIEW
     assert any(t == "awaiting_spec_review" for t in d.notifier.sent)
+    (tmpl, ctx), = [x for x in d.notifier.contexts
+                    if x[0] == "awaiting_spec_review"]
+    assert f"spec: {SPEC_URL}" in ctx["note"]
 
 
 def test_gate_respawn_clears_stale_artifact(tmp_path, monkeypatch):
@@ -2066,11 +2069,59 @@ def test_spec_parked_ping_links_spec(tmp_path, monkeypatch):
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "ready",
          "artifact": "docs/superpowers/specs/x-design.md"}))
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **kw: spec_publish.PublishResult(url=SPEC_URL))
     d = deps(sess=FakeSessions(alive={42}))
     main.run_pass(c, d)
     (tmpl, ctx), = [x for x in d.notifier.contexts if x[0] == "spec_parked"]
-    assert ("spec: https://github.com/jesdi/portfolio_eval/blob/"
-            "agent/task-42/docs/superpowers/specs/x-design.md") in ctx["note"]
+    assert f"spec: {SPEC_URL}" in ctx["note"]
+
+
+def test_spec_parked_note_says_local_only_when_publish_fails(
+        tmp_path, monkeypatch):
+    """_park_for_review must re-run ensure_published and surface its failure
+    in the morning ping so the operator knows the link is broken, not silently
+    embed a 404."""
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
+    wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+                   artifact="docs/superpowers/specs/x-design.md")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "ready",
+         "artifact": "docs/superpowers/specs/x-design.md"}))
+    monkeypatch.setattr(
+        main.spec_publish, "ensure_published",
+        lambda **kw: spec_publish.PublishResult(error="git push failed: auth"))
+    d = deps(sess=FakeSessions(alive={42}))
+    main.run_pass(c, d)
+    (tmpl, ctx), = [x for x in d.notifier.contexts if x[0] == "spec_parked"]
+    assert "⚠️ spec is local only: git push failed: auth" in ctx["note"]
+    # No URL anywhere — the operator must not see a link that 404s.
+    assert "https://github.com" not in ctx["note"]
+
+
+def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
+    """A tokenized remote URL in push stderr must not reach the Telegram note."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.SPEC)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "ready",
+         "artifact": "docs/specs/x-design.md"}))
+    token_error = (
+        "git push failed: fatal: unable to access "
+        "'https://x-access-token:ghp_SECRET@github.com/jesdi/r.git/': "
+        "The requested URL returned error: 403"
+    )
+    monkeypatch.setattr(
+        main.spec_publish, "ensure_published",
+        lambda **kw: spec_publish.PublishResult(error=token_error))
+    d = deps(sess=FakeSessions(alive={42}))
+    main.run_pass(c, d)
+    (tmpl, ctx), = [x for x in d.notifier.contexts
+                    if x[0] == "awaiting_spec_review"]
+    assert "ghp_SECRET" not in ctx["note"]
+    assert "⚠️ spec is local only:" in ctx["note"]
 
 
 def test_reply_to_the_spec_parked_message_wakes_the_task(tmp_path, monkeypatch):
