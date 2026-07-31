@@ -235,6 +235,78 @@ def test_sweep_budget_gate_skips_everything(tmp_path):
     assert "budget" in "\n".join(deps.notifier.sent[0][1]["lines"])
 
 
+def test_sweep_holds_cursor_when_every_write_failed(tmp_path):
+    """apply no longer raises on a gh failure, so an expired token or a rate
+    limit would otherwise complete the repo and advance its cursor — that
+    window would never be re-triaged. Nothing written + gh failures = hold."""
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    triage.save_cursors(tmp_path, {"o/a": OLD})
+    failed = ApplyResult(
+        labeled=0, comments=0, closes=(),
+        rejected=("#1: gh issue edit failed: HTTP 401",),
+        write_failures=("#1: gh issue edit failed: HTTP 401",))
+    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+         patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
+         patch.object(triage, "_run_session", return_value={"issues": []}), \
+         patch.object(triage.triage_apply, "apply", return_value=failed):
+        triage.run_sweep(cfg, deps)
+    assert triage.load_cursors(tmp_path)["o/a"] == OLD
+    joined = "\n".join(deps.notifier.sent[0][1]["lines"])
+    assert "cursor held" in joined
+
+
+def test_sweep_advances_cursor_when_some_writes_landed(tmp_path):
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    triage.save_cursors(tmp_path, {"o/a": OLD})
+    partial = ApplyResult(
+        labeled=1, comments=0, closes=(),
+        rejected=("#2: gh issue edit failed: HTTP 500",),
+        write_failures=("#2: gh issue edit failed: HTTP 500",))
+    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+         patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
+         patch.object(triage, "_run_session", return_value={"issues": []}), \
+         patch.object(triage.triage_apply, "apply", return_value=partial):
+        triage.run_sweep(cfg, deps)
+    # re-running the window would duplicate the write that DID land
+    assert triage.load_cursors(tmp_path)["o/a"] != OLD
+    assert "cursor held" not in "\n".join(deps.notifier.sent[0][1]["lines"])
+
+
+def test_sweep_advances_cursor_when_rejections_are_only_validation(tmp_path):
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    triage.save_cursors(tmp_path, {"o/a": OLD})
+    invalid = ApplyResult(labeled=0, comments=0, closes=(),
+                          rejected=("#1: unknown label(s) ['zzz']",))
+    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+         patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
+         patch.object(triage, "_run_session", return_value={"issues": []}), \
+         patch.object(triage.triage_apply, "apply", return_value=invalid):
+        triage.run_sweep(cfg, deps)
+    # nothing to retry: the agent's decision was invalid, not GitHub's fault
+    assert triage.load_cursors(tmp_path)["o/a"] != OLD
+
+
+def test_sweep_reports_an_unfittable_context_and_holds_the_cursor(tmp_path):
+    """ContextTooLargeError is the diagnosable end of the shed ladder: this
+    repo fails visibly with its cursor intact, rather than the container
+    getting an argv it cannot exec."""
+    cfg = _sweep_cfg(tmp_path)
+    deps = FakeDeps()
+    triage.save_cursors(tmp_path, {"o/a": OLD})
+    boom = triage.triage_prefetch.ContextTooLargeError(
+        "triage context is 200000 bytes with everything shed")
+    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+         patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
+         patch.object(triage, "_run_session", side_effect=boom):
+        triage.run_sweep(cfg, deps)
+    assert triage.load_cursors(tmp_path)["o/a"] == OLD
+    joined = "\n".join(deps.notifier.sent[0][1]["lines"])
+    assert "o/a: FAILED" in joined and "everything shed" in joined
+
+
 def test_sweep_rejected_decisions_reported(tmp_path):
     cfg = _sweep_cfg(tmp_path)
     deps = FakeDeps()
@@ -324,6 +396,36 @@ def test_run_session_prompt_never_in_argv_for_a_huge_blob(tmp_path):
     # bounded, and the session is told the context was cut
     assert len(prompt) < 100_000
     assert "truncated" in prompt
+
+
+def test_run_session_prompt_stays_under_the_argv_ceiling(tmp_path):
+    """The end-to-end invariant: the *rendered prompt* — blob plus template —
+    is what the container passes as one argv element, so the worst window
+    prefetch can produce must land under MAX_ARG_STRLEN with margin."""
+    from dispatcher.triage_prefetch import ARGV_CEILING_BYTES
+    cfg = _sweep_cfg(tmp_path)
+    tdir = tmp_path / "triage"
+    tdir.mkdir()
+    worst = {
+        "repo": "o/a", "cursor": "2026-07-30T05:30:00Z",
+        "issues": [{"number": n, "title": "T" * 250, "body": "b" * 5000,
+                    "author": "a", "labels": ["inbox"],
+                    "comments": [{"author": "x", "body": "c" * 900}
+                                 for _ in range(20)]}
+                   for n in range(100)],
+        "labels": [{"name": f"label-name-{i}", "description": "d" * 120}
+                   for i in range(400)],
+        "issue_types": [],
+        "open_issues": [{"number": n, "title": "t" * 60} for n in range(500)]}
+
+    def fake_run(args, capture_output=True, text=True, timeout=None):
+        (tdir / "o-a-2026-07-30.json").write_text('{"issues": []}')
+        return _subprocess.CompletedProcess(args, 0, "", "")
+
+    triage._run_session(cfg, "o/a", worst, "2026-07-30", run=fake_run)
+    written = (tdir / "o-a-2026-07-30-prompt.md").read_text().encode()
+    assert len(written) < ARGV_CEILING_BYTES
+    assert len(written) < 0.75 * ARGV_CEILING_BYTES  # real margin, not 5%
 
 
 def test_run_session_nonzero_rc_surfaces_rc_and_stderr(tmp_path):
