@@ -163,7 +163,14 @@ def _status_lines(cfg: Config) -> list[str]:
         lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
                      + (f" [{t.park}]" if t.park else "") + f" {slot}")
     lines = lines or ["(nothing in flight)"]
-    lines.append(f"capacity {len(active(tasks))}/{cfg.capacity}")
+    # The sweep holds a real capacity unit that active() cannot see (its work
+    # is a tmux session, not a TaskState) — _run_pass reduces effective
+    # capacity for it, so status must count it too or it reports 1/2 on a full
+    # box for as long as the sweep runs.
+    held = 1 if triage.running() else 0
+    if held:
+        lines.append("triage sweep running (holds 1 slot)")
+    lines.append(f"capacity {len(active(tasks)) + held}/{cfg.capacity}")
     return lines
 
 

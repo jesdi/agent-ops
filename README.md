@@ -110,6 +110,30 @@ flowchart LR
   rebuilds the session image when the `Containerfile` changes. Operating the
   box *is* merging PRs.
 
+### Daily backlog triage
+
+An `agent-ops-triage.timer` fires at 07:30 Europe/Madrid and enqueues a triage
+request; the dispatcher runs it in a real capacity slot (skipping the day if no
+slot frees within 2 h). Per repo, a **read-only** Claude session reads the
+issues touched since that repo's cursor and records decisions to a file;
+deterministic Python (`dispatcher/triage_apply.py`) is the only GitHub write
+path, applying labels and author questions. Closes are never executed — only
+suggested in the single Telegram report that closes the sweep.
+
+**Prerequisite — once per triaged repo, before its first sweep.** Triage
+records `auto` (routine enough to automate) or `human-required` (needs heavy
+human interaction) on the issues it judges, and a label that does not exist in
+the repo's inventory is rejected rather than created — the sweep never mutates
+label taxonomy. Create them up front, or the first sweep's report is a wall of
+`unknown label(s) ['auto']` rejections and nothing gets labeled:
+
+```bash
+gh label create auto --repo OWNER/REPO \
+  --description "Routine enough for an agent to take unattended" --force
+gh label create human-required --repo OWNER/REPO \
+  --description "Needs heavy human interaction; not agent-ready" --force
+```
+
 ## Two ways to drive it from your phone
 
 **Web console** (`web/` + `frontend/`) — the board view above, plus per-task
@@ -135,7 +159,7 @@ are never forceable).
 | `frontend/`     | React SPA — board, task pages, queue, failures, history      |
 | `telegram/`     | Outbound notifications/digests and inbound reply handling    |
 | `provision/`    | `bootstrap.sh`, systemd units, and the pull-based updater    |
-| `prompts/`      | Stage prompts (spec, plan, implement)                        |
+| `prompts/`      | Stage prompts (spec, plan, implement) and the triage prompt   |
 | `docs/adr/`     | Architecture decision records                                |
 | `tests/`        | pytest suite                                                 |
 | `Containerfile` | The per-session sandbox image                                |

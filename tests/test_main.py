@@ -1297,6 +1297,23 @@ def test_status_line_for_a_parked_task_puts_model_before_park(tmp_path):
                         f"[{PARK_HUMAN}] (slot 0)")
 
 
+def test_status_counts_the_slot_the_triage_sweep_holds(tmp_path, monkeypatch):
+    """The sweep's work is a tmux session, not a TaskState, so active() cannot
+    see it — but _run_pass reduces effective capacity for it. Without counting
+    it here, /status reports 'capacity 1/2' on a full box for the whole sweep,
+    which is the operator's primary visibility surface lying."""
+    c = cfg(tmp_path)
+    save(c.state_dir, TaskState(
+        issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
+        worktree="/wt", branch="agent/task-42", title="Fix rounding",
+        updated_at="2026-07-24T00:00:00+00:00"))
+    assert main._status_lines(c)[-1] == f"capacity 1/{c.capacity}"
+    monkeypatch.setattr(main.triage, "running", lambda: True)
+    lines = main._status_lines(c)
+    assert lines[-1] == f"capacity 2/{c.capacity}"
+    assert "triage sweep running (holds 1 slot)" in lines
+
+
 def test_status_reply_content_carries_the_status_lines(tmp_path, monkeypatch):
     """Finding C: FakeNotifier previously recorded only the template name, so
     no test could assert on what a /status reply actually contains."""
