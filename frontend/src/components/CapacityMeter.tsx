@@ -21,7 +21,9 @@ export function CapacityMeter({ capacity }: { capacity: CapacityView }) {
         aria-label="capacity units in use"
         aria-valuemin={0}
         aria-valuemax={capacity.capacity}
-        aria-valuenow={capacity.active}
+        // aria-valuenow must stay within [aria-valuemin, aria-valuemax] per ARIA spec;
+        // clamp it while aria-valuetext carries the truthful overflow state
+        aria-valuenow={Math.min(capacity.active, capacity.capacity)}
         aria-valuetext={`${capacity.active} of ${capacity.capacity} capacity units in use`}
         className="flex items-center gap-1"
       >

@@ -44,3 +44,11 @@ it('exposes the occupancy to assistive tech', () => {
   expect(bar).toHaveAttribute('aria-valuemax', '3')
   expect(bar).toHaveAttribute('aria-valuetext', '2 of 3 capacity units in use')
 })
+
+it('clamps aria-valuenow in overflow case but keeps aria-valuetext truthful', () => {
+  render(<CapacityMeter capacity={{ active: 3, capacity: 2, slots_used: 2, max_slots: 3 }} />)
+  const bar = screen.getByRole('progressbar', { name: 'capacity units in use' })
+  expect(bar).toHaveAttribute('aria-valuenow', '2')
+  expect(bar).toHaveAttribute('aria-valuemax', '2')
+  expect(bar).toHaveAttribute('aria-valuetext', '3 of 2 capacity units in use')
+})
