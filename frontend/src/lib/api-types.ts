@@ -526,6 +526,8 @@ export interface components {
             branch: string;
             /** Column */
             column: string;
+            /** Consuming Capacity */
+            consuming_capacity: boolean;
             /** Feedback Pending */
             feedback_pending: boolean;
             /** Issue */

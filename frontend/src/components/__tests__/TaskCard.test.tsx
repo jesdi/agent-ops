@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { TaskCardView } from '../TaskCard'
-import { parkedCard, reviewCard } from '../../test/fixtures'
+import { inProgressCard, loginParkedCard, parkedCard, reviewCard } from '../../test/fixtures'
 
 function renderCard(card: typeof parkedCard, pendingActions?: string[]) {
   return render(
@@ -34,4 +34,49 @@ it('shows the feedback-queued badge when feedback_pending', () => {
 it('hides the badge otherwise', () => {
   renderCard({ ...parkedCard, feedback_pending: false })
   expect(screen.queryByText('feedback queued')).not.toBeInTheDocument()
+})
+
+it('marks a card that holds a capacity unit, in text and not only colour', () => {
+  renderCard({ ...inProgressCard, consuming_capacity: true })
+  expect(screen.getByText('holding a capacity unit')).toBeInTheDocument()
+})
+
+it('leaves a card that holds no unit unmarked', () => {
+  renderCard({ ...parkedCard, consuming_capacity: false })
+  expect(screen.queryByText('holding a capacity unit')).not.toBeInTheDocument()
+})
+
+it('AWKWARD: a login-parked card is marked — parked, yet still consuming', () => {
+  renderCard(loginParkedCard)
+  expect(screen.getByText('parked: parked-login')).toBeInTheDocument()
+  expect(screen.getByText('holding a capacity unit')).toBeInTheDocument()
+})
+
+// The accent border is purely visual with no accessible surface of its own;
+// its text counterpart ('holding a capacity unit') is asserted separately above.
+// These class assertions exist specifically to catch a regressed ACCENT_BORDER
+// application — the sr-only span is gated independently and would pass without it.
+it('accent: consuming card gets blue border classes by default', () => {
+  renderCard({ ...inProgressCard, consuming_capacity: true })
+  expect(screen.getByTestId('card-41')).toHaveClass('border-l-4', 'border-l-blue-500')
+})
+
+it('accent: non-consuming card has no accent colour (transparent left border, pinned on hover)', () => {
+  renderCard({ ...parkedCard, consuming_capacity: false })
+  expect(screen.getByTestId('card-42')).not.toHaveClass('border-l-blue-500')
+  expect(screen.getByTestId('card-42')).not.toHaveClass('border-l-amber-500')
+  // hover:border-l-transparent must be present to pin the left border against
+  // hover:border-gray-400 (shorthand), which would otherwise expand to
+  // border-left-color and override the transparent baseline on hover.
+  expect(screen.getByTestId('card-42')).toHaveClass('border-l-transparent')
+  expect(screen.getByTestId('card-42')).toHaveClass('hover:border-l-transparent')
+})
+
+it('accent: amber accent is applied when passed explicitly', () => {
+  render(
+    <MemoryRouter>
+      <TaskCardView card={{ ...inProgressCard, consuming_capacity: true }} accent="amber" />
+    </MemoryRouter>,
+  )
+  expect(screen.getByTestId('card-41')).toHaveClass('border-l-4', 'border-l-amber-500')
 })

@@ -27,7 +27,9 @@ it('AWKWARD: budget source unavailable shows the consequence, not a gauge', asyn
       screen.getByText('usage unknown — dispatcher will not spawn'),
     ).toBeInTheDocument(),
   )
-  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('progressbar', { name: 'usage budget utilization' }),
+  ).not.toBeInTheDocument()
 })
 
 it('AWKWARD: a pending intent renders a badge on the affected card', async () => {
@@ -76,5 +78,29 @@ it('a failing /api/budget states the gap instead of silently dropping the gauge'
     expect(screen.getByTestId('budget-error')).toBeInTheDocument(),
   )
   expect(screen.getByTestId('budget-error')).toHaveTextContent('usage unknown')
-  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('progressbar', { name: 'usage budget utilization' }),
+  ).not.toBeInTheDocument()
+})
+
+it('AWKWARD: two parked cards, only the login-parked one holds a unit', async () => {
+  renderWithProviders(<BoardPage />)
+  await waitFor(() =>
+    expect(screen.getByTestId('card-45')).toBeInTheDocument(),
+  )
+  // login-parked: still running, still consuming
+  expect(screen.getByTestId('card-45')).toHaveTextContent('holding a capacity unit')
+  // CI-parked: container stopped, unit released
+  expect(screen.getByTestId('card-46')).not.toHaveTextContent('holding a capacity unit')
+})
+
+it('the accented cards reconcile with the header meter', async () => {
+  renderWithProviders(<BoardPage />)
+  await waitFor(() =>
+    expect(screen.getByRole('progressbar', { name: 'capacity units in use' }))
+      .toBeInTheDocument(),
+  )
+  expect(screen.getAllByText('holding a capacity unit')).toHaveLength(2)
+  expect(screen.getAllByTestId('cap-pip-filled')).toHaveLength(2)
+  expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
 })
