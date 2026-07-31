@@ -1,0 +1,12 @@
+[Unit]
+Description=agent-ops daily triage enqueue
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/agent-ops
+Environment=AGENT_OPS_STATE_DIR=%h/agent-ops-state
+EnvironmentFile=%h/agent-ops-state/op-token.env
+ExecStart=/usr/bin/env OP_SERVICE_ACCOUNT_TOKEN=${OP_SERVICE_ACCOUNT_AGENT_OPS_TOKEN} \
+  op run --env-file=%h/agent-ops/provision/op.env.tpl -- \
+  %h/agent-ops/.venv/bin/python -m dispatcher.main --config %h/agent-ops-state/targets.yaml --triage

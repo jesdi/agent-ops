@@ -73,3 +73,23 @@ def test_spec_prompt_keeps_approval_commit_and_signal_protocol():
     out = render_stage_prompt(Stage.SPEC, CTX)
     assert "docs: spec for #42 (agent-ops)" in out
     assert ".agent/stage.json" in out
+
+
+def test_render_triage_prompt():
+    from dispatcher.prompts import render_triage_prompt
+    text = render_triage_prompt({
+        "repo": "o/r",
+        "decisions_path": "/triage/o-r-2026-07-30.json",
+        "context_json": '{"issues": []}',
+    })
+    assert "o/r" in text
+    assert "/triage/o-r-2026-07-30.json" in text
+    assert '{"issues": []}' in text
+    assert "auto" in text and "human-required" in text
+
+
+def test_render_triage_prompt_missing_var_raises():
+    from dispatcher.prompts import render_triage_prompt
+    import pytest
+    with pytest.raises(KeyError):
+        render_triage_prompt({"repo": "o/r"})

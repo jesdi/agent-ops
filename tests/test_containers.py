@@ -117,3 +117,36 @@ def test_setup_cmd_splits_multiword_commands(tmp_path: Path, monkeypatch):
     wt, _ = make_worktree(tmp_path)
     argv = containers.setup_cmd("task-7-setup", wt, "bash scripts/provision.sh --fast")
     assert argv[-3:] == ["bash", "scripts/provision.sh", "--fast"]
+
+
+def test_triage_cmd_read_only_clone_and_report_mount(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    from dispatcher import containers
+    cmd = containers.triage_cmd(
+        "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+        "claude-opus-4-8", "/triage/o-r-2026-07-30-prompt.md")
+    assert cmd[:3] == ["podman", "run", "--rm"]
+    assert "-it" not in cmd
+    assert "/repos/r:/repos/r:ro" in cmd
+    assert "/state/triage:/triage" in cmd
+    assert f"{tmp_path / 'state'}/claude-home:/root/.claude" in cmd
+    i = cmd.index("-w")
+    assert cmd[i + 1] == "/repos/r"
+    assert cmd[cmd.index("--memory") + 1] == "1500m"
+    # The prompt is read from the /triage mount inside the container, never
+    # passed as an argv string (128 KiB MAX_ARG_STRLEN), so the tail is a
+    # shell line — the only place command substitution can happen.
+    assert cmd[-3:-1] == ["bash", "-c"]
+    assert cmd[-1] == ('claude -p "$(cat /triage/o-r-2026-07-30-prompt.md)" '
+                       '--permission-mode auto --model claude-opus-4-8')
+
+
+def test_triage_cmd_quotes_prompt_path_and_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    from dispatcher import containers
+    cmd = containers.triage_cmd(
+        "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+        "m; rm -rf /", "/triage/a b; rm -rf /.md")
+    shell_line = cmd[-1]
+    assert "'/triage/a b; rm -rf /.md'" in shell_line
+    assert "'m; rm -rf /'" in shell_line

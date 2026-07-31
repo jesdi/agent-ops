@@ -22,7 +22,7 @@ from pathlib import Path
 from dispatcher.budget import fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
-from dispatcher import eventlog, failures, intents, pr_poll, queue_ops, relogin
+from dispatcher import eventlog, failures, intents, pr_poll, queue_ops, relogin, triage
 from dispatcher.github import GitHubClient
 from dispatcher import spec_publish
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
@@ -163,7 +163,14 @@ def _status_lines(cfg: Config) -> list[str]:
         lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
                      + (f" [{t.park}]" if t.park else "") + f" {slot}")
     lines = lines or ["(nothing in flight)"]
-    lines.append(f"capacity {len(active(tasks))}/{cfg.capacity}")
+    # The sweep holds a real capacity unit that active() cannot see (its work
+    # is a tmux session, not a TaskState) — _run_pass reduces effective
+    # capacity for it, so status must count it too or it reports 1/2 on a full
+    # box for as long as the sweep runs.
+    held = 1 if triage.running() else 0
+    if held:
+        lines.append("triage sweep running (holds 1 slot)")
+    lines.append(f"capacity {len(active(tasks)) + held}/{cfg.capacity}")
     return lines
 
 
@@ -1043,18 +1050,29 @@ def _sandboxed_state(cfg: Config):
         yield replace(cfg, state_dir=str(sandbox))
 
 
-def run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
+             config_path: str = "targets.yaml") -> None:
     if dry_run:
         with _sandboxed_state(cfg) as sandboxed:
-            _run_pass(sandboxed, deps, dry_run)
+            _run_pass(sandboxed, deps, dry_run, config_path)
         return
-    _run_pass(cfg, deps, dry_run)
+    _run_pass(cfg, deps, dry_run, config_path)
 
 
-def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
+              config_path: str = "targets.yaml") -> None:
     if not dry_run:
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
+        triage.tick(cfg, deps, config_path)
+    # Evaluate each triage signal once — triage.running() is a real tmux
+    # subprocess; calling it per target would spawn (1 + len(targets)) processes
+    # each pass. The two signals are semantically distinct: eff is reduced when
+    # the sweep is running (it holds a real capacity unit active() cannot see);
+    # claims are paused when any request is in flight (pending = file OR running).
+    sweep_running = triage.running()
+    eff = replace(cfg, capacity=max(0, cfg.capacity - 1)) if sweep_running else cfg
+    claims_paused = triage.pending(cfg.state_dir)
     _handle_telegram(cfg, deps, dry_run)
     usage = fetch_usage(cfg.state_dir)
     budget_ok = should_spawn(usage, cfg.budget_threshold,
@@ -1062,24 +1080,24 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
     _budget_edge(cfg, deps, budget_ok,
                  note=f"{usage.source}: {usage.utilization:.0%}, "
                       f"reset in {usage.minutes_to_reset:.0f}m")
-    for target in cfg.targets:
+    for target in eff.targets:
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
-            _drive_task(cfg, deps, target, task, budget_ok, dry_run)
-        _wake_ci(cfg, deps, target)
-        _poll_prs(cfg, deps, target, dry_run)
-        _resume_woken(cfg, deps, target, budget_ok)
-        _spawn_feedback(cfg, deps, target, budget_ok)
-        if budget_ok:
-            _claim_new(cfg, deps, target, dry_run)
+            _drive_task(eff, deps, target, task, budget_ok, dry_run)
+        _wake_ci(eff, deps, target)
+        _poll_prs(eff, deps, target, dry_run)
+        _resume_woken(eff, deps, target, budget_ok)
+        _spawn_feedback(eff, deps, target, budget_ok)
+        if budget_ok and not claims_paused:
+            _claim_new(eff, deps, target, dry_run)
     _flush_done(cfg)
 
 
 def guarded_pass(cfg: Config, deps: Deps, config_path: str,
                  dry_run: bool = False) -> None:
     try:
-        run_pass(cfg, deps, dry_run=dry_run)
+        run_pass(cfg, deps, dry_run=dry_run, config_path=config_path)
     except Exception:
         rep = failures.FailureReport(
             klass="pass-crash", target="", issue=0, title="(dispatcher)",
@@ -1099,6 +1117,8 @@ def main() -> None:
     ap.add_argument("--config", default="targets.yaml")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--digest", action="store_true")
+    ap.add_argument("--triage", action="store_true")
+    ap.add_argument("--triage-run", action="store_true")
     args = ap.parse_args()
     cfg = load_config(args.config)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
@@ -1107,6 +1127,13 @@ def main() -> None:
                                   console_url=cfg.console_url))
     if args.digest:
         send_digest(cfg, deps)
+    elif args.triage:
+        if triage.enqueue(cfg.state_dir):
+            print("triage request enqueued")
+        else:
+            print("triage already pending or running; not enqueued")
+    elif args.triage_run:
+        triage.guarded_sweep(cfg, deps)
     else:
         with pass_lock(cfg.state_dir):
             guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)

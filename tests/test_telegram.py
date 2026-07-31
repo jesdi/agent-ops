@@ -136,3 +136,31 @@ def test_spec_parked_carries_the_console_deep_link_when_configured():
 def test_pr_lifecycle_templates_render(template, frag):
     text = render(template, issue=7, title="Add widget", url="u", note="n")
     assert "#7" in text and "Add widget" in text and frag in text
+
+
+def test_triage_report_template():
+    from telegram.templates import render
+    text = render("triage_report", lines=["o/a: 2 labeled", "o/b: FAILED"])
+    assert text == "🧹 agent-ops triage\no/a: 2 labeled\no/b: FAILED"
+
+
+def test_triage_report_truncated_under_the_telegram_limit():
+    """Over 4096 chars Telegram returns 400, Notifier.send swallows the
+    OSError, and the whole report — the sweep's only output — vanishes."""
+    from telegram.templates import TRIAGE_REPORT_LIMIT, render
+    lines = [f"o/a: rejected line {n} " + "x" * 80 for n in range(200)]
+    text = render("triage_report", lines=lines, triage_dir="/state/triage")
+    assert len(text) <= TRIAGE_REPORT_LIMIT
+    body = text.splitlines()
+    assert body[1] == lines[0]  # keeps the head of the report
+    assert body[-1].startswith("… ")
+    assert body[-1].endswith("more line(s) (see /state/triage)")
+    dropped = int(body[-1].split()[1])
+    assert dropped == len(lines) - (len(body) - 2)
+
+
+def test_triage_report_names_the_state_dir_when_not_given():
+    from telegram.templates import render
+    text = render("triage_report", lines=[f"line {n} " + "y" * 90
+                                          for n in range(200)])
+    assert text.splitlines()[-1].endswith("(see <state_dir>/triage/)")

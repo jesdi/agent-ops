@@ -72,6 +72,42 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     )
 
 
+def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
+               cpus: str, model: str, prompt_path: str) -> list[str]:
+    """Headless read-only triage session: argv for subprocess.run (no tmux,
+    no -it). The clone is :ro — the session decides, it never writes; its
+    only writable surface is /triage, where the prompt is read from and the
+    decisions file lands.
+
+    prompt_path is the prompt file's path *inside* the container (under
+    /triage) — the prompt itself is never an element of this argv. Linux caps
+    a single argv string at MAX_ARG_STRLEN (128 KiB) regardless of total
+    ARG_MAX, and a busy repo's context blob passed inline made subprocess.run
+    raise E2BIG (not SweepError), so the repo reported FAILED, its cursor never
+    advanced, and the same oversized window retried every morning forever.
+
+    So the container runs `claude -p "$(cat …)"` under a shell — the same file
+    + command-substitution idiom as Sessions.spawn_stage. That keeps the
+    dispatcher's own execve small; the container's own execve is kept under the
+    same 128 KiB ceiling by triage_prefetch's context budget, which is measured
+    on exactly the serialization that lands in the file. Only the shell line is
+    composed; the podman argv stays a list so its shape stays assertable."""
+    home = str(Path.home())
+    claude = (f"claude -p \"$(cat {shlex.quote(prompt_path)})\" "
+              f"--permission-mode auto --model {shlex.quote(model)}")
+    return [
+        "podman", "run", "--rm", "--name", name,
+        "--memory", memory, "--cpus", cpus,
+        "-e", "CLAUDE_CONFIG_DIR=/root/.claude",
+        "-v", f"{clone}:{clone}:ro", "-w", clone,
+        "-v", f"{_state_dir()}/claude-home:/root/.claude",
+        "-v", f"{home}/.config/gh:/root/.config/gh:ro",
+        "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
+        "-v", f"{triage_dir}:/triage",
+        image(), "bash", "-c", claude,
+    ]
+
+
 def setup_cmd(name: str, worktree: str, setup: str) -> list[str]:
     clone = clone_root(worktree)
     return [

@@ -51,6 +51,7 @@ class Config:
     # file is flushed. The durable record (merged PR, closed issue, board
     # item, event log) outlives the card.
     done_retention_days: int = 7
+    triage_model: str = ""  # "" = use models.default for triage sessions
 
 
 def _target(raw: dict) -> Target:
@@ -82,6 +83,7 @@ def load_config(path: str | Path) -> Config:
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
         spec_review_grace_minutes=int(raw.get("spec_review_grace_minutes", 15)),
         done_retention_days=int(raw.get("done_retention_days", 7)),
+        triage_model=str(raw.get("triage_model", "")),
     )
 
 

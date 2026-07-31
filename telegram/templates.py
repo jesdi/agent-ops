@@ -4,6 +4,28 @@ from __future__ import annotations
 
 _ATTACH = "attach: `mosh agent-vps -- tmux attach -t task-{issue}`"
 
+# Telegram's sendMessage hard limit is 4096 characters; over it the API
+# returns 400 and Notifier.send swallows the OSError — the whole message
+# vanishes. The triage report is the one variable-length message here (a line
+# per repo, per close suggestion, per rejection), so it is capped with room to
+# spare and says how many lines it dropped and where to read them.
+TRIAGE_REPORT_LIMIT = 3900
+
+
+def _triage_report(lines: list[str], where: str) -> str:
+    head = "🧹 agent-ops triage"
+    kept: list[str] = []
+    used = len(head)
+    for idx, line in enumerate(lines):
+        marker = (f"… {len(lines) - idx} more line(s) "
+                  f"(see {where})")
+        if used + 1 + len(line) + 1 + len(marker) > TRIAGE_REPORT_LIMIT:
+            kept.append(marker)
+            break
+        kept.append(line)
+        used += 1 + len(line)
+    return "\n".join([head] + kept)
+
 _TEMPLATES = {
     "awaiting_spec_review": "📝 #{issue} {title} — spec ready for review.\n{url}\nsession task-{issue} · {note}\n" + _ATTACH,
     "stage_blocked": "🚧 #{issue} {title} — stage blocked: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
@@ -42,6 +64,9 @@ def render(template: str, **ctx) -> str:
         return "📟 agent-ops status\n" + "\n".join(ctx["lines"])
     if template == "queue":
         return "📊 agent-ops queue\n" + "\n".join(ctx["lines"])
+    if template == "triage_report":
+        return _triage_report(list(ctx["lines"]),
+                              ctx.get("triage_dir") or "<state_dir>/triage/")
     text = _TEMPLATES[template].format(**ctx)
     if template in ("awaiting_spec_review", "spec_parked") and ctx.get("console"):
         text += f"\nread & approve: {ctx['console']}/task/{ctx['issue']}"
