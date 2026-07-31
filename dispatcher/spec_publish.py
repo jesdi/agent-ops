@@ -81,10 +81,8 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
             return PublishResult(
                 error=f"git rev-parse failed: {head.stderr.strip()}")
         remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}")
-        if remote.returncode != 0:
-            return PublishResult(
-                error=f"git ls-remote failed: {remote.stderr.strip()}")
-        if remote.stdout.split()[:1] != [head.stdout.strip()]:
+        remote_sha = remote.stdout.split()[:1] if remote.returncode == 0 else []
+        if remote_sha != [head.stdout.strip()]:
             push = _git(worktree, "push", "origin", f"HEAD:refs/heads/{branch}")
             if push.returncode != 0:
                 return PublishResult(

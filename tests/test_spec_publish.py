@@ -106,7 +106,7 @@ def test_push_failure_reports_local_only_error(wt, tmp_path):
     _git(wt, "remote", "set-url", "origin", str(tmp_path / "does-not-exist"))
     res = _publish(wt)
     assert res.url == ""
-    assert "push" in res.error
+    assert res.error.startswith("git push failed:")
     # the commit itself survives — review from the attached session still works
     assert _git(wt, "log", "-1", "--pretty=%s") == "docs: draft spec for #7"
 
