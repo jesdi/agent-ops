@@ -2863,3 +2863,134 @@ def test_dry_run_leaves_the_real_state_dir_alone_entirely(
     before = snapshot()
     main.run_pass(c, deps(gh), dry_run=True)
     assert snapshot() == before
+
+
+# ---------------------------------------------------------------------------
+# auth-dark edge tests (Task 3)
+# ---------------------------------------------------------------------------
+
+def patch_usage_dark(monkeypatch):
+    monkeypatch.setattr(
+        main, "fetch_usage",
+        lambda state_dir: UsageSnapshot(0.0, 0.0, "unavailable"))
+
+
+def dark_marker(c):
+    return Path(c.state_dir) / "auth-dark"
+
+
+def test_auth_dark_first_pass_marks_but_does_not_alert(tmp_path, monkeypatch):
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)
+    st = json.loads(dark_marker(c).read_text())
+    assert st["alerted"] is False
+    assert "auth_dark" not in d.notifier.sent
+
+
+def test_auth_dark_silent_during_grace_and_since_survives(tmp_path, monkeypatch):
+    """Second pass inside the grace window must not alert and must not
+    rewrite 'since' — exercises the _now()->fromisoformat round-trip."""
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)                        # pass 1: creates marker
+    since_1 = json.loads(dark_marker(c).read_text())["since"]
+    main.run_pass(c, d)                        # pass 2: still within grace
+    st = json.loads(dark_marker(c).read_text())
+    assert st["alerted"] is False
+    assert st["since"] == since_1              # since not rewritten
+    assert "auth_dark" not in d.notifier.sent
+
+
+def test_auth_dark_alerts_once_after_grace(tmp_path, monkeypatch):
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)                       # creates the marker
+    old = (datetime.now(timezone.utc)
+           - timedelta(minutes=main.AUTH_DARK_GRACE_MINUTES + 1)).isoformat()
+    dark_marker(c).write_text(json.dumps({"since": old, "alerted": False}))
+    main.run_pass(c, d)                       # past grace -> alert
+    main.run_pass(c, d)                       # already alerted -> silent
+    assert d.notifier.sent.count("auth_dark") == 1
+    assert json.loads(dark_marker(c).read_text())["alerted"] is True
+
+
+def test_auth_dark_clears_on_recovery(tmp_path, monkeypatch):
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    patch_usage_dark(monkeypatch)
+    main.run_pass(c, d)
+    assert dark_marker(c).exists()
+    patch_usage(monkeypatch, util=0.2)        # usage readable again
+    main.run_pass(c, d)
+    assert not dark_marker(c).exists()
+    assert "auth_dark" not in d.notifier.sent
+
+
+def test_budget_full_with_live_source_never_touches_auth_dark(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch, util=0.95)       # full window, oauth source
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)
+    assert not dark_marker(c).exists()
+    assert "auth_dark" not in d.notifier.sent
+
+
+def test_unavailable_usage_sends_no_budget_stall(tmp_path, monkeypatch):
+    """An auth outage fail-safes to no-spawns, but it is not a budget stall:
+    "usage window exhausted; stalled until reset" would send the operator to
+    wait out an outage only a re-login ends, 30 minutes before the accurate
+    auth_dark alert. auth-dark owns the unavailable case."""
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)
+    main.run_pass(c, d)
+    assert "budget_stall" not in d.notifier.sent
+    assert not (Path(c.state_dir) / "budget-stalled").exists()
+
+
+def test_full_window_with_readable_usage_still_sends_budget_stall(
+        tmp_path, monkeypatch):
+    """Guard on the other side of the suppression: a genuinely exhausted
+    window with a live source keeps its stall ping (and its resume)."""
+    patch_usage(monkeypatch, util=0.95)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_stall") == 1
+    assert (Path(c.state_dir) / "budget-stalled").exists()
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_resume") == 1
+
+
+def test_auth_dark_corrupt_marker_is_repaired(tmp_path, monkeypatch):
+    """Non-JSON marker must not crash the pass; it is reset to fresh state."""
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    Path(c.state_dir).mkdir(parents=True, exist_ok=True)
+    dark_marker(c).write_text("not valid json{{")
+    main.run_pass(c, d)                        # must not raise
+    st = json.loads(dark_marker(c).read_text())
+    assert st["alerted"] is False
+    assert "auth_dark" not in d.notifier.sent
+
+
+def test_auth_dark_malformed_marker_is_repaired(tmp_path, monkeypatch):
+    """Parseable-but-malformed JSON (null, missing 'since') must not crash the
+    pass; the marker is reset to fresh state."""
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    Path(c.state_dir).mkdir(parents=True, exist_ok=True)
+    dark_marker(c).write_text(json.dumps(None))   # valid JSON, non-dict
+    main.run_pass(c, d)                            # must not raise
+    st = json.loads(dark_marker(c).read_text())
+    assert st["alerted"] is False
+    assert "auth_dark" not in d.notifier.sent

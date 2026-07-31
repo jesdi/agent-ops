@@ -2,6 +2,7 @@
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +31,13 @@ def box(tmp_path):
     git(origin, "config", "user.name", "t")
     (origin / "pyproject.toml").write_text("[project]\nname = 'agent-ops'\n")
     (origin / "provision").mkdir()
+    # The real units ship in the fake origin so the sync loop sees what the
+    # box sees — notably the `agent-ops-alert@.service` TEMPLATE unit, which
+    # systemd cannot try-restart without an instance name. Two of them are
+    # then replaced by cheap stubs the change/drift tests mutate by hand.
+    prov_repo = Path(__file__).resolve().parent.parent / "provision"
+    for real in sorted(prov_repo.glob("agent-ops-*")):
+        (origin / "provision" / real.name).write_text(real.read_text())
     (origin / "provision" / "agent-ops-waitd.service").write_text(
         "[Unit]\nDescription=waitd v1\n")
     (origin / "provision" / "agent-ops-dispatcher.timer").write_text(
@@ -46,7 +54,21 @@ def box(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     sysctl = bin_dir / "systemctl"
-    sysctl.write_text(f'#!/bin/sh\necho "systemctl $@" >> "{calls}"\n')
+    # Mimics real systemd: `try-restart` on a template unit with no instance
+    # is rejected ("missing the instance name") with a non-zero exit, which
+    # under `set -euo pipefail` would abort the whole update pass.
+    sysctl.write_text(
+        f'#!/bin/sh\n'
+        f'echo "systemctl $*" >> "{calls}"\n'
+        f'case " $* " in\n'
+        f'  *" try-restart "*)\n'
+        f'    case "$*" in\n'
+        f'      *@.service*)\n'
+        f'        echo "Unit name is missing the instance name." >&2\n'
+        f'        exit 1 ;;\n'
+        f'    esac ;;\n'
+        f'esac\n'
+        f'exit 0\n')
     sysctl.chmod(0o755)
     venv_bin = repo / ".venv" / "bin"
     venv_bin.mkdir(parents=True)
@@ -96,6 +118,11 @@ def box(tmp_path):
         AGENT_OPS_PODMAN=str(podman),
         AGENT_OPS_PNPM=str(pnpm),
         AGENT_OPS_CLAUDE=str(claude),
+        # Point the creds-convergence step at a non-existent path so
+        # pre-existing tests are a clean no-op regardless of the developer's
+        # real ~/.claude store. Tests that need a host file override this via
+        # _creds_setup or by setting box.env["AGENT_OPS_HOST_CREDS"] directly.
+        AGENT_OPS_HOST_CREDS=str(tmp_path / "nohost" / ".credentials.json"),
     )
     return SimpleNamespace(origin=origin, repo=repo, state=state,
                            units=units, calls=calls, env=env)
@@ -154,6 +181,32 @@ def test_unit_change_syncs_and_restarts_only_changed_unit(box):
     assert "systemctl --user daemon-reload" in log
     assert "try-restart agent-ops-waitd.service" in log
     assert "agent-ops-dispatcher.timer" not in log
+
+
+def test_template_unit_change_syncs_without_aborting_the_pass(box):
+    # `systemctl try-restart agent-ops-alert@.service` is rejected by systemd
+    # (no instance name) and, under `set -euo pipefail`, would kill the pass —
+    # on the very pass that deploys the template unit, before the keepalive
+    # timer restart, credential convergence and claude-home sync. The template
+    # must still be copied and daemon-reloaded, just never try-restarted.
+    tmpl = "agent-ops-alert@.service"
+    assert (box.origin / "provision" / tmpl).exists(), "fixture must ship it"
+    (box.origin / "provision" / tmpl).write_text(
+        "[Unit]\nDescription=alert v2 for %i\n")
+    (box.origin / "provision" / "agent-ops-waitd.service").write_text(
+        "[Unit]\nDescription=waitd v2\n")
+    commit_all(box.origin, "template + regular unit change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    # Copied and daemon-reloaded...
+    assert "alert v2" in (box.units / tmpl).read_text()
+    log = calls(box)
+    assert "systemctl --user daemon-reload" in log
+    # ...but never try-restarted...
+    assert f"try-restart {tmpl}" not in log
+    # ...and everything downstream of the restart loop still ran.
+    assert "try-restart agent-ops-waitd.service" in log
+    assert (box.state / "claude-home" / "CLAUDE.md").exists()
 
 
 def test_unit_drift_heals_without_new_commits(box):
@@ -407,3 +460,125 @@ def test_failed_credentials_fails_pass_and_retries_next_pass(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
     assert "credentials ran" in calls(box)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: credential convergence — freshest valid host login -> claude-home
+# ---------------------------------------------------------------------------
+
+VALID_CREDS = '{"claudeAiOauth": {"accessToken": "sk-live", "expiresAt": 1}}'
+
+
+def _creds_setup(box, tmp_path, host_body, host_newer=True):
+    """Write a host credentials file and seed claude-home with a stale copy."""
+    host = tmp_path / "hostclaude" / ".credentials.json"
+    host.parent.mkdir(parents=True, exist_ok=True)
+    host.write_text(host_body)
+    ch = box.state / "claude-home" / ".credentials.json"
+    ch.parent.mkdir(parents=True, exist_ok=True)
+    ch.write_text('{"claudeAiOauth": {"accessToken": "sk-stale"}}')
+    stamp = time.time() + (60 if host_newer else -60)
+    os.utime(host, (stamp, stamp))
+    box.env["AGENT_OPS_HOST_CREDS"] = str(host)
+    return host, ch
+
+
+def test_newer_valid_host_creds_converge_into_claude_home(box, tmp_path):
+    _, ch = _creds_setup(box, tmp_path, VALID_CREDS, host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-live" in ch.read_text()
+    assert (ch.stat().st_mode & 0o777) == 0o600
+
+
+def test_convergence_is_atomic_and_leaves_no_temp_file(box, tmp_path):
+    # Readers (dispatcher, keepalive, session containers) must never see a
+    # truncated credentials file, so the copy lands via temp-then-rename —
+    # and the temp must not survive the pass.
+    _, ch = _creds_setup(box, tmp_path, VALID_CREDS, host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-live" in ch.read_text()
+    assert not Path(str(ch) + ".tmp").exists()
+
+
+def test_older_host_creds_left_alone(box, tmp_path):
+    _, ch = _creds_setup(box, tmp_path, VALID_CREDS, host_newer=False)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-stale" in ch.read_text()
+
+
+def test_corrupt_host_creds_never_copied(box, tmp_path):
+    _, ch = _creds_setup(box, tmp_path, "not json {", host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-stale" in ch.read_text()
+
+
+def test_tokenless_host_creds_never_copied(box, tmp_path):
+    _, ch = _creds_setup(box, tmp_path,
+                         '{"claudeAiOauth": {"accessToken": ""}}',
+                         host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-stale" in ch.read_text()
+
+
+def test_missing_host_creds_is_a_noop(box, tmp_path):
+    box.env["AGENT_OPS_HOST_CREDS"] = str(tmp_path / "nope" / "creds.json")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr  # must not fail under set -e
+
+
+def test_array_host_creds_never_copied_and_no_traceback(box, tmp_path):
+    # A valid JSON non-dict (e.g. []) must be silently skipped — no copy, no
+    # Python traceback noise in the updater log (AttributeError from .get()).
+    _, ch = _creds_setup(box, tmp_path, "[]", host_newer=True)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "sk-stale" in ch.read_text()
+    assert "Traceback" not in r.stderr
+    assert "AttributeError" not in r.stderr
+
+
+def test_failed_install_aborts_pass_and_does_not_print_converged(box, tmp_path):
+    # Regression: the former `install … && mv` AND-list swallowed install
+    # failures under `set -e`, letting the pass continue and print the
+    # "converged" success line when nothing was actually written.  With two
+    # plain statements the first failure must abort immediately.
+    host, ch = _creds_setup(box, tmp_path, VALID_CREDS, host_newer=True)
+    # Make the claude-home dir unwritable so `install` cannot create the temp.
+    ch_dir = box.state / "claude-home"
+    ch_dir.mkdir(parents=True, exist_ok=True)
+    ch_dir.chmod(0o555)
+    try:
+        r = run_update(box)
+        assert r.returncode != 0, (
+            "update pass must exit non-zero when install fails; got 0\n"
+            f"stdout: {r.stdout}\nstderr: {r.stderr}"
+        )
+        assert "converged fresher host credentials" not in r.stdout, (
+            "success line must not appear when install failed"
+        )
+    finally:
+        ch_dir.chmod(0o755)
+
+
+def test_first_ever_convergence_creates_dir_and_sets_mode(box, tmp_path):
+    # claude-home/.credentials.json does not yet exist (and its parent dir may
+    # not exist either). A valid, newer host file must be copied in and land
+    # with mode 0600, exercising the `mkdir -p` and the `[ ! -f "$CH_CREDS" ]`
+    # branch.
+    host = tmp_path / "hostclaude" / ".credentials.json"
+    host.parent.mkdir(parents=True, exist_ok=True)
+    host.write_text(VALID_CREDS)
+    # Do NOT pre-create claude-home or the credentials file.
+    ch = box.state / "claude-home" / ".credentials.json"
+    assert not ch.exists(), "precondition: ch must not exist before the run"
+    box.env["AGENT_OPS_HOST_CREDS"] = str(host)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert ch.exists(), "claude-home/.credentials.json was not created"
+    assert "sk-live" in ch.read_text()
+    assert (ch.stat().st_mode & 0o777) == 0o600

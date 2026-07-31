@@ -9,6 +9,7 @@ import argparse
 import json
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher.budget import fetch_usage, should_spawn
+from dispatcher.budget import UsageSnapshot, fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher import eventlog, failures, intents, pr_poll, queue_ops, relogin, triage
@@ -340,8 +341,18 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     return task
 
 
-def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str) -> None:
-    """Edge-triggered stall/resume pings via a marker file."""
+def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str,
+                 usage: UsageSnapshot) -> None:
+    """Edge-triggered stall/resume pings via a marker file.
+
+    Unknowable usage also fail-safes to `budget_ok=False`, but it is not a
+    budget stall: there is no window and nothing will reset, so the
+    "stalled until reset" ping would send an operator off to wait out an
+    outage that only a re-login ends — 30 minutes before the accurate
+    auth_dark alert. _auth_dark_edge owns that case; stay silent for it and
+    leave every readable-usage case exactly as it was."""
+    if usage.source == "unavailable":
+        return
     marker = Path(cfg.state_dir) / "budget-stalled"
     marker.parent.mkdir(parents=True, exist_ok=True)
     if not budget_ok and not marker.exists():
@@ -352,6 +363,39 @@ def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str) -> None:
         marker.unlink()
         deps.notifier.send("budget_resume", issue=0, title="(all tasks)",
                            url="", note=note)
+
+
+AUTH_DARK_GRACE_MINUTES = 30
+
+
+def _auth_dark_edge(cfg: Config, deps: Deps, usage: UsageSnapshot) -> None:
+    """One alert per unknowable-usage incident (auth likely dead).
+
+    Companion to _budget_edge: budget_stall covers "window full, will
+    reset on its own"; this covers "we cannot even tell", which
+    fail-safes every spawn indefinitely and therefore needs a human.
+    30-minute grace absorbs transient API blips."""
+    marker = Path(cfg.state_dir) / "auth-dark"
+    if usage.source != "unavailable":
+        marker.unlink(missing_ok=True)
+        return
+    if not marker.exists():
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"since": _now(), "alerted": False}))
+        return
+    try:
+        st = json.loads(marker.read_text())
+        if st.get("alerted"):
+            return
+        age_min = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(st["since"])).total_seconds() / 60
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+        marker.write_text(json.dumps({"since": _now(), "alerted": False}))
+        return
+    if age_min >= AUTH_DARK_GRACE_MINUTES:
+        deps.notifier.send("auth_dark", minutes=int(age_min),
+                           host=socket.gethostname())
+        marker.write_text(json.dumps({"since": st["since"], "alerted": True}))
 
 
 def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -1079,7 +1123,9 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
                              cfg.racing_minutes, cfg.racing_threshold)
     _budget_edge(cfg, deps, budget_ok,
                  note=f"{usage.source}: {usage.utilization:.0%}, "
-                      f"reset in {usage.minutes_to_reset:.0f}m")
+                      f"reset in {usage.minutes_to_reset:.0f}m",
+                 usage=usage)
+    _auth_dark_edge(cfg, deps, usage)
     for target in eff.targets:
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park

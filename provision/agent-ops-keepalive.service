@@ -1,5 +1,6 @@
 [Unit]
 Description=agent-ops claude token keepalive
+OnFailure=agent-ops-alert@%n.service
 
 [Service]
 Type=oneshot

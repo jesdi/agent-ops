@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily claude token keepalive
+Description=Hourly claude token keepalive
 
 [Timer]
-OnCalendar=daily
+OnCalendar=hourly
 Persistent=true
 
 [Install]
