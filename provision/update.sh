@@ -116,3 +116,21 @@ fi
 # heal drift, not just on rev deltas. A failure fails the pass (set -e) —
 # that is the loud surfacing channel for e.g. a pin mismatch.
 bash provision/claude-home-sync.sh
+
+# Credentials convergence: bootstrap runs credentials.sh once, so a box
+# provisioned before a credentials feature merged (e.g. git commit signing)
+# never picks it up. Re-run whenever the script's content differs from the
+# last converged run. The stamp is written only on success, so a transient
+# failure (1P outage) fails the pass loudly and retries next firing. A box
+# whose single manual secret is not yet placed has nothing to materialize —
+# skip loudly instead of failing every firing.
+if [ -f provision/credentials.sh ]; then
+  cred_sum=$(git hash-object provision/credentials.sh)
+  cred_stamp="$STATE_DIR/credentials-converged.sha"
+  if [ ! -f "$STATE_DIR/op-token.env" ]; then
+    echo "agent-ops update: op-token.env missing — skipping credentials convergence" >&2
+  elif [ "$(cat "$cred_stamp" 2>/dev/null || true)" != "$cred_sum" ]; then
+    bash provision/credentials.sh
+    printf '%s\n' "$cred_sum" > "$cred_stamp"
+  fi
+fi

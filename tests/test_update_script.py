@@ -341,3 +341,69 @@ def test_dep_and_web_change_installs_before_restart(box):
     assert pip_pos != -1, "pip install not called"
     assert restart_pos != -1, "try-restart not called"
     assert pip_pos < restart_pos, "pip install must precede try-restart"
+
+
+def seed_credentials(box, body=None, token=True):
+    """Commit a fake provision/credentials.sh upstream; optionally place the
+    box's op-token.env so the credentials pass is armed."""
+    script = box.origin / "provision" / "credentials.sh"
+    script.write_text(body or f'#!/bin/sh\necho "credentials ran" >> "{box.calls}"\n')
+    commit_all(box.origin, "credentials script")
+    if token:
+        box.state.mkdir(parents=True, exist_ok=True)
+        (box.state / "op-token.env").write_text("OP_SERVICE_ACCOUNT_AGENT_OPS_TOKEN=x\n")
+
+
+def test_credentials_run_when_script_first_appears(box):
+    # The regression this guards: the signing feature merged into
+    # credentials.sh, but nothing on the box ever re-ran it (bootstrap is
+    # one-shot), so commits stayed unsigned until someone SSHed in.
+    seed_credentials(box)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "credentials ran" in calls(box)
+
+
+def test_credentials_not_rerun_when_unchanged(box):
+    seed_credentials(box)
+    run_update(box)
+    box.calls.unlink()
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "credentials ran" not in calls(box)
+
+
+def test_credentials_rerun_on_content_change(box):
+    seed_credentials(box)
+    run_update(box)
+    box.calls.unlink()
+    (box.origin / "provision" / "credentials.sh").write_text(
+        f'#!/bin/sh\necho "credentials ran v2" >> "{box.calls}"\n')
+    commit_all(box.origin, "credentials v2")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "credentials ran v2" in calls(box)
+
+
+def test_missing_token_skips_credentials_without_failing(box):
+    # A box before its one manual secret is placed has nothing to
+    # materialize; failing the pass would take unit sync down every firing.
+    seed_credentials(box, token=False)
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "credentials" not in calls(box)
+    assert "op-token.env" in r.stderr
+
+
+def test_failed_credentials_fails_pass_and_retries_next_pass(box):
+    # A transient 1P failure must surface loudly AND not be stamped as
+    # converged — the next firing retries.
+    seed_credentials(box, body="#!/bin/sh\nexit 1\n")
+    r = run_update(box)
+    assert r.returncode != 0
+    (box.origin / "provision" / "credentials.sh").write_text(
+        f'#!/bin/sh\necho "credentials ran" >> "{box.calls}"\n')
+    commit_all(box.origin, "fix credentials")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "credentials ran" in calls(box)
