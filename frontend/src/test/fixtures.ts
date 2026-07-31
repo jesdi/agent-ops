@@ -8,7 +8,7 @@ export const parkedCard: TaskCard = {
   stage: 'implement', park: 'question', column: 'parked', slot: 1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?', feedback_pending: false,
-  updated_at: '2026-07-25T10:00:00Z', attached: false,
+  updated_at: '2026-07-25T10:00:00Z', attached: false, consuming_capacity: false,
 }
 
 export const reviewCard: TaskCard = {
@@ -17,7 +17,7 @@ export const reviewCard: TaskCard = {
   slot: -1,
   branch: 'feat/search', model: 'opus', park_note_pending: false,
   park_note: 'spec ready for review', feedback_pending: false,
-  updated_at: '2026-07-25T09:00:00Z', attached: false,
+  updated_at: '2026-07-25T09:00:00Z', attached: false, consuming_capacity: false,
 }
 
 export const inProgressCard: TaskCard = {
@@ -25,7 +25,24 @@ export const inProgressCard: TaskCard = {
   stage: 'implement', park: '', column: 'in-progress', slot: 2,
   branch: 'feat/csv-export', model: 'opus', park_note_pending: false,
   park_note: '', feedback_pending: false,
-  updated_at: '2026-07-25T11:30:00Z', attached: false,
+  updated_at: '2026-07-25T11:30:00Z', attached: false, consuming_capacity: true,
+}
+
+// The motivating pair: both sit in the Parked column, only one holds a unit.
+export const loginParkedCard: TaskCard = {
+  issue: 45, target: 'jesdi/widget', title: 'Rate-limit webhooks',
+  stage: 'spec', park: 'parked-login', column: 'parked', slot: 0,
+  branch: 'feat/rate-limit', model: 'opus', park_note_pending: false,
+  park_note: '', feedback_pending: false,
+  updated_at: '2026-07-25T11:00:00Z', attached: false, consuming_capacity: true,
+}
+
+export const ciParkedCard: TaskCard = {
+  issue: 46, target: 'jesdi/widget', title: 'Fix nightly digest',
+  stage: 'implement', park: 'awaiting-ci', column: 'awaiting-ci', slot: 1,
+  branch: 'fix/nightly-digest', model: 'sonnet', park_note_pending: false,
+  park_note: '', feedback_pending: false,
+  updated_at: '2026-07-25T10:30:00Z', attached: false, consuming_capacity: false,
 }
 
 export const board: BoardView = {

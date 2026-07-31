@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from dispatcher.budget import UsageSnapshot, should_spawn
 from dispatcher.state import (IN_FLIGHT_STAGES, MAX_SLOTS, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
-                              Stage, TaskState, active)
+                              Stage, TaskState, active, consumes_capacity)
 
 # (key, title) in display order — the single place column semantics live.
 COLUMNS: tuple[tuple[str, str], ...] = (
@@ -68,6 +68,10 @@ class TaskCard(BaseModel):
     feedback_pending: bool
     updated_at: str
     attached: bool
+    # Whether this card holds one of the dispatcher's capacity units. Derived
+    # server-side so the console cannot disagree with the dispatcher about a
+    # rule with a real exception (parked-login still counts).
+    consuming_capacity: bool
 
 
 class Column(BaseModel):
@@ -101,7 +105,8 @@ def task_card(t: TaskState, *, model: str, attached: bool) -> TaskCard:
         # and CI/wake parks ask the operator nothing.
         park_note_pending=(t.park == PARK_HUMAN and t.park_msg_id == 0),
         feedback_pending=t.feedback_pending,
-        updated_at=t.updated_at, attached=attached)
+        updated_at=t.updated_at, attached=attached,
+        consuming_capacity=consumes_capacity(t))
 
 
 def build_board(tasks: list[TaskState], *, capacity: int,
