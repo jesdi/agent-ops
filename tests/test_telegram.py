@@ -164,3 +164,52 @@ def test_triage_report_names_the_state_dir_when_not_given():
     text = render("triage_report", lines=[f"line {n} " + "y" * 90
                                           for n in range(200)])
     assert text.splitlines()[-1].endswith("(see <state_dir>/triage/)")
+
+
+RECOVERY = "CLAUDE_CONFIG_DIR=$HOME/agent-ops-state/claude-home"
+
+
+def test_unit_failed_template_names_unit_and_recovery():
+    msg = render("unit_failed", unit="agent-ops-keepalive.service",
+                 host="box1")
+    assert "agent-ops-keepalive.service" in msg
+    assert "box1" in msg
+    assert RECOVERY in msg
+    assert "/login" in msg
+
+
+def test_auth_dark_template_carries_age_and_recovery():
+    msg = render("auth_dark", minutes=42, host="box1")
+    assert "42" in msg
+    assert RECOVERY in msg
+    assert "/login" in msg
+
+
+def test_alert_main_sends_unit_failed(monkeypatch):
+    import telegram.alert as alert
+    sent = []
+
+    class FakeNotifier:
+        def send(self, template, **ctx):
+            sent.append((template, ctx))
+            return 1
+
+    monkeypatch.setattr(alert, "Notifier", FakeNotifier)
+    monkeypatch.setattr(alert.socket, "gethostname", lambda: "box1")
+    assert alert.main(["agent-ops-keepalive.service"]) == 0
+    assert sent == [("unit_failed", {"unit": "agent-ops-keepalive.service",
+                                     "host": "box1"})]
+
+
+def test_alert_main_without_args_still_sends(monkeypatch):
+    import telegram.alert as alert
+    sent = []
+
+    class FakeNotifier:
+        def send(self, template, **ctx):
+            sent.append(template)
+            return 1
+
+    monkeypatch.setattr(alert, "Notifier", FakeNotifier)
+    assert alert.main([]) == 0
+    assert sent == ["unit_failed"]

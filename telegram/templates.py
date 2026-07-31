@@ -26,6 +26,10 @@ def _triage_report(lines: list[str], where: str) -> str:
         used += 1 + len(line)
     return "\n".join([head] + kept)
 
+
+_RELOGIN = ("ssh -t agent@{host} 'CLAUDE_CONFIG_DIR=$HOME/agent-ops-state/"
+            "claude-home $HOME/.local/bin/claude' then /login")
+
 _TEMPLATES = {
     "awaiting_spec_review": "📝 #{issue} {title} — spec ready for review.\n{url}\nsession task-{issue} · {note}\n" + _ATTACH,
     "stage_blocked": "🚧 #{issue} {title} — stage blocked: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
@@ -54,6 +58,12 @@ _TEMPLATES = {
     "pr_updated": "🔁 #{issue} {title} — feedback addressed, PR updated: {note}\n{url}\nsession task-{issue}\n" + _ATTACH,
     "task_done": "🎉 #{issue} {title} — PR merged; task done. {note}\n{url}",
     "pr_closed": "🚫 #{issue} {title} — PR closed without merge: {note}\n{url}",
+    "unit_failed": ("🚨 {unit} FAILED on {host}. If this is the keepalive, "
+                    "the Claude OAuth token is dying — re-login now:\n"
+                    + _RELOGIN),
+    "auth_dark": ("🕳 usage unknowable for {minutes}m — dispatcher is "
+                  "failing safe and spawning NOTHING. Claude auth on the "
+                  "box is likely dead. Fix:\n" + _RELOGIN),
 }
 
 

@@ -17,3 +17,15 @@ def test_keepalive_timer_is_hourly():
     assert "OnCalendar=hourly" in text
     assert "OnCalendar=daily" not in text
     assert "Persistent=true" in text
+
+
+def test_keepalive_failure_triggers_alert_unit():
+    assert ("OnFailure=agent-ops-alert@%n.service"
+            in unit_text("agent-ops-keepalive.service"))
+
+
+def test_alert_template_unit_runs_telegram_alert():
+    text = unit_text("agent-ops-alert@.service")
+    assert "telegram.alert %i" in text
+    assert "op run" in text          # same secret plumbing as the dispatcher
+    assert "Type=oneshot" in text
