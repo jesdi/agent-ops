@@ -220,7 +220,7 @@ def test_run_session_timeout_kills_and_raises(tmp_path):
 
     with pytest.raises(triage.SweepError):
         triage._run_session(cfg, "o/a", BLOB, "2026-07-30", run=fake_run)
-    assert any(c[:2] == ["podman", "kill"] for c in calls)
+    assert ["podman", "kill", "triage-o-a"] in calls
 
 
 def test_run_session_missing_decisions_raises(tmp_path):
@@ -237,13 +237,32 @@ def test_run_session_reads_decisions(tmp_path):
     cfg = _sweep_cfg(tmp_path)
     tdir = tmp_path / "triage"
     tdir.mkdir()
+    captured = []
 
     def fake_run(args, capture_output=True, text=True, timeout=None):
+        captured.append(args)
         (tdir / "o-a-2026-07-30.json").write_text('{"issues": []}')
         return _subprocess.CompletedProcess(args, 0, "", "")
 
     got = triage._run_session(cfg, "o/a", BLOB, "2026-07-30", run=fake_run)
     assert got == {"issues": []}
+    argv = captured[0]
+    assert f"{tdir}:/triage" in argv
+    prompt = argv[argv.index("-p") + 1]
+    assert "/triage/o-a-2026-07-30.json" in prompt
+
+
+def test_run_session_nonzero_rc_surfaces_rc_and_stderr(tmp_path):
+    cfg = _sweep_cfg(tmp_path)
+
+    def fake_run(args, capture_output=True, text=True, timeout=None):
+        return _subprocess.CompletedProcess(args, 1, "", "fatal: image pull failed")
+
+    with pytest.raises(triage.SweepError) as exc_info:
+        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", run=fake_run)
+    msg = str(exc_info.value)
+    assert "rc=1" in msg
+    assert "fatal: image pull failed" in msg
 
 
 def test_guarded_sweep_notifies_and_reraises(tmp_path):

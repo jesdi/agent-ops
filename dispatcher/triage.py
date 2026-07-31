@@ -125,15 +125,24 @@ def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
                                 str(triage_dir), cfg.session_memory,
                                 cfg.session_cpus, model, prompt)
     try:
-        run(cmd, capture_output=True, text=True,
-            timeout=SESSION_TIMEOUT_SECONDS)
+        proc = run(cmd, capture_output=True, text=True,
+                   timeout=SESSION_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        run(["podman", "kill", name], capture_output=True, text=True,
-            timeout=60)
+        try:
+            run(["podman", "kill", name], capture_output=True, text=True,
+                timeout=60)
+        except Exception:
+            pass
         raise SweepError(f"session timed out after "
                          f"{SESSION_TIMEOUT_SECONDS // 60} min")
     if not decisions_path.exists():
-        raise SweepError("session wrote no decisions file")
+        stderr_tail = (proc.stderr or "")[-300:].strip()
+        raise SweepError(
+            f"session wrote no decisions file "
+            f"(rc={proc.returncode}"
+            + (f", stderr: {stderr_tail}" if stderr_tail else "")
+            + ")"
+        )
     try:
         return json.loads(decisions_path.read_text())
     except json.JSONDecodeError as e:
