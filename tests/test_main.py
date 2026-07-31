@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
-from dispatcher import failures
+from dispatcher import failures, spec_publish
 from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
@@ -54,6 +54,8 @@ class FakeGitHub:
         self.branch_prs = {}         # branch -> pr number
         self.deleted_branches = []   # (repo, branch)
         self.login = "agent-bot"
+        self.comments = []           # (issue, body)
+        self.comment_raises = False
 
     def rank_rows(self, target):
         if self.boost_raises:
@@ -78,7 +80,9 @@ class FakeGitHub:
         self.claimed.append(cand.number)
 
     def comment(self, target, issue, body):
-        pass
+        if self.comment_raises:
+            raise subprocess.CalledProcessError(1, ["gh"])
+        self.comments.append((issue, body))
 
     def release(self, target, issue, reason):
         self.released.append((issue, reason))
@@ -311,6 +315,74 @@ def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
     t = load(c.state_dir, 42)
     assert t.stage is Stage.AWAITING_SPEC_REVIEW
     assert t.artifact == spec_path
+
+
+SPEC_URL = ("https://github.com/jesdi/portfolio_eval/blob/agent/task-42/"
+            "docs/superpowers/specs/x-design.md")
+
+
+def _awaiting_review_task(c, wt):
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
+         "artifact": "docs/superpowers/specs/x-design.md"}))
+
+
+def test_awaiting_review_publishes_comments_and_links(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.SPEC)
+    _awaiting_review_task(c, wt)
+    seen = []
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **kw: (seen.append(kw)
+                                      or spec_publish.PublishResult(url=SPEC_URL)))
+    gh = FakeGitHub()
+    d = deps(gh, FakeSessions(alive={42}))
+    main.run_pass(c, d)
+    # backstop called with the task's real coordinates
+    assert seen[0]["branch"] == "agent/task-42"
+    assert seen[0]["repo"] == "jesdi/portfolio_eval"
+    assert seen[0]["artifact"] == "docs/superpowers/specs/x-design.md"
+    # one-tap link on the issue…
+    assert gh.comments == [(42, f"📝 Spec ready for review: {SPEC_URL}")]
+    # …and in the Telegram ping
+    (tmpl, ctx), = [x for x in d.notifier.contexts
+                    if x[0] == "awaiting_spec_review"]
+    assert f"spec: {SPEC_URL}" in ctx["note"]
+    assert ctx["note"].startswith("spec ready")
+
+
+def test_publish_failure_says_local_only_and_skips_comment(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.SPEC)
+    _awaiting_review_task(c, wt)
+    monkeypatch.setattr(
+        main.spec_publish, "ensure_published",
+        lambda **kw: spec_publish.PublishResult(error="git push failed: auth"))
+    gh = FakeGitHub()
+    d = deps(gh, FakeSessions(alive={42}))
+    main.run_pass(c, d)
+    assert gh.comments == []
+    # the gate itself is NOT blocked by the failure
+    assert load(c.state_dir, 42).stage is Stage.AWAITING_SPEC_REVIEW
+    (tmpl, ctx), = [x for x in d.notifier.contexts
+                    if x[0] == "awaiting_spec_review"]
+    assert "⚠️ spec is local only: git push failed: auth" in ctx["note"]
+
+
+def test_comment_failure_is_best_effort(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.SPEC)
+    _awaiting_review_task(c, wt)
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **kw: spec_publish.PublishResult(url=SPEC_URL))
+    gh = FakeGitHub(); gh.comment_raises = True
+    d = deps(gh, FakeSessions(alive={42}))
+    main.run_pass(c, d)  # must not raise
+    assert load(c.state_dir, 42).stage is Stage.AWAITING_SPEC_REVIEW
+    assert any(t == "awaiting_spec_review" for t in d.notifier.sent)
 
 
 def test_gate_respawn_clears_stale_artifact(tmp_path, monkeypatch):

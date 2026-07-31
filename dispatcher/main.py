@@ -24,9 +24,11 @@ from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher import eventlog, failures, intents, pr_poll, queue_ops, relogin
 from dispatcher.github import GitHubClient
+from dispatcher import spec_publish
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
-                                ParkForInput, ParkForReview, RetryStage,
-                                SetTaskStage, SpawnStage, next_actions)
+                                ParkForInput, ParkForReview, PublishSpec,
+                                RetryStage, SetTaskStage, SpawnStage,
+                                next_actions)
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
@@ -709,6 +711,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # session alive (the crash path owns dead sessions).
     idle = (deps.sessions.idle_seconds(task.issue)
             if alive and cfg.stall_after_seconds > 0 else None)
+    spec_line = ""
     for act in next_actions(task, signal, alive, waiting=waiting,
                             idle_seconds=idle,
                             stall_after=cfg.stall_after_seconds,
@@ -744,8 +747,26 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 eventlog.append_event(cfg.state_dir, "pr-opened",
                                       target=target.name, issue=task.issue,
                                       stage=act.stage.value)
+        elif isinstance(act, PublishSpec):
+            pub = spec_publish.ensure_published(
+                worktree=task.worktree, branch=task.branch,
+                repo=target.repo, issue=task.issue,
+                artifact=act.artifact, dry_run=dry_run)
+            if pub.error:
+                spec_line = f"⚠️ spec is local only: {pub.error}"
+            else:
+                spec_line = f"spec: {pub.url}"
+                try:
+                    deps.github.comment(
+                        target, task.issue,
+                        f"📝 Spec ready for review: {pub.url}")
+                except Exception as exc:
+                    print(f"[warn] spec link comment failed for "
+                          f"#{task.issue}: {exc}", file=sys.stderr)
+            continue
         elif isinstance(act, Notify):
-            _notify(deps, target, task, act.template, act.note)
+            note = act.note + (f"\n{spec_line}" if spec_line else "")
+            _notify(deps, target, task, act.template, note)
         elif isinstance(act, SpawnStage):
             if not budget_ok:
                 return  # signal persists; retried next pass
