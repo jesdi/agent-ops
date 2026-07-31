@@ -367,8 +367,7 @@ def _auth_dark_edge(cfg: Config, deps: Deps, usage: UsageSnapshot) -> None:
     30-minute grace absorbs transient API blips."""
     marker = Path(cfg.state_dir) / "auth-dark"
     if usage.source != "unavailable":
-        if marker.exists():
-            marker.unlink()
+        marker.unlink(missing_ok=True)
         return
     if not marker.exists():
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -376,12 +375,13 @@ def _auth_dark_edge(cfg: Config, deps: Deps, usage: UsageSnapshot) -> None:
         return
     try:
         st = json.loads(marker.read_text())
-    except (json.JSONDecodeError, KeyError):
-        st = {"since": _now(), "alerted": False}
-    if st.get("alerted"):
+        if st.get("alerted"):
+            return
+        age_min = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(st["since"])).total_seconds() / 60
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+        marker.write_text(json.dumps({"since": _now(), "alerted": False}))
         return
-    age_min = (datetime.now(timezone.utc)
-               - datetime.fromisoformat(st["since"])).total_seconds() / 60
     if age_min >= AUTH_DARK_GRACE_MINUTES:
         deps.notifier.send("auth_dark", minutes=int(age_min),
                            host=socket.gethostname())
