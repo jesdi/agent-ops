@@ -109,6 +109,18 @@ if [ ! -x $AGENT_HOME/.local/bin/claude ]; then
   as_agent bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
 fi
 
+# >>> agent-ops claude-config >>>
+# Spec 2026-07-31-auth-resilience §4: interactive `claude` logins must land
+# in the claude-home store the fleet reads, not the ~/.claude default.
+# Login shells pick this up via ~/.profile; systemd units are unaffected
+# (each sets its own environment).
+type as_agent >/dev/null 2>&1 || as_agent() { "$@"; }
+PROFILE_LINE='export CLAUDE_CONFIG_DIR="$HOME/agent-ops-state/claude-home"'
+as_agent touch "$AGENT_HOME/.profile"
+grep -qxF "$PROFILE_LINE" "$AGENT_HOME/.profile" \
+  || printf '%s\n' "$PROFILE_LINE" | as_agent tee -a "$AGENT_HOME/.profile" >/dev/null
+# <<< agent-ops claude-config <<<
+
 if [ ! -d $AGENT_HOME/agent-ops ]; then
   as_agent git clone https://github.com/jesdi/agent-ops $AGENT_HOME/agent-ops
 fi
