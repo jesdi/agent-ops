@@ -58,3 +58,18 @@ def test_address_review_prompt_renders():
     assert "PR #12" in text or "pull request #12" in text
     assert '"stage": "address-review"' in text
     assert "awaiting-ci" in text and '"status": "done"' in text
+
+
+def test_spec_prompt_commits_and_pushes_draft_before_review():
+    out = render_stage_prompt(Stage.SPEC, CTX)
+    assert "docs: draft spec for #42" in out          # draft commit message
+    assert "push" in out and "origin" in out          # pushed before the gate
+    assert "do NOT commit" not in out                 # old instruction gone
+    # push/commit ordered BEFORE the awaiting-review signal
+    assert out.index("draft spec for #42") < out.index("awaiting-review")
+
+
+def test_spec_prompt_keeps_approval_commit_and_signal_protocol():
+    out = render_stage_prompt(Stage.SPEC, CTX)
+    assert "docs: spec for #42 (agent-ops)" in out
+    assert ".agent/stage.json" in out
