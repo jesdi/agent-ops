@@ -149,12 +149,15 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     for card in cards:
         by_column[card.column].append(card)
     in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
-    known = {t.issue for t in tasks}
+    # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
+    # are per-repo; bare numbers would wrongly suppress cross-target candidates
+    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
+    known = {(t.target, t.issue) for t in tasks}
     upcoming = [GhostCard(number=r["number"], target=name,
                           title=r.get("title", ""), url=r.get("url", ""),
                           score=r.get("score"), boost=int(r.get("boost") or 0))
                 for name, rows in queues for r in rows
-                if _is_candidate(r) and r["number"] not in known]
+                if _is_candidate(r) and (name, r["number"]) not in known]
     return BoardView(
         columns=[Column(key=key, title=title, cards=by_column[key])
                  for key, title in COLUMNS],
@@ -408,11 +411,13 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     # Mirror dispatcher line 1136: capacity is reduced by 1 when triage is running,
     # floored at 0 so a capacity=1 system does not claim during a triage sweep.
     eff_capacity = max(0, capacity - 1) if triage_running else capacity
-    known = {t.issue for t in tasks}
+    # Key on (target, issue) — same rationale as build_board: issue numbers
+    # are per-repo so alpha#73 must not shadow beta#73 in the claim forecast.
+    known = {(t.target, t.issue) for t in tasks}
     any_candidate = False
     for name, rows in queues:
         heads = [r for r in rows
-                 if _is_candidate(r) and r["number"] not in known]
+                 if _is_candidate(r) and (name, r["number"]) not in known]
         if not heads:
             continue
         any_candidate = True

@@ -453,3 +453,62 @@ def test_build_board_degrades_without_events_or_heartbeat():
     assert board.upcoming == [] and board.upcoming_stale is True
     card = board.columns[1].cards[0]  # in-progress
     assert card.claimed_at == "" and card.cycle_seconds is None
+
+
+# ---- cross-target issue-number collision tests ----------------------------
+
+def test_build_board_cross_target_ghost_not_suppressed():
+    """alpha#73 in-flight must NOT hide beta#73 ghost — issue numbers are
+    per-repo. Old bare-number `known` would suppress the beta ghost; this
+    test fails against that code and passes after the (target, issue) fix."""
+    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    queues = [
+        ("alpha", [row(73)]),   # alpha#73 already in-flight — no ghost
+        ("beta",  [row(73)]),   # beta#73 is a different issue — should ghost
+    ]
+    board = build_board(
+        tasks, capacity=4, models={}, attached=set(),
+        events=[], heartbeat=HB, now=NOW, budget=BUDGET_OK,
+        queues=queues, queue_stale=False,
+        claims_paused=False, triage_running=False)
+    ghost_targets = [(g.number, g.target) for g in board.upcoming]
+    assert (73, "beta") in ghost_targets, \
+        "beta#73 ghost missing — known set wrongly keyed on bare issue number"
+    assert (73, "alpha") not in ghost_targets, \
+        "alpha#73 ghost present — in-flight task not excluded on same target"
+
+
+def test_build_board_same_target_still_excluded():
+    """alpha#73 in-flight must still NOT appear as an alpha ghost (regression
+    guard: the fix must not accidentally stop excluding same-target issues)."""
+    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    board = build_board(
+        tasks, capacity=4, models={}, attached=set(),
+        events=[], heartbeat=HB, now=NOW, budget=BUDGET_OK,
+        queues=[("alpha", [row(73), row(74)])], queue_stale=False,
+        claims_paused=False, triage_running=False)
+    assert [g.number for g in board.upcoming] == [74]
+
+
+def test_next_claim_cross_target_not_suppressed():
+    """alpha#73 in-flight must NOT prevent beta#73 from being the will-claim
+    head. Old bare-number `known` skips beta#73; this test fails against that
+    code and passes after the (target, issue) fix."""
+    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    queues = [
+        ("alpha", []),        # alpha has no additional candidates
+        ("beta",  [row(73)]), # beta#73 should be claimable
+    ]
+    v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, budget=BUDGET_OK,
+                   queues=queues, claims_paused=False, triage_running=False)
+    assert v.verdict == "will-claim"
+    assert v.next_target == "beta" and v.next_issue == 73
+
+
+def test_next_claim_same_target_still_skipped():
+    """alpha#73 in-flight must still be skipped on alpha's own queue."""
+    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    queues = [("alpha", [row(73), row(74)])]
+    v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, budget=BUDGET_OK,
+                   queues=queues, claims_paused=False, triage_running=False)
+    assert v.verdict == "will-claim" and v.next_issue == 74
