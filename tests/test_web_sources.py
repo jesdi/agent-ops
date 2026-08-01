@@ -410,3 +410,54 @@ def test_issue_description_caches_and_degrades(tmp_path):
     # cold cache with gh down: explicit error, never a raise
     d = src.issue_description("jesdi/alpha", 99)
     assert d["title"] == "" and d["error"] != ""
+
+
+def test_issue_description_non_dict_payload_degrades(tmp_path):
+    """issue_view returning None or a list (valid JSON but not a dict) must
+    not escape the try block and 500 the route — it must land in the explicit-
+    error path exactly as a fetch exception would."""
+    clock = [1000.0]
+
+    class ReturnNone:
+        def issue_view(self, repo, number):
+            return None
+
+    class ReturnList:
+        def issue_view(self, repo, number):
+            return [{"title": "oops"}]
+
+    _, src_none = make_sources(tmp_path, github=ReturnNone(),
+                               clock=lambda: clock[0])
+    d = src_none.issue_description("jesdi/alpha", 73)
+    assert d["title"] == "" and d["error"] != ""
+
+    _, src_list = make_sources(tmp_path, github=ReturnList(),
+                               clock=lambda: clock[0])
+    d = src_list.issue_description("jesdi/alpha", 73)
+    assert d["title"] == "" and d["error"] != ""
+
+
+def test_issue_description_cache_key_includes_repo(tmp_path):
+    """Cache key must include BOTH repo and number — (repo, number) not just
+    number — so alpha#73 and beta#73 are cached independently."""
+    clock = [1000.0]
+    calls = []
+
+    class FakeGH:
+        def issue_view(self, repo, number):
+            calls.append((repo, number))
+            return {"title": f"T-{repo}", "body": "", "url": ""}
+
+    _, src = make_sources(tmp_path, github=FakeGH(), clock=lambda: clock[0])
+    d_alpha = src.issue_description("jesdi/alpha", 73)
+    d_beta = src.issue_description("jesdi/beta", 73)
+    # Both should have been fetched (two separate gh calls)
+    assert len(calls) == 2
+    # Titles must reflect the correct repo, not bleed from one cache to another
+    assert d_alpha["title"] == "T-jesdi/alpha"
+    assert d_beta["title"] == "T-jesdi/beta"
+    # Within TTL: served from their respective caches (no new calls)
+    clock[0] += 100
+    src.issue_description("jesdi/alpha", 73)
+    src.issue_description("jesdi/beta", 73)
+    assert len(calls) == 2

@@ -75,13 +75,15 @@ class Sources:
             return cached["data"]
         try:
             d = self._github.issue_view(repo, number)
+            data = {"title": str(d.get("title") or ""),
+                    "body": str(d.get("body") or ""),
+                    "url": str(d.get("url") or ""),
+                    "fetched_at": _iso(now), "error": ""}
         except Exception as exc:
             if cached:
                 return cached["data"]
             return {"title": "", "body": "", "url": "",
                     "fetched_at": _iso(now), "error": str(exc)}
-        data = {"title": d.get("title", ""), "body": d.get("body") or "",
-                "url": d.get("url", ""), "fetched_at": _iso(now), "error": ""}
         self._desc_cache[key] = {"data": data, "at": now}
         return data
 
