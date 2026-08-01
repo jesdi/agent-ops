@@ -206,16 +206,17 @@ it('park does not wipe typed reply text', async () => {
   expect(screen.getByLabelText('Reply')).toHaveValue('half-written thought')
 })
 
-it('unknown issue renders a not-found message', async () => {
+it('a non-404 server error renders an error message, not a ghost view', async () => {
   server.use(
     http.get('/api/task/:issue', () =>
-      HttpResponse.json({ detail: 'unknown task' }, { status: 404 }),
+      HttpResponse.json({ detail: 'internal error' }, { status: 500 }),
     ),
   )
   renderTask()
   await waitFor(() =>
-    expect(screen.getByText(/unknown task/)).toBeInTheDocument(),
+    expect(screen.getByText(/internal error/)).toBeInTheDocument(),
   )
+  expect(screen.queryByTestId('ghost-task-view')).not.toBeInTheDocument()
 })
 
 const reviewDetail = {
@@ -366,4 +367,35 @@ it('keeps the Open in Claude link when the session is dead', async () => {
   expect(
     screen.getByRole('link', { name: 'Open in Claude ↗' }),
   ).toHaveAttribute('href', 'https://claude.ai/code')
+})
+
+it('claimed task shows description toggle and stage timeline', async () => {
+  server.use(http.get('/api/task/:issue', () => HttpResponse.json({
+    ...taskDetail,
+    timeline: [
+      { label: 'spec', seconds: 2400, kind: 'stage', ongoing: false },
+      { label: 'parked', seconds: 1200, kind: 'parked', ongoing: false },
+      { label: 'implement', seconds: 3600, kind: 'stage', ongoing: true },
+    ],
+  })))
+  renderTask()
+  expect(await screen.findByRole('button', { name: /description/i })).toBeInTheDocument()
+  const tl = screen.getByTestId('stage-timeline')
+  expect(tl).toHaveTextContent('spec 40m')
+  expect(tl).toHaveTextContent('parked 20m')
+  expect(tl).toHaveTextContent('implement 1h — ongoing')
+})
+
+it('unclaimed issue renders the slim ghost view instead of an error', async () => {
+  server.use(
+    http.get('/api/task/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
+    http.get('/api/task/73/description', () => HttpResponse.json({
+      title: 'Ship dark mode', body: 'B', url: 'u',
+      fetched_at: '2026-08-01T12:00:00Z', error: '',
+    })),
+  )
+  renderTask('/task/73')
+  expect(await screen.findByTestId('ghost-task-view')).toBeInTheDocument()
+  expect(await screen.findByText('Ship dark mode')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Boost' })).toBeInTheDocument()
 })

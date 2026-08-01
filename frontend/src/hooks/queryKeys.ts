@@ -8,4 +8,5 @@ export const queryKeys = {
   taskHistory: (issue: number) => ['task', issue, 'history'] as const,
   allTasks: ['task'] as const,
   pendingIntents: ['pending-intents'] as const,
+  description: (issue: number) => ['task', issue, 'description'] as const,
 }
