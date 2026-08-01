@@ -327,7 +327,9 @@ def _is_candidate(r: dict) -> bool:
 
 def next_claim(heartbeat: dict | None, *, now: datetime,
                tasks: list[TaskState], capacity: int, budget: BudgetView,
-               queues: list[tuple[str, list[dict]]]) -> NextClaimView:
+               queues: list[tuple[str, list[dict]]],
+               claims_paused: bool = False,
+               triage_running: bool = False) -> NextClaimView:
     hb = heartbeat or {}
     finished = _parse_ts(hb.get("finished_at", ""))
     try:
@@ -345,9 +347,17 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     if stale:
         return NextClaimView(verdict="unknown", next_pass_eta="")
     eta = (finished + timedelta(minutes=interval)).isoformat()
+    # Mirror dispatcher line 1156: `if budget_ok and not claims_paused: _claim_new(...)`.
+    # claims_paused wins over budget-blocked: when both are true claims are still
+    # skipped, and the triage pause is the more actionable signal for the operator.
+    if claims_paused:
+        return NextClaimView(verdict="claims-paused", next_pass_eta=eta)
     if not budget.would_spawn:
         return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
                              minutes_to_reset=budget.minutes_to_reset)
+    # Mirror dispatcher line 1136: capacity is reduced by 1 when triage is running,
+    # floored at 0 so a capacity=1 system does not claim during a triage sweep.
+    eff_capacity = max(0, capacity - 1) if triage_running else capacity
     known = {t.issue for t in tasks}
     any_candidate = False
     for name, rows in queues:
@@ -357,7 +367,7 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
             continue
         any_candidate = True
         mine = [t for t in tasks if t.target == name]
-        if capacity - len(active(mine)) > 0:
+        if eff_capacity - len(active(mine)) > 0:
             return NextClaimView(verdict="will-claim", next_pass_eta=eta,
                                  next_issue=heads[0]["number"],
                                  next_target=name)

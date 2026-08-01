@@ -363,3 +363,42 @@ def test_next_claim_per_target_capacity_filter():
     assert v.verdict == "will-claim"
     assert v.next_target == "beta"
     assert v.next_issue == 20
+
+
+def test_next_claim_claims_paused():
+    # claims-paused fires even when the queue has a will-claim candidate
+    v = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                   queues=[("alpha", [row(73)])], claims_paused=True)
+    assert v.verdict == "claims-paused"
+    assert v.next_pass_eta != ""
+    # claims-paused wins over budget-blocked: both conditions skip claiming,
+    # but triage pause is the more actionable operator signal
+    v2 = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_NO,
+                    queues=[("alpha", [row(73)])], claims_paused=True)
+    assert v2.verdict == "claims-paused"
+
+
+def test_next_claim_triage_running_reduces_effective_capacity():
+    # Without triage: capacity=1, no active tasks → will-claim normally
+    assert next_claim(HB, now=NOW, tasks=[], capacity=1, budget=BUDGET_OK,
+                      queues=[("alpha", [row(10)])]).verdict == "will-claim"
+    # With triage: capacity=1, no active tasks → effective=0 → capacity-full
+    v = next_claim(HB, now=NOW, tasks=[], capacity=1, budget=BUDGET_OK,
+                   queues=[("alpha", [row(10)])], triage_running=True)
+    assert v.verdict == "capacity-full"
+    # With triage: capacity=2, no active tasks → effective=1 > 0 → still claims
+    v2 = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                    queues=[("alpha", [row(10)])], triage_running=True)
+    assert v2.verdict == "will-claim"
+
+
+def test_next_claim_unknown_wins_over_new_gates():
+    # unknown (missing heartbeat) overrides both new gates
+    assert next_claim(None, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                      queues=[("alpha", [row(1)])],
+                      claims_paused=True, triage_running=True).verdict == "unknown"
+    # unknown (stale heartbeat) also overrides
+    stale = dict(HB, finished_at="2026-08-01T12:09:59+00:00")
+    assert next_claim(stale, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                      queues=[("alpha", [row(1)])],
+                      claims_paused=True, triage_running=True).verdict == "unknown"
