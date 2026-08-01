@@ -19,10 +19,14 @@ const VERDICT_DETAIL: Partial<Record<string, (nc: NextClaimView) => string>> = {
  *  the board payload changes — the SSE fingerprint includes pass.json. */
 export function NextClaimLine({ nextClaim }: { nextClaim: NextClaimView }) {
   const [now, setNow] = useState(() => Date.now())
+  // Hook is unconditional (rules of hooks); interval is gated on verdict so a
+  // dead dispatcher ('unknown') does not tick at 1 Hz indefinitely while `now`
+  // is never read.
   useEffect(() => {
+    if (nextClaim.verdict === 'unknown') return
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
-  }, [])
+  }, [nextClaim.verdict])
 
   if (nextClaim.verdict === 'unknown') {
     return (
@@ -34,8 +38,14 @@ export function NextClaimLine({ nextClaim }: { nextClaim: NextClaimView }) {
 
   // Math.ceil so the display shows "6m" until the exact tick it flips, not
   // "5m 59s" when the render happens 1 ms after the ETA was calculated.
-  const left = Math.ceil((new Date(nextClaim.next_pass_eta).getTime() - now) / 1000)
-  const pass = left > 0 ? `next pass in ${formatDuration(left)}` : 'next pass due now'
+  // Guard against an unparseable ETA (empty string or bad ISO) — getTime()
+  // returns NaN in that case, which would silently render "due now" (a lie).
+  const etaMs = new Date(nextClaim.next_pass_eta).getTime()
+  const left = isFinite(etaMs) ? Math.ceil((etaMs - now) / 1000) : null
+  const pass =
+    left === null ? 'next pass time unknown'
+    : left > 0   ? `next pass in ${formatDuration(left)}`
+    :               'next pass due now'
 
   const detailFn = VERDICT_DETAIL[nextClaim.verdict]
   const detail = detailFn
