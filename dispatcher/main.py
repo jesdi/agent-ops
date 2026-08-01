@@ -1042,6 +1042,23 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
 SNAPSHOT_TTL_SECONDS = 7 * 24 * 3600
 
 
+def _write_heartbeat(cfg: Config, started_at: str) -> None:
+    """Atomic pass timestamp for the console's next-pass countdown. Written
+    only when a pass completes: a crash-looping dispatcher goes stale, which
+    the console surfaces as 'dispatcher not running?'. Never raises into a
+    pass (same contract as eventlog.append_event)."""
+    try:
+        p = Path(cfg.state_dir) / "pass.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "started_at": started_at, "finished_at": _now(),
+            "interval_minutes": cfg.pass_interval_minutes}))
+        tmp.replace(p)
+    except OSError as exc:
+        print(f"[warn] heartbeat write failed: {exc}", file=sys.stderr)
+
+
 def _prune_snapshots(cfg: Config) -> None:
     """A snapshot outlives its task by at most a week. In-flight tasks keep
     theirs regardless of age — the console may need it while they are
@@ -1105,6 +1122,7 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
 
 def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
               config_path: str = "targets.yaml") -> None:
+    pass_started = _now()
     if not dry_run:
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
@@ -1138,6 +1156,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         if budget_ok and not claims_paused:
             _claim_new(eff, deps, target, dry_run)
     _flush_done(cfg)
+    _write_heartbeat(cfg, pass_started)
 
 
 def guarded_pass(cfg: Config, deps: Deps, config_path: str,

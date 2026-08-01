@@ -357,3 +357,11 @@ def test_triage_model_loaded(tmp_path):
     p.write_text(
         "state_dir: /tmp/s\ntriage_model: claude-opus-4-8\ntargets: []\n")
     assert load_config(p).triage_model == "claude-opus-4-8"
+
+
+def test_pass_interval_minutes_default_and_override(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    assert load_config(p).pass_interval_minutes == 10
+    p.write_text("state_dir: /tmp/s\npass_interval_minutes: 5\ntargets: []\n")
+    assert load_config(p).pass_interval_minutes == 5
