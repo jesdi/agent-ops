@@ -114,7 +114,7 @@ test('queued column renders ghost cards in rank order with count and stale hint'
       { number: 74, target: 'jesdi/widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
     ],
     upcoming_stale: true,
-    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73 },
+    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'jesdi/widget' },
   })))
   renderWithProviders(<BoardPage />)
   const queued = await screen.findByTestId('column-queued')
@@ -123,6 +123,26 @@ test('queued column renders ghost cards in rank order with count and stale hint'
   expect(within(queued).getByText('2')).toBeInTheDocument()  // header count
   expect(within(queued).getByText(/stale/)).toBeInTheDocument()
   expect(within(ghosts[0]!).getByText('next')).toBeInTheDocument()
+})
+
+test('same issue number on two targets renders two distinct ghosts', async () => {
+  // Issue numbers are per-repo, so alpha#73 and beta#73 are different work.
+  // The ghost key must include the target (duplicate React keys otherwise),
+  // and only the forecast target may wear the "next" badge.
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    upcoming: [
+      { number: 73, target: 'jesdi/alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0, quarantined: false },
+      { number: 73, target: 'jesdi/beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0, quarantined: false },
+    ],
+    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'jesdi/beta' },
+  })))
+  renderWithProviders(<BoardPage />)
+  const queued = await screen.findByTestId('column-queued')
+  expect(within(queued).getByText('Alpha work')).toBeInTheDocument()
+  expect(within(queued).getByText('Beta work')).toBeInTheDocument()
+  // exactly one "next" badge — the alpha ghost must not claim the forecast
+  expect(within(queued).getAllByText('next')).toHaveLength(1)
 })
 
 test('stale indicator survives collapsing the Queued column', async () => {

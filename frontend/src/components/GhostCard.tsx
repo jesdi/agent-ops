@@ -25,6 +25,17 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
             next
           </span>
         )}
+        {/* Shown, not hidden: the dispatcher skips it every pass, and a
+            silently absent head-of-queue card is what the operator would
+            have to debug. See /failures for the blocker. */}
+        {ghost.quarantined && (
+          <span
+            className="rounded bg-amber-100 px-1.5 text-xs font-medium text-amber-800"
+            title="held by a quarantine record — the dispatcher skips it until the blocker issue closes"
+          >
+            quarantined
+          </span>
+        )}
       </div>
       <Link to={`/task/${ghost.number}`} className="mt-1 block text-sm font-medium hover:underline">
         {ghost.title}

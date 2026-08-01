@@ -65,10 +65,12 @@ export function BoardPage() {
           creates a last-writer-wins race on the error state. */}
       {upcoming.map((g) => (
         <GhostCardView
-          key={g.number}
+          /* Issue numbers are per-repo: alpha#73 and beta#73 can both be
+             ghosts, so the key (and the next-badge match) needs the target. */
+          key={`${g.target}#${g.number}`}
           ghost={g}
           busy={busy}
-          isNext={next_claim.verdict === 'will-claim' && next_claim.next_issue === g.number}
+          isNext={next_claim.verdict === 'will-claim' && next_claim.next_issue === g.number && next_claim.next_target === g.target}
           onBoost={(n, amount) => boost(n, amount)}
           onNext={(n) => next(n)}
           onReady={(n) => ready(n)}

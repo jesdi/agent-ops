@@ -39,9 +39,11 @@ const state = {
     capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 3 },
     upcoming: [
       { number: 73, target: 'jesdi/widget', title: 'Ship dark mode',
-        url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
+        url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0,
+        quarantined: false },
       { number: 74, target: 'jesdi/widget', title: 'Fix flaky test',
-        url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
+        url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0,
+        quarantined: false },
     ],
     upcoming_stale: false,
     median_cycle_seconds: 7200,
@@ -190,9 +192,11 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/__control__/reset-queue' && req.method === 'POST') {
     state.board.upcoming = [
       { number: 73, target: 'jesdi/widget', title: 'Ship dark mode',
-        url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
+        url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0,
+        quarantined: false },
       { number: 74, target: 'jesdi/widget', title: 'Fix flaky test',
-        url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
+        url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0,
+        quarantined: false },
     ]
     state.board.next_claim = {
       verdict: 'will-claim',
