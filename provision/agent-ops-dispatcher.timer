@@ -3,7 +3,8 @@ Description=Run agent-ops dispatcher every 10 minutes
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=10min  # Paired with Config.pass_interval_minutes (dispatcher/config.py) — change both together.
+# Paired with Config.pass_interval_minutes (dispatcher/config.py) — change both together.
+OnUnitActiveSec=10min
 RandomizedDelaySec=30
 
 [Install]
