@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from dispatcher import budget, eventlog, queue_ops, state
+from dispatcher import budget, eventlog, queue_ops, state, triage
 from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.intents import write_intent
@@ -94,6 +94,31 @@ class Sources:
         except Exception:
             return None  # unknown, surfaced as such — never a guess
 
+    def pass_heartbeat(self) -> dict | None:
+        try:
+            d = json.loads((self.state_dir / "pass.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return d if isinstance(d, dict) else None
+
+    def claims_paused(self) -> bool:
+        # Degrade to False (non-blocking) on any error: a read failure must
+        # not make the console claim the dispatcher is paused when it isn't.
+        # False = claims not paused = safe default that never prevents work.
+        try:
+            return triage.pending(self.state_dir)
+        except Exception:
+            return False
+
+    def triage_running(self) -> bool:
+        # Degrade to False (non-blocking) on any error: same contract as
+        # claims_paused. A failure to read tmux state must not reduce the
+        # effective capacity shown to the operator.
+        try:
+            return triage.running()
+        except Exception:
+            return False
+
     def events_tail(self, limit: int) -> list[dict]:
         return eventlog.read_tail(self._cfg.state_dir, limit=limit)
 
@@ -162,7 +187,7 @@ class Sources:
 
         board = digest(
             list(root.glob("task-*.json")) + list(root.glob("waiting-*"))
-            + list(root.glob("attached-*")))
+            + list(root.glob("attached-*")) + [root / "pass.json"])
         budget_d = digest([root / "usage-cache.json",
                            root / "budget-stalled"])
         failures = digest(

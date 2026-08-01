@@ -20,6 +20,7 @@ const parkedCard = {
   updated_at: '2026-07-25T10:00:00Z', attached: false,
   // question-parked: container stopped, unit released
   consuming_capacity: false,
+  claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null,
 }
 
 const state = {
@@ -36,6 +37,8 @@ const state = {
       { key: 'pr-open', title: 'PR open', cards: [] },
     ],
     capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 3 },
+    upcoming: [], upcoming_stale: false, median_cycle_seconds: null,
+    next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0 },
   },
   queue: { targets: [] },
   budget: {
@@ -58,6 +61,7 @@ function taskDetail(issue) {
     session_alive: true,
     worktree: `/home/agent/worktrees/task-${issue}`,
     pending_reply: '', ci_run_id: 0, effort: 3, labels: ['auto'],
+    timeline: [],
   }
 }
 

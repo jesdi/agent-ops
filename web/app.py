@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -40,6 +41,7 @@ class SPAStaticFiles(StaticFiles):
 
 SSE_KEYS = ("board", "queue", "budget", "failures", "history")
 HEARTBEAT_SECONDS = 15.0
+EVENTS_SCAN_LIMIT = 5000
 
 
 class BoostReq(BaseModel):
@@ -84,11 +86,25 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         tasks = sources.tasks()
+        queues, stale_any = [], False
+        for target in cfg.targets:
+            rows, _as_of, stale = sources.rank_rows(target)
+            stale_any = stale_any or stale
+            queues.append((target.name, rows))
         return read_model.build_board(
             tasks, capacity=cfg.capacity,
             models={t.issue: _model_for(t) for t in tasks},
             attached={t.issue for t in tasks
-                      if sources.has_attached(t.issue)})
+                      if sources.has_attached(t.issue)},
+            events=sources.events_tail(EVENTS_SCAN_LIMIT),
+            heartbeat=sources.pass_heartbeat(),
+            now=datetime.now(timezone.utc),
+            budget=read_model.budget_view(
+                sources.usage(), cfg.budget_threshold, cfg.racing_minutes,
+                cfg.racing_threshold),
+            queues=queues, queue_stale=stale_any,
+            claims_paused=sources.claims_paused(),
+            triage_running=sources.triage_running())
 
     @app.get("/api/task/{issue}", response_model=read_model.TaskDetail)
     def task_detail(issue: int,
@@ -101,7 +117,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             t, model=_model_for(t),
             attached=sources.has_attached(issue),
             pane_tail=sources.pane_tail(issue),
-            session_alive=sources.session_alive(issue))
+            session_alive=sources.session_alive(issue),
+            events=sources.events_tail(EVENTS_SCAN_LIMIT),
+            now=datetime.now(timezone.utc))
 
     @app.get("/api/task/{issue}/spec", response_model=read_model.SpecView)
     def task_spec(issue: int,

@@ -339,3 +339,29 @@ def test_pane_history_corrupt_snapshot_degrades_to_empty(tmp_path):
     snap.write_bytes(b"\x80\x81\x82")  # Invalid UTF-8 sequence
     _, src = make_sources(tmp_path)
     assert src.pane_history(7) == ""
+
+
+def test_pass_heartbeat_reads_and_degrades(tmp_path):
+    _, src = make_sources(tmp_path)
+    assert src.pass_heartbeat() is None
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "pass.json").write_text('{"interval_minutes": 10}')
+    assert src.pass_heartbeat() == {"interval_minutes": 10}
+    (src.state_dir / "pass.json").write_text("not json")
+    assert src.pass_heartbeat() is None
+
+
+def test_state_fingerprint_changes_when_pass_json_changes(tmp_path):
+    _, src = make_sources(tmp_path)
+    f1 = json.loads(src.state_fingerprint())
+    (tmp_path / "pass.json").write_text('{"interval_minutes": 10}')
+    f2 = json.loads(src.state_fingerprint())
+    assert f2["board"] != f1["board"]
+
+
+def test_claims_paused_and_triage_running_degrade_to_false(tmp_path):
+    """Both triage flags degrade to False on any error; never block claims."""
+    _, src = make_sources(tmp_path)
+    # Without any triage process or request file, both return False.
+    assert src.claims_paused() is False
+    assert src.triage_running() is False

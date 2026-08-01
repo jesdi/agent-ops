@@ -70,7 +70,9 @@ def test_login_park_card_shows_its_park_kind_in_the_parked_column():
 def test_login_park_counts_towards_active_capacity():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0, park=PARK_LOGIN),
              make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
-    board = build_board(tasks, capacity=2, models={}, attached=set())
+    board = build_board(tasks, capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False)
     assert board.capacity.active == 1   # matches dispatcher.state.active()
     assert board.capacity.slots_used == 2
 
@@ -82,7 +84,9 @@ def test_build_board_groups_and_counts():
         make_task(issue=3, stage=Stage.PR_OPEN, slot=0),
     ]
     board = build_board(tasks, capacity=2,
-                        models={1: "a", 2: "b", 3: "c"}, attached={1})
+                        models={1: "a", 2: "b", 3: "c"}, attached={1},
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False)
     by_key = {c.key: c for c in board.columns}
     assert [c.issue for c in by_key["in-progress"].cards] == [1]
     assert [c.issue for c in by_key["parked"].cards] == [2]
@@ -97,7 +101,9 @@ def test_build_board_groups_and_counts():
 
 
 def test_board_column_order_is_stable():
-    board = build_board([], capacity=2, models={}, attached=set())
+    board = build_board([], capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False)
     assert [c.key for c in board.columns] == [
         "queued", "in-progress", "needs-review", "pr-open", "done", "parked",
         "awaiting-ci", "resuming", "stalled", "failed"]
@@ -133,7 +139,9 @@ def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
              make_task(issue=2, stage=Stage.AWAITING_SPEC_REVIEW,
                        slot=NO_SLOT, park=PARK_REVIEW)]
-    board = build_board(tasks, capacity=2, models={}, attached=set())
+    board = build_board(tasks, capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False)
     assert board.capacity.active == 1
     assert board.capacity.slots_used == 1   # not 2 — #2 gave its slot back
 
@@ -176,7 +184,9 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
         make_task(issue=6, stage=Stage.FAILED),
         make_task(issue=7, stage=Stage.QUEUED),
     ]
-    board = build_board(tasks, capacity=3, models={}, attached=set())
+    board = build_board(tasks, capacity=3, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False)
     flagged = [c for col in board.columns for c in col.cards
                if c.consuming_capacity]
     assert len(flagged) == board.capacity.active
@@ -402,3 +412,38 @@ def test_next_claim_unknown_wins_over_new_gates():
     assert next_claim(stale, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
                       queues=[("alpha", [row(1)])],
                       claims_paused=True, triage_running=True).verdict == "unknown"
+
+
+def test_build_board_merges_ghosts_next_claim_and_durations():
+    tasks = [make_task(issue=7, stage=Stage.IMPLEMENT),
+             make_task(issue=9, stage=Stage.DONE, slot=-1,
+                       done_at="2026-08-01T12:00:00+00:00")]
+    events = [ev(T0, "claimed", 7), ev(T0, "claimed", 9),
+              ev("2026-08-01T12:00:00+00:00", "merged", 9)]
+    board = build_board(
+        tasks, capacity=2, models={7: "opus", 9: "opus"}, attached=set(),
+        events=events, heartbeat=HB, now=NOW, budget=BUDGET_OK,
+        queues=[("alpha", [row(7), row(73), row(74, blocked=True)])],
+        queue_stale=False)
+    # ghosts: candidates only, minus in-flight; rank order preserved
+    assert [g.number for g in board.upcoming] == [73]
+    assert board.upcoming[0].target == "alpha"
+    assert board.next_claim.verdict == "will-claim"
+    assert board.next_claim.next_issue == 73
+    assert board.median_cycle_seconds == 7200.0
+    assert board.upcoming_stale is False
+    cards = {c.issue: c for col in board.columns for c in col.cards}
+    assert cards[7].claimed_at == T0 and cards[7].cycle_seconds is None
+    assert cards[9].cycle_seconds == 7200.0
+
+
+def test_build_board_degrades_without_events_or_heartbeat():
+    board = build_board(
+        [make_task(issue=7)], capacity=2, models={}, attached=set(),
+        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+        queues=[("alpha", [])], queue_stale=True)
+    assert board.next_claim.verdict == "unknown"
+    assert board.median_cycle_seconds is None
+    assert board.upcoming == [] and board.upcoming_stale is True
+    card = board.columns[1].cards[0]  # in-progress
+    assert card.claimed_at == "" and card.cycle_seconds is None

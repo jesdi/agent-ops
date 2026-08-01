@@ -74,12 +74,26 @@ class TaskCard(BaseModel):
     # server-side so the console cannot disagree with the dispatcher about a
     # rule with a real exception (parked-login still counts).
     consuming_capacity: bool
+    # From the event log; "" / None when the claimed event rotated away.
+    claimed_at: str
+    cycle_seconds: float | None
 
 
 class Column(BaseModel):
     key: str
     title: str
     cards: list[TaskCard]
+
+
+class GhostCard(BaseModel):
+    """A ranked, not-yet-claimed candidate: exactly what _claim_new would
+    consume next, rendered in the Queued column ahead of being claimed."""
+    number: int
+    target: str
+    title: str
+    url: str
+    score: float | None
+    boost: int
 
 
 class CapacityView(BaseModel):
@@ -92,9 +106,15 @@ class CapacityView(BaseModel):
 class BoardView(BaseModel):
     columns: list[Column]
     capacity: CapacityView
+    upcoming: list[GhostCard]
+    upcoming_stale: bool
+    next_claim: NextClaimView
+    median_cycle_seconds: float | None
 
 
-def task_card(t: TaskState, *, model: str, attached: bool) -> TaskCard:
+def task_card(t: TaskState, *, model: str, attached: bool,
+              claimed_at: str = "",
+              cycle_seconds: float | None = None) -> TaskCard:
     return TaskCard(
         issue=t.issue, target=t.target, title=t.title,
         stage=t.stage.value, park=t.park,
@@ -108,17 +128,34 @@ def task_card(t: TaskState, *, model: str, attached: bool) -> TaskCard:
         park_note_pending=(t.park == PARK_HUMAN and t.park_msg_id == 0),
         feedback_pending=t.feedback_pending,
         updated_at=t.updated_at, attached=attached,
-        consuming_capacity=consumes_capacity(t))
+        consuming_capacity=consumes_capacity(t),
+        claimed_at=claimed_at, cycle_seconds=cycle_seconds)
 
 
 def build_board(tasks: list[TaskState], *, capacity: int,
-                models: dict[int, str], attached: set[int]) -> BoardView:
+                models: dict[int, str], attached: set[int],
+                events: list[dict], heartbeat: dict | None, now: datetime,
+                budget: BudgetView, queues: list[tuple[str, list[dict]]],
+                queue_stale: bool,
+                claims_paused: bool = False,
+                triage_running: bool = False) -> BoardView:
+    claimed = claimed_at_index(events)
     cards = [task_card(t, model=models.get(t.issue, ""),
-                       attached=t.issue in attached) for t in tasks]
+                       attached=t.issue in attached,
+                       claimed_at=claimed.get(t.issue, ""),
+                       cycle_seconds=cycle_seconds(claimed.get(t.issue, ""),
+                                                   t.done_at))
+             for t in tasks]
     by_column: dict[str, list[TaskCard]] = {key: [] for key, _ in COLUMNS}
     for card in cards:
         by_column[card.column].append(card)
     in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
+    known = {t.issue for t in tasks}
+    upcoming = [GhostCard(number=r["number"], target=name,
+                          title=r.get("title", ""), url=r.get("url", ""),
+                          score=r.get("score"), boost=int(r.get("boost") or 0))
+                for name, rows in queues for r in rows
+                if _is_candidate(r) and r["number"] not in known]
     return BoardView(
         columns=[Column(key=key, title=title, cards=by_column[key])
                  for key, title in COLUMNS],
@@ -128,7 +165,14 @@ def build_board(tasks: list[TaskState], *, capacity: int,
             active=len(active(in_flight)),
             capacity=capacity,
             slots_used=len([t for t in in_flight if t.slot != NO_SLOT]),
-            max_slots=MAX_SLOTS))
+            max_slots=MAX_SLOTS),
+        upcoming=upcoming, upcoming_stale=queue_stale,
+        next_claim=next_claim(heartbeat, now=now, tasks=tasks,
+                              capacity=capacity, budget=budget,
+                              queues=queues,
+                              claims_paused=claims_paused,
+                              triage_running=triage_running),
+        median_cycle_seconds=median_cycle_seconds(events))
 
 
 class TaskDetail(BaseModel):
@@ -140,15 +184,22 @@ class TaskDetail(BaseModel):
     ci_run_id: int
     effort: int | None
     labels: list[str]
+    timeline: list[TimelineEntry]
 
 
 def task_detail(t: TaskState, *, model: str, attached: bool,
-                pane_tail: str, session_alive: bool) -> TaskDetail:
+                pane_tail: str, session_alive: bool,
+                events: list[dict], now: datetime) -> TaskDetail:
+    claimed = claimed_at_index(events)
     return TaskDetail(
-        card=task_card(t, model=model, attached=attached),
+        card=task_card(t, model=model, attached=attached,
+                       claimed_at=claimed.get(t.issue, ""),
+                       cycle_seconds=cycle_seconds(claimed.get(t.issue, ""),
+                                                   t.done_at)),
         pane_tail=pane_tail, session_alive=session_alive,
         worktree=t.worktree, pending_reply=t.pending_reply,
-        ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels))
+        ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
+        timeline=stage_timeline(events, t.issue, now=now))
 
 
 class SpecView(BaseModel):
@@ -312,7 +363,7 @@ _TIMELINE_EVENTS = {"claimed", "stage-started", "parked", "resumed", "merged"}
 
 
 class NextClaimView(BaseModel):
-    verdict: str          # will-claim|no-candidates|capacity-full|budget-blocked|unknown
+    verdict: str          # will-claim|no-candidates|capacity-full|budget-blocked|claims-paused|unknown
     next_pass_eta: str    # ISO; "" when verdict == "unknown"
     next_issue: int = 0
     next_target: str = ""

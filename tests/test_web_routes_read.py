@@ -170,3 +170,42 @@ def test_task_history_404_for_unknown_task(tmp_path):
     fake, client = rig(tmp_path)
     assert client.get("/api/task/999/history",
                       headers=HEADERS).status_code == 404
+
+
+def test_board_carries_next_claim_upcoming_and_timeline(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT)]
+    fake.heartbeat = {"started_at": "2026-08-01T12:25:00+00:00",
+                      "finished_at": "2026-08-01T12:26:00+00:00",
+                      "interval_minutes": 10}
+    fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 2.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    # Use a timestamp guaranteed to be in the past so stage_timeline produces
+    # an ongoing segment (now - claimed_at >= 1 s at any wall-clock time).
+    fake.events = [{"ts": "2026-07-31T10:00:00+00:00", "event": "claimed",
+                    "target": "alpha", "issue": 7, "stage": "queued",
+                    "model": "", "actor": "dispatcher", "detail": ""}]
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert body["next_claim"]["next_issue"] == 73
+    assert [g["number"] for g in body["upcoming"]] == [73]
+    card = [c for col in body["columns"] for c in col["cards"]][0]
+    assert card["claimed_at"] == "2026-07-31T10:00:00+00:00"
+    detail = client.get("/api/task/7", headers=HEADERS).json()
+    assert detail["timeline"][0]["label"] == "queued"
+    assert detail["timeline"][0]["ongoing"] is True
+
+
+def test_board_next_claim_claims_paused(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.heartbeat = {"started_at": "2026-08-01T12:25:00+00:00",
+                      "finished_at": "2026-08-01T12:26:00+00:00",
+                      "interval_minutes": 10}
+    fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 2.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    fake._claims_paused = True
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert body["next_claim"]["verdict"] == "claims-paused"

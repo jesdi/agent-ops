@@ -53,6 +53,9 @@ class FakeSources:
         self.appended = []        # (event, target, issue, actor, detail)
         self.fingerprint = ('{"board": "a", "budget": "a", "failures": "a",'
                             ' "history": "0", "queue": "a"}')
+        self.heartbeat = None     # dict | None returned by pass_heartbeat()
+        self._claims_paused = False
+        self._triage_running = False
 
     def tasks(self):
         return list(self.tasks_list)
@@ -72,6 +75,15 @@ class FakeSources:
 
     def issue_open(self, repo, number):
         return self.open_issues.get((repo, number))
+
+    def pass_heartbeat(self):
+        return self.heartbeat
+
+    def claims_paused(self):
+        return self._claims_paused
+
+    def triage_running(self):
+        return self._triage_running
 
     def events_tail(self, limit):
         return self.events[-limit:]
