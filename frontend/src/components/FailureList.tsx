@@ -4,7 +4,7 @@ import { relativeTime } from '../lib/format'
 export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
   failures: FailuresView
   onRetry: (issue: number) => void
-  /** Per-task inline retry errors, same convention as QueueTable. */
+  /** Per-task inline retry errors, same convention as GhostCard. */
   errors?: Readonly<Record<number, string | null>>
   busy?: boolean
 }) {

@@ -30,7 +30,7 @@ function TaskView({ issue }: { issue: number }) {
   const intentsQuery = usePendingIntents()
   const queryClient = useQueryClient()
   const [replyText, setReplyText] = useState('')
-  // Inline error channel, same convention as QueuePage/QueueTable: park/kill/
+  // Inline error channel, same convention as useQueueActions: park/kill/
   // retry/reply return real 404s and 5xx, and a swallowed failure is
   // pixel-identical to success — no badge, no error, operator misled.
   const [actionError, setActionError] = useState<string | null>(null)

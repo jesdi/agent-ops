@@ -1,6 +1,6 @@
 import type {
   BoardView, BudgetView, FailuresView, HistoryView, PendingIntentsView,
-  QueueView, TaskCard, TaskDetail,
+  TaskCard, TaskDetail,
 } from '../lib/api'
 
 export const parkedCard: TaskCard = {
@@ -66,26 +66,6 @@ export const board: BoardView = {
   capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3 },
   upcoming: [], upcoming_stale: false, median_cycle_seconds: null,
   next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0 },
-}
-
-export const queue: QueueView = {
-  targets: [{
-    target: 'jesdi/widget',
-    as_of: '2026-07-25T11:55:00Z',
-    stale: false,
-    rows: [
-      { number: 51, title: 'Rate-limit webhooks', url: 'https://github.com/jesdi/widget/issues/51',
-        status: 'Ready', labels: ['auto'], blocked: false, score: 8.5, boost: 1, in_flight: false },
-      { number: 41, title: 'Add CSV export', url: 'https://github.com/jesdi/widget/issues/41',
-        status: 'In progress', labels: [], blocked: false, score: 7.0, boost: 0, in_flight: true },
-      { number: 60, title: 'Migrate to pydantic v2', url: 'https://github.com/jesdi/widget/issues/60',
-        status: 'Backlog', labels: [], blocked: true, score: null, boost: 0, in_flight: false },
-    ],
-  }],
-}
-
-export const staleQueue: QueueView = {
-  targets: [{ ...queue.targets[0]!, stale: true, as_of: '2026-07-25T09:12:00Z' }],
 }
 
 export const budget: BudgetView = {

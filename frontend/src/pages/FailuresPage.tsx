@@ -8,7 +8,7 @@ import { api, ApiError } from '../lib/api'
 export function FailuresPage() {
   const failuresQuery = useFailures()
   const queryClient = useQueryClient()
-  // Per-task inline error channel, same convention as QueuePage/QueueTable:
+  // Per-task inline error channel, same convention as GhostCard/useQueueActions:
   // /task/{issue}/retry really does 404 ("issue N is not quarantined"), and a
   // swallowed failure is pixel-identical to a landed retry.
   const [errors, setErrors] = useState<Record<number, string | null>>({})

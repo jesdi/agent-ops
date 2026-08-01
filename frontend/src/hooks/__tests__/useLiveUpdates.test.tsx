@@ -66,9 +66,10 @@ it('a malformed frame is ignored, and the next good frame still invalidates', ()
     act(() => { es.onmessage?.({ data: '{"changed": "queue"}' }) })
   }).not.toThrow()
   expect(spy).not.toHaveBeenCalled()
+  // server still emits 'queue'; since Task 7 it remaps to board invalidation
   act(() => { es.onmessage?.({ data: '{"changed": ["queue"]}' }) })
   expect(spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))).toContain(
-    JSON.stringify(['queue']),
+    JSON.stringify(['board']),
   )
 })
 

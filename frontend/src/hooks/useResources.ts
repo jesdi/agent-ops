@@ -12,11 +12,6 @@ export function useTasks() {
   return useQuery({ queryKey: queryKeys.board, queryFn: api.board, refetchInterval })
 }
 
-export function useQueue() {
-  const refetchInterval = useFallbackInterval()
-  return useQuery({ queryKey: queryKeys.queue, queryFn: api.queue, refetchInterval })
-}
-
 export function useBudget() {
   const refetchInterval = useFallbackInterval()
   return useQuery({ queryKey: queryKeys.budget, queryFn: api.budget, refetchInterval })
