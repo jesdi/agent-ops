@@ -225,23 +225,82 @@ def test_board_next_claim_claims_paused(tmp_path):
 
 def test_board_next_claim_triage_running(tmp_path):
     """capacity=1 + triage_running → effective capacity=0 → capacity-full."""
-    fake, client = rig(tmp_path)
+    fake = FakeSources()
     fake.heartbeat = _fresh_heartbeat()
     fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
                             "status": "Ready", "labels": ["auto"],
                             "blocked": False, "score": 2.0, "boost": 0}],
                           "2026-08-01T12:00:00+00:00", False)
     fake._triage_running = True
-    # capacity=1 configured via make_config default=2; override via a 1-slot config
-    cfg = make_config(tmp_path, capacity=1)
-    local_fake = FakeSources()
-    local_fake.heartbeat = fake.heartbeat
-    local_fake.rank["alpha"] = fake.rank["alpha"]
-    local_fake._triage_running = True
-    from web.app import create_app
-    client2 = TestClient(create_app(cfg, local_fake))
-    body = client2.get("/api/board", headers=HEADERS).json()
+    client = TestClient(create_app(make_config(tmp_path, capacity=1), fake))
+    body = client.get("/api/board", headers=HEADERS).json()
     assert body["next_claim"]["verdict"] == "capacity-full"
+
+
+def test_board_quarantined_head_is_flagged_not_forecast(tmp_path):
+    """Route level: the quarantined candidate still renders as a ghost (so
+    the operator sees the stuck head of the queue) but the will-claim
+    forecast moves to the next one — matching what _claim_new does."""
+    fake, client = rig(tmp_path)
+    fake.heartbeat = _fresh_heartbeat()
+    rows = [{"number": n, "title": f"t{n}", "url": "u", "status": "Ready",
+             "labels": ["auto"], "blocked": False, "score": 2.0, "boost": 0}
+            for n in (73, 74)]
+    fake.rank["alpha"] = (rows, "2026-08-01T12:00:00+00:00", False)
+    fake.quarantined_pairs = {("alpha", 73)}
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert [(g["number"], g["quarantined"]) for g in body["upcoming"]] == [
+        (73, True), (74, False)]
+    assert body["next_claim"]["verdict"] == "will-claim"
+    assert body["next_claim"]["next_issue"] == 74
+
+
+def test_board_probes_tmux_at_most_once_per_request(tmp_path):
+    """The board asked sources for claims_paused and triage_running
+    separately, and triage.pending() calls running() itself — two tmux
+    subprocesses (timeout=30 each) per request on the hottest route. Real
+    Sources here so the deduplication in sources.py is what is measured."""
+    from dispatcher import triage as triage_mod
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    calls = []
+
+    class _NullGitHub:
+        def rank_rows(self, _): return []
+
+    class _NullSessions:
+        def is_alive(self, _): return False
+
+    def _running():
+        calls.append(1)
+        return False
+
+    import pytest
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(triage_mod, "running", _running)
+        client2 = TestClient(create_app(cfg, Sources(cfg, _NullSessions(),
+                                                     _NullGitHub())))
+        assert client2.get("/api/board", headers=HEADERS).status_code == 200
+    assert len(calls) == 1, f"tmux probed {len(calls)} times per board request"
+
+
+def test_task_detail_200_with_mixed_timezone_events(tmp_path):
+    """A naive `ts` beside an aware `now` raised TypeError out of
+    stage_timeline and 500'd this route; it now degrades by dropping the
+    incomparable segment."""
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7)]
+    fake.events = [
+        {"ts": "2026-07-31T10:00:00+00:00", "event": "claimed",
+         "target": "alpha", "issue": 7, "stage": "queued", "model": "",
+         "actor": "dispatcher", "detail": ""},
+        {"ts": "2026-07-31T11:00:00", "event": "stage-started",  # NAIVE
+         "target": "alpha", "issue": 7, "stage": "spec", "model": "",
+         "actor": "dispatcher", "detail": ""},
+    ]
+    resp = client.get("/api/task/7", headers=HEADERS)
+    assert resp.status_code == 200
+    assert isinstance(resp.json()["timeline"], list)
 
 
 def test_board_degrades_to_200_on_corrupt_events(tmp_path):
@@ -290,3 +349,21 @@ def test_description_for_task_ghost_and_unknown(tmp_path):
                       headers=HEADERS).json()["title"] == "T73"
     assert client.get("/api/task/999/description",
                       headers=HEADERS).status_code == 404
+
+
+def test_description_refuses_a_number_on_two_queues(tmp_path):
+    """Both alpha#73 and beta#73 can be ghosts. Serving the first hit could
+    hand back the WRONG repo's body; the routing scheme is issue-number-only
+    so there is nothing to disambiguate on — report 409 (same contract as
+    _locate_row) instead of guessing."""
+    from tests.webfakes import make_target
+    fake = FakeSources()
+    cfg = make_config(tmp_path, targets=[make_target("alpha", "jesdi/alpha"),
+                                         make_target("beta", "jesdi/beta")])
+    client = TestClient(create_app(cfg, fake))
+    r73 = [{"number": 73, "title": "t", "url": "u", "status": "Ready",
+            "labels": ["auto"], "blocked": False, "score": 1.0, "boost": 0}]
+    fake.rank["alpha"] = (r73, "2026-08-01T12:00:00+00:00", False)
+    fake.rank["beta"] = (r73, "2026-08-01T12:00:00+00:00", False)
+    resp = client.get("/api/task/73/description", headers=HEADERS)
+    assert resp.status_code == 409 and "ambiguous" in resp.json()["detail"]

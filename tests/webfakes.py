@@ -40,6 +40,9 @@ class FakeSources:
         self.descriptions = {}    # (repo, number) -> dict
         self.snapshot = UsageSnapshot(0.5, 120.0, "oauth")
         self.quarantine = []
+        # (target, issue) pairs the dispatcher would skip; empty = the
+        # non-blocking default, so no existing test's forecast changes.
+        self.quarantined_pairs = set()
         self.fingerprints = []
         self.open_issues = {}     # (repo, number) -> bool | None
         self.events = []
@@ -80,11 +83,11 @@ class FakeSources:
     def pass_heartbeat(self):
         return self.heartbeat
 
-    def claims_paused(self):
-        return self._claims_paused
+    def triage_state(self):
+        return self._claims_paused, self._triage_running
 
-    def triage_running(self):
-        return self._triage_running
+    def quarantined(self):
+        return frozenset(self.quarantined_pairs)
 
     def events_tail(self, limit):
         return self.events[-limit:]

@@ -20,6 +20,7 @@ from dispatcher.state import TaskState
 
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
+QUARANTINE_TTL_SECONDS = 30.0
 DISPATCHER_KICK = ("systemctl", "--user", "start",
                    "agent-ops-dispatcher.service")
 
@@ -39,6 +40,8 @@ class Sources:
         self._systemctl = systemctl
         self._rank_cache: dict[str, dict] = {}
         self._desc_cache: dict[tuple[str, int], dict] = {}
+        self._quarantine_cache: (
+            tuple[float, frozenset[tuple[str, int]]] | None) = None
 
     @property
     def state_dir(self) -> Path:
@@ -130,23 +133,79 @@ class Sources:
             return None
         return d if isinstance(d, dict) else None
 
-    def claims_paused(self) -> bool:
-        # Degrade to False (non-blocking) on any error: a read failure must
-        # not make the console claim the dispatcher is paused when it isn't.
-        # False = claims not paused = safe default that never prevents work.
-        try:
-            return triage.pending(self.state_dir)
-        except Exception:
-            return False
+    def triage_state(self) -> tuple[bool, bool]:
+        """(claims_paused, triage_running) from exactly ONE tmux probe.
 
-    def triage_running(self) -> bool:
-        # Degrade to False (non-blocking) on any error: same contract as
-        # claims_paused. A failure to read tmux state must not reduce the
-        # effective capacity shown to the operator.
+        Mirrors dispatcher/main.py:1135-1137, which evaluates triage.running()
+        once per pass for the reason its comment gives: running() is a real
+        subprocess with timeout=30. triage.pending() calls running() itself, so
+        asking sources for the two signals separately ran it twice per board
+        request — a wedged tmux server stalled the hottest route for up to 60 s
+        per connected client. Composed here from the same primitives instead.
+
+        Degrades to (False, False) on any error: False is the non-blocking
+        value for both. A read failure must not make the console claim claims
+        are paused, nor reduce the effective capacity it shows.
+        """
         try:
-            return triage.running()
+            running = triage.running()
         except Exception:
-            return False
+            running = False
+        try:
+            # pending() == request file present OR running — inlined so the
+            # running half is the value already probed above.
+            paused = running or triage.load_request(self.state_dir) is not None
+        except Exception:
+            paused = running
+        return paused, running
+
+    def quarantined(self) -> frozenset[tuple[str, int]]:
+        """(target, issue) pairs _claim_new would skip, mirroring
+        failures.check_quarantine — read-only: the web service never deletes a
+        dispatcher record, it only predicts.
+
+        Semantics copied from failures.py:160: a record blocks until its
+        blocker issue is CLOSED, and every uncertainty resolves to "still
+        blocked" (unreadable record, missing blocker_issue, unknown blocker
+        state) exactly as check_quarantine does — so the forecast never claims
+        an issue the dispatcher will skip. Records are named
+        `{target}-{issue}.json`, i.e. quarantine is per-target, so the key
+        matches how `known` is keyed in the read model.
+
+        TTL-cached: this resolves blocker state over the network (one `gh` call
+        per record) and /api/board is refetched on every SSE tick.
+        """
+        now = self._clock()
+        if (self._quarantine_cache is not None
+                and now - self._quarantine_cache[0] < QUARANTINE_TTL_SECONDS):
+            return self._quarantine_cache[1]
+        out: set[tuple[str, int]] = set()
+        root = self.state_dir / "quarantine"
+        for p in sorted(root.glob("*.json")) if root.exists() else []:
+            target, _, raw = p.stem.rpartition("-")
+            try:
+                issue = int(raw)
+            except ValueError:
+                continue  # not a quarantine record this scheme can key
+            try:
+                rec = json.loads(p.read_text())
+            except (json.JSONDecodeError, OSError):
+                out.add((target, issue))  # unreadable: stays blocked
+                continue
+            try:  # the record's own number wins; a corrupt one falls back
+                issue = int(rec.get("task_issue") or issue)
+            except (TypeError, ValueError):
+                pass
+            blocker = rec.get("blocker_issue")
+            if not blocker:
+                out.add((target, issue))  # no blocker: a human must clear it
+                continue
+            if self.issue_open(rec.get("blocker_repo", ""), blocker) is False:
+                continue  # blocker closed: the next pass clears and claims it
+            out.add((target, issue))
+        frozen = frozenset(out)
+        self._quarantine_cache = (now, frozen)
+        return frozen
 
     def events_tail(self, limit: int) -> list[dict]:
         # Degrade to [] rather than 500: an unreadable event log costs

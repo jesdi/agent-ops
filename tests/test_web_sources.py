@@ -14,6 +14,7 @@ class FakeGitHub:
         self.calls = 0
         self.fail = False
         self.states = {}        # (repo, number) -> "OPEN"/"CLOSED"/None
+        self.state_calls = []   # (repo, number) per issue_state call
         self.boosts = []
 
     def rank_rows(self, target):
@@ -23,6 +24,7 @@ class FakeGitHub:
         return self.rows.get(target.name, [])
 
     def issue_state(self, repo, number):
+        self.state_calls.append((repo, number))
         v = self.states.get((repo, number))
         if v is None:
             raise RuntimeError("gh failed")
@@ -367,8 +369,7 @@ def test_state_fingerprint_changes_when_pass_json_changes(tmp_path):
     assert f2["board"] != f1["board"]
 
 
-def test_claims_paused_and_triage_running_degrade_to_false(tmp_path,
-                                                            monkeypatch):
+def test_triage_state_degrades_to_false(tmp_path, monkeypatch):
     """Both triage flags degrade to False when the underlying call raises.
     Monkeypatching forces the error path so the test does not depend on
     whether the host has a tmux session named 'triage' or tmux installed."""
@@ -381,8 +382,91 @@ def test_claims_paused_and_triage_running_degrade_to_false(tmp_path,
     monkeypatch.setattr(triage_mod, "pending", boom)
     monkeypatch.setattr(triage_mod, "running", boom)
 
-    assert src.claims_paused() is False
-    assert src.triage_running() is False
+    assert src.triage_state() == (False, False)
+
+
+def test_triage_state_probes_tmux_once(tmp_path, monkeypatch):
+    """triage.pending() calls running() internally; composing the two signals
+    from one probe is the whole point (cf. dispatcher run_pass)."""
+    import dispatcher.triage as triage_mod
+    _, src = make_sources(tmp_path)
+    calls = []
+    monkeypatch.setattr(triage_mod, "running",
+                        lambda: (calls.append(1), False)[1])
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_request_file_pauses_claims(tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    _, src = make_sources(tmp_path)
+    monkeypatch.setattr(triage_mod, "running", lambda: False)
+    (tmp_path / triage_mod.REQUEST_FILE).write_text(
+        '{"requested_at": "2026-08-01T00:00:00+00:00"}')
+    assert src.triage_state() == (True, False)
+
+
+def test_triage_state_running_pauses_claims_too(tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    _, src = make_sources(tmp_path)
+    monkeypatch.setattr(triage_mod, "running", lambda: True)
+    assert src.triage_state() == (True, True)
+
+
+def _quarantine(tmp_path, name, **rec):
+    d = tmp_path / "quarantine"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(json.dumps(rec))
+
+
+def test_quarantined_mirrors_check_quarantine(tmp_path):
+    """Open blocker blocks; closed blocker does not (the dispatcher clears the
+    record and claims in the same pass); unknown state stays blocked."""
+    gh = FakeGitHub()
+    _, src = make_sources(tmp_path, github=gh)
+    _quarantine(tmp_path, "alpha-73.json", task_issue=73,
+                blocker_repo="jesdi/agent-ops", blocker_issue=31,
+                fingerprint="f", created_at="c")
+    _quarantine(tmp_path, "alpha-74.json", task_issue=74,
+                blocker_repo="jesdi/agent-ops", blocker_issue=32,
+                fingerprint="f", created_at="c")
+    gh.states = {("jesdi/agent-ops", 31): "OPEN",
+                 ("jesdi/agent-ops", 32): "CLOSED"}
+    assert src.quarantined() == frozenset({("alpha", 73)})
+
+
+def test_quarantined_stays_blocked_when_unresolvable(tmp_path):
+    """Unreadable record, missing blocker, and an issue_state that raises all
+    resolve to "still quarantined" — the same direction check_quarantine
+    fails in. Over-hiding one card beats forecasting a claim that never
+    happens."""
+    gh = FakeGitHub()
+    _, src = make_sources(tmp_path, github=gh)
+    (tmp_path / "quarantine").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "quarantine" / "alpha-73.json").write_text("{not json")
+    _quarantine(tmp_path, "alpha-74.json", task_issue=74, blocker_repo="r",
+                blocker_issue=0, fingerprint="f", created_at="c")
+    _quarantine(tmp_path, "beta-75.json", task_issue=75, blocker_repo="r",
+                blocker_issue=9, fingerprint="f", created_at="c")
+    gh.states = {}  # issue_state raises -> issue_open None -> blocked
+    assert src.quarantined() == frozenset(
+        {("alpha", 73), ("alpha", 74), ("beta", 75)})
+
+
+def test_quarantined_keys_on_target_and_caches(tmp_path):
+    """The record file name is `{target}-{issue}.json`, so quarantine is
+    per-target — and the resolved set is TTL-cached because /api/board would
+    otherwise hit the network on every SSE tick."""
+    gh = FakeGitHub()
+    _, src = make_sources(tmp_path, github=gh)
+    _quarantine(tmp_path, "agent-ops-73.json", task_issue=73,
+                blocker_repo="r", blocker_issue=1, fingerprint="f",
+                created_at="c")
+    gh.states = {("r", 1): "OPEN"}
+    assert src.quarantined() == frozenset({("agent-ops", 73)})
+    before = len(gh.state_calls)
+    assert src.quarantined() == frozenset({("agent-ops", 73)})
+    assert len(gh.state_calls) == before  # served from cache
 
 
 def test_issue_description_caches_and_degrades(tmp_path):

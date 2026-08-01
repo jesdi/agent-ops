@@ -86,6 +86,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         tasks = sources.tasks()
+        claims_paused, triage_running = sources.triage_state()
         queues, stale_any = [], False
         for target in cfg.targets:
             rows, _as_of, stale = sources.rank_rows(target)
@@ -103,8 +104,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 sources.usage(), cfg.budget_threshold, cfg.racing_minutes,
                 cfg.racing_threshold),
             queues=queues, queue_stale=stale_any,
-            claims_paused=sources.claims_paused(),
-            triage_running=sources.triage_running())
+            # One tmux probe for both signals (cf. dispatcher run_pass).
+            claims_paused=claims_paused, triage_running=triage_running,
+            quarantined=sources.quarantined())
 
     @app.get("/api/task/{issue}", response_model=read_model.TaskDetail)
     def task_detail(issue: int,
@@ -134,11 +136,17 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 repo = target.repo if target else ""
                 break
         if not repo:
-            for target in cfg.targets:
-                rows, _as_of, _stale = sources.rank_rows(target)
-                if any(r["number"] == issue for r in rows):
-                    repo = target.repo
-                    break
+            # Every target whose queue lists the number, not the first: issue
+            # numbers are per-repo, so serving hit #1 could hand back the wrong
+            # repo's body. Ambiguity is reported as such — same 409 contract as
+            # _locate_row — rather than silently picked.
+            hits = [target.repo for target in cfg.targets
+                    if any(r["number"] == issue
+                           for r in sources.rank_rows(target)[0])]
+            if len(hits) > 1:
+                raise HTTPException(
+                    409, f"issue {issue} is ambiguous across targets")
+            repo = hits[0] if hits else ""
         if not repo:
             raise HTTPException(404, f"issue {issue} is neither a task "
                                      "nor on any queue")

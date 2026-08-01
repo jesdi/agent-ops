@@ -94,6 +94,10 @@ class GhostCard(BaseModel):
     url: str
     score: float | None
     boost: int
+    # Held by a quarantine record: _claim_new skips it every pass until the
+    # blocker issue closes. Still shown (the operator needs to see that the
+    # head of the queue is stuck) but never forecast as the next claim.
+    quarantined: bool = False
 
 
 class CapacityView(BaseModel):
@@ -137,14 +141,17 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 events: list[dict], heartbeat: dict | None, now: datetime,
                 budget: BudgetView, queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
-                triage_running: bool) -> BoardView:
+                triage_running: bool,
+                quarantined: frozenset[tuple[str, int]] = frozenset()
+                ) -> BoardView:
     claimed = claimed_at_index(events)
-    cards = [task_card(t, model=models.get(t.issue, ""),
-                       attached=t.issue in attached,
-                       claimed_at=claimed.get(t.issue, ""),
-                       cycle_seconds=cycle_seconds(claimed.get(t.issue, ""),
-                                                   t.done_at))
-             for t in tasks]
+    cards = []
+    for t in tasks:
+        at = claimed_at(claimed, t.target, t.issue)
+        cards.append(task_card(t, model=models.get(t.issue, ""),
+                               attached=t.issue in attached,
+                               claimed_at=at,
+                               cycle_seconds=cycle_seconds(at, t.done_at)))
     by_column: dict[str, list[TaskCard]] = {key: [] for key, _ in COLUMNS}
     for card in cards:
         by_column[card.column].append(card)
@@ -153,9 +160,13 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
     # (cf. dispatcher/main.py:223 which acknowledges number collisions).
     known = {(t.target, t.issue) for t in tasks}
+    # A quarantined candidate stays in `upcoming` — it is genuinely at the
+    # head of the queue and the operator must see that it is stuck — but it
+    # carries the flag so the card can say so, and next_claim skips it.
     upcoming = [GhostCard(number=r["number"], target=name,
                           title=r.get("title", ""), url=r.get("url", ""),
-                          score=r.get("score"), boost=int(r.get("boost") or 0))
+                          score=r.get("score"), boost=int(r.get("boost") or 0),
+                          quarantined=(name, r["number"]) in quarantined)
                 for name, rows in queues for r in rows
                 if _is_candidate(r) and (name, r["number"]) not in known]
     return BoardView(
@@ -173,7 +184,8 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                               capacity=capacity, budget=budget,
                               queues=queues,
                               claims_paused=claims_paused,
-                              triage_running=triage_running),
+                              triage_running=triage_running,
+                              quarantined=quarantined),
         median_cycle_seconds=median_cycle_seconds(events))
 
 
@@ -192,12 +204,11 @@ class TaskDetail(BaseModel):
 def task_detail(t: TaskState, *, model: str, attached: bool,
                 pane_tail: str, session_alive: bool,
                 events: list[dict], now: datetime) -> TaskDetail:
-    claimed = claimed_at_index(events)
+    at = claimed_at(claimed_at_index(events), t.target, t.issue)
     return TaskDetail(
         card=task_card(t, model=model, attached=attached,
-                       claimed_at=claimed.get(t.issue, ""),
-                       cycle_seconds=cycle_seconds(claimed.get(t.issue, ""),
-                                                   t.done_at)),
+                       claimed_at=at,
+                       cycle_seconds=cycle_seconds(at, t.done_at)),
         pane_tail=pane_tail, session_alive=session_alive,
         worktree=t.worktree, pending_reply=t.pending_reply,
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
@@ -332,14 +343,29 @@ def _parse_ts(iso: str) -> datetime | None:
         return None
 
 
-def claimed_at_index(events: list[dict]) -> dict[int, str]:
-    """issue -> ts of its FIRST claimed event. events.jsonl rotates at a size
-    cap, so a task may have no claimed event at all — absent means unknown."""
-    out: dict[int, str] = {}
+def claimed_at_index(events: list[dict]) -> dict[tuple[str, int], str]:
+    """(target, issue) -> ts of its FIRST claimed event. events.jsonl rotates
+    at a size cap, so a task may have no claimed event at all — absent means
+    unknown.
+
+    Keyed on the pair, not the bare number: issue numbers are per-repo, so a
+    merged alpha#73 from weeks ago would otherwise win the setdefault over a
+    freshly claimed beta#73 and report a month-old claim time. Log lines
+    written before events carried `target` land under ("", issue) and are read
+    back as a fallback for any target — see claimed_at()."""
+    out: dict[tuple[str, int], str] = {}
     for e in events:
         if e.get("event") == "claimed" and e.get("issue"):
-            out.setdefault(e["issue"], e.get("ts", ""))
+            out.setdefault((str(e.get("target") or ""), e["issue"]),
+                           e.get("ts", ""))
     return out
+
+
+def claimed_at(index: dict[tuple[str, int], str], target: str,
+               issue: int) -> str:
+    """Exact (target, issue) match, else the untargeted legacy entry, else ""
+    — never another target's claim."""
+    return index.get((target, issue)) or index.get(("", issue), "")
 
 
 def cycle_seconds(claimed_iso: str, done_iso: str) -> float | None:
@@ -360,8 +386,9 @@ def median_cycle_seconds(events: list[dict], last: int = 20) -> float | None:
     claimed = claimed_at_index(events)
     cycles = [c for e in events
               if e.get("event") == "merged" and e.get("issue")
-              if (c := cycle_seconds(claimed.get(e["issue"], ""),
-                                     e.get("ts", ""))) is not None]
+              if (c := cycle_seconds(
+                  claimed_at(claimed, str(e.get("target") or ""), e["issue"]),
+                  e.get("ts", ""))) is not None]
     if not cycles:
         return None
     tail = sorted(cycles[-last:])
@@ -390,7 +417,9 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                tasks: list[TaskState], capacity: int, budget: BudgetView,
                queues: list[tuple[str, list[dict]]],
                claims_paused: bool = False,
-               triage_running: bool = False) -> NextClaimView:
+               triage_running: bool = False,
+               quarantined: frozenset[tuple[str, int]] = frozenset()
+               ) -> NextClaimView:
     hb = heartbeat or {}
     finished = _parse_ts(hb.get("finished_at", ""))
     try:
@@ -424,8 +453,13 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     known = {(t.target, t.issue) for t in tasks}
     any_candidate = False
     for name, rows in queues:
+        # Mirror dispatcher/main.py:913 — _claim_new skips a candidate held by
+        # failures.check_quarantine, so forecasting one is a promise the
+        # dispatcher will not keep. The set is resolved in web/sources.py
+        # (this module stays pure); an empty set is the non-blocking default.
         heads = [r for r in rows
-                 if _is_candidate(r) and (name, r["number"]) not in known]
+                 if _is_candidate(r) and (name, r["number"]) not in known
+                 and (name, r["number"]) not in quarantined]
         if not heads:
             continue
         any_candidate = True
@@ -452,7 +486,15 @@ def stage_timeline(events: list[dict], issue: int, *,
         if open_seg is None:
             return
         label, kind, start = open_seg
-        secs = (end - start).total_seconds()
+        try:
+            secs = (end - start).total_seconds()
+        except TypeError:
+            # Mixed-awareness endpoints (one naive, one aware): the zone is
+            # unknown, so the segment has no meaningful duration. DROP it —
+            # same contract as cycle_seconds and next_claim, and never invent
+            # a timezone for a naive timestamp.
+            open_seg = None
+            return
         if secs >= 1:
             out.append(TimelineEntry(label=label, seconds=secs, kind=kind,
                                      ongoing=ongoing))

@@ -200,7 +200,7 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
 
 from datetime import datetime
 
-from web.read_model import (claimed_at_index, cycle_seconds,
+from web.read_model import (claimed_at, claimed_at_index, cycle_seconds,
                             median_cycle_seconds, stage_timeline)
 
 
@@ -220,7 +220,35 @@ NOW = datetime.fromisoformat("2026-08-01T12:30:00+00:00")
 def test_claimed_at_index_first_wins_and_ignores_other_events():
     events = [ev(T0, "claimed", 7), ev(T1, "stage-started", 7, "spec"),
               ev(T2, "claimed", 7), ev(T1, "claimed", 8)]
-    assert claimed_at_index(events) == {7: T0, 8: T1}
+    assert claimed_at_index(events) == {("alpha", 7): T0, ("alpha", 8): T1}
+
+
+def test_claimed_at_index_separates_targets():
+    """A merged alpha#73 from weeks ago must not win setdefault over a
+    freshly claimed beta#73 — issue numbers are per-repo."""
+    events = [ev(T0, "claimed", 73),
+              {**ev(T2, "claimed", 73), "target": "beta"}]
+    idx = claimed_at_index(events)
+    assert claimed_at(idx, "alpha", 73) == T0
+    assert claimed_at(idx, "beta", 73) == T2
+
+
+def test_claimed_at_falls_back_to_untargeted_legacy_lines():
+    """Log lines written before events carried `target` are still read for
+    whatever target asks — the pre-fix behaviour, preserved."""
+    idx = claimed_at_index([{**ev(T0, "claimed", 7), "target": ""}])
+    assert claimed_at(idx, "alpha", 7) == T0
+    assert claimed_at(idx, "beta", 7) == T0
+    assert claimed_at({}, "alpha", 7) == ""
+
+
+def test_median_cycle_attributes_durations_per_target():
+    """alpha#73 claimed long ago + beta#73 claimed recently: beta's cycle must
+    be measured from beta's own claim, not alpha's."""
+    events = [ev("2026-07-01T00:00:00+00:00", "claimed", 73),  # alpha, old
+              {**ev(T0, "claimed", 73), "target": "beta"},
+              {**ev(T1, "merged", 73), "target": "beta"}]
+    assert median_cycle_seconds(events) == 2400.0  # 40m, not 31 days
 
 
 def test_cycle_seconds_valid_invalid_negative():
@@ -288,6 +316,36 @@ def test_stage_timeline_open_segment_is_ongoing_and_other_issues_ignored():
 
 def test_stage_timeline_empty_for_unknown_or_rotated_issue():
     assert stage_timeline([], 7, now=NOW) == []
+
+
+def test_stage_timeline_drops_segments_with_mixed_awareness():
+    """A naive `ts` next to an aware `now` used to raise TypeError out of
+    (end - start) and 500 /api/task/{issue}. The segment whose endpoints
+    cannot be compared is DROPPED (never coerced into a guessed zone); the
+    comparable segments around it survive."""
+    events = [ev(T0, "claimed", 7),
+              ev(T1, "stage-started", 7, "spec"),            # aware, 40m
+              ev("2026-08-01T11:00:00", "parked", 7, "spec"),  # NAIVE
+              ev(T3, "resumed", 7, "spec")]                  # aware
+    tl = stage_timeline(events, 7, now=NOW)
+    # spec (T0->T1 via claimed->stage-started is queued 40m), then the two
+    # segments touching the naive timestamp vanish, then the open tail.
+    labels = [(e.label, e.ongoing) for e in tl]
+    assert ("parked", False) not in labels          # naive->aware dropped
+    assert labels[0] == ("queued", False)           # aware->aware kept
+    assert labels[-1] == ("spec", True)             # open tail still ongoing
+    assert all(e.seconds >= 1 for e in tl)
+
+
+def test_stage_timeline_all_naive_still_works():
+    """Naive-only logs are internally consistent: durations are computable
+    and must not be dropped just because `now` is aware elsewhere."""
+    events = [{**ev("2026-08-01T10:00:00", "claimed", 7)},
+              {**ev("2026-08-01T10:40:00", "stage-started", 7, "spec")}]
+    tl = stage_timeline(events, 7,
+                        now=datetime.fromisoformat("2026-08-01T11:00:00"))
+    assert [(e.label, e.seconds) for e in tl] == [("queued", 2400.0),
+                                                  ("spec", 1200.0)]
 
 
 from web.read_model import BudgetView, next_claim
@@ -512,3 +570,57 @@ def test_next_claim_same_target_still_skipped():
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, budget=BUDGET_OK,
                    queues=queues, claims_paused=False, triage_running=False)
     assert v.verdict == "will-claim" and v.next_issue == 74
+
+
+# -- quarantine gate: mirror of _claim_new's failures.check_quarantine skip --
+
+def test_next_claim_skips_quarantined_head_of_queue():
+    """A quarantined head-of-queue candidate is skipped by _claim_new every
+    pass, so forecasting it is an over-promise the board repeats forever.
+    The next unquarantined candidate is forecast instead."""
+    queues = [("alpha", [row(73), row(74)])]
+    v = next_claim(HB, now=NOW, tasks=[], capacity=4, budget=BUDGET_OK,
+                   queues=queues, quarantined=frozenset({("alpha", 73)}))
+    assert v.verdict == "will-claim"
+    assert v.next_issue == 74 and v.next_target == "alpha"
+
+
+def test_next_claim_quarantine_is_keyed_on_target():
+    """beta#73 quarantined must not suppress alpha#73 — quarantine records
+    are named {target}-{issue}.json, i.e. per-target like `known`."""
+    queues = [("alpha", [row(73)])]
+    v = next_claim(HB, now=NOW, tasks=[], capacity=4, budget=BUDGET_OK,
+                   queues=queues, quarantined=frozenset({("beta", 73)}))
+    assert v.verdict == "will-claim" and v.next_issue == 73
+
+
+def test_next_claim_no_candidates_when_quarantine_empties_the_queue():
+    """Every candidate quarantined = nothing claimable at all. That is
+    'no-candidates', not 'capacity-full': capacity is free and irrelevant."""
+    queues = [("alpha", [row(73), row(74)])]
+    v = next_claim(HB, now=NOW, tasks=[], capacity=4, budget=BUDGET_OK,
+                   queues=queues,
+                   quarantined=frozenset({("alpha", 73), ("alpha", 74)}))
+    assert v.verdict == "no-candidates" and v.next_issue == 0
+
+
+def test_next_claim_default_quarantine_is_non_blocking():
+    """Omitting the parameter must not change any forecast — an empty set is
+    the degrade value when quarantine state cannot be read."""
+    v = next_claim(HB, now=NOW, tasks=[], capacity=4, budget=BUDGET_OK,
+                   queues=[("alpha", [row(73)])])
+    assert v.verdict == "will-claim" and v.next_issue == 73
+
+
+def test_build_board_keeps_quarantined_ghost_but_flags_it():
+    """Deliberate: a quarantined candidate stays VISIBLE as a ghost (the
+    operator must see the head of the queue is stuck) but is flagged, and
+    next_claim forecasts the one behind it."""
+    board = build_board(
+        [], capacity=4, models={}, attached=set(), events=[], heartbeat=HB,
+        now=NOW, budget=BUDGET_OK, queues=[("alpha", [row(73), row(74)])],
+        queue_stale=False, claims_paused=False, triage_running=False,
+        quarantined=frozenset({("alpha", 73)}))
+    assert [(g.number, g.quarantined) for g in board.upcoming] == [
+        (73, True), (74, False)]
+    assert board.next_claim.next_issue == 74
