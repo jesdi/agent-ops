@@ -122,12 +122,27 @@ const server = createServer(async (req, res) => {
   const descMatch = url.pathname.match(/^\/api\/task\/(\d+)\/description$/)
   if (descMatch && req.method === 'GET') {
     const n = Number(descMatch[1])
+    // Mirror real backend precedence: claimed task first, then queue ghost,
+    // then 404 — identical to web/app.py task_description().
+    const claimedCard = state.board.columns
+      .flatMap((c) => c.cards)
+      .find((c) => c.issue === n)
+    if (claimedCard) {
+      return json(200, {
+        title: claimedCard.title,
+        body: `## Goal\nBody of issue ${n}.`,
+        url: `https://github.com/${claimedCard.target}/issues/${n}`,
+        fetched_at: new Date().toISOString(), error: '',
+      })
+    }
     const ghost = state.board.upcoming.find((g) => g.number === n)
-    if (!ghost) return json(404, { detail: 'not on any queue' })
-    return json(200, {
-      title: ghost.title, body: `## Goal\nBody of issue ${n}.`,
-      url: ghost.url, fetched_at: new Date().toISOString(), error: '',
-    })
+    if (ghost) {
+      return json(200, {
+        title: ghost.title, body: `## Goal\nBody of issue ${n}.`,
+        url: ghost.url, fetched_at: new Date().toISOString(), error: '',
+      })
+    }
+    return json(404, { detail: `issue ${n} is neither a task nor on any queue` })
   }
   const intentMatch = url.pathname.match(
     /^\/api\/task\/(\d+)\/(reply|park|kill|retry|resume)$/,
@@ -145,7 +160,11 @@ const server = createServer(async (req, res) => {
     let body = ''
     req.on('data', (c) => { body += c })
     req.on('end', () => {
-      const { issue, amount } = JSON.parse(body)
+      let parsed
+      try { parsed = JSON.parse(body) } catch {
+        json(400, { detail: 'invalid json body' }); return
+      }
+      const { issue, amount } = parsed
       const g = state.board.upcoming.find((x) => x.number === issue)
       if (g) {
         g.boost += amount
@@ -165,6 +184,22 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname.startsWith('/api/')) {
     return json(404, { detail: 'not found' })
+  }
+  // Resets only the mutable queue state touched by queue-flow.spec.ts so the
+  // spec is idempotent across Playwright retries (workers:1, no parallel runs).
+  if (url.pathname === '/__control__/reset-queue' && req.method === 'POST') {
+    state.board.upcoming = [
+      { number: 73, target: 'jesdi/widget', title: 'Ship dark mode',
+        url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
+      { number: 74, target: 'jesdi/widget', title: 'Fix flaky test',
+        url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
+    ]
+    state.board.next_claim = {
+      verdict: 'will-claim',
+      next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
+      next_issue: 73, next_target: 'jesdi/widget', minutes_to_reset: 0,
+    }
+    return json(200, { ok: true })
   }
   if (url.pathname === '/__control__/apply-intents' && req.method === 'POST') {
     state.intents = []

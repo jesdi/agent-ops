@@ -1,5 +1,12 @@
 import { expect, test } from '@playwright/test'
 
+// Reset the mutable queue state before each attempt so the spec is idempotent
+// across Playwright retries. The webServer is NOT restarted between retries
+// (reuseExistingServer:false applies only to fresh pnpm test:e2e invocations).
+test.beforeEach(async ({ request }) => {
+  await request.post('/__control__/reset-queue')
+})
+
 test('ghosts -> slim view -> description -> boost reorders', async ({ page }) => {
   await page.goto('/')
 
