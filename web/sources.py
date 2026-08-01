@@ -19,6 +19,7 @@ from dispatcher.queue_ops import QueuePlan
 from dispatcher.state import TaskState
 
 RANK_TTL_SECONDS = 15.0
+DESCRIPTION_TTL_SECONDS = 300.0
 DISPATCHER_KICK = ("systemctl", "--user", "start",
                    "agent-ops-dispatcher.service")
 
@@ -37,6 +38,7 @@ class Sources:
         self._clock = clock
         self._systemctl = systemctl
         self._rank_cache: dict[str, dict] = {}
+        self._desc_cache: dict[tuple[str, int], dict] = {}
 
     @property
     def state_dir(self) -> Path:
@@ -61,6 +63,27 @@ class Sources:
         self._rank_cache[target.name] = {
             "rows": rows, "fetched_at": now, "as_of": _iso(now)}
         return rows, _iso(now), False
+
+    def issue_description(self, repo: str, number: int) -> dict:
+        """gh-backed issue body with a TTL cache. A fetch failure serves the
+        last cached value if one exists (stale beats blank, cf. rank_rows);
+        cold-cache failure returns an explicit error payload, never raises."""
+        now = self._clock()
+        key = (repo, number)
+        cached = self._desc_cache.get(key)
+        if cached and now - cached["at"] < DESCRIPTION_TTL_SECONDS:
+            return cached["data"]
+        try:
+            d = self._github.issue_view(repo, number)
+        except Exception as exc:
+            if cached:
+                return cached["data"]
+            return {"title": "", "body": "", "url": "",
+                    "fetched_at": _iso(now), "error": str(exc)}
+        data = {"title": d.get("title", ""), "body": d.get("body") or "",
+                "url": d.get("url", ""), "fetched_at": _iso(now), "error": ""}
+        self._desc_cache[key] = {"data": data, "at": now}
+        return data
 
     def usage(self) -> UsageSnapshot:
         return budget.fetch_usage(self._cfg.state_dir, now=self._clock)

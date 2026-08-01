@@ -135,6 +135,11 @@ class GitHubClient:
         raise LookupError(f"issue #{issue} not on project {target.project_number}"
                           f" (title join: {len(matches)} items match {title!r})")
 
+    def issue_view(self, repo: str, number: int) -> dict:
+        out = _run(["gh", "issue", "view", str(number), "--repo", repo,
+                    "--json", "title,body,url"])
+        return json.loads(out)
+
     def issue_state(self, repo: str, number: int) -> str:
         if self.dry_run:
             print(f"[dry-run] issue_state {repo}#{number} -> OPEN")

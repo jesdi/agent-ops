@@ -37,6 +37,7 @@ class FakeSources:
     def __init__(self):
         self.tasks_list = []
         self.rank = {}            # target name -> (rows, as_of, stale)
+        self.descriptions = {}    # (repo, number) -> dict
         self.snapshot = UsageSnapshot(0.5, 120.0, "oauth")
         self.quarantine = []
         self.fingerprints = []
@@ -123,3 +124,9 @@ class FakeSources:
 
     def has_attached(self, issue):
         return issue in self.attached
+
+    def issue_description(self, repo, number):
+        return self.descriptions.get(
+            (repo, number),
+            {"title": "", "body": "", "url": "", "fetched_at": "",
+             "error": "not seeded"})

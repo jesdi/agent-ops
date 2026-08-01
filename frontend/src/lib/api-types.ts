@@ -208,6 +208,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{issue}/description": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Task Description */
+        get: operations["task_description_api_task__issue__description_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{issue}/history": {
         parameters: {
             query?: never;
@@ -449,6 +466,19 @@ export interface components {
         HistoryView: {
             /** Events */
             events: components["schemas"]["EventEntry"][];
+        };
+        /** IssueDescription */
+        IssueDescription: {
+            /** Body */
+            body: string;
+            /** Error */
+            error: string;
+            /** Fetched At */
+            fetched_at: string;
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
         };
         /** NextClaimView */
         NextClaimView: {
@@ -947,6 +977,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    task_description_api_task__issue__description_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                issue: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueDescription"];
                 };
             };
             /** @description Validation Error */

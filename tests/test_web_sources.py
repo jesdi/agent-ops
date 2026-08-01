@@ -5,7 +5,7 @@ import subprocess
 from dispatcher import eventlog, state
 from dispatcher.queue_ops import QueuePlan
 from tests.webfakes import make_config, make_target
-from web.sources import RANK_TTL_SECONDS, Sources
+from web.sources import DESCRIPTION_TTL_SECONDS, RANK_TTL_SECONDS, Sources
 
 
 class FakeGitHub:
@@ -383,3 +383,30 @@ def test_claims_paused_and_triage_running_degrade_to_false(tmp_path,
 
     assert src.claims_paused() is False
     assert src.triage_running() is False
+
+
+def test_issue_description_caches_and_degrades(tmp_path):
+    calls = []
+
+    class FakeGH:
+        def issue_view(self, repo, number):
+            calls.append((repo, number))
+            if len(calls) > 1:
+                raise RuntimeError("gh down")
+            return {"title": "T", "body": "B", "url": "u"}
+
+    clock = [1000.0]
+    _, src = make_sources(tmp_path, github=FakeGH(), clock=lambda: clock[0])
+    d = src.issue_description("jesdi/alpha", 73)
+    assert (d["title"], d["error"]) == ("T", "")
+    # within TTL: served from cache, no second gh call
+    clock[0] += 100
+    assert src.issue_description("jesdi/alpha", 73)["title"] == "T"
+    assert len(calls) == 1
+    # past TTL with gh down: stale cache beats an error
+    clock[0] += 400
+    d = src.issue_description("jesdi/alpha", 73)
+    assert d["title"] == "T" and d["error"] == ""
+    # cold cache with gh down: explicit error, never a raise
+    d = src.issue_description("jesdi/alpha", 99)
+    assert d["title"] == "" and d["error"] != ""

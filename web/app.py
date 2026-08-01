@@ -121,6 +121,30 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             now=datetime.now(timezone.utc))
 
+    @app.get("/api/task/{issue}/description",
+             response_model=read_model.IssueDescription)
+    def task_description(issue: int,
+                         op: Operator = Depends(current_operator)):
+        # Claimed task -> its target's repo; otherwise a ghost: any target
+        # whose queue lists the issue. Neither -> a true 404.
+        repo = ""
+        for t in sources.tasks():
+            if t.issue == issue:
+                target = targets_by_name.get(t.target)
+                repo = target.repo if target else ""
+                break
+        if not repo:
+            for target in cfg.targets:
+                rows, _as_of, _stale = sources.rank_rows(target)
+                if any(r["number"] == issue for r in rows):
+                    repo = target.repo
+                    break
+        if not repo:
+            raise HTTPException(404, f"issue {issue} is neither a task "
+                                     "nor on any queue")
+        return read_model.IssueDescription(
+            **sources.issue_description(repo, issue))
+
     @app.get("/api/task/{issue}/spec", response_model=read_model.SpecView)
     def task_spec(issue: int,
                   op: Operator = Depends(current_operator)):

@@ -204,6 +204,14 @@ def task_detail(t: TaskState, *, model: str, attached: bool,
         timeline=stage_timeline(events, t.issue, now=now))
 
 
+class IssueDescription(BaseModel):
+    title: str
+    body: str
+    url: str
+    fetched_at: str
+    error: str  # "" = ok; non-empty = fetch failed and no cache existed
+
+
 class SpecView(BaseModel):
     path: str      # worktree-relative
     markdown: str

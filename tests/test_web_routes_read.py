@@ -269,3 +269,24 @@ def test_board_degrades_to_200_on_corrupt_events(tmp_path):
     assert resp.status_code == 200
     card = [c for col in resp.json()["columns"] for c in col["cards"]][0]
     assert card["claimed_at"] == ""
+
+
+def test_description_for_task_ghost_and_unknown(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7)]
+    fake.rank["alpha"] = ([{"number": 73, "title": "t", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 1.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    fake.descriptions[("jesdi/alpha", 7)] = {
+        "title": "T7", "body": "B", "url": "u7",
+        "fetched_at": "2026-08-01T12:00:00+00:00", "error": ""}
+    fake.descriptions[("jesdi/alpha", 73)] = {
+        "title": "T73", "body": "B", "url": "u73",
+        "fetched_at": "2026-08-01T12:00:00+00:00", "error": ""}
+    assert client.get("/api/task/7/description",
+                      headers=HEADERS).json()["title"] == "T7"
+    assert client.get("/api/task/73/description",
+                      headers=HEADERS).json()["title"] == "T73"
+    assert client.get("/api/task/999/description",
+                      headers=HEADERS).status_code == 404
