@@ -37,8 +37,19 @@ const state = {
       { key: 'pr-open', title: 'PR open', cards: [] },
     ],
     capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 3 },
-    upcoming: [], upcoming_stale: false, median_cycle_seconds: null,
-    next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0 },
+    upcoming: [
+      { number: 73, target: 'jesdi/widget', title: 'Ship dark mode',
+        url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
+      { number: 74, target: 'jesdi/widget', title: 'Fix flaky test',
+        url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
+    ],
+    upcoming_stale: false,
+    median_cycle_seconds: 7200,
+    next_claim: {
+      verdict: 'will-claim',
+      next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
+      next_issue: 73, next_target: 'jesdi/widget', minutes_to_reset: 0,
+    },
   },
   queue: { targets: [] },
   budget: {
@@ -108,6 +119,16 @@ const server = createServer(async (req, res) => {
     const detail = taskDetail(Number(detailMatch[1]))
     return detail ? json(200, detail) : json(404, { detail: 'unknown task' })
   }
+  const descMatch = url.pathname.match(/^\/api\/task\/(\d+)\/description$/)
+  if (descMatch && req.method === 'GET') {
+    const n = Number(descMatch[1])
+    const ghost = state.board.upcoming.find((g) => g.number === n)
+    if (!ghost) return json(404, { detail: 'not on any queue' })
+    return json(200, {
+      title: ghost.title, body: `## Goal\nBody of issue ${n}.`,
+      url: ghost.url, fetched_at: new Date().toISOString(), error: '',
+    })
+  }
   const intentMatch = url.pathname.match(
     /^\/api\/task\/(\d+)\/(reply|park|kill|retry|resume)$/,
   )
@@ -121,7 +142,20 @@ const server = createServer(async (req, res) => {
     return json(202, { status: 'pending', intent: `${Date.now()}-${issue}-${action}` })
   }
   if (url.pathname === '/api/queue/boost' && req.method === 'POST') {
-    return json(200, { ok: true, reason: 'boosted' })
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => {
+      const { issue, amount } = JSON.parse(body)
+      const g = state.board.upcoming.find((x) => x.number === issue)
+      if (g) {
+        g.boost += amount
+        state.board.upcoming.sort((a, b) => b.boost - a.boost || b.score - a.score)
+        state.board.next_claim = { ...state.board.next_claim, next_issue: state.board.upcoming[0].number }
+      }
+      push(['board', 'queue'])
+      json(200, { ok: true, reason: 'boosted' })
+    })
+    return
   }
   if (url.pathname === '/api/queue/next' && req.method === 'POST') {
     return json(200, { ok: true, reason: 'queued next' })
