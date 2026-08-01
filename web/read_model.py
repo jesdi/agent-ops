@@ -283,7 +283,14 @@ def claimed_at_index(events: list[dict]) -> dict[int, str]:
 
 def cycle_seconds(claimed_iso: str, done_iso: str) -> float | None:
     a, b = _parse_ts(claimed_iso), _parse_ts(done_iso)
-    if a is None or b is None or b < a:
+    if a is None or b is None:
+        return None
+    try:
+        if b < a:
+            return None
+    except TypeError:
+        # Mixed-awareness comparison (one naive, one aware): zone is unknown,
+        # so we cannot produce a meaningful duration — return None.
         return None
     return (b - a).total_seconds()
 

@@ -183,7 +183,7 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
     assert sorted(c.issue for c in flagged) == [1, 2, 7]
 
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from web.read_model import (claimed_at_index, cycle_seconds,
                             median_cycle_seconds, stage_timeline)
@@ -213,6 +213,28 @@ def test_cycle_seconds_valid_invalid_negative():
     assert cycle_seconds("", T3) is None
     assert cycle_seconds(T0, "not-a-date") is None
     assert cycle_seconds(T3, T0) is None  # clock skew: no negative durations
+
+
+def test_cycle_seconds_mixed_awareness_returns_none():
+    # naive vs aware: zone unknown, so duration is unknowable — must not raise
+    assert cycle_seconds("2026-08-01T10:00:00", "2026-08-01T12:00:00+00:00") is None
+    assert cycle_seconds("2026-08-01T12:00:00+00:00", "2026-08-01T10:00:00") is None
+
+
+def test_median_cycle_window_uses_last_20_not_all():
+    # Build 22 completed pairs: issues 1-22, durations 1h..22h.
+    # Last 20 are issues 3-22 (durations 3h..22h, i.e. 10800..79200 seconds).
+    # Median of last 20 (sorted): indices 9 and 10 → (12*3600 + 13*3600) / 2
+    # = (43200 + 46800) / 2 = 45000.0.
+    # Median of all 22 would be (11*3600 + 12*3600) / 2 = 41400.0 — different.
+    events = []
+    for i in range(1, 23):
+        claim_ts = "2026-08-01T00:00:00+00:00"
+        merge_ts = f"2026-08-01T{i:02d}:00:00+00:00"
+        events.append(ev(claim_ts, "claimed", i))
+        events.append(ev(merge_ts, "merged", i))
+    result = median_cycle_seconds(events, last=20)
+    assert result == (12 * 3600 + 13 * 3600) / 2  # 45000.0
 
 
 def test_median_cycle_over_merges_skipping_rotated_claims():
