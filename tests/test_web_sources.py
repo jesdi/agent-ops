@@ -162,6 +162,14 @@ def test_events_tail_via_real_eventlog(tmp_path):
     assert tail[-1]["event"] == "claimed" and tail[-1]["issue"] == 7
 
 
+def test_events_tail_degrades_to_empty_on_corrupt_log(tmp_path):
+    """A torn or undecodable events.jsonl must not 500 /api/board or
+    /api/task/{issue}; degrade to [] so the board still renders."""
+    (tmp_path / "events.jsonl").write_bytes(b"\xff\xfe bad utf-8")
+    _, src = make_sources(tmp_path)
+    assert src.events_tail(100) == []
+
+
 def test_submit_intent_writes_file_and_kicks_dispatcher(tmp_path):
     kick_log = tmp_path / "kick.log"
     _, src = make_sources(
@@ -359,9 +367,19 @@ def test_state_fingerprint_changes_when_pass_json_changes(tmp_path):
     assert f2["board"] != f1["board"]
 
 
-def test_claims_paused_and_triage_running_degrade_to_false(tmp_path):
-    """Both triage flags degrade to False on any error; never block claims."""
+def test_claims_paused_and_triage_running_degrade_to_false(tmp_path,
+                                                            monkeypatch):
+    """Both triage flags degrade to False when the underlying call raises.
+    Monkeypatching forces the error path so the test does not depend on
+    whether the host has a tmux session named 'triage' or tmux installed."""
+    import dispatcher.triage as triage_mod
     _, src = make_sources(tmp_path)
-    # Without any triage process or request file, both return False.
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("simulated triage read failure")
+
+    monkeypatch.setattr(triage_mod, "pending", boom)
+    monkeypatch.setattr(triage_mod, "running", boom)
+
     assert src.claims_paused() is False
     assert src.triage_running() is False

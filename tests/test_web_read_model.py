@@ -72,7 +72,8 @@ def test_login_park_counts_towards_active_capacity():
              make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
     board = build_board(tasks, capacity=2, models={}, attached=set(),
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
-                        queues=[], queue_stale=False)
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     assert board.capacity.active == 1   # matches dispatcher.state.active()
     assert board.capacity.slots_used == 2
 
@@ -86,7 +87,8 @@ def test_build_board_groups_and_counts():
     board = build_board(tasks, capacity=2,
                         models={1: "a", 2: "b", 3: "c"}, attached={1},
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
-                        queues=[], queue_stale=False)
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     by_key = {c.key: c for c in board.columns}
     assert [c.issue for c in by_key["in-progress"].cards] == [1]
     assert [c.issue for c in by_key["parked"].cards] == [2]
@@ -103,7 +105,8 @@ def test_build_board_groups_and_counts():
 def test_board_column_order_is_stable():
     board = build_board([], capacity=2, models={}, attached=set(),
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
-                        queues=[], queue_stale=False)
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     assert [c.key for c in board.columns] == [
         "queued", "in-progress", "needs-review", "pr-open", "done", "parked",
         "awaiting-ci", "resuming", "stalled", "failed"]
@@ -141,7 +144,8 @@ def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
                        slot=NO_SLOT, park=PARK_REVIEW)]
     board = build_board(tasks, capacity=2, models={}, attached=set(),
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
-                        queues=[], queue_stale=False)
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     assert board.capacity.active == 1
     assert board.capacity.slots_used == 1   # not 2 — #2 gave its slot back
 
@@ -186,7 +190,8 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
     ]
     board = build_board(tasks, capacity=3, models={}, attached=set(),
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
-                        queues=[], queue_stale=False)
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     flagged = [c for col in board.columns for c in col.cards
                if c.consuming_capacity]
     assert len(flagged) == board.capacity.active
@@ -424,7 +429,7 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
         tasks, capacity=2, models={7: "opus", 9: "opus"}, attached=set(),
         events=events, heartbeat=HB, now=NOW, budget=BUDGET_OK,
         queues=[("alpha", [row(7), row(73), row(74, blocked=True)])],
-        queue_stale=False)
+        queue_stale=False, claims_paused=False, triage_running=False)
     # ghosts: candidates only, minus in-flight; rank order preserved
     assert [g.number for g in board.upcoming] == [73]
     assert board.upcoming[0].target == "alpha"
@@ -441,7 +446,8 @@ def test_build_board_degrades_without_events_or_heartbeat():
     board = build_board(
         [make_task(issue=7)], capacity=2, models={}, attached=set(),
         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
-        queues=[("alpha", [])], queue_stale=True)
+        queues=[("alpha", [])], queue_stale=True,
+        claims_paused=False, triage_running=False)
     assert board.next_claim.verdict == "unknown"
     assert board.median_cycle_seconds is None
     assert board.upcoming == [] and board.upcoming_stale is True

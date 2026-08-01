@@ -1,10 +1,23 @@
 """GET routes wired against FakeSources."""
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from dispatcher.budget import UsageSnapshot
 from dispatcher.state import PARK_HUMAN, Stage
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_task)
 from web.app import create_app
+
+
+def _fresh_heartbeat(interval_minutes: int = 10) -> dict:
+    """Heartbeat whose finished_at is 1 minute ago — always within the
+    2*interval staleness window, regardless of wall-clock time of day."""
+    now = datetime.now(timezone.utc)
+    return {
+        "started_at": (now - timedelta(minutes=2)).isoformat(),
+        "finished_at": (now - timedelta(minutes=1)).isoformat(),
+        "interval_minutes": interval_minutes,
+    }
 
 
 def rig(tmp_path):
@@ -175,15 +188,15 @@ def test_task_history_404_for_unknown_task(tmp_path):
 def test_board_carries_next_claim_upcoming_and_timeline(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT)]
-    fake.heartbeat = {"started_at": "2026-08-01T12:25:00+00:00",
-                      "finished_at": "2026-08-01T12:26:00+00:00",
-                      "interval_minutes": 10}
+    # Heartbeat derived from real now so it is always within the staleness
+    # window (now - finished_at < 2 * 10 * 60 = 1200 s).
+    fake.heartbeat = _fresh_heartbeat()
     fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
                             "status": "Ready", "labels": ["auto"],
                             "blocked": False, "score": 2.0, "boost": 0}],
                           "2026-08-01T12:00:00+00:00", False)
-    # Use a timestamp guaranteed to be in the past so stage_timeline produces
-    # an ongoing segment (now - claimed_at >= 1 s at any wall-clock time).
+    # Event timestamp well in the past so stage_timeline produces an ongoing
+    # segment (now - claimed_at >> 1 s) regardless of time of day.
     fake.events = [{"ts": "2026-07-31T10:00:00+00:00", "event": "claimed",
                     "target": "alpha", "issue": 7, "stage": "queued",
                     "model": "", "actor": "dispatcher", "detail": ""}]
@@ -199,9 +212,8 @@ def test_board_carries_next_claim_upcoming_and_timeline(tmp_path):
 
 def test_board_next_claim_claims_paused(tmp_path):
     fake, client = rig(tmp_path)
-    fake.heartbeat = {"started_at": "2026-08-01T12:25:00+00:00",
-                      "finished_at": "2026-08-01T12:26:00+00:00",
-                      "interval_minutes": 10}
+    # Fresh heartbeat so next_claim does not short-circuit to "unknown".
+    fake.heartbeat = _fresh_heartbeat()
     fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
                             "status": "Ready", "labels": ["auto"],
                             "blocked": False, "score": 2.0, "boost": 0}],
@@ -209,3 +221,51 @@ def test_board_next_claim_claims_paused(tmp_path):
     fake._claims_paused = True
     body = client.get("/api/board", headers=HEADERS).json()
     assert body["next_claim"]["verdict"] == "claims-paused"
+
+
+def test_board_next_claim_triage_running(tmp_path):
+    """capacity=1 + triage_running → effective capacity=0 → capacity-full."""
+    fake, client = rig(tmp_path)
+    fake.heartbeat = _fresh_heartbeat()
+    fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 2.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    fake._triage_running = True
+    # capacity=1 configured via make_config default=2; override via a 1-slot config
+    cfg = make_config(tmp_path, capacity=1)
+    local_fake = FakeSources()
+    local_fake.heartbeat = fake.heartbeat
+    local_fake.rank["alpha"] = fake.rank["alpha"]
+    local_fake._triage_running = True
+    from web.app import create_app
+    client2 = TestClient(create_app(cfg, local_fake))
+    body = client2.get("/api/board", headers=HEADERS).json()
+    assert body["next_claim"]["verdict"] == "capacity-full"
+
+
+def test_board_degrades_to_200_on_corrupt_events(tmp_path):
+    """An unreadable events.jsonl must not 500 /api/board; the board still
+    renders with empty event-derived fields (no claimed_at, no timeline).
+    Uses real Sources so the events_tail degrade in sources.py is exercised."""
+    from dispatcher import state as state_mod
+    from tests.webfakes import make_task as _make_task
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    # Write a task so the board has something to show.
+    state_mod.save(tmp_path, _make_task(issue=7))
+    # Write a corrupt events file that will raise UnicodeDecodeError.
+    (tmp_path / "events.jsonl").write_bytes(b"\xff\xfe bad utf-8")
+
+    class _NullGitHub:
+        def rank_rows(self, _): return []
+
+    class _NullSessions:
+        def is_alive(self, _): return False
+
+    src = Sources(cfg, _NullSessions(), _NullGitHub())
+    client2 = TestClient(create_app(cfg, src))
+    resp = client2.get("/api/board", headers=HEADERS)
+    assert resp.status_code == 200
+    card = [c for col in resp.json()["columns"] for c in col["cards"]][0]
+    assert card["claimed_at"] == ""

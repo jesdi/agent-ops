@@ -136,9 +136,8 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 models: dict[int, str], attached: set[int],
                 events: list[dict], heartbeat: dict | None, now: datetime,
                 budget: BudgetView, queues: list[tuple[str, list[dict]]],
-                queue_stale: bool,
-                claims_paused: bool = False,
-                triage_running: bool = False) -> BoardView:
+                queue_stale: bool, claims_paused: bool,
+                triage_running: bool) -> BoardView:
     claimed = claimed_at_index(events)
     cards = [task_card(t, model=models.get(t.issue, ""),
                        attached=t.issue in attached,

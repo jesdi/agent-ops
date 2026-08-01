@@ -97,7 +97,11 @@ class Sources:
     def pass_heartbeat(self) -> dict | None:
         try:
             d = json.loads((self.state_dir / "pass.json").read_text())
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
+            # OSError: file missing or unreadable.
+            # ValueError (incl. JSONDecodeError): torn write mid-UTF-8 or
+            # invalid JSON — pass.json is rewritten every dispatcher pass,
+            # so a partial read is realistic (cf. _read_snapshot same idiom).
             return None
         return d if isinstance(d, dict) else None
 
@@ -120,7 +124,14 @@ class Sources:
             return False
 
     def events_tail(self, limit: int) -> list[dict]:
-        return eventlog.read_tail(self._cfg.state_dir, limit=limit)
+        # Degrade to [] rather than 500: an unreadable event log costs
+        # duration/timeline data but must never break /api/board or
+        # /api/task/{issue}. A torn append (UnicodeDecodeError -> ValueError)
+        # is realistic because the dispatcher appends under normal operation.
+        try:
+            return eventlog.read_tail(self._cfg.state_dir, limit=limit)
+        except (OSError, ValueError):
+            return []
 
     def pane_tail(self, issue: int) -> str:
         try:
@@ -197,6 +208,11 @@ class Sources:
                if (root / "quarantine").exists() else []))
         events = root / "events.jsonl"
         history = str(events.stat().st_size) if events.exists() else "0"
+        # Note: "board" and "queue" share the same digest (an intentional
+        # pre-existing alias). Adding pass.json to the board list means a
+        # completed dispatcher pass also invalidates the "queue" SSE key.
+        # This is harmless — the 15 s rank_rows TTL absorbs the extra ping —
+        # but it was not deliberate coupling; recorded here for future readers.
         return json.dumps({"board": board, "queue": board,
                            "budget": budget_d, "failures": failures,
                            "history": history}, sort_keys=True)
