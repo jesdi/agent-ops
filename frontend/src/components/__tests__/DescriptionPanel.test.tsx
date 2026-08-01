@@ -15,19 +15,23 @@ const desc = {
 test('collapsed by default; fetches only on expand; renders markdown', async () => {
   server.use(http.get('/api/task/73/description', () => HttpResponse.json(desc)))
   const { queryClient } = renderWithProviders(<DescriptionPanel issue={73} defaultOpen={false} />)
-  // findByRole's internal waitFor wraps polls in async act, which flushes React
-  // effects AND drains the microtask queue — including MSW response promises.
-  // So by the time findByRole resolves, any eager fetch has fully completed and
-  // the result is in the cache. A disabled query (enabled=false) never fetches,
-  // so getQueryData stays undefined. This is deterministic: no timing dependency.
-  await screen.findByRole('button', { name: /description/i })
-  expect(queryClient.getQueryData(queryKeys.description(73))).toBeUndefined()
+  // fetchStatus flips to 'fetching' synchronously during the observer's useEffect,
+  // which RTL's render-wrapping act() flushes before returning. This happens before
+  // any MSW response arrives (proven: adding delay(50) to the handler — a macrotask
+  // act cannot drain — still shows fetchStatus='fetching' and the toBe('idle') check
+  // still fails red). A disabled query (enabled=false) never starts a fetch, so its
+  // fetchStatus stays 'idle'. This check is therefore independent of MSW timing.
+  expect(queryClient.getQueryState(queryKeys.description(73))?.fetchStatus).toBe('idle')
 
-  await userEvent.click(screen.getByRole('button', { name: /description/i }))
+  const btn = await screen.findByRole('button', { name: /description/i })
+  expect(btn).toHaveAttribute('aria-expanded', 'false')
+
+  await userEvent.click(btn)
   expect(await screen.findByText('Everything dark.')).toBeInTheDocument()
+  expect(btn).toHaveAttribute('aria-expanded', 'true')
   expect(screen.getByRole('heading', { name: 'Goal' })).toBeInTheDocument()
   expect(screen.getByRole('link', { name: /github/i })).toHaveAttribute('href', desc.url)
-  // After expanding: data is in cache, proving the fetch happened after the click.
+  // After expanding, data must be in cache (fetch ran after the click, not before).
   expect(queryClient.getQueryData(queryKeys.description(73))).toBeDefined()
 })
 
