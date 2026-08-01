@@ -15,6 +15,10 @@ export type HistoryView = components['schemas']['HistoryView']
 export type EventEntry = components['schemas']['EventEntry']
 export type SpecView = components['schemas']['SpecView']
 export type PaneHistory = components['schemas']['PaneHistory']
+export type NextClaimView = components['schemas']['NextClaimView']
+export type GhostCard = components['schemas']['GhostCard']
+export type TimelineEntry = components['schemas']['TimelineEntry']
+export type IssueDescription = components['schemas']['IssueDescription']
 
 export interface PendingIntent {
   action: string
@@ -103,4 +107,5 @@ export const api = {
   retry: (issue: number) => post<IntentAccepted>(`/task/${issue}/retry`, {}),
   resume: (issue: number, text?: string) =>
     post<IntentAccepted>(`/task/${issue}/resume`, text ? { text } : {}),
+  taskDescription: (issue: number) => request<IssueDescription>(`/task/${issue}/description`),
 }

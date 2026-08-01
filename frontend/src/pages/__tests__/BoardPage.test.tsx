@@ -2,7 +2,7 @@ import { screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
-import { budgetUnavailable, pendingReplyIntent } from '../../test/fixtures'
+import { board as fx_board, budgetUnavailable, pendingReplyIntent } from '../../test/fixtures'
 import { renderWithProviders } from '../../test/render'
 import { BoardPage } from '../BoardPage'
 
@@ -103,4 +103,15 @@ it('the accented cards reconcile with the header meter', async () => {
   expect(screen.getAllByText('holding a capacity unit')).toHaveLength(2)
   expect(screen.getAllByTestId('cap-pip-filled')).toHaveLength(2)
   expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
+})
+
+test('header shows next-claim line and median cycle', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    median_cycle_seconds: 7200,
+    next_claim: { verdict: 'capacity-full', next_pass_eta: new Date(Date.now() + 300_000).toISOString(), next_issue: 0, next_target: '', minutes_to_reset: 0 },
+  })))
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByTestId('next-claim')).toHaveTextContent(/capacity full/i)
+  expect(screen.getByText(/≈2h per task/)).toBeInTheDocument()
 })

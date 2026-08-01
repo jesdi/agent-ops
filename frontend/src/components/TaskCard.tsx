@@ -1,7 +1,7 @@
 import { Link } from 'react-router'
 import type { TaskCard } from '../lib/api'
 import { ACCENT_BORDER, type Accent } from '../lib/capacity'
-import { relativeTime, stageLabel } from '../lib/format'
+import { formatDuration, relativeTime, stageLabel } from '../lib/format'
 import { PendingBadge } from './PendingBadge'
 
 export function TaskCardView({ card, pendingActions, accent = 'blue' }: {
@@ -55,6 +55,11 @@ export function TaskCardView({ card, pendingActions, accent = 'blue' }: {
           <span className="rounded bg-emerald-100 px-1.5 text-emerald-700">
             attached
           </span>
+        )}
+        {card.stage === 'done' && card.cycle_seconds != null ? (
+          <span>took {formatDuration(card.cycle_seconds)}</span>
+        ) : (
+          card.claimed_at !== '' && <span>claimed {relativeTime(card.claimed_at)}</span>
         )}
         <span>{relativeTime(card.updated_at)}</span>
       </div>

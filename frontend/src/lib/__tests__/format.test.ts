@@ -37,3 +37,13 @@ describe('stageLabel', () => {
     expect(stageLabel('done')).toBe('Done')
   })
 })
+
+import { formatDuration } from '../format'
+
+test('formatDuration picks the two most significant units', () => {
+  expect(formatDuration(45)).toBe('45s')
+  expect(formatDuration(720)).toBe('12m')
+  expect(formatDuration(8100)).toBe('2h 15m')
+  expect(formatDuration(273600)).toBe('3d 4h')
+  expect(formatDuration(0)).toBe('0s')
+})

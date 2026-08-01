@@ -1,7 +1,9 @@
 import { BoardColumn } from '../components/BoardColumn'
 import { BudgetBar } from '../components/BudgetBar'
 import { CapacityMeter } from '../components/CapacityMeter'
+import { NextClaimLine } from '../components/NextClaimLine'
 import { capacityAccent } from '../lib/capacity'
+import { formatDuration } from '../lib/format'
 import { useBudget, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useUiStore } from '../store/ui'
 
@@ -43,6 +45,12 @@ export function BoardPage() {
           </span>
         ) : (
           budgetQuery.data && <BudgetBar budget={budgetQuery.data} />
+        )}
+        <NextClaimLine nextClaim={boardQuery.data.next_claim} />
+        {boardQuery.data.median_cycle_seconds != null && (
+          <span className="text-sm text-gray-500">
+            ≈{formatDuration(boardQuery.data.median_cycle_seconds)} per task
+          </span>
         )}
       </div>
       <div className="flex gap-4 overflow-x-auto pb-4">
