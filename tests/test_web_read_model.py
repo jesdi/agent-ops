@@ -301,7 +301,7 @@ def test_next_claim_unknown_when_heartbeat_missing_or_stale():
     # exactly at the boundary (20m old) is still fresh
     edge = dict(HB, finished_at="2026-08-01T12:10:00+00:00")
     assert next_claim(edge, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
-                      queues=[]).verdict != "unknown"
+                      queues=[]).verdict == "no-candidates"
     assert next_claim({"garbage": True}, now=NOW, tasks=[], capacity=2,
                       budget=BUDGET_OK, queues=[]).verdict == "unknown"
 
@@ -327,6 +327,7 @@ def test_next_claim_budget_blocked_beats_everything_else():
     v = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_NO,
                    queues=[("alpha", [row(73)])])
     assert (v.verdict, v.minutes_to_reset) == ("budget-blocked", 130)
+    assert v.next_pass_eta == "2026-08-01T12:36:00+00:00"  # ETA set on non-unknown verdicts
 
 
 def test_next_claim_capacity_full_and_no_candidates():
@@ -335,3 +336,30 @@ def test_next_claim_capacity_full_and_no_candidates():
                       queues=[("alpha", [row(73)])]).verdict == "capacity-full"
     assert next_claim(HB, now=NOW, tasks=busy, capacity=2, budget=BUDGET_OK,
                       queues=[("alpha", [])]).verdict == "no-candidates"
+
+
+def test_next_claim_unknown_on_bad_interval():
+    assert next_claim(dict(HB, interval_minutes="ten"), now=NOW, tasks=[],
+                      capacity=2, budget=BUDGET_OK, queues=[]).verdict == "unknown"
+    assert next_claim(dict(HB, interval_minutes=[]), now=NOW, tasks=[],
+                      capacity=2, budget=BUDGET_OK, queues=[]).verdict == "unknown"
+    # naive finished_at with aware now raises TypeError on subtraction
+    naive_hb = dict(HB, finished_at="2026-08-01T12:26:00")
+    assert next_claim(naive_hb, now=NOW, tasks=[],
+                      capacity=2, budget=BUDGET_OK, queues=[]).verdict == "unknown"
+
+
+def test_next_claim_per_target_capacity_filter():
+    # alpha is capacity-full (2 active tasks, capacity=2) but has a candidate;
+    # beta has one active task and one slot free with a candidate.
+    # Collapsing `mine = tasks` would wrongly count 3 active units for beta and
+    # produce capacity-full instead of will-claim.
+    alpha_tasks = [make_task(issue=1, target="alpha"),
+                   make_task(issue=2, target="alpha")]
+    beta_tasks = [make_task(issue=3, target="beta")]
+    v = next_claim(HB, now=NOW, tasks=alpha_tasks + beta_tasks, capacity=2,
+                   budget=BUDGET_OK,
+                   queues=[("alpha", [row(10)]), ("beta", [row(20)])])
+    assert v.verdict == "will-claim"
+    assert v.next_target == "beta"
+    assert v.next_issue == 20

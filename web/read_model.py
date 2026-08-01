@@ -328,10 +328,21 @@ def _is_candidate(r: dict) -> bool:
 def next_claim(heartbeat: dict | None, *, now: datetime,
                tasks: list[TaskState], capacity: int, budget: BudgetView,
                queues: list[tuple[str, list[dict]]]) -> NextClaimView:
-    finished = _parse_ts((heartbeat or {}).get("finished_at", ""))
-    interval = int((heartbeat or {}).get("interval_minutes") or 0)
-    if finished is None or interval <= 0 or \
-            (now - finished).total_seconds() > 2 * interval * 60:
+    hb = heartbeat or {}
+    finished = _parse_ts(hb.get("finished_at", ""))
+    try:
+        interval = int(hb.get("interval_minutes") or 0)
+    except (ValueError, TypeError):
+        return NextClaimView(verdict="unknown", next_pass_eta="")
+    if finished is None or interval <= 0:
+        return NextClaimView(verdict="unknown", next_pass_eta="")
+    try:
+        stale = (now - finished).total_seconds() > 2 * interval * 60
+    except TypeError:
+        # Mixed-awareness comparison (one naive, one aware): zone is unknown,
+        # so we cannot determine staleness — treat as unknown.
+        return NextClaimView(verdict="unknown", next_pass_eta="")
+    if stale:
         return NextClaimView(verdict="unknown", next_pass_eta="")
     eta = (finished + timedelta(minutes=interval)).isoformat()
     if not budget.would_spawn:
