@@ -1,7 +1,8 @@
 import { act, render, screen } from '@testing-library/react'
-import { afterEach, vi } from 'vitest'
 import { NextClaimLine } from '../NextClaimLine'
 import type { NextClaimView } from '../../lib/api'
+
+// vi, afterEach, test, expect are vitest globals (globals: true in vitest.config.ts)
 
 const base: NextClaimView = {
   verdict: 'will-claim', next_pass_eta: '', next_issue: 73,
@@ -18,6 +19,8 @@ afterEach(() => {
 })
 
 test('will-claim renders countdown and the next issue', () => {
+  // Pin the clock so elapsed time between withEta() and render is deterministically zero.
+  vi.useFakeTimers()
   render(<NextClaimLine nextClaim={withEta(360)} />)
   expect(screen.getByTestId('next-claim').textContent).toMatch(/next pass in 6m/i)
   expect(screen.getByTestId('next-claim').textContent).toMatch(/will claim #73/)
@@ -37,17 +40,19 @@ test('unparseable ETA renders honest copy, not a confident lie', () => {
   expect(screen.getByTestId('next-claim').textContent).not.toMatch(/due now/i)
 })
 
-test('unmounting clears the interval — no state update after unmount', () => {
+test('unmounting clears the interval — clearInterval is called on unmount', () => {
   vi.useFakeTimers()
+  const clearSpy = vi.spyOn(window, 'clearInterval')
   const { unmount } = render(<NextClaimLine nextClaim={withEta(60)} />)
   unmount()
-  // Advancing timers after unmount must not trigger a state update or act() warning.
-  act(() => vi.advanceTimersByTime(5000))
-  // If the interval were not cleared, vitest would emit an act() warning here.
+  expect(clearSpy).toHaveBeenCalled()
+  clearSpy.mockRestore()
 })
 
 test('unhandled verdict renders honest fallback instead of wrong copy', () => {
-  // Cast through unknown to simulate a future seventh verdict the map doesn't know.
+  // Cast through unknown to simulate a future seventh verdict the map doesn't contain.
+  // `as unknown as NextClaimView` is the standard escape hatch for probing runtime
+  // branches that TypeScript's type narrowing would otherwise block at the call site.
   const nc = { ...withEta(300), verdict: 'future-verdict-x' } as unknown as NextClaimView
   render(<NextClaimLine nextClaim={nc} />)
   expect(screen.getByTestId('next-claim').textContent).toMatch(/unknown verdict: future-verdict-x/)
