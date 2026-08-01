@@ -234,10 +234,20 @@ def test_create_issue_returns_number_from_url(monkeypatch):
 
 def test_issue_view_parses_json(monkeypatch):
     payload = '{"title": "T", "body": "B", "url": "u"}'
-    monkeypatch.setattr(github, "_run",
-                        lambda a, cwd=None, env=None: payload)
+    seen = []
+
+    def _run(a, cwd=None, env=None):
+        seen.append(a)
+        return payload
+
+    monkeypatch.setattr(github, "_run", _run)
     result = github.GitHubClient().issue_view("jesdi/alpha", 73)
     assert result == {"title": "T", "body": "B", "url": "u"}
+    # The argv is the security-relevant surface: a swapped repo/number would
+    # silently fetch a different issue's body, and a widened --json field list
+    # would put unrequested issue data on the wire.
+    assert seen == [["gh", "issue", "view", "73", "--repo", "jesdi/alpha",
+                     "--json", "title,body,url"]]
 
 
 def test_issue_state_parses_json(monkeypatch):
