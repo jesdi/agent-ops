@@ -13,20 +13,22 @@ export function DescriptionPanel({ issue, defaultOpen = false }: {
   const desc = useIssueDescription(issue, open)
   return (
     <section data-testid="description-panel" className="rounded border border-gray-300 bg-white">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between px-4 py-2 text-left text-sm font-semibold text-gray-700"
-      >
-        <span>{open ? '▾' : '▸'} Description</span>
+      <div className="flex items-center justify-between px-4 py-2">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+          className="flex items-center gap-1 text-left text-sm font-semibold text-gray-700"
+        >
+          {open ? '▾' : '▸'} Description
+        </button>
         {desc.data?.url && (
           <a href={desc.data.url} target="_blank" rel="noreferrer"
-             onClick={(e) => e.stopPropagation()}
-             className="text-xs font-normal text-blue-600 hover:underline">
+             className="text-xs text-blue-600 hover:underline">
             open on GitHub ↗
           </a>
         )}
-      </button>
+      </div>
       {open && (
         <div className="border-t border-gray-100 px-4 py-3">
           {desc.isPending && <p className="text-sm text-gray-500">loading description…</p>}

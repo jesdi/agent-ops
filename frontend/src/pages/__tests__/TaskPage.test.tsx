@@ -399,3 +399,21 @@ it('unclaimed issue renders the slim ghost view instead of an error', async () =
   expect(await screen.findByText('Ship dark mode')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Boost' })).toBeInTheDocument()
 })
+
+it('a failing queue action from the ghost view surfaces its error text', async () => {
+  server.use(
+    http.get('/api/task/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
+    http.get('/api/task/73/description', () => HttpResponse.json({
+      title: 'Ship dark mode', body: 'B', url: 'u',
+      fetched_at: '2026-08-01T12:00:00Z', error: '',
+    })),
+    http.post('/api/queue/boost', () =>
+      HttpResponse.json({ detail: 'queue locked' }, { status: 422 })),
+  )
+  renderTask('/task/73')
+  await screen.findByTestId('ghost-task-view')
+  await userEvent.click(screen.getByRole('button', { name: 'Boost' }))
+  await waitFor(() =>
+    expect(screen.getByTestId('queue-error')).toHaveTextContent('queue locked'),
+  )
+})

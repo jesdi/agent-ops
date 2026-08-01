@@ -255,7 +255,7 @@ function GhostTaskView({ issue }: { issue: number }) {
         </span>
       </header>
       <DescriptionPanel issue={issue} defaultOpen />
-      {queueError && <p className="text-sm text-red-600">{queueError}</p>}
+      {queueError && <p data-testid="queue-error" className="text-sm text-red-600">{queueError}</p>}
       <div className="flex gap-2">
         <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, 1)}>Boost</button>
         <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, -1)}>Demote</button>

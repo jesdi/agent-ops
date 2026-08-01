@@ -2,6 +2,7 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
+import { queryKeys } from '../../hooks/queryKeys'
 import { renderWithProviders } from '../../test/render'
 import { DescriptionPanel } from '../DescriptionPanel'
 
@@ -12,24 +13,22 @@ const desc = {
 }
 
 test('collapsed by default; fetches only on expand; renders markdown', async () => {
-  let calls = 0
-  server.use(http.get('/api/task/73/description', () => {
-    calls += 1
-    return HttpResponse.json(desc)
-  }))
-  renderWithProviders(<DescriptionPanel issue={73} defaultOpen={false} />)
-  // findByRole flushes React effects (including React Query's useEffect that
-  // would initiate an enabled query). If enabled=true, MSW intercepts the
-  // fetch synchronously (calls++ fires before the response Promise resolves),
-  // so calls would be >0 here. With enabled=false, calls stays 0.
-  const btn = await screen.findByRole('button', { name: /description/i })
-  expect(calls).toBe(0)
-  await userEvent.click(btn)
+  server.use(http.get('/api/task/73/description', () => HttpResponse.json(desc)))
+  const { queryClient } = renderWithProviders(<DescriptionPanel issue={73} defaultOpen={false} />)
+  // findByRole's internal waitFor wraps polls in async act, which flushes React
+  // effects AND drains the microtask queue — including MSW response promises.
+  // So by the time findByRole resolves, any eager fetch has fully completed and
+  // the result is in the cache. A disabled query (enabled=false) never fetches,
+  // so getQueryData stays undefined. This is deterministic: no timing dependency.
+  await screen.findByRole('button', { name: /description/i })
+  expect(queryClient.getQueryData(queryKeys.description(73))).toBeUndefined()
+
+  await userEvent.click(screen.getByRole('button', { name: /description/i }))
   expect(await screen.findByText('Everything dark.')).toBeInTheDocument()
   expect(screen.getByRole('heading', { name: 'Goal' })).toBeInTheDocument()
   expect(screen.getByRole('link', { name: /github/i })).toHaveAttribute('href', desc.url)
-  // Exactly one fetch happened, and it happened after the click (not before).
-  expect(calls).toBe(1)
+  // After expanding: data is in cache, proving the fetch happened after the click.
+  expect(queryClient.getQueryData(queryKeys.description(73))).toBeDefined()
 })
 
 test('backend error payload renders as an explicit message', async () => {
@@ -37,4 +36,19 @@ test('backend error payload renders as an explicit message', async () => {
     HttpResponse.json({ ...desc, title: '', body: '', url: '', error: 'gh: timeout' })))
   renderWithProviders(<DescriptionPanel issue={73} defaultOpen />)
   expect(await screen.findByText(/description unavailable: gh: timeout/)).toBeInTheDocument()
+})
+
+test('transport failure renders explicit error, not a blank panel', async () => {
+  server.use(http.get('/api/task/73/description', () =>
+    HttpResponse.json({ detail: 'gh: unreachable' }, { status: 500 })))
+  renderWithProviders(<DescriptionPanel issue={73} defaultOpen />)
+  expect(await screen.findByText(/description unavailable: gh: unreachable/)).toBeInTheDocument()
+})
+
+test('empty body renders the no-description fallback, not a blank panel', async () => {
+  server.use(http.get('/api/task/73/description', () =>
+    HttpResponse.json({ ...desc, body: '', error: '' })))
+  renderWithProviders(<DescriptionPanel issue={73} defaultOpen />)
+  // ReactMarkdown renders _no description_ as <em>no description</em>
+  expect(await screen.findByText(/no description/)).toBeInTheDocument()
 })
