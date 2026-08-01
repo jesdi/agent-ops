@@ -2,6 +2,8 @@
 Pydantic responses. NO I/O in this module — construction only."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel
 
 from dispatcher.budget import UsageSnapshot, should_spawn
@@ -253,3 +255,94 @@ def target_queue(name: str, rows: list[dict], as_of: str, stale: bool,
             blocked=bool(r.get("blocked", False)),
             score=r.get("score"), boost=int(r.get("boost") or 0),
             in_flight=r["number"] in in_flight) for r in rows])
+
+
+class TimelineEntry(BaseModel):
+    label: str      # stage value, or "parked"
+    seconds: float
+    kind: str       # "stage" | "parked"
+    ongoing: bool = False
+
+
+def _parse_ts(iso: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return None
+
+
+def claimed_at_index(events: list[dict]) -> dict[int, str]:
+    """issue -> ts of its FIRST claimed event. events.jsonl rotates at a size
+    cap, so a task may have no claimed event at all — absent means unknown."""
+    out: dict[int, str] = {}
+    for e in events:
+        if e.get("event") == "claimed" and e.get("issue"):
+            out.setdefault(e["issue"], e.get("ts", ""))
+    return out
+
+
+def cycle_seconds(claimed_iso: str, done_iso: str) -> float | None:
+    a, b = _parse_ts(claimed_iso), _parse_ts(done_iso)
+    if a is None or b is None or b < a:
+        return None
+    return (b - a).total_seconds()
+
+
+def median_cycle_seconds(events: list[dict], last: int = 20) -> float | None:
+    claimed = claimed_at_index(events)
+    cycles = [c for e in events
+              if e.get("event") == "merged" and e.get("issue")
+              if (c := cycle_seconds(claimed.get(e["issue"], ""),
+                                     e.get("ts", ""))) is not None]
+    if not cycles:
+        return None
+    tail = sorted(cycles[-last:])
+    n = len(tail)
+    return tail[n // 2] if n % 2 else (tail[n // 2 - 1] + tail[n // 2]) / 2
+
+
+_TIMELINE_EVENTS = {"claimed", "stage-started", "parked", "resumed", "merged"}
+
+
+def stage_timeline(events: list[dict], issue: int, *,
+                   now: datetime) -> list[TimelineEntry]:
+    """Closed segments between this issue's transition events, in order; the
+    open tail (no merged yet) ends at `now` with ongoing=True. Sub-second
+    segments (claimed -> immediate spec spawn) are dropped as noise."""
+    out: list[TimelineEntry] = []
+    open_seg: tuple[str, str, datetime] | None = None  # (label, kind, start)
+
+    def close(end: datetime, ongoing: bool = False) -> None:
+        nonlocal open_seg
+        if open_seg is None:
+            return
+        label, kind, start = open_seg
+        secs = (end - start).total_seconds()
+        if secs >= 1:
+            out.append(TimelineEntry(label=label, seconds=secs, kind=kind,
+                                     ongoing=ongoing))
+        open_seg = None
+
+    last_stage = ""
+    for e in events:
+        if e.get("issue") != issue or e.get("event") not in _TIMELINE_EVENTS:
+            continue
+        ts = _parse_ts(e.get("ts", ""))
+        if ts is None:
+            continue
+        kind = e["event"]
+        close(ts)
+        if kind == "claimed":
+            open_seg = (Stage.QUEUED.value, "stage", ts)
+        elif kind == "stage-started":
+            last_stage = e.get("stage", "") or last_stage
+            open_seg = (last_stage, "stage", ts)
+        elif kind == "parked":
+            last_stage = e.get("stage", "") or last_stage
+            open_seg = ("parked", "parked", ts)
+        elif kind == "resumed":
+            open_seg = (e.get("stage", "") or last_stage, "stage", ts)
+        elif kind == "merged":
+            open_seg = None
+    close(now, ongoing=True)
+    return out

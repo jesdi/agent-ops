@@ -181,3 +181,73 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
                if c.consuming_capacity]
     assert len(flagged) == board.capacity.active
     assert sorted(c.issue for c in flagged) == [1, 2, 7]
+
+
+from datetime import datetime, timezone
+
+from web.read_model import (claimed_at_index, cycle_seconds,
+                            median_cycle_seconds, stage_timeline)
+
+
+def ev(ts, event, issue, stage="", detail=""):
+    return {"ts": ts, "event": event, "target": "alpha", "issue": issue,
+            "stage": stage, "model": "", "actor": "dispatcher",
+            "detail": detail}
+
+
+T0 = "2026-08-01T10:00:00+00:00"
+T1 = "2026-08-01T10:40:00+00:00"   # +40m
+T2 = "2026-08-01T11:00:00+00:00"   # +1h
+T3 = "2026-08-01T12:00:00+00:00"   # +2h
+NOW = datetime.fromisoformat("2026-08-01T12:30:00+00:00")
+
+
+def test_claimed_at_index_first_wins_and_ignores_other_events():
+    events = [ev(T0, "claimed", 7), ev(T1, "stage-started", 7, "spec"),
+              ev(T2, "claimed", 7), ev(T1, "claimed", 8)]
+    assert claimed_at_index(events) == {7: T0, 8: T1}
+
+
+def test_cycle_seconds_valid_invalid_negative():
+    assert cycle_seconds(T0, T3) == 7200.0
+    assert cycle_seconds("", T3) is None
+    assert cycle_seconds(T0, "not-a-date") is None
+    assert cycle_seconds(T3, T0) is None  # clock skew: no negative durations
+
+
+def test_median_cycle_over_merges_skipping_rotated_claims():
+    events = [ev(T0, "claimed", 1), ev(T1, "merged", 1),      # 40m
+              ev(T0, "claimed", 2), ev(T3, "merged", 2),      # 2h
+              ev(T2, "merged", 3)]                             # claim rotated away
+    assert median_cycle_seconds(events) == (2400.0 + 7200.0) / 2
+
+
+def test_median_none_when_no_complete_pairs():
+    assert median_cycle_seconds([ev(T0, "claimed", 1)]) is None
+    assert median_cycle_seconds([]) is None
+
+
+def test_stage_timeline_stages_parks_and_merge():
+    events = [ev(T0, "claimed", 7),
+              ev(T0, "stage-started", 7, "spec"),   # 0s queued segment dropped
+              ev(T1, "parked", 7, "spec"),          # spec 40m
+              ev(T2, "resumed", 7, "spec"),         # parked 20m
+              ev(T3, "merged", 7)]                  # spec (resumed) 1h
+    tl = stage_timeline(events, 7, now=NOW)
+    assert [(e.label, e.seconds, e.kind, e.ongoing) for e in tl] == [
+        ("spec", 2400.0, "stage", False),
+        ("parked", 1200.0, "parked", False),
+        ("spec", 3600.0, "stage", False)]
+
+
+def test_stage_timeline_open_segment_is_ongoing_and_other_issues_ignored():
+    events = [ev(T0, "claimed", 7), ev(T0, "stage-started", 7, "implement"),
+              ev(T1, "stage-started", 9, "spec")]
+    tl = stage_timeline(events, 7, now=NOW)
+    assert [(e.label, e.kind, e.ongoing) for e in tl] == [
+        ("implement", "stage", True)]
+    assert tl[0].seconds == 9000.0  # T0 -> NOW
+
+
+def test_stage_timeline_empty_for_unknown_or_rotated_issue():
+    assert stage_timeline([], 7, now=NOW) == []
