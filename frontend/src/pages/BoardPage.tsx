@@ -33,14 +33,36 @@ export function BoardPage() {
   // Computed once so every column and every accented card agree on the colour.
   const accent = capacityAccent(capacity)
 
-  const ghostStack = (
+  // Stale indicator and action error live in the column header so they are
+  // visible even when Queued is collapsed (headerExtra survives collapse).
+  const queuedHeaderExtra = (
     <>
       {upcoming_stale && (
-        <p data-testid="queue-stale" className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">
-          stale — queue order may be outdated
-        </p>
+        <span
+          data-testid="queue-stale"
+          className="rounded bg-amber-100 px-1.5 text-xs font-normal text-amber-800"
+          title="queue order may be outdated"
+        >
+          stale
+        </span>
       )}
+      {queueError && (
+        <span
+          data-testid="queue-error"
+          className="rounded bg-red-100 px-1.5 text-xs font-normal text-red-700"
+          title={queueError}
+        >
+          !</span>
+      )}
+    </>
+  )
+
+  const ghostStack = (
+    <>
       {queueError && <p className="text-xs text-red-600">{queueError}</p>}
+      {/* busy disables every ghost's buttons at once: each action re-ranks the
+          shared queue, so a second click would act on pre-mutation ranks and
+          creates a last-writer-wins race on the error state. */}
       {upcoming.map((g) => (
         <GhostCardView
           key={g.number}
@@ -89,6 +111,7 @@ export function BoardPage() {
             accent={accent}
             extra={column.key === 'queued' ? ghostStack : undefined}
             extraCount={column.key === 'queued' ? upcoming.length : undefined}
+            headerExtra={column.key === 'queued' ? queuedHeaderExtra : undefined}
           />
         ))}
       </div>

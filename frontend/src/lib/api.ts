@@ -3,9 +3,6 @@ import type { components } from './api-types'
 export type BoardView = components['schemas']['BoardView']
 export type TaskCard = components['schemas']['TaskCard']
 export type CapacityView = components['schemas']['CapacityView']
-export type QueueView = components['schemas']['QueueView']
-export type TargetQueue = components['schemas']['TargetQueue']
-export type QueueRow = components['schemas']['QueueRow']
 export type TaskDetail = components['schemas']['TaskDetail']
 export type BudgetView = components['schemas']['BudgetView']
 export type FailuresView = components['schemas']['FailuresView']
@@ -84,7 +81,6 @@ const post = <T>(path: string, body: unknown) =>
 
 export const api = {
   board: () => request<BoardView>('/board'),
-  queue: () => request<QueueView>('/queue'),
   taskDetail: (issue: number) => request<TaskDetail>(`/task/${issue}`),
   taskSpec: (issue: number) => request<SpecView>(`/task/${issue}/spec`),
   taskHistory: (issue: number, lines = 2000) =>
