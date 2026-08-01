@@ -273,3 +273,65 @@ def test_stage_timeline_open_segment_is_ongoing_and_other_issues_ignored():
 
 def test_stage_timeline_empty_for_unknown_or_rotated_issue():
     assert stage_timeline([], 7, now=NOW) == []
+
+
+from web.read_model import BudgetView, next_claim
+
+HB = {"started_at": "2026-08-01T12:25:00+00:00",
+      "finished_at": "2026-08-01T12:26:00+00:00", "interval_minutes": 10}
+BUDGET_OK = BudgetView(utilization=0.5, minutes_to_reset=120, source="oauth",
+                       would_spawn=True, threshold_applied="base")
+BUDGET_NO = BudgetView(utilization=0.95, minutes_to_reset=130, source="oauth",
+                       would_spawn=False, threshold_applied="base")
+
+
+def row(number, status="Ready", blocked=False, labels=("auto",)):
+    return {"number": number, "status": status, "blocked": blocked,
+            "labels": list(labels), "title": f"t{number}",
+            "url": f"https://x/{number}", "boost": 0, "score": 1.0}
+
+
+def test_next_claim_unknown_when_heartbeat_missing_or_stale():
+    v = next_claim(None, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                   queues=[("alpha", [row(1)])])
+    assert (v.verdict, v.next_pass_eta) == ("unknown", "")
+    stale = dict(HB, finished_at="2026-08-01T12:09:59+00:00")  # >2x10m before NOW
+    assert next_claim(stale, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                      queues=[]).verdict == "unknown"
+    # exactly at the boundary (20m old) is still fresh
+    edge = dict(HB, finished_at="2026-08-01T12:10:00+00:00")
+    assert next_claim(edge, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                      queues=[]).verdict != "unknown"
+    assert next_claim({"garbage": True}, now=NOW, tasks=[], capacity=2,
+                      budget=BUDGET_OK, queues=[]).verdict == "unknown"
+
+
+def test_next_claim_will_claim_head_of_queue():
+    v = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                   queues=[("alpha", [row(70, status="In progress"),
+                                      row(71, blocked=True),
+                                      row(72, labels=()),
+                                      row(73)])])
+    assert v.verdict == "will-claim"
+    assert (v.next_issue, v.next_target) == (73, "alpha")
+    assert v.next_pass_eta == "2026-08-01T12:36:00+00:00"  # finished + 10m
+
+
+def test_next_claim_skips_already_claimed_issues():
+    v = next_claim(HB, now=NOW, tasks=[make_task(issue=73)], capacity=2,
+                   budget=BUDGET_OK, queues=[("alpha", [row(73), row(74)])])
+    assert (v.verdict, v.next_issue) == ("will-claim", 74)
+
+
+def test_next_claim_budget_blocked_beats_everything_else():
+    v = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_NO,
+                   queues=[("alpha", [row(73)])])
+    assert (v.verdict, v.minutes_to_reset) == ("budget-blocked", 130)
+
+
+def test_next_claim_capacity_full_and_no_candidates():
+    busy = [make_task(issue=i) for i in (1, 2)]  # IMPLEMENT: active, unparked
+    assert next_claim(HB, now=NOW, tasks=busy, capacity=2, budget=BUDGET_OK,
+                      queues=[("alpha", [row(73)])]).verdict == "capacity-full"
+    assert next_claim(HB, now=NOW, tasks=busy, capacity=2, budget=BUDGET_OK,
+                      queues=[("alpha", [])]).verdict == "no-candidates"

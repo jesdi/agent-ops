@@ -2,7 +2,7 @@
 Pydantic responses. NO I/O in this module — construction only."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import BaseModel
 
@@ -309,6 +309,50 @@ def median_cycle_seconds(events: list[dict], last: int = 20) -> float | None:
 
 
 _TIMELINE_EVENTS = {"claimed", "stage-started", "parked", "resumed", "merged"}
+
+
+class NextClaimView(BaseModel):
+    verdict: str          # will-claim|no-candidates|capacity-full|budget-blocked|unknown
+    next_pass_eta: str    # ISO; "" when verdict == "unknown"
+    next_issue: int = 0
+    next_target: str = ""
+    minutes_to_reset: float = 0
+
+
+def _is_candidate(r: dict) -> bool:
+    """Mirror of GitHubClient.candidates: what _claim_new would consume."""
+    return (r.get("status") == "Ready" and not r.get("blocked")
+            and "auto" in (r.get("labels") or []))
+
+
+def next_claim(heartbeat: dict | None, *, now: datetime,
+               tasks: list[TaskState], capacity: int, budget: BudgetView,
+               queues: list[tuple[str, list[dict]]]) -> NextClaimView:
+    finished = _parse_ts((heartbeat or {}).get("finished_at", ""))
+    interval = int((heartbeat or {}).get("interval_minutes") or 0)
+    if finished is None or interval <= 0 or \
+            (now - finished).total_seconds() > 2 * interval * 60:
+        return NextClaimView(verdict="unknown", next_pass_eta="")
+    eta = (finished + timedelta(minutes=interval)).isoformat()
+    if not budget.would_spawn:
+        return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
+                             minutes_to_reset=budget.minutes_to_reset)
+    known = {t.issue for t in tasks}
+    any_candidate = False
+    for name, rows in queues:
+        heads = [r for r in rows
+                 if _is_candidate(r) and r["number"] not in known]
+        if not heads:
+            continue
+        any_candidate = True
+        mine = [t for t in tasks if t.target == name]
+        if capacity - len(active(mine)) > 0:
+            return NextClaimView(verdict="will-claim", next_pass_eta=eta,
+                                 next_issue=heads[0]["number"],
+                                 next_target=name)
+    return NextClaimView(
+        verdict="capacity-full" if any_candidate else "no-candidates",
+        next_pass_eta=eta)
 
 
 def stage_timeline(events: list[dict], issue: int, *,
