@@ -6,9 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-import threading
 import time
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -22,28 +20,12 @@ from dispatcher.state import TaskState
 
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
-QUARANTINE_TTL_SECONDS = 30.0
-# The board's hard bound on quarantine resolution: at most this many NEW `gh`
-# probes started per request, none of them inline, and at most this many
-# seconds of total waiting before the request answers with what it has.
-QUARANTINE_MAX_PROBES = 4
-QUARANTINE_WAIT_SECONDS = 2.0
 DISPATCHER_KICK = ("systemctl", "--user", "start",
                    "agent-ops-dispatcher.service")
 
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
-
-@dataclass
-class _Probe:
-    """One in-flight off-request blocker-state lookup. Deliberately not a
-    concurrent.futures Future: ThreadPoolExecutor joins its threads at
-    interpreter exit, so a `gh` call wedged for its full 120 s timeout would
-    hold up shutdown. A daemon thread plus an Event never does."""
-    done: threading.Event = field(default_factory=threading.Event)
-    value: bool | None = None
 
 
 class Sources:
@@ -57,12 +39,6 @@ class Sources:
         self._systemctl = systemctl
         self._rank_cache: dict[str, dict] = {}
         self._desc_cache: dict[tuple[str, int], dict] = {}
-        # (blocker repo, issue) -> (resolved_at, open?) written incrementally
-        # by each probe as it lands, so a slow batch still leaves its finished
-        # results behind for the next request instead of caching nothing.
-        self._blocker_cache: dict[tuple[str, int],
-                                  tuple[float, bool | None]] = {}
-        self._blocker_probes: dict[tuple[str, int], _Probe] = {}
 
     @property
     def state_dir(self) -> Path:
@@ -115,21 +91,21 @@ class Sources:
         return budget.fetch_usage(self._cfg.state_dir, now=self._clock)
 
     def quarantine_entries(self) -> list[dict]:
-        """Every quarantine record, parsed once for both /api/failures and the
-        board's claim forecast.
+        """Every readable quarantine record, for /api/failures and the retry
+        route's "is this issue quarantined?" check.
 
         Keyed the way failures.check_quarantine keys them: by FILENAME
-        (`{target}-{issue}.json`), which is the only thing a lookup can match
-        — a record whose body disagrees with its name must not shift the key,
-        or the board would hide a candidate the dispatcher WOULD claim. Names
-        that do not fit the scheme keep the old lenient handling: no lookup can
-        ever match them, so they are reported but never blocking (`keyed`).
+        (`{target}-{issue}.json`), which is the only thing a lookup can match,
+        so a body whose task_issue disagrees with its name cannot shift the
+        key that /api/task/{issue}/retry validates against. Names that do not
+        fit the scheme fall back to the body's task_issue.
 
-        A record whose body is unreadable or is not a JSON object is still
-        returned, flagged `readable=False`, when its name is keyable — that is
-        the case check_quarantine treats as still blocked, and dropping it here
-        would tell the board the candidate is claimable. Blank defaults keep
-        FailuresView's model valid for such a record.
+        A record whose body is unreadable, or is valid JSON that is not an
+        object, is SKIPPED. Every field would be blank and the row would be
+        indistinguishable from a real entry — the console's constraint is
+        never a blank, always an explicit state, and a row that says nothing
+        is worse than no row. Nothing else consumes this: the board's claim
+        forecast does not model quarantine.
 
         The read is guarded with (OSError, ValueError), not
         (json.JSONDecodeError, OSError): a torn write_text yields invalid UTF-8
@@ -147,24 +123,17 @@ class Sources:
             try:
                 d = json.loads(p.read_text())
             except (OSError, ValueError):
-                d = None
+                continue
             if not isinstance(d, dict):
-                # Unreadable, or valid JSON that is not an object (null, a
-                # list): rec.get() would raise. Only worth reporting when a
-                # lookup could match the name.
-                if keyed_issue is None:
-                    continue
-                d, readable = {}, False
-            else:
-                readable = True
+                continue  # null / a list: rec.get() would raise downstream
+            # Blank defaults keep FailuresView's model valid for a readable
+            # record that is missing a field.
             entry = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
                      "fingerprint": "", "created_at": "", **d}
             entry["target"] = (target if keyed_issue is not None
                                else p.stem.rsplit("-", 1)[0])
             if keyed_issue is not None:
                 entry["task_issue"] = keyed_issue
-            entry["keyed"] = keyed_issue is not None
-            entry["readable"] = readable
             entries.append(entry)
         return entries
 
@@ -221,90 +190,6 @@ class Sources:
         except Exception:
             paused = running
         return paused, running
-
-    def _blocker_probe(self, key: tuple[str, int]) -> _Probe:
-        """Start (or join) an OFF-REQUEST probe of one blocker issue's state.
-
-        `gh issue view` runs through github._run with timeout=120, so this must
-        never be awaited inline: N records would serialise into N x 120 s on
-        /api/board. The probe runs on a daemon thread (no interpreter-exit
-        join, unlike a ThreadPoolExecutor) and writes its cache entry as soon
-        as it lands, so a slow batch still leaves every finished result behind
-        for the next request. Keyed in-flight so concurrent SSE-driven clients
-        share one probe instead of each starting their own.
-        """
-        existing = self._blocker_probes.get(key)
-        if existing is not None:
-            return existing
-        probe = _Probe()
-        self._blocker_probes[key] = probe
-
-        def run() -> None:
-            try:
-                probe.value = self.issue_open(*key)  # degrades to None itself
-                self._blocker_cache[key] = (self._clock(), probe.value)
-            finally:
-                self._blocker_probes.pop(key, None)
-                probe.done.set()
-
-        threading.Thread(target=run, daemon=True,
-                         name=f"blocker-probe-{key[0]}#{key[1]}").start()
-        return probe
-
-    def quarantined(self) -> frozenset[tuple[str, int]]:
-        """(target, issue) pairs _claim_new would skip, mirroring
-        failures.check_quarantine — read-only: the web service never deletes a
-        dispatcher record, it only predicts.
-
-        Semantics copied from failures.py:160: a record blocks until its
-        blocker issue is CLOSED, and every uncertainty resolves to "still
-        blocked" (unreadable record, missing blocker_issue, unknown blocker
-        state, a probe that has not landed yet) exactly as check_quarantine
-        does — so the forecast never claims an issue the dispatcher will skip.
-        Records parse through quarantine_entries(), which keys them on the
-        filename exactly as check_quarantine looks them up.
-
-        BOUNDED: this sits on /api/board, refetched on every SSE tick, and the
-        underlying `gh` call can block for 120 s. Per request it starts at most
-        QUARANTINE_MAX_PROBES new probes, never inline, and waits at most
-        QUARANTINE_WAIT_SECONDS in TOTAL for results — so the board's added
-        latency is capped at that one number regardless of record count, gh
-        latency, or how many clients are connected. Anything unresolved at the
-        deadline is reported blocked for this request and picked up from cache
-        on a later one.
-        """
-        out: set[tuple[str, int]] = set()
-        waiting: list[tuple[tuple[str, int], _Probe]] = []
-        started = 0
-        for rec in self.quarantine_entries():
-            if not rec["keyed"]:
-                continue  # no lookup can match this name; never blocking
-            key = (rec["target"], rec["task_issue"])
-            if not rec["readable"] or not rec["blocker_issue"]:
-                out.add(key)  # unreadable / no blocker: a human must clear it
-                continue
-            bkey = (rec["blocker_repo"], rec["blocker_issue"])
-            cached = self._blocker_cache.get(bkey)
-            if (cached is not None
-                    and self._clock() - cached[0] < QUARANTINE_TTL_SECONDS):
-                if cached[1] is False:
-                    continue  # blocker confirmed closed: claimable next pass
-                out.add(key)
-                continue
-            in_flight = bkey in self._blocker_probes
-            if not in_flight and started >= QUARANTINE_MAX_PROBES:
-                out.add(key)  # over the per-request cap: blocked for now
-                continue
-            if not in_flight:
-                started += 1
-            waiting.append((key, self._blocker_probe(bkey)))
-        deadline = time.monotonic() + QUARANTINE_WAIT_SECONDS
-        for key, probe in waiting:
-            if not probe.done.wait(max(0.0, deadline - time.monotonic())):
-                out.add(key)  # not landed in time: blocked, retried next tick
-            elif probe.value is not False:
-                out.add(key)  # open, or unknown (issue_open degraded to None)
-        return frozenset(out)
 
     def events_tail(self, limit: int) -> list[dict]:
         # Degrade to [] rather than 500: an unreadable event log costs

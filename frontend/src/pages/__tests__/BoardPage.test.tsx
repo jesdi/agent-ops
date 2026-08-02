@@ -132,8 +132,8 @@ test('same issue number on two targets renders two distinct ghosts', async () =>
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     upcoming: [
-      { number: 73, target: 'jesdi/alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0, quarantined: false },
-      { number: 73, target: 'jesdi/beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0, quarantined: false },
+      { number: 73, target: 'jesdi/alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, target: 'jesdi/beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
     ],
     next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'jesdi/beta' },
   })))

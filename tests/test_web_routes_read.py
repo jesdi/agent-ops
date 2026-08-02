@@ -1,4 +1,5 @@
 """GET routes wired against FakeSources."""
+import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
@@ -237,24 +238,6 @@ def test_board_next_claim_triage_running(tmp_path):
     assert body["next_claim"]["verdict"] == "capacity-full"
 
 
-def test_board_quarantined_head_is_flagged_not_forecast(tmp_path):
-    """Route level: the quarantined candidate still renders as a ghost (so
-    the operator sees the stuck head of the queue) but the will-claim
-    forecast moves to the next one — matching what _claim_new does."""
-    fake, client = rig(tmp_path)
-    fake.heartbeat = _fresh_heartbeat()
-    rows = [{"number": n, "title": f"t{n}", "url": "u", "status": "Ready",
-             "labels": ["auto"], "blocked": False, "score": 2.0, "boost": 0}
-            for n in (73, 74)]
-    fake.rank["alpha"] = (rows, "2026-08-01T12:00:00+00:00", False)
-    fake.quarantined_pairs = {("alpha", 73)}
-    body = client.get("/api/board", headers=HEADERS).json()
-    assert [(g["number"], g["quarantined"]) for g in body["upcoming"]] == [
-        (73, True), (74, False)]
-    assert body["next_claim"]["verdict"] == "will-claim"
-    assert body["next_claim"]["next_issue"] == 74
-
-
 def test_board_probes_tmux_at_most_once_per_request(tmp_path):
     """The board asked sources for claims_paused and triage_running
     separately, and triage.pending() calls running() itself — two tmux
@@ -369,16 +352,21 @@ def test_description_refuses_a_number_on_two_queues(tmp_path):
     assert resp.status_code == 409 and "ambiguous" in resp.json()["detail"]
 
 
-def test_board_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
+def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
     """A torn quarantine record (invalid UTF-8 -> UnicodeDecodeError, a
-    ValueError not an OSError) must not 500 /api/board. Real Sources so the
-    guard in sources.py is what is exercised, mirroring the corrupt-events
-    test above."""
+    ValueError not an OSError) must not 500 /api/failures. Real Sources so
+    the guard in sources.py is what is exercised, mirroring the corrupt-
+    events test above. The unreadable records are SKIPPED, not surfaced: a
+    row with every field blank is indistinguishable from a real entry, and
+    the console's rule is never a blank, always an explicit state."""
     from web.sources import Sources
     cfg = make_config(tmp_path)
     (tmp_path / "quarantine").mkdir(parents=True, exist_ok=True)
     (tmp_path / "quarantine" / "alpha-73.json").write_bytes(b"\xff\xfe torn")
     (tmp_path / "quarantine" / "alpha-74.json").write_text("null")
+    (tmp_path / "quarantine" / "alpha-75.json").write_text(json.dumps(
+        {"task_issue": 75, "blocker_repo": "r", "blocker_issue": 0,
+         "fingerprint": "f", "created_at": "c"}))
 
     class _NullGitHub:
         def rank_rows(self, _): return []
@@ -388,8 +376,6 @@ def test_board_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
 
     client2 = TestClient(create_app(cfg, Sources(cfg, _NullSessions(),
                                                  _NullGitHub())))
-    assert client2.get("/api/board", headers=HEADERS).status_code == 200
-    # /api/failures reads the same records and must survive them too.
     resp = client2.get("/api/failures", headers=HEADERS)
     assert resp.status_code == 200
-    assert [q["task_issue"] for q in resp.json()["quarantined"]] == [73, 74]
+    assert [q["task_issue"] for q in resp.json()["quarantined"]] == [75]

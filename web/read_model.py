@@ -94,10 +94,6 @@ class GhostCard(BaseModel):
     url: str
     score: float | None
     boost: int
-    # Held by a quarantine record: _claim_new skips it every pass until the
-    # blocker issue closes. Still shown (the operator needs to see that the
-    # head of the queue is stuck) but never forecast as the next claim.
-    quarantined: bool = False
 
 
 class CapacityView(BaseModel):
@@ -141,9 +137,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 events: list[dict], heartbeat: dict | None, now: datetime,
                 budget: BudgetView, queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
-                triage_running: bool,
-                quarantined: frozenset[tuple[str, int]] = frozenset()
-                ) -> BoardView:
+                triage_running: bool) -> BoardView:
     claimed = claimed_at_index(events)
     cards = []
     for t in tasks:
@@ -160,13 +154,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
     # (cf. dispatcher/main.py:223 which acknowledges number collisions).
     known = {(t.target, t.issue) for t in tasks}
-    # A quarantined candidate stays in `upcoming` — it is genuinely at the
-    # head of the queue and the operator must see that it is stuck — but it
-    # carries the flag so the card can say so, and next_claim skips it.
     upcoming = [GhostCard(number=r["number"], target=name,
                           title=r.get("title", ""), url=r.get("url", ""),
-                          score=r.get("score"), boost=int(r.get("boost") or 0),
-                          quarantined=(name, r["number"]) in quarantined)
+                          score=r.get("score"), boost=int(r.get("boost") or 0))
                 for name, rows in queues for r in rows
                 if _is_candidate(r) and (name, r["number"]) not in known]
     return BoardView(
@@ -184,8 +174,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                               capacity=capacity, budget=budget,
                               queues=queues,
                               claims_paused=claims_paused,
-                              triage_running=triage_running,
-                              quarantined=quarantined),
+                              triage_running=triage_running),
         median_cycle_seconds=median_cycle_seconds(events))
 
 
@@ -417,9 +406,22 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                tasks: list[TaskState], capacity: int, budget: BudgetView,
                queues: list[tuple[str, list[dict]]],
                claims_paused: bool = False,
-               triage_running: bool = False,
-               quarantined: frozenset[tuple[str, int]] = frozenset()
-               ) -> NextClaimView:
+               triage_running: bool = False) -> NextClaimView:
+    """A forecast of what _claim_new consumes next, from data already on the
+    board request. It is a PARTIAL mirror, deliberately: the gates it models
+    are the ones readable from local state (heartbeat, budget, capacity, the
+    triage pause, the cached rank rows).
+
+    Gates it does NOT model, so `will-claim` can still be wrong:
+      * failures.check_quarantine — a quarantined candidate is forecast as
+        claimable. Resolving it needs a live `gh issue view` per record, which
+        does not belong on a route polled once per second; the record is
+        visible on /failures instead.
+      * slot exhaustion (_claim_new breaks when allocate_slot returns None)
+        and a create_workspace failure — only knowable at claim time.
+      * queue movement since the rank rows were cached (rank_rows has a TTL,
+        so the dispatcher's own pass may see a different head).
+    """
     hb = heartbeat or {}
     finished = _parse_ts(hb.get("finished_at", ""))
     try:
@@ -453,13 +455,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     known = {(t.target, t.issue) for t in tasks}
     any_candidate = False
     for name, rows in queues:
-        # Mirror dispatcher/main.py:913 — _claim_new skips a candidate held by
-        # failures.check_quarantine, so forecasting one is a promise the
-        # dispatcher will not keep. The set is resolved in web/sources.py
-        # (this module stays pure); an empty set is the non-blocking default.
         heads = [r for r in rows
-                 if _is_candidate(r) and (name, r["number"]) not in known
-                 and (name, r["number"]) not in quarantined]
+                 if _is_candidate(r) and (name, r["number"]) not in known]
         if not heads:
             continue
         any_candidate = True

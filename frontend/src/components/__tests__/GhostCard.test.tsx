@@ -8,7 +8,6 @@ import type { GhostCard } from '../../lib/api'
 const ghost: GhostCard = {
   number: 73, target: 'jesdi/widget', title: 'Ship dark mode',
   url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 2,
-  quarantined: false,
 }
 
 test('renders muted upcoming card with rank data and links to the task view', () => {
@@ -35,16 +34,4 @@ test('next badge and actions', async () => {
   expect(onBoost).toHaveBeenCalledWith(73, 1)
   await userEvent.click(screen.getByRole('button', { name: 'Demote' }))
   expect(onBoost).toHaveBeenCalledWith(73, -1)
-})
-
-test('a quarantined ghost stays visible and says so', () => {
-  // Deliberate: the dispatcher skips it every pass, so hiding it would make
-  // the operator debug an absence. It is shown, flagged, and never "next".
-  renderWithProviders(
-    <GhostCardView ghost={{ ...ghost, quarantined: true }} isNext={false}
-      busy={false} onBoost={() => {}} onNext={() => {}} onReady={() => {}} />,
-  )
-  expect(screen.getByTestId('ghost-73')).toBeInTheDocument()
-  expect(screen.getByText('quarantined')).toBeInTheDocument()
-  expect(screen.queryByText('next')).not.toBeInTheDocument()
 })

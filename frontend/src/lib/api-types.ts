@@ -448,11 +448,6 @@ export interface components {
             boost: number;
             /** Number */
             number: number;
-            /**
-             * Quarantined
-             * @default false
-             */
-            quarantined: boolean;
             /** Score */
             score: number | null;
             /** Target */

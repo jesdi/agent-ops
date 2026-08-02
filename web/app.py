@@ -105,8 +105,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 cfg.racing_threshold),
             queues=queues, queue_stale=stale_any,
             # One tmux probe for both signals (cf. dispatcher run_pass).
-            claims_paused=claims_paused, triage_running=triage_running,
-            quarantined=sources.quarantined())
+            claims_paused=claims_paused, triage_running=triage_running)
 
     @app.get("/api/task/{issue}", response_model=read_model.TaskDetail)
     def task_detail(issue: int,
@@ -198,9 +197,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def failures(op: Operator = Depends(current_operator)):
         quarantined = [
             read_model.QuarantineEntry(
-                # A record with no blocker (an unreadable one now surfaces as
-                # such rather than vanishing) has nothing to look up: asking
-                # gh about issue 0 costs a 120 s subprocess to learn nothing.
+                # A record with no blocker has nothing to look up: asking gh
+                # about issue 0 costs a 120 s subprocess to learn nothing.
                 **q, blocker_open=(sources.issue_open(q["blocker_repo"],
                                                       q["blocker_issue"])
                                    if q["blocker_issue"] else None))
