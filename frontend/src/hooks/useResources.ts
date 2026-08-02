@@ -12,11 +12,6 @@ export function useTasks() {
   return useQuery({ queryKey: queryKeys.board, queryFn: api.board, refetchInterval })
 }
 
-export function useQueue() {
-  const refetchInterval = useFallbackInterval()
-  return useQuery({ queryKey: queryKeys.queue, queryFn: api.queue, refetchInterval })
-}
-
 export function useBudget() {
   const refetchInterval = useFallbackInterval()
   return useQuery({ queryKey: queryKeys.budget, queryFn: api.budget, refetchInterval })
@@ -65,6 +60,17 @@ export function useTaskHistory(issue: number, enabled: boolean) {
     queryFn: () => api.taskHistory(issue),
     enabled,
     staleTime: 0,
+  })
+}
+
+/** Lazy: `enabled` gates the fetch so a collapsed panel costs nothing.
+ *  retry:false — the backend already degrades gh failures into the payload. */
+export function useIssueDescription(issue: number, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.description(issue),
+    queryFn: () => api.taskDescription(issue),
+    enabled,
+    retry: false,
   })
 }
 

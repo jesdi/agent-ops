@@ -80,3 +80,14 @@ it('accent: amber accent is applied when passed explicitly', () => {
   )
   expect(screen.getByTestId('card-41')).toHaveClass('border-l-4', 'border-l-amber-500')
 })
+
+test('active card shows time since claim; done card shows total cycle', () => {
+  renderCard(
+    { ...inProgressCard, claimed_at: new Date(Date.now() - 7200_000).toISOString() },
+  )
+  expect(screen.getByText(/claimed 2h ago/)).toBeInTheDocument()
+  renderCard(
+    { ...inProgressCard, stage: 'done', column: 'done', cycle_seconds: 8100 },
+  )
+  expect(screen.getByText(/took 2h 15m/)).toBeInTheDocument()
+})

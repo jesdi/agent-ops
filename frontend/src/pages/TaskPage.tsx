@@ -1,14 +1,16 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useParams } from 'react-router'
+import { DescriptionPanel } from '../components/DescriptionPanel'
 import { PendingBadge } from '../components/PendingBadge'
 import { SpecPanel } from '../components/SpecPanel'
 import { Terminal } from '../components/Terminal'
 import { queryKeys } from '../hooks/queryKeys'
-import { usePendingIntents, useTaskDetail } from '../hooks/useResources'
+import { useQueueActions } from '../hooks/useQueueActions'
+import { useIssueDescription, usePendingIntents, useTaskDetail } from '../hooks/useResources'
 import { usePersistedTerminalHeight } from '../hooks/usePersistedTerminalHeight'
 import { api, ApiError } from '../lib/api'
-import { relativeTime, stageLabel } from '../lib/format'
+import { formatDuration, relativeTime, stageLabel } from '../lib/format'
 import { useUiStore } from '../store/ui'
 
 export function TaskPage() {
@@ -30,7 +32,7 @@ function TaskView({ issue }: { issue: number }) {
   const intentsQuery = usePendingIntents()
   const queryClient = useQueryClient()
   const [replyText, setReplyText] = useState('')
-  // Inline error channel, same convention as QueuePage/QueueTable: park/kill/
+  // Inline error channel, same convention as useQueueActions: park/kill/
   // retry/reply return real 404s and 5xx, and a swallowed failure is
   // pixel-identical to success — no badge, no error, operator misled.
   const [actionError, setActionError] = useState<string | null>(null)
@@ -64,6 +66,9 @@ function TaskView({ issue }: { issue: number }) {
 
   if (detailQuery.isPending) return <p className="p-4 text-gray-500">loading task…</p>
   if (detailQuery.isError) {
+    if (detailQuery.error instanceof ApiError && detailQuery.error.status === 404) {
+      return <GhostTaskView issue={issue} />
+    }
     return <p className="p-4 text-red-600">{detailQuery.error.message}</p>
   }
 
@@ -91,7 +96,20 @@ function TaskView({ issue }: { issue: number }) {
         ))}
       </header>
 
+      {detailQuery.data.timeline.length > 0 && (
+        <div data-testid="stage-timeline" className="flex flex-wrap gap-2 text-xs text-gray-500">
+          {detailQuery.data.timeline.map((seg, i) => (
+            <span key={i}
+              className={`rounded px-1.5 py-0.5 ${seg.kind === 'parked' ? 'bg-purple-50 text-purple-700' : 'bg-gray-100'}`}>
+              {seg.label} {formatDuration(seg.seconds)}{seg.ongoing ? ' — ongoing' : ''}
+            </span>
+          ))}
+        </div>
+      )}
+
       <p className="font-mono text-xs text-gray-500">{worktree}</p>
+
+      <DescriptionPanel issue={issue} />
 
       {card.stage === 'awaiting-spec-review' && (
         <SpecPanel
@@ -220,6 +238,29 @@ function TaskView({ issue }: { issue: number }) {
             Cancel kill
           </button>
         )}
+      </div>
+    </div>
+  )
+}
+
+function GhostTaskView({ issue }: { issue: number }) {
+  const desc = useIssueDescription(issue, true)
+  const { queueError, busy, boost, next, ready } = useQueueActions()
+  return (
+    <div data-testid="ghost-task-view" className="flex flex-col gap-4 p-4">
+      <header className="flex flex-wrap items-center gap-3">
+        <h1 className="text-lg font-semibold">{desc.data?.title || `#${issue}`}</h1>
+        <span className="rounded border border-dashed border-gray-300 px-2 py-0.5 text-sm text-gray-500">
+          upcoming — not claimed yet
+        </span>
+      </header>
+      <DescriptionPanel issue={issue} defaultOpen />
+      {queueError && <p data-testid="queue-error" className="text-sm text-red-600">{queueError}</p>}
+      <div className="flex gap-2">
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, 1)}>Boost</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, -1)}>Demote</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => next(issue)}>Next</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => ready(issue)}>Ready</button>
       </div>
     </div>
   )

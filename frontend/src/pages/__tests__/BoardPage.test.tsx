@@ -1,8 +1,9 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
-import { budgetUnavailable, pendingReplyIntent } from '../../test/fixtures'
+import { board as fx_board, budgetUnavailable, pendingReplyIntent } from '../../test/fixtures'
 import { renderWithProviders } from '../../test/render'
 import { BoardPage } from '../BoardPage'
 
@@ -103,4 +104,79 @@ it('the accented cards reconcile with the header meter', async () => {
   expect(screen.getAllByText('holding a capacity unit')).toHaveLength(2)
   expect(screen.getAllByTestId('cap-pip-filled')).toHaveLength(2)
   expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
+})
+
+test('queued column renders ghost cards in rank order with count and stale hint', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    upcoming: [
+      { number: 73, target: 'jesdi/widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 74, target: 'jesdi/widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
+    ],
+    upcoming_stale: true,
+    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'jesdi/widget' },
+  })))
+  renderWithProviders(<BoardPage />)
+  const queued = await screen.findByTestId('column-queued')
+  const ghosts = within(queued).getAllByTestId(/^ghost-/)
+  expect(ghosts.map((g) => g.dataset.testid)).toEqual(['ghost-73', 'ghost-74'])
+  expect(within(queued).getByText('2')).toBeInTheDocument()  // header count
+  expect(within(queued).getByText(/stale/)).toBeInTheDocument()
+  expect(within(ghosts[0]!).getByText('next')).toBeInTheDocument()
+})
+
+test('same issue number on two targets renders two distinct ghosts', async () => {
+  // Issue numbers are per-repo, so alpha#73 and beta#73 are different work.
+  // The ghost key must include the target (duplicate React keys otherwise),
+  // and only the forecast target may wear the "next" badge.
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    upcoming: [
+      { number: 73, target: 'jesdi/alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, target: 'jesdi/beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
+    ],
+    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'jesdi/beta' },
+  })))
+  renderWithProviders(<BoardPage />)
+  const queued = await screen.findByTestId('column-queued')
+  expect(within(queued).getByText('Alpha work')).toBeInTheDocument()
+  expect(within(queued).getByText('Beta work')).toBeInTheDocument()
+  // exactly one "next" badge — the alpha ghost must not claim the forecast
+  expect(within(queued).getAllByText('next')).toHaveLength(1)
+})
+
+test('stale indicator survives collapsing the Queued column', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    upcoming: [
+      { number: 73, target: 'jesdi/widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+    ],
+    upcoming_stale: true,
+    next_claim: { ...fx_board.next_claim, verdict: 'no-candidates' },
+  })))
+  renderWithProviders(<BoardPage />)
+  const queued = await screen.findByTestId('column-queued')
+
+  // Confirm ghost is visible before collapse.
+  expect(within(queued).getByTestId('ghost-73')).toBeInTheDocument()
+
+  // Collapse the column by clicking the header toggle button.
+  await userEvent.click(within(queued).getByRole('button', { name: /Queued/i }))
+
+  // Ghost cards must be hidden once collapsed.
+  expect(within(queued).queryByTestId('ghost-73')).not.toBeInTheDocument()
+
+  // Stale indicator must still be visible in the header.
+  expect(within(queued).getByTestId('queue-stale')).toBeInTheDocument()
+})
+
+test('header shows next-claim line and median cycle', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    median_cycle_seconds: 7200,
+    next_claim: { verdict: 'capacity-full', next_pass_eta: new Date(Date.now() + 300_000).toISOString(), next_issue: 0, next_target: '', minutes_to_reset: 0 },
+  })))
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByTestId('next-claim')).toHaveTextContent(/capacity full/i)
+  expect(screen.getByText(/≈2h per task/)).toBeInTheDocument()
 })

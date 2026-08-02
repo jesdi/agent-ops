@@ -208,6 +208,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{issue}/description": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Task Description */
+        get: operations["task_description_api_task__issue__description_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{issue}/history": {
         parameters: {
             query?: never;
@@ -336,6 +353,13 @@ export interface components {
             capacity: components["schemas"]["CapacityView"];
             /** Columns */
             columns: components["schemas"]["Column"][];
+            /** Median Cycle Seconds */
+            median_cycle_seconds: number | null;
+            next_claim: components["schemas"]["NextClaimView"];
+            /** Upcoming */
+            upcoming: components["schemas"]["GhostCard"][];
+            /** Upcoming Stale */
+            upcoming_stale: boolean;
         };
         /** BoostReq */
         BoostReq: {
@@ -414,6 +438,25 @@ export interface components {
             /** When */
             when: string;
         };
+        /**
+         * GhostCard
+         * @description A ranked, not-yet-claimed candidate: exactly what _claim_new would
+         *     consume next, rendered in the Queued column ahead of being claimed.
+         */
+        GhostCard: {
+            /** Boost */
+            boost: number;
+            /** Number */
+            number: number;
+            /** Score */
+            score: number | null;
+            /** Target */
+            target: string;
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -423,6 +466,41 @@ export interface components {
         HistoryView: {
             /** Events */
             events: components["schemas"]["EventEntry"][];
+        };
+        /** IssueDescription */
+        IssueDescription: {
+            /** Body */
+            body: string;
+            /** Error */
+            error: string;
+            /** Fetched At */
+            fetched_at: string;
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
+        };
+        /** NextClaimView */
+        NextClaimView: {
+            /**
+             * Minutes To Reset
+             * @default 0
+             */
+            minutes_to_reset: number;
+            /**
+             * Next Issue
+             * @default 0
+             */
+            next_issue: number;
+            /** Next Pass Eta */
+            next_pass_eta: string;
+            /**
+             * Next Target
+             * @default
+             */
+            next_target: string;
+            /** Verdict */
+            verdict: string;
         };
         /** NextReq */
         NextReq: {
@@ -524,10 +602,14 @@ export interface components {
             attached: boolean;
             /** Branch */
             branch: string;
+            /** Claimed At */
+            claimed_at: string;
             /** Column */
             column: string;
             /** Consuming Capacity */
             consuming_capacity: boolean;
+            /** Cycle Seconds */
+            cycle_seconds: number | null;
             /** Feedback Pending */
             feedback_pending: boolean;
             /** Issue */
@@ -566,8 +648,24 @@ export interface components {
             pending_reply: string;
             /** Session Alive */
             session_alive: boolean;
+            /** Timeline */
+            timeline: components["schemas"]["TimelineEntry"][];
             /** Worktree */
             worktree: string;
+        };
+        /** TimelineEntry */
+        TimelineEntry: {
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /**
+             * Ongoing
+             * @default false
+             */
+            ongoing: boolean;
+            /** Seconds */
+            seconds: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -879,6 +977,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    task_description_api_task__issue__description_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                issue: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueDescription"];
                 };
             };
             /** @description Validation Error */

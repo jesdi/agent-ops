@@ -1,3 +1,18 @@
+/** Two most significant units, zero units dropped: 8100 -> "2h 15m". */
+export function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds))
+  const units: [string, number][] = [['d', 86400], ['h', 3600], ['m', 60], ['s', 1]]
+  const parts: string[] = []
+  let rest = s
+  for (const [label, size] of units) {
+    const n = Math.floor(rest / size)
+    if (n > 0 || (label === 's' && parts.length === 0)) parts.push(`${n}${label}`)
+    rest -= n * size
+    if (parts.length === 2) break
+  }
+  return parts.join(' ')
+}
+
 export function relativeTime(iso: string, now: Date = new Date()): string {
   const secs = Math.floor((now.getTime() - new Date(iso).getTime()) / 1000)
   if (secs < 10) return 'just now'

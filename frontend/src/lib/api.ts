@@ -3,9 +3,6 @@ import type { components } from './api-types'
 export type BoardView = components['schemas']['BoardView']
 export type TaskCard = components['schemas']['TaskCard']
 export type CapacityView = components['schemas']['CapacityView']
-export type QueueView = components['schemas']['QueueView']
-export type TargetQueue = components['schemas']['TargetQueue']
-export type QueueRow = components['schemas']['QueueRow']
 export type TaskDetail = components['schemas']['TaskDetail']
 export type BudgetView = components['schemas']['BudgetView']
 export type FailuresView = components['schemas']['FailuresView']
@@ -15,6 +12,10 @@ export type HistoryView = components['schemas']['HistoryView']
 export type EventEntry = components['schemas']['EventEntry']
 export type SpecView = components['schemas']['SpecView']
 export type PaneHistory = components['schemas']['PaneHistory']
+export type NextClaimView = components['schemas']['NextClaimView']
+export type GhostCard = components['schemas']['GhostCard']
+export type TimelineEntry = components['schemas']['TimelineEntry']
+export type IssueDescription = components['schemas']['IssueDescription']
 
 export interface PendingIntent {
   action: string
@@ -80,7 +81,6 @@ const post = <T>(path: string, body: unknown) =>
 
 export const api = {
   board: () => request<BoardView>('/board'),
-  queue: () => request<QueueView>('/queue'),
   taskDetail: (issue: number) => request<TaskDetail>(`/task/${issue}`),
   taskSpec: (issue: number) => request<SpecView>(`/task/${issue}/spec`),
   taskHistory: (issue: number, lines = 2000) =>
@@ -103,4 +103,5 @@ export const api = {
   retry: (issue: number) => post<IntentAccepted>(`/task/${issue}/retry`, {}),
   resume: (issue: number, text?: string) =>
     post<IntentAccepted>(`/task/${issue}/resume`, text ? { text } : {}),
+  taskDescription: (issue: number) => request<IssueDescription>(`/task/${issue}/description`),
 }

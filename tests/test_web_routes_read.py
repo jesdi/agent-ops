@@ -1,10 +1,24 @@
 """GET routes wired against FakeSources."""
+import json
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from dispatcher.budget import UsageSnapshot
 from dispatcher.state import PARK_HUMAN, Stage
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_task)
 from web.app import create_app
+
+
+def _fresh_heartbeat(interval_minutes: int = 10) -> dict:
+    """Heartbeat whose finished_at is 1 minute ago — always within the
+    2*interval staleness window, regardless of wall-clock time of day."""
+    now = datetime.now(timezone.utc)
+    return {
+        "started_at": (now - timedelta(minutes=2)).isoformat(),
+        "finished_at": (now - timedelta(minutes=1)).isoformat(),
+        "interval_minutes": interval_minutes,
+    }
 
 
 def rig(tmp_path):
@@ -170,3 +184,198 @@ def test_task_history_404_for_unknown_task(tmp_path):
     fake, client = rig(tmp_path)
     assert client.get("/api/task/999/history",
                       headers=HEADERS).status_code == 404
+
+
+def test_board_carries_next_claim_upcoming_and_timeline(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT)]
+    # Heartbeat derived from real now so it is always within the staleness
+    # window (now - finished_at < 2 * 10 * 60 = 1200 s).
+    fake.heartbeat = _fresh_heartbeat()
+    fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 2.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    # Event timestamp well in the past so stage_timeline produces an ongoing
+    # segment (now - claimed_at >> 1 s) regardless of time of day.
+    fake.events = [{"ts": "2026-07-31T10:00:00+00:00", "event": "claimed",
+                    "target": "alpha", "issue": 7, "stage": "queued",
+                    "model": "", "actor": "dispatcher", "detail": ""}]
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert body["next_claim"]["next_issue"] == 73
+    assert [g["number"] for g in body["upcoming"]] == [73]
+    card = [c for col in body["columns"] for c in col["cards"]][0]
+    assert card["claimed_at"] == "2026-07-31T10:00:00+00:00"
+    detail = client.get("/api/task/7", headers=HEADERS).json()
+    assert detail["timeline"][0]["label"] == "queued"
+    assert detail["timeline"][0]["ongoing"] is True
+
+
+def test_board_next_claim_claims_paused(tmp_path):
+    fake, client = rig(tmp_path)
+    # Fresh heartbeat so next_claim does not short-circuit to "unknown".
+    fake.heartbeat = _fresh_heartbeat()
+    fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 2.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    fake._claims_paused = True
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert body["next_claim"]["verdict"] == "claims-paused"
+
+
+def test_board_next_claim_triage_running(tmp_path):
+    """capacity=1 + triage_running → effective capacity=0 → capacity-full."""
+    fake = FakeSources()
+    fake.heartbeat = _fresh_heartbeat()
+    fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 2.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    fake._triage_running = True
+    client = TestClient(create_app(make_config(tmp_path, capacity=1), fake))
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert body["next_claim"]["verdict"] == "capacity-full"
+
+
+def test_board_probes_tmux_at_most_once_per_request(tmp_path):
+    """The board asked sources for claims_paused and triage_running
+    separately, and triage.pending() calls running() itself — two tmux
+    subprocesses (timeout=30 each) per request on the hottest route. Real
+    Sources here so the deduplication in sources.py is what is measured."""
+    from dispatcher import triage as triage_mod
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    calls = []
+
+    class _NullGitHub:
+        def rank_rows(self, _): return []
+
+    class _NullSessions:
+        def is_alive(self, _): return False
+
+    def _running():
+        calls.append(1)
+        return False
+
+    import pytest
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(triage_mod, "running", _running)
+        client2 = TestClient(create_app(cfg, Sources(cfg, _NullSessions(),
+                                                     _NullGitHub())))
+        assert client2.get("/api/board", headers=HEADERS).status_code == 200
+    assert len(calls) == 1, f"tmux probed {len(calls)} times per board request"
+
+
+def test_task_detail_200_with_mixed_timezone_events(tmp_path):
+    """A naive `ts` beside an aware `now` raised TypeError out of
+    stage_timeline and 500'd this route; it now degrades by dropping the
+    incomparable segment."""
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7)]
+    fake.events = [
+        {"ts": "2026-07-31T10:00:00+00:00", "event": "claimed",
+         "target": "alpha", "issue": 7, "stage": "queued", "model": "",
+         "actor": "dispatcher", "detail": ""},
+        {"ts": "2026-07-31T11:00:00", "event": "stage-started",  # NAIVE
+         "target": "alpha", "issue": 7, "stage": "spec", "model": "",
+         "actor": "dispatcher", "detail": ""},
+    ]
+    resp = client.get("/api/task/7", headers=HEADERS)
+    assert resp.status_code == 200
+    assert isinstance(resp.json()["timeline"], list)
+
+
+def test_board_degrades_to_200_on_corrupt_events(tmp_path):
+    """An unreadable events.jsonl must not 500 /api/board; the board still
+    renders with empty event-derived fields (no claimed_at, no timeline).
+    Uses real Sources so the events_tail degrade in sources.py is exercised."""
+    from dispatcher import state as state_mod
+    from tests.webfakes import make_task as _make_task
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    # Write a task so the board has something to show.
+    state_mod.save(tmp_path, _make_task(issue=7))
+    # Write a corrupt events file that will raise UnicodeDecodeError.
+    (tmp_path / "events.jsonl").write_bytes(b"\xff\xfe bad utf-8")
+
+    class _NullGitHub:
+        def rank_rows(self, _): return []
+
+    class _NullSessions:
+        def is_alive(self, _): return False
+
+    src = Sources(cfg, _NullSessions(), _NullGitHub())
+    client2 = TestClient(create_app(cfg, src))
+    resp = client2.get("/api/board", headers=HEADERS)
+    assert resp.status_code == 200
+    card = [c for col in resp.json()["columns"] for c in col["cards"]][0]
+    assert card["claimed_at"] == ""
+
+
+def test_description_for_task_ghost_and_unknown(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7)]
+    fake.rank["alpha"] = ([{"number": 73, "title": "t", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 1.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    fake.descriptions[("jesdi/alpha", 7)] = {
+        "title": "T7", "body": "B", "url": "u7",
+        "fetched_at": "2026-08-01T12:00:00+00:00", "error": ""}
+    fake.descriptions[("jesdi/alpha", 73)] = {
+        "title": "T73", "body": "B", "url": "u73",
+        "fetched_at": "2026-08-01T12:00:00+00:00", "error": ""}
+    assert client.get("/api/task/7/description",
+                      headers=HEADERS).json()["title"] == "T7"
+    assert client.get("/api/task/73/description",
+                      headers=HEADERS).json()["title"] == "T73"
+    assert client.get("/api/task/999/description",
+                      headers=HEADERS).status_code == 404
+
+
+def test_description_refuses_a_number_on_two_queues(tmp_path):
+    """Both alpha#73 and beta#73 can be ghosts. Serving the first hit could
+    hand back the WRONG repo's body; the routing scheme is issue-number-only
+    so there is nothing to disambiguate on — report 409 (same contract as
+    _locate_row) instead of guessing."""
+    from tests.webfakes import make_target
+    fake = FakeSources()
+    cfg = make_config(tmp_path, targets=[make_target("alpha", "jesdi/alpha"),
+                                         make_target("beta", "jesdi/beta")])
+    client = TestClient(create_app(cfg, fake))
+    r73 = [{"number": 73, "title": "t", "url": "u", "status": "Ready",
+            "labels": ["auto"], "blocked": False, "score": 1.0, "boost": 0}]
+    fake.rank["alpha"] = (r73, "2026-08-01T12:00:00+00:00", False)
+    fake.rank["beta"] = (r73, "2026-08-01T12:00:00+00:00", False)
+    resp = client.get("/api/task/73/description", headers=HEADERS)
+    assert resp.status_code == 409 and "ambiguous" in resp.json()["detail"]
+
+
+def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
+    """A torn quarantine record (invalid UTF-8 -> UnicodeDecodeError, a
+    ValueError not an OSError) must not 500 /api/failures. Real Sources so
+    the guard in sources.py is what is exercised, mirroring the corrupt-
+    events test above. The unreadable records are SKIPPED, not surfaced: a
+    row with every field blank is indistinguishable from a real entry, and
+    the console's rule is never a blank, always an explicit state."""
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    (tmp_path / "quarantine").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "quarantine" / "alpha-73.json").write_bytes(b"\xff\xfe torn")
+    (tmp_path / "quarantine" / "alpha-74.json").write_text("null")
+    (tmp_path / "quarantine" / "alpha-75.json").write_text(json.dumps(
+        {"task_issue": 75, "blocker_repo": "r", "blocker_issue": 0,
+         "fingerprint": "f", "created_at": "c"}))
+
+    class _NullGitHub:
+        def rank_rows(self, _): return []
+
+    class _NullSessions:
+        def is_alive(self, _): return False
+
+    client2 = TestClient(create_app(cfg, Sources(cfg, _NullSessions(),
+                                                 _NullGitHub())))
+    resp = client2.get("/api/failures", headers=HEADERS)
+    assert resp.status_code == 200
+    assert [q["task_issue"] for q in resp.json()["quarantined"]] == [75]

@@ -12,7 +12,8 @@ export function useLiveConnected(): boolean {
 
 const CHANGED_TO_KEYS: Record<string, readonly (readonly string[])[]> = {
   board: [queryKeys.board, queryKeys.allTasks, queryKeys.pendingIntents],
-  queue: [queryKeys.queue],
+  // rank data now renders on the board; the server still emits 'queue'
+  queue: [queryKeys.board],
   budget: [queryKeys.budget],
   failures: [queryKeys.failures],
   history: [queryKeys.history],

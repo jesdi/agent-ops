@@ -2994,3 +2994,13 @@ def test_auth_dark_malformed_marker_is_repaired(tmp_path, monkeypatch):
     st = json.loads(dark_marker(c).read_text())
     assert st["alerted"] is False
     assert "auth_dark" not in d.notifier.sent
+
+
+def test_pass_writes_heartbeat(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    d = deps()
+    main.run_pass(c, d)
+    hb = json.loads((Path(c.state_dir) / "pass.json").read_text())
+    assert hb["interval_minutes"] == c.pass_interval_minutes
+    assert hb["started_at"] <= hb["finished_at"]

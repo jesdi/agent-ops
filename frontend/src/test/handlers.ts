@@ -3,7 +3,6 @@ import * as fx from './fixtures'
 
 export const defaultHandlers = [
   http.get('/api/board', () => HttpResponse.json(fx.board)),
-  http.get('/api/queue', () => HttpResponse.json(fx.queue)),
   http.get('/api/budget', () => HttpResponse.json(fx.budget)),
   http.get('/api/failures', () => HttpResponse.json(fx.failures)),
   http.get('/api/history', () => HttpResponse.json(fx.history)),

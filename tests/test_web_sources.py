@@ -5,7 +5,7 @@ import subprocess
 from dispatcher import eventlog, state
 from dispatcher.queue_ops import QueuePlan
 from tests.webfakes import make_config, make_target
-from web.sources import RANK_TTL_SECONDS, Sources
+from web.sources import DESCRIPTION_TTL_SECONDS, RANK_TTL_SECONDS, Sources
 
 
 class FakeGitHub:
@@ -14,6 +14,7 @@ class FakeGitHub:
         self.calls = 0
         self.fail = False
         self.states = {}        # (repo, number) -> "OPEN"/"CLOSED"/None
+        self.state_calls = []   # (repo, number) per issue_state call
         self.boosts = []
 
     def rank_rows(self, target):
@@ -23,6 +24,7 @@ class FakeGitHub:
         return self.rows.get(target.name, [])
 
     def issue_state(self, repo, number):
+        self.state_calls.append((repo, number))
         v = self.states.get((repo, number))
         if v is None:
             raise RuntimeError("gh failed")
@@ -160,6 +162,14 @@ def test_events_tail_via_real_eventlog(tmp_path):
     _, src = make_sources(tmp_path)
     tail = src.events_tail(10)
     assert tail[-1]["event"] == "claimed" and tail[-1]["issue"] == 7
+
+
+def test_events_tail_degrades_to_empty_on_corrupt_log(tmp_path):
+    """A torn or undecodable events.jsonl must not 500 /api/board or
+    /api/task/{issue}; degrade to [] so the board still renders."""
+    (tmp_path / "events.jsonl").write_bytes(b"\xff\xfe bad utf-8")
+    _, src = make_sources(tmp_path)
+    assert src.events_tail(100) == []
 
 
 def test_submit_intent_writes_file_and_kicks_dispatcher(tmp_path):
@@ -339,3 +349,179 @@ def test_pane_history_corrupt_snapshot_degrades_to_empty(tmp_path):
     snap.write_bytes(b"\x80\x81\x82")  # Invalid UTF-8 sequence
     _, src = make_sources(tmp_path)
     assert src.pane_history(7) == ""
+
+
+def test_pass_heartbeat_reads_and_degrades(tmp_path):
+    _, src = make_sources(tmp_path)
+    assert src.pass_heartbeat() is None
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "pass.json").write_text('{"interval_minutes": 10}')
+    assert src.pass_heartbeat() == {"interval_minutes": 10}
+    (src.state_dir / "pass.json").write_text("not json")
+    assert src.pass_heartbeat() is None
+
+
+def test_state_fingerprint_changes_when_pass_json_changes(tmp_path):
+    _, src = make_sources(tmp_path)
+    f1 = json.loads(src.state_fingerprint())
+    (tmp_path / "pass.json").write_text('{"interval_minutes": 10}')
+    f2 = json.loads(src.state_fingerprint())
+    assert f2["board"] != f1["board"]
+
+
+def test_triage_state_degrades_to_false(tmp_path, monkeypatch):
+    """Both triage flags degrade to False when the underlying call raises.
+    Monkeypatching forces the error path so the test does not depend on
+    whether the host has a tmux session named 'triage' or tmux installed."""
+    import dispatcher.triage as triage_mod
+    _, src = make_sources(tmp_path)
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("simulated triage read failure")
+
+    monkeypatch.setattr(triage_mod, "pending", boom)
+    monkeypatch.setattr(triage_mod, "running", boom)
+
+    assert src.triage_state() == (False, False)
+
+
+def test_triage_state_probes_tmux_once(tmp_path, monkeypatch):
+    """triage.pending() calls running() internally; composing the two signals
+    from one probe is the whole point (cf. dispatcher run_pass)."""
+    import dispatcher.triage as triage_mod
+    _, src = make_sources(tmp_path)
+    calls = []
+    monkeypatch.setattr(triage_mod, "running",
+                        lambda: (calls.append(1), False)[1])
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_request_file_pauses_claims(tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    _, src = make_sources(tmp_path)
+    monkeypatch.setattr(triage_mod, "running", lambda: False)
+    (tmp_path / triage_mod.REQUEST_FILE).write_text(
+        '{"requested_at": "2026-08-01T00:00:00+00:00"}')
+    assert src.triage_state() == (True, False)
+
+
+def test_triage_state_running_pauses_claims_too(tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    _, src = make_sources(tmp_path)
+    monkeypatch.setattr(triage_mod, "running", lambda: True)
+    assert src.triage_state() == (True, True)
+
+
+def _quarantine(tmp_path, name, **rec):
+    d = tmp_path / "quarantine"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(json.dumps(rec))
+
+
+def test_issue_description_caches_and_degrades(tmp_path):
+    calls = []
+
+    class FakeGH:
+        def issue_view(self, repo, number):
+            calls.append((repo, number))
+            if len(calls) > 1:
+                raise RuntimeError("gh down")
+            return {"title": "T", "body": "B", "url": "u"}
+
+    clock = [1000.0]
+    _, src = make_sources(tmp_path, github=FakeGH(), clock=lambda: clock[0])
+    d = src.issue_description("jesdi/alpha", 73)
+    assert (d["title"], d["error"]) == ("T", "")
+    # within TTL: served from cache, no second gh call
+    clock[0] += 100
+    assert src.issue_description("jesdi/alpha", 73)["title"] == "T"
+    assert len(calls) == 1
+    # past TTL with gh down: stale cache beats an error
+    clock[0] += 400
+    d = src.issue_description("jesdi/alpha", 73)
+    assert d["title"] == "T" and d["error"] == ""
+    # cold cache with gh down: explicit error, never a raise
+    d = src.issue_description("jesdi/alpha", 99)
+    assert d["title"] == "" and d["error"] != ""
+
+
+def test_issue_description_non_dict_payload_degrades(tmp_path):
+    """issue_view returning None or a list (valid JSON but not a dict) must
+    not escape the try block and 500 the route — it must land in the explicit-
+    error path exactly as a fetch exception would."""
+    clock = [1000.0]
+
+    class ReturnNone:
+        def issue_view(self, repo, number):
+            return None
+
+    class ReturnList:
+        def issue_view(self, repo, number):
+            return [{"title": "oops"}]
+
+    _, src_none = make_sources(tmp_path, github=ReturnNone(),
+                               clock=lambda: clock[0])
+    d = src_none.issue_description("jesdi/alpha", 73)
+    assert d["title"] == "" and d["error"] != ""
+
+    _, src_list = make_sources(tmp_path, github=ReturnList(),
+                               clock=lambda: clock[0])
+    d = src_list.issue_description("jesdi/alpha", 73)
+    assert d["title"] == "" and d["error"] != ""
+
+
+def test_issue_description_cache_key_includes_repo(tmp_path):
+    """Cache key must include BOTH repo and number — (repo, number) not just
+    number — so alpha#73 and beta#73 are cached independently."""
+    clock = [1000.0]
+    calls = []
+
+    class FakeGH:
+        def issue_view(self, repo, number):
+            calls.append((repo, number))
+            return {"title": f"T-{repo}", "body": "", "url": ""}
+
+    _, src = make_sources(tmp_path, github=FakeGH(), clock=lambda: clock[0])
+    d_alpha = src.issue_description("jesdi/alpha", 73)
+    d_beta = src.issue_description("jesdi/beta", 73)
+    # Both should have been fetched (two separate gh calls)
+    assert len(calls) == 2
+    # Titles must reflect the correct repo, not bleed from one cache to another
+    assert d_alpha["title"] == "T-jesdi/alpha"
+    assert d_beta["title"] == "T-jesdi/beta"
+    # Within TTL: served from their respective caches (no new calls)
+    clock[0] += 100
+    src.issue_description("jesdi/alpha", 73)
+    src.issue_description("jesdi/beta", 73)
+    assert len(calls) == 2
+
+
+def test_quarantine_entries_skip_an_unreadable_record(tmp_path):
+    """A torn write_text leaves invalid UTF-8, whose read_text raises
+    UnicodeDecodeError — a ValueError, NOT an OSError. The old
+    (JSONDecodeError, OSError) guard missed it and 500'd the route. Valid
+    JSON that is not an object (null, a list) has the same effect via
+    rec.get -> AttributeError. Neither may raise, and neither may reach
+    /api/failures: with no readable body every field would be blank and the
+    row would be indistinguishable from a real entry."""
+    _, src = make_sources(tmp_path)
+    d = tmp_path / "quarantine"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "alpha-73.json").write_bytes(b'{"blocker_issue": \xff\xfe}')
+    (d / "alpha-74.json").write_text("null")
+    (d / "alpha-75.json").write_text("[1, 2]")
+    _quarantine(tmp_path, "alpha-76.json", task_issue=76, blocker_repo="r",
+                blocker_issue=1, fingerprint="f", created_at="c")
+    assert [e["task_issue"] for e in src.quarantine_entries()] == [76]
+
+
+def test_quarantine_key_comes_from_the_filename_not_the_body(tmp_path):
+    """check_quarantine — and the retry route that validates against these
+    entries — looks a record up by FILENAME. A body whose task_issue
+    disagrees must not shift the key."""
+    _, src = make_sources(tmp_path)
+    _quarantine(tmp_path, "alpha-73.json", task_issue=999, blocker_repo="r",
+                blocker_issue=1, fingerprint="f", created_at="c")
+    entry, = src.quarantine_entries()
+    assert (entry["target"], entry["task_issue"]) == ("alpha", 73)

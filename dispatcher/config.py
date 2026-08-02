@@ -52,6 +52,10 @@ class Config:
     # item, event log) outlives the card.
     done_retention_days: int = 7
     triage_model: str = ""  # "" = use models.default for triage sessions
+    # Minutes between dispatcher passes. Paired with OnUnitActiveSec in
+    # provision/agent-ops-dispatcher.timer — change both together; the web
+    # console's next-pass countdown is computed from this value.
+    pass_interval_minutes: int = 10
 
 
 def _target(raw: dict) -> Target:
@@ -84,6 +88,7 @@ def load_config(path: str | Path) -> Config:
         spec_review_grace_minutes=int(raw.get("spec_review_grace_minutes", 15)),
         done_retention_days=int(raw.get("done_retention_days", 7)),
         triage_model=str(raw.get("triage_model", "")),
+        pass_interval_minutes=int(raw.get("pass_interval_minutes", 10)),
     )
 
 

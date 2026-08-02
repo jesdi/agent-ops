@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -40,6 +41,7 @@ class SPAStaticFiles(StaticFiles):
 
 SSE_KEYS = ("board", "queue", "budget", "failures", "history")
 HEARTBEAT_SECONDS = 15.0
+EVENTS_SCAN_LIMIT = 5000
 
 
 class BoostReq(BaseModel):
@@ -84,11 +86,26 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         tasks = sources.tasks()
+        claims_paused, triage_running = sources.triage_state()
+        queues, stale_any = [], False
+        for target in cfg.targets:
+            rows, _as_of, stale = sources.rank_rows(target)
+            stale_any = stale_any or stale
+            queues.append((target.name, rows))
         return read_model.build_board(
             tasks, capacity=cfg.capacity,
             models={t.issue: _model_for(t) for t in tasks},
             attached={t.issue for t in tasks
-                      if sources.has_attached(t.issue)})
+                      if sources.has_attached(t.issue)},
+            events=sources.events_tail(EVENTS_SCAN_LIMIT),
+            heartbeat=sources.pass_heartbeat(),
+            now=datetime.now(timezone.utc),
+            budget=read_model.budget_view(
+                sources.usage(), cfg.budget_threshold, cfg.racing_minutes,
+                cfg.racing_threshold),
+            queues=queues, queue_stale=stale_any,
+            # One tmux probe for both signals (cf. dispatcher run_pass).
+            claims_paused=claims_paused, triage_running=triage_running)
 
     @app.get("/api/task/{issue}", response_model=read_model.TaskDetail)
     def task_detail(issue: int,
@@ -101,7 +118,39 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             t, model=_model_for(t),
             attached=sources.has_attached(issue),
             pane_tail=sources.pane_tail(issue),
-            session_alive=sources.session_alive(issue))
+            session_alive=sources.session_alive(issue),
+            events=sources.events_tail(EVENTS_SCAN_LIMIT),
+            now=datetime.now(timezone.utc))
+
+    @app.get("/api/task/{issue}/description",
+             response_model=read_model.IssueDescription)
+    def task_description(issue: int,
+                         op: Operator = Depends(current_operator)):
+        # Claimed task -> its target's repo; otherwise a ghost: any target
+        # whose queue lists the issue. Neither -> a true 404.
+        repo = ""
+        for t in sources.tasks():
+            if t.issue == issue:
+                target = targets_by_name.get(t.target)
+                repo = target.repo if target else ""
+                break
+        if not repo:
+            # Every target whose queue lists the number, not the first: issue
+            # numbers are per-repo, so serving hit #1 could hand back the wrong
+            # repo's body. Ambiguity is reported as such — same 409 contract as
+            # _locate_row — rather than silently picked.
+            hits = [target.repo for target in cfg.targets
+                    if any(r["number"] == issue
+                           for r in sources.rank_rows(target)[0])]
+            if len(hits) > 1:
+                raise HTTPException(
+                    409, f"issue {issue} is ambiguous across targets")
+            repo = hits[0] if hits else ""
+        if not repo:
+            raise HTTPException(404, f"issue {issue} is neither a task "
+                                     "nor on any queue")
+        return read_model.IssueDescription(
+            **sources.issue_description(repo, issue))
 
     @app.get("/api/task/{issue}/spec", response_model=read_model.SpecView)
     def task_spec(issue: int,
@@ -148,8 +197,11 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def failures(op: Operator = Depends(current_operator)):
         quarantined = [
             read_model.QuarantineEntry(
-                **q, blocker_open=sources.issue_open(
-                    q["blocker_repo"], q["blocker_issue"]))
+                # A record with no blocker has nothing to look up: asking gh
+                # about issue 0 costs a 120 s subprocess to learn nothing.
+                **q, blocker_open=(sources.issue_open(q["blocker_repo"],
+                                                      q["blocker_issue"])
+                                   if q["blocker_issue"] else None))
             for q in sources.quarantine_entries()]
         fingerprints = [read_model.FingerprintEntry(**f)
                         for f in sources.fingerprint_entries()]

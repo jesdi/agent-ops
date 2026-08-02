@@ -37,6 +37,7 @@ class FakeSources:
     def __init__(self):
         self.tasks_list = []
         self.rank = {}            # target name -> (rows, as_of, stale)
+        self.descriptions = {}    # (repo, number) -> dict
         self.snapshot = UsageSnapshot(0.5, 120.0, "oauth")
         self.quarantine = []
         self.fingerprints = []
@@ -53,6 +54,9 @@ class FakeSources:
         self.appended = []        # (event, target, issue, actor, detail)
         self.fingerprint = ('{"board": "a", "budget": "a", "failures": "a",'
                             ' "history": "0", "queue": "a"}')
+        self.heartbeat = None     # dict | None returned by pass_heartbeat()
+        self._claims_paused = False
+        self._triage_running = False
 
     def tasks(self):
         return list(self.tasks_list)
@@ -72,6 +76,12 @@ class FakeSources:
 
     def issue_open(self, repo, number):
         return self.open_issues.get((repo, number))
+
+    def pass_heartbeat(self):
+        return self.heartbeat
+
+    def triage_state(self):
+        return self._claims_paused, self._triage_running
 
     def events_tail(self, limit):
         return self.events[-limit:]
@@ -111,3 +121,9 @@ class FakeSources:
 
     def has_attached(self, issue):
         return issue in self.attached
+
+    def issue_description(self, repo, number):
+        return self.descriptions.get(
+            (repo, number),
+            {"title": "", "body": "", "url": "", "fetched_at": "",
+             "error": "not seeded"})

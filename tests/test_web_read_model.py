@@ -70,7 +70,10 @@ def test_login_park_card_shows_its_park_kind_in_the_parked_column():
 def test_login_park_counts_towards_active_capacity():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0, park=PARK_LOGIN),
              make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
-    board = build_board(tasks, capacity=2, models={}, attached=set())
+    board = build_board(tasks, capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     assert board.capacity.active == 1   # matches dispatcher.state.active()
     assert board.capacity.slots_used == 2
 
@@ -82,7 +85,10 @@ def test_build_board_groups_and_counts():
         make_task(issue=3, stage=Stage.PR_OPEN, slot=0),
     ]
     board = build_board(tasks, capacity=2,
-                        models={1: "a", 2: "b", 3: "c"}, attached={1})
+                        models={1: "a", 2: "b", 3: "c"}, attached={1},
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     by_key = {c.key: c for c in board.columns}
     assert [c.issue for c in by_key["in-progress"].cards] == [1]
     assert [c.issue for c in by_key["parked"].cards] == [2]
@@ -97,7 +103,10 @@ def test_build_board_groups_and_counts():
 
 
 def test_board_column_order_is_stable():
-    board = build_board([], capacity=2, models={}, attached=set())
+    board = build_board([], capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     assert [c.key for c in board.columns] == [
         "queued", "in-progress", "needs-review", "pr-open", "done", "parked",
         "awaiting-ci", "resuming", "stalled", "failed"]
@@ -133,7 +142,10 @@ def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
              make_task(issue=2, stage=Stage.AWAITING_SPEC_REVIEW,
                        slot=NO_SLOT, park=PARK_REVIEW)]
-    board = build_board(tasks, capacity=2, models={}, attached=set())
+    board = build_board(tasks, capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     assert board.capacity.active == 1
     assert board.capacity.slots_used == 1   # not 2 — #2 gave its slot back
 
@@ -176,8 +188,385 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
         make_task(issue=6, stage=Stage.FAILED),
         make_task(issue=7, stage=Stage.QUEUED),
     ]
-    board = build_board(tasks, capacity=3, models={}, attached=set())
+    board = build_board(tasks, capacity=3, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
     flagged = [c for col in board.columns for c in col.cards
                if c.consuming_capacity]
     assert len(flagged) == board.capacity.active
     assert sorted(c.issue for c in flagged) == [1, 2, 7]
+
+
+from datetime import datetime
+
+from web.read_model import (claimed_at, claimed_at_index, cycle_seconds,
+                            median_cycle_seconds, stage_timeline)
+
+
+def ev(ts, event, issue, stage="", detail=""):
+    return {"ts": ts, "event": event, "target": "alpha", "issue": issue,
+            "stage": stage, "model": "", "actor": "dispatcher",
+            "detail": detail}
+
+
+T0 = "2026-08-01T10:00:00+00:00"
+T1 = "2026-08-01T10:40:00+00:00"   # +40m
+T2 = "2026-08-01T11:00:00+00:00"   # +1h
+T3 = "2026-08-01T12:00:00+00:00"   # +2h
+NOW = datetime.fromisoformat("2026-08-01T12:30:00+00:00")
+
+
+def test_claimed_at_index_first_wins_and_ignores_other_events():
+    events = [ev(T0, "claimed", 7), ev(T1, "stage-started", 7, "spec"),
+              ev(T2, "claimed", 7), ev(T1, "claimed", 8)]
+    assert claimed_at_index(events) == {("alpha", 7): T0, ("alpha", 8): T1}
+
+
+def test_claimed_at_index_separates_targets():
+    """A merged alpha#73 from weeks ago must not win setdefault over a
+    freshly claimed beta#73 — issue numbers are per-repo."""
+    events = [ev(T0, "claimed", 73),
+              {**ev(T2, "claimed", 73), "target": "beta"}]
+    idx = claimed_at_index(events)
+    assert claimed_at(idx, "alpha", 73) == T0
+    assert claimed_at(idx, "beta", 73) == T2
+
+
+def test_claimed_at_falls_back_to_untargeted_legacy_lines():
+    """Log lines written before events carried `target` are still read for
+    whatever target asks — the pre-fix behaviour, preserved."""
+    idx = claimed_at_index([{**ev(T0, "claimed", 7), "target": ""}])
+    assert claimed_at(idx, "alpha", 7) == T0
+    assert claimed_at(idx, "beta", 7) == T0
+    assert claimed_at({}, "alpha", 7) == ""
+
+
+def test_median_cycle_attributes_durations_per_target():
+    """alpha#73 claimed long ago + beta#73 claimed recently: beta's cycle must
+    be measured from beta's own claim, not alpha's."""
+    events = [ev("2026-07-01T00:00:00+00:00", "claimed", 73),  # alpha, old
+              {**ev(T0, "claimed", 73), "target": "beta"},
+              {**ev(T1, "merged", 73), "target": "beta"}]
+    assert median_cycle_seconds(events) == 2400.0  # 40m, not 31 days
+
+
+def test_cycle_seconds_valid_invalid_negative():
+    assert cycle_seconds(T0, T3) == 7200.0
+    assert cycle_seconds("", T3) is None
+    assert cycle_seconds(T0, "not-a-date") is None
+    assert cycle_seconds(T3, T0) is None  # clock skew: no negative durations
+
+
+def test_cycle_seconds_mixed_awareness_returns_none():
+    # naive vs aware: zone unknown, so duration is unknowable — must not raise
+    assert cycle_seconds("2026-08-01T10:00:00", "2026-08-01T12:00:00+00:00") is None
+    assert cycle_seconds("2026-08-01T12:00:00+00:00", "2026-08-01T10:00:00") is None
+
+
+def test_median_cycle_window_uses_last_20_not_all():
+    # Build 22 completed pairs: issues 1-22, durations 1h..22h.
+    # Last 20 are issues 3-22 (durations 3h..22h, i.e. 10800..79200 seconds).
+    # Median of last 20 (sorted): indices 9 and 10 → (12*3600 + 13*3600) / 2
+    # = (43200 + 46800) / 2 = 45000.0.
+    # Median of all 22 would be (11*3600 + 12*3600) / 2 = 41400.0 — different.
+    events = []
+    for i in range(1, 23):
+        claim_ts = "2026-08-01T00:00:00+00:00"
+        merge_ts = f"2026-08-01T{i:02d}:00:00+00:00"
+        events.append(ev(claim_ts, "claimed", i))
+        events.append(ev(merge_ts, "merged", i))
+    result = median_cycle_seconds(events, last=20)
+    assert result == (12 * 3600 + 13 * 3600) / 2  # 45000.0
+
+
+def test_median_cycle_over_merges_skipping_rotated_claims():
+    events = [ev(T0, "claimed", 1), ev(T1, "merged", 1),      # 40m
+              ev(T0, "claimed", 2), ev(T3, "merged", 2),      # 2h
+              ev(T2, "merged", 3)]                             # claim rotated away
+    assert median_cycle_seconds(events) == (2400.0 + 7200.0) / 2
+
+
+def test_median_none_when_no_complete_pairs():
+    assert median_cycle_seconds([ev(T0, "claimed", 1)]) is None
+    assert median_cycle_seconds([]) is None
+
+
+def test_stage_timeline_stages_parks_and_merge():
+    events = [ev(T0, "claimed", 7),
+              ev(T0, "stage-started", 7, "spec"),   # 0s queued segment dropped
+              ev(T1, "parked", 7, "spec"),          # spec 40m
+              ev(T2, "resumed", 7, "spec"),         # parked 20m
+              ev(T3, "merged", 7)]                  # spec (resumed) 1h
+    tl = stage_timeline(events, 7, now=NOW)
+    assert [(e.label, e.seconds, e.kind, e.ongoing) for e in tl] == [
+        ("spec", 2400.0, "stage", False),
+        ("parked", 1200.0, "parked", False),
+        ("spec", 3600.0, "stage", False)]
+
+
+def test_stage_timeline_open_segment_is_ongoing_and_other_issues_ignored():
+    events = [ev(T0, "claimed", 7), ev(T0, "stage-started", 7, "implement"),
+              ev(T1, "stage-started", 9, "spec")]
+    tl = stage_timeline(events, 7, now=NOW)
+    assert [(e.label, e.kind, e.ongoing) for e in tl] == [
+        ("implement", "stage", True)]
+    assert tl[0].seconds == 9000.0  # T0 -> NOW
+
+
+def test_stage_timeline_empty_for_unknown_or_rotated_issue():
+    assert stage_timeline([], 7, now=NOW) == []
+
+
+def test_stage_timeline_drops_segments_with_mixed_awareness():
+    """A naive `ts` next to an aware `now` used to raise TypeError out of
+    (end - start) and 500 /api/task/{issue}. The segment whose endpoints
+    cannot be compared is DROPPED (never coerced into a guessed zone); the
+    comparable segments around it survive."""
+    events = [ev(T0, "claimed", 7),
+              ev(T1, "stage-started", 7, "spec"),            # aware, 40m
+              ev("2026-08-01T11:00:00", "parked", 7, "spec"),  # NAIVE
+              ev(T3, "resumed", 7, "spec")]                  # aware
+    tl = stage_timeline(events, 7, now=NOW)
+    # spec (T0->T1 via claimed->stage-started is queued 40m), then the two
+    # segments touching the naive timestamp vanish, then the open tail.
+    labels = [(e.label, e.ongoing) for e in tl]
+    assert ("parked", False) not in labels          # naive->aware dropped
+    assert labels[0] == ("queued", False)           # aware->aware kept
+    assert labels[-1] == ("spec", True)             # open tail still ongoing
+    assert all(e.seconds >= 1 for e in tl)
+
+
+def test_stage_timeline_all_naive_still_works():
+    """Naive-only logs are internally consistent: durations are computable
+    and must not be dropped just because `now` is aware elsewhere."""
+    events = [{**ev("2026-08-01T10:00:00", "claimed", 7)},
+              {**ev("2026-08-01T10:40:00", "stage-started", 7, "spec")}]
+    tl = stage_timeline(events, 7,
+                        now=datetime.fromisoformat("2026-08-01T11:00:00"))
+    assert [(e.label, e.seconds) for e in tl] == [("queued", 2400.0),
+                                                  ("spec", 1200.0)]
+
+
+from web.read_model import BudgetView, next_claim
+
+HB = {"started_at": "2026-08-01T12:25:00+00:00",
+      "finished_at": "2026-08-01T12:26:00+00:00", "interval_minutes": 10}
+BUDGET_OK = BudgetView(utilization=0.5, minutes_to_reset=120, source="oauth",
+                       would_spawn=True, threshold_applied="base")
+BUDGET_NO = BudgetView(utilization=0.95, minutes_to_reset=130, source="oauth",
+                       would_spawn=False, threshold_applied="base")
+
+
+def row(number, status="Ready", blocked=False, labels=("auto",)):
+    return {"number": number, "status": status, "blocked": blocked,
+            "labels": list(labels), "title": f"t{number}",
+            "url": f"https://x/{number}", "boost": 0, "score": 1.0}
+
+
+def test_next_claim_unknown_when_heartbeat_missing_or_stale():
+    v = next_claim(None, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                   queues=[("alpha", [row(1)])])
+    assert (v.verdict, v.next_pass_eta) == ("unknown", "")
+    stale = dict(HB, finished_at="2026-08-01T12:09:59+00:00")  # >2x10m before NOW
+    assert next_claim(stale, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                      queues=[]).verdict == "unknown"
+    # exactly at the boundary (20m old) is still fresh
+    edge = dict(HB, finished_at="2026-08-01T12:10:00+00:00")
+    assert next_claim(edge, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                      queues=[]).verdict == "no-candidates"
+    assert next_claim({"garbage": True}, now=NOW, tasks=[], capacity=2,
+                      budget=BUDGET_OK, queues=[]).verdict == "unknown"
+
+
+def test_next_claim_will_claim_head_of_queue():
+    v = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                   queues=[("alpha", [row(70, status="In progress"),
+                                      row(71, blocked=True),
+                                      row(72, labels=()),
+                                      row(73)])])
+    assert v.verdict == "will-claim"
+    assert (v.next_issue, v.next_target) == (73, "alpha")
+    assert v.next_pass_eta == "2026-08-01T12:36:00+00:00"  # finished + 10m
+
+
+def test_next_claim_skips_already_claimed_issues():
+    v = next_claim(HB, now=NOW, tasks=[make_task(issue=73)], capacity=2,
+                   budget=BUDGET_OK, queues=[("alpha", [row(73), row(74)])])
+    assert (v.verdict, v.next_issue) == ("will-claim", 74)
+
+
+def test_next_claim_budget_blocked_beats_everything_else():
+    v = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_NO,
+                   queues=[("alpha", [row(73)])])
+    assert (v.verdict, v.minutes_to_reset) == ("budget-blocked", 130)
+    assert v.next_pass_eta == "2026-08-01T12:36:00+00:00"  # ETA set on non-unknown verdicts
+
+
+def test_next_claim_capacity_full_and_no_candidates():
+    busy = [make_task(issue=i) for i in (1, 2)]  # IMPLEMENT: active, unparked
+    assert next_claim(HB, now=NOW, tasks=busy, capacity=2, budget=BUDGET_OK,
+                      queues=[("alpha", [row(73)])]).verdict == "capacity-full"
+    assert next_claim(HB, now=NOW, tasks=busy, capacity=2, budget=BUDGET_OK,
+                      queues=[("alpha", [])]).verdict == "no-candidates"
+
+
+def test_next_claim_unknown_on_bad_interval():
+    assert next_claim(dict(HB, interval_minutes="ten"), now=NOW, tasks=[],
+                      capacity=2, budget=BUDGET_OK, queues=[]).verdict == "unknown"
+    assert next_claim(dict(HB, interval_minutes=[]), now=NOW, tasks=[],
+                      capacity=2, budget=BUDGET_OK, queues=[]).verdict == "unknown"
+    # naive finished_at with aware now raises TypeError on subtraction
+    naive_hb = dict(HB, finished_at="2026-08-01T12:26:00")
+    assert next_claim(naive_hb, now=NOW, tasks=[],
+                      capacity=2, budget=BUDGET_OK, queues=[]).verdict == "unknown"
+
+
+def test_next_claim_per_target_capacity_filter():
+    # alpha is capacity-full (2 active tasks, capacity=2) but has a candidate;
+    # beta has one active task and one slot free with a candidate.
+    # Collapsing `mine = tasks` would wrongly count 3 active units for beta and
+    # produce capacity-full instead of will-claim.
+    alpha_tasks = [make_task(issue=1, target="alpha"),
+                   make_task(issue=2, target="alpha")]
+    beta_tasks = [make_task(issue=3, target="beta")]
+    v = next_claim(HB, now=NOW, tasks=alpha_tasks + beta_tasks, capacity=2,
+                   budget=BUDGET_OK,
+                   queues=[("alpha", [row(10)]), ("beta", [row(20)])])
+    assert v.verdict == "will-claim"
+    assert v.next_target == "beta"
+    assert v.next_issue == 20
+
+
+def test_next_claim_claims_paused():
+    # claims-paused fires even when the queue has a will-claim candidate
+    v = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                   queues=[("alpha", [row(73)])], claims_paused=True)
+    assert v.verdict == "claims-paused"
+    assert v.next_pass_eta != ""
+    # claims-paused wins over budget-blocked: both conditions skip claiming,
+    # but triage pause is the more actionable operator signal
+    v2 = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_NO,
+                    queues=[("alpha", [row(73)])], claims_paused=True)
+    assert v2.verdict == "claims-paused"
+
+
+def test_next_claim_triage_running_reduces_effective_capacity():
+    # Without triage: capacity=1, no active tasks → will-claim normally
+    assert next_claim(HB, now=NOW, tasks=[], capacity=1, budget=BUDGET_OK,
+                      queues=[("alpha", [row(10)])]).verdict == "will-claim"
+    # With triage: capacity=1, no active tasks → effective=0 → capacity-full
+    v = next_claim(HB, now=NOW, tasks=[], capacity=1, budget=BUDGET_OK,
+                   queues=[("alpha", [row(10)])], triage_running=True)
+    assert v.verdict == "capacity-full"
+    # With triage: capacity=2, no active tasks → effective=1 > 0 → still claims
+    v2 = next_claim(HB, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                    queues=[("alpha", [row(10)])], triage_running=True)
+    assert v2.verdict == "will-claim"
+
+
+def test_next_claim_unknown_wins_over_new_gates():
+    # unknown (missing heartbeat) overrides both new gates
+    assert next_claim(None, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                      queues=[("alpha", [row(1)])],
+                      claims_paused=True, triage_running=True).verdict == "unknown"
+    # unknown (stale heartbeat) also overrides
+    stale = dict(HB, finished_at="2026-08-01T12:09:59+00:00")
+    assert next_claim(stale, now=NOW, tasks=[], capacity=2, budget=BUDGET_OK,
+                      queues=[("alpha", [row(1)])],
+                      claims_paused=True, triage_running=True).verdict == "unknown"
+
+
+def test_build_board_merges_ghosts_next_claim_and_durations():
+    tasks = [make_task(issue=7, stage=Stage.IMPLEMENT),
+             make_task(issue=9, stage=Stage.DONE, slot=-1,
+                       done_at="2026-08-01T12:00:00+00:00")]
+    events = [ev(T0, "claimed", 7), ev(T0, "claimed", 9),
+              ev("2026-08-01T12:00:00+00:00", "merged", 9)]
+    board = build_board(
+        tasks, capacity=2, models={7: "opus", 9: "opus"}, attached=set(),
+        events=events, heartbeat=HB, now=NOW, budget=BUDGET_OK,
+        queues=[("alpha", [row(7), row(73), row(74, blocked=True)])],
+        queue_stale=False, claims_paused=False, triage_running=False)
+    # ghosts: candidates only, minus in-flight; rank order preserved
+    assert [g.number for g in board.upcoming] == [73]
+    assert board.upcoming[0].target == "alpha"
+    assert board.next_claim.verdict == "will-claim"
+    assert board.next_claim.next_issue == 73
+    assert board.median_cycle_seconds == 7200.0
+    assert board.upcoming_stale is False
+    cards = {c.issue: c for col in board.columns for c in col.cards}
+    assert cards[7].claimed_at == T0 and cards[7].cycle_seconds is None
+    assert cards[9].cycle_seconds == 7200.0
+
+
+def test_build_board_degrades_without_events_or_heartbeat():
+    board = build_board(
+        [make_task(issue=7)], capacity=2, models={}, attached=set(),
+        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+        queues=[("alpha", [])], queue_stale=True,
+        claims_paused=False, triage_running=False)
+    assert board.next_claim.verdict == "unknown"
+    assert board.median_cycle_seconds is None
+    assert board.upcoming == [] and board.upcoming_stale is True
+    card = board.columns[1].cards[0]  # in-progress
+    assert card.claimed_at == "" and card.cycle_seconds is None
+
+
+# ---- cross-target issue-number collision tests ----------------------------
+
+def test_build_board_cross_target_ghost_not_suppressed():
+    """alpha#73 in-flight must NOT hide beta#73 ghost — issue numbers are
+    per-repo. Old bare-number `known` would suppress the beta ghost; this
+    test fails against that code and passes after the (target, issue) fix."""
+    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    queues = [
+        ("alpha", [row(73)]),   # alpha#73 already in-flight — no ghost
+        ("beta",  [row(73)]),   # beta#73 is a different issue — should ghost
+    ]
+    board = build_board(
+        tasks, capacity=4, models={}, attached=set(),
+        events=[], heartbeat=HB, now=NOW, budget=BUDGET_OK,
+        queues=queues, queue_stale=False,
+        claims_paused=False, triage_running=False)
+    ghost_targets = [(g.number, g.target) for g in board.upcoming]
+    assert (73, "beta") in ghost_targets, \
+        "beta#73 ghost missing — known set wrongly keyed on bare issue number"
+    assert (73, "alpha") not in ghost_targets, \
+        "alpha#73 ghost present — in-flight task not excluded on same target"
+
+
+def test_build_board_same_target_still_excluded():
+    """alpha#73 in-flight must still NOT appear as an alpha ghost (regression
+    guard: the fix must not accidentally stop excluding same-target issues)."""
+    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    board = build_board(
+        tasks, capacity=4, models={}, attached=set(),
+        events=[], heartbeat=HB, now=NOW, budget=BUDGET_OK,
+        queues=[("alpha", [row(73), row(74)])], queue_stale=False,
+        claims_paused=False, triage_running=False)
+    assert [g.number for g in board.upcoming] == [74]
+
+
+def test_next_claim_cross_target_not_suppressed():
+    """alpha#73 in-flight must NOT prevent beta#73 from being the will-claim
+    head. Old bare-number `known` skips beta#73; this test fails against that
+    code and passes after the (target, issue) fix."""
+    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    queues = [
+        ("alpha", []),        # alpha has no additional candidates
+        ("beta",  [row(73)]), # beta#73 should be claimable
+    ]
+    v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, budget=BUDGET_OK,
+                   queues=queues, claims_paused=False, triage_running=False)
+    assert v.verdict == "will-claim"
+    assert v.next_target == "beta" and v.next_issue == 73
+
+
+def test_next_claim_same_target_still_skipped():
+    """alpha#73 in-flight must still be skipped on alpha's own queue."""
+    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    queues = [("alpha", [row(73), row(74)])]
+    v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, budget=BUDGET_OK,
+                   queues=queues, claims_paused=False, triage_running=False)
+    assert v.verdict == "will-claim" and v.next_issue == 74
