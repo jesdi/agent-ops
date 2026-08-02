@@ -56,3 +56,14 @@ test('empty body renders the no-description fallback, not a blank panel', async 
   // ReactMarkdown renders _no description_ as <em>no description</em>
   expect(await screen.findByText(/no description/)).toBeInTheDocument()
 })
+
+test('an ambiguous issue number degrades to explicit unavailable text', async () => {
+  // The description route now answers 409 when the same number sits on two
+  // targets' queues, rather than serving the first repo's body. The panel
+  // must say so rather than render a blank or a wrong description.
+  server.use(http.get('/api/task/73/description', () =>
+    HttpResponse.json({ detail: 'issue 73 is ambiguous across targets' },
+      { status: 409 })))
+  renderWithProviders(<DescriptionPanel issue={73} defaultOpen />)
+  expect(await screen.findByText(/description unavailable/)).toBeInTheDocument()
+})
