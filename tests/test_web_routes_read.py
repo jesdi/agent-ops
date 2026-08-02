@@ -367,3 +367,29 @@ def test_description_refuses_a_number_on_two_queues(tmp_path):
     fake.rank["beta"] = (r73, "2026-08-01T12:00:00+00:00", False)
     resp = client.get("/api/task/73/description", headers=HEADERS)
     assert resp.status_code == 409 and "ambiguous" in resp.json()["detail"]
+
+
+def test_board_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
+    """A torn quarantine record (invalid UTF-8 -> UnicodeDecodeError, a
+    ValueError not an OSError) must not 500 /api/board. Real Sources so the
+    guard in sources.py is what is exercised, mirroring the corrupt-events
+    test above."""
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    (tmp_path / "quarantine").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "quarantine" / "alpha-73.json").write_bytes(b"\xff\xfe torn")
+    (tmp_path / "quarantine" / "alpha-74.json").write_text("null")
+
+    class _NullGitHub:
+        def rank_rows(self, _): return []
+
+    class _NullSessions:
+        def is_alive(self, _): return False
+
+    client2 = TestClient(create_app(cfg, Sources(cfg, _NullSessions(),
+                                                 _NullGitHub())))
+    assert client2.get("/api/board", headers=HEADERS).status_code == 200
+    # /api/failures reads the same records and must survive them too.
+    resp = client2.get("/api/failures", headers=HEADERS)
+    assert resp.status_code == 200
+    assert [q["task_issue"] for q in resp.json()["quarantined"]] == [73, 74]

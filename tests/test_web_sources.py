@@ -545,3 +545,96 @@ def test_issue_description_cache_key_includes_repo(tmp_path):
     src.issue_description("jesdi/alpha", 73)
     src.issue_description("jesdi/beta", 73)
     assert len(calls) == 2
+
+
+def test_quarantine_entries_survive_a_torn_record(tmp_path):
+    """A torn write_text leaves invalid UTF-8, whose read_text raises
+    UnicodeDecodeError — a ValueError, NOT an OSError. The old
+    (JSONDecodeError, OSError) guard missed it and 500'd /api/board. Valid
+    JSON that is not an object (null, a list) has the same effect via
+    rec.get -> AttributeError. Both stay BLOCKED, as check_quarantine treats
+    an unreadable record."""
+    _, src = make_sources(tmp_path)
+    d = tmp_path / "quarantine"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "alpha-73.json").write_bytes(b'{"blocker_issue": \xff\xfe}')
+    (d / "alpha-74.json").write_text("null")
+    (d / "alpha-75.json").write_text("[1, 2]")
+    entries = {e["task_issue"]: e for e in src.quarantine_entries()}
+    assert sorted(entries) == [73, 74, 75]
+    assert all(e["readable"] is False for e in entries.values())
+    assert src.quarantined() == frozenset(
+        {("alpha", 73), ("alpha", 74), ("alpha", 75)})
+
+
+def test_quarantine_key_comes_from_the_filename_not_the_body(tmp_path):
+    """check_quarantine looks a record up by FILENAME. A body that disagrees
+    must not shift the key, or the board would hide a candidate keyed
+    {target}-{issue} that the dispatcher would happily claim."""
+    gh = FakeGitHub()
+    _, src = make_sources(tmp_path, github=gh)
+    _quarantine(tmp_path, "alpha-73.json", task_issue=999, blocker_repo="r",
+                blocker_issue=1, fingerprint="f", created_at="c")
+    gh.states = {("r", 1): "OPEN"}
+    assert src.quarantined() == frozenset({("alpha", 73)})
+
+
+def test_quarantined_bounds_the_board_against_a_slow_gh(tmp_path,
+                                                        monkeypatch):
+    """`gh issue view` runs with timeout=120: N records must NOT serialise
+    into N x 120 s on the hottest route. The call is capped per request and
+    the wait is capped in total, so the board answers regardless."""
+    import time as time_mod
+    from web import sources as sources_mod
+    monkeypatch.setattr(sources_mod, "QUARANTINE_WAIT_SECONDS", 0.2)
+
+    class SlowGitHub(FakeGitHub):
+        def issue_state(self, repo, number):
+            self.state_calls.append((repo, number))
+            time_mod.sleep(5)  # stands in for a wedged gh
+            return "CLOSED"
+
+    gh = SlowGitHub()
+    _, src = make_sources(tmp_path, github=gh)
+    for n in range(70, 80):  # 10 records, well over the probe cap
+        _quarantine(tmp_path, f"alpha-{n}.json", task_issue=n,
+                    blocker_repo="r", blocker_issue=n, fingerprint="f",
+                    created_at="c")
+    started = time_mod.monotonic()
+    blocked = src.quarantined()
+    elapsed = time_mod.monotonic() - started
+    # Bounded latency: the total wait, not 10 x 5 s and certainly not
+    # 10 x the real 120 s timeout.
+    assert elapsed < 2.0, f"board waited {elapsed:.1f}s on quarantine"
+    # Bounded work: at most the per-request probe cap of new gh calls.
+    assert len(gh.state_calls) <= sources_mod.QUARANTINE_MAX_PROBES
+    # Nothing resolved in time -> everything reported blocked (safe side).
+    assert len(blocked) == 10
+
+
+def test_quarantined_dedupes_probes_across_concurrent_requests(tmp_path,
+                                                               monkeypatch):
+    """Every connected client refetches /api/board on each SSE tick. Probes
+    are keyed in-flight so N concurrent requests share one gh call rather
+    than each starting their own."""
+    import threading as threading_mod
+    import time as time_mod
+    from web import sources as sources_mod
+    monkeypatch.setattr(sources_mod, "QUARANTINE_WAIT_SECONDS", 0.05)
+
+    class SlowGitHub(FakeGitHub):
+        def issue_state(self, repo, number):
+            self.state_calls.append((repo, number))
+            time_mod.sleep(0.5)
+            return "OPEN"
+
+    gh = SlowGitHub()
+    _, src = make_sources(tmp_path, github=gh)
+    _quarantine(tmp_path, "alpha-73.json", task_issue=73, blocker_repo="r",
+                blocker_issue=1, fingerprint="f", created_at="c")
+    threads = [threading_mod.Thread(target=src.quarantined) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    assert len(gh.state_calls) == 1

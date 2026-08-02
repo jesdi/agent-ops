@@ -198,8 +198,12 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def failures(op: Operator = Depends(current_operator)):
         quarantined = [
             read_model.QuarantineEntry(
-                **q, blocker_open=sources.issue_open(
-                    q["blocker_repo"], q["blocker_issue"]))
+                # A record with no blocker (an unreadable one now surfaces as
+                # such rather than vanishing) has nothing to look up: asking
+                # gh about issue 0 costs a 120 s subprocess to learn nothing.
+                **q, blocker_open=(sources.issue_open(q["blocker_repo"],
+                                                      q["blocker_issue"])
+                                   if q["blocker_issue"] else None))
             for q in sources.quarantine_entries()]
         fingerprints = [read_model.FingerprintEntry(**f)
                         for f in sources.fingerprint_entries()]
