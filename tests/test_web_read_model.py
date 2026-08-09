@@ -102,6 +102,56 @@ def test_build_board_groups_and_counts():
     assert board.capacity.max_slots == 3
 
 
+def _scored_queue(*pairs):
+    """(target, number, score) triples -> the queues shape build_board reads,
+    grouped by target. score=None models a card no longer in the ranking."""
+    by_target: dict[str, list[dict]] = {}
+    for target, number, score in pairs:
+        by_target.setdefault(target, []).append(
+            {"number": number, "status": "Ready", "blocked": False,
+             "labels": ["auto"], "title": f"t{number}",
+             "url": f"https://x/{number}", "boost": 0, "score": score})
+    return list(by_target.items())
+
+
+def test_task_cards_carry_their_backlog_score():
+    tasks = [make_task(issue=1, stage=Stage.IMPLEMENT)]
+    board = build_board(tasks, capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=_scored_queue(("alpha", 1, 4.2)),
+                        queue_stale=False, claims_paused=False,
+                        triage_running=False)
+    card = {c.key: c for c in board.columns}["in-progress"].cards[0]
+    assert card.score == 4.2
+
+
+def test_task_card_score_is_none_when_not_in_ranking():
+    """A claimed task that dropped off the backlog board has no score."""
+    tasks = [make_task(issue=5, stage=Stage.DONE)]
+    board = build_board(tasks, capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
+    assert {c.key: c for c in board.columns}["done"].cards[0].score is None
+
+
+def test_cards_sort_by_score_descending_nulls_last_within_a_column():
+    tasks = [
+        make_task(issue=1, stage=Stage.IMPLEMENT),   # score 2.0
+        make_task(issue=2, stage=Stage.IMPLEMENT),   # score None
+        make_task(issue=3, stage=Stage.IMPLEMENT),   # score 9.0
+        make_task(issue=4, stage=Stage.IMPLEMENT),   # score None
+    ]
+    board = build_board(
+        tasks, capacity=9, models={}, attached=set(), events=[],
+        heartbeat=None, now=NOW, budget=BUDGET_OK,
+        queues=_scored_queue(("alpha", 1, 2.0), ("alpha", 3, 9.0)),
+        queue_stale=False, claims_paused=False, triage_running=False)
+    cards = {c.key: c for c in board.columns}["in-progress"].cards
+    # 3 (9.0) then 1 (2.0), then the two null-score cards in issue order.
+    assert [c.issue for c in cards] == [3, 1, 2, 4]
+
+
 def test_board_column_order_is_stable():
     board = build_board([], capacity=2, models={}, attached=set(),
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,

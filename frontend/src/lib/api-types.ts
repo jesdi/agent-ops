@@ -622,6 +622,8 @@ export interface components {
             park_note: string;
             /** Park Note Pending */
             park_note_pending: boolean;
+            /** Score */
+            score: number | null;
             /** Slot */
             slot: number;
             /** Stage */

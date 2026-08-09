@@ -77,6 +77,9 @@ class TaskCard(BaseModel):
     # From the event log; "" / None when the claimed event rotated away.
     claimed_at: str
     cycle_seconds: float | None
+    # Backlog rank score (impact/effort) looked up from the rank rows; None
+    # once the task drops off the ranking (typically Done/Failed).
+    score: float | None
 
 
 class Column(BaseModel):
@@ -114,7 +117,8 @@ class BoardView(BaseModel):
 
 def task_card(t: TaskState, *, model: str, attached: bool,
               claimed_at: str = "",
-              cycle_seconds: float | None = None) -> TaskCard:
+              cycle_seconds: float | None = None,
+              score: float | None = None) -> TaskCard:
     return TaskCard(
         issue=t.issue, target=t.target, title=t.title,
         stage=t.stage.value, park=t.park,
@@ -129,7 +133,7 @@ def task_card(t: TaskState, *, model: str, attached: bool,
         feedback_pending=t.feedback_pending,
         updated_at=t.updated_at, attached=attached,
         consuming_capacity=consumes_capacity(t),
-        claimed_at=claimed_at, cycle_seconds=cycle_seconds)
+        claimed_at=claimed_at, cycle_seconds=cycle_seconds, score=score)
 
 
 def build_board(tasks: list[TaskState], *, capacity: int,
@@ -139,16 +143,26 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 queue_stale: bool, claims_paused: bool,
                 triage_running: bool) -> BoardView:
     claimed = claimed_at_index(events)
+    # (target, number) -> score from the rank rows already on the request, so
+    # a task card can show the same backlog score its ghost card would.
+    scores = {(name, r["number"]): r.get("score")
+              for name, rows in queues for r in rows}
     cards = []
     for t in tasks:
         at = claimed_at(claimed, t.target, t.issue)
         cards.append(task_card(t, model=models.get(t.issue, ""),
                                attached=t.issue in attached,
                                claimed_at=at,
-                               cycle_seconds=cycle_seconds(at, t.done_at)))
+                               cycle_seconds=cycle_seconds(at, t.done_at),
+                               score=scores.get((t.target, t.issue))))
     by_column: dict[str, list[TaskCard]] = {key: [] for key, _ in COLUMNS}
     for card in cards:
         by_column[card.column].append(card)
+    # Highest score at the top of every column; unscored cards fall to the
+    # bottom, issue number as a stable tiebreaker.
+    for col_cards in by_column.values():
+        col_cards.sort(key=lambda c: (c.score is None, -(c.score or 0.0),
+                                      c.issue))
     in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
     # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-target candidates

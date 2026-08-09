@@ -26,6 +26,16 @@ it('shows parked badge when park is set', () => {
   expect(screen.getByText('parked: awaiting-review')).toBeInTheDocument()
 })
 
+it('shows the backlog score when the card has one', () => {
+  renderCard({ ...inProgressCard, score: 8.5 })
+  expect(screen.getByText('score 8.5')).toBeInTheDocument()
+})
+
+it('omits the score badge when the card has no score', () => {
+  renderCard({ ...inProgressCard, score: null })
+  expect(screen.queryByText(/score/)).not.toBeInTheDocument()
+})
+
 it('shows the feedback-queued badge when feedback_pending', () => {
   renderCard({ ...parkedCard, feedback_pending: true })
   expect(screen.getByText('feedback queued')).toBeInTheDocument()
