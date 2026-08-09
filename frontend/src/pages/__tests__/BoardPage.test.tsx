@@ -20,6 +20,28 @@ it('renders all ten columns with cards and capacity', async () => {
   expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
 })
 
+it('renders a column\'s cards in the order the API returns (server sorts by score)', async () => {
+  // The board API is the single source of card order (score-descending); the
+  // page must render that order verbatim and never re-sort client-side.
+  const parked = [
+    { ...fx_board.columns.find((c) => c.key === 'parked')!.cards[0], issue: 42, score: 3.0 },
+    { ...fx_board.columns.find((c) => c.key === 'parked')!.cards[1], issue: 45, score: 9.0 },
+  ]
+  const board = {
+    ...fx_board,
+    columns: fx_board.columns.map((c) =>
+      c.key === 'parked' ? { ...c, cards: parked } : c,
+    ),
+  }
+  server.use(http.get('/api/board', () => HttpResponse.json(board)))
+  renderWithProviders(<BoardPage />)
+  await waitFor(() => expect(screen.getByTestId('column-parked')).toBeInTheDocument())
+  const order = within(screen.getByTestId('column-parked'))
+    .getAllByTestId(/^card-/)
+    .map((el) => el.getAttribute('data-testid'))
+  expect(order).toEqual(['card-42', 'card-45'])
+})
+
 it('AWKWARD: budget source unavailable shows the consequence, not a gauge', async () => {
   server.use(http.get('/api/budget', () => HttpResponse.json(budgetUnavailable)))
   renderWithProviders(<BoardPage />)
