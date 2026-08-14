@@ -144,7 +144,7 @@ class FakeSessions:
         self.sent_text.append((issue, text))
 
     def spawn_stage(self, issue, worktree, prompt, stage_name, model):
-        self.spawned.append((issue, stage_name, model))
+        self.spawned.append((issue, stage_name, model, prompt))
 
     def resume(self, issue, worktree, message, model):
         self.resumed.append((issue, message, model))
@@ -242,7 +242,7 @@ def test_new_candidate_claimed_and_spec_spawned(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess))
 
     assert gh.claimed == [42]
-    assert sess.spawned == [(42, "spec", "claude-opus-4-8")]
+    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-opus-4-8")]
     ts = load(c.state_dir, 42)
     assert ts.stage is Stage.SPEC and ts.slot == 0 and ts.title == "Add widget"
     sig = json.loads(
@@ -398,7 +398,7 @@ def test_gate_respawn_clears_stale_artifact(tmp_path, monkeypatch):
               artifact=str(tmp_path / "old-spec.md"))
     sess = FakeSessions()  # session not alive
     main.run_pass(c, deps(sess=sess))
-    assert [(i, s) for i, s, _m in sess.spawned] == [(42, "spec")]
+    assert [(s[0], s[1]) for s in sess.spawned] == [(42, "spec")]
     assert load(c.state_dir, 42).artifact == ""
 
 
@@ -419,7 +419,7 @@ def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
                                 title="t", updated_at="2026-07-14T00:00:00+00:00"))
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
-    assert sess.spawned == [(42, "plan", "claude-opus-4-8")]
+    assert [s[:3] for s in sess.spawned] == [(42, "plan", "claude-opus-4-8")]
     assert load(c.state_dir, 42).stage is Stage.PLAN
 
 
@@ -1132,7 +1132,7 @@ def test_spawn_uses_the_rule_matched_model(tmp_path, monkeypatch):
     sess = FakeSessions()
     c = cfg(tmp_path)
     main.run_pass(c, deps(gh, sess))
-    assert sess.spawned == [(42, "spec", "claude-sonnet-4-6")]
+    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-sonnet-4-6")]
 
 
 def test_unmatched_task_spawns_on_the_default_model(tmp_path, monkeypatch):
@@ -1142,7 +1142,7 @@ def test_unmatched_task_spawns_on_the_default_model(tmp_path, monkeypatch):
     sess = FakeSessions()
     c = cfg(tmp_path)
     main.run_pass(c, deps(gh, sess))
-    assert sess.spawned == [(42, "spec", "claude-opus-4-8")]
+    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-opus-4-8")]
 
 
 def test_frontend_task_spawns_spec_on_fable(tmp_path, monkeypatch):
@@ -1153,7 +1153,7 @@ def test_frontend_task_spawns_spec_on_fable(tmp_path, monkeypatch):
     sess = FakeSessions()
     c = cfg(tmp_path)
     main.run_pass(c, deps(gh, sess))
-    assert sess.spawned == [(42, "spec", "claude-fable-5")]
+    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-fable-5")]
 
 
 def test_frontend_task_spawns_plan_on_fable_and_implement_on_opus(
@@ -1168,7 +1168,7 @@ def test_frontend_task_spawns_plan_on_fable_and_implement_on_opus(
         {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
-    assert sess.spawned == [(42, "plan", "claude-fable-5")]
+    assert [s[:3] for s in sess.spawned] == [(42, "plan", "claude-fable-5")]
 
     # …and the implement stage of the same task drops to opus
     t = load(c.state_dir, 42)
@@ -1359,7 +1359,7 @@ def test_target_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
     gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
-    assert sess.spawned == [(42, "spec", "claude-fable-5")]
+    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-fable-5")]
 
 
 from dispatcher import eventlog
@@ -2298,7 +2298,7 @@ def test_overnight_drain_parks_every_ready_spec_then_one_reply_advances_one(
     patch_events(monkeypatch, [])
     main.run_pass(c, d)
     assert load(c.state_dir, woken.issue).stage is Stage.PLAN
-    assert (woken.issue, "plan") in [(i, s) for i, s, _m in sess.spawned]
+    assert (woken.issue, "plan") in [(s[0], s[1]) for s in sess.spawned]
 
 
 def test_park_for_input_saves_park_note(tmp_path, monkeypatch):
@@ -2719,7 +2719,7 @@ def test_address_review_resolves_the_implement_model(tmp_path, monkeypatch):
     gh.pr_payloads[12] = payload()
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
-    assert sess.spawned == [(42, "address-review", "claude-opus-4-8")]
+    assert [s[:3] for s in sess.spawned] == [(42, "address-review", "claude-opus-4-8")]
 
 
 def test_cursor_now_never_seals_the_second_it_was_taken_in():
