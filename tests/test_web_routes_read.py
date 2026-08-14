@@ -40,7 +40,7 @@ def test_board_resolves_model_and_columns(tmp_path):
     assert card7["model"]  # resolved via the config's model policy
     assert cols["parked"]["cards"][0]["issue"] == 8
     assert body["capacity"] == {"active": 1, "capacity": 2,
-                                "slots_used": 2, "max_slots": 3}
+                                "slots_used": 2, "max_slots": 4}
 
 
 def test_task_detail_and_404(tmp_path):

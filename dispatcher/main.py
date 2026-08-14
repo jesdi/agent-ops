@@ -38,7 +38,8 @@ from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, allocate_slot,
                               clear_waiting, delete, has_attached, has_waiting,
-                              load, load_all, read_stage_signal, save)
+                              holds_slot, load, load_all, max_slots,
+                              read_stage_signal, save)
 from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
@@ -448,7 +449,8 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     deps.sessions.end(task.issue)
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
-                                park_note=note, updated_at=_now()))
+                                park_note=note, slot=NO_SLOT,
+                                updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
 
@@ -523,7 +525,7 @@ def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
     deps.sessions.end(task.issue)
     clear_waiting(cfg.state_dir, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_CI, ci_run_id=run_id,
-                                updated_at=_now()))
+                                slot=NO_SLOT, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=f"awaiting CI run {run_id}")
@@ -734,7 +736,8 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
             # Gate-parked tasks gave their slot back. Take any free one —
             # worktrees are per-issue and the spec stage never bound the
             # slot's ports, so the number need not be the original.
-            slot = allocate_slot(load_all(cfg.state_dir))
+            slot = allocate_slot(load_all(cfg.state_dir),
+                                 max_slots(cfg.capacity))
             if slot is None:
                 continue  # no free slot: stays parked, retried next pass
             task = replace(task, slot=slot)
@@ -797,7 +800,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
                  if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             return
-        slot = allocate_slot(load_all(cfg.state_dir))
+        slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
             return
         # Cursor := spawn time: everything the session can read live is
@@ -957,7 +960,7 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
                                      cand.number):
             continue
-        slot = allocate_slot(load_all(cfg.state_dir))
+        slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
             break
         try:
@@ -1161,6 +1164,22 @@ def _sandboxed_state(cfg: Config):
         yield replace(cfg, state_dir=str(sandbox))
 
 
+def _reconcile_slots(cfg: Config) -> None:
+    """Retroactive fix for slots leaked by older code: any non-login parked
+    task still holding a slot gives it back. Runs at the top of every pass so
+    no manual state surgery is ever needed — the invariant is re-established
+    from disk rather than assumed."""
+    for task in load_all(cfg.state_dir):
+        if holds_slot(task) or task.slot == NO_SLOT:
+            continue
+        save(cfg.state_dir, replace(task, slot=NO_SLOT))
+        eventlog.append_event(cfg.state_dir, "slot-reclaimed",
+                              target=task.target, issue=task.issue,
+                              stage=task.stage.value,
+                              detail=f"park {task.park} released slot "
+                                     f"{task.slot}")
+
+
 def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
              config_path: str = "targets.yaml") -> None:
     if dry_run:
@@ -1173,6 +1192,7 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
 def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
               config_path: str = "targets.yaml") -> None:
     pass_started = _now()
+    _reconcile_slots(cfg)
     if not dry_run:
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)

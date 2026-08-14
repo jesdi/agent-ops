@@ -94,12 +94,12 @@ def test_build_board_groups_and_counts():
     assert [c.issue for c in by_key["parked"].cards] == [2]
     assert [c.issue for c in by_key["pr-open"].cards] == [3]
     assert by_key["in-progress"].cards[0].attached is True
-    # capacity: parked releases capacity but keeps its slot;
-    # pr-open is not in-flight at all.
+    # capacity: parked releases capacity; pr-open is not in-flight at all.
+    # max_slots derives from capacity: capacity + 2 = 4.
     assert board.capacity.active == 1
     assert board.capacity.slots_used == 2
     assert board.capacity.capacity == 2
-    assert board.capacity.max_slots == 3
+    assert board.capacity.max_slots == 4
 
 
 def _scored_queue(*pairs):

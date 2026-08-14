@@ -2070,7 +2070,10 @@ def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
 def test_woken_gate_parked_task_waits_when_every_slot_is_taken(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
-    c = dc_replace(cfg(tmp_path), capacity=9)  # capacity is not the binding limit
+    # capacity=1 → max_slots=3; filling all 3 slots also exhausts capacity
+    # (holds_slot and consumes_capacity are the same predicate, so slot
+    # exhaustion always implies capacity exhaustion with the new formula).
+    c = dc_replace(cfg(tmp_path), capacity=1)
     for issue, slot in ((1, 0), (2, 1), (3, 2)):
         make_task(c, issue=issue, stage=Stage.IMPLEMENT, slot=slot)
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
@@ -3181,3 +3184,65 @@ def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
     messages.append(c.state_dir, 42, "arrived later", "jesdi@github")
     assert [m.text for m in messages.undelivered(c.state_dir, 42)] == [
         "arrived later"]
+
+
+def test_park_for_input_frees_the_slot(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, slot=1)
+    main._park_for_input(c, deps(), c.targets[0], load(c.state_dir, 42),
+                         note="which redirect URL?")
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_HUMAN and t.slot == NO_SLOT
+
+
+def test_park_for_ci_frees_the_slot(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, slot=2)
+    main._park_for_ci(c, deps(), c.targets[0], load(c.state_dir, 42),
+                      run_id=4242)
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_CI and t.slot == NO_SLOT
+
+
+def test_login_park_keeps_its_slot(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, slot=1, park=PARK_LOGIN)
+    main._reconcile_slots(c)
+    assert load(c.state_dir, 42).slot == 1
+
+
+def test_reconcile_frees_slots_leaked_by_older_code(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, slot=0, park=PARK_HUMAN)
+    make_task(c, issue=43, slot=1, park=PARK_WAKE)
+    make_task(c, issue=44, slot=2, park="")          # live: untouched
+    main._reconcile_slots(c)
+    assert load(c.state_dir, 42).slot == NO_SLOT
+    assert load(c.state_dir, 43).slot == NO_SLOT
+    assert load(c.state_dir, 44).slot == 2
+
+
+def test_reconcile_emits_one_event_per_freed_slot(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, slot=0, park=PARK_HUMAN)
+    main._reconcile_slots(c)
+    main._reconcile_slots(c)                          # already NO_SLOT: no-op
+    freed = [e for e in main.eventlog.read_tail(c.state_dir)
+             if e["event"] == "slot-reclaimed"]
+    assert len(freed) == 1 and freed[0]["issue"] == 42
+
+
+def test_two_human_parks_no_longer_deadlock_a_resume(tmp_path):
+    """The live 2026-08-12 failure: two PARK_HUMAN tasks plus one running
+    session held every slot while capacity showed headroom, and the woken
+    task was skipped every pass."""
+    c = dc_replace(cfg(tmp_path), capacity=2)
+    make_task(c, issue=197, slot=0, park=PARK_HUMAN)
+    make_task(c, issue=267, slot=1, park=PARK_HUMAN)
+    make_task(c, issue=240, slot=2, park="")
+    make_task(c, issue=198, slot=NO_SLOT, park=PARK_WAKE)
+    main._reconcile_slots(c)
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    t = load(c.state_dir, 198)
+    assert t.park == "" and t.slot != NO_SLOT

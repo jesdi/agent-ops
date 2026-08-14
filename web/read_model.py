@@ -7,9 +7,10 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 
 from dispatcher.budget import UsageSnapshot, should_spawn
-from dispatcher.state import (IN_FLIGHT_STAGES, MAX_SLOTS, NO_SLOT, PARK_CI,
+from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
-                              Stage, TaskState, active, consumes_capacity)
+                              Stage, TaskState, active, consumes_capacity,
+                              holds_slot, max_slots)
 
 # (key, title) in display order — the single place column semantics live.
 COLUMNS: tuple[tuple[str, str], ...] = (
@@ -182,7 +183,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
             active=len(active(in_flight)),
             capacity=capacity,
             slots_used=len([t for t in in_flight if t.slot != NO_SLOT]),
-            max_slots=MAX_SLOTS),
+            max_slots=max_slots(capacity)),
         upcoming=upcoming, upcoming_stale=queue_stale,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
                               capacity=capacity, budget=budget,

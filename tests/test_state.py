@@ -26,7 +26,7 @@ from dispatcher.state import (
 )
 
 
-def make(issue=101, stage=Stage.SPEC, slot=0):
+def make(issue=101, stage=Stage.SPEC, slot=0, **kw):
     return TaskState(
         issue=issue,
         target="portfolio_eval",
@@ -36,6 +36,7 @@ def make(issue=101, stage=Stage.SPEC, slot=0):
         branch=f"agent/task-{issue}",
         title="Add widget",
         updated_at="2026-07-14T12:00:00+00:00",
+        **kw,
     )
 
 
@@ -60,18 +61,18 @@ def test_load_all_sorted_by_issue(tmp_path: Path):
 
 def test_allocate_slot_picks_first_free():
     existing = [make(issue=1, slot=0), make(issue=2, slot=2)]
-    assert allocate_slot(existing) == 1
+    assert allocate_slot(existing, max_slots=3) == 1
 
 
 def test_allocate_slot_full_returns_none():
     existing = [make(issue=i, slot=i) for i in range(3)]
-    assert allocate_slot(existing) is None
+    assert allocate_slot(existing, max_slots=3) is None
 
 
 def test_terminal_stages_do_not_hold_slots():
     # a FAILED task's slot is reusable
     existing = [make(issue=1, slot=0, stage=Stage.FAILED)]
-    assert allocate_slot(existing) == 0
+    assert allocate_slot(existing, max_slots=3) == 0
 
 
 def test_in_flight_stages():
@@ -140,7 +141,7 @@ def test_active_excludes_parked_but_parked_holds_slot():
     assert [t.issue for t in active(ts)] == [2]
     assert [t.issue for t in parked(ts)] == [1]
     from dispatcher.state import allocate_slot
-    assert allocate_slot(ts) not in (0,)  # slot 0 still held by both
+    assert allocate_slot(ts, max_slots=3) not in (0,)  # slot 0 still held by task 2
 
 
 def test_parked_helper_covers_all_park_values():
@@ -251,13 +252,13 @@ def test_legacy_state_file_without_artifact_loads(tmp_path):
 def test_allocate_slot_ignores_slot_less_holders():
     # A gate-parked task holds no slot; slot 0 must stay allocatable.
     existing = [make(issue=1, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT)]
-    assert allocate_slot(existing) == 0
+    assert allocate_slot(existing, max_slots=3) == 0
 
 
 def test_all_slots_free_when_every_holder_is_gate_parked():
     existing = [make(issue=i, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT)
                 for i in range(5)]
-    assert allocate_slot(existing) == 0
+    assert allocate_slot(existing, max_slots=3) == 0
 
 
 def test_review_park_frees_capacity_and_counts_as_parked():
@@ -402,3 +403,29 @@ def test_load_tolerates_a_retired_pending_reply_key(tmp_path):
     d["pending_reply"] = "left over from the old schema"
     p.write_text(json.dumps(d))
     assert load(tmp_path, 5).issue == 5
+
+
+def test_max_slots_is_capacity_plus_headroom():
+    from dispatcher.state import max_slots
+    assert max_slots(2) == 4
+    assert max_slots(3) == 5
+
+
+def test_allocate_slot_respects_the_passed_max():
+    from dispatcher.state import allocate_slot
+    existing = [make(issue=1, slot=0), make(issue=2, slot=1)]
+    assert allocate_slot(existing, max_slots=2) is None
+    assert allocate_slot(existing, max_slots=4) == 2
+
+
+def test_holds_slot_only_for_live_and_login_parked():
+    from dispatcher.state import holds_slot
+    assert holds_slot(make(issue=1, slot=0, park="")) is True
+    assert holds_slot(make(issue=2, slot=0, park=PARK_LOGIN)) is True
+    for park in (PARK_HUMAN, PARK_CI, PARK_WAKE, PARK_REVIEW):
+        assert holds_slot(make(issue=3, slot=0, park=park)) is False
+
+
+def test_max_slots_constant_is_gone():
+    import dispatcher.state as state
+    assert not hasattr(state, "MAX_SLOTS")
