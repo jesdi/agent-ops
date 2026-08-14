@@ -23,7 +23,8 @@ from pathlib import Path
 from dispatcher.budget import UsageSnapshot, fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
-from dispatcher import eventlog, failures, intents, pr_poll, queue_ops, relogin, triage
+from dispatcher import (eventlog, failures, intents, messages, pr_poll,
+                        queue_ops, relogin, triage)
 from dispatcher.github import GitHubClient
 from dispatcher import spec_publish
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
@@ -109,9 +110,19 @@ def _url(target: Target, issue: int) -> str:
     return f"https://github.com/{target.repo}/issues/{issue}"
 
 
-def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False) -> None:
-    save(cfg.state_dir, replace(task, park=PARK_WAKE, pending_reply=text,
-                                hold_for_attach=hold, updated_at=_now()))
+def _queue_message(cfg: Config, issue: int, text: str, actor: str) -> None:
+    """Every message the agent should eventually read goes here — operator
+    replies AND dispatcher-authored ones (CI conclusions, "the operator
+    resumed this"). Appending instead of overwriting one field is the whole
+    point: a second message can no longer clobber the first."""
+    messages.append(cfg.state_dir, issue, text, actor)
+
+
+def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
+          actor: str = "dispatcher") -> None:
+    _queue_message(cfg, task.issue, text, actor)
+    save(cfg.state_dir, replace(task, park=PARK_WAKE, hold_for_attach=hold,
+                                updated_at=_now()))
 
 
 def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
@@ -565,8 +576,9 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
             continue
         reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
                  f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
-        save(cfg.state_dir, replace(task, park=PARK_WAKE, pending_reply=reply,
-                                    ci_run_id=0, updated_at=_now()))
+        _queue_message(cfg, task.issue, reply, "dispatcher")
+        save(cfg.state_dir, replace(task, park=PARK_WAKE, ci_run_id=0,
+                                    updated_at=_now()))
 
 
 def _poll_prs(cfg: Config, deps: Deps, target: Target,
@@ -720,10 +732,10 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
                                note="")
         else:
             deps.sessions.resume(task.issue, task.worktree,
-                                 task.pending_reply or "Continue.", model)
-        save(cfg.state_dir, replace(task, park="", pending_reply="",
-                                    hold_for_attach=False, park_msg_id=0,
-                                    park_note="", updated_at=_now()))
+                                 "Continue.", model)
+        save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
+                                    park_msg_id=0, park_note="",
+                                    updated_at=_now()))
         eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                               issue=task.issue, stage=task.stage.value,
                               model=model)
@@ -953,11 +965,16 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
     issue = intent.issue
     task = load(cfg.state_dir, issue)
     if intent.action == "reply":
-        if task is None or task.park not in (PARK_HUMAN, PARK_REVIEW):
-            print(f"[warn] reply intent for #{issue}: task not parked for "
-                  f"input — skipped", file=sys.stderr)
-            return
-        _wake(cfg, task, intent.payload.get("text", ""))
+        # Unconditional: EVERY card accepts messages, including a running
+        # session, a done/failed tombstone, and an issue with no task file at
+        # all (a pre-briefing left on a backlog card, delivered at claim
+        # time). The old park-state guard dropped these with only a journald
+        # warning — the silent message loss this change exists to kill.
+        _queue_message(cfg, issue, intent.payload.get("text", ""),
+                       intent.actor or "operator")
+        if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
+            save(cfg.state_dir, replace(task, park=PARK_WAKE,
+                                        updated_at=_now()))
     elif intent.action == "park":
         if (task is None or task.stage not in IN_FLIGHT_STAGES or task.park
                 or not deps.sessions.is_alive(issue)):
@@ -1015,7 +1032,8 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             return
         _wake(cfg, task,
               intent.payload.get("text")
-              or "The operator resumed this task. Continue.", hold=False)
+              or "The operator resumed this task. Continue.",
+              hold=False, actor=intent.actor or "operator")
     else:
         print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
               file=sys.stderr)

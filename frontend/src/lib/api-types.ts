@@ -646,8 +646,6 @@ export interface components {
             labels: string[];
             /** Pane Tail */
             pane_tail: string;
-            /** Pending Reply */
-            pending_reply: string;
             /** Session Alive */
             session_alive: boolean;
             /** Timeline */

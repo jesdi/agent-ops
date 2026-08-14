@@ -83,7 +83,6 @@ export const taskDetail: TaskDetail = {
   pane_tail: '? Should I use the staging redirect URL or prod?\n> ',
   session_alive: true,
   worktree: '/home/agent/worktrees/task-42',
-  pending_reply: '',
   ci_run_id: 0,
   effort: 3,
   labels: ['auto'],

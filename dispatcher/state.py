@@ -69,7 +69,6 @@ class TaskState:
     park: str = ""
     ci_run_id: int = 0
     park_msg_id: int = 0
-    pending_reply: str = ""
     park_note: str = ""                  # the question shown while parked
     hold_for_attach: bool = False
     effort: int | None = None            # board Effort at claim time
@@ -112,6 +111,11 @@ def load(state_dir: str | Path, issue: int) -> TaskState | None:
     d = json.loads(p.read_text())
     d["stage"] = Stage(d["stage"])
     d["labels"] = tuple(d.get("labels", ()))
+    # Retired in the message-queue change: state files written by older code
+    # still carry it. Drop it rather than crash the pass — the text itself is
+    # not migrated, because a still-parked task's reply is re-sent by the
+    # operator and a delivered one is already in the transcript.
+    d.pop("pending_reply", None)
     return TaskState(**d)
 
 

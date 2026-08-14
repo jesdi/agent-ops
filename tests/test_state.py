@@ -127,7 +127,7 @@ def test_old_state_file_without_park_fields_loads(tmp_path):
         "updated_at": "2026-07-14T00:00:00+00:00"}))
     ts = load(tmp_path, 7)
     assert ts.park == "" and ts.ci_run_id == 0 and ts.park_msg_id == 0
-    assert ts.pending_reply == "" and ts.hold_for_attach is False
+    assert ts.hold_for_attach is False
 
 
 def test_park_fields_roundtrip(tmp_path):
@@ -199,7 +199,7 @@ def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
         "issue": 55, "target": "portfolio_eval", "stage": "implement", "slot": 1,
         "worktree": "/wt", "branch": "agent/task-55", "title": "Old task",
         "updated_at": "2026-07-01T00:00:00+00:00", "park": "", "ci_run_id": 0,
-        "park_msg_id": 0, "pending_reply": "", "hold_for_attach": False,
+        "park_msg_id": 0, "hold_for_attach": False,
     }))
     loaded = load(tmp_path, 55)
     assert loaded.effort is None
@@ -384,3 +384,21 @@ def test_active_is_exactly_the_predicate_over_a_mixed_fixture():
     ]
     assert active(tasks) == [t for t in tasks if consumes_capacity(t)]
     assert [t.issue for t in active(tasks)] == [1, 2, 7]
+
+
+def test_task_state_has_no_pending_reply_field():
+    from dataclasses import fields
+    assert "pending_reply" not in {f.name for f in fields(TaskState)}
+
+
+def test_load_tolerates_a_retired_pending_reply_key(tmp_path):
+    import json
+    from dispatcher.state import load, save
+    save(tmp_path, TaskState(issue=5, target="t", stage=Stage.IMPLEMENT,
+                             slot=0, worktree="/w", branch="b", title="x",
+                             updated_at="2026-08-12T00:00:00+00:00"))
+    p = tmp_path / "task-5.json"
+    d = json.loads(p.read_text())
+    d["pending_reply"] = "left over from the old schema"
+    p.write_text(json.dumps(d))
+    assert load(tmp_path, 5).issue == 5

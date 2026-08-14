@@ -45,8 +45,7 @@ def test_board_resolves_model_and_columns(tmp_path):
 
 def test_task_detail_and_404(tmp_path):
     fake, client = rig(tmp_path)
-    fake.tasks_list = [make_task(issue=7, pending_reply="please rebase",
-                                 ci_run_id=42, effort=3,
+    fake.tasks_list = [make_task(issue=7, ci_run_id=42, effort=3,
                                  labels=("auto",))]
     fake.pane_tails[7] = "$ pytest -q\n3 passed"
     fake.alive.add(7)
@@ -54,7 +53,6 @@ def test_task_detail_and_404(tmp_path):
     assert body["card"]["issue"] == 7
     assert body["pane_tail"].endswith("3 passed")
     assert body["session_alive"] is True
-    assert body["pending_reply"] == "please rebase"
     assert body["ci_run_id"] == 42 and body["effort"] == 3
     assert body["labels"] == ["auto"]
     assert client.get("/api/task/999", headers=HEADERS).status_code == 404

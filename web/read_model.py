@@ -197,7 +197,6 @@ class TaskDetail(BaseModel):
     pane_tail: str
     session_alive: bool
     worktree: str
-    pending_reply: str
     ci_run_id: int
     effort: int | None
     labels: list[str]
@@ -213,7 +212,7 @@ def task_detail(t: TaskState, *, model: str, attached: bool,
                        claimed_at=at,
                        cycle_seconds=cycle_seconds(at, t.done_at)),
         pane_tail=pane_tail, session_alive=session_alive,
-        worktree=t.worktree, pending_reply=t.pending_reply,
+        worktree=t.worktree,
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
         timeline=stage_timeline(events, t.issue, now=now))
 
