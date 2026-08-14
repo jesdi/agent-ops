@@ -29,10 +29,19 @@ def test_reply_empty_text_422(tmp_path):
     assert fake.intents == []
 
 
-def test_reply_unknown_task_404(tmp_path):
+def test_reply_is_accepted_for_an_unclaimed_issue(tmp_path):
     fake, client = rig(tmp_path)
-    assert client.post("/api/task/999/reply", headers=HEADERS,
-                       json={"text": "x"}).status_code == 404
+    r = client.post("/api/task/999/reply", headers=HEADERS,
+                    json={"text": "pre-brief"})
+    assert r.status_code == 202
+    assert fake.intents == [("reply", 999, {"text": "pre-brief"},
+                             "jesdi@github")]
+
+
+def test_park_still_requires_a_real_task(tmp_path):
+    fake, client = rig(tmp_path)
+    assert client.post("/api/task/999/park", headers=HEADERS,
+                       json={}).status_code == 404
 
 
 def test_park_kill_resume(tmp_path):

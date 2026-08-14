@@ -57,6 +57,9 @@ class FakeSources:
         self.heartbeat = None     # dict | None returned by pass_heartbeat()
         self._claims_paused = False
         self._triage_running = False
+        self.messages_by_issue = {}   # issue -> list[msgq.Message]
+        self.undelivered = {}         # issue -> int
+        self.blocked_wakes = set()    # issues with a wake-blocked marker
 
     def tasks(self):
         return list(self.tasks_list)
@@ -127,3 +130,12 @@ class FakeSources:
             (repo, number),
             {"title": "", "body": "", "url": "", "fetched_at": "",
              "error": "not seeded"})
+
+    def messages(self, issue):
+        return self.messages_by_issue.get(issue, [])
+
+    def undelivered_counts(self):
+        return dict(self.undelivered)
+
+    def wake_blocked_issues(self):
+        return set(self.blocked_wakes)

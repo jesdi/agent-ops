@@ -105,7 +105,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 cfg.racing_threshold),
             queues=queues, queue_stale=stale_any,
             # One tmux probe for both signals (cf. dispatcher run_pass).
-            claims_paused=claims_paused, triage_running=triage_running)
+            claims_paused=claims_paused, triage_running=triage_running,
+            undelivered=sources.undelivered_counts(),
+            wake_blocked=sources.wake_blocked_issues())
 
     @app.get("/api/task/{issue}", response_model=read_model.TaskDetail)
     def task_detail(issue: int,
@@ -114,13 +116,19 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if not match:
             raise HTTPException(404, f"no task {issue}")
         t = match[0]
+        pending = [i for i in sources.pending_intents()
+                   if i.get("issue") == issue
+                   and i.get("action") in ("reply", "resume")]
         return read_model.task_detail(
             t, model=_model_for(t),
             attached=sources.has_attached(issue),
             pane_tail=sources.pane_tail(issue),
             session_alive=sources.session_alive(issue),
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
-            now=datetime.now(timezone.utc))
+            now=datetime.now(timezone.utc),
+            messages=sources.messages(issue),
+            pending_sends=pending,
+            wake_blocked=issue in sources.wake_blocked_issues())
 
     @app.get("/api/task/{issue}/description",
              response_model=read_model.IssueDescription)
@@ -301,7 +309,11 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     @app.post("/api/task/{issue}/reply", status_code=202)
     def intent_reply(issue: int, req: ReplyReq,
                      op: Operator = Depends(current_operator)):
-        _require_task(issue)
+        # NO _require_task: the contract is "never drop a message", and that
+        # includes an unclaimed backlog issue (a pre-briefing delivered at
+        # claim time) and a done/failed tombstone (delivered if it restarts).
+        # The queue is keyed by issue and survives every task lifecycle, so
+        # there is nothing here to 404 against.
         return _accepted("reply", issue, {"text": req.text}, op)
 
     @app.post("/api/task/{issue}/park", status_code=202)

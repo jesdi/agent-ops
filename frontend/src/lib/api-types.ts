@@ -389,6 +389,11 @@ export interface components {
             capacity: number;
             /** Max Slots */
             max_slots: number;
+            /**
+             * Slots Held
+             * @default []
+             */
+            slots_held: number[];
             /** Slots Used */
             slots_used: number;
         };
@@ -479,6 +484,21 @@ export interface components {
             title: string;
             /** Url */
             url: string;
+        };
+        /** MessageView */
+        MessageView: {
+            /** Actor */
+            actor: string;
+            /** Created At */
+            created_at: string;
+            /** Delivered At */
+            delivered_at: string;
+            /** Id */
+            id: string;
+            /** State */
+            state: string;
+            /** Text */
+            text: string;
         };
         /** NextClaimView */
         NextClaimView: {
@@ -632,18 +652,32 @@ export interface components {
             target: string;
             /** Title */
             title: string;
+            /**
+             * Undelivered Messages
+             * @default 0
+             */
+            undelivered_messages: number;
             /** Updated At */
             updated_at: string;
+            /**
+             * Wake Blocked
+             * @default false
+             */
+            wake_blocked: boolean;
         };
         /** TaskDetail */
         TaskDetail: {
             card: components["schemas"]["TaskCard"];
             /** Ci Run Id */
             ci_run_id: number;
+            /** Delivery Contract */
+            delivery_contract: string;
             /** Effort */
             effort: number | null;
             /** Labels */
             labels: string[];
+            /** Messages */
+            messages: components["schemas"]["MessageView"][];
             /** Pane Tail */
             pane_tail: string;
             /** Session Alive */
