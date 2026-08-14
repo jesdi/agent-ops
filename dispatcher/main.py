@@ -118,6 +118,27 @@ def _queue_message(cfg: Config, issue: int, text: str, actor: str) -> None:
     messages.append(cfg.state_dir, issue, text, actor)
 
 
+def _message_block(msgs: list[messages.Message]) -> str:
+    """The block appended to a spawn/resume prompt, oldest first. Actor and
+    timestamp are included so the agent can tell an operator instruction from
+    a dispatcher-authored CI note."""
+    if not msgs:
+        return ""
+    lines = ["## Operator messages", ""]
+    lines += [f"- [{m.created_at}] {m.actor}: {m.text}" for m in msgs]
+    return "\n".join(lines)
+
+
+def _drain(cfg: Config, issue: int) -> tuple[str, list[str]]:
+    """(block, ids) for everything queued on this issue. The caller stamps
+    the ids only AFTER the session actually took the prompt, so a spawn that
+    raises leaves the mail queued for the next attempt. Ids are captured
+    here, not re-derived later, so a message that arrives during the spawn is
+    not stamped as delivered without ever being shown."""
+    msgs = messages.undelivered(cfg.state_dir, issue)
+    return _message_block(msgs), [m.id for m in msgs]
+
+
 def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
           actor: str = "dispatcher") -> None:
     _queue_message(cfg, task.issue, text, actor)
@@ -336,6 +357,9 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         pr_number=task.pr_number,
     )
     prompt = render_stage_prompt(stage, ctx)
+    block, drained = _drain(cfg, task.issue)
+    if block:
+        prompt = f"{prompt}\n\n{block}\n"
     model = _model_for(cfg, target, task, stage)
     # Reset the signal BEFORE spawning, or the next pass re-reads the
     # previous stage's `done` and advances again.
@@ -345,6 +369,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         {"stage": stage.value, "status": "working", "model": model}))
     _log_model(task.worktree, stage, model)
     deps.sessions.spawn_stage(task.issue, task.worktree, prompt, stage.value, model)
+    messages.mark_delivered(cfg.state_dir, task.issue, drained)
     task = replace(task, stage=stage, artifact="", updated_at=_now())
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
@@ -477,14 +502,17 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     _log_model(task.worktree, Stage.PLAN, model)
     clear_waiting(cfg.state_dir, task.issue)
     deps.sessions.end(task.issue)
-    deps.sessions.resume(
-        task.issue, task.worktree,
+    block, drained = _drain(cfg, task.issue)
+    retry_text = (
         f"Your .agent/plan.md failed the pipeline's mechanical format check: "
         f"{reason}. Fix it in place — every task needs an H3 heading of exactly "
         f"`### Task N:` (not `## Task N:`) and the plan must contain a "
         f"`**Goal:**` line — then re-write .agent/stage.json with "
-        f'status "done". Do not re-plan from scratch; only fix the formatting.',
-        model)
+        f'status "done". Do not re-plan from scratch; only fix the formatting.')
+    if block:
+        retry_text = f"{retry_text}\n\n{block}"
+    deps.sessions.resume(task.issue, task.worktree, retry_text, model)
+    messages.mark_delivered(cfg.state_dir, task.issue, drained)
     save(cfg.state_dir, replace(task, plan_retries=task.plan_retries + 1,
                                 updated_at=_now()))
     _notify(deps, target, task, "plan_retry", reason)
@@ -723,16 +751,20 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         # LIVE, and _launch would then type the podman command INTO the
         # running claude (the failure _retry_plan and SpawnStage guard).
         deps.sessions.end(task.issue)
+        block, drained = _drain(cfg, task.issue)
         if task.hold_for_attach:
-            deps.sessions.resume(task.issue, task.worktree,
-                                 "The operator is attaching to talk to you "
-                                 "directly. Wait for their input.", model)
+            text = ("The operator is attaching to talk to you directly. "
+                    "Wait for their input.")
+            if block:
+                text = f"{text}\n\n{block}"
+            deps.sessions.resume(task.issue, task.worktree, text, model)
             deps.notifier.send("resumed_for_attach", issue=task.issue,
                                title=task.title, url=_url(target, task.issue),
                                note="")
         else:
             deps.sessions.resume(task.issue, task.worktree,
-                                 "Continue.", model)
+                                 block or "Continue.", model)
+        messages.mark_delivered(cfg.state_dir, task.issue, drained)
         save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                     park_msg_id=0, park_note="",
                                     updated_at=_now()))

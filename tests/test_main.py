@@ -721,7 +721,8 @@ def test_ci_completion_marks_unpark_requested(tmp_path, monkeypatch):
     t = load(c.state_dir, 42)
     assert t.park in (PARK_WAKE, "")  # woken; may already have resumed
     from dispatcher import messages
-    assert "run 4242 concluded: failure" in messages.undelivered(
+    # Message may be delivered already if resumed same pass; all_messages captures both.
+    assert "run 4242 concluded: failure" in messages.all_messages(
         c.state_dir, 42)[0].text
 
 
@@ -1595,9 +1596,11 @@ def test_resume_intent_wakes_with_default_text(tmp_path, monkeypatch):
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42)[0].text == (
-        "The operator resumed this task. Continue.")
-    assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
+    # Task 3: _resume_woken delivers the queued message into the resume prompt.
+    msgs = messages.all_messages(c.state_dir, 42)
+    assert msgs[0].text == "The operator resumed this task. Continue."
+    assert msgs[0].delivered_at != ""
+    assert "The operator resumed this task. Continue." in sess.resumed[0][1]
 
 
 def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
@@ -1610,8 +1613,11 @@ def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42)[0].text == "ship it"
-    assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
+    # Task 3: _resume_woken delivers the queued message into the resume prompt.
+    msgs = messages.all_messages(c.state_dir, 42)
+    assert msgs[0].text == "ship it"
+    assert msgs[0].delivered_at != ""
+    assert "ship it" in sess.resumed[0][1]
 
 
 def test_failed_intent_does_not_abort_pass_or_remaining_intents(tmp_path, monkeypatch):
@@ -1860,10 +1866,11 @@ def test_reply_to_human_park_still_wakes(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, 42)
     assert sess.sent_text == []
-    # _wake marks PARK_WAKE, queues the text, then _resume_woken resumes with "Continue."
+    # _wake marks PARK_WAKE and queues the text; _resume_woken delivers it into the prompt.
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42)[0].text == "hi"
-    assert sess.resumed and sess.resumed[0][1] == "Continue."
+    assert messages.undelivered(c.state_dir, 42) == []
+    assert messages.all_messages(c.state_dir, 42)[0].text == "hi"
+    assert sess.resumed and "hi" in sess.resumed[0][1]
 
 
 def test_unmatched_reply_still_reports(tmp_path, monkeypatch):
@@ -3105,3 +3112,72 @@ def test_ci_conclusion_becomes_a_dispatcher_message(tmp_path):
     assert queued[0].actor == "dispatcher"
     t = load(c.state_dir, 42)
     assert t.park == PARK_WAKE and t.ci_run_id == 0
+
+
+def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.QUEUED)
+    from dispatcher import messages
+    messages.append(c.state_dir, 42, "pre-brief: use the v2 API", "jesdi@github")
+    d = deps()
+    task = load(c.state_dir, 42)
+    main._spawn_stage(c, d, c.targets[0], task, Stage.SPEC)
+    prompt = d.sessions.spawned[-1][3]
+    assert "## Operator messages" in prompt
+    assert "pre-brief: use the v2 API" in prompt
+    assert messages.undelivered(c.state_dir, 42) == []
+    assert messages.all_messages(c.state_dir, 42)[0].delivered_at != ""
+
+
+def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.QUEUED)
+    d = deps()
+    main._spawn_stage(c, d, c.targets[0], load(c.state_dir, 42), Stage.SPEC)
+    assert "## Operator messages" not in d.sessions.spawned[-1][3]
+
+
+def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
+    from dispatcher import messages
+    messages.append(c.state_dir, 42, "first", "jesdi@github")
+    messages.append(c.state_dir, 42, "second", "jesdi@github")
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    text = d.sessions.resumed[-1][1]
+    assert text.index("first") < text.index("second")
+    assert messages.undelivered(c.state_dir, 42) == []
+
+
+def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    assert d.sessions.resumed[-1][1] == "Continue."
+
+
+def test_retry_plan_delivers_queued_messages_too(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.PLAN)
+    from dispatcher import messages
+    messages.append(c.state_dir, 42, "keep the scope small", "jesdi@github")
+    d = deps()
+    main._retry_plan(c, d, c.targets[0], load(c.state_dir, 42),
+                     "missing Goal line")
+    assert "keep the scope small" in d.sessions.resumed[-1][1]
+    assert messages.undelivered(c.state_dir, 42) == []
+
+
+def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
+    """A message that lands between the drain and the stamp must survive."""
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
+    from dispatcher import messages
+    messages.append(c.state_dir, 42, "delivered now", "jesdi@github")
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    messages.append(c.state_dir, 42, "arrived later", "jesdi@github")
+    assert [m.text for m in messages.undelivered(c.state_dir, 42)] == [
+        "arrived later"]
