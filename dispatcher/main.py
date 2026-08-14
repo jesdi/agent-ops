@@ -566,7 +566,7 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     only park that also releases the SLOT: the spec stage never used the
     slot's ports and worktrees are per-issue, so resume can take any free
     slot — and freeing it is the whole point, since a held slot would cap the
-    overnight run at MAX_SLOTS specs."""
+    overnight run at max_slots(capacity) specs."""
     tail = deps.sessions.capture_tail(task.issue)
     note = tail.strip() or "(no detail)"
     if task.artifact:

@@ -1,8 +1,9 @@
 // Seeded fake backend for Playwright E2E. Serves frontend/dist with SPA
 // fallback, the /api contract from mutable seed state, SSE, and the
-// terminal WebSocket. POST /__control__/apply-intents plays the
-// dispatcher: clears intents, moves the parked card to in-progress, and
-// pushes an SSE board-changed event.
+// terminal WebSocket. POST /__control__/apply-intents plays the dispatcher:
+// drains intents into the durable message queue (without resuming the starved
+// task). POST /__control__/free-slot simulates a slot becoming available:
+// the parked task resumes and all queued messages are delivered.
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -15,12 +16,15 @@ const PORT = 8481
 
 const parkedCard = {
   issue: 42, target: 'jesdi/widget', title: 'Fix login redirect',
-  stage: 'implement', park: 'question', column: 'parked', slot: 1,
+  stage: 'implement', park: 'question', column: 'parked', slot: -1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
+  park_note: 'Should I use the staging redirect URL or prod?',
+  feedback_pending: false,
   updated_at: '2026-07-25T10:00:00Z', attached: false,
-  // question-parked: container stopped, unit released
+  // question-parked: container stopped, unit AND slot released
   consuming_capacity: false,
-  claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null,
+  claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
+  undelivered_messages: 0, wake_blocked: true,
 }
 
 const state = {
@@ -29,14 +33,14 @@ const state = {
       { key: 'queued', title: 'Queued', cards: [] },
       { key: 'in-progress', title: 'In progress', cards: [] },
       { key: 'needs-review', title: 'Needs review', cards: [] },
-      { key: 'parked', title: 'Parked', cards: [parkedCard] },
+      { key: 'parked', title: 'Parked', cards: [{ ...parkedCard }] },
       { key: 'awaiting-ci', title: 'Awaiting CI', cards: [] },
       { key: 'resuming', title: 'Resuming', cards: [] },
       { key: 'stalled', title: 'Stalled', cards: [] },
       { key: 'failed', title: 'Failed', cards: [] },
       { key: 'pr-open', title: 'PR open', cards: [] },
     ],
-    capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 3 },
+    capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 5, slots_held: [] },
     upcoming: [
       { number: 73, target: 'jesdi/widget', title: 'Ship dark mode',
         url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
@@ -59,6 +63,34 @@ const state = {
   failures: { quarantined: [], fingerprints: [] },
   history: { events: [] },
   intents: [],
+  // issue -> [{ id, text, actor, created_at, delivered_at }]
+  messages: {},
+}
+
+function messageViews(issue) {
+  const stored = (state.messages[issue] ?? []).map((m) => ({
+    ...m, state: m.delivered_at ? 'delivered' : 'queued',
+  }))
+  const sending = state.intents
+    .filter((i) => i.issue === issue && (i.action === 'reply' || i.action === 'resume'))
+    .map((i, n) => ({
+      id: `intent-${n}`, text: i.text ?? '', actor: i.actor,
+      created_at: i.created_at, delivered_at: '', state: 'sending',
+    }))
+  return [...stored, ...sending]
+}
+
+function contractFor(card) {
+  if (!card) return 'will deliver when this task is claimed'
+  if (card.stage === 'done' || card.stage === 'failed') {
+    return 'will deliver if this task restarts'
+  }
+  if (card.park !== '') {
+    return card.wake_blocked
+      ? 'will deliver when the session resumes — waiting for a free slot'
+      : 'will deliver when the session resumes'
+  }
+  return 'will deliver at the next session boundary — this session is still running'
 }
 
 function taskDetail(issue) {
@@ -68,6 +100,8 @@ function taskDetail(issue) {
   if (!card) return null
   return {
     card,
+    messages: messageViews(issue),
+    delivery_contract: contractFor(card),
     pane_tail: '? Should I use the staging redirect URL or prod?\n> ',
     session_alive: true,
     worktree: `/home/agent/worktrees/task-${issue}`,
@@ -150,11 +184,19 @@ const server = createServer(async (req, res) => {
   if (intentMatch && req.method === 'POST') {
     const issue = Number(intentMatch[1])
     const action = intentMatch[2]
-    state.intents.push({
-      action, issue, actor: 'dev@localhost',
-      created_at: new Date().toISOString(),
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => {
+      let text = ''
+      try { text = (JSON.parse(body || '{}').text) ?? '' } catch { /* no body */ }
+      state.intents.push({
+        action, issue, actor: 'dev@localhost', text,
+        created_at: new Date().toISOString(),
+      })
+      push(['board'])
+      json(202, { status: 'pending', intent: `${Date.now()}-${issue}-${action}` })
     })
-    return json(202, { status: 'pending', intent: `${Date.now()}-${issue}-${action}` })
+    return
   }
   if (url.pathname === '/api/queue/boost' && req.method === 'POST') {
     let body = ''
@@ -202,17 +244,57 @@ const server = createServer(async (req, res) => {
     return json(200, { ok: true })
   }
   if (url.pathname === '/__control__/apply-intents' && req.method === 'POST') {
+    for (const i of state.intents) {
+      if (i.action !== 'reply' && i.action !== 'resume') continue
+      const list = state.messages[i.issue] ?? (state.messages[i.issue] = [])
+      list.push({ id: `m${list.length + 1}`, text: i.text ?? '',
+                  actor: i.actor, created_at: i.created_at, delivered_at: '' })
+    }
+    state.intents = []
+    for (const col of state.board.columns) {
+      for (const c of col.cards) {
+        c.undelivered_messages =
+          (state.messages[c.issue] ?? []).filter((m) => !m.delivered_at).length
+      }
+    }
+    push(['board', 'history'])
+    return json(200, { ok: true })
+  }
+
+  if (url.pathname === '/__control__/free-slot' && req.method === 'POST') {
+    // A slot frees: the parked card resumes and everything queued is
+    // delivered and stamped — the second half of the real dispatcher pass.
+    const stamp = new Date().toISOString()
+    for (const list of Object.values(state.messages)) {
+      for (const m of list) if (!m.delivered_at) m.delivered_at = stamp
+    }
+    const parked = state.board.columns.find((c) => c.key === 'parked')
+    const inProgress = state.board.columns.find((c) => c.key === 'in-progress')
+    inProgress.cards.push(...parked.cards.map((c) => ({
+      ...c, column: 'in-progress', park: '', consuming_capacity: true,
+      slot: 0, wake_blocked: false, undelivered_messages: 0,
+    })))
+    parked.cards = []
+    state.board.capacity = {
+      ...state.board.capacity, active: inProgress.cards.length,
+      slots_used: 1, slots_held: [0],
+    }
+    push(['board', 'history'])
+    return json(200, { ok: true })
+  }
+
+  // Restores the seed so the spec is idempotent across Playwright retries.
+  if (url.pathname === '/__control__/reset-messages' && req.method === 'POST') {
+    state.messages = {}
     state.intents = []
     const parked = state.board.columns.find((c) => c.key === 'parked')
     const inProgress = state.board.columns.find((c) => c.key === 'in-progress')
-    inProgress.cards.push(
-      ...parked.cards.map((c) => ({
-        ...c, column: 'in-progress', park: '', consuming_capacity: true,
-      })),
-    )
-    parked.cards = []
-    state.board.capacity = { ...state.board.capacity, active: inProgress.cards.length }
-    push(['board', 'history'])
+    inProgress.cards = []
+    parked.cards = [{ ...parkedCard }]
+    state.board.capacity = {
+      active: 0, capacity: 3, slots_used: 0, max_slots: 5, slots_held: [],
+    }
+    push(['board'])
     return json(200, { ok: true })
   }
 
