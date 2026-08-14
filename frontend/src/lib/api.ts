@@ -16,6 +16,7 @@ export type NextClaimView = components['schemas']['NextClaimView']
 export type GhostCard = components['schemas']['GhostCard']
 export type TimelineEntry = components['schemas']['TimelineEntry']
 export type IssueDescription = components['schemas']['IssueDescription']
+export type MessageView = components['schemas']['MessageView']
 
 export interface PendingIntent {
   action: string

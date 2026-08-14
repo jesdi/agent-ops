@@ -56,6 +56,20 @@ export function TaskCardView({ card, pendingActions, accent = 'blue' }: {
             feedback queued
           </span>
         )}
+        {card.undelivered_messages > 0 && (
+          <span
+            data-testid="mail-badge"
+            className="rounded bg-blue-100 px-1.5 text-blue-700"
+            title="queued operator messages"
+          >
+            ✉ {card.undelivered_messages}
+          </span>
+        )}
+        {card.wake_blocked && (
+          <span className="rounded bg-amber-100 px-1.5 text-amber-800">
+            waiting for a free slot
+          </span>
+        )}
         {card.attached && (
           <span className="rounded bg-emerald-100 px-1.5 text-emerald-700">
             attached

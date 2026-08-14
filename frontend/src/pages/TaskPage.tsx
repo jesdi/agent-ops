@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useParams } from 'react-router'
 import { DescriptionPanel } from '../components/DescriptionPanel'
+import { MessageThread } from '../components/MessageThread'
 import { PendingBadge } from '../components/PendingBadge'
 import { SpecPanel } from '../components/SpecPanel'
 import { Terminal } from '../components/Terminal'
@@ -72,7 +73,8 @@ function TaskView({ issue }: { issue: number }) {
     return <p className="p-4 text-red-600">{detailQuery.error.message}</p>
   }
 
-  const { card, pane_tail, session_alive, worktree } = detailQuery.data
+  const { card, pane_tail, session_alive, worktree, messages, delivery_contract } =
+    detailQuery.data
   const myIntents = (intentsQuery.data?.intents ?? []).filter(
     (i) => i.issue === issue,
   )
@@ -170,6 +172,8 @@ function TaskView({ issue }: { issue: number }) {
         </p>
       )}
 
+      <MessageThread messages={messages} />
+
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex flex-col text-sm">
           Reply
@@ -180,6 +184,9 @@ function TaskView({ issue }: { issue: number }) {
             className="mt-1 w-96 rounded border border-gray-300 p-2 font-mono text-xs"
             rows={3}
           />
+          <span data-testid="delivery-contract" className="mt-1 text-xs text-gray-500">
+            {delivery_contract}
+          </span>
         </label>
         <button
           type="button"
@@ -187,7 +194,7 @@ function TaskView({ issue }: { issue: number }) {
           disabled={replyText.trim() === '' || busy}
           onClick={() => runIntent(() => api.reply(issue, replyText), true)}
         >
-          {card.park !== '' ? 'Send reply & wake' : 'Send reply'}
+          {card.park !== '' ? 'Send reply & wake' : 'Send message'}
         </button>
         <button
           type="button"

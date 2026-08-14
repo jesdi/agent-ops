@@ -303,7 +303,7 @@ it('the reply button says it wakes a parked task', async () => {
   )
 })
 
-it('an unparked task keeps the plain reply label and no parked panel', async () => {
+it('an unparked task keeps the plain send label and no parked panel', async () => {
   server.use(
     http.get('/api/task/:issue', () =>
       HttpResponse.json({
@@ -314,7 +314,7 @@ it('an unparked task keeps the plain reply label and no parked panel', async () 
   )
   renderTask()
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Send reply' })).toBeInTheDocument(),
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument(),
   )
   expect(screen.queryByTestId('parked-panel')).not.toBeInTheDocument()
 })

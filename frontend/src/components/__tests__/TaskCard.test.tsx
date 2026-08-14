@@ -101,3 +101,18 @@ test('active card shows time since claim; done card shows total cycle', () => {
   )
   expect(screen.getByText(/took 2h 15m/)).toBeInTheDocument()
 })
+
+test('shows an envelope badge when messages are queued', () => {
+  renderCard({ ...parkedCard, undelivered_messages: 2 })
+  expect(screen.getByTestId('mail-badge')).toHaveTextContent('2')
+})
+
+test('no envelope badge when nothing is queued', () => {
+  renderCard({ ...parkedCard, undelivered_messages: 0 })
+  expect(screen.queryByTestId('mail-badge')).toBeNull()
+})
+
+test('a starved wake says so on the card', () => {
+  renderCard({ ...parkedCard, wake_blocked: true })
+  expect(screen.getByText('waiting for a free slot')).toBeInTheDocument()
+})
