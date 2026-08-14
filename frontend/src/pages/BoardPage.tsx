@@ -3,7 +3,6 @@ import { BudgetBar } from '../components/BudgetBar'
 import { CapacityMeter } from '../components/CapacityMeter'
 import { GhostCardView } from '../components/GhostCard'
 import { NextClaimLine } from '../components/NextClaimLine'
-import { capacityAccent } from '../lib/capacity'
 import { formatDuration } from '../lib/format'
 import { useBudget, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useQueueActions } from '../hooks/useQueueActions'
@@ -30,9 +29,6 @@ export function BoardPage() {
   for (const i of intentsQuery.data?.intents ?? []) {
     pendingByIssue.set(i.issue, [...(pendingByIssue.get(i.issue) ?? []), i.action])
   }
-  // Computed once so every column and every accented card agree on the colour.
-  const accent = capacityAccent(capacity)
-
   // Stale indicator and action error live in the column header so they are
   // visible even when Queued is collapsed (headerExtra survives collapse).
   const queuedHeaderExtra = (
@@ -110,7 +106,6 @@ export function BoardPage() {
             pendingByIssue={pendingByIssue}
             collapsed={collapsedColumns[column.key] ?? false}
             onToggle={() => toggleColumn(column.key)}
-            accent={accent}
             extra={column.key === 'queued' ? ghostStack : undefined}
             extraCount={column.key === 'queued' ? upcoming.length : undefined}
             headerExtra={column.key === 'queued' ? queuedHeaderExtra : undefined}

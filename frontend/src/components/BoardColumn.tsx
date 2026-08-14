@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
 import type { TaskCard } from '../lib/api'
-import type { Accent } from '../lib/capacity'
 import { TaskCardView } from './TaskCard'
 
 export interface ColumnProps {
@@ -8,7 +7,6 @@ export interface ColumnProps {
   pendingByIssue: ReadonlyMap<number, readonly string[]>
   collapsed: boolean
   onToggle: () => void
-  accent: Accent
   /** Extra content (e.g. ghost cards) rendered after the task cards, hidden when collapsed. */
   extra?: ReactNode
   /** Added to the card count shown in the column header. */
@@ -21,7 +19,7 @@ export interface ColumnProps {
   headerExtra?: ReactNode
 }
 
-export function BoardColumn({ column, pendingByIssue, collapsed, onToggle, accent, extra, extraCount, headerExtra }: ColumnProps) {
+export function BoardColumn({ column, pendingByIssue, collapsed, onToggle, extra, extraCount, headerExtra }: ColumnProps) {
   return (
     <section data-testid={`column-${column.key}`} className="w-64 shrink-0">
       <button
@@ -42,7 +40,6 @@ export function BoardColumn({ column, pendingByIssue, collapsed, onToggle, accen
               key={card.issue}
               card={card}
               pendingActions={pendingByIssue.get(card.issue)}
-              accent={accent}
             />
           ))}
           {extra}

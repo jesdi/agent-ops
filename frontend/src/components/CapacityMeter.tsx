@@ -1,5 +1,5 @@
 import type { CapacityView } from '../lib/api'
-import { ACCENT_PIP, capacityAccent } from '../lib/capacity'
+import { ACCENT_PIP, capacityAccent, slotSegment } from '../lib/capacity'
 
 export function CapacityMeter({ capacity }: { capacity: CapacityView }) {
   const text = (
@@ -34,6 +34,25 @@ export function CapacityMeter({ capacity }: { capacity: CapacityView }) {
             className={`h-3 w-3 rounded-sm ${filled ? pipClass : 'bg-gray-200'}`}
           />
         ))}
+      </div>
+      <div
+        role="group"
+        aria-label="E2E slots in use"
+        className="flex items-center gap-1"
+      >
+        {Array.from({ length: capacity.max_slots }, (_, i) => {
+          const held = capacity.slots_held.includes(i)
+          return (
+            <span
+              key={i}
+              data-testid={`slot-seg-${i}`}
+              data-held={String(held)}
+              className={`h-3 w-2 rounded-sm ${held ? slotSegment(i) : 'bg-gray-200'}`}
+            >
+              {held && <span className="sr-only">slot {i} in use</span>}
+            </span>
+          )
+        })}
       </div>
       {text}
     </div>

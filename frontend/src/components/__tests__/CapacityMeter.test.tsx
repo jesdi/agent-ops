@@ -52,3 +52,22 @@ it('clamps aria-valuenow in overflow case but keeps aria-valuetext truthful', ()
   expect(bar).toHaveAttribute('aria-valuemax', '2')
   expect(bar).toHaveAttribute('aria-valuetext', '3 of 2 capacity units in use')
 })
+
+test('renders one segment per slot, held ones coloured', () => {
+  render(<CapacityMeter capacity={{
+    active: 2, capacity: 3, slots_used: 2, max_slots: 5, slots_held: [0, 2],
+  }} />)
+  const segs = screen.getAllByTestId(/^slot-seg-/)
+  expect(segs).toHaveLength(5)
+  expect(screen.getByTestId('slot-seg-0')).toHaveAttribute('data-held', 'true')
+  expect(screen.getByTestId('slot-seg-1')).toHaveAttribute('data-held', 'false')
+  expect(screen.getByTestId('slot-seg-2')).toHaveAttribute('data-held', 'true')
+})
+
+test('the slot strip is labelled for screen readers', () => {
+  render(<CapacityMeter capacity={{
+    active: 1, capacity: 3, slots_used: 1, max_slots: 5, slots_held: [1],
+  }} />)
+  expect(screen.getByLabelText('E2E slots in use')).toBeInTheDocument()
+  expect(screen.getByText('slot 1 in use')).toBeInTheDocument()
+})

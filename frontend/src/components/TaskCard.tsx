@@ -1,28 +1,26 @@
 import { Link } from 'react-router'
 import type { TaskCard } from '../lib/api'
-import { ACCENT_BORDER, type Accent } from '../lib/capacity'
+import { slotBorder, slotChip } from '../lib/capacity'
 import { formatDuration, relativeTime, stageLabel } from '../lib/format'
 import { PendingBadge } from './PendingBadge'
 
-export function TaskCardView({ card, pendingActions, accent = 'blue' }: {
+export function TaskCardView({ card, pendingActions }: {
   card: TaskCard
   /** Every pending intent on this issue — one badge each, never collapsed. */
   pendingActions?: readonly string[]
-  /** Board-wide: amber once capacity is full. Computed once in BoardPage so
-   *  every accented card agrees with the header meter. */
-  accent?: Accent
 }) {
   return (
     <Link
       to={`/task/${card.issue}`}
       data-testid={`card-${card.issue}`}
       className={`block rounded border border-gray-200 bg-white p-3 shadow-sm hover:border-gray-400 border-l-4 ${
-        card.consuming_capacity ? ACCENT_BORDER[accent] : 'border-l-transparent hover:border-l-transparent'
+        card.slot >= 0 ? slotBorder(card.slot) : 'border-l-transparent hover:border-l-transparent'
       }`}
     >
       {/* Colour is never the only signal — and this must not be an aria-label
           on the Link, which would clobber its accessible name. */}
       {card.consuming_capacity && <span className="sr-only">holding a capacity unit</span>}
+      {card.slot >= 0 && <span className="sr-only">holding E2E slot {card.slot}</span>}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs text-gray-500">
           {card.target}#{card.issue}
@@ -40,7 +38,11 @@ export function TaskCardView({ card, pendingActions, accent = 'blue' }: {
             score {card.score}
           </span>
         )}
-        {card.slot >= 0 && <span>slot {card.slot}</span>}
+        {card.slot >= 0 && (
+          <span data-testid="slot-chip" className={`rounded px-1.5 ${slotChip(card.slot)}`}>
+            slot {card.slot}
+          </span>
+        )}
         {card.park !== '' && (
           <span className="rounded bg-purple-100 px-1.5 text-purple-700">
             parked: {card.park}
