@@ -1,0 +1,9 @@
+[Unit]
+Description=agent-ops stale worktree sweep
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/agent-ops
+Environment=AGENT_OPS_STATE_DIR=%h/agent-ops-state
+ExecStart=%h/agent-ops/provision/sweep-worktrees.sh --sweep

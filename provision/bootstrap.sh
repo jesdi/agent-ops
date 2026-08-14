@@ -169,6 +169,8 @@ as_agent cp provision/agent-ops-dispatcher.service \
    provision/agent-ops-digest.timer \
    provision/agent-ops-triage.service \
    provision/agent-ops-triage.timer \
+   provision/agent-ops-sweep.service \
+   provision/agent-ops-sweep.timer \
    provision/agent-ops-update.service \
    provision/agent-ops-update.timer \
    provision/agent-ops-web.service \
@@ -183,6 +185,7 @@ as_agent systemctl --user enable --now agent-ops-dispatcher.timer
 as_agent systemctl --user enable --now agent-ops-keepalive.timer
 as_agent systemctl --user enable --now agent-ops-digest.timer
 as_agent systemctl --user enable --now agent-ops-triage.timer
+as_agent systemctl --user enable --now agent-ops-sweep.timer
 as_agent systemctl --user enable --now agent-ops-waitd.service \
   || echo "waitd not up yet (expected before credentials): after follow-ups, run
   systemctl --user restart agent-ops-waitd  (as agent)"
