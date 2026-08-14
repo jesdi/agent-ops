@@ -1465,15 +1465,18 @@ def test_reply_intent_wakes_parked_task_and_is_deleted(tmp_path, monkeypatch):
     assert applied[0]["detail"] == "reply" and applied[0]["issue"] == 42
 
 
-def test_reply_intent_for_unparked_task_is_skipped_and_deleted(tmp_path, monkeypatch):
+def test_reply_intent_for_running_task_is_queued_but_task_stays_running(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    make_task(c, issue=42)  # not parked
+    make_task(c, issue=42)  # not parked — session is live
     intents_mod.write_intent(c.state_dir, "reply", 42, {"text": "hi"}, "op", 1)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    assert load(c.state_dir, 42).park == ""  # untouched
-    assert intents_mod.list_intents(c.state_dir) == []  # still deleted
+    # message is queued — not dropped — and the task stays unparked
+    from dispatcher import messages
+    assert messages.undelivered(c.state_dir, 42)[0].text == "hi"
+    assert load(c.state_dir, 42).park == ""  # no wake flip for a live session
+    assert intents_mod.list_intents(c.state_dir) == []  # intent deleted
 
 
 def test_reply_intent_on_gate_parked_task_wakes_it(tmp_path, monkeypatch):
