@@ -3246,3 +3246,55 @@ def test_two_human_parks_no_longer_deadlock_a_resume(tmp_path):
     main._resume_woken(c, d, c.targets[0], budget_ok=True)
     t = load(c.state_dir, 198)
     assert t.park == "" and t.slot != NO_SLOT
+
+
+def test_blocked_wake_emits_one_event_not_one_per_pass(tmp_path):
+    c = dc_replace(cfg(tmp_path), capacity=1)
+    make_task(c, issue=41, slot=0, park="")          # holds the only capacity
+    make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    blocked = [e for e in main.eventlog.read_tail(c.state_dir)
+               if e["event"] == "wake-blocked"]
+    assert len(blocked) == 1
+    assert blocked[0]["issue"] == 42
+    assert blocked[0]["detail"] == "capacity full"
+    assert main._wake_blocked_path(c, 42).exists()
+
+
+def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
+    """Practically unreachable now that max_slots == capacity + 2 (the
+    capacity gate fires first), but the guard stays — and when it does fire it
+    must name the resource that ran out, not just go quiet."""
+    c = cfg(tmp_path)
+    make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
+    monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
+    main._resume_woken(c, deps(), c.targets[0], budget_ok=True)
+    blocked = [e for e in main.eventlog.read_tail(c.state_dir)
+               if e["event"] == "wake-blocked"]
+    assert [e["detail"] for e in blocked] == ["no free slot"]
+
+
+def test_marker_clears_once_the_wake_succeeds(tmp_path):
+    c = dc_replace(cfg(tmp_path), capacity=1)
+    make_task(c, issue=41, slot=0, park="")
+    make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    assert main._wake_blocked_path(c, 42).exists()
+    main.delete(c.state_dir, 41)                     # capacity frees up
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    assert not main._wake_blocked_path(c, 42).exists()
+    assert load(c.state_dir, 42).park == ""
+
+
+def test_blocked_feedback_spawn_is_reported_too(tmp_path):
+    c = dc_replace(cfg(tmp_path), capacity=1)
+    make_task(c, issue=41, slot=0, park="")
+    make_task(c, issue=42, slot=NO_SLOT, stage=Stage.PR_OPEN,
+              feedback_pending=True)
+    main._spawn_feedback(c, deps(), c.targets[0], budget_ok=True)
+    blocked = [e for e in main.eventlog.read_tail(c.state_dir)
+               if e["event"] == "wake-blocked"]
+    assert [e["issue"] for e in blocked] == [42]

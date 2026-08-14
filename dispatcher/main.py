@@ -699,6 +699,29 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
             f"https://github.com/{target.repo}/pull/{task.pr_number}")
 
 
+def _wake_blocked_path(cfg: Config, issue: int) -> Path:
+    return Path(cfg.state_dir) / f"wake-blocked-{issue}"
+
+
+def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
+                       reason: str) -> None:
+    """Edge-triggered: the event fires the pass a wake FIRST goes hungry, not
+    every pass thereafter — a resume that waits overnight must not write 144
+    identical lines into events.jsonl. The marker is the edge."""
+    p = _wake_blocked_path(cfg, task.issue)
+    if p.exists():
+        return
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.touch()
+    eventlog.append_event(cfg.state_dir, "wake-blocked", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail=reason)
+
+
+def _clear_wake_blocked(cfg: Config, issue: int) -> None:
+    _wake_blocked_path(cfg, issue).unlink(missing_ok=True)
+
+
 def _flush_done(cfg: Config) -> None:
     cutoff = cfg.done_retention_days * 86400
     for task in load_all(cfg.state_dir):
@@ -711,6 +734,7 @@ def _flush_done(cfg: Config) -> None:
         if since.tzinfo is None:
             since = since.replace(tzinfo=timezone.utc)
         if (datetime.now(timezone.utc) - since).total_seconds() >= cutoff:
+            _clear_wake_blocked(cfg, task.issue)
             delete(cfg.state_dir, task.issue)
             eventlog.append_event(cfg.state_dir, "flushed",
                                   target=task.target, issue=task.issue,
@@ -731,6 +755,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
             continue  # a human is typing in this session — do not resume over them
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
+            _mark_wake_blocked(cfg, target, task, "capacity full")
             return
         if task.slot == NO_SLOT:
             # Gate-parked tasks gave their slot back. Take any free one —
@@ -739,7 +764,8 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
             slot = allocate_slot(load_all(cfg.state_dir),
                                  max_slots(cfg.capacity))
             if slot is None:
-                continue  # no free slot: stays parked, retried next pass
+                _mark_wake_blocked(cfg, target, task, "no free slot")
+                continue  # stays parked, retried next pass
             task = replace(task, slot=slot)
         model = _model_for(cfg, target, task, task.stage)
         agent_dir = Path(task.worktree) / ".agent"
@@ -768,6 +794,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
             deps.sessions.resume(task.issue, task.worktree,
                                  block or "Continue.", model)
         messages.mark_delivered(cfg.state_dir, task.issue, drained)
+        _clear_wake_blocked(cfg, task.issue)
         save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                     park_msg_id=0, park_note="",
                                     updated_at=_now()))
@@ -799,10 +826,13 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
         tasks = [t for t in load_all(cfg.state_dir)
                  if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
+            _mark_wake_blocked(cfg, target, task, "capacity full")
             return
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
+            _mark_wake_blocked(cfg, target, task, "no free slot")
             return
+        _clear_wake_blocked(cfg, task.issue)
         # Cursor := spawn time: everything the session can read live is
         # now "seen"; anything arriving after this moment re-triggers a
         # round (conservative — a redundant round beats a lost comment).
