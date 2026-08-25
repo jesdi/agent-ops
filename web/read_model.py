@@ -74,7 +74,12 @@ def message_views(msgs: list[msgq.Message],
     `msgs` is the dispatcher-owned queue file, `pending` is the intents dir —
     a reply the web has written but no pass has drained yet. "sending" always
     sorts last: it is by construction the newest thing the operator did, and
-    an intent's created_at can be missing or clock-skewed."""
+    an intent's created_at can be missing or clock-skewed.
+
+    A textless pending intent is not a message: the Resume button posts `{}`,
+    so its intent carries text="" and would otherwise render as an empty
+    "sending" bubble for something the operator never typed. (The queue file
+    cannot contain one — _queue_message drops blank text.)"""
     out = [MessageView(id=m.id, text=m.text, actor=m.actor,
                        created_at=m.created_at,
                        delivered_at=m.delivered_at,
@@ -84,7 +89,7 @@ def message_views(msgs: list[msgq.Message],
                         actor=str(p.get("actor", "")),
                         created_at=str(p.get("created_at", "")),
                         delivered_at="", state="sending")
-            for p in pending]
+            for p in pending if str(p.get("text", "")).strip()]
     return out
 
 
@@ -229,6 +234,13 @@ def build_board(tasks: list[TaskState], *, capacity: int,
         col_cards.sort(key=lambda c: (c.score is None, -(c.score or 0.0),
                                       c.issue))
     in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
+    # Which numbers, not just how many: the console colours a card by its
+    # slot, and the gauge must light the same segments. slots_used is the
+    # LENGTH of that list, never a second count — counting `slot != NO_SLOT`
+    # instead made old on-disk state (a parked task still recording a slot)
+    # read "1/4" with zero segments lit.
+    slots_held = sorted({t.slot for t in in_flight
+                         if holds_slot(t) and t.slot != NO_SLOT})
     # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
     # (cf. dispatcher/main.py:223 which acknowledges number collisions).
@@ -246,12 +258,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
             # different capacity than the one the dispatcher enforces
             active=len(active(in_flight)),
             capacity=capacity,
-            slots_used=len([t for t in in_flight if t.slot != NO_SLOT]),
+            slots_used=len(slots_held),
             max_slots=max_slots(capacity),
-            # Which numbers, not just how many: the console colours a card by
-            # its slot, and the gauge must light the same segments.
-            slots_held=sorted({t.slot for t in in_flight
-                               if holds_slot(t) and t.slot != NO_SLOT})),
+            slots_held=slots_held),
         upcoming=upcoming, upcoming_stale=queue_stale,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
                               capacity=capacity, budget=budget,

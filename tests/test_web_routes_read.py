@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
+from dispatcher import messages as msgq
 from dispatcher.budget import UsageSnapshot
 from dispatcher.state import PARK_HUMAN, Stage
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_task)
@@ -39,9 +40,23 @@ def test_board_resolves_model_and_columns(tmp_path):
     assert card7["issue"] == 7 and card7["attached"] is True
     assert card7["model"]  # resolved via the config's model policy
     assert cols["parked"]["cards"][0]["issue"] == 8
+    # #8 is question-parked: it released both its capacity unit and its slot,
+    # so the gauge reads 1/4 with exactly one segment lit.
     assert body["capacity"] == {"active": 1, "capacity": 2,
-                                "slots_used": 2, "max_slots": 4,
+                                "slots_used": 1, "max_slots": 4,
                                 "slots_held": [0]}
+
+
+def _msg(mid, text, delivered=""):
+    return msgq.Message(id=mid, text=text, actor="jesdi@github",
+                        created_at="2026-08-12T10:00:00+00:00",
+                        delivered_at=delivered)
+
+
+def _intent(action, issue, text, iid="i1"):
+    return {"action": action, "issue": issue, "actor": "jesdi@github",
+            "created_at": "2026-08-12T10:07:00+00:00", "id": iid,
+            "text": text}
 
 
 def test_task_detail_and_404(tmp_path):
@@ -50,13 +65,41 @@ def test_task_detail_and_404(tmp_path):
                                  labels=("auto",))]
     fake.pane_tails[7] = "$ pytest -q\n3 passed"
     fake.alive.add(7)
+    fake.messages_by_issue[7] = [
+        _msg("m1", "use oauth", delivered="2026-08-12T10:05:00+00:00"),
+        _msg("m2", "and rebase")]
+    fake.pending = [
+        _intent("reply", 7, "one more thing"),
+        _intent("reply", 8, "another task's reply", iid="i2"),  # wrong issue
+        _intent("kill", 7, "", iid="i3"),                       # not a message
+    ]
     body = client.get("/api/task/7", headers=HEADERS).json()
     assert body["card"]["issue"] == 7
     assert body["pane_tail"].endswith("3 passed")
     assert body["session_alive"] is True
     assert body["ci_run_id"] == 42 and body["effort"] == 3
     assert body["labels"] == ["auto"]
+    # The thread the console renders: the durable queue plus this issue's
+    # not-yet-drained reply intents, and nothing else.
+    assert [(m["text"], m["state"]) for m in body["messages"]] == [
+        ("use oauth", "delivered"),
+        ("and rebase", "queued"),
+        ("one more thing", "sending")]
+    assert body["card"]["undelivered_messages"] == 1
+    assert body["delivery_contract"] == (
+        "will deliver at the next session boundary — this session is still "
+        "running")
     assert client.get("/api/task/999", headers=HEADERS).status_code == 404
+
+
+def test_task_detail_reports_a_starved_wake(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, park=PARK_HUMAN)]
+    fake.blocked_wakes.add(7)
+    body = client.get("/api/task/7", headers=HEADERS).json()
+    assert body["card"]["wake_blocked"] is True
+    assert body["delivery_contract"] == (
+        "will deliver when the session resumes — waiting for a free slot")
 
 
 def test_budget_base_threshold(tmp_path):

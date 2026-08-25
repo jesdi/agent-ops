@@ -75,7 +75,10 @@ def test_login_park_counts_towards_active_capacity():
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
     assert board.capacity.active == 1   # matches dispatcher.state.active()
-    assert board.capacity.slots_used == 2
+    # #1 keeps its slot (a login park keeps its pane); #2 gave its back, and
+    # slots_used counts held slots, not state files that still record one.
+    assert board.capacity.slots_used == 1
+    assert board.capacity.slots_held == [0]
 
 
 def test_build_board_groups_and_counts():
@@ -94,10 +97,10 @@ def test_build_board_groups_and_counts():
     assert [c.issue for c in by_key["parked"].cards] == [2]
     assert [c.issue for c in by_key["pr-open"].cards] == [3]
     assert by_key["in-progress"].cards[0].attached is True
-    # capacity: parked releases capacity; pr-open is not in-flight at all.
-    # max_slots derives from capacity: capacity + 2 = 4.
+    # capacity: parked releases capacity AND its slot; pr-open is not
+    # in-flight at all. max_slots derives from capacity: capacity + 2 = 4.
     assert board.capacity.active == 1
-    assert board.capacity.slots_used == 2
+    assert board.capacity.slots_used == 1   # only #1 still holds a slot
     assert board.capacity.capacity == 2
     assert board.capacity.max_slots == 4
 
@@ -716,3 +719,31 @@ def test_capacity_view_reports_held_slots_and_derived_max():
                         claims_paused=False, triage_running=False)
     assert board.capacity.slots_held == [0, 2]
     assert board.capacity.max_slots == 5
+
+
+def test_a_pending_intent_with_no_text_is_not_a_message():
+    """The Resume button posts `{}`, so a resume intent yields text="" — an
+    empty "sending" bubble in the thread. Nothing was typed; nothing renders."""
+    views = message_views([_msg("a", "queued one")],
+                          [{"id": "i", "text": "", "actor": "op",
+                            "created_at": "2026-08-12T10:06:00+00:00"},
+                           {"id": "j", "text": "   ", "actor": "op",
+                            "created_at": "2026-08-12T10:07:00+00:00"},
+                           {"id": "k", "text": "ship it", "actor": "op",
+                            "created_at": "2026-08-12T10:08:00+00:00"}])
+    assert [(v.text, v.state) for v in views] == [
+        ("queued one", "queued"), ("ship it", "sending")]
+
+
+def test_slots_used_never_disagrees_with_the_lit_segments():
+    """The gauge prints slots_used and lights slots_held: on old on-disk state
+    (a parked task still recording a slot) counting `slot != NO_SLOT` read
+    "1/4" with zero segments lit. One derivation, one truth."""
+    tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
+             make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
+    board = build_board(tasks, capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
+    assert board.capacity.slots_held == [0]
+    assert board.capacity.slots_used == len(board.capacity.slots_held)
