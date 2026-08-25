@@ -35,20 +35,18 @@ IN_FLIGHT_STAGES = frozenset({
     Stage.STALLED_ON_BUDGET,
 })
 
-MAX_SLOTS = 3
-
-# A task that holds no E2E slot. Only the spec-review park releases its slot:
-# the spec stage never used the slot's ports, and worktrees are per-issue, so
-# a fresh slot on resume is safe — and freeing it is what lets the whole Ready
-# queue be specced overnight instead of three tasks at a time.
+# A task that holds no E2E slot. Every session-ending park releases its slot
+# back to the pool; only PARK_LOGIN keeps a slot because it keeps a live
+# container and tmux session running (the pane is where the operator types the
+# OAuth code). PARK_REVIEW is the original exception that freed the slot; the
+# rule now applies to all session-ending parks, so slots are never leaked.
 NO_SLOT = -1
 
 # Park lifecycle (orthogonal to stage — the stage is preserved while parked).
-# "" = not parked. Parked tasks release CAPACITY but keep their SLOT
-# (ports/worktree stay reserved until the task truly ends). PARK_LOGIN is the
-# exception on both counts: it keeps its container and tmux session running,
-# so it keeps consuming capacity too (see active()). PARK_REVIEW is the
-# opposite exception: it releases the slot as well (see NO_SLOT).
+# "" = not parked. Parked tasks release CAPACITY. Every park that ends the
+# session also releases its SLOT — the only exception is PARK_LOGIN, which
+# keeps a live container and tmux session and therefore keeps both capacity
+# and the slot (see active() and holds_slot()).
 PARK_HUMAN = "parked"            # waiting for operator input
 PARK_CI = "awaiting-ci"          # waiting for a GitHub Actions run
 PARK_WAKE = "unpark-requested"   # wake event arrived; resume when slot free
@@ -69,7 +67,6 @@ class TaskState:
     park: str = ""
     ci_run_id: int = 0
     park_msg_id: int = 0
-    pending_reply: str = ""
     park_note: str = ""                  # the question shown while parked
     hold_for_attach: bool = False
     effort: int | None = None            # board Effort at claim time
@@ -112,6 +109,11 @@ def load(state_dir: str | Path, issue: int) -> TaskState | None:
     d = json.loads(p.read_text())
     d["stage"] = Stage(d["stage"])
     d["labels"] = tuple(d.get("labels", ()))
+    # Retired in the message-queue change: state files written by older code
+    # still carry it. Drop it rather than crash the pass — the text itself is
+    # not migrated, because a still-parked task's reply is re-sent by the
+    # operator and a delivered one is already in the transcript.
+    d.pop("pending_reply", None)
     return TaskState(**d)
 
 
@@ -133,10 +135,27 @@ def delete(state_dir: str | Path, issue: int) -> None:
     _path(state_dir, issue).unlink(missing_ok=True)
 
 
-def allocate_slot(existing: list[TaskState]) -> int | None:
-    held = {t.slot for t in existing
-            if t.stage in IN_FLIGHT_STAGES and t.slot != NO_SLOT}
-    for slot in range(MAX_SLOTS):
+def max_slots(capacity: int) -> int:
+    """Slots are a resource NAMESPACE (ports 8100+slot / 5200+slot and the
+    {slot} substitution in verify_cmd), not a concurrency limit — capacity is
+    the concurrency limit. Two spare slots above capacity give a resume room
+    to grab a fresh number while another session is mid-teardown, and deriving
+    the ceiling means raising capacity: in targets.yaml can never silently
+    reintroduce the starvation this replaced."""
+    return capacity + 2
+
+
+def holds_slot(t: TaskState) -> bool:
+    """Does this task legitimately still own its slot? Every park that ENDS
+    the session gives the slot back; PARK_LOGIN is the only one that keeps a
+    live pane, so it is the only park that keeps a slot."""
+    return (t.stage in IN_FLIGHT_STAGES
+            and (not t.park or t.park == PARK_LOGIN))
+
+
+def allocate_slot(existing: list[TaskState], max_slots: int) -> int | None:
+    held = {t.slot for t in existing if holds_slot(t) and t.slot != NO_SLOT}
+    for slot in range(max_slots):
         if slot not in held:
             return slot
     return None

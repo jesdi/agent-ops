@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { TaskCardView } from '../TaskCard'
 import { inProgressCard, loginParkedCard, parkedCard, reviewCard } from '../../test/fixtures'
+import { SLOT_COLORS } from '../../lib/capacity'
 
 function renderCard(card: typeof parkedCard, pendingActions?: string[]) {
   return render(
@@ -62,35 +63,6 @@ it('AWKWARD: a login-parked card is marked — parked, yet still consuming', () 
   expect(screen.getByText('holding a capacity unit')).toBeInTheDocument()
 })
 
-// The accent border is purely visual with no accessible surface of its own;
-// its text counterpart ('holding a capacity unit') is asserted separately above.
-// These class assertions exist specifically to catch a regressed ACCENT_BORDER
-// application — the sr-only span is gated independently and would pass without it.
-it('accent: consuming card gets blue border classes by default', () => {
-  renderCard({ ...inProgressCard, consuming_capacity: true })
-  expect(screen.getByTestId('card-41')).toHaveClass('border-l-4', 'border-l-blue-500')
-})
-
-it('accent: non-consuming card has no accent colour (transparent left border, pinned on hover)', () => {
-  renderCard({ ...parkedCard, consuming_capacity: false })
-  expect(screen.getByTestId('card-42')).not.toHaveClass('border-l-blue-500')
-  expect(screen.getByTestId('card-42')).not.toHaveClass('border-l-amber-500')
-  // hover:border-l-transparent must be present to pin the left border against
-  // hover:border-gray-400 (shorthand), which would otherwise expand to
-  // border-left-color and override the transparent baseline on hover.
-  expect(screen.getByTestId('card-42')).toHaveClass('border-l-transparent')
-  expect(screen.getByTestId('card-42')).toHaveClass('hover:border-l-transparent')
-})
-
-it('accent: amber accent is applied when passed explicitly', () => {
-  render(
-    <MemoryRouter>
-      <TaskCardView card={{ ...inProgressCard, consuming_capacity: true }} accent="amber" />
-    </MemoryRouter>,
-  )
-  expect(screen.getByTestId('card-41')).toHaveClass('border-l-4', 'border-l-amber-500')
-})
-
 test('active card shows time since claim; done card shows total cycle', () => {
   renderCard(
     { ...inProgressCard, claimed_at: new Date(Date.now() - 7200_000).toISOString() },
@@ -100,4 +72,36 @@ test('active card shows time since claim; done card shows total cycle', () => {
     { ...inProgressCard, stage: 'done', column: 'done', cycle_seconds: 8100 },
   )
   expect(screen.getByText(/took 2h 15m/)).toBeInTheDocument()
+})
+
+test('shows an envelope badge when messages are queued', () => {
+  renderCard({ ...parkedCard, undelivered_messages: 2 })
+  expect(screen.getByTestId('mail-badge')).toHaveTextContent('2')
+})
+
+test('no envelope badge when nothing is queued', () => {
+  renderCard({ ...parkedCard, undelivered_messages: 0 })
+  expect(screen.queryByTestId('mail-badge')).toBeNull()
+})
+
+test('a starved wake says so on the card', () => {
+  renderCard({ ...parkedCard, wake_blocked: true })
+  expect(screen.getByText('waiting for a free slot')).toBeInTheDocument()
+})
+
+test('a card holding a slot is bordered and chipped in that slot colour', () => {
+  const { container } = render(
+    <MemoryRouter>
+      <TaskCardView card={{ ...inProgressCard, slot: 2 }} />
+    </MemoryRouter>)
+  expect(screen.getByTestId('slot-chip')).toHaveTextContent('slot 2')
+  expect(container.firstElementChild?.className).toContain(SLOT_COLORS[2])
+})
+
+test('a slot-less card carries no slot chip', () => {
+  render(
+    <MemoryRouter>
+      <TaskCardView card={{ ...reviewCard, slot: -1 }} />
+    </MemoryRouter>)
+  expect(screen.queryByTestId('slot-chip')).toBeNull()
 })

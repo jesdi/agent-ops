@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from dispatcher import budget, eventlog, queue_ops, state, triage
+from dispatcher import budget, eventlog, messages as msgq, queue_ops, state, triage
 from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.intents import write_intent
@@ -248,7 +248,9 @@ class Sources:
             out.append({"action": d.get("action", ""),
                         "issue": d.get("issue", 0),
                         "actor": d.get("actor", ""),
-                        "created_at": d.get("created_at", "")})
+                        "created_at": d.get("created_at", ""),
+                        "id": p.name,
+                        "text": str((d.get("payload") or {}).get("text", ""))})
         return out
 
     def state_fingerprint(self) -> str:
@@ -266,7 +268,10 @@ class Sources:
 
         board = digest(
             list(root.glob("task-*.json")) + list(root.glob("waiting-*"))
-            + list(root.glob("attached-*")) + [root / "pass.json"])
+            + list(root.glob("attached-*"))
+            + list(root.glob("wake-blocked-*"))
+            + list((root / "messages").glob("*.jsonl"))
+            + [root / "pass.json"])
         budget_d = digest([root / "usage-cache.json",
                            root / "budget-stalled"])
         failures = digest(
@@ -287,6 +292,21 @@ class Sources:
 
     def has_attached(self, issue: int) -> bool:
         return state.has_attached(self._cfg.state_dir, issue)
+
+    def messages(self, issue: int) -> list:
+        return msgq.all_messages(self._cfg.state_dir, issue)
+
+    def undelivered_counts(self) -> dict[int, int]:
+        return msgq.undelivered_counts(self._cfg.state_dir)
+
+    def wake_blocked_issues(self) -> set[int]:
+        out = set()
+        for p in self.state_dir.glob("wake-blocked-*"):
+            try:
+                out.add(int(p.name.removeprefix("wake-blocked-")))
+            except ValueError:
+                continue
+        return out
 
     # -- writes ----------------------------------------------------------
 

@@ -75,7 +75,10 @@ def test_login_park_counts_towards_active_capacity():
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
     assert board.capacity.active == 1   # matches dispatcher.state.active()
-    assert board.capacity.slots_used == 2
+    # #1 keeps its slot (a login park keeps its pane); #2 gave its back, and
+    # slots_used counts held slots, not state files that still record one.
+    assert board.capacity.slots_used == 1
+    assert board.capacity.slots_held == [0]
 
 
 def test_build_board_groups_and_counts():
@@ -94,12 +97,12 @@ def test_build_board_groups_and_counts():
     assert [c.issue for c in by_key["parked"].cards] == [2]
     assert [c.issue for c in by_key["pr-open"].cards] == [3]
     assert by_key["in-progress"].cards[0].attached is True
-    # capacity: parked releases capacity but keeps its slot;
-    # pr-open is not in-flight at all.
+    # capacity: parked releases capacity AND its slot; pr-open is not
+    # in-flight at all. max_slots derives from capacity: capacity + 2 = 4.
     assert board.capacity.active == 1
-    assert board.capacity.slots_used == 2
+    assert board.capacity.slots_used == 1   # only #1 still holds a slot
     assert board.capacity.capacity == 2
-    assert board.capacity.max_slots == 3
+    assert board.capacity.max_slots == 4
 
 
 def _scored_queue(*pairs):
@@ -620,3 +623,127 @@ def test_next_claim_same_target_still_skipped():
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, budget=BUDGET_OK,
                    queues=queues, claims_paused=False, triage_running=False)
     assert v.verdict == "will-claim" and v.next_issue == 74
+
+
+# ---------------------------------------------------------------------------
+# Task 6: message thread, delivery contract, undelivered badge
+# ---------------------------------------------------------------------------
+
+from dispatcher import messages as msgq
+from web.read_model import (delivery_contract, message_views, task_detail)
+
+
+def _msg(mid, text, delivered=""):
+    return msgq.Message(id=mid, text=text, actor="jesdi@github",
+                        created_at="2026-08-12T10:00:00+00:00",
+                        delivered_at=delivered)
+
+
+def test_message_states_are_derived_from_the_two_sources():
+    views = message_views(
+        [_msg("a", "delivered one", "2026-08-12T10:05:00+00:00"),
+         _msg("b", "queued one")],
+        [{"id": "intent-1", "text": "just sent", "actor": "jesdi@github",
+          "created_at": "2026-08-12T10:06:00+00:00"}])
+    assert [(v.text, v.state) for v in views] == [
+        ("delivered one", "delivered"),
+        ("queued one", "queued"),
+        ("just sent", "sending")]
+
+
+def test_sending_entries_come_last_even_with_odd_timestamps():
+    views = message_views(
+        [_msg("a", "queued one")],
+        [{"id": "i", "text": "sent", "actor": "op", "created_at": ""}])
+    assert [v.state for v in views] == ["queued", "sending"]
+
+
+def test_delivery_contract_unclaimed_issue():
+    assert delivery_contract(None, wake_blocked=False) == (
+        "will deliver when this task is claimed")
+
+
+@pytest.mark.parametrize("stage", [Stage.DONE, Stage.FAILED])
+def test_delivery_contract_finished_task(stage):
+    t = make_task(stage=stage)
+    assert delivery_contract(t, wake_blocked=False) == (
+        "will deliver if this task restarts")
+
+
+def test_delivery_contract_parked_and_starved():
+    t = make_task(park=PARK_HUMAN)
+    assert delivery_contract(t, wake_blocked=True) == (
+        "will deliver when the session resumes — waiting for a free slot")
+    assert delivery_contract(t, wake_blocked=False) == (
+        "will deliver when the session resumes")
+
+
+def test_delivery_contract_running_session():
+    t = make_task(park="")
+    assert delivery_contract(t, wake_blocked=False) == (
+        "will deliver at the next session boundary — this session is still "
+        "running")
+
+
+def test_task_detail_carries_thread_and_contract():
+    t = make_task(issue=7, park=PARK_HUMAN)
+    detail = task_detail(t, model="m", attached=False, pane_tail="",
+                         session_alive=False, events=[],
+                         now=NOW,
+                         messages=[_msg("a", "hi")], pending_sends=[],
+                         wake_blocked=False)
+    assert [m.state for m in detail.messages] == ["queued"]
+    assert detail.delivery_contract == (
+        "will deliver when the session resumes")
+
+
+def test_card_carries_undelivered_count_and_blocked_flag():
+    tasks = [make_task(issue=7)]
+    board = build_board(tasks, capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None,
+                        now=NOW,
+                        budget=BUDGET_OK, queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False,
+                        undelivered={7: 3}, wake_blocked={7})
+    card = [c for col in board.columns for c in col.cards][0]
+    assert card.undelivered_messages == 3
+    assert card.wake_blocked is True
+
+
+def test_capacity_view_reports_held_slots_and_derived_max():
+    tasks = [make_task(issue=7, slot=0), make_task(issue=8, slot=2)]
+    board = build_board(tasks, capacity=3, models={}, attached=set(),
+                        events=[], heartbeat=None,
+                        now=NOW,
+                        budget=BUDGET_OK, queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
+    assert board.capacity.slots_held == [0, 2]
+    assert board.capacity.max_slots == 5
+
+
+def test_a_pending_intent_with_no_text_is_not_a_message():
+    """The Resume button posts `{}`, so a resume intent yields text="" — an
+    empty "sending" bubble in the thread. Nothing was typed; nothing renders."""
+    views = message_views([_msg("a", "queued one")],
+                          [{"id": "i", "text": "", "actor": "op",
+                            "created_at": "2026-08-12T10:06:00+00:00"},
+                           {"id": "j", "text": "   ", "actor": "op",
+                            "created_at": "2026-08-12T10:07:00+00:00"},
+                           {"id": "k", "text": "ship it", "actor": "op",
+                            "created_at": "2026-08-12T10:08:00+00:00"}])
+    assert [(v.text, v.state) for v in views] == [
+        ("queued one", "queued"), ("ship it", "sending")]
+
+
+def test_slots_used_never_disagrees_with_the_lit_segments():
+    """The gauge prints slots_used and lights slots_held: on old on-disk state
+    (a parked task still recording a slot) counting `slot != NO_SLOT` read
+    "1/4" with zero segments lit. One derivation, one truth."""
+    tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
+             make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
+    board = build_board(tasks, capacity=2, models={}, attached=set(),
+                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+                        queues=[], queue_stale=False,
+                        claims_paused=False, triage_running=False)
+    assert board.capacity.slots_held == [0]
+    assert board.capacity.slots_used == len(board.capacity.slots_held)

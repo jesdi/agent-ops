@@ -10,6 +10,7 @@ export const parkedCard: TaskCard = {
   park_note: 'Should I use the staging redirect URL or prod?', feedback_pending: false,
   updated_at: '2026-07-25T10:00:00Z', attached: false, consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
+  undelivered_messages: 0, wake_blocked: false,
 }
 
 export const reviewCard: TaskCard = {
@@ -20,6 +21,7 @@ export const reviewCard: TaskCard = {
   park_note: 'spec ready for review', feedback_pending: false,
   updated_at: '2026-07-25T09:00:00Z', attached: false, consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
+  undelivered_messages: 0, wake_blocked: false,
 }
 
 export const inProgressCard: TaskCard = {
@@ -29,6 +31,7 @@ export const inProgressCard: TaskCard = {
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T11:30:00Z', attached: false, consuming_capacity: true,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
+  undelivered_messages: 0, wake_blocked: false,
 }
 
 // The motivating pair: both sit in the Parked column, only one holds a unit.
@@ -39,6 +42,7 @@ export const loginParkedCard: TaskCard = {
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T11:00:00Z', attached: false, consuming_capacity: true,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
+  undelivered_messages: 0, wake_blocked: false,
 }
 
 export const ciParkedCard: TaskCard = {
@@ -48,6 +52,7 @@ export const ciParkedCard: TaskCard = {
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T10:30:00Z', attached: false, consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
+  undelivered_messages: 0, wake_blocked: false,
 }
 
 export const board: BoardView = {
@@ -63,7 +68,7 @@ export const board: BoardView = {
     { key: 'stalled', title: 'Stalled', cards: [] },
     { key: 'failed', title: 'Failed', cards: [] },
   ],
-  capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3 },
+  capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3, slots_held: [1, 2] },
   upcoming: [], upcoming_stale: false, median_cycle_seconds: null,
   next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0 },
 }
@@ -83,7 +88,8 @@ export const taskDetail: TaskDetail = {
   pane_tail: '? Should I use the staging redirect URL or prod?\n> ',
   session_alive: true,
   worktree: '/home/agent/worktrees/task-42',
-  pending_reply: '',
+  messages: [],
+  delivery_contract: 'will deliver when the session resumes',
   ci_run_id: 0,
   effort: 3,
   labels: ['auto'],

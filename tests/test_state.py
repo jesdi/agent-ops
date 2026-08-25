@@ -26,7 +26,7 @@ from dispatcher.state import (
 )
 
 
-def make(issue=101, stage=Stage.SPEC, slot=0):
+def make(issue=101, stage=Stage.SPEC, slot=0, **kw):
     return TaskState(
         issue=issue,
         target="portfolio_eval",
@@ -36,6 +36,7 @@ def make(issue=101, stage=Stage.SPEC, slot=0):
         branch=f"agent/task-{issue}",
         title="Add widget",
         updated_at="2026-07-14T12:00:00+00:00",
+        **kw,
     )
 
 
@@ -60,18 +61,18 @@ def test_load_all_sorted_by_issue(tmp_path: Path):
 
 def test_allocate_slot_picks_first_free():
     existing = [make(issue=1, slot=0), make(issue=2, slot=2)]
-    assert allocate_slot(existing) == 1
+    assert allocate_slot(existing, max_slots=3) == 1
 
 
 def test_allocate_slot_full_returns_none():
     existing = [make(issue=i, slot=i) for i in range(3)]
-    assert allocate_slot(existing) is None
+    assert allocate_slot(existing, max_slots=3) is None
 
 
 def test_terminal_stages_do_not_hold_slots():
     # a FAILED task's slot is reusable
     existing = [make(issue=1, slot=0, stage=Stage.FAILED)]
-    assert allocate_slot(existing) == 0
+    assert allocate_slot(existing, max_slots=3) == 0
 
 
 def test_in_flight_stages():
@@ -127,7 +128,7 @@ def test_old_state_file_without_park_fields_loads(tmp_path):
         "updated_at": "2026-07-14T00:00:00+00:00"}))
     ts = load(tmp_path, 7)
     assert ts.park == "" and ts.ci_run_id == 0 and ts.park_msg_id == 0
-    assert ts.pending_reply == "" and ts.hold_for_attach is False
+    assert ts.hold_for_attach is False
 
 
 def test_park_fields_roundtrip(tmp_path):
@@ -135,12 +136,12 @@ def test_park_fields_roundtrip(tmp_path):
     assert load(tmp_path, 1).park == PARK_CI
 
 
-def test_active_excludes_parked_but_parked_holds_slot():
+def test_active_excludes_parked_and_parked_releases_its_slot():
     ts = [_task(issue=1, park=PARK_HUMAN), _task(issue=2)]
     assert [t.issue for t in active(ts)] == [2]
     assert [t.issue for t in parked(ts)] == [1]
     from dispatcher.state import allocate_slot
-    assert allocate_slot(ts) not in (0,)  # slot 0 still held by both
+    assert allocate_slot(ts, max_slots=3) not in (0,)  # slot 0 still held by task 2
 
 
 def test_parked_helper_covers_all_park_values():
@@ -199,7 +200,7 @@ def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
         "issue": 55, "target": "portfolio_eval", "stage": "implement", "slot": 1,
         "worktree": "/wt", "branch": "agent/task-55", "title": "Old task",
         "updated_at": "2026-07-01T00:00:00+00:00", "park": "", "ci_run_id": 0,
-        "park_msg_id": 0, "pending_reply": "", "hold_for_attach": False,
+        "park_msg_id": 0, "hold_for_attach": False,
     }))
     loaded = load(tmp_path, 55)
     assert loaded.effort is None
@@ -251,13 +252,13 @@ def test_legacy_state_file_without_artifact_loads(tmp_path):
 def test_allocate_slot_ignores_slot_less_holders():
     # A gate-parked task holds no slot; slot 0 must stay allocatable.
     existing = [make(issue=1, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT)]
-    assert allocate_slot(existing) == 0
+    assert allocate_slot(existing, max_slots=3) == 0
 
 
 def test_all_slots_free_when_every_holder_is_gate_parked():
     existing = [make(issue=i, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT)
                 for i in range(5)]
-    assert allocate_slot(existing) == 0
+    assert allocate_slot(existing, max_slots=3) == 0
 
 
 def test_review_park_frees_capacity_and_counts_as_parked():
@@ -384,3 +385,84 @@ def test_active_is_exactly_the_predicate_over_a_mixed_fixture():
     ]
     assert active(tasks) == [t for t in tasks if consumes_capacity(t)]
     assert [t.issue for t in active(tasks)] == [1, 2, 7]
+
+
+def test_task_state_has_no_pending_reply_field():
+    from dataclasses import fields
+    assert "pending_reply" not in {f.name for f in fields(TaskState)}
+
+
+def test_load_tolerates_a_retired_pending_reply_key(tmp_path):
+    import json
+    from dispatcher.state import load, save
+    save(tmp_path, TaskState(issue=5, target="t", stage=Stage.IMPLEMENT,
+                             slot=0, worktree="/w", branch="b", title="x",
+                             updated_at="2026-08-12T00:00:00+00:00"))
+    p = tmp_path / "task-5.json"
+    d = json.loads(p.read_text())
+    d["pending_reply"] = "left over from the old schema"
+    p.write_text(json.dumps(d))
+    assert load(tmp_path, 5).issue == 5
+
+
+def test_max_slots_is_capacity_plus_headroom():
+    from dispatcher.state import max_slots
+    assert max_slots(2) == 4
+    assert max_slots(3) == 5
+
+
+def test_allocate_slot_respects_the_passed_max():
+    from dispatcher.state import allocate_slot
+    existing = [make(issue=1, slot=0), make(issue=2, slot=1)]
+    assert allocate_slot(existing, max_slots=2) is None
+    assert allocate_slot(existing, max_slots=4) == 2
+
+
+def test_holds_slot_only_for_live_and_login_parked():
+    from dispatcher.state import holds_slot
+    assert holds_slot(make(issue=1, slot=0, park="")) is True
+    assert holds_slot(make(issue=2, slot=0, park=PARK_LOGIN)) is True
+    for park in (PARK_HUMAN, PARK_CI, PARK_WAKE, PARK_REVIEW):
+        assert holds_slot(make(issue=3, slot=0, park=park)) is False
+
+
+def test_max_slots_constant_is_gone():
+    import dispatcher.state as state
+    assert not hasattr(state, "MAX_SLOTS")
+
+
+@pytest.mark.parametrize("stage", list(Stage))
+@pytest.mark.parametrize(
+    "park", ["", PARK_HUMAN, PARK_CI, PARK_WAKE, PARK_LOGIN, PARK_REVIEW])
+def test_slot_holders_are_exactly_the_capacity_consumers(stage, park):
+    """holds_slot and consumes_capacity are distinct CONCEPTS that currently
+    coincide, and the coincidence is load-bearing: because the slot-holder set
+    equals the capacity-consumer set, the capacity gate guarantees at most
+    capacity - 1 slots are held when allocate_slot runs, which is what makes a
+    ceiling of max_slots(capacity) == capacity + 2 sufficient — allocate_slot
+    can never return None.
+
+    Let the two diverge (e.g. give PARK_CI its slot back to holds_slot alone)
+    and the starvation this branch exists to kill returns silently: parked
+    tasks would pin every number while capacity still shows headroom, and no
+    other test would fail. Do NOT collapse the functions to satisfy this test;
+    the test is the pin.
+    """
+    from dispatcher.state import holds_slot
+    t = replace(make(stage=stage), park=park)
+    assert holds_slot(t) is consumes_capacity(t)
+
+
+def test_the_two_predicates_agree_over_the_mixed_fixture():
+    from dispatcher.state import holds_slot
+    tasks = [
+        make(issue=1, stage=Stage.IMPLEMENT),
+        replace(make(issue=2, stage=Stage.SPEC), park=PARK_LOGIN),
+        replace(make(issue=3, stage=Stage.IMPLEMENT), park=PARK_CI),
+        replace(make(issue=4, stage=Stage.AWAITING_SPEC_REVIEW), park=PARK_REVIEW),
+        make(issue=5, stage=Stage.DONE),
+        make(issue=6, stage=Stage.FAILED),
+        make(issue=7, stage=Stage.QUEUED),
+    ]
+    assert ([t.issue for t in tasks if holds_slot(t)]
+            == [t.issue for t in tasks if consumes_capacity(t)] == [1, 2, 7])

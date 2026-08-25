@@ -6,10 +6,14 @@ from datetime import datetime, timedelta
 
 from pydantic import BaseModel
 
+from dispatcher import messages as msgq
 from dispatcher.budget import UsageSnapshot, should_spawn
-from dispatcher.state import (IN_FLIGHT_STAGES, MAX_SLOTS, NO_SLOT, PARK_CI,
+from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
-                              Stage, TaskState, active, consumes_capacity)
+                              Stage, TaskState, active, consumes_capacity,
+                              holds_slot, max_slots)
+
+FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED})
 
 # (key, title) in display order — the single place column semantics live.
 COLUMNS: tuple[tuple[str, str], ...] = (
@@ -55,6 +59,57 @@ def column_for(stage: str, park: str) -> str:
     return _STAGE_COLUMN[stage]
 
 
+class MessageView(BaseModel):
+    id: str
+    text: str
+    actor: str
+    created_at: str
+    delivered_at: str          # "" while queued
+    state: str                 # sending | queued | delivered
+
+
+def message_views(msgs: list[msgq.Message],
+                  pending: list[dict]) -> list[MessageView]:
+    """The thread the console renders. Two sources, deliberately:
+    `msgs` is the dispatcher-owned queue file, `pending` is the intents dir —
+    a reply the web has written but no pass has drained yet. "sending" always
+    sorts last: it is by construction the newest thing the operator did, and
+    an intent's created_at can be missing or clock-skewed.
+
+    A textless pending intent is not a message: the Resume button posts `{}`,
+    so its intent carries text="" and would otherwise render as an empty
+    "sending" bubble for something the operator never typed. (The queue file
+    cannot contain one — _queue_message drops blank text.)"""
+    out = [MessageView(id=m.id, text=m.text, actor=m.actor,
+                       created_at=m.created_at,
+                       delivered_at=m.delivered_at,
+                       state="delivered" if m.delivered_at else "queued")
+           for m in msgs]
+    out += [MessageView(id=str(p.get("id", "")), text=str(p.get("text", "")),
+                        actor=str(p.get("actor", "")),
+                        created_at=str(p.get("created_at", "")),
+                        delivered_at="", state="sending")
+            for p in pending if str(p.get("text", "")).strip()]
+    return out
+
+
+def delivery_contract(t: TaskState | None, *, wake_blocked: bool) -> str:
+    """What the compose box promises BEFORE the operator hits send. Derived
+    from task state so it can never contradict what the dispatcher will
+    actually do with the message."""
+    if t is None:
+        return "will deliver when this task is claimed"
+    if t.stage in FINISHED_STAGES:
+        return "will deliver if this task restarts"
+    if t.park:
+        if wake_blocked:
+            return ("will deliver when the session resumes — waiting for a "
+                    "free slot")
+        return "will deliver when the session resumes"
+    return ("will deliver at the next session boundary — this session is "
+            "still running")
+
+
 class TaskCard(BaseModel):
     issue: int
     target: str
@@ -80,6 +135,10 @@ class TaskCard(BaseModel):
     # Backlog rank score (impact/effort) looked up from the rank rows; None
     # once the task drops off the ranking (typically Done/Failed).
     score: float | None
+    # Queued (undelivered) messages on this issue — the ✉ badge.
+    undelivered_messages: int = 0
+    # A wake this task asked for was denied for want of capacity or a slot.
+    wake_blocked: bool = False
 
 
 class Column(BaseModel):
@@ -104,6 +163,7 @@ class CapacityView(BaseModel):
     capacity: int
     slots_used: int
     max_slots: int
+    slots_held: list[int] = []
 
 
 class BoardView(BaseModel):
@@ -118,7 +178,9 @@ class BoardView(BaseModel):
 def task_card(t: TaskState, *, model: str, attached: bool,
               claimed_at: str = "",
               cycle_seconds: float | None = None,
-              score: float | None = None) -> TaskCard:
+              score: float | None = None,
+              undelivered_messages: int = 0,
+              wake_blocked: bool = False) -> TaskCard:
     return TaskCard(
         issue=t.issue, target=t.target, title=t.title,
         stage=t.stage.value, park=t.park,
@@ -133,7 +195,9 @@ def task_card(t: TaskState, *, model: str, attached: bool,
         feedback_pending=t.feedback_pending,
         updated_at=t.updated_at, attached=attached,
         consuming_capacity=consumes_capacity(t),
-        claimed_at=claimed_at, cycle_seconds=cycle_seconds, score=score)
+        claimed_at=claimed_at, cycle_seconds=cycle_seconds, score=score,
+        undelivered_messages=undelivered_messages,
+        wake_blocked=wake_blocked)
 
 
 def build_board(tasks: list[TaskState], *, capacity: int,
@@ -141,7 +205,11 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 events: list[dict], heartbeat: dict | None, now: datetime,
                 budget: BudgetView, queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
-                triage_running: bool) -> BoardView:
+                triage_running: bool,
+                undelivered: dict[int, int] | None = None,
+                wake_blocked: set[int] | None = None) -> BoardView:
+    mail = undelivered or {}
+    blocked = wake_blocked or set()
     claimed = claimed_at_index(events)
     # (target, number) -> score from the rank rows already on the request, so
     # a task card can show the same backlog score its ghost card would.
@@ -154,7 +222,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                                attached=t.issue in attached,
                                claimed_at=at,
                                cycle_seconds=cycle_seconds(at, t.done_at),
-                               score=scores.get((t.target, t.issue))))
+                               score=scores.get((t.target, t.issue)),
+                               undelivered_messages=mail.get(t.issue, 0),
+                               wake_blocked=t.issue in blocked))
     by_column: dict[str, list[TaskCard]] = {key: [] for key, _ in COLUMNS}
     for card in cards:
         by_column[card.column].append(card)
@@ -164,6 +234,13 @@ def build_board(tasks: list[TaskState], *, capacity: int,
         col_cards.sort(key=lambda c: (c.score is None, -(c.score or 0.0),
                                       c.issue))
     in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
+    # Which numbers, not just how many: the console colours a card by its
+    # slot, and the gauge must light the same segments. slots_used is the
+    # LENGTH of that list, never a second count — counting `slot != NO_SLOT`
+    # instead made old on-disk state (a parked task still recording a slot)
+    # read "1/4" with zero segments lit.
+    slots_held = sorted({t.slot for t in in_flight
+                         if holds_slot(t) and t.slot != NO_SLOT})
     # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
     # (cf. dispatcher/main.py:223 which acknowledges number collisions).
@@ -181,8 +258,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
             # different capacity than the one the dispatcher enforces
             active=len(active(in_flight)),
             capacity=capacity,
-            slots_used=len([t for t in in_flight if t.slot != NO_SLOT]),
-            max_slots=MAX_SLOTS),
+            slots_used=len(slots_held),
+            max_slots=max_slots(capacity),
+            slots_held=slots_held),
         upcoming=upcoming, upcoming_stale=queue_stale,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
                               capacity=capacity, budget=budget,
@@ -197,7 +275,8 @@ class TaskDetail(BaseModel):
     pane_tail: str
     session_alive: bool
     worktree: str
-    pending_reply: str
+    messages: list[MessageView]
+    delivery_contract: str
     ci_run_id: int
     effort: int | None
     labels: list[str]
@@ -206,14 +285,23 @@ class TaskDetail(BaseModel):
 
 def task_detail(t: TaskState, *, model: str, attached: bool,
                 pane_tail: str, session_alive: bool,
-                events: list[dict], now: datetime) -> TaskDetail:
+                events: list[dict], now: datetime,
+                messages: list[msgq.Message] | None = None,
+                pending_sends: list[dict] | None = None,
+                wake_blocked: bool = False) -> TaskDetail:
     at = claimed_at(claimed_at_index(events), t.target, t.issue)
+    msgs = messages or []
     return TaskDetail(
         card=task_card(t, model=model, attached=attached,
                        claimed_at=at,
-                       cycle_seconds=cycle_seconds(at, t.done_at)),
+                       cycle_seconds=cycle_seconds(at, t.done_at),
+                       undelivered_messages=len(
+                           [m for m in msgs if not m.delivered_at]),
+                       wake_blocked=wake_blocked),
         pane_tail=pane_tail, session_alive=session_alive,
-        worktree=t.worktree, pending_reply=t.pending_reply,
+        worktree=t.worktree,
+        messages=message_views(msgs, pending_sends or []),
+        delivery_contract=delivery_contract(t, wake_blocked=wake_blocked),
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
         timeline=stage_timeline(events, t.issue, now=now))
 
