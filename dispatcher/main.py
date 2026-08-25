@@ -115,7 +115,15 @@ def _queue_message(cfg: Config, issue: int, text: str, actor: str) -> None:
     """Every message the agent should eventually read goes here — operator
     replies AND dispatcher-authored ones (CI conclusions, "the operator
     resumed this"). Appending instead of overwriting one field is the whole
-    point: a second message can no longer clobber the first."""
+    point: a second message can no longer clobber the first.
+
+    Blank text is not a message and never enters the queue: /attach wakes a
+    task with text="" (it is a wake, not something to say), and a queued
+    zero-length message would show a phantom ✉ badge on the card, an empty
+    row in the console thread, and an empty entry under "## Operator
+    messages" in the next resume prompt."""
+    if not text.strip():
+        return
     messages.append(cfg.state_dir, issue, text, actor)
 
 
@@ -1030,11 +1038,23 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
     issue = intent.issue
     task = load(cfg.state_dir, issue)
     if intent.action == "reply":
-        # Unconditional: EVERY card accepts messages, including a running
-        # session, a done/failed tombstone, and an issue with no task file at
-        # all (a pre-briefing left on a backlog card, delivered at claim
-        # time). The old park-state guard dropped these with only a journald
-        # warning — the silent message loss this change exists to kill.
+        # One exception to "every reply is a message": a reply to a login
+        # park is the OAuth authorization code, and the only thing that can
+        # act on it is the live pane it was issued for. Queueing it would
+        # promise a delivery that cannot do what the operator intended (the
+        # resume ENDS that pane) and would persist a single-use credential in
+        # messages/<issue>.jsonl and render it in the console thread. Same
+        # path the Telegram reply takes — including its "the pane left the
+        # login prompt" refusal.
+        if task is not None and task.park == PARK_LOGIN:
+            _inject_login_code(cfg, deps, task,
+                               intent.payload.get("text", ""))
+            return
+        # Otherwise unconditional: EVERY card accepts messages, including a
+        # running session, a done/failed tombstone, and an issue with no task
+        # file at all (a pre-briefing left on a backlog card, delivered at
+        # claim time). The old park-state guard dropped these with only a
+        # journald warning — the silent message loss this change exists to kill.
         _queue_message(cfg, issue, intent.payload.get("text", ""),
                        intent.actor or "operator")
         if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
@@ -1067,7 +1087,13 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             # the issue becomes a live candidate again. Without a tombstone,
             # _claim_new's guard (known = {t.issue for t in tasks}) would not
             # contain it and would re-claim the just-killed issue the same pass.
-            save(cfg.state_dir, replace(task, stage=Stage.FAILED,
+            # The park is cleared with it: a killed task waits for nothing, so
+            # it must leave the wake queue (_resume_woken filters on park
+            # alone) — otherwise a killed PARK_WAKE task keeps asking for a
+            # slot it will never use, re-arming the wake-blocked marker every
+            # pass that _reconcile_slots clears it.
+            save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
+                                        hold_for_attach=False,
                                         updated_at=_now()))
         clear_waiting(cfg.state_dir, issue)
         eventlog.append_event(cfg.state_dir, "failed",
@@ -1194,20 +1220,54 @@ def _sandboxed_state(cfg: Config):
         yield replace(cfg, state_dir=str(sandbox))
 
 
+def _starving(task: TaskState) -> bool:
+    """Is this task legitimately still waiting for the capacity/slot it was
+    denied? Exactly the two queues that mark the marker: _resume_woken's
+    (park == PARK_WAKE) and _spawn_feedback's (a pr-open task with pending
+    feedback). Anything else is not waiting for anything."""
+    return task.park == PARK_WAKE or task.feedback_pending
+
+
 def _reconcile_slots(cfg: Config) -> None:
-    """Retroactive fix for slots leaked by older code: any non-login parked
-    task still holding a slot gives it back. Runs at the top of every pass so
-    no manual state surgery is ever needed — the invariant is re-established
-    from disk rather than assumed."""
+    """Re-establish two invariants from disk at the top of every pass, so no
+    terminal path has to remember them and no manual state surgery is ever
+    needed.
+
+    Slots: a task that no longer holds its slot by holds_slot() gives the
+    number back. That is every session-ending park (the leak older code left
+    behind) AND every task that reached a terminal stage — pr-open, done,
+    failed — still recording one.
+
+    Wake-blocked markers: the marker (and the "waiting for a free slot"
+    badge and delivery_contract suffix it drives) is dropped for every task
+    that is not _starving(), plus every marker whose task file is gone. It
+    used to be unlinked only on a successful resume/feedback-spawn and in
+    _flush_done, so every other terminal transition — the kill intent's
+    FAILED tombstone, a crash, a closed PR, a done task inside its retention
+    window — left a dead card claiming forever that it was waiting for a
+    slot, and a re-claim of the same issue inherited the stale badge."""
+    known: set[int] = set()
     for task in load_all(cfg.state_dir):
-        if holds_slot(task) or task.slot == NO_SLOT:
+        known.add(task.issue)
+        if not holds_slot(task) and task.slot != NO_SLOT:
+            eventlog.append_event(cfg.state_dir, "slot-reclaimed",
+                                  target=task.target, issue=task.issue,
+                                  stage=task.stage.value,
+                                  detail=f"stage {task.stage.value}"
+                                         + (f" park {task.park}" if task.park
+                                            else " unparked")
+                                         + f" released slot {task.slot}")
+            task = replace(task, slot=NO_SLOT)
+            save(cfg.state_dir, task)
+        if not _starving(task):
+            _clear_wake_blocked(cfg, task.issue)
+    for p in Path(cfg.state_dir).glob("wake-blocked-*"):
+        try:
+            issue = int(p.name.removeprefix("wake-blocked-"))
+        except ValueError:
             continue
-        save(cfg.state_dir, replace(task, slot=NO_SLOT))
-        eventlog.append_event(cfg.state_dir, "slot-reclaimed",
-                              target=task.target, issue=task.issue,
-                              stage=task.stage.value,
-                              detail=f"park {task.park} released slot "
-                                     f"{task.slot}")
+        if issue not in known:  # state file flushed/deleted under the marker
+            p.unlink(missing_ok=True)
 
 
 def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,

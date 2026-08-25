@@ -839,6 +839,34 @@ def test_attach_command_sets_hold(tmp_path, monkeypatch):
     assert t.park == PARK_WAKE and t.hold_for_attach is True
 
 
+def test_attach_command_queues_no_message(tmp_path, monkeypatch):
+    """/attach is a wake, not a message. The empty text it hands _wake must
+    not land in the queue: a zero-length message shows a phantom ✉ badge on
+    the card, an empty row in the thread, and appends a junk "Operator
+    messages" block with an empty entry to the resume prompt."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43)  # the running task holds the only capacity unit
+    patch_events(monkeypatch, [Command(name="attach", issue=42)])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    from dispatcher import messages
+    t = load(c.state_dir, 42)
+    assert t.park == PARK_WAKE and t.hold_for_attach is True
+    assert messages.all_messages(c.state_dir, 42) == []
+
+
+def test_queue_message_drops_blank_text_only(tmp_path):
+    c = cfg(tmp_path)
+    from dispatcher import messages
+    main._queue_message(c, 42, "", "dispatcher")
+    main._queue_message(c, 42, "   \n ", "dispatcher")
+    main._queue_message(c, 42, "use the staging URL", "jesdi@github")
+    assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
+        "use the staging URL"]
+
+
 def test_status_command_reports(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -2088,8 +2116,10 @@ def test_woken_gate_parked_task_waits_when_every_slot_is_taken(tmp_path, monkeyp
 def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, monkeypatch):
     # Skipping a slot-less task must not abandon the rest of the wake queue:
     # a task that already holds a slot resumes in the same pass.
-    # Issues 1 and 2 occupy slots 0 and 1; issue 43 uniquely holds slot 2
-    # (all three MAX_SLOTS are taken, so slot-less issue 42 must wait).
+    # Issues 1 and 2 occupy slots 0 and 1; issue 43 already holds slot 2 and
+    # sits second in the wake queue, behind slot-less issue 42. The invariant
+    # under test is the `continue` in _resume_woken: whatever the head of the
+    # queue does, the rest of it is still processed in the same pass.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = dc_replace(cfg(tmp_path), capacity=9)
@@ -3298,3 +3328,85 @@ def test_blocked_feedback_spawn_is_reported_too(tmp_path):
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["issue"] for e in blocked] == [42]
+
+
+def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
+        tmp_path, monkeypatch):
+    """A terminal transition must not leave the wake-blocked marker behind:
+    the killed card would render "waiting for a free slot" forever, and a
+    later re-claim of the same issue would inherit the stale badge and the
+    stale delivery_contract suffix. The marker lifecycle is healed from disk
+    by the reconcile sweep, not by every terminal path remembering to unlink."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), capacity=1)
+    make_task(c, issue=41, slot=0, park="")      # holds the only capacity unit
+    make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
+    d = deps(sess=FakeSessions(alive={41}))
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    assert main._wake_blocked_path(c, 42).exists()
+
+    intents_mod.write_intent(c.state_dir, "kill", 42, {}, "op", 1)
+    main.run_pass(c, d)
+    t = load(c.state_dir, 42)
+    assert t.stage is Stage.FAILED
+    assert t.park == ""                          # no longer waiting for a wake
+    main.run_pass(c, d)                          # the sweep heals it from disk
+    assert not main._wake_blocked_path(c, 42).exists()
+
+
+def test_reconcile_keeps_the_marker_of_a_task_that_is_still_starving(tmp_path):
+    c = dc_replace(cfg(tmp_path), capacity=1)
+    make_task(c, issue=41, slot=0, park="")
+    make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
+    make_task(c, issue=43, slot=NO_SLOT, stage=Stage.PR_OPEN,
+              feedback_pending=True)
+    main._wake_blocked_path(c, 42).touch()
+    main._wake_blocked_path(c, 43).touch()
+    main._reconcile_slots(c)
+    assert main._wake_blocked_path(c, 42).exists()   # wake still denied
+    assert main._wake_blocked_path(c, 43).exists()   # feedback spawn still denied
+
+
+def test_reconcile_drops_a_marker_left_by_a_vanished_task(tmp_path):
+    c = cfg(tmp_path)
+    main._wake_blocked_path(c, 42).parent.mkdir(parents=True, exist_ok=True)
+    main._wake_blocked_path(c, 42).touch()      # state file already flushed
+    main._reconcile_slots(c)
+    assert not main._wake_blocked_path(c, 42).exists()
+
+
+def test_console_reply_to_a_login_park_types_the_code(tmp_path, monkeypatch):
+    """PARK_LOGIN is the one park whose "reply" is an OAuth authorization
+    code. Queueing it would promise a delivery that cannot work (the resume
+    ends the pane the code was for) and would persist a single-use credential
+    at rest, rendered in the console thread."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.SPEC, park=PARK_LOGIN, park_msg_id=77)
+    intents_mod.write_intent(c.state_dir, "reply", 42,
+                             {"text": "oauth-code-abc#123"}, "jesdi@github", 1)
+    sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
+    main.run_pass(c, deps(sess=sess))
+    from dispatcher import messages
+    assert sess.sent_text == [(42, "oauth-code-abc#123")]
+    assert sess.resumed == []                   # never through the wake path
+    assert messages.all_messages(c.state_dir, 42) == []  # not persisted at rest
+    assert load(c.state_dir, 42).park == ""
+
+
+def test_console_reply_to_a_human_park_still_queues(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43)                      # holds the only capacity unit
+    intents_mod.write_intent(c.state_dir, "reply", 42, {"text": "use oauth"},
+                             "jesdi@github", 1)
+    sess = FakeSessions(alive={43})
+    main.run_pass(c, deps(sess=sess))
+    from dispatcher import messages
+    assert sess.sent_text == []
+    assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
+        "use oauth"]
