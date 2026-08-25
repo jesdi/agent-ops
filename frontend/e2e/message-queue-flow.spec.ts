@@ -1,4 +1,11 @@
 import { expect, test } from '@playwright/test'
+import type { Page } from '@playwright/test'
+
+// Scoped through the per-message row, never the bare chip testid: the thread
+// renders one `message-state` per message, so an unqualified lookup only ever
+// worked because this spec keeps exactly one message in flight.
+const stateOf = (page: Page, id: string) =>
+  page.getByTestId(`message-${id}`).getByTestId('message-state')
 
 test('reply to a starved parked task: sending -> queued -> delivered', async ({ page, request }) => {
   await request.post('/__control__/reset-messages')
@@ -16,12 +23,12 @@ test('reply to a starved parked task: sending -> queued -> delivered', async ({ 
   await expect(page.getByTestId('message-thread')).toContainText(
     'use the staging redirect URL',
   )
-  await expect(page.getByTestId('message-state')).toHaveText('sending')
+  await expect(stateOf(page, 'intent-0')).toHaveText('sending')
 
   // The dispatcher pass drains the intent into the durable queue, but the
   // resume is still starved — the message must NOT be lost.
   await request.post('/__control__/apply-intents')
-  await expect(page.getByTestId('message-state')).toHaveText('queued')
+  await expect(stateOf(page, 'm1')).toHaveText('queued')
   await page.goto('/')
   await expect(
     page.getByTestId('card-42').getByTestId('mail-badge'),
@@ -33,7 +40,7 @@ test('reply to a starved parked task: sending -> queued -> delivered', async ({ 
   // A slot frees: the task resumes and the message is delivered and stamped.
   await request.post('/__control__/free-slot')
   await page.goto('/task/42')
-  await expect(page.getByTestId('message-state')).toContainText('delivered')
+  await expect(stateOf(page, 'm1')).toContainText('delivered')
   await page.goto('/')
   await expect(page.getByTestId('card-42').getByTestId('mail-badge')).toBeHidden()
 })

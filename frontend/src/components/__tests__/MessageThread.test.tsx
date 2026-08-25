@@ -31,9 +31,14 @@ test('renders nothing when there are no messages', () => {
   expect(container).toBeEmptyDOMElement()
 })
 
-test('a delivered message shows when it was delivered', () => {
+test('a delivered message shows WHEN it was delivered, not just that it was', () => {
+  // relativeTime(delivered_at) renders "just now" | "42s ago" | "5m ago" | …,
+  // so the chip must read "delivered <something> ago" (or "delivered just
+  // now") — asserting the bare word would still pass with the timestamp gone.
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000).toISOString()
   render(<MessageThread messages={[
-    msg({ id: 'a', state: 'delivered', delivered_at: '2026-08-12T10:05:00Z' }),
+    msg({ id: 'a', state: 'delivered', delivered_at: fiveMinutesAgo }),
   ]} />)
-  expect(screen.getByTestId('message-a')).toHaveTextContent('delivered')
+  const chip = within(screen.getByTestId('message-a')).getByTestId('message-state')
+  expect(chip).toHaveTextContent(/^delivered \d+m ago$/)
 })

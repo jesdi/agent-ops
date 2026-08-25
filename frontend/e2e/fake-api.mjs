@@ -71,8 +71,11 @@ function messageViews(issue) {
   const stored = (state.messages[issue] ?? []).map((m) => ({
     ...m, state: m.delivered_at ? 'delivered' : 'queued',
   }))
+  // Mirrors read_model.message_views: a textless pending intent (the Resume
+  // button posts `{}`) is not a message and renders no bubble.
   const sending = state.intents
     .filter((i) => i.issue === issue && (i.action === 'reply' || i.action === 'resume'))
+    .filter((i) => (i.text ?? '').trim() !== '')
     .map((i, n) => ({
       id: `intent-${n}`, text: i.text ?? '', actor: i.actor,
       created_at: i.created_at, delivered_at: '', state: 'sending',
@@ -246,6 +249,8 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/__control__/apply-intents' && req.method === 'POST') {
     for (const i of state.intents) {
       if (i.action !== 'reply' && i.action !== 'resume') continue
+      // Mirrors _queue_message: blank text never enters the durable queue.
+      if ((i.text ?? '').trim() === '') continue
       const list = state.messages[i.issue] ?? (state.messages[i.issue] = [])
       list.push({ id: `m${list.length + 1}`, text: i.text ?? '',
                   actor: i.actor, created_at: i.created_at, delivered_at: '' })

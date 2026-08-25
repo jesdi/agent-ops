@@ -136,7 +136,7 @@ def test_park_fields_roundtrip(tmp_path):
     assert load(tmp_path, 1).park == PARK_CI
 
 
-def test_active_excludes_parked_but_parked_holds_slot():
+def test_active_excludes_parked_and_parked_releases_its_slot():
     ts = [_task(issue=1, park=PARK_HUMAN), _task(issue=2)]
     assert [t.issue for t in active(ts)] == [2]
     assert [t.issue for t in parked(ts)] == [1]
@@ -429,3 +429,40 @@ def test_holds_slot_only_for_live_and_login_parked():
 def test_max_slots_constant_is_gone():
     import dispatcher.state as state
     assert not hasattr(state, "MAX_SLOTS")
+
+
+@pytest.mark.parametrize("stage", list(Stage))
+@pytest.mark.parametrize(
+    "park", ["", PARK_HUMAN, PARK_CI, PARK_WAKE, PARK_LOGIN, PARK_REVIEW])
+def test_slot_holders_are_exactly_the_capacity_consumers(stage, park):
+    """holds_slot and consumes_capacity are distinct CONCEPTS that currently
+    coincide, and the coincidence is load-bearing: because the slot-holder set
+    equals the capacity-consumer set, the capacity gate guarantees at most
+    capacity - 1 slots are held when allocate_slot runs, which is what makes a
+    ceiling of max_slots(capacity) == capacity + 2 sufficient — allocate_slot
+    can never return None.
+
+    Let the two diverge (e.g. give PARK_CI its slot back to holds_slot alone)
+    and the starvation this branch exists to kill returns silently: parked
+    tasks would pin every number while capacity still shows headroom, and no
+    other test would fail. Do NOT collapse the functions to satisfy this test;
+    the test is the pin.
+    """
+    from dispatcher.state import holds_slot
+    t = replace(make(stage=stage), park=park)
+    assert holds_slot(t) is consumes_capacity(t)
+
+
+def test_the_two_predicates_agree_over_the_mixed_fixture():
+    from dispatcher.state import holds_slot
+    tasks = [
+        make(issue=1, stage=Stage.IMPLEMENT),
+        replace(make(issue=2, stage=Stage.SPEC), park=PARK_LOGIN),
+        replace(make(issue=3, stage=Stage.IMPLEMENT), park=PARK_CI),
+        replace(make(issue=4, stage=Stage.AWAITING_SPEC_REVIEW), park=PARK_REVIEW),
+        make(issue=5, stage=Stage.DONE),
+        make(issue=6, stage=Stage.FAILED),
+        make(issue=7, stage=Stage.QUEUED),
+    ]
+    assert ([t.issue for t in tasks if holds_slot(t)]
+            == [t.issue for t in tasks if consumes_capacity(t)] == [1, 2, 7])
