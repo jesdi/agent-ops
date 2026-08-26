@@ -125,13 +125,19 @@ class FakeGitHub:
 
 
 class FakeSessions:
-    def __init__(self, alive=(), idle=None, tail="…pane tail…"):
+    def __init__(self, alive=(), idle=None, tail="…pane tail…",
+                 resume_raises=(), spawn_raises=()):
         self.alive_set = set(alive)
         self.idle = dict(idle or {})
         self.idle_queried = []
         self.tail = tail
         self.spawned, self.resumed, self.ended = [], [], []
         self.sent_text = []
+        # Issues whose launch explodes the way a vanished worktree does:
+        # containers.clone_root reads <worktree>/.git to find the clone to
+        # mount, so a swept or half-removed checkout raises here.
+        self.resume_raises = set(resume_raises)
+        self.spawn_raises = set(spawn_raises)
 
     def is_alive(self, issue):
         return issue in self.alive_set
@@ -144,9 +150,15 @@ class FakeSessions:
         self.sent_text.append((issue, text))
 
     def spawn_stage(self, issue, worktree, prompt, stage_name, model):
+        if issue in self.spawn_raises:
+            raise FileNotFoundError(
+                f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.spawned.append((issue, stage_name, model, prompt))
 
     def resume(self, issue, worktree, message, model):
+        if issue in self.resume_raises:
+            raise FileNotFoundError(
+                f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.resumed.append((issue, message, model))
 
     def capture_tail(self, issue, lines=25):
@@ -910,6 +922,79 @@ def test_pass_crash_recurring_dedupes_to_one_issue(tmp_path, monkeypatch):
             main.guarded_pass(c, d, "targets.yaml")
     assert len(gh.created_issues) == 1
     assert d.notifier.sent.count("task_failed") == 1
+
+
+def test_broken_worktree_fails_that_task_and_pass_survives(tmp_path, monkeypatch):
+    """A woken task whose worktree vanished must not take the pass with it.
+
+    The box wedged this way for hours: task-194's checkout was gone, so
+    clone_root raised inside sessions.resume, guarded_pass re-raised, and
+    _resume_woken never reached the tasks behind it — no claims, no spawns,
+    nothing, every pass, until a human looked."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE, slot=0,
+              updated_at="2026-07-21T00:00:00+00:00")
+    make_task(c, issue=43, park=PARK_WAKE, slot=1,
+              updated_at="2026-07-22T00:00:00+00:00")
+    gh = FakeGitHub()
+    sess = FakeSessions(resume_raises=[42])
+    d = deps(gh, sess)
+
+    main.run_pass(c, d)  # must not raise
+
+    # The task behind the broken one still got its turn.
+    assert [r[0] for r in sess.resumed] == [43]
+    assert load(c.state_dir, 43).park == ""
+    # The broken one is failed, unparked and off the board's live columns.
+    broken = load(c.state_dir, 42)
+    assert broken.stage is Stage.FAILED and broken.park == ""
+    assert (42, "task crashed mid-pass") in gh.released
+    # Filed on the infra repo: a vanished worktree is a box-side problem
+    # no session container can fix.
+    repo, title, body = gh.created_issues[0]
+    assert repo == "jesdi/agent-ops"
+    assert "task-crash" in title and "#42" in title
+    assert "No such file or directory" in body
+    assert "task_failed" in d.notifier.sent
+
+
+def test_broken_worktree_task_crash_dedupes_to_one_issue(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE, slot=0)
+    gh = FakeGitHub()
+    d = deps(gh, FakeSessions(resume_raises=[42]))
+    main.run_pass(c, d)
+    # Second pass: the task is FAILED now, so it is not woken again — but a
+    # re-park by the operator must not file a second identical issue.
+    save(c.state_dir, dc_replace(load(c.state_dir, 42),
+                                 stage=Stage.IMPLEMENT, park=PARK_WAKE))
+    main.run_pass(c, d)
+    assert len(gh.created_issues) == 1
+    assert d.notifier.sent.count("task_failed") == 1
+
+
+def test_broken_worktree_on_spawn_fails_that_task_and_pass_survives(
+        tmp_path, monkeypatch):
+    """Same isolation on the spawn path: _drive_task advancing a stage into
+    a vanished worktree fails the task, not the pass."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    # Gate stage with a dead session: _drive_task respawns it in place.
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=0)
+    gh = FakeGitHub()
+    sess = FakeSessions(spawn_raises=[42])
+    d = deps(gh, sess)
+
+    main.run_pass(c, d)  # must not raise
+
+    assert sess.spawned == []
+    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert "task-crash" in gh.created_issues[0][1]
 
 
 def test_run_status_error_does_not_abort_pass(tmp_path, monkeypatch):

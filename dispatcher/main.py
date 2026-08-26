@@ -750,7 +750,7 @@ def _flush_done(cfg: Config) -> None:
 
 
 def _resume_woken(cfg: Config, deps: Deps, target: Target,
-                  budget_ok: bool) -> None:
+                  budget_ok: bool, dry_run: bool = False) -> None:
     if not budget_ok:
         return
     woken = sorted(
@@ -775,40 +775,88 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
                 _mark_wake_blocked(cfg, target, task, "no free slot")
                 continue  # stays parked, retried next pass
             task = replace(task, slot=slot)
-        model = _model_for(cfg, target, task, task.stage)
-        agent_dir = Path(task.worktree) / ".agent"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        # Rewrite stage.json BEFORE resuming, or the next pass re-reads
-        # blocked/awaiting-ci and re-parks the freshly resumed session.
-        (agent_dir / "stage.json").write_text(json.dumps(
-            {"stage": task.stage.value, "status": "working", "model": model}))
-        _log_model(task.worktree, task.stage, model)
-        # End first, unconditionally. Most parks already stopped the session,
-        # but /attach on a PARK_LOGIN task reaches here with the pane still
-        # LIVE, and _launch would then type the podman command INTO the
-        # running claude (the failure _retry_plan and SpawnStage guard).
-        deps.sessions.end(task.issue)
-        block, drained = _drain(cfg, task.issue)
-        if task.hold_for_attach:
-            text = ("The operator is attaching to talk to you directly. "
-                    "Wait for their input.")
-            if block:
-                text = f"{text}\n\n{block}"
-            deps.sessions.resume(task.issue, task.worktree, text, model)
-            deps.notifier.send("resumed_for_attach", issue=task.issue,
-                               title=task.title, url=_url(target, task.issue),
-                               note="")
-        else:
-            deps.sessions.resume(task.issue, task.worktree,
-                                 block or "Continue.", model)
-        messages.mark_delivered(cfg.state_dir, task.issue, drained)
-        _clear_wake_blocked(cfg, task.issue)
-        save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
-                                    park_msg_id=0, park_note="",
-                                    updated_at=_now()))
-        eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
-                              issue=task.issue, stage=task.stage.value,
-                              model=model)
+        try:
+            _resume_one(cfg, deps, target, task)
+        except Exception:
+            _fail_task_crash(cfg, deps, target, task, dry_run)
+
+
+def _resume_one(cfg: Config, deps: Deps, target: Target,
+                task: TaskState) -> None:
+    model = _model_for(cfg, target, task, task.stage)
+    agent_dir = Path(task.worktree) / ".agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    # Rewrite stage.json BEFORE resuming, or the next pass re-reads
+    # blocked/awaiting-ci and re-parks the freshly resumed session.
+    (agent_dir / "stage.json").write_text(json.dumps(
+        {"stage": task.stage.value, "status": "working", "model": model}))
+    _log_model(task.worktree, task.stage, model)
+    # End first, unconditionally. Most parks already stopped the session,
+    # but /attach on a PARK_LOGIN task reaches here with the pane still
+    # LIVE, and _launch would then type the podman command INTO the
+    # running claude (the failure _retry_plan and SpawnStage guard).
+    deps.sessions.end(task.issue)
+    block, drained = _drain(cfg, task.issue)
+    if task.hold_for_attach:
+        text = ("The operator is attaching to talk to you directly. "
+                "Wait for their input.")
+        if block:
+            text = f"{text}\n\n{block}"
+        deps.sessions.resume(task.issue, task.worktree, text, model)
+        deps.notifier.send("resumed_for_attach", issue=task.issue,
+                           title=task.title, url=_url(target, task.issue),
+                           note="")
+    else:
+        deps.sessions.resume(task.issue, task.worktree,
+                             block or "Continue.", model)
+    messages.mark_delivered(cfg.state_dir, task.issue, drained)
+    _clear_wake_blocked(cfg, task.issue)
+    save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
+                                park_msg_id=0, park_note="",
+                                updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          model=model)
+
+
+def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
+                     task: TaskState, dry_run: bool = False) -> None:
+    """One task's turn blew up. Fail THAT task; let the pass carry on.
+
+    Everything a task's turn touches is reachable through its worktree, and
+    a worktree can simply be gone — swept, half-removed, or deleted by hand.
+    containers.clone_root then raises reading <worktree>/.git, and before
+    this the exception unwound all the way out of run_pass: guarded_pass
+    filed a pass-crash and re-raised, so the unit failed and every task
+    QUEUED BEHIND the broken one was never reached. One dead checkout stopped
+    the whole box, every firing, until a human looked. A card in Failed is
+    the far cheaper outcome, and the report carries the traceback."""
+    error = traceback.format_exc()
+    # Best-effort teardown: the point of this function is that nothing in it
+    # may raise, or we are back to killing the pass.
+    try:
+        deps.github.release(target, task.issue, "task crashed mid-pass")
+    except Exception as exc:
+        print(f"[warn] release failed for #{task.issue}: {exc}", file=sys.stderr)
+    try:
+        log_tail = deps.sessions.capture_tail(task.issue, lines=30)
+    except Exception:
+        log_tail = ""
+    save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
+                                hold_for_attach=False, updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "failed", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail="task crashed mid-pass")
+    # klass is not "session-crash": nothing is wrong inside the container,
+    # so this routes to infra_repo rather than the target repo.
+    rep = failures.FailureReport(
+        klass="task-crash", target=target.name, issue=task.issue,
+        title=f"task #{task.issue} crashed mid-pass: {task.title}",
+        error=error, log_tail=log_tail,
+        repro=f"agent-ops-dispatcher  # with task-{task.issue} at "
+              f"stage {task.stage.value}",
+        worktree=task.worktree)
+    failures.report_failure(cfg, deps, rep, dry_run=dry_run)
 
 
 def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
@@ -1308,10 +1356,13 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
-            _drive_task(eff, deps, target, task, budget_ok, dry_run)
+            try:
+                _drive_task(eff, deps, target, task, budget_ok, dry_run)
+            except Exception:
+                _fail_task_crash(eff, deps, target, task, dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
-        _resume_woken(eff, deps, target, budget_ok)
+        _resume_woken(eff, deps, target, budget_ok, dry_run)
         _spawn_feedback(eff, deps, target, budget_ok)
         if budget_ok and not claims_paused:
             _claim_new(eff, deps, target, dry_run)
