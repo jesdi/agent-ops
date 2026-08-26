@@ -1,4 +1,4 @@
-"""Per-task runtime state (~/agent-ops-state/task-<issue>.json) and the
+"""Per-task runtime state (~/agent-ops-state/task-<target>-<issue>.json) and the
 stage.json signal sessions write into their worktree."""
 from __future__ import annotations
 
@@ -89,51 +89,60 @@ class StageSignal:
     run_id: int = 0
 
 
-def _path(state_dir: str | Path, issue: int) -> Path:
+def _path(state_dir: str | Path, target: str, issue: int) -> Path:
+    return Path(state_dir) / f"task-{target}-{issue}.json"
+
+
+def _legacy_path(state_dir: str | Path, issue: int) -> Path:
     return Path(state_dir) / f"task-{issue}.json"
 
 
 def save(state_dir: str | Path, ts: TaskState) -> None:
     d = asdict(ts)
     d["stage"] = ts.stage.value
-    p = _path(state_dir, ts.issue)
+    p = _path(state_dir, ts.target, ts.issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, indent=2))
     tmp.replace(p)
+    # Lazy migration: the first save under the new key retires the legacy twin.
+    _legacy_path(state_dir, ts.issue).unlink(missing_ok=True)
 
 
-def load(state_dir: str | Path, issue: int) -> TaskState | None:
-    p = _path(state_dir, issue)
+def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
     d = json.loads(p.read_text())
     d["stage"] = Stage(d["stage"])
     d["labels"] = tuple(d.get("labels", ()))
-    # Retired in the message-queue change: state files written by older code
-    # still carry it. Drop it rather than crash the pass — the text itself is
-    # not migrated, because a still-parked task's reply is re-sent by the
-    # operator and a delivered one is already in the transcript.
-    d.pop("pending_reply", None)
+    d.pop("pending_reply", None)   # retired field, see original comment
     return TaskState(**d)
+
+
+def load(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
+    ts = _read(_path(state_dir, target, issue))
+    if ts is not None:
+        return ts
+    legacy = _read(_legacy_path(state_dir, issue))
+    # A legacy file speaks only for its own target.
+    return legacy if legacy is not None and legacy.target == target else None
 
 
 def load_all(state_dir: str | Path) -> list[TaskState]:
     root = Path(state_dir)
     if not root.exists():
         return []
-    tasks = []
-    for p in root.glob("task-*.json"):
-        issue = int(p.stem.removeprefix("task-"))
-        ts = load(root, issue)
-        if ts is not None:
-            tasks.append(ts)
-    return sorted(tasks, key=lambda t: t.issue)
+    # Identity comes from the JSON, never the filename stem.
+    tasks = [ts for p in root.glob("task-*.json")
+             if (ts := _read(p)) is not None]
+    return sorted(tasks, key=lambda t: (t.target, t.issue))
 
 
-def delete(state_dir: str | Path, issue: int) -> None:
-    """Remove a task's state file (Done-column flush). Idempotent."""
-    _path(state_dir, issue).unlink(missing_ok=True)
+def delete(state_dir: str | Path, target: str, issue: int) -> None:
+    _path(state_dir, target, issue).unlink(missing_ok=True)
+    legacy = _read(_legacy_path(state_dir, issue))
+    if legacy is not None and legacy.target == target:
+        _legacy_path(state_dir, issue).unlink(missing_ok=True)
 
 
 def max_slots(capacity: int) -> int:
@@ -198,40 +207,52 @@ def parked(tasks: list[TaskState]) -> list[TaskState]:
     return [t for t in tasks if t.stage in IN_FLIGHT_STAGES and t.park]
 
 
-def _waiting_path(state_dir: str | Path, issue: int) -> Path:
+def _waiting_path(state_dir: str | Path, target: str, issue: int) -> Path:
+    return Path(state_dir) / f"waiting-{target}-{issue}"
+
+
+def _legacy_waiting_path(state_dir: str | Path, issue: int) -> Path:
     return Path(state_dir) / f"waiting-{issue}"
 
 
-def mark_waiting(state_dir: str | Path, issue: int) -> None:
-    p = _waiting_path(state_dir, issue)
+def mark_waiting(state_dir: str | Path, target: str, issue: int) -> None:
+    p = _waiting_path(state_dir, target, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.touch()
 
 
-def has_waiting(state_dir: str | Path, issue: int) -> bool:
-    return _waiting_path(state_dir, issue).exists()
+def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
+    return (_waiting_path(state_dir, target, issue).exists()
+            or _legacy_waiting_path(state_dir, issue).exists())
 
 
-def clear_waiting(state_dir: str | Path, issue: int) -> None:
-    _waiting_path(state_dir, issue).unlink(missing_ok=True)
+def clear_waiting(state_dir: str | Path, target: str, issue: int) -> None:
+    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)
+    _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
 
 
-def _attached_path(state_dir: str | Path, issue: int) -> Path:
+def _attached_path(state_dir: str | Path, target: str, issue: int) -> Path:
+    return Path(state_dir) / f"attached-{target}-{issue}"
+
+
+def _legacy_attached_path(state_dir: str | Path, issue: int) -> Path:
     return Path(state_dir) / f"attached-{issue}"
 
 
-def mark_attached(state_dir: str | Path, issue: int) -> None:
+def mark_attached(state_dir: str | Path, target: str, issue: int) -> None:
     """A human is attached to this task's tmux (web terminal, Plan 2).
     While the marker exists the dispatcher holds the task: no resume, no
     park, no reap — the meaning hold_for_attach already carries."""
-    p = _attached_path(state_dir, issue)
+    p = _attached_path(state_dir, target, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.touch()
 
 
-def has_attached(state_dir: str | Path, issue: int) -> bool:
-    return _attached_path(state_dir, issue).exists()
+def has_attached(state_dir: str | Path, target: str, issue: int) -> bool:
+    return (_attached_path(state_dir, target, issue).exists()
+            or _legacy_attached_path(state_dir, issue).exists())
 
 
-def clear_attached(state_dir: str | Path, issue: int) -> None:
-    _attached_path(state_dir, issue).unlink(missing_ok=True)
+def clear_attached(state_dir: str | Path, target: str, issue: int) -> None:
+    _attached_path(state_dir, target, issue).unlink(missing_ok=True)
+    _legacy_attached_path(state_dir, issue).unlink(missing_ok=True)
