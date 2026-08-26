@@ -40,6 +40,9 @@ function TaskView({ issue }: { issue: number }) {
   // Kill terminates a live agent, so it is two-step. Not window.confirm: a
   // native modal blocks the page (and the polling console behind it).
   const [killArmed, setKillArmed] = useState(false)
+  // Won't-do retires the task for good (board → Wont do, issue closed as
+  // not planned), so it takes the same two-step confirm as kill.
+  const [wontDoArmed, setWontDoArmed] = useState(false)
   const terminalOpenFor = useUiStore((s) => s.terminalOpenFor)
   const setTerminalOpenFor = useUiStore((s) => s.setTerminalOpenFor)
   const { ref: paneWrapRef, height: terminalHeight } = usePersistedTerminalHeight()
@@ -62,6 +65,7 @@ function TaskView({ issue }: { issue: number }) {
 
   const runIntent = (run: () => Promise<unknown>, isReply = false) => {
     setKillArmed(false)
+    setWontDoArmed(false)
     intent.mutate({ run, isReply })
   }
 
@@ -243,6 +247,25 @@ function TaskView({ issue }: { issue: number }) {
             onClick={() => setKillArmed(false)}
           >
             Cancel kill
+          </button>
+        )}
+        <button
+          type="button"
+          className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
+          disabled={busy}
+          onClick={() =>
+            wontDoArmed ? runIntent(() => api.cancel(issue)) : setWontDoArmed(true)
+          }
+        >
+          {wontDoArmed ? "Confirm won't do?" : "Won't do"}
+        </button>
+        {wontDoArmed && (
+          <button
+            type="button"
+            className="rounded border px-3 py-1.5 text-sm"
+            onClick={() => setWontDoArmed(false)}
+          >
+            Keep task
           </button>
         )}
       </div>
