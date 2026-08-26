@@ -15,30 +15,57 @@ REAL_SEED = Path(__file__).resolve().parent.parent / "provision" / "claude-home"
 FAKE_CLAUDE = r'''#!/bin/sh
 # Fake claude CLI: logs every call (with CLAUDE_CONFIG_DIR), serves `plugin
 # list --json` from $AGENT_OPS_FAKE_PLUGIN_LIST, and mutates that file on
-# install/uninstall so the sync script's verify step sees the effect.
+# install/update/uninstall so the sync script's verify step sees the effect.
 # AGENT_OPS_FAKE_IGNORE_PIN=1 simulates a CLI that cannot pin: installs
 # record version 9.9.9 regardless of a requested pin.
+#
+# Scope is modelled because the real CLI enforces it: every plugin verb
+# takes `-s/--scope` (user|project|local|managed) and DEFAULTS TO USER, and
+# update/uninstall fail outright when the plugin lives in another scope.
+# Fixtures may omit "scope"; missing reads as user.
 echo "claude $* CONFIG=${CLAUDE_CONFIG_DIR:-}" >> "$AGENT_OPS_CALLS_LOG"
 case "$1 $2" in
   "plugin list") cat "$AGENT_OPS_FAKE_PLUGIN_LIST" ;;
-  "plugin install") python3 - "$AGENT_OPS_FAKE_PLUGIN_LIST" "$3" <<'PYEOF'
+  "plugin install"|"plugin update"|"plugin uninstall")
+    python3 - "$AGENT_OPS_FAKE_PLUGIN_LIST" "$@" <<'PYEOF'
 import json, os, sys
-path, arg = sys.argv[1], sys.argv[2]
-parts = arg.split("@")
-if len(parts) == 3 and os.environ.get("AGENT_OPS_FAKE_IGNORE_PIN") != "1":
-    pid, version = "@".join(parts[:2]), parts[2]
+path, args = sys.argv[1], sys.argv[2:]
+verb, arg = args[1], args[2]
+scope = "user"
+for flag in ("--scope", "-s"):
+    if flag in args:
+        scope = args[args.index(flag) + 1]
+plugins = json.load(open(path))
+
+
+def find(pid):
+    for p in plugins:
+        if p["id"] == pid and p.get("scope", "user") == scope:
+            return p
+    return None
+
+
+if verb == "install":
+    parts = arg.split("@")
+    if len(parts) == 3 and os.environ.get("AGENT_OPS_FAKE_IGNORE_PIN") != "1":
+        pid, version = "@".join(parts[:2]), parts[2]
+    else:
+        pid, version = "@".join(parts[:2]), "9.9.9"
+    plugins = [p for p in plugins
+               if not (p["id"] == pid and p.get("scope", "user") == scope)]
+    plugins.append({"id": pid, "version": version, "scope": scope})
 else:
-    pid, version = "@".join(parts[:2]), "9.9.9"
-plugins = [p for p in json.load(open(path)) if p["id"] != pid]
-plugins.append({"id": pid, "version": version})
+    hit = find(arg)
+    if hit is None:
+        sys.stderr.write(
+            f'Failed to {verb} plugin "{arg}": Plugin "{arg.split("@")[0]}" '
+            f'is not installed at scope {scope}\n')
+        sys.exit(1)
+    if verb == "update":
+        hit["version"] = "9.9.9"
+    else:
+        plugins.remove(hit)
 json.dump(plugins, open(path, "w"))
-PYEOF
-  ;;
-  "plugin uninstall") python3 - "$AGENT_OPS_FAKE_PLUGIN_LIST" "$3" <<'PYEOF'
-import json, sys
-path, pid = sys.argv[1], sys.argv[2]
-json.dump([p for p in json.load(open(path)) if p["id"] != pid],
-          open(path, "w"))
 PYEOF
   ;;
 esac
@@ -232,6 +259,58 @@ def test_declaration_change_updates_latest_plugins(rig):
     assert "plugin install extra@claude-plugins-official" in log
     # superpowers tracks latest and the declared set changed → update it.
     assert "plugin update superpowers@claude-plugins-official" in log
+
+
+def test_project_scope_install_reconverged_at_user_scope(rig):
+    """The box wedged exactly here for hours.
+
+    Both declared plugins were installed at project scope. The script read
+    them from `plugin list --json` as satisfied, and — the declared set
+    having changed since the stamp — emitted `plugin update <id>`, which
+    defaults to --scope user. The CLI answered "Plugin is not installed at
+    scope user", `set -e` killed claude-home-sync, update.sh failed, and the
+    stamp was never written, so EVERY later pass repeated it. Credential
+    convergence and unit sync sat behind that dead pass."""
+    rig.plugin_list.write_text(json.dumps([
+        {"id": "superpowers@claude-plugins-official", "version": "4.0.0",
+         "scope": "project", "projectPath": "/home/agent"}]))
+
+    r = run_sync(rig)
+
+    assert r.returncode == 0, r.stderr
+    # A foreign-scope copy does not satisfy the declaration: install at user.
+    assert ("plugin install superpowers@claude-plugins-official --scope user"
+            in calls(rig))
+    assert installed(rig)["superpowers@claude-plugins-official"] == "9.9.9"
+    # And the stray is named, since only a human standing in the project dir
+    # can remove it.
+    assert "project" in r.stderr and "superpowers@claude-plugins-official" in r.stderr
+
+
+def test_every_mutating_plugin_call_names_its_scope(rig):
+    """Never rely on the CLI's default scope: it is a documented default that
+    can change, and the box's actual drift is invisible without it."""
+    rig.plugin_list.write_text(json.dumps([
+        {"id": "engram@engram", "version": "0.1.0", "scope": "user"}]))
+    r = run_sync(rig)
+    assert r.returncode == 0, r.stderr
+    mutating = [ln for ln in calls(rig).splitlines()
+                if any(f"plugin {v} " in ln
+                       for v in ("install", "update", "uninstall"))]
+    assert mutating, "expected install and uninstall calls"
+    for line in mutating:
+        assert "--scope user" in line, f"scope-less call: {line}"
+
+
+def test_stamp_not_written_when_convergence_fails(rig):
+    """The stamp is the 'declared set converged' receipt, and a stale stamp
+    is what makes latest-tracking plugins get an update action at all. It
+    must never be written for a pass that did not converge."""
+    declare(rig, {"superpowers@claude-plugins-official": "5.0.0"})
+    stamp = rig.state / "claude-home-plugins.stamp"
+    r = run_sync(rig, AGENT_OPS_FAKE_IGNORE_PIN="1")
+    assert r.returncode != 0
+    assert not stamp.exists()
 
 
 def test_marketplace_added_before_first_install(rig):
