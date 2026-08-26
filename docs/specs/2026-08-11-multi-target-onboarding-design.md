@@ -15,9 +15,10 @@ lets the operator filter the console by target.
 
 - **Dispatcher and web API are multi-target.** `targets:` in
   `targets.yaml` is a list; `run_pass` iterates all targets and degrades
-  per-target on failure; cross-repo issue-number ambiguity is rejected
-  with 409s; board cards and Queued ghosts carry a `target` field.
-  No dispatcher, API, or read-model changes are required.
+  per-target on failure; queue writes reject cross-repo issue-number
+  ambiguity with 409s; board cards and Queued ghosts carry a `target`
+  field. The claim loop and queue endpoints need no changes — but task
+  *identity* does not include the target yet (work package 0 below).
 - **The backlog skill is published and pinned.** `backlog@0.1.6` lives
   in `jesdi/general-skills`; agent-ops's committed `.my-skills.json`
   already pins it. `npx -y @jesdi/skills-cli sync` materialises it into
@@ -32,6 +33,36 @@ lets the operator filter the console by target.
   `jesdi/agent-ops` (verified via `gh api repos/jesdi/agent-ops
   -q .permissions`), and the classic project-scope token
   (`GH_PROJECT_TOKEN`, fed per-pass by `op run`) reads project #3.
+
+## Work package 0 — task identity becomes (target, issue) — PREREQUISITE
+
+Issue numbers are per-repo, but everything downstream of the claim keys
+tasks by bare issue number. With a second target this is not cosmetic:
+
+- **State files**: `$STATE_DIR/task-<issue>.json` (`state.py:92`). If
+  portfolio_eval#42 is in flight and agent_ops#42 reaches Ready,
+  `_claim_new` — whose duplicate guard is per-target — claims it and
+  `save()` **overwrites the other target's live task state**, orphaning
+  its session and corrupting slot accounting.
+- **tmux sessions / snapshots**: named `task-<N>`
+  (`sessions.py:22,136`) — two targets' sessions would collide.
+- **Web API**: `/api/task/{issue}` and subroutes resolve by bare number.
+- **Console URLs**: `/task/<issue>` is ambiguous across projects; cards,
+  ghosts, and timeline all link this way.
+- **Pending intents**: matched by bare issue number (board + task page).
+
+Scope: key state files as `task-<target>-<issue>.json` (one-time
+migration: existing files adopt `portfolio_eval`), name sessions and
+snapshots `task-<target>-<issue>`, move API routes to
+`/api/task/{target}/{issue}` and console routes to
+`/task/<target>/<issue>`, carry `target` in intents, and update every
+frontend link. Tests cover the migration and a same-number-two-targets
+claim scenario.
+
+**Ordering constraint:** this package must merge BEFORE the second
+target is added to the box's `targets.yaml` (work package 2). Numbers
+between the two repos already overlap (portfolio_eval is past #243,
+agent-ops past #93), so the overwrite is a when, not an if.
 
 ## Work package 1 — assets committed to agent-ops (one PR)
 
@@ -135,9 +166,10 @@ its PR is the end-to-end proof of the onboarding.
   target's pass failed and continues with the others (existing
   dispatcher behaviour), so a bad onboarding cannot stall
   portfolio_eval.
-- **Issue-number collisions:** already handled — queue writes 409 on
-  cross-target ambiguity; ghost keys and next-claim matching include
-  the target.
+- **Issue-number collisions:** queue writes 409 on cross-target
+  ambiguity, and ghost keys / next-claim matching include the target —
+  but claimed-task identity does not, which is exactly work package 0;
+  onboarding is blocked on it.
 - **Deployed-checkout hazard:** documented in the runbook; the target
   block's `clone_path` is `/home/agent/repos/agent-ops`, never
   `/home/agent/agent-ops`.
