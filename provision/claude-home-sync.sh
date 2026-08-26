@@ -68,8 +68,18 @@ try:
     stale = open(sys.argv[2]).read().strip() != digest
 except FileNotFoundError:
     stale = True
+raw = json.loads(os.environ["AGENT_OPS_INSTALLED"])
+# SCOPE. `claude plugin install|update|uninstall` all take --scope and all
+# default to user; `plugin list` reports every scope at once. Reading the
+# list scope-blind is what wedged the box in 2026-08: both plugins sat at
+# project scope (projectPath /home/agent), so they read as satisfied, the
+# stale stamp turned that into `plugin update <id>`, and the CLI refused —
+# "not installed at scope user" — killing the pass under set -e on every
+# firing, forever, because the stamp is only written on success.
+# Only user-scope installs count as installed, because user scope is the
+# only one every action below addresses.
 installed = {p["id"]: p["version"]
-             for p in json.loads(os.environ["AGENT_OPS_INSTALLED"])}
+             for p in raw if p.get("scope", "user") == "user"}
 for pid, want in declared.items():
     if pid not in installed:
         print(f"install\t{pid}" if want is True else f"install\t{pid}@{want}")
@@ -80,6 +90,19 @@ for pid, want in declared.items():
 for pid in installed:
     if pid not in declared:
         print(f"uninstall\t{pid}")
+# A foreign-scope copy is drift we cannot clear: `plugin uninstall --scope
+# project` resolves the project from the CWD, so only someone standing in
+# projectPath can remove it. Name it every pass rather than fail — the
+# user-scope install above already makes the box correct.
+for p in raw:
+    scope = p.get("scope", "user")
+    if scope != "user" and p["id"] in declared:
+        where = p.get("projectPath", "")
+        print(f"warn\t{p['id']} is also installed at {scope} scope"
+              + (f" (projectPath {where})" if where else "")
+              + f"; user scope is authoritative. Remove the stray with: "
+                f"(cd {where or '<projectPath>'} && claude plugin uninstall "
+                f"{p['id']} --scope {scope})")
 print(f"stamp\t{digest}")
 PY
 )
@@ -102,12 +125,17 @@ ensure_marketplace() {
     || "$CLAUDE" plugin marketplace add anthropics/claude-plugins-official
 }
 
+# --scope user is passed explicitly everywhere. It is the CLI's current
+# default, but a default is not a contract, and being explicit is what makes
+# the action generator's user-scope-only view of `plugin list` true.
 new_stamp=""
 while IFS=$'\t' read -r verb arg; do
   case "$verb" in
-    install)   ensure_marketplace; "$CLAUDE" plugin install "$arg" ;;
-    update)    "$CLAUDE" plugin update "$arg" ;;
-    uninstall) "$CLAUDE" plugin uninstall "$arg" ;;
+    install)   ensure_marketplace
+               "$CLAUDE" plugin install "$arg" --scope user ;;
+    update)    "$CLAUDE" plugin update "$arg" --scope user ;;
+    uninstall) "$CLAUDE" plugin uninstall "$arg" --scope user ;;
+    warn)      echo "agent-ops claude-home: $arg" >&2 ;;
     stamp)     new_stamp="$arg" ;;
   esac
 done <<< "$actions"
@@ -117,8 +145,11 @@ AGENT_OPS_INSTALLED="$installed_json" \
 python3 - "$SEED/settings.json" <<'PY'
 import json, os, sys
 declared = json.load(open(sys.argv[1])).get("enabledPlugins", {})
+# Same user-scope-only view as the action generator: a project-scope copy
+# must not let a missing user-scope install pass verification.
 installed = {p["id"]: p["version"]
-             for p in json.loads(os.environ["AGENT_OPS_INSTALLED"])}
+             for p in json.loads(os.environ["AGENT_OPS_INSTALLED"])
+             if p.get("scope", "user") == "user"}
 bad = [f"{pid}: want {want if want is not True else 'latest'}, "
        f"have {installed.get(pid, 'nothing')}"
        for pid, want in declared.items()
