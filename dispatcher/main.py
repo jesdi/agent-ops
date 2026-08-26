@@ -1157,39 +1157,47 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             return
         _park_for_input(cfg, deps, target, task, note="parked by operator")
     elif intent.action == "kill":
-        # No unique matching task (missing, or an ambiguous legacy intent
-        # matching more than one target's task with this issue number) means
-        # there is no target to end a session for — skip, same as every
-        # other intent _task_for_intent can't resolve.
-        if task is None:
+        # A target-carrying intent always knows which session to end, even
+        # with no state file at all — e.g. _flush_done deletes a DONE task's
+        # state, but a leaked tmux session can still be sitting there, and
+        # the operator needs to be able to kill it. Only a legacy/ambiguous
+        # intent (target == "", no unique task match) has no knowable
+        # target — that is the one case with nothing to act on, so it alone
+        # is skipped, same as every other action _task_for_intent can't
+        # resolve.
+        kill_target = intent.target or (task.target if task is not None else "")
+        if not kill_target:
             print(f"[warn] kill intent for #{issue}: no unique matching "
                   f"task — skipped", file=sys.stderr)
             return
-        deps.sessions.end(task.target, issue)
-        target = by_name.get(task.target)
-        if target is not None:
-            try:
-                deps.github.release(target, issue, "abandoned by operator")
-            except Exception as exc:
-                print(f"[warn] release failed while killing #{issue}: "
-                      f"{exc}", file=sys.stderr)
-        # Write a FAILED tombstone instead of deleting the state file.
-        # github.release() flips the board status back to Ready+auto, so
-        # the issue becomes a live candidate again. Without a tombstone,
-        # _claim_new's guard (known = {t.issue for t in tasks}) would not
-        # contain it and would re-claim the just-killed issue the same pass.
-        # The park is cleared with it: a killed task waits for nothing, so
-        # it must leave the wake queue (_resume_woken filters on park
-        # alone) — otherwise a killed PARK_WAKE task keeps asking for a
-        # slot it will never use, re-arming the wake-blocked marker every
-        # pass that _reconcile_slots clears it.
-        save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
-                                    hold_for_attach=False,
-                                    updated_at=_now()))
-        clear_waiting(cfg.state_dir, task.target, issue)
+        deps.sessions.end(kill_target, issue)
+        if task is not None:
+            target = by_name.get(task.target)
+            if target is not None:
+                try:
+                    deps.github.release(target, issue, "abandoned by operator")
+                except Exception as exc:
+                    print(f"[warn] release failed while killing #{issue}: "
+                          f"{exc}", file=sys.stderr)
+            # Write a FAILED tombstone instead of deleting the state file.
+            # github.release() flips the board status back to Ready+auto, so
+            # the issue becomes a live candidate again. Without a tombstone,
+            # _claim_new's guard (known = {t.issue for t in tasks}) would not
+            # contain it and would re-claim the just-killed issue the same pass.
+            save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
+                                        hold_for_attach=False,
+                                        updated_at=_now()))
+        # The park is cleared with it: a killed task waits for nothing, so it
+        # must leave the wake queue (_resume_woken filters on park alone) —
+        # otherwise a killed PARK_WAKE task keeps asking for a slot it will
+        # never use, re-arming the wake-blocked marker every pass that
+        # _reconcile_slots clears it. Cleared unconditionally on kill_target:
+        # a stray session with no task can't have parked in the first place,
+        # so this is a no-op for it, not a risk.
+        clear_waiting(cfg.state_dir, kill_target, issue)
         eventlog.append_event(cfg.state_dir, "failed",
-                              target=task.target, issue=issue,
-                              stage=task.stage.value,
+                              target=kill_target, issue=issue,
+                              stage=task.stage.value if task is not None else "",
                               actor=intent.actor, detail="killed by operator")
     elif intent.action == "cancel":
         # Operator won't-do. Unlike kill, the card is retired (Wont do +

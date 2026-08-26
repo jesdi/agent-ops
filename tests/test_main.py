@@ -136,6 +136,7 @@ class FakeSessions:
         self.tail = tail
         self.spawned, self.resumed, self.ended = [], [], []
         self.sent_text = []
+        self.end_calls = []  # (target, issue) — the target end() actually got
         # Issues whose launch explodes the way a vanished worktree does:
         # containers.clone_root reads <worktree>/.git to find the clone to
         # mount, so a swept or half-removed checkout raises here.
@@ -173,6 +174,7 @@ class FakeSessions:
 
     def end(self, target, issue):
         self.ended.append(issue)
+        self.end_calls.append((target, issue))
 
 
 class FakeNotifier:
@@ -1714,6 +1716,21 @@ def test_kill_intent_does_not_reclaim_released_issue_same_pass(tmp_path, monkeyp
     main.run_pass(c, deps(gh, FakeSessions(alive={42})))
     assert gh.claimed == []
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+
+
+def test_kill_intent_with_target_ends_a_stray_session_with_no_state_file(tmp_path):
+    """A target-carrying kill intent must be able to end a session even when
+    there is no task file to resolve — e.g. _flush_done deleted a DONE
+    task's state while its tmux session leaked (never actually ended). The
+    operator's kill intent still names its target, so nothing stops the
+    session from being ended even though there is no task left to
+    tombstone."""
+    c = cfg(tmp_path)
+    intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
+    sess = FakeSessions(alive={42})
+    main._apply_intents(c, deps(sess=sess))
+    assert sess.end_calls == [("portfolio_eval", 42)]
+    assert load(c.state_dir, "portfolio_eval", 42) is None  # nothing to tombstone
 
 
 def test_cancel_intent_ends_session_moves_board_and_tombstones(tmp_path, monkeypatch):

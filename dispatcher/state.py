@@ -112,18 +112,11 @@ def save(state_dir: str | Path, ts: TaskState) -> None:
 def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
-    try:
-        d = json.loads(p.read_text())
-        d["stage"] = Stage(d["stage"])
-        d["labels"] = tuple(d.get("labels", ()))
-        d.pop("pending_reply", None)   # retired field, see original comment
-        return TaskState(**d)
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        # A corrupt single state file must not take load_all() down with it —
-        # callers that scan every task (e.g. _prune_snapshots) need the rest
-        # of the sweep to proceed. Same tolerance read_stage_signal already
-        # gives a corrupt stage.json.
-        return None
+    d = json.loads(p.read_text())
+    d["stage"] = Stage(d["stage"])
+    d["labels"] = tuple(d.get("labels", ()))
+    d.pop("pending_reply", None)   # retired field, see original comment
+    return TaskState(**d)
 
 
 def load(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
@@ -136,12 +129,25 @@ def load(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
 
 
 def load_all(state_dir: str | Path) -> list[TaskState]:
+    """Every task on disk. A single corrupt file (truncated write, unknown
+    field after a partial upgrade) is skipped rather than taking the whole
+    scan down — callers like _prune_snapshots and capacity/slot accounting
+    need every OTHER task's state to stay visible. A directly-addressed file
+    (load()) still raises: silently losing one task from a targeted lookup
+    is worse than a loud crash, but silently losing it from a scan that
+    every other task depends on (allocate_slot, active()) is worse still."""
     root = Path(state_dir)
     if not root.exists():
         return []
-    # Identity comes from the JSON, never the filename stem.
-    tasks = [ts for p in root.glob("task-*.json")
-             if (ts := _read(p)) is not None]
+    tasks = []
+    for p in root.glob("task-*.json"):
+        try:
+            ts = _read(p)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        # Identity comes from the JSON, never the filename stem.
+        if ts is not None:
+            tasks.append(ts)
     return sorted(tasks, key=lambda t: (t.target, t.issue))
 
 
