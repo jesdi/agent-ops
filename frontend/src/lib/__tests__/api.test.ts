@@ -52,6 +52,22 @@ it('coerces an array-shaped 422 detail to a renderable string', async () => {
   )
 })
 
+it('POST cancel sends the target only when one is given', async () => {
+  const bodies: unknown[] = []
+  server.use(
+    http.post('/api/task/42/cancel', async ({ request }) => {
+      bodies.push(await request.json())
+      return HttpResponse.json(
+        { status: 'pending', intent: '1753444800000-42-cancel' },
+        { status: 202 },
+      )
+    }),
+  )
+  await api.cancel(42)
+  await api.cancel(42, 'portfolio_eval')
+  expect(bodies).toEqual([{}, { target: 'portfolio_eval' }])
+})
+
 it('POST intent action returns 202 pending', async () => {
   server.use(
     http.post('/api/task/42/reply', () =>
