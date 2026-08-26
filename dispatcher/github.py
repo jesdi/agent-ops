@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass
 
 from dispatcher.config import Target
@@ -207,6 +208,23 @@ class GitHubClient:
                      f"🤖 agent-ops released this task: {reason}. "
                      f"Worktree preserved for autopsy.")
         self.set_status(target, issue, target.status_ready_option_id)
+
+    def cancel(self, target: Target, issue: int) -> None:
+        """Operator won't-do: unlike release(), the card leaves the claim
+        pool for good (Wont do, not Ready) and the issue closes as not
+        planned."""
+        if self.dry_run:
+            print(f"[dry-run] cancel #{issue}")
+            return
+        self.comment(target, issue,
+                     "🤖 canceled by operator — moved to Wont do.")
+        if target.status_wont_do_option_id:
+            self.set_status(target, issue, target.status_wont_do_option_id)
+        else:
+            print(f"[warn] {target.name}: status_wont_do_option_id unset — "
+                  f"board not updated for canceled #{issue}", file=sys.stderr)
+        _run(["gh", "issue", "close", str(issue), "--repo", target.repo,
+              "--reason", "not planned"])
 
     def delete_branch(self, target: Target, branch: str) -> None:
         """Best-effort: repos with delete-branch-on-merge already removed

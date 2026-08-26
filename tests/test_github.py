@@ -105,6 +105,42 @@ def test_release_comments_and_resets_board(monkeypatch):
     assert "session crashed" in " ".join(comment)
 
 
+def test_cancel_comments_moves_board_and_closes_issue(monkeypatch):
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        joined = " ".join(args)
+        if "project view" in joined:
+            return json.dumps({"id": "PROJ_NODE"})
+        if "item-list" in joined:
+            return json.dumps({"items": [{"id": "ITEM7", "content": {"number": 7}}]})
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    t = dc_replace(TARGET, status_wont_do_option_id="WONTDO")
+    github.GitHubClient().cancel(t, 7)
+    edit = next(a for a in calls if "item-edit" in a)
+    assert "WONTDO" in edit and "ITEM7" in edit
+    close = next(a for a in calls if "close" in a)
+    assert "--reason" in close and "not planned" in close
+    comment = next(a for a in calls if "comment" in a)
+    assert "canceled by operator" in " ".join(comment)
+
+
+def test_cancel_without_board_option_still_closes_issue(monkeypatch):
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    github.GitHubClient().cancel(TARGET, 7)  # status_wont_do_option_id == ""
+    assert not any("item-edit" in a for a in calls)
+    assert any("close" in a for a in calls)
+
+
 def test_item_id_title_join_when_content_redacted(monkeypatch):
     # A project-scope token cannot expand linked issues of a private repo:
     # item-list returns items without "content". The issue title (fetched with
