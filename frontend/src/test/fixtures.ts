@@ -67,6 +67,7 @@ export const board: BoardView = {
     { key: 'resuming', title: 'Resuming', cards: [] },
     { key: 'stalled', title: 'Stalled', cards: [] },
     { key: 'failed', title: 'Failed', cards: [] },
+    { key: 'wont-do', title: 'Wont do', cards: [] },
   ],
   capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3, slots_held: [1, 2] },
   upcoming: [], upcoming_stale: false, median_cycle_seconds: null,

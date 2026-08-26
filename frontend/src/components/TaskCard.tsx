@@ -13,6 +13,13 @@ export function TaskCardView({ card, pendingActions }: {
     <Link
       to={`/task/${card.issue}`}
       data-testid={`card-${card.issue}`}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData(
+          'application/x-agent-ops-card',
+          JSON.stringify({ issue: card.issue, target: card.target, title: card.title }),
+        )
+      }}
       className={`block rounded border border-gray-200 bg-white p-3 shadow-sm hover:border-gray-400 border-l-4 ${
         card.slot >= 0 ? slotBorder(card.slot) : 'border-l-transparent hover:border-l-transparent'
       }`}

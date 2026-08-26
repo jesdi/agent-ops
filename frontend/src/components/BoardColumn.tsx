@@ -2,6 +2,12 @@ import type { ReactNode } from 'react'
 import type { TaskCard } from '../lib/api'
 import { TaskCardView } from './TaskCard'
 
+export interface DraggedCard {
+  issue: number
+  target: string
+  title: string
+}
+
 export interface ColumnProps {
   column: { key: string; title: string; cards: TaskCard[] }
   pendingByIssue: ReadonlyMap<number, readonly string[]>
@@ -17,11 +23,25 @@ export interface ColumnProps {
    * be hidden (e.g. stale-queue marker, action error).
    */
   headerExtra?: ReactNode
+  /** When set, the column accepts card drags and reports each drop. */
+  onCardDrop?: (card: DraggedCard) => void
 }
 
-export function BoardColumn({ column, pendingByIssue, collapsed, onToggle, extra, extraCount, headerExtra }: ColumnProps) {
+export function BoardColumn({ column, pendingByIssue, collapsed, onToggle, extra, extraCount, headerExtra, onCardDrop }: ColumnProps) {
   return (
-    <section data-testid={`column-${column.key}`} className="w-64 shrink-0">
+    <section
+      data-testid={`column-${column.key}`}
+      className="w-64 shrink-0"
+      onDragOver={onCardDrop && ((e) => e.preventDefault())}
+      onDrop={onCardDrop && ((e) => {
+        e.preventDefault()
+        const raw = e.dataTransfer.getData('application/x-agent-ops-card')
+        if (!raw) return
+        try {
+          onCardDrop(JSON.parse(raw) as DraggedCard)
+        } catch { /* foreign drag — ignore */ }
+      })}
+    >
       <button
         type="button"
         onClick={onToggle}

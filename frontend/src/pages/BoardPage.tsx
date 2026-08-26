@@ -1,9 +1,13 @@
-import { BoardColumn } from '../components/BoardColumn'
+import { useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { BoardColumn, type DraggedCard } from '../components/BoardColumn'
 import { BudgetBar } from '../components/BudgetBar'
 import { CapacityMeter } from '../components/CapacityMeter'
 import { GhostCardView } from '../components/GhostCard'
 import { NextClaimLine } from '../components/NextClaimLine'
 import { formatDuration } from '../lib/format'
+import { api, ApiError } from '../lib/api'
+import { queryKeys } from '../hooks/queryKeys'
 import { useBudget, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useUiStore } from '../store/ui'
@@ -15,6 +19,22 @@ export function BoardPage() {
   const collapsedColumns = useUiStore((s) => s.collapsedColumns)
   const toggleColumn = useUiStore((s) => s.toggleColumn)
   const { queueError, busy, boost, next, ready } = useQueueActions()
+  const queryClient = useQueryClient()
+  // A drop on Wont do never fires an intent by itself: won't-do retires the
+  // task for good, so the operator always confirms first (mirrors the
+  // two-step kill on the task view — no window.confirm, it blocks polling).
+  const [wontDoCandidate, setWontDoCandidate] = useState<DraggedCard | null>(null)
+  const [wontDoError, setWontDoError] = useState<string | null>(null)
+  const cancelMutation = useMutation({
+    mutationFn: (card: DraggedCard) => api.cancel(card.issue, card.target),
+    onSuccess: () => {
+      setWontDoCandidate(null)
+      setWontDoError(null)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.pendingIntents })
+    },
+    onError: (err) =>
+      setWontDoError(err instanceof ApiError ? err.detail : String(err)),
+  })
 
   if (boardQuery.isPending) return <p className="p-4 text-gray-500">loading board…</p>
   if (boardQuery.isError) {
@@ -109,9 +129,41 @@ export function BoardPage() {
             extra={column.key === 'queued' ? ghostStack : undefined}
             extraCount={column.key === 'queued' ? upcoming.length : undefined}
             headerExtra={column.key === 'queued' ? queuedHeaderExtra : undefined}
+            onCardDrop={column.key === 'wont-do' ? setWontDoCandidate : undefined}
           />
         ))}
       </div>
+      {wontDoCandidate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div
+            data-testid="wont-do-confirm"
+            className="w-96 rounded border bg-white p-4 shadow-lg"
+          >
+            <p className="text-sm">
+              Move <span className="font-medium">#{wontDoCandidate.issue} {wontDoCandidate.title}</span>{' '}
+              to Wont do? The board card is retired and the issue closes as not planned.
+            </p>
+            {wontDoError && <p className="mt-2 text-xs text-red-600">{wontDoError}</p>}
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded border px-3 py-1.5 text-sm"
+                onClick={() => { setWontDoCandidate(null); setWontDoError(null) }}
+              >
+                Keep task
+              </button>
+              <button
+                type="button"
+                className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
+                disabled={cancelMutation.isPending}
+                onClick={() => cancelMutation.mutate(wontDoCandidate)}
+              >
+                Confirm won't do?
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

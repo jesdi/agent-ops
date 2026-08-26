@@ -14,6 +14,13 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
   return (
     <div
       data-testid={`ghost-${ghost.number}`}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData(
+          'application/x-agent-ops-card',
+          JSON.stringify({ issue: ghost.number, target: ghost.target, title: ghost.title }),
+        )
+      }}
       className="rounded border border-dashed border-gray-300 bg-gray-50 p-3 text-gray-600"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
