@@ -1032,17 +1032,33 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
 
 
 def _claim_new(cfg: Config, deps: Deps, target: Target,
-               dry_run: bool) -> None:
+               dry_run: bool, pass_started: str = "") -> None:
     tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
     free = cfg.capacity - len(active(tasks))
     if free <= 0:
         return
     known = {t.issue for t in tasks}
+    by_issue = {t.issue: t for t in tasks}
     for cand in deps.github.candidates(target):
         if free <= 0:
             break
         if cand.number in known:
-            continue
+            stale = by_issue.get(cand.number)
+            if (stale is None or stale.stage is not Stage.CANCELED
+                    or (pass_started and stale.updated_at >= pass_started)):
+                continue
+            # Reopened won't-do: rank drops CLOSED issues, so this candidate
+            # row proves the operator reopened the issue and moved the card
+            # back to Ready. Sweep the tombstone and fall through to a fresh
+            # claim. The pass_started guard keeps a tombstone written by THIS
+            # pass's cancel intent (its board write lagging or failed) from
+            # resurrecting the task it just retired.
+            delete(cfg.state_dir, cand.number)
+            known.discard(cand.number)
+            eventlog.append_event(cfg.state_dir, "reopened",
+                                  target=target.name, issue=cand.number,
+                                  detail="canceled task ranked again — "
+                                         "reopened by operator")
         if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
                                      cand.number):
             continue
@@ -1169,9 +1185,11 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         if task is not None:
             # CANCELED tombstone, same reasoning as kill's FAILED one: the
             # board write can lag or fail, so _claim_new's known-issues guard
-            # must contain the issue this same pass. Park cleared with it.
+            # must contain the issue this same pass. Park cleared with it,
+            # and the slot released at transition time (park precedent) so
+            # the capacity view never shows a retired task holding one.
             save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
-                                        hold_for_attach=False,
+                                        hold_for_attach=False, slot=NO_SLOT,
                                         updated_at=_now()))
         clear_waiting(cfg.state_dir, issue)
         eventlog.append_event(cfg.state_dir, "canceled",
@@ -1397,7 +1415,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         _resume_woken(eff, deps, target, budget_ok, dry_run)
         _spawn_feedback(eff, deps, target, budget_ok)
         if budget_ok and not claims_paused:
-            _claim_new(eff, deps, target, dry_run)
+            _claim_new(eff, deps, target, dry_run, pass_started)
     _flush_done(cfg)
     _write_heartbeat(cfg, pass_started)
 
