@@ -340,6 +340,14 @@ def test_status_done_option_id_loaded_and_defaults_empty(tmp_path):
     assert cfg.targets[0].status_done_option_id == ""
 
 
+def test_status_wont_do_option_id_loaded_and_defaults_empty(tmp_path):
+    cfg = load_config(write_yaml(tmp_path, target_extra={
+        "status_wont_do_option_id": "w0nt"}))
+    assert cfg.targets[0].status_wont_do_option_id == "w0nt"
+    cfg = load_config(write_yaml(tmp_path))
+    assert cfg.targets[0].status_wont_do_option_id == ""
+
+
 def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
     cfg = load_config(write_yaml(tmp_path, top_extra={"done_retention_days": 3}))
     assert cfg.done_retention_days == 3
