@@ -1,6 +1,7 @@
 """WebSocket <-> PTY bridge. Each viewer gets a GROUPED tmux session
-(`new-session -t task-<N> -s view-<token>`): independent window sizing,
-and closing the browser kills only the view session, never the task's."""
+(`new-session -t task-<target>-<issue> -s view-<token>`): independent window
+sizing, and closing the browser kills only the view session, never the
+task's."""
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +18,8 @@ import termios
 import time
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
+
+from dispatcher.sessions import session_name
 
 READ_CHUNK = 65536
 TMUX_TIMEOUT = 10
@@ -35,24 +38,26 @@ class AttachRegistry:
 
     def __init__(self, sources):
         self._sources = sources
-        self._counts: dict[int, int] = {}
+        self._counts: dict[tuple[str, int], int] = {}
 
-    def attach(self, issue: int) -> None:
-        count = self._counts.get(issue, 0) + 1
-        self._counts[issue] = count
+    def attach(self, target: str, issue: int) -> None:
+        key = (target, issue)
+        count = self._counts.get(key, 0) + 1
+        self._counts[key] = count
         if count == 1:
-            self._sources.mark_attached(issue)
+            self._sources.mark_attached(target, issue)
 
-    def detach(self, issue: int) -> None:
-        count = self._counts.get(issue, 0) - 1
+    def detach(self, target: str, issue: int) -> None:
+        key = (target, issue)
+        count = self._counts.get(key, 0) - 1
         if count > 0:
-            self._counts[issue] = count
+            self._counts[key] = count
             return
-        self._counts.pop(issue, None)
-        self._sources.clear_attached(issue)
+        self._counts.pop(key, None)
+        self._sources.clear_attached(target, issue)
 
-    def viewers(self, issue: int) -> int:
-        return self._counts.get(issue, 0)
+    def viewers(self, target: str, issue: int) -> int:
+        return self._counts.get((target, issue), 0)
 
 
 def _resize(fd: int, cols: int, rows: int) -> None:
@@ -92,12 +97,12 @@ def _reap(pid: int) -> None:
         os.waitpid(pid, 0)  # blocking — child cannot ignore SIGKILL
 
 
-async def run_terminal(ws: WebSocket, issue: int, sources,
+async def run_terminal(ws: WebSocket, target: str, issue: int, sources,
                        viewers: AttachRegistry, actor: str = "") -> None:
     await ws.accept()
-    if not sources.session_alive(issue):
+    if not sources.session_alive(target, issue):
         await ws.send_text(json.dumps(
-            {"type": "dead", "tail": sources.pane_tail(issue)}))
+            {"type": "dead", "tail": sources.pane_tail(target, issue)}))
         await ws.close()
         return
 
@@ -110,17 +115,18 @@ async def run_terminal(ws: WebSocket, issue: int, sources,
             # systemd services have no TERM; tmux refuses to start without
             # one ("open terminal failed: terminal does not support clear").
             os.execvpe("tmux", ["tmux", "-u", "new-session",
-                                "-t", f"task-{issue}", "-s", view],
+                                "-t", session_name(target, issue),
+                                "-s", view],
                        {**os.environ, "TERM": "xterm-256color"})
         finally:
             os._exit(127)
 
-    viewers.attach(issue)
+    viewers.attach(target, issue)
     # Guarded: this runs before the try/finally, so a raising event log here
     # would leak both the marker and the child process.
     with contextlib.suppress(Exception):
-        sources.append_event("terminal-attach", issue=issue, actor=actor,
-                             detail=view)
+        sources.append_event("terminal-attach", target=target, issue=issue,
+                             actor=actor, detail=view)
     loop = asyncio.get_running_loop()
 
     async def pump_pty() -> None:
@@ -159,12 +165,12 @@ async def run_terminal(ws: WebSocket, issue: int, sources,
         # Release this viewer FIRST so the dispatcher slot is never wedged by
         # a crash anywhere in the subsequent cleanup steps.  The marker itself
         # only clears when the last viewer leaves.
-        viewers.detach(issue)
+        viewers.detach(target, issue)
         # Log the detach before any await: a disconnect can cancel this
         # coroutine, and a cancelled await would skip everything after it.
         with contextlib.suppress(Exception):
-            sources.append_event("terminal-detach", issue=issue, actor=actor,
-                                 detail=view)
+            sources.append_event("terminal-detach", target=target,
+                                 issue=issue, actor=actor, detail=view)
         pump.cancel()
         # Kill the child first: closing the slave PTY causes os.read on the
         # master to return EIO, which lets the executor thread exit promptly.

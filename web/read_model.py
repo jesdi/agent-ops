@@ -203,13 +203,15 @@ def task_card(t: TaskState, *, model: str, attached: bool,
 
 
 def build_board(tasks: list[TaskState], *, capacity: int,
-                models: dict[int, str], attached: set[int],
+                models: dict[tuple[str, int], str],
+                attached: set[tuple[str, int]],
                 events: list[dict], heartbeat: dict | None, now: datetime,
                 budget: BudgetView, queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
                 triage_running: bool,
-                undelivered: dict[int, int] | None = None,
-                wake_blocked: set[int] | None = None) -> BoardView:
+                undelivered: dict[tuple[str, int], int] | None = None,
+                wake_blocked: set[tuple[str, int]] | None = None
+                ) -> BoardView:
     mail = undelivered or {}
     blocked = wake_blocked or set()
     claimed = claimed_at_index(events)
@@ -219,14 +221,15 @@ def build_board(tasks: list[TaskState], *, capacity: int,
               for name, rows in queues for r in rows}
     cards = []
     for t in tasks:
+        key = (t.target, t.issue)
         at = claimed_at(claimed, t.target, t.issue)
-        cards.append(task_card(t, model=models.get(t.issue, ""),
-                               attached=t.issue in attached,
+        cards.append(task_card(t, model=models.get(key, ""),
+                               attached=key in attached,
                                claimed_at=at,
                                cycle_seconds=cycle_seconds(at, t.done_at),
-                               score=scores.get((t.target, t.issue)),
-                               undelivered_messages=mail.get(t.issue, 0),
-                               wake_blocked=t.issue in blocked))
+                               score=scores.get(key),
+                               undelivered_messages=mail.get(key, 0),
+                               wake_blocked=key in blocked))
     by_column: dict[str, list[TaskCard]] = {key: [] for key, _ in COLUMNS}
     for card in cards:
         by_column[card.column].append(card)

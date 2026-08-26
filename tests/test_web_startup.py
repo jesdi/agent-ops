@@ -28,13 +28,13 @@ class FakeRun:
 
 def test_clears_every_attached_marker(tmp_path):
     for issue in (7, 12):
-        state.mark_attached(tmp_path, issue)
-    assert state.has_attached(tmp_path, 7)
+        state.mark_attached(tmp_path, "alpha", issue)
+    assert state.has_attached(tmp_path, "alpha", 7)
 
     sweep_stale_terminals(tmp_path, run=FakeRun())
 
-    assert not state.has_attached(tmp_path, 7)
-    assert not state.has_attached(tmp_path, 12)
+    assert not state.has_attached(tmp_path, "alpha", 7)
+    assert not state.has_attached(tmp_path, "alpha", 12)
 
 
 def test_kills_orphaned_view_sessions_only(tmp_path):
@@ -50,12 +50,12 @@ def test_kills_orphaned_view_sessions_only(tmp_path):
 
 
 def test_survives_a_missing_or_wedged_tmux(tmp_path):
-    state.mark_attached(tmp_path, 7)
+    state.mark_attached(tmp_path, "alpha", 7)
 
     sweep_stale_terminals(tmp_path, run=FakeRun(fail=True))  # must not raise
 
     # marker clearing does not depend on tmux being reachable
-    assert not state.has_attached(tmp_path, 7)
+    assert not state.has_attached(tmp_path, "alpha", 7)
 
 
 def test_ignores_unrelated_state_files(tmp_path):

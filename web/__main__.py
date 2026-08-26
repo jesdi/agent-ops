@@ -26,11 +26,17 @@ def sweep_stale_terminals(state_dir, *, run=subprocess.run) -> None:
     from dispatcher import state
 
     for path in sorted(Path(state_dir).glob("attached-*")):
+        # Modern marker: attached-<target>-<issue>. Legacy (pre (target,
+        # issue) rekey): attached-<issue>, with no target segment at all.
+        # clear_attached() unconditionally also unlinks the legacy path, so
+        # an empty target is harmless for that case.
+        rest = path.name[len("attached-"):]
+        target, _, tail = rest.rpartition("-")
         try:
-            issue = int(path.name.split("-", 1)[1])
+            issue = int(tail)
         except ValueError:
             continue
-        state.clear_attached(state_dir, issue)
+        state.clear_attached(state_dir, target, issue)
 
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         listed = run(["tmux", "list-sessions", "-F", "#{session_name}"],

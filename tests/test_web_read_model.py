@@ -88,11 +88,13 @@ def test_build_board_groups_and_counts():
         make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN),
         make_task(issue=3, stage=Stage.PR_OPEN, slot=0),
     ]
-    board = build_board(tasks, capacity=2,
-                        models={1: "a", 2: "b", 3: "c"}, attached={1},
-                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
-                        queues=[], queue_stale=False,
-                        claims_paused=False, triage_running=False)
+    board = build_board(
+        tasks, capacity=2,
+        models={("alpha", 1): "a", ("alpha", 2): "b", ("alpha", 3): "c"},
+        attached={("alpha", 1)},
+        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+        queues=[], queue_stale=False,
+        claims_paused=False, triage_running=False)
     by_key = {c.key: c for c in board.columns}
     assert [c.issue for c in by_key["in-progress"].cards] == [1]
     assert [c.issue for c in by_key["parked"].cards] == [2]
@@ -544,7 +546,8 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
     events = [ev(T0, "claimed", 7), ev(T0, "claimed", 9),
               ev("2026-08-01T12:00:00+00:00", "merged", 9)]
     board = build_board(
-        tasks, capacity=2, models={7: "opus", 9: "opus"}, attached=set(),
+        tasks, capacity=2,
+        models={("alpha", 7): "opus", ("alpha", 9): "opus"}, attached=set(),
         events=events, heartbeat=HB, now=NOW, budget=BUDGET_OK,
         queues=[("alpha", [row(7), row(73), row(74, blocked=True)])],
         queue_stale=False, claims_paused=False, triage_running=False)
@@ -711,7 +714,8 @@ def test_card_carries_undelivered_count_and_blocked_flag():
                         now=NOW,
                         budget=BUDGET_OK, queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
-                        undelivered={7: 3}, wake_blocked={7})
+                        undelivered={("alpha", 7): 3},
+                        wake_blocked={("alpha", 7)})
     card = [c for col in board.columns for c in col.cards][0]
     assert card.undelivered_messages == 3
     assert card.wake_blocked is True

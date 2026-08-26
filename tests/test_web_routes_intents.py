@@ -13,64 +13,65 @@ def rig(tmp_path):
 
 def test_reply_writes_intent_and_returns_202(tmp_path):
     fake, client = rig(tmp_path)
-    r = client.post("/api/task/7/reply", headers=HEADERS,
+    r = client.post("/api/task/alpha/7/reply", headers=HEADERS,
                     json={"text": "use main, not master"})
     assert r.status_code == 202
     assert r.json() == {"status": "pending",
-                        "intent": "1753430000000-7-reply.json"}
-    assert fake.intents == [("reply", 7, {"text": "use main, not master"},
+                        "intent": "1753430000000-alpha-7-reply.json"}
+    assert fake.intents == [("reply", "alpha", 7,
+                             {"text": "use main, not master"},
                              "jesdi@github")]
 
 
 def test_reply_empty_text_422(tmp_path):
     fake, client = rig(tmp_path)
-    assert client.post("/api/task/7/reply", headers=HEADERS,
+    assert client.post("/api/task/alpha/7/reply", headers=HEADERS,
                        json={"text": ""}).status_code == 422
     assert fake.intents == []
 
 
 def test_reply_is_accepted_for_an_unclaimed_issue(tmp_path):
     fake, client = rig(tmp_path)
-    r = client.post("/api/task/999/reply", headers=HEADERS,
+    r = client.post("/api/task/alpha/999/reply", headers=HEADERS,
                     json={"text": "pre-brief"})
     assert r.status_code == 202
-    assert fake.intents == [("reply", 999, {"text": "pre-brief"},
+    assert fake.intents == [("reply", "alpha", 999, {"text": "pre-brief"},
                              "jesdi@github")]
 
 
 def test_park_still_requires_a_real_task(tmp_path):
     fake, client = rig(tmp_path)
-    assert client.post("/api/task/999/park", headers=HEADERS,
+    assert client.post("/api/task/alpha/999/park", headers=HEADERS,
                        json={}).status_code == 404
 
 
 def test_park_kill_resume(tmp_path):
     fake, client = rig(tmp_path)
-    assert client.post("/api/task/7/park", headers=HEADERS,
+    assert client.post("/api/task/alpha/7/park", headers=HEADERS,
                        json={}).status_code == 202
-    assert client.post("/api/task/7/kill", headers=HEADERS,
+    assert client.post("/api/task/alpha/7/kill", headers=HEADERS,
                        json={}).status_code == 202
-    assert client.post("/api/task/7/resume", headers=HEADERS,
+    assert client.post("/api/task/alpha/7/resume", headers=HEADERS,
                        json={"text": "go on"}).status_code == 202
-    assert [(i[0], i[2]) for i in fake.intents] == [
+    assert [(i[0], i[3]) for i in fake.intents] == [
         ("park", {}), ("kill", {}), ("resume", {"text": "go on"})]
 
 
 def test_cancel_writes_intent_for_a_live_task(tmp_path):
     fake, client = rig(tmp_path)
-    r = client.post("/api/task/7/cancel", headers=HEADERS, json={})
+    r = client.post("/api/task/alpha/7/cancel", headers=HEADERS, json={})
     assert r.status_code == 202
-    assert fake.intents == [("cancel", 7, {}, "jesdi@github")]
+    assert fake.intents == [("cancel", "alpha", 7, {}, "jesdi@github")]
 
 
-def test_cancel_accepts_an_unclaimed_backlog_issue_with_target(tmp_path):
-    # A backlog card has no task file; the target rides the payload so the
-    # dispatcher can still retire the board card and close the issue.
+def test_cancel_accepts_an_unclaimed_backlog_issue(tmp_path):
+    # A backlog card has no task file; the target in the path is all the
+    # dispatcher needs to retire the board card and close the issue.
     fake, client = rig(tmp_path)
-    r = client.post("/api/task/999/cancel", headers=HEADERS,
-                    json={"target": "portfolio_eval"})
+    r = client.post("/api/task/portfolio_eval/999/cancel", headers=HEADERS,
+                    json={})
     assert r.status_code == 202
-    assert fake.intents == [("cancel", 999, {"target": "portfolio_eval"},
+    assert fake.intents == [("cancel", "portfolio_eval", 999, {},
                              "jesdi@github")]
 
 
@@ -80,10 +81,10 @@ def test_retry_validates_against_quarantine_not_tasks(tmp_path):
     fake.quarantine = [{"target": "alpha", "task_issue": 12,
                         "blocker_repo": "r", "blocker_issue": 1,
                         "fingerprint": "f", "created_at": "c"}]
-    assert client.post("/api/task/12/retry", headers=HEADERS,
+    assert client.post("/api/task/alpha/12/retry", headers=HEADERS,
                        json={}).status_code == 202
     # issue 7 has a task but no quarantine record -> 404 for retry
-    assert client.post("/api/task/7/retry", headers=HEADERS,
+    assert client.post("/api/task/alpha/7/retry", headers=HEADERS,
                        json={}).status_code == 404
 
 
@@ -109,7 +110,7 @@ def test_intent_roundtrip_through_real_sources(tmp_path):
                   systemctl=("true",))
     state.save(tmp_path, make_task(issue=7))
     client = TestClient(create_app(cfg, src))
-    r = client.post("/api/task/7/reply", headers=HEADERS,
+    r = client.post("/api/task/alpha/7/reply", headers=HEADERS,
                     json={"text": "hi"})
     assert r.status_code == 202
     path = tmp_path / "intents" / r.json()["intent"]

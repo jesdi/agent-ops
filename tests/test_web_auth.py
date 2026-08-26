@@ -50,7 +50,7 @@ def _intent_client(tmp_path):
 
 def test_cross_origin_bodyless_post_is_403_and_writes_no_intent(tmp_path):
     fake, client = _intent_client(tmp_path)
-    r = client.post("/api/task/7/kill",
+    r = client.post("/api/task/alpha/7/kill",
                     headers={**HEADERS, "Origin": "https://evil.example.com"})
     assert r.status_code == 403
     assert fake.intents == []
@@ -58,7 +58,7 @@ def test_cross_origin_bodyless_post_is_403_and_writes_no_intent(tmp_path):
 
 def test_same_origin_post_succeeds(tmp_path):
     fake, client = _intent_client(tmp_path)
-    r = client.post("/api/task/7/kill",
+    r = client.post("/api/task/alpha/7/kill",
                     headers={**HEADERS, "Origin": "http://testserver"})
     assert r.status_code == 202
     assert [i[0] for i in fake.intents] == ["kill"]
@@ -67,7 +67,7 @@ def test_same_origin_post_succeeds(tmp_path):
 def test_origin_less_post_succeeds(tmp_path):
     """curl and the documented SSE verification send no Origin at all."""
     fake, client = _intent_client(tmp_path)
-    r = client.post("/api/task/7/kill", headers=HEADERS)
+    r = client.post("/api/task/alpha/7/kill", headers=HEADERS)
     assert r.status_code == 202
     assert [i[0] for i in fake.intents] == ["kill"]
 
@@ -83,7 +83,7 @@ def test_cross_origin_websocket_is_closed_4403(tmp_path):
     _, client = _intent_client(tmp_path)
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(
-                "/api/task/7/terminal",
+                "/api/task/alpha/7/terminal",
                 headers={**HEADERS, "Origin": "https://evil.example.com"}):
             pass
     assert exc.value.code == 4403
@@ -91,14 +91,14 @@ def test_cross_origin_websocket_is_closed_4403(tmp_path):
 
 def test_origin_host_match_is_case_insensitive_and_scheme_stripped(tmp_path):
     fake, client = _intent_client(tmp_path)
-    r = client.post("/api/task/7/kill",
+    r = client.post("/api/task/alpha/7/kill",
                     headers={**HEADERS, "Origin": "HTTPS://TestServer"})
     assert r.status_code == 202
 
 
 def test_origin_with_different_port_is_rejected(tmp_path):
     fake, client = _intent_client(tmp_path)
-    r = client.post("/api/task/7/kill",
+    r = client.post("/api/task/alpha/7/kill",
                     headers={**HEADERS, "Origin": "http://testserver:9999"})
     assert r.status_code == 403
     assert fake.intents == []

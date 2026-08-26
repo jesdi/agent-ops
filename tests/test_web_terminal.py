@@ -64,7 +64,7 @@ def rig(tmp_path):
 def test_ws_without_header_is_rejected(tmp_path):
     _, client = rig(tmp_path)
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect("/api/task/7/terminal"):
+        with client.websocket_connect("/api/task/alpha/7/terminal"):
             pass
     assert exc_info.value.code == 4401
 
@@ -72,7 +72,7 @@ def test_ws_without_header_is_rejected(tmp_path):
 def test_dead_session_sends_tail_and_closes(tmp_path):
     fake, client = rig(tmp_path)
     fake.pane_tails[7] = "last output"
-    with client.websocket_connect("/api/task/7/terminal",
+    with client.websocket_connect("/api/task/alpha/7/terminal",
                                   headers=HEADERS) as ws:
         msg = ws.receive_json()
         assert msg == {"type": "dead", "tail": "last output"}
@@ -90,7 +90,7 @@ def test_live_session_echo_and_attach_markers(tmp_path, monkeypatch):
     stub_tmux(tmp_path, monkeypatch)
     fake, client = rig(tmp_path)
     fake.alive.add(7)
-    with client.websocket_connect("/api/task/7/terminal",
+    with client.websocket_connect("/api/task/alpha/7/terminal",
                                   headers=HEADERS) as ws:
         buf = b""
         for _ in range(50):
@@ -155,11 +155,11 @@ def test_two_viewers_keep_marker_until_both_disconnect(tmp_path, monkeypatch):
     stub_tmux(tmp_path, monkeypatch)
     fake, client = rig(tmp_path)
     fake.alive.add(7)
-    with client.websocket_connect("/api/task/7/terminal",
+    with client.websocket_connect("/api/task/alpha/7/terminal",
                                   headers=HEADERS) as first:
         _drain_until_ready(first)
         assert 7 in fake.attached
-        with client.websocket_connect("/api/task/7/terminal",
+        with client.websocket_connect("/api/task/alpha/7/terminal",
                                       headers=HEADERS) as second:
             _drain_until_ready(second)
             assert 7 in fake.attached
@@ -176,7 +176,7 @@ def test_attach_and_detach_are_logged_with_operator(tmp_path, monkeypatch):
     stub_tmux(tmp_path, monkeypatch)
     fake, client = rig(tmp_path)
     fake.alive.add(7)
-    with client.websocket_connect("/api/task/7/terminal",
+    with client.websocket_connect("/api/task/alpha/7/terminal",
                                   headers=HEADERS) as ws:
         _drain_until_ready(ws)
         assert _wait_until(lambda: [e[0] for e in fake.appended]
@@ -198,7 +198,7 @@ def test_malformed_resize_frames_do_not_drop_the_terminal(tmp_path,
     stub_tmux(tmp_path, monkeypatch)
     fake, client = rig(tmp_path)
     fake.alive.add(7)
-    with client.websocket_connect("/api/task/7/terminal",
+    with client.websocket_connect("/api/task/alpha/7/terminal",
                                   headers=HEADERS) as ws:
         _drain_until_ready(ws)
         for frame in ('"3"', "3", "null", "[1,2]",
@@ -241,7 +241,7 @@ def test_child_gets_a_term_even_when_service_env_has_none(tmp_path,
     monkeypatch.delenv("TERM", raising=False)
     fake, client = rig(tmp_path)
     fake.alive.add(7)
-    with client.websocket_connect("/api/task/7/terminal",
+    with client.websocket_connect("/api/task/alpha/7/terminal",
                                   headers=HEADERS) as ws:
         buf = b""
         for _ in range(50):
@@ -296,7 +296,8 @@ def test_cleanup_survives_a_reap_that_raises(tmp_path, monkeypatch):
     viewers = AttachRegistry(fake)
     ws = FakeWS()
     # must return normally, not raise
-    asyncio.run(run_terminal(ws, 7, fake, viewers, actor="jesdi@github"))
+    asyncio.run(run_terminal(ws, "alpha", 7, fake, viewers,
+                             actor="jesdi@github"))
     assert 7 not in fake.attached
     assert [e[0] for e in fake.appended] == ["terminal-attach",
                                              "terminal-detach"]
@@ -305,15 +306,15 @@ def test_cleanup_survives_a_reap_that_raises(tmp_path, monkeypatch):
 def test_attach_registry_refcounts_the_marker():
     fake = FakeSources()
     viewers = AttachRegistry(fake)
-    viewers.attach(7)
-    viewers.attach(7)
+    viewers.attach("alpha", 7)
+    viewers.attach("alpha", 7)
     assert fake.attached == {7}
-    viewers.detach(7)
+    viewers.detach("alpha", 7)
     assert fake.attached == {7}   # second viewer still there
-    viewers.detach(7)
+    viewers.detach("alpha", 7)
     assert fake.attached == set()
-    assert viewers.viewers(7) == 0
-    viewers.detach(7)             # unbalanced detach must not explode
+    assert viewers.viewers("alpha", 7) == 0
+    viewers.detach("alpha", 7)     # unbalanced detach must not explode
     assert fake.attached == set()
 
 
