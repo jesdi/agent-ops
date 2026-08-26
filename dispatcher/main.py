@@ -1148,6 +1148,38 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
                               target=task.target if task else "", issue=issue,
                               stage=task.stage.value if task else "",
                               actor=intent.actor, detail="killed by operator")
+    elif intent.action == "cancel":
+        # Operator won't-do. Unlike kill, the card is retired (Wont do +
+        # issue closed as not planned), never released back to Ready. Also
+        # unlike kill, it works for cards with no task file (a backlog card
+        # canceled from the board) — the web UI names the target in the
+        # payload since there is no state file to read it from.
+        deps.sessions.end(issue)
+        target = by_name.get(task.target if task is not None
+                             else str(intent.payload.get("target", "")))
+        if target is not None:
+            try:
+                deps.github.cancel(target, issue)
+            except Exception as exc:
+                print(f"[warn] github cancel failed for #{issue}: {exc}",
+                      file=sys.stderr)
+        else:
+            print(f"[warn] cancel intent for #{issue}: unknown target — "
+                  f"board/issue untouched", file=sys.stderr)
+        if task is not None:
+            # CANCELED tombstone, same reasoning as kill's FAILED one: the
+            # board write can lag or fail, so _claim_new's known-issues guard
+            # must contain the issue this same pass. Park cleared with it.
+            save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
+                                        hold_for_attach=False,
+                                        updated_at=_now()))
+        clear_waiting(cfg.state_dir, issue)
+        eventlog.append_event(cfg.state_dir, "canceled",
+                              target=target.name if target else "",
+                              issue=issue,
+                              stage=task.stage.value if task else "",
+                              actor=intent.actor,
+                              detail="canceled by operator")
     elif intent.action == "retry":
         # Mirror check_quarantine's clear path (failures.py:160): drop the
         # fingerprint marker too, or the dedupe silently swallows the next
