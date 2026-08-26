@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import logging
 import shlex
 import subprocess
-import sys
 from dataclasses import dataclass
 
 from dispatcher.config import Target
+
+log = logging.getLogger(__name__)
 
 
 def _run(args: list[str], cwd: str | None = None,
@@ -221,8 +223,8 @@ class GitHubClient:
         if target.status_wont_do_option_id:
             self.set_status(target, issue, target.status_wont_do_option_id)
         else:
-            print(f"[warn] {target.name}: status_wont_do_option_id unset — "
-                  f"board not updated for canceled #{issue}", file=sys.stderr)
+            log.warning("%s: status_wont_do_option_id unset — board not "
+                        "updated for canceled #%d", target.name, issue)
         _run(["gh", "issue", "close", str(issue), "--repo", target.repo,
               "--reason", "not planned"])
 

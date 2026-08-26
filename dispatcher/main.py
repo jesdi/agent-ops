@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import shutil
 import socket
@@ -26,6 +27,8 @@ from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher import (eventlog, failures, intents, messages, pr_poll,
                         queue_ops, relogin, triage)
 from dispatcher.github import GitHubClient
+
+log = logging.getLogger(__name__)
 from dispatcher import spec_publish
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
@@ -1176,12 +1179,12 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         if target is not None:
             try:
                 deps.github.cancel(target, issue)
-            except Exception as exc:
-                print(f"[warn] github cancel failed for #{issue}: {exc}",
-                      file=sys.stderr)
+            except Exception:
+                log.warning("github cancel failed for #%d", issue,
+                            exc_info=True)
         else:
-            print(f"[warn] cancel intent for #{issue}: unknown target — "
-                  f"board/issue untouched", file=sys.stderr)
+            log.warning("cancel intent for #%d: unknown target — board/issue "
+                        "untouched", issue)
         if task is not None:
             # CANCELED tombstone, same reasoning as kill's FAILED one: the
             # board write can lag or fail, so _claim_new's known-issues guard
