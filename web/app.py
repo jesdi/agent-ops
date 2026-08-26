@@ -57,6 +57,12 @@ class ResumeReq(BaseModel):
     text: str = ""
 
 
+class CancelReq(BaseModel):
+    # Only needed when the issue has no task file (a backlog card): the
+    # dispatcher reads the target from task state when one exists.
+    target: str = ""
+
+
 class NextReq(BaseModel):
     issue: int
     force: bool = False
@@ -327,6 +333,14 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                     op: Operator = Depends(current_operator)):
         _require_task(issue)
         return _accepted("kill", issue, {}, op)
+
+    @app.post("/api/task/{issue}/cancel", status_code=202)
+    def intent_cancel(issue: int, req: CancelReq,
+                      op: Operator = Depends(current_operator)):
+        # NO _require_task: a backlog card with no task file cancels too —
+        # the payload's target lets the dispatcher retire the board card.
+        payload = {"target": req.target} if req.target else {}
+        return _accepted("cancel", issue, payload, op)
 
     @app.post("/api/task/{issue}/retry", status_code=202)
     def intent_retry(issue: int,
