@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prototype — target consumption priority</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-white text-gray-900">
+<div class="mx-auto max-w-6xl p-4">
+
+  <!-- ======== prototype chrome (not part of the console) ======== -->
+  <div class="mb-4 rounded border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900">
+    <p class="font-semibold">Prototype: strict-priority consumption across targets</p>
+    <p class="mt-1">Semantics in every variant: the dispatcher consumes from the highest-priority
+    project while it has actionable (Ready, unblocked) work; only when it runs dry does it fall
+    back to the next one. Reordering is live in each variant — drag, or use the ▲▼ buttons — and
+    the Queued forecast + next-claim line react. <span class="font-medium">infra has no actionable
+    work</span> on purpose, so you can see the skip/fallback treatment.</p>
+  </div>
+
+  <div class="mb-4 flex flex-wrap items-center gap-2" id="variant-switch"></div>
+  <div class="mb-4 rounded border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700" id="variant-blurb"></div>
+
+  <!-- ======== console mock ======== -->
+  <div class="flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-2 text-sm">
+      <span class="font-semibold">capacity</span>
+      <span class="rounded bg-gray-100 px-2 py-0.5">1 / 2</span>
+    </div>
+    <p class="text-sm text-gray-600" id="next-claim"></p>
+    <span class="text-sm text-gray-500">≈41m per task</span>
+  </div>
+
+  <div id="rail-slot" class="mt-4"></div>
+  <div id="tabs-slot" class="mt-4"></div>
+
+  <div class="mt-4 flex gap-4 overflow-x-auto pb-4" id="board"></div>
+</div>
+
+<script>
+/* ---------- mock data ---------- */
+const TARGETS = {
+  portfolio_eval: { color: 'bg-sky-500', ghosts: [
+    { number: 212, title: 'Alert digest: collapse duplicate tickers', score: 8, boost: 1 },
+    { number: 198, title: 'Scorecard: handle delisted positions', score: 5, boost: 0 },
+  ]},
+  agent_ops: { color: 'bg-violet-500', ghosts: [
+    { number: 7,  title: 'Board target filter tabs', score: 6, boost: 0 },
+    { number: 12, title: 'Runbook: PAT rotation checklist', score: 4, boost: 0 },
+  ]},
+  infra: { color: 'bg-amber-500', ghosts: [] },
+}
+
+const IN_FLIGHT = {
+  spec:      [{ target: 'agent_ops', number: 3, title: 'Onboard agent-ops as a target', stage: 'spec', model: 'claude-fable-5' }],
+  implement: [{ target: 'portfolio_eval', number: 189, title: 'Backtest cache invalidation', stage: 'implement', model: 'claude-opus-4-8', slot: 0 }],
+  done:      [{ target: 'portfolio_eval', number: 174, title: 'Dividend reinvest toggle', stage: 'done', model: 'claude-opus-4-8' }],
+}
+
+/* ---------- state ---------- */
+let priority = ['portfolio_eval', 'agent_ops', 'infra']
+let variant = 'A'
+let filter = 'All'
+
+const actionable = (t) => TARGETS[t].ghosts.length
+const feedingTarget = () => priority.find((t) => actionable(t) > 0) ?? null
+
+/* ---------- shared renderers (console visual language) ---------- */
+function ghostCard(t, g, isNext) {
+  return `
+  <div class="rounded border border-dashed border-gray-300 bg-gray-50 p-3 text-gray-600">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <span class="text-xs text-gray-400">${t}#${g.number}</span>
+      ${isNext ? '<span class="rounded bg-emerald-100 px-1.5 text-xs font-medium text-emerald-700">next</span>' : ''}
+    </div>
+    <p class="mt-1 text-sm font-medium">${g.title}</p>
+    <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+      <span>score ${g.score}</span>${g.boost ? `<span>boost ${g.boost}</span>` : ''}
+    </div>
+    <div class="mt-2 flex gap-1">
+      ${['Boost', 'Demote', 'Next', 'Ready'].map((b) => `<button class="rounded border px-2 text-xs">${b}</button>`).join('')}
+    </div>
+  </div>`
+}
+
+function taskCard(c) {
+  const slot = c.slot != null ? `<span class="rounded bg-sky-100 px-1.5 text-sky-700">slot ${c.slot}</span>` : ''
+  return `
+  <div class="block rounded border border-gray-200 bg-white p-3 shadow-sm border-l-4 ${c.slot != null ? 'border-l-sky-400' : 'border-l-transparent'}">
+    <span class="text-xs text-gray-500">${c.target}#${c.number}</span>
+    <p class="mt-1 text-sm font-medium">${c.title}</p>
+    <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+      <span>${c.stage}</span><span>${c.model}</span>${slot}
+    </div>
+  </div>`
+}
+
+function columnShell(title, count, inner) {
+  return `
+  <section class="w-64 shrink-0">
+    <div class="flex w-full items-center justify-between rounded bg-gray-100 px-2 py-1 text-sm font-semibold">
+      <span>${title}</span><span class="text-gray-500">${count}</span>
+    </div>
+    <div class="mt-2 flex flex-col gap-2">${inner}</div>
+  </section>`
+}
+
+const dot = (t) => `<span class="inline-block h-2 w-2 rounded-full ${TARGETS[t].color}"></span>`
+const feedingBadge = '<span class="rounded bg-emerald-100 px-1.5 text-xs font-medium text-emerald-700">feeding</span>'
+const prio = (i) => `<span class="text-xs text-gray-400">P${i + 1}</span>`
+
+/* ---------- reorder plumbing (drag + ▲▼) ---------- */
+function move(t, delta) {
+  const i = priority.indexOf(t), j = i + delta
+  if (j < 0 || j >= priority.length) return
+  ;[priority[i], priority[j]] = [priority[j], priority[i]]
+  render()
+}
+let dragSrc = null
+function wireDnD(root) {
+  root.querySelectorAll('[data-drag]').forEach((el) => {
+    el.addEventListener('dragstart', () => { dragSrc = el.dataset.drag })
+    el.addEventListener('dragover', (e) => e.preventDefault())
+    el.addEventListener('drop', (e) => {
+      e.preventDefault()
+      if (!dragSrc || dragSrc === el.dataset.drag) return
+      const from = priority.indexOf(dragSrc), to = priority.indexOf(el.dataset.drag)
+      priority.splice(to, 0, priority.splice(from, 1)[0])
+      render()
+    })
+  })
+  root.querySelectorAll('[data-up]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); move(b.dataset.up, -1) }))
+  root.querySelectorAll('[data-down]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); move(b.dataset.down, 1) }))
+}
+
+/* ---------- variant A: priority-ordered tabs ---------- */
+function renderTabsA(slot) {
+  const tabs = priority.map((t, i) => {
+    const feeding = feedingTarget() === t
+    const skipped = actionable(t) === 0
+    return `
+    <button draggable="true" data-drag="${t}"
+      class="flex cursor-grab items-center gap-1.5 rounded border px-3 py-1.5 text-sm
+             ${filter === t ? 'border-gray-800 bg-gray-800 text-white' : 'border-gray-300 bg-white text-gray-700'}"
+      onclick="setFilter('${t}')">
+      ${prio(i)} ${dot(t)} ${t}
+      <span class="rounded ${filter === t ? 'bg-gray-600' : 'bg-gray-100'} px-1.5 text-xs">${actionable(t)}</span>
+      ${feeding ? feedingBadge : ''}${skipped ? '<span class="text-xs text-gray-400">idle</span>' : ''}
+      <span class="ml-1 flex flex-col leading-none text-[10px] text-gray-400">
+        <span data-up="${t}" class="cursor-pointer hover:text-gray-700">▲</span>
+        <span data-down="${t}" class="cursor-pointer hover:text-gray-700">▼</span>
+      </span>
+    </button>`
+  }).join('')
+  slot.innerHTML = `
+  <div class="flex flex-wrap items-center gap-2">
+    <button class="rounded border px-3 py-1.5 text-sm ${filter === 'All' ? 'border-gray-800 bg-gray-800 text-white' : 'border-gray-300 bg-white text-gray-700'}"
+      onclick="setFilter('All')">All</button>
+    <span class="text-xs text-gray-400">— tab order = consumption priority (drag to reorder)</span>
+    ${tabs}
+  </div>`
+}
+
+/* ---------- variant B: priority rail + plain filter tabs ---------- */
+function renderRailB(slot) {
+  const rows = priority.map((t, i) => `
+    <li draggable="true" data-drag="${t}"
+        class="flex cursor-grab items-center gap-2 rounded border border-gray-200 bg-white px-2 py-1.5">
+      <span class="text-gray-300">⠿</span> ${prio(i)} ${dot(t)}
+      <span class="text-sm font-medium">${t}</span>
+      <span class="text-xs text-gray-500">${actionable(t)} actionable</span>
+      <span class="ml-auto flex items-center gap-1">
+        ${feedingTarget() === t ? feedingBadge : ''}
+        ${actionable(t) === 0 ? '<span class="text-xs text-gray-400">skipped ↓</span>' : ''}
+        <button data-up="${t}" class="rounded border px-1 text-xs">▲</button>
+        <button data-down="${t}" class="rounded border px-1 text-xs">▼</button>
+      </span>
+    </li>`).join('')
+  slot.innerHTML = `
+  <div class="max-w-md rounded border border-gray-200 bg-gray-50 p-3">
+    <p class="text-sm font-semibold">Consumption priority</p>
+    <p class="mt-0.5 text-xs text-gray-500">top project feeds the box; falls through when it has no actionable work</p>
+    <ul class="mt-2 flex flex-col gap-1">${rows}</ul>
+  </div>`
+}
+function renderTabsPlain(slot) {
+  const tabs = ['All', ...priority].map((t) => `
+    <button class="flex items-center gap-1.5 rounded border px-3 py-1.5 text-sm
+      ${filter === t ? 'border-gray-800 bg-gray-800 text-white' : 'border-gray-300 bg-white text-gray-700'}"
+      onclick="setFilter('${t}')">
+      ${t === 'All' ? 'All' : `${dot(t)} ${t}`}
+      ${t !== 'All' ? `<span class="rounded ${filter === t ? 'bg-gray-600' : 'bg-gray-100'} px-1.5 text-xs">${actionable(t)}</span>` : ''}
+    </button>`).join('')
+  slot.innerHTML = `<div class="flex flex-wrap items-center gap-2">${tabs}
+    <span class="text-xs text-gray-400">— tabs only filter the view; priority lives in the rail above</span></div>`
+}
+
+/* ---------- queued column bodies ---------- */
+function queuedFlat() {
+  const feeding = feedingTarget()
+  return priority.flatMap((t) =>
+    (filter === 'All' || filter === t)
+      ? TARGETS[t].ghosts.map((g, i) => ghostCard(t, g, t === feeding && i === 0))
+      : []
+  ).join('') || '<p class="text-xs text-gray-400">nothing queued for this filter</p>'
+}
+function queuedSectionedC() {
+  const feeding = feedingTarget()
+  return priority.map((t, i) => {
+    const body = TARGETS[t].ghosts.length
+      ? TARGETS[t].ghosts.map((g, j) => ghostCard(t, g, t === feeding && j === 0)).join('')
+      : '<p class="rounded border border-dashed border-gray-200 p-2 text-xs text-gray-400">no actionable work — skipped ↓</p>'
+    return `
+    <div draggable="true" data-drag="${t}"
+         class="flex cursor-grab items-center justify-between rounded bg-gray-100 px-2 py-1 text-xs font-semibold">
+      <span class="flex items-center gap-1.5"><span class="text-gray-300">⠿</span> ${prio(i)} ${dot(t)} ${t}</span>
+      <span class="flex items-center gap-1">
+        ${feedingTarget() === t ? feedingBadge : ''}
+        <button data-up="${t}" class="rounded border px-1">▲</button>
+        <button data-down="${t}" class="rounded border px-1">▼</button>
+      </span>
+    </div>
+    ${body}`
+  }).join('')
+}
+
+/* ---------- board ---------- */
+function renderBoard() {
+  const show = (c) => filter === 'All' || filter === c.target
+  const queued = variant === 'C' ? queuedSectionedC() : queuedFlat()
+  const queuedCount = priority.reduce((n, t) => n + ((filter === 'All' || filter === t) ? actionable(t) : 0), 0)
+  document.getElementById('board').innerHTML =
+    columnShell('Queued', queuedCount, queued) +
+    columnShell('Spec', IN_FLIGHT.spec.filter(show).length, IN_FLIGHT.spec.filter(show).map(taskCard).join('')) +
+    columnShell('Implement', IN_FLIGHT.implement.filter(show).length, IN_FLIGHT.implement.filter(show).map(taskCard).join('')) +
+    columnShell('Done', IN_FLIGHT.done.filter(show).length, IN_FLIGHT.done.filter(show).map(taskCard).join(''))
+}
+
+/* ---------- variant chrome ---------- */
+const BLURBS = {
+  A: '<b>A — priority-ordered tabs.</b> One control does double duty: the filter tabs, in order, ARE the consumption priority. Compact, zero new surface. Trade-off: view-filtering and scheduling are coupled — dragging a tab to peek at a project must not be confused with reprioritising it, and "All" sits awkwardly in an ordered strip.',
+  B: '<b>B — priority rail.</b> A dedicated "Consumption priority" panel owns the order; tabs stay a pure view filter. Clearest separation of concerns and room to grow (per-project pause, capacity share later). Trade-off: one more panel on the board page.',
+  C: '<b>C — sectioned queue.</b> No separate control: the Queued column itself is sectioned by project in priority order, and you drag section headers. Priority is visualised exactly where its effect is felt. Trade-off: reordering lives inside one (collapsible) column, and long queues push lower sections below the fold.',
+}
+function renderChrome() {
+  document.getElementById('variant-switch').innerHTML =
+    ['A', 'B', 'C'].map((v) => `
+      <button class="rounded border px-3 py-1.5 text-sm font-medium
+        ${variant === v ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-gray-300 bg-white text-gray-700'}"
+        onclick="setVariant('${v}')">Approach ${v}</button>`).join('') +
+    '<span class="text-sm text-gray-500">— same semantics, three homes for the priority control</span>'
+  document.getElementById('variant-blurb').innerHTML = BLURBS[variant]
+}
+
+function renderNextClaim() {
+  const t = feedingTarget()
+  document.getElementById('next-claim').innerHTML = t
+    ? `next claim: <span class="font-medium text-emerald-700">${t}#${TARGETS[t].ghosts[0].number}</span> (capacity free)`
+    : 'next claim: nothing actionable in any project'
+}
+
+function render() {
+  renderChrome()
+  const rail = document.getElementById('rail-slot'), tabs = document.getElementById('tabs-slot')
+  rail.innerHTML = ''; tabs.innerHTML = ''
+  if (variant === 'A') renderTabsA(tabs)
+  if (variant === 'B') { renderRailB(rail); renderTabsPlain(tabs) }
+  if (variant === 'C') renderTabsPlain(tabs)
+  renderBoard()
+  renderNextClaim()
+  wireDnD(document.body)
+}
+function setVariant(v) { variant = v; render() }
+function setFilter(f) { filter = f; render() }
+render()
+</script>
+</body>
+</html>
