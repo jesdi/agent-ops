@@ -142,32 +142,36 @@ class FakeSessions:
         self.resume_raises = set(resume_raises)
         self.spawn_raises = set(spawn_raises)
 
-    def is_alive(self, issue):
+    # Every method takes `target` first, matching dispatcher.sessions.Sessions
+    # post-rekey — but the fakes still record/key by issue alone, since every
+    # test here (bar the target-disambiguation ones) uses a single target and
+    # the recorded issue is what assertions check.
+    def is_alive(self, target, issue):
         return issue in self.alive_set
 
-    def idle_seconds(self, issue):
+    def idle_seconds(self, target, issue):
         self.idle_queried.append(issue)
         return self.idle.get(issue)
 
-    def send_text(self, issue, text):
+    def send_text(self, target, issue, text):
         self.sent_text.append((issue, text))
 
-    def spawn_stage(self, issue, worktree, prompt, stage_name, model):
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.spawned.append((issue, stage_name, model, prompt))
 
-    def resume(self, issue, worktree, message, model):
+    def resume(self, target, issue, worktree, message, model):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.resumed.append((issue, message, model))
 
-    def capture_tail(self, issue, lines=25):
+    def capture_tail(self, target, issue, lines=25):
         return self.tail
 
-    def end(self, issue):
+    def end(self, target, issue):
         self.ended.append(issue)
 
 
@@ -258,7 +262,7 @@ def test_new_candidate_claimed_and_spec_spawned(tmp_path, monkeypatch):
 
     assert gh.claimed == [42]
     assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-opus-4-8")]
-    ts = load(c.state_dir, 42)
+    ts = load(c.state_dir, "portfolio_eval", 42)
     assert ts.stage is Stage.SPEC and ts.slot == 0 and ts.title == "Add widget"
     sig = json.loads(
         (Path(c.targets[0].worktrees_path) / "task-42" / ".agent" / "stage.json")
@@ -273,7 +277,7 @@ def test_claim_snapshots_effort_and_labels(tmp_path, monkeypatch):
                                labels=("auto", "frontend"))])
     c = cfg(tmp_path)
     main.run_pass(c, deps(gh))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.effort == 3
     assert t.labels == ("auto", "frontend")
 
@@ -327,7 +331,7 @@ def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
         {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
          "artifact": spec_path}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_SPEC_REVIEW
     assert t.artifact == spec_path
 
@@ -380,7 +384,7 @@ def test_publish_failure_says_local_only_and_skips_comment(tmp_path, monkeypatch
     main.run_pass(c, d)
     assert gh.comments == []
     # the gate itself is NOT blocked by the failure
-    assert load(c.state_dir, 42).stage is Stage.AWAITING_SPEC_REVIEW
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.AWAITING_SPEC_REVIEW
     (tmpl, ctx), = [x for x in d.notifier.contexts
                     if x[0] == "awaiting_spec_review"]
     assert "⚠️ spec is local only: git push failed: auth" in ctx["note"]
@@ -396,7 +400,7 @@ def test_comment_failure_is_best_effort(tmp_path, monkeypatch):
     gh = FakeGitHub(); gh.comment_raises = True
     d = deps(gh, FakeSessions(alive={42}))
     main.run_pass(c, d)  # must not raise
-    assert load(c.state_dir, 42).stage is Stage.AWAITING_SPEC_REVIEW
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.AWAITING_SPEC_REVIEW
     assert any(t == "awaiting_spec_review" for t in d.notifier.sent)
     (tmpl, ctx), = [x for x in d.notifier.contexts
                     if x[0] == "awaiting_spec_review"]
@@ -414,7 +418,7 @@ def test_gate_respawn_clears_stale_artifact(tmp_path, monkeypatch):
     sess = FakeSessions()  # session not alive
     main.run_pass(c, deps(sess=sess))
     assert [(s[0], s[1]) for s in sess.spawned] == [(42, "spec")]
-    assert load(c.state_dir, 42).artifact == ""
+    assert load(c.state_dir, "portfolio_eval", 42).artifact == ""
 
 
 def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
@@ -435,7 +439,7 @@ def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
     assert [s[:3] for s in sess.spawned] == [(42, "plan", "claude-opus-4-8")]
-    assert load(c.state_dir, 42).stage is Stage.PLAN
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PLAN
 
 
 def test_plan_format_failure_retries_in_session_then_fails(tmp_path, monkeypatch):
@@ -457,7 +461,7 @@ def test_plan_format_failure_retries_in_session_then_fails(tmp_path, monkeypatch
     assert 42 in sess.ended
     assert len(sess.resumed) == 1 and sess.resumed[0][0] == 42
     assert "plan_retry" in d.notifier.sent
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.PLAN and t.plan_retries == 1
     assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
 
@@ -466,7 +470,7 @@ def test_plan_format_failure_retries_in_session_then_fails(tmp_path, monkeypatch
         {"stage": "plan", "status": "done", "note": "", "artifact": ".agent/plan.md"}))
     d2 = deps(sess=FakeSessions(alive={42}))
     main.run_pass(c, d2)
-    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
     assert "artifact_failed" in d2.notifier.sent
 
 
@@ -497,13 +501,13 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
             super().__init__(alive)
             self.ops = []
 
-        def end(self, issue):
+        def end(self, target, issue):
             self.ops.append(("end", issue))
-            super().end(issue)
+            super().end(target, issue)
 
-        def spawn_stage(self, issue, worktree, prompt, stage_name, model):
+        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model):
             self.ops.append(("spawn", stage_name))
-            super().spawn_stage(issue, worktree, prompt, stage_name, model)
+            super().spawn_stage(target, issue, worktree, prompt, stage_name, model)
 
     sess = OrderedSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
@@ -525,7 +529,7 @@ def test_dead_session_is_crash(tmp_path, monkeypatch):
     main.run_pass(c, d)
     assert gh.released == [(42, "session crashed mid-stage")]
     assert "session_crashed" in d.notifier.sent
-    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
     assert wt.exists()  # worktree preserved
 
 
@@ -547,7 +551,7 @@ def test_dead_session_files_diagnosis_issue_and_blocks(tmp_path, monkeypatch):
     assert "task_failed" in d.notifier.sent
     # existing crash handling still intact
     assert gh.released == [(42, "session crashed mid-stage")]
-    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
 
 
 def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monkeypatch):
@@ -574,7 +578,7 @@ def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monke
     main.run_pass(c, d)  # must NOT raise
 
     assert gh.claimed == [], "capped at one provisioning failure per pass; 43 not claimed this pass"
-    assert load(c.state_dir, 42) is None, "no state file for the failed candidate"
+    assert load(c.state_dir, "portfolio_eval", 42) is None, "no state file for the failed candidate"
     repo, title, body = gh.created_issues[0]
     assert repo == "jesdi/agent-ops" and "provisioning" in title
     assert "no python 3.13" in body
@@ -662,7 +666,7 @@ def test_release_called_when_claim_fails(tmp_path, monkeypatch):
         main.run_pass(c, deps(gh, sess))
 
     assert any(issue == 42 for issue, _ in gh.released), "release must be called for the issue when claim fails"
-    ts = load(c.state_dir, 42)
+    ts = load(c.state_dir, "portfolio_eval", 42)
     assert ts is not None and ts.stage is Stage.QUEUED, "QUEUED state file must exist for crash-recovery path"
 
 
@@ -687,7 +691,7 @@ def test_blocked_session_parks_and_frees_capacity(tmp_path, monkeypatch):
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN and t.park_msg_id == 77
     assert t.stage is Stage.IMPLEMENT  # stage preserved while parked
     assert sess.ended == [42]
@@ -701,12 +705,12 @@ def test_waiting_marker_parks_working_session(tmp_path, monkeypatch):
     wt = make_task(c)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "working"}))
-    mark_waiting(c.state_dir, 42)
+    mark_waiting(c.state_dir, "portfolio_eval", 42)
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN
-    assert not has_waiting(c.state_dir, 42)  # marker consumed
+    assert not has_waiting(c.state_dir, "portfolio_eval", 42)  # marker consumed
 
 
 def test_awaiting_ci_parks_silently_with_run_id(tmp_path, monkeypatch):
@@ -719,7 +723,7 @@ def test_awaiting_ci_parks_silently_with_run_id(tmp_path, monkeypatch):
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_CI and t.ci_run_id == 4242
     assert sess.ended == [42]
     assert "parked_question" not in d.notifier.sent
@@ -733,7 +737,7 @@ def test_ci_completion_marks_unpark_requested(tmp_path, monkeypatch):
     gh = FakeGitHub(run_conclusion="failure")
     # No free capacity race: resumed same pass is fine — assert either state.
     main.run_pass(c, deps(gh, FakeSessions()))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park in (PARK_WAKE, "")  # woken; may already have resumed
     from dispatcher import messages
     # Message may be delivered already if resumed same pass; all_messages captures both.
@@ -754,7 +758,7 @@ def test_woken_task_resumes_before_new_claims(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess))
     assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
     assert gh.claimed == []  # head-of-queue: resume consumed the only slot
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == "" and t.park_msg_id == 0
     sig = json.loads((wt / ".agent" / "stage.json").read_text())
     assert sig["status"] == "working"  # rewritten before resume
@@ -799,7 +803,7 @@ def test_reply_wakes_matching_parked_task(tmp_path, monkeypatch):
     make_task(c, issue=43)  # active task occupies the only slot
     patch_events(monkeypatch, [Reply(reply_to_msg_id=55, text="use oauth")])
     main.run_pass(c, deps(sess=FakeSessions(alive={43})))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
     assert messages.undelivered(c.state_dir, 42)[0].text == "use oauth"
@@ -824,7 +828,7 @@ def test_plain_text_with_single_parked_task_wakes_it(tmp_path, monkeypatch):
     make_task(c, issue=43)
     patch_events(monkeypatch, [Plain(text="go ahead")])
     main.run_pass(c, deps(sess=FakeSessions(alive={43})))
-    assert load(c.state_dir, 42).park == PARK_WAKE
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
 
 
 def test_plain_text_with_two_parked_tasks_asks_which(tmp_path, monkeypatch):
@@ -836,8 +840,8 @@ def test_plain_text_with_two_parked_tasks_asks_which(tmp_path, monkeypatch):
     patch_events(monkeypatch, [Plain(text="yes")])
     d = deps()
     main.run_pass(c, d)
-    assert load(c.state_dir, 42).park == PARK_HUMAN
-    assert load(c.state_dir, 43).park == PARK_HUMAN
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
+    assert load(c.state_dir, "portfolio_eval", 43).park == PARK_HUMAN
     assert "status" in d.notifier.sent  # the "Which task?" prompt
 
 
@@ -850,7 +854,7 @@ def test_attach_command_sets_hold(tmp_path, monkeypatch):
     make_task(c, issue=43)
     patch_events(monkeypatch, [Command(name="attach", issue=42)])
     main.run_pass(c, deps(sess=FakeSessions(alive={43})))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE and t.hold_for_attach is True
 
 
@@ -867,7 +871,7 @@ def test_attach_command_queues_no_message(tmp_path, monkeypatch):
     patch_events(monkeypatch, [Command(name="attach", issue=42)])
     main.run_pass(c, deps(sess=FakeSessions(alive={43})))
     from dispatcher import messages
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE and t.hold_for_attach is True
     assert messages.all_messages(c.state_dir, 42) == []
 
@@ -949,9 +953,9 @@ def test_broken_worktree_fails_that_task_and_pass_survives(tmp_path, monkeypatch
 
     # The task behind the broken one still got its turn.
     assert [r[0] for r in sess.resumed] == [43]
-    assert load(c.state_dir, 43).park == ""
+    assert load(c.state_dir, "portfolio_eval", 43).park == ""
     # The broken one is failed, unparked and off the board's live columns.
-    broken = load(c.state_dir, 42)
+    broken = load(c.state_dir, "portfolio_eval", 42)
     assert broken.stage is Stage.FAILED and broken.park == ""
     assert (42, "task crashed mid-pass") in gh.released
     # Filed on the infra repo: a vanished worktree is a box-side problem
@@ -973,7 +977,7 @@ def test_broken_worktree_task_crash_dedupes_to_one_issue(tmp_path, monkeypatch):
     main.run_pass(c, d)
     # Second pass: the task is FAILED now, so it is not woken again — but a
     # re-park by the operator must not file a second identical issue.
-    save(c.state_dir, dc_replace(load(c.state_dir, 42),
+    save(c.state_dir, dc_replace(load(c.state_dir, "portfolio_eval", 42),
                                  stage=Stage.IMPLEMENT, park=PARK_WAKE))
     main.run_pass(c, d)
     assert len(gh.created_issues) == 1
@@ -996,7 +1000,7 @@ def test_broken_worktree_on_spawn_fails_that_task_and_pass_survives(
     main.run_pass(c, d)  # must not raise
 
     assert sess.spawned == []
-    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
     assert "task-crash" in gh.created_issues[0][1]
 
 
@@ -1014,7 +1018,7 @@ def test_run_status_error_does_not_abort_pass(tmp_path, monkeypatch):
     # Must NOT raise; the pass must survive the error
     main.run_pass(c, deps(gh, sess))
     # CI-parked task remains unchanged (still PARK_CI with same run_id)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_CI and t.ci_run_id == 4242
     # The rest of the pass continued: the fresh candidate was claimed
     assert gh.claimed == [99]
@@ -1288,7 +1292,7 @@ def test_frontend_task_spawns_plan_on_fable_and_implement_on_opus(
     assert [s[:3] for s in sess.spawned] == [(42, "plan", "claude-fable-5")]
 
     # …and the implement stage of the same task drops to opus
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert main._model_for(c, c.targets[0], t, Stage.IMPLEMENT) == "claude-opus-4-8"
 
 
@@ -1541,7 +1545,7 @@ def test_implement_done_appends_pr_opened_event(tmp_path, monkeypatch):
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "done", "note": "PR #9"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    assert load(c.state_dir, 42).stage is Stage.PR_OPEN
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PR_OPEN
     opened = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "pr-opened"]
     assert len(opened) == 1 and opened[0]["issue"] == 42
 
@@ -1561,6 +1565,35 @@ def test_crash_appends_failed_event(tmp_path, monkeypatch):
 from dispatcher import intents as intents_mod
 
 
+def test_apply_intent_resolves_by_target(tmp_path):
+    """A target-carrying kill intent must resolve to exactly that target's
+    task — even when a different target happens to have a task with the
+    identical issue number. Regression for the (target, issue) rekey:
+    _task_for_intent looks up by (target, issue), not by issue alone, so
+    killing agent_ops#42 must leave portfolio_eval#42 completely untouched."""
+    c = cfg(tmp_path)
+    c = dc_replace(c, targets=[c.targets[0],
+                               dc_replace(c.targets[0], name="agent_ops",
+                                          repo="jesdi/agent-ops")])
+    make_task(c, issue=42)  # portfolio_eval#42 — make_task's default target
+    wt2 = Path(c.targets[1].worktrees_path) / "task-42"
+    (wt2 / ".agent").mkdir(parents=True, exist_ok=True)
+    save(c.state_dir, TaskState(
+        issue=42, target="agent_ops", stage=Stage.IMPLEMENT, slot=1,
+        worktree=str(wt2), branch="agent/task-42", title="t",
+        updated_at="2026-07-21T00:00:00+00:00"))
+    intents_mod.write_intent(c.state_dir, "kill", "agent_ops", 42, {}, "op", 1)
+    sess = FakeSessions(alive={42})
+    main._apply_intents(c, deps(sess=sess))
+
+    killed = load(c.state_dir, "agent_ops", 42)
+    assert killed.stage is Stage.FAILED
+
+    untouched = load(c.state_dir, "portfolio_eval", 42)
+    assert untouched.stage is Stage.IMPLEMENT
+    assert untouched.park == ""
+
+
 def test_reply_intent_wakes_parked_task_and_is_deleted(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -1568,10 +1601,10 @@ def test_reply_intent_wakes_parked_task_and_is_deleted(tmp_path, monkeypatch):
     c = replace_capacity(c, 1)
     make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
     make_task(c, issue=43)  # active task occupies the only slot → 42 stays PARK_WAKE
-    intents_mod.write_intent(c.state_dir, "reply", 42, {"text": "use oauth"},
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42, {"text": "use oauth"},
                              actor="jesdi@github", epoch_ms=1)
     main.run_pass(c, deps(sess=FakeSessions(alive={43})))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
     assert messages.undelivered(c.state_dir, 42)[0].text == "use oauth"
@@ -1587,12 +1620,12 @@ def test_reply_intent_for_running_task_is_queued_but_task_stays_running(tmp_path
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42)  # not parked — session is live
-    intents_mod.write_intent(c.state_dir, "reply", 42, {"text": "hi"}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42, {"text": "hi"}, "op", 1)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     # message is queued — not dropped — and the task stays unparked
     from dispatcher import messages
     assert messages.undelivered(c.state_dir, 42)[0].text == "hi"
-    assert load(c.state_dir, 42).park == ""  # no wake flip for a live session
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""  # no wake flip for a live session
     assert intents_mod.list_intents(c.state_dir) == []  # intent deleted
 
 
@@ -1606,11 +1639,11 @@ def test_reply_intent_on_gate_parked_task_wakes_it(tmp_path, monkeypatch):
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
               park=PARK_REVIEW, park_msg_id=55)
     make_task(c, issue=43)  # active task occupies the only slot → 42 stays PARK_WAKE
-    intents_mod.write_intent(c.state_dir, "reply", 42,
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
                              {"text": "Approved — proceed."}, actor="jesdi@github",
                              epoch_ms=1)
     main.run_pass(c, deps(sess=FakeSessions(alive={43})))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
     assert messages.undelivered(c.state_dir, 42)[0].text == "Approved — proceed."
@@ -1622,11 +1655,11 @@ def test_park_intent_parks_a_live_task(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42)
-    intents_mod.write_intent(c.state_dir, "park", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "park", "portfolio_eval", 42, {}, "op", 1)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN and t.park_msg_id == 77
     assert sess.ended == [42]
     assert "parked_question" in d.notifier.sent
@@ -1638,15 +1671,15 @@ def test_kill_intent_ends_releases_and_tombstones_state(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42)
-    mark_waiting(c.state_dir, 42)
-    intents_mod.write_intent(c.state_dir, "kill", 42, {}, "op", 1)
+    mark_waiting(c.state_dir, "portfolio_eval", 42)
+    intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
     gh = FakeGitHub()
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(gh, sess))
     assert sess.ended == [42]
     assert gh.released == [(42, "abandoned by operator")]
-    assert load(c.state_dir, 42).stage is Stage.FAILED
-    assert not has_waiting(c.state_dir, 42)
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+    assert not has_waiting(c.state_dir, "portfolio_eval", 42)
     failed = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "failed"]
     assert failed[0]["detail"] == "killed by operator"
 
@@ -1661,11 +1694,11 @@ def test_kill_intent_survives_release_failure(tmp_path, monkeypatch):
         def release(self, target, issue, reason):
             raise RuntimeError("gh outage")
 
-    intents_mod.write_intent(c.state_dir, "kill", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(ReleaseFailsGitHub(), sess))  # must not raise
     assert sess.ended == [42]
-    assert load(c.state_dir, 42).stage is Stage.FAILED  # tombstone written even when release raises
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED  # tombstone written even when release raises
 
 
 def test_kill_intent_does_not_reclaim_released_issue_same_pass(tmp_path, monkeypatch):
@@ -1673,14 +1706,14 @@ def test_kill_intent_does_not_reclaim_released_issue_same_pass(tmp_path, monkeyp
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42)
-    intents_mod.write_intent(c.state_dir, "kill", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
     # release() flips #42 back to Ready+auto, so it is still a live board
     # candidate this pass; the FAILED tombstone must stop _claim_new from
     # re-claiming the issue the operator just killed.
     gh = FakeGitHub([Candidate(42, "Killed but still on board", "u42")])
     main.run_pass(c, deps(gh, FakeSessions(alive={42})))
     assert gh.claimed == []
-    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
 
 
 def test_cancel_intent_ends_session_moves_board_and_tombstones(tmp_path, monkeypatch):
@@ -1791,7 +1824,7 @@ def test_retry_intent_clears_quarantine_and_fingerprint(tmp_path, monkeypatch):
         parents=True, exist_ok=True)
     failures.fingerprint_path(c.state_dir, "abc").write_text(
         json.dumps({"repo": "jesdi/agent-ops", "issue": 501, "when": "w"}))
-    intents_mod.write_intent(c.state_dir, "retry", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "retry", "portfolio_eval", 42, {}, "op", 1)
     gh = FakeGitHub([Candidate(42, "Retry me", "u42")],
                     issue_states={("jesdi/agent-ops", 501): "OPEN"})
     main.run_pass(c, deps(gh, FakeSessions()))
@@ -1806,7 +1839,7 @@ def test_resume_intent_wakes_with_default_text(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
-    intents_mod.write_intent(c.state_dir, "resume", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     from dispatcher import messages
@@ -1822,7 +1855,7 @@ def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
-    intents_mod.write_intent(c.state_dir, "resume", 42, {"text": "ship it"},
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {"text": "ship it"},
                              "op", 1)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
@@ -1851,11 +1884,11 @@ def test_failed_intent_does_not_abort_pass_or_remaining_intents(tmp_path, monkey
         real_wake(cfg_, task, text, hold=hold, actor=actor)
 
     monkeypatch.setattr(main, "_wake", wake_or_boom)
-    intents_mod.write_intent(c.state_dir, "resume", 42, {}, "op", 1)
-    intents_mod.write_intent(c.state_dir, "resume", 43, {}, "op", 2)
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 43, {}, "op", 2)
     main.run_pass(c, deps(sess=FakeSessions(alive={44})))  # must not raise
-    assert load(c.state_dir, 42).park == PARK_HUMAN  # failed intent: unchanged
-    assert load(c.state_dir, 43).park in (PARK_WAKE, "")  # later intent applied
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN  # failed intent: unchanged
+    assert load(c.state_dir, "portfolio_eval", 43).park in (PARK_WAKE, "")  # later intent applied
     assert intents_mod.list_intents(c.state_dir) == []  # both files deleted
 
 
@@ -1864,7 +1897,7 @@ def test_dry_run_does_not_drain_intents(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
-    intents_mod.write_intent(c.state_dir, "resume", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     main.run_pass(c, deps(sess=FakeSessions()), dry_run=True)
     assert len(intents_mod.list_intents(c.state_dir)) == 1  # untouched
 
@@ -1877,11 +1910,11 @@ def test_attached_marker_holds_resume(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE)
-    mark_attached(c.state_dir, 42)
+    mark_attached(c.state_dir, "portfolio_eval", 42)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     assert sess.resumed == []
-    assert load(c.state_dir, 42).park == PARK_WAKE  # still queued to wake
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE  # still queued to wake
 
 
 def test_attached_marker_holds_drive_no_crash_no_park(tmp_path, monkeypatch):
@@ -1893,12 +1926,12 @@ def test_attached_marker_holds_drive_no_crash_no_park(tmp_path, monkeypatch):
     # crash-handle or park. With it: nothing happens.
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "blocked", "note": "q"}))
-    mark_attached(c.state_dir, 42)
+    mark_attached(c.state_dir, "portfolio_eval", 42)
     gh = FakeGitHub()
     sess = FakeSessions(alive=set())
     d = deps(gh, sess)
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.IMPLEMENT and t.park == ""  # untouched
     assert gh.released == [] and sess.ended == []
     assert "session_crashed" not in d.notifier.sent
@@ -1910,12 +1943,12 @@ def test_clearing_attached_marker_releases_the_hold(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE)
-    mark_attached(c.state_dir, 42)
+    mark_attached(c.state_dir, "portfolio_eval", 42)
     sess = FakeSessions()
     d = deps(sess=sess)
     main.run_pass(c, d)
     assert sess.resumed == []
-    clear_attached(c.state_dir, 42)
+    clear_attached(c.state_dir, "portfolio_eval", 42)
     main.run_pass(c, d)
     assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
 
@@ -1929,7 +1962,7 @@ def test_stalled_working_session_parks(tmp_path, monkeypatch):
     sess = FakeSessions(alive=[42], idle={42: 999999.0})
     d = deps(sess=sess)
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN
     assert sess.ended == [42]
     assert "parked_question" in d.notifier.sent
@@ -1941,7 +1974,7 @@ def test_no_signal_stalled_session_parks(tmp_path, monkeypatch):
     make_task(c, stage=Stage.SPEC)  # no stage.json written
     sess = FakeSessions(alive=[42], idle={42: 999999.0})
     main.run_pass(c, deps(sess=sess))
-    assert load(c.state_dir, 42).park == PARK_HUMAN
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
 
 
 def test_stall_disabled_never_queries_idle(tmp_path, monkeypatch):
@@ -1953,7 +1986,7 @@ def test_stall_disabled_never_queries_idle(tmp_path, monkeypatch):
     sess = FakeSessions(alive=[42], idle={42: 999999.0})
     main.run_pass(c, deps(sess=sess))
     assert sess.idle_queried == []
-    assert load(c.state_dir, 42).park == ""
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
 def test_dead_session_never_queries_idle(tmp_path, monkeypatch):
@@ -1977,7 +2010,7 @@ def test_stall_with_login_tail_parks_login_and_keeps_session(tmp_path, monkeypat
     sess = FakeSessions(alive=[42], idle={42: 999999.0}, tail=LOGIN_TAIL)
     d = deps(sess=sess)
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_LOGIN
     assert t.park_msg_id == 77          # FakeNotifier.send returns 77
     assert sess.ended == []             # pane must stay ALIVE
@@ -1997,7 +2030,7 @@ def test_blocked_park_with_login_tail_also_classifies(tmp_path, monkeypatch):
         json.dumps({"stage": "implement", "status": "blocked", "note": "x"}))
     sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
     main.run_pass(c, deps(sess=sess))
-    assert load(c.state_dir, 42).park == PARK_LOGIN
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN
     assert sess.ended == []
 
 
@@ -2008,7 +2041,7 @@ def test_stall_without_login_tail_stays_generic(tmp_path, monkeypatch):
     sess = FakeSessions(alive=[42], idle={42: 999999.0})  # default tail
     d = deps(sess=sess)
     main.run_pass(c, d)
-    assert load(c.state_dir, 42).park == PARK_HUMAN
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
     assert sess.ended == [42]
     assert "parked_question" in d.notifier.sent
 
@@ -2024,7 +2057,7 @@ def test_login_park_when_ping_fails_falls_back_to_generic_park(tmp_path,
     sess = FakeSessions(alive=[42], idle={42: 999999.0}, tail=LOGIN_TAIL)
     d = deps(sess=sess, notifier=FakeNotifier(msg_id=0))
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN
     assert sess.ended == [42]           # container released
     assert d.notifier.sent == ["needs_relogin", "parked_question"]
@@ -2066,7 +2099,7 @@ def test_reply_to_login_park_injects_code(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess))
     assert sess.sent_text == [(42, "oauth-code-abc#123")]
     assert sess.resumed == []          # must NOT go through resume
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == "" and t.park_msg_id == 0
 
 
@@ -2078,7 +2111,7 @@ def test_reply_to_human_park_still_wakes(tmp_path, monkeypatch):
                         lambda sd: [main.Reply(reply_to_msg_id=88, text="hi")])
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert sess.sent_text == []
     # _wake marks PARK_WAKE and queues the text; _resume_woken delivers it into the prompt.
     from dispatcher import messages
@@ -2096,7 +2129,7 @@ def test_unmatched_reply_still_reports(tmp_path, monkeypatch):
     d = deps()
     main.run_pass(c, d)
     assert "status" in d.notifier.sent
-    assert load(c.state_dir, 42).park == PARK_LOGIN  # untouched
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN  # untouched
 
 
 def test_injection_refused_when_pane_left_the_login_prompt(tmp_path, monkeypatch):
@@ -2112,7 +2145,7 @@ def test_injection_refused_when_pane_left_the_login_prompt(tmp_path, monkeypatch
     d = deps(sess=sess)
     main.run_pass(c, d)
     assert sess.sent_text == []
-    assert load(c.state_dir, 42).park == PARK_LOGIN  # park kept, not cleared
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN  # park kept, not cleared
     assert "status" in d.notifier.sent
 
 
@@ -2124,14 +2157,14 @@ def test_injection_restores_the_unpark_invariant(tmp_path, monkeypatch):
     wt = make_task(c, stage=Stage.IMPLEMENT, park=PARK_LOGIN, park_msg_id=77)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "blocked", "note": "x"}))
-    mark_waiting(c.state_dir, 42)
+    mark_waiting(c.state_dir, "portfolio_eval", 42)
     monkeypatch.setattr(main.inbound, "fetch_events",
                         lambda sd: [main.Reply(reply_to_msg_id=77, text="code")])
     sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
     main.run_pass(c, deps(sess=sess))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == ""
-    assert not has_waiting(c.state_dir, 42)
+    assert not has_waiting(c.state_dir, "portfolio_eval", 42)
     assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
     assert sess.ended == []             # NOT re-parked over the live session
 
@@ -2142,11 +2175,11 @@ def test_login_park_clears_the_waiting_marker(tmp_path, monkeypatch):
     wt = make_task(c, stage=Stage.IMPLEMENT)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "working"}))
-    mark_waiting(c.state_dir, 42)
+    mark_waiting(c.state_dir, "portfolio_eval", 42)
     sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
     main.run_pass(c, deps(sess=sess))
-    assert load(c.state_dir, 42).park == PARK_LOGIN
-    assert not has_waiting(c.state_dir, 42)
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN
+    assert not has_waiting(c.state_dir, "portfolio_eval", 42)
 
 
 def test_injection_logs_a_distinct_event(tmp_path, monkeypatch):
@@ -2177,7 +2210,7 @@ def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatc
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_REVIEW
     assert t.slot == NO_SLOT
     assert t.stage is Stage.AWAITING_SPEC_REVIEW   # stage preserved
@@ -2212,7 +2245,7 @@ def test_gate_holds_inside_the_grace_period(tmp_path, monkeypatch):
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == "" and t.slot == 0
     assert sess.ended == []
     assert "spec_parked" not in d.notifier.sent
@@ -2226,10 +2259,10 @@ def test_attached_operator_suspends_the_grace_timer(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW)
     gate_signal(wt)
-    mark_attached(c.state_dir, 42)
+    mark_attached(c.state_dir, "portfolio_eval", 42)
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
-    assert load(c.state_dir, 42).park == ""
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
     assert sess.ended == []
 
 
@@ -2252,7 +2285,7 @@ def test_zero_grace_parks_on_the_next_pass(tmp_path, monkeypatch):
                    updated_at=datetime.now(timezone.utc).isoformat())
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    assert load(c.state_dir, 42).park == PARK_REVIEW
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_REVIEW
 
 
 def test_unparseable_timestamp_never_expires(tmp_path, monkeypatch):
@@ -2264,7 +2297,7 @@ def test_unparseable_timestamp_never_expires(tmp_path, monkeypatch):
                    updated_at="not-a-timestamp")
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    assert load(c.state_dir, 42).park == ""
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
 def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
@@ -2275,7 +2308,7 @@ def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
               park=PARK_WAKE)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == ""
     assert t.slot in range(3)   # a real slot, not NO_SLOT
     assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
@@ -2294,7 +2327,7 @@ def test_woken_gate_parked_task_waits_when_every_slot_is_taken(tmp_path, monkeyp
               park=PARK_WAKE)
     sess = FakeSessions(alive={1, 2, 3})
     main.run_pass(c, deps(sess=sess))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE and t.slot == NO_SLOT  # still parked, retried next pass
     assert 42 not in [issue for issue, _msg, _model in sess.resumed]
 
@@ -2393,7 +2426,7 @@ def test_reply_to_the_spec_parked_message_wakes_the_task(tmp_path, monkeypatch):
     patch_events(monkeypatch, [Reply(reply_to_msg_id=55,
                                      text="drop the caching section")])
     main.run_pass(c, deps(sess=FakeSessions(alive={43})))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
     assert messages.undelivered(c.state_dir, 42)[0].text == "drop the caching section"
@@ -2408,7 +2441,7 @@ def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
     make_task(c, issue=43)
     patch_events(monkeypatch, [Plain(text="ok")])
     main.run_pass(c, deps(sess=FakeSessions(alive={43})))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
     assert messages.undelivered(c.state_dir, 42)[0].text == "ok"
@@ -2425,8 +2458,8 @@ def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
     patch_events(monkeypatch, [Plain(text="yes")])
     d = deps()
     main.run_pass(c, d)
-    assert load(c.state_dir, 42).park == PARK_HUMAN
-    assert load(c.state_dir, 43).park == PARK_REVIEW
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
+    assert load(c.state_dir, "portfolio_eval", 43).park == PARK_REVIEW
     assert "status" in d.notifier.sent  # the "Which task?" prompt lists both
 
 
@@ -2444,8 +2477,8 @@ def test_two_slot_less_woken_tasks_get_distinct_slots(tmp_path, monkeypatch):
               park=PARK_WAKE,
               updated_at="2026-07-21T00:00:01+00:00")
     main.run_pass(c, deps(sess=FakeSessions()))
-    t42 = load(c.state_dir, 42)
-    t43 = load(c.state_dir, 43)
+    t42 = load(c.state_dir, "portfolio_eval", 42)
+    t43 = load(c.state_dir, "portfolio_eval", 43)
     assert t42.slot in range(3)
     assert t43.slot in range(3)
     assert t42.slot != t43.slot
@@ -2470,16 +2503,16 @@ class LiveUntilEnded(FakeSessions):
     frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
     express across a dozen passes."""
 
-    def spawn_stage(self, issue, worktree, prompt, stage_name, model):
-        super().spawn_stage(issue, worktree, prompt, stage_name, model)
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model):
+        super().spawn_stage(target, issue, worktree, prompt, stage_name, model)
         self.alive_set.add(issue)
 
-    def resume(self, issue, worktree, message, model):
-        super().resume(issue, worktree, message, model)
+    def resume(self, target, issue, worktree, message, model):
+        super().resume(target, issue, worktree, message, model)
         self.alive_set.add(issue)
 
-    def end(self, issue):
-        super().end(issue)
+    def end(self, target, issue):
+        super().end(target, issue)
         self.alive_set.discard(issue)
 
 
@@ -2523,7 +2556,7 @@ def test_overnight_drain_parks_every_ready_spec_then_one_reply_advances_one(
         {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
     patch_events(monkeypatch, [])
     main.run_pass(c, d)
-    assert load(c.state_dir, woken.issue).stage is Stage.PLAN
+    assert load(c.state_dir, "portfolio_eval", woken.issue).stage is Stage.PLAN
     assert (woken.issue, "plan") in [(s[0], s[1]) for s in sess.spawned]
 
 
@@ -2535,7 +2568,7 @@ def test_park_for_input_saves_park_note(tmp_path, monkeypatch):
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "blocked", "note": "need a decision"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    assert load(c.state_dir, 42).park_note == "need a decision"
+    assert load(c.state_dir, "portfolio_eval", 42).park_note == "need a decision"
 
 
 def test_park_for_review_saves_park_note(tmp_path, monkeypatch):
@@ -2546,7 +2579,7 @@ def test_park_for_review_saves_park_note(tmp_path, monkeypatch):
     wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=1)
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    assert load(c.state_dir, 42).park_note == "spec ready for review"
+    assert load(c.state_dir, "portfolio_eval", 42).park_note == "spec ready for review"
 
 
 def test_resume_clears_park_note(tmp_path, monkeypatch):
@@ -2555,7 +2588,7 @@ def test_resume_clears_park_note(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     make_task(c, park=PARK_WAKE, park_note="stale question")
     main.run_pass(c, deps(sess=FakeSessions()))
-    assert load(c.state_dir, 42).park_note == ""
+    assert load(c.state_dir, "portfolio_eval", 42).park_note == ""
 
 
 def test_prune_snapshots_removes_only_old_finished(tmp_path, monkeypatch):
@@ -2632,7 +2665,7 @@ def patch_teardown(monkeypatch):
 def pr_open_task(c, issue=42, pr_number=12, **kw):
     make_task(c, issue=issue, stage=Stage.PR_OPEN, slot=NO_SLOT,
               pr_number=pr_number, **kw)
-    return load(c.state_dir, issue)
+    return load(c.state_dir, "portfolio_eval", issue)
 
 
 def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
@@ -2648,7 +2681,7 @@ def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
     notif = FakeNotifier()
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess=sess, notifier=notif))
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.DONE and got.done_at
     assert (42, "D0") in gh.statused
     assert 42 in sess.ended
@@ -2666,7 +2699,7 @@ def test_merged_without_done_option_id_still_completes(tmp_path, monkeypatch):
     gh.pr_payloads[12] = payload(state="MERGED",
                                  merged_at="2026-07-30T10:00:00Z")
     main.run_pass(c, deps(gh))
-    assert load(c.state_dir, 42).stage is Stage.DONE
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.DONE
     assert gh.statused == []
 
 
@@ -2680,7 +2713,7 @@ def test_closed_unmerged_pr_fails_task_preserving_worktree(tmp_path, monkeypatch
     notif = FakeNotifier()
     sess = FakeSessions(alive=(42,))
     main.run_pass(c, deps(gh, sess, notifier=notif))
-    assert load(c.state_dir, 42).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
     assert removed == [] and "pr_closed" in notif.sent
     # The implement session is still alive at pr-open and nothing will ever
     # drive a FAILED task again — the tmux session and its container must be
@@ -2697,7 +2730,7 @@ def test_feedback_sets_pending_flag_and_notifies_once(tmp_path, monkeypatch):
         "createdAt": "2026-07-30T09:00:00Z", "author": {"login": "alice"}}])
     notif = FakeNotifier()
     main.run_pass(c, deps(gh, notifier=notif))
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.feedback_pending is True and got.stage is Stage.PR_OPEN
     assert got.feedback_cursor == ""  # cursor NOT advanced here; that is Task 9's job
     assert notif.sent.count("pr_feedback") == 1
@@ -2715,7 +2748,7 @@ def test_own_and_bot_comments_do_not_reopen(tmp_path, monkeypatch):
         {"createdAt": "2026-07-30T09:01:00Z",
          "author": {"login": "github-actions[bot]"}}])
     main.run_pass(c, deps(gh))
-    assert load(c.state_dir, 42).feedback_pending is False
+    assert load(c.state_dir, "portfolio_eval", 42).feedback_pending is False
 
 
 def test_pr_number_resolved_from_branch_when_missing(tmp_path, monkeypatch):
@@ -2726,7 +2759,7 @@ def test_pr_number_resolved_from_branch_when_missing(tmp_path, monkeypatch):
     gh.branch_prs["agent/task-42"] = 12
     gh.pr_payloads[12] = payload()
     main.run_pass(c, deps(gh))
-    assert load(c.state_dir, 42).pr_number == 12
+    assert load(c.state_dir, "portfolio_eval", 42).pr_number == 12
 
 
 def test_poll_failure_leaves_task_untouched(tmp_path, monkeypatch):
@@ -2736,7 +2769,7 @@ def test_poll_failure_leaves_task_untouched(tmp_path, monkeypatch):
     gh = FakeGitHub()
     gh.pr_view_raises = True
     main.run_pass(c, deps(gh))
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.PR_OPEN and got.feedback_pending is False
 
 
@@ -2761,7 +2794,7 @@ def test_finish_merged_gh_failure_leaves_task_pr_open_and_pass_survives(
     gh.pr_payloads[12] = payload(state="MERGED",
                                  merged_at="2026-07-30T10:00:00Z")
     main.run_pass(c, deps(gh))  # must not raise
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.PR_OPEN  # state flip never reached
     assert removed == []               # teardown never reached (board runs first)
 
@@ -2775,7 +2808,7 @@ def test_implement_done_captures_pr_number(tmp_path, monkeypatch):
         "note": "https://github.com/jesdi/portfolio_eval/pull/77",
         "artifact": "https://github.com/jesdi/portfolio_eval/pull/77"}))
     main.run_pass(c, deps(FakeGitHub()))
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.PR_OPEN and got.pr_number == 77
 
 
@@ -2788,9 +2821,9 @@ def test_flush_deletes_only_old_done_tasks(tmp_path, monkeypatch):
     make_task(c, issue=2, stage=Stage.DONE, slot=NO_SLOT, done_at=fresh)
     make_task(c, issue=3, stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=0)
     main.run_pass(c, deps(FakeGitHub()))
-    assert load(c.state_dir, 1) is None
-    assert load(c.state_dir, 2) is not None
-    assert load(c.state_dir, 3) is not None
+    assert load(c.state_dir, "portfolio_eval", 1) is None
+    assert load(c.state_dir, "portfolio_eval", 2) is not None
+    assert load(c.state_dir, "portfolio_eval", 3) is not None
 
 
 def test_pending_feedback_spawns_address_review_when_capacity_frees(
@@ -2802,7 +2835,7 @@ def test_pending_feedback_spawns_address_review_when_capacity_frees(
     gh.pr_payloads[12] = payload()  # quiet now; pending flag drives the spawn
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.ADDRESS_REVIEW
     assert got.feedback_pending is False
     assert got.feedback_cursor != ""      # cursor = spawn time
@@ -2820,7 +2853,7 @@ def test_pending_feedback_not_spawned_over_capacity(tmp_path, monkeypatch):
     gh.pr_payloads[12] = payload()
     sess = FakeSessions(alive=(1,))
     main.run_pass(c, deps(gh, sess))
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.PR_OPEN and got.feedback_pending is True
 
 
@@ -2832,7 +2865,7 @@ def test_pending_feedback_not_spawned_when_budget_low(tmp_path, monkeypatch):
     gh.pr_payloads[12] = payload()
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
-    assert load(c.state_dir, 42).stage is Stage.PR_OPEN
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PR_OPEN
     assert sess.spawned == []
 
 
@@ -2882,7 +2915,7 @@ def test_remove_workspace_dry_run_flag_reaches_the_real_teardown(
     # and the task stayed put — a dry run reports the teardown, never
     # performs it and never records it as performed.
     assert "[dry-run] remove worktree" in capsys.readouterr().out
-    assert load(c.state_dir, 42).stage is Stage.PR_OPEN
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PR_OPEN
 
 
 def test_merged_task_with_a_human_attached_is_left_alone(tmp_path, monkeypatch):
@@ -2894,14 +2927,14 @@ def test_merged_task_with_a_human_attached_is_left_alone(tmp_path, monkeypatch):
     removed = patch_teardown(monkeypatch)
     c = merged_cfg(tmp_path)
     pr_open_task(c)
-    mark_attached(c.state_dir, 42)
+    mark_attached(c.state_dir, "portfolio_eval", 42)
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(state="MERGED",
                                  merged_at="2026-07-30T10:00:00Z")
     sess = FakeSessions(alive=(42,))
     notif = FakeNotifier()
     main.run_pass(c, deps(gh, sess, notifier=notif))
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.PR_OPEN          # still polled next pass
     assert removed == []                       # worktree intact
     assert sess.ended == []                    # pty untouched
@@ -2917,12 +2950,12 @@ def test_pending_feedback_not_spawned_while_a_human_is_attached(
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     pr_open_task(c, feedback_pending=True)
-    mark_attached(c.state_dir, 42)
+    mark_attached(c.state_dir, "portfolio_eval", 42)
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload()
     sess = FakeSessions(alive=(42,))
     main.run_pass(c, deps(gh, sess))
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.PR_OPEN and got.feedback_pending is True
     assert got.feedback_cursor == ""   # cursor NOT advanced by a skipped spawn
     assert sess.spawned == [] and sess.ended == []
@@ -2971,7 +3004,7 @@ def test_spawned_cursor_still_sees_a_comment_from_the_spawn_second(
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload()
     main.run_pass(c, deps(gh))
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.ADDRESS_REVIEW and got.feedback_cursor
 
     # Derive the spawn second from the cursor the pass actually wrote.
@@ -3019,7 +3052,7 @@ def test_address_review_done_returns_task_to_pr_open(tmp_path, monkeypatch):
     notif = FakeNotifier()
     main.run_pass(c, deps(gh, sess, notifier=notif))
 
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.PR_OPEN
     assert got.pr_number == 12              # regex found nothing; not clobbered
     assert got.feedback_pending is False    # comment predates the cursor
@@ -3053,7 +3086,7 @@ def test_dry_run_over_a_merged_pr_leaves_state_and_events_untouched(
                                  merged_at="2026-07-30T10:00:00Z")
     main.run_pass(c, deps(gh), dry_run=True)
 
-    got = load(c.state_dir, 42)
+    got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.PR_OPEN
     assert got.done_at == ""
     assert got.pr_number == 0             # not even the benign backfill
@@ -3068,7 +3101,7 @@ def test_dry_run_does_not_write_state_for_a_newly_claimed_task(
     gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
     main.run_pass(c, deps(gh), dry_run=True)
 
-    assert load(c.state_dir, 42) is None
+    assert load(c.state_dir, "portfolio_eval", 42) is None
     assert eventlog.read_tail(c.state_dir) == []
 
 
@@ -3082,7 +3115,7 @@ def test_dry_run_does_not_flush_expired_done_tasks(tmp_path, monkeypatch):
               done_at="2026-07-01T00:00:00+00:00")   # ancient
     main.run_pass(c, deps(FakeGitHub()), dry_run=True)
 
-    assert load(c.state_dir, 1) is not None
+    assert load(c.state_dir, "portfolio_eval", 1) is not None
 
 
 def test_dry_run_leaves_the_real_state_dir_alone_entirely(
@@ -3252,7 +3285,7 @@ def test_pass_writes_heartbeat(tmp_path, monkeypatch):
 def test_reply_to_a_running_task_is_queued_not_dropped(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park="")           # live, unparked
-    main.intents.write_intent(c.state_dir, "reply", 42, {"text": "use oauth"},
+    main.intents.write_intent(c.state_dir, "reply", "portfolio_eval", 42, {"text": "use oauth"},
                               "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
@@ -3260,14 +3293,14 @@ def test_reply_to_a_running_task_is_queued_not_dropped(tmp_path):
     assert [m.text for m in queued] == ["use oauth"]
     assert [m.actor for m in queued] == ["jesdi@github"]
     # a running task is NOT woken — mail waits for the next boundary
-    assert load(c.state_dir, 42).park == ""
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
 def test_reply_to_a_wake_pending_task_is_queued_and_not_clobbered(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE)
     for i, text in enumerate(["first", "second"], start=1):
-        main.intents.write_intent(c.state_dir, "reply", 42, {"text": text},
+        main.intents.write_intent(c.state_dir, "reply", "portfolio_eval", 42, {"text": text},
                                   "jesdi@github", i)
     main._apply_intents(c, deps())
     from dispatcher import messages
@@ -3277,7 +3310,7 @@ def test_reply_to_a_wake_pending_task_is_queued_and_not_clobbered(tmp_path):
 
 def test_reply_to_an_unclaimed_issue_is_held(tmp_path):
     c = cfg(tmp_path)
-    main.intents.write_intent(c.state_dir, "reply", 777,
+    main.intents.write_intent(c.state_dir, "reply", "portfolio_eval", 777,
                               {"text": "pre-brief: use the v2 API"},
                               "jesdi@github", 1)
     main._apply_intents(c, deps())
@@ -3289,7 +3322,7 @@ def test_reply_to_an_unclaimed_issue_is_held(tmp_path):
 def test_reply_to_a_done_task_is_held(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.DONE)
-    main.intents.write_intent(c.state_dir, "reply", 42, {"text": "one more"},
+    main.intents.write_intent(c.state_dir, "reply", "portfolio_eval", 42, {"text": "one more"},
                               "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
@@ -3299,24 +3332,24 @@ def test_reply_to_a_done_task_is_held(tmp_path):
 def test_reply_to_a_parked_task_queues_and_requests_a_wake(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_HUMAN)
-    main.intents.write_intent(c.state_dir, "reply", 42, {"text": "use oauth"},
+    main.intents.write_intent(c.state_dir, "reply", "portfolio_eval", 42, {"text": "use oauth"},
                               "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
     assert [m.text for m in messages.undelivered(c.state_dir, 42)] == [
         "use oauth"]
-    assert load(c.state_dir, 42).park == PARK_WAKE
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
 
 
 def test_resume_intent_queues_its_text_as_a_message(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_HUMAN)
-    main.intents.write_intent(c.state_dir, "resume", 42, {}, "jesdi@github", 1)
+    main.intents.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
     texts = [m.text for m in messages.undelivered(c.state_dir, 42)]
     assert texts == ["The operator resumed this task. Continue."]
-    assert load(c.state_dir, 42).park == PARK_WAKE
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
 
 
 def test_ci_conclusion_becomes_a_dispatcher_message(tmp_path):
@@ -3329,7 +3362,7 @@ def test_ci_conclusion_becomes_a_dispatcher_message(tmp_path):
     assert len(queued) == 1
     assert "4242 concluded: failure" in queued[0].text
     assert queued[0].actor == "dispatcher"
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE and t.ci_run_id == 0
 
 
@@ -3339,7 +3372,7 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     from dispatcher import messages
     messages.append(c.state_dir, 42, "pre-brief: use the v2 API", "jesdi@github")
     d = deps()
-    task = load(c.state_dir, 42)
+    task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task, Stage.SPEC)
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
@@ -3352,7 +3385,7 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.QUEUED)
     d = deps()
-    main._spawn_stage(c, d, c.targets[0], load(c.state_dir, 42), Stage.SPEC)
+    main._spawn_stage(c, d, c.targets[0], load(c.state_dir, "portfolio_eval", 42), Stage.SPEC)
     assert "## Operator messages" not in d.sessions.spawned[-1][3]
 
 
@@ -3383,7 +3416,7 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
     from dispatcher import messages
     messages.append(c.state_dir, 42, "keep the scope small", "jesdi@github")
     d = deps()
-    main._retry_plan(c, d, c.targets[0], load(c.state_dir, 42),
+    main._retry_plan(c, d, c.targets[0], load(c.state_dir, "portfolio_eval", 42),
                      "missing Goal line")
     assert "keep the scope small" in d.sessions.resumed[-1][1]
     assert messages.undelivered(c.state_dir, 42) == []
@@ -3405,18 +3438,18 @@ def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
 def test_park_for_input_frees_the_slot(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=1)
-    main._park_for_input(c, deps(), c.targets[0], load(c.state_dir, 42),
+    main._park_for_input(c, deps(), c.targets[0], load(c.state_dir, "portfolio_eval", 42),
                          note="which redirect URL?")
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN and t.slot == NO_SLOT
 
 
 def test_park_for_ci_frees_the_slot(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=2)
-    main._park_for_ci(c, deps(), c.targets[0], load(c.state_dir, 42),
+    main._park_for_ci(c, deps(), c.targets[0], load(c.state_dir, "portfolio_eval", 42),
                       run_id=4242)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_CI and t.slot == NO_SLOT
 
 
@@ -3424,7 +3457,7 @@ def test_login_park_keeps_its_slot(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=1, park=PARK_LOGIN)
     main._reconcile_slots(c)
-    assert load(c.state_dir, 42).slot == 1
+    assert load(c.state_dir, "portfolio_eval", 42).slot == 1
 
 
 def test_reconcile_frees_slots_leaked_by_older_code(tmp_path):
@@ -3433,9 +3466,9 @@ def test_reconcile_frees_slots_leaked_by_older_code(tmp_path):
     make_task(c, issue=43, slot=1, park=PARK_WAKE)
     make_task(c, issue=44, slot=2, park="")          # live: untouched
     main._reconcile_slots(c)
-    assert load(c.state_dir, 42).slot == NO_SLOT
-    assert load(c.state_dir, 43).slot == NO_SLOT
-    assert load(c.state_dir, 44).slot == 2
+    assert load(c.state_dir, "portfolio_eval", 42).slot == NO_SLOT
+    assert load(c.state_dir, "portfolio_eval", 43).slot == NO_SLOT
+    assert load(c.state_dir, "portfolio_eval", 44).slot == 2
 
 
 def test_reconcile_emits_one_event_per_freed_slot(tmp_path):
@@ -3460,7 +3493,7 @@ def test_two_human_parks_no_longer_deadlock_a_resume(tmp_path):
     main._reconcile_slots(c)
     d = deps()
     main._resume_woken(c, d, c.targets[0], budget_ok=True)
-    t = load(c.state_dir, 198)
+    t = load(c.state_dir, "portfolio_eval", 198)
     assert t.park == "" and t.slot != NO_SLOT
 
 
@@ -3499,10 +3532,10 @@ def test_marker_clears_once_the_wake_succeeds(tmp_path):
     d = deps()
     main._resume_woken(c, d, c.targets[0], budget_ok=True)
     assert main._wake_blocked_path(c, 42).exists()
-    main.delete(c.state_dir, 41)                     # capacity frees up
+    main.delete(c.state_dir, "portfolio_eval", 41)                     # capacity frees up
     main._resume_woken(c, d, c.targets[0], budget_ok=True)
     assert not main._wake_blocked_path(c, 42).exists()
-    assert load(c.state_dir, 42).park == ""
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
 def test_blocked_feedback_spawn_is_reported_too(tmp_path):
@@ -3532,9 +3565,9 @@ def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
     main._resume_woken(c, d, c.targets[0], budget_ok=True)
     assert main._wake_blocked_path(c, 42).exists()
 
-    intents_mod.write_intent(c.state_dir, "kill", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
     main.run_pass(c, d)
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.FAILED
     assert t.park == ""                          # no longer waiting for a wake
     main.run_pass(c, d)                          # the sweep heals it from disk
@@ -3571,7 +3604,7 @@ def test_console_reply_to_a_login_park_types_the_code(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.SPEC, park=PARK_LOGIN, park_msg_id=77)
-    intents_mod.write_intent(c.state_dir, "reply", 42,
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
                              {"text": "oauth-code-abc#123"}, "jesdi@github", 1)
     sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
     main.run_pass(c, deps(sess=sess))
@@ -3579,7 +3612,7 @@ def test_console_reply_to_a_login_park_types_the_code(tmp_path, monkeypatch):
     assert sess.sent_text == [(42, "oauth-code-abc#123")]
     assert sess.resumed == []                   # never through the wake path
     assert messages.all_messages(c.state_dir, 42) == []  # not persisted at rest
-    assert load(c.state_dir, 42).park == ""
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
 def test_console_reply_to_a_human_park_still_queues(tmp_path, monkeypatch):
@@ -3588,7 +3621,7 @@ def test_console_reply_to_a_human_park_still_queues(tmp_path, monkeypatch):
     c = replace_capacity(cfg(tmp_path), 1)
     make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
     make_task(c, issue=43)                      # holds the only capacity unit
-    intents_mod.write_intent(c.state_dir, "reply", 42, {"text": "use oauth"},
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42, {"text": "use oauth"},
                              "jesdi@github", 1)
     sess = FakeSessions(alive={43})
     main.run_pass(c, deps(sess=sess))

@@ -112,11 +112,18 @@ def save(state_dir: str | Path, ts: TaskState) -> None:
 def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
-    d = json.loads(p.read_text())
-    d["stage"] = Stage(d["stage"])
-    d["labels"] = tuple(d.get("labels", ()))
-    d.pop("pending_reply", None)   # retired field, see original comment
-    return TaskState(**d)
+    try:
+        d = json.loads(p.read_text())
+        d["stage"] = Stage(d["stage"])
+        d["labels"] = tuple(d.get("labels", ()))
+        d.pop("pending_reply", None)   # retired field, see original comment
+        return TaskState(**d)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        # A corrupt single state file must not take load_all() down with it —
+        # callers that scan every task (e.g. _prune_snapshots) need the rest
+        # of the sweep to proceed. Same tolerance read_stage_signal already
+        # gives a corrupt stage.json.
+        return None
 
 
 def load(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
