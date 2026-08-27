@@ -308,7 +308,7 @@ def task_detail(t: TaskState, *, model: str, attached: bool,
         messages=message_views(msgs, pending_sends or []),
         delivery_contract=delivery_contract(t, wake_blocked=wake_blocked),
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
-        timeline=stage_timeline(events, t.issue, now=now))
+        timeline=stage_timeline(events, t.target, t.issue, now=now))
 
 
 class IssueDescription(BaseModel):
@@ -577,11 +577,18 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
         next_pass_eta=eta)
 
 
-def stage_timeline(events: list[dict], issue: int, *,
+def stage_timeline(events: list[dict], target: str, issue: int, *,
                    now: datetime) -> list[TimelineEntry]:
     """Closed segments between this issue's transition events, in order; the
     open tail (no merged yet) ends at `now` with ongoing=True. Sub-second
-    segments (claimed -> immediate spec spawn) are dropped as noise."""
+    segments (claimed -> immediate spec spawn) are dropped as noise.
+
+    Keyed on (target, issue), not the bare number: issue numbers are
+    per-repo, so two targets claiming the same issue number must not have
+    their claimed/parked/resumed/merged events interleave into one garbled
+    timeline. Log lines written before events carried `target` land with no
+    target key and are read back for any target — same fallback convention
+    as claimed_at()/claimed_at_index()."""
     out: list[TimelineEntry] = []
     open_seg: tuple[str, str, datetime] | None = None  # (label, kind, start)
 
@@ -606,7 +613,9 @@ def stage_timeline(events: list[dict], issue: int, *,
 
     last_stage = ""
     for e in events:
-        if e.get("issue") != issue or e.get("event") not in _TIMELINE_EVENTS:
+        if (e.get("issue") != issue
+                or (e.get("target") or "") not in ("", target)
+                or e.get("event") not in _TIMELINE_EVENTS):
             continue
         ts = _parse_ts(e.get("ts", ""))
         if ts is None:
