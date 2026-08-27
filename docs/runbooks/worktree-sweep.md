@@ -12,8 +12,10 @@ The dispatcher removes a worktree itself when a PR merges —
 That is the primary mechanism and it stays primary. Two cases never reach
 it:
 
-- **Orphans.** The task's `<state>/task-N.json` is gone, so the dispatcher
-  no longer knows the task exists. Four of the five leftovers were this.
+- **Orphans.** The task's `<state>/task-<target>-N.json` (or, for a task
+  never touched since the (target, issue) rekey, the legacy
+  `<state>/task-N.json`) is gone, so the dispatcher no longer knows the
+  task exists. Four of the five leftovers were this.
 - **Stale `failed`.** The task sits at `stage=failed` while its PR is
   merged and its issue closed — a state-machine desync, not a real
   failure. `workspace.py` preserves failed worktrees for autopsy by
@@ -31,8 +33,12 @@ thing that desyncs. Git and GitHub are ground truth. All seven must hold:
 3. no uncommitted tracked changes — `.my-skills.json` excepted, see below
 4. no unpushed commits versus its remote branch
 5. its GitHub issue is CLOSED
-6. no live `task-N` tmux session and no running `task-N` container
-7. no `<state>/attached-N` marker (you are not attached to it)
+6. no live `task-<target>-N` tmux session and no running `task-<target>-N`
+   container (the sweeper also still recognizes the legacy `task-N` form,
+   and falls back to matching any target for a worktree provisioned before
+   the (target, issue) rekey)
+7. no `<state>/attached-<target>-N` marker, or its legacy `<state>/attached-N`
+   form (you are not attached to it)
 
 `--sweep` adds an eighth: last commit **and** worktree mtime both older
 than `AGENT_OPS_WORKTREE_STALE_DAYS` (default 7). Naming a single target
@@ -51,7 +57,10 @@ nothing rather than guessing.
 On removal, in order: snapshot `.agent/` to
 `<state>/autopsy/task-N-agent/`, remove the worktree, delete the local
 branch, delete the remote branch if it survives, drop an orphaned
-`<state>/task-N.json`, append a `worktree_swept` event.
+`<state>/task-N.json` **and** its `<state>/task-<target>-N.json` twin
+(the target comes from the worktree's own `.agent/task.json`, not the
+target's current config name — a rename since provisioning must not orphan
+the cleanup), append a `worktree_swept` event.
 
 The `.agent/` snapshot is what keeps the `workspace.py` autopsy rule
 honest: the plan, stage signal and model log survive the deletion, and
@@ -85,8 +94,9 @@ midway through creating and delete it for having no commits.
   the PR was probably squash-merged, or the branch was re-pushed after
   the merge. Confirm with `gh pr list --head <branch> --state all` before
   deleting anything manually.
-- **`operator attached`** — clear `<state>/attached-N` only if you are
-  certain no one is in that session.
+- **`operator attached`** — clear `<state>/attached-<target>-N` (or the
+  legacy `<state>/attached-N`) only if you are certain no one is in that
+  session.
 
 ## Adding it to a box provisioned before 2026-08-14
 
