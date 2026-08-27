@@ -388,9 +388,12 @@ def test_board_degrades_to_200_on_corrupt_events(tmp_path):
 
 
 def test_description_for_task_and_ghost(tmp_path):
-    """With `target` in the path there is nothing left to disambiguate: a
-    claimed issue and a ghost (not yet claimed, still on the target's queue)
-    both resolve straight to targets_by_name[target].repo."""
+    """With `target` in the path there is no cross-target ambiguity to
+    resolve: a claimed issue and a ghost (not yet claimed, still on the
+    target's queue) both resolve straight to targets_by_name[target].repo.
+    An issue that is neither a task nor on this target's queue is still a
+    true 404 — target-scoping removed the old ambiguity check, not the
+    existence check."""
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7)]
     fake.rank["alpha"] = ([{"number": 73, "title": "t", "url": "u",
@@ -407,18 +410,47 @@ def test_description_for_task_and_ghost(tmp_path):
                       headers=HEADERS).json()["title"] == "T7"
     assert client.get("/api/task/alpha/73/description",
                       headers=HEADERS).json()["title"] == "T73"
+    assert client.get("/api/task/alpha/999/description",
+                      headers=HEADERS).status_code == 404
 
 
 def test_description_404_on_unknown_target(tmp_path):
     """The old issue-only route had to scan every target's queue for a hit
     and could find the number on two of them at once — hence the old 409
     ambiguity contract. With `target` in the path that scan (and the
-    ambiguity it could hit) is gone; the only way this route now fails is an
-    unrecognised target name."""
+    ambiguity it could hit) is gone; an unrecognised target name is still a
+    404, same as any target-scoped route."""
     fake, client = rig(tmp_path)
     resp = client.get("/api/task/nonexistent-target/73/description",
                       headers=HEADERS)
     assert resp.status_code == 404
+
+
+def test_description_resolves_each_targets_own_repo(tmp_path):
+    """Two targets can both hold issue #73 as a claimed task (or a ghost) —
+    the old issue-only route could only guess (or 409) which repo's body to
+    serve. With `target` in the path each call must resolve strictly to
+    THAT target's repo, never the other one's, even for the same number."""
+    from tests.webfakes import make_target
+    fake = FakeSources()
+    cfg = make_config(tmp_path, targets=[make_target("alpha", "jesdi/alpha"),
+                                         make_target("beta", "jesdi/beta")])
+    client = TestClient(create_app(cfg, fake))
+    r73 = [{"number": 73, "title": "t", "url": "u", "status": "Ready",
+            "labels": ["auto"], "blocked": False, "score": 1.0, "boost": 0}]
+    fake.rank["alpha"] = (r73, "2026-08-01T12:00:00+00:00", False)
+    fake.rank["beta"] = (r73, "2026-08-01T12:00:00+00:00", False)
+    fake.descriptions[("jesdi/alpha", 73)] = {
+        "title": "alpha-73", "body": "", "url": "",
+        "fetched_at": "2026-08-01T12:00:00+00:00", "error": ""}
+    fake.descriptions[("jesdi/beta", 73)] = {
+        "title": "beta-73", "body": "", "url": "",
+        "fetched_at": "2026-08-01T12:00:00+00:00", "error": ""}
+    a = client.get("/api/task/alpha/73/description", headers=HEADERS)
+    b = client.get("/api/task/beta/73/description", headers=HEADERS)
+    assert a.status_code == 200 and b.status_code == 200
+    assert a.json()["title"] == "alpha-73"
+    assert b.json()["title"] == "beta-73"
 
 
 def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):

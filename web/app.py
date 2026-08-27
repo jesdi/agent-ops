@@ -165,13 +165,23 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def task_description(target: str, issue: int,
                          op: Operator = Depends(current_operator)):
         # `target` is already given, so — unlike the old issue-only route —
-        # there is no cross-target ambiguity left to resolve or 409 on: the
-        # repo comes straight from this target's config. Still serves a
-        # ghost (not yet claimed) issue, same as before; sources.issue_
-        # description() itself never raises, degrading to an error field.
+        # there is no cross-target AMBIGUITY left to resolve or 409 on: the
+        # repo comes straight from this target's config, never scanned for
+        # across cfg.targets. But the issue must still be real on this
+        # target: either a claimed task (state) or a ghost still on this
+        # target's own queue (rank_rows) — anything else is a true 404, the
+        # same "never a blank, always an explicit state" contract the
+        # sibling routes hold to.
         tgt = targets_by_name.get(target)
         if tgt is None:
             raise HTTPException(404, f"unknown target {target!r}")
+        is_task = any(t.target == target and t.issue == issue
+                      for t in sources.tasks())
+        is_ghost = any(r["number"] == issue
+                       for r in sources.rank_rows(tgt)[0])
+        if not (is_task or is_ghost):
+            raise HTTPException(404, f"issue {target}/{issue} is neither a "
+                                     "task nor on this target's queue")
         return read_model.IssueDescription(
             **sources.issue_description(tgt.repo, issue))
 
