@@ -1272,9 +1272,16 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
     for intent in intents.list_intents(cfg.state_dir):
         try:
             _apply_one_intent(cfg, deps, by_name, intent)
+            # A legacy intent (target == "") carries no target of its own;
+            # if it resolved unambiguously to one task, use THAT task's
+            # target so the console's /task/{target}/{issue} link is never
+            # blank. Same fallback idiom as the "kill" action's kill_target.
+            resolved = _task_for_intent(cfg, intent)
+            target = intent.target or (
+                resolved.target if resolved is not None else "")
             eventlog.append_event(cfg.state_dir, "intent-applied",
-                                  issue=intent.issue, actor=intent.actor,
-                                  detail=intent.action)
+                                  target=target, issue=intent.issue,
+                                  actor=intent.actor, detail=intent.action)
         except Exception as exc:
             print(f"[warn] intent {intent.path.name} failed: {exc}",
                   file=sys.stderr)
