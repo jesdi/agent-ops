@@ -53,10 +53,13 @@ it('success after failure clears the error — proven by requiring the error exi
   act(() => { result.current.next(51) })
   await waitFor(() => expect(result.current.queueError).toBeNull())
 
-  // Phase 3: board AND task keys are invalidated.
+  // Phase 3: board AND all task queries are invalidated. Queue actions never
+  // know a ghost issue's eventual target, so task queries — keyed by
+  // (target, issue) — are invalidated by the `['task']` prefix, not one
+  // exact key.
   const calledKeys = spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))
   expect(calledKeys).toContain(JSON.stringify(queryKeys.board))
-  expect(calledKeys).toContain(JSON.stringify(queryKeys.task(51)))
+  expect(calledKeys).toContain(JSON.stringify(queryKeys.allTasks))
 })
 
 it('ready() posts to /api/queue/ready and invalidates board + task', async () => {
@@ -74,7 +77,7 @@ it('ready() posts to /api/queue/ready and invalidates board + task', async () =>
   })
   act(() => { result.current.ready(73) })
   await waitFor(() =>
-    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.task(73) }),
+    expect(spy).toHaveBeenCalledWith({ queryKey: queryKeys.allTasks }),
   )
   const calledKeys = spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))
   expect(calledKeys).toContain(JSON.stringify(queryKeys.board))

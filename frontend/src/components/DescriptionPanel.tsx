@@ -5,12 +5,13 @@ import { useIssueDescription } from '../hooks/useResources'
 /** Collapsible GitHub issue body — the "what is this task" answer without a
  *  round-trip to GitHub. Collapsed by default on claimed tasks; the slim
  *  ghost view opens it, since the description IS that view's content. */
-export function DescriptionPanel({ issue, defaultOpen = false }: {
+export function DescriptionPanel({ target, issue, defaultOpen = false }: {
+  target: string
   issue: number
   defaultOpen?: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
-  const desc = useIssueDescription(issue, open)
+  const desc = useIssueDescription(target, issue, open)
   return (
     <section data-testid="description-panel" className="rounded border border-gray-300 bg-white">
       <div className="flex items-center justify-between px-4 py-2">

@@ -11,7 +11,7 @@ export function TaskCardView({ card, pendingActions }: {
 }) {
   return (
     <Link
-      to={`/task/${card.issue}`}
+      to={`/task/${card.target}/${card.issue}`}
       data-testid={`card-${card.issue}`}
       draggable
       onDragStart={(e) => {

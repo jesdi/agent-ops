@@ -17,12 +17,12 @@ vi.mock('../../components/Terminal', () => ({
   ),
 }))
 
-function renderTask(route = '/task/42') {
+function renderTask(route = '/task/widget/42') {
   return renderWithProviders(
     <>
-      <Link to="/task/43">go to 43</Link>
+      <Link to="/task/widget/43">go to 43</Link>
       <Routes>
-        <Route path="/task/:issue" element={<TaskPage />} />
+        <Route path="/task/:target/:issue" element={<TaskPage />} />
       </Routes>
     </>,
     { route },
@@ -49,7 +49,7 @@ it('reply POSTs the text and refetches pending intents — no optimistic state f
   let posted: unknown = null
   let intentCalls = 0
   server.use(
-    http.post('/api/task/42/reply', async ({ request }) => {
+    http.post('/api/task/widget/42/reply', async ({ request }) => {
       posted = await request.json()
       return HttpResponse.json(
         { status: 'pending', intent: '175-42-reply' }, { status: 202 },
@@ -78,7 +78,7 @@ it('reply POSTs the text and refetches pending intents — no optimistic state f
 
 it('a failing intent surfaces the API detail inline instead of looking like success', async () => {
   server.use(
-    http.post('/api/task/42/kill', () =>
+    http.post('/api/task/widget/42/kill', () =>
       HttpResponse.json({ detail: 'no task 42' }, { status: 404 }),
     ),
   )
@@ -98,7 +98,7 @@ it('a failing intent surfaces the API detail inline instead of looking like succ
 it('won\'t-do is two-step: no intent until the operator confirms', async () => {
   const posts: string[] = []
   server.use(
-    http.post('/api/task/42/cancel', () => {
+    http.post('/api/task/widget/42/cancel', () => {
       posts.push('cancel')
       return HttpResponse.json(
         { status: 'pending', intent: '1-42-cancel.json' },
@@ -119,7 +119,7 @@ it('won\'t-do is two-step: no intent until the operator confirms', async () => {
 it('arming won\'t-do can be backed out without firing', async () => {
   const posts: string[] = []
   server.use(
-    http.post('/api/task/42/cancel', () => {
+    http.post('/api/task/widget/42/cancel', () => {
       posts.push('cancel')
       return HttpResponse.json(
         { status: 'pending', intent: '1-42-cancel.json' },
@@ -141,7 +141,7 @@ it('arming won\'t-do can be backed out without firing', async () => {
 
 it('a 422 with an array-shaped detail renders readable text, not [object Object]', async () => {
   server.use(
-    http.post('/api/task/42/park', () =>
+    http.post('/api/task/widget/42/park', () =>
       HttpResponse.json(
         { detail: [{ loc: ['body', 'issue'], msg: 'field required', type: 'missing' }] },
         { status: 422 },
@@ -164,7 +164,7 @@ it('a 422 with an array-shaped detail renders readable text, not [object Object]
 it('a later success clears the inline error', async () => {
   let first = true
   server.use(
-    http.post('/api/task/42/park', () => {
+    http.post('/api/task/widget/42/park', () => {
       if (first) {
         first = false
         return HttpResponse.json({ detail: 'no task 42' }, { status: 404 })
@@ -206,7 +206,7 @@ it('an attached terminal does not carry over to the next task navigated to', asy
 
 it('a dead session explains itself on load and disables the attach button', async () => {
   server.use(
-    http.get('/api/task/:issue', () =>
+    http.get('/api/task/:target/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         session_alive: false,
@@ -225,16 +225,44 @@ it('a dead session explains itself on load and disables the attach button', asyn
 it('a non-numeric issue param renders not-found instead of requesting /api/task/NaN', async () => {
   renderWithProviders(
     <Routes>
-      <Route path="/task/:issue" element={<TaskPage />} />
+      <Route path="/task/:target/:issue" element={<TaskPage />} />
     </Routes>,
-    { route: '/task/abc' },
+    { route: '/task/widget/abc' },
   )
   expect(await screen.findByText(/is not a task number/)).toBeInTheDocument()
 })
 
+it('a missing target renders not-found instead of requesting /api/task//<issue>', async () => {
+  // react-router never matches an empty dynamic segment (a bare "/task//42"
+  // simply has no matching route), so the only way an empty/missing target
+  // reaches TaskPage is via useParams() resolving with no ancestor <Route>
+  // match — rendering TaskPage with no wrapping <Routes>/<Route> reproduces
+  // exactly that params shape.
+  renderWithProviders(<TaskPage />)
+  expect(await screen.findByText(/a task needs a target/)).toBeInTheDocument()
+})
+
+it('reads target and issue from the route and requests the matching endpoint', async () => {
+  let requestedPath = ''
+  server.use(
+    http.get('/api/task/:target/:issue', ({ params }) => {
+      requestedPath = `/api/task/${params.target}/${params.issue}`
+      return HttpResponse.json(taskDetail)
+    }),
+  )
+  renderWithProviders(
+    <Routes>
+      <Route path="/task/:target/:issue" element={<TaskPage />} />
+    </Routes>,
+    { route: '/task/agent_ops/42' },
+  )
+  await waitFor(() => expect(requestedPath).toBe('/api/task/agent_ops/42'))
+  expect(screen.getByText('Fix login redirect')).toBeInTheDocument()
+})
+
 it('park does not wipe typed reply text', async () => {
   server.use(
-    http.post('/api/task/42/park', () =>
+    http.post('/api/task/widget/42/park', () =>
       HttpResponse.json({ status: 'pending', intent: '175-42-park' }, { status: 202 }),
     ),
   )
@@ -252,7 +280,7 @@ it('park does not wipe typed reply text', async () => {
 
 it('a non-404 server error renders an error message, not a ghost view', async () => {
   server.use(
-    http.get('/api/task/:issue', () =>
+    http.get('/api/task/:target/:issue', () =>
       HttpResponse.json({ detail: 'internal error' }, { status: 500 }),
     ),
   )
@@ -271,14 +299,14 @@ const reviewDetail = {
 it('shows the spec panel at the review gate and approves in two taps', async () => {
   let replied: unknown = null
   server.use(
-    http.get('/api/task/42', () => HttpResponse.json(reviewDetail)),
-    http.get('/api/task/42/spec', () =>
+    http.get('/api/task/widget/42', () => HttpResponse.json(reviewDetail)),
+    http.get('/api/task/widget/42/spec', () =>
       HttpResponse.json({
         path: 'docs/superpowers/specs/x-design.md',
         markdown: '# Widget spec\n\nSpec body here.',
       }),
     ),
-    http.post('/api/task/42/reply', async ({ request }) => {
+    http.post('/api/task/widget/42/reply', async ({ request }) => {
       replied = await request.json()
       return HttpResponse.json(
         { status: 'pending', intent: '175-42-reply' }, { status: 202 },
@@ -318,7 +346,7 @@ it('the unattached tail renders at the persisted terminal height', async () => {
 
 it('a parked task shows the parked panel with the note, not the dead banner', async () => {
   server.use(
-    http.get('/api/task/:issue', () =>
+    http.get('/api/task/:target/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         session_alive: false,
@@ -349,7 +377,7 @@ it('the reply button says it wakes a parked task', async () => {
 
 it('an unparked task keeps the plain send label and no parked panel', async () => {
   server.use(
-    http.get('/api/task/:issue', () =>
+    http.get('/api/task/:target/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         card: { ...taskDetail.card, park: '', park_note: '' },
@@ -365,8 +393,8 @@ it('an unparked task keeps the plain send label and no parked panel', async () =
 
 it('shows the attach fallback when the spec 404s', async () => {
   server.use(
-    http.get('/api/task/42', () => HttpResponse.json(reviewDetail)),
-    http.get('/api/task/42/spec', () =>
+    http.get('/api/task/widget/42', () => HttpResponse.json(reviewDetail)),
+    http.get('/api/task/widget/42/spec', () =>
       HttpResponse.json({ detail: 'no spec recorded for task 42' }, { status: 404 }),
     ),
   )
@@ -394,7 +422,7 @@ it('links to claude.ai/code so mobile can use the Claude app instead of xterm', 
 
 it('keeps the Open in Claude link when the session is dead', async () => {
   server.use(
-    http.get('/api/task/:issue', () =>
+    http.get('/api/task/:target/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         session_alive: false,
@@ -414,7 +442,7 @@ it('keeps the Open in Claude link when the session is dead', async () => {
 })
 
 it('claimed task shows description toggle and stage timeline', async () => {
-  server.use(http.get('/api/task/:issue', () => HttpResponse.json({
+  server.use(http.get('/api/task/:target/:issue', () => HttpResponse.json({
     ...taskDetail,
     timeline: [
       { label: 'spec', seconds: 2400, kind: 'stage', ongoing: false },
@@ -432,13 +460,13 @@ it('claimed task shows description toggle and stage timeline', async () => {
 
 it('unclaimed issue renders the slim ghost view instead of an error', async () => {
   server.use(
-    http.get('/api/task/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
-    http.get('/api/task/73/description', () => HttpResponse.json({
+    http.get('/api/task/:target/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
+    http.get('/api/task/widget/73/description', () => HttpResponse.json({
       title: 'Ship dark mode', body: 'B', url: 'u',
       fetched_at: '2026-08-01T12:00:00Z', error: '',
     })),
   )
-  renderTask('/task/73')
+  renderTask('/task/widget/73')
   expect(await screen.findByTestId('ghost-task-view')).toBeInTheDocument()
   expect(await screen.findByText('Ship dark mode')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Boost' })).toBeInTheDocument()
@@ -446,15 +474,15 @@ it('unclaimed issue renders the slim ghost view instead of an error', async () =
 
 it('a failing queue action from the ghost view surfaces its error text', async () => {
   server.use(
-    http.get('/api/task/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
-    http.get('/api/task/73/description', () => HttpResponse.json({
+    http.get('/api/task/:target/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
+    http.get('/api/task/widget/73/description', () => HttpResponse.json({
       title: 'Ship dark mode', body: 'B', url: 'u',
       fetched_at: '2026-08-01T12:00:00Z', error: '',
     })),
     http.post('/api/queue/boost', () =>
       HttpResponse.json({ detail: 'queue locked' }, { status: 422 })),
   )
-  renderTask('/task/73')
+  renderTask('/task/widget/73')
   await screen.findByTestId('ghost-task-view')
   await userEvent.click(screen.getByRole('button', { name: 'Boost' }))
   await waitFor(() =>

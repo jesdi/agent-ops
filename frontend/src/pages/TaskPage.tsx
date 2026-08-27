@@ -15,21 +15,29 @@ import { formatDuration, relativeTime, stageLabel } from '../lib/format'
 import { useUiStore } from '../store/ui'
 
 export function TaskPage() {
-  const raw = useParams().issue
-  const issue = Number(raw)
-  // /task/abc would otherwise request /api/task/NaN.
-  if (!Number.isInteger(issue) || issue <= 0) {
+  const { target, issue: rawIssue } = useParams()
+  // An empty/missing target would otherwise request /api/task//<issue>.
+  if (!target) {
     return (
       <p className="p-4 text-red-600">
-        not found — “{raw}” is not a task number
+        not found — a task needs a target
       </p>
     )
   }
-  return <TaskView issue={issue} />
+  const issue = Number(rawIssue)
+  // /task/x/abc would otherwise request /api/task/x/NaN.
+  if (!Number.isInteger(issue) || issue <= 0) {
+    return (
+      <p className="p-4 text-red-600">
+        not found — “{rawIssue}” is not a task number
+      </p>
+    )
+  }
+  return <TaskView target={target} issue={issue} />
 }
 
-function TaskView({ issue }: { issue: number }) {
-  const detailQuery = useTaskDetail(issue)
+function TaskView({ target, issue }: { target: string; issue: number }) {
+  const detailQuery = useTaskDetail(target, issue)
   const intentsQuery = usePendingIntents()
   const queryClient = useQueryClient()
   const [replyText, setReplyText] = useState('')
@@ -72,15 +80,18 @@ function TaskView({ issue }: { issue: number }) {
   if (detailQuery.isPending) return <p className="p-4 text-gray-500">loading task…</p>
   if (detailQuery.isError) {
     if (detailQuery.error instanceof ApiError && detailQuery.error.status === 404) {
-      return <GhostTaskView issue={issue} />
+      return <GhostTaskView target={target} issue={issue} />
     }
     return <p className="p-4 text-red-600">{detailQuery.error.message}</p>
   }
 
   const { card, pane_tail, session_alive, worktree, messages, delivery_contract } =
     detailQuery.data
+  // A target-less legacy intent (written before the target field existed)
+  // cannot be attributed to one target over another, so it matches by issue
+  // alone; anything else must match this exact target too.
   const myIntents = (intentsQuery.data?.intents ?? []).filter(
-    (i) => i.issue === issue,
+    (i) => i.issue === issue && (i.target === target || i.target === ''),
   )
   const busy = intent.isPending
 
@@ -115,14 +126,15 @@ function TaskView({ issue }: { issue: number }) {
 
       <p className="font-mono text-xs text-gray-500">{worktree}</p>
 
-      <DescriptionPanel issue={issue} />
+      <DescriptionPanel target={target} issue={issue} />
 
       {card.stage === 'awaiting-spec-review' && (
         <SpecPanel
+          target={target}
           issue={issue}
           busy={busy}
           onApprove={() =>
-            runIntent(() => api.reply(issue, 'Approved — proceed.'))
+            runIntent(() => api.reply(target, issue, 'Approved — proceed.'))
           }
         />
       )}
@@ -153,7 +165,7 @@ function TaskView({ issue }: { issue: number }) {
       )}
 
       {terminalOpen && session_alive ? (
-        <Terminal issue={issue} />
+        <Terminal target={target} issue={issue} />
       ) : (
         <div
           ref={paneWrapRef}
@@ -196,7 +208,7 @@ function TaskView({ issue }: { issue: number }) {
           type="button"
           className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
           disabled={replyText.trim() === '' || busy}
-          onClick={() => runIntent(() => api.reply(issue, replyText), true)}
+          onClick={() => runIntent(() => api.reply(target, issue, replyText), true)}
         >
           {card.park !== '' ? 'Send reply & wake' : 'Send message'}
         </button>
@@ -223,19 +235,19 @@ function TaskView({ issue }: { issue: number }) {
         </a>
         <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={busy}
-          onClick={() => runIntent(() => api.park(issue))}>Park now</button>
+          onClick={() => runIntent(() => api.park(target, issue))}>Park now</button>
         <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={busy}
-          onClick={() => runIntent(() => api.resume(issue))}>Resume now</button>
+          onClick={() => runIntent(() => api.resume(target, issue))}>Resume now</button>
         <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={busy}
-          onClick={() => runIntent(() => api.retry(issue))}>Retry</button>
+          onClick={() => runIntent(() => api.retry(target, issue))}>Retry</button>
         <button
           type="button"
           className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
           disabled={busy}
           onClick={() =>
-            killArmed ? runIntent(() => api.kill(issue)) : setKillArmed(true)
+            killArmed ? runIntent(() => api.kill(target, issue)) : setKillArmed(true)
           }
         >
           {killArmed ? 'Confirm kill?' : 'Kill'}
@@ -254,7 +266,7 @@ function TaskView({ issue }: { issue: number }) {
           className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
           disabled={busy}
           onClick={() =>
-            wontDoArmed ? runIntent(() => api.cancel(issue)) : setWontDoArmed(true)
+            wontDoArmed ? runIntent(() => api.cancel(target, issue)) : setWontDoArmed(true)
           }
         >
           {wontDoArmed ? "Confirm won't do?" : "Won't do"}
@@ -273,8 +285,8 @@ function TaskView({ issue }: { issue: number }) {
   )
 }
 
-function GhostTaskView({ issue }: { issue: number }) {
-  const desc = useIssueDescription(issue, true)
+function GhostTaskView({ target, issue }: { target: string; issue: number }) {
+  const desc = useIssueDescription(target, issue, true)
   const { queueError, busy, boost, next, ready } = useQueueActions()
   return (
     <div data-testid="ghost-task-view" className="flex flex-col gap-4 p-4">
@@ -284,7 +296,7 @@ function GhostTaskView({ issue }: { issue: number }) {
           upcoming — not claimed yet
         </span>
       </header>
-      <DescriptionPanel issue={issue} defaultOpen />
+      <DescriptionPanel target={target} issue={issue} defaultOpen />
       {queueError && <p data-testid="queue-error" className="text-sm text-red-600">{queueError}</p>}
       <div className="flex gap-2">
         <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, 1)}>Boost</button>

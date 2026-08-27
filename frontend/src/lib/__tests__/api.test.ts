@@ -52,31 +52,52 @@ it('coerces an array-shaped 422 detail to a renderable string', async () => {
   )
 })
 
-it('POST cancel sends the target only when one is given', async () => {
+it('POST cancel is keyed by target and issue like every other intent', async () => {
   const bodies: unknown[] = []
   server.use(
-    http.post('/api/task/42/cancel', async ({ request }) => {
+    http.post('/api/task/portfolio_eval/42/cancel', async ({ request }) => {
       bodies.push(await request.json())
       return HttpResponse.json(
-        { status: 'pending', intent: '1753444800000-42-cancel' },
+        { status: 'pending', intent: '1753444800000-portfolio_eval-42-cancel' },
         { status: 202 },
       )
     }),
   )
-  await api.cancel(42)
-  await api.cancel(42, 'portfolio_eval')
-  expect(bodies).toEqual([{}, { target: 'portfolio_eval' }])
+  await api.cancel('portfolio_eval', 42)
+  expect(bodies).toEqual([{}])
 })
 
 it('POST intent action returns 202 pending', async () => {
   server.use(
-    http.post('/api/task/42/reply', () =>
+    http.post('/api/task/widget/42/reply', () =>
       HttpResponse.json(
         { status: 'pending', intent: '1753444800000-42-reply' },
         { status: 202 },
       ),
     ),
   )
-  const res = await api.reply(42, 'go ahead')
+  const res = await api.reply('widget', 42, 'go ahead')
   expect(res.status).toBe('pending')
+})
+
+it('GET task detail hits /api/task/{target}/{issue}', async () => {
+  let requestedPath = ''
+  server.use(
+    http.get('/api/task/:target/:issue', ({ params }) => {
+      requestedPath = `/api/task/${params.target}/${params.issue}`
+      return HttpResponse.json({
+        card: { issue: 42, target: 'agent_ops', title: 't', stage: 's',
+          park: '', park_note: '', column: 'c', slot: -1, branch: 'b',
+          model: 'm', park_note_pending: false, feedback_pending: false,
+          updated_at: '', attached: false, consuming_capacity: false,
+          claimed_at: '', cycle_seconds: null, score: null,
+          undelivered_messages: 0, wake_blocked: false },
+        pane_tail: '', session_alive: true, worktree: '', messages: [],
+        delivery_contract: '', ci_run_id: 0, effort: null, labels: [],
+        timeline: [],
+      })
+    }),
+  )
+  await api.taskDetail('agent_ops', 42)
+  expect(requestedPath).toBe('/api/task/agent_ops/42')
 })

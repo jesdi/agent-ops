@@ -20,6 +20,7 @@ export type MessageView = components['schemas']['MessageView']
 
 export interface PendingIntent {
   action: string
+  target: string
   issue: number
   actor: string
   created_at: string
@@ -82,30 +83,37 @@ const post = <T>(path: string, body: unknown) =>
 
 export const api = {
   board: () => request<BoardView>('/board'),
-  taskDetail: (issue: number) => request<TaskDetail>(`/task/${issue}`),
-  taskSpec: (issue: number) => request<SpecView>(`/task/${issue}/spec`),
-  taskHistory: (issue: number, lines = 2000) =>
-    request<PaneHistory>(`/task/${issue}/history?lines=${lines}`),
+  taskDetail: (target: string, issue: number) =>
+    request<TaskDetail>(`/task/${target}/${issue}`),
+  taskSpec: (target: string, issue: number) =>
+    request<SpecView>(`/task/${target}/${issue}/spec`),
+  taskHistory: (target: string, issue: number, lines = 2000) =>
+    request<PaneHistory>(`/task/${target}/${issue}/history?lines=${lines}`),
   budget: () => request<BudgetView>('/budget'),
   failures: () => request<FailuresView>('/failures'),
   history: (limit = 200) => request<HistoryView>(`/history?limit=${limit}`),
   pendingIntents: () => request<PendingIntentsView>('/pending-intents'),
-  // Queue actions — applied immediately, 200 or 422.
+  // Queue actions — applied immediately, 200 or 422. Issue-only: the queue
+  // (GitHub project board rank) has no per-target route.
   queueBoost: (issue: number, amount: number) =>
     post<QueueActionResult>('/queue/boost', { issue, amount }),
   queueNext: (issue: number, force: boolean) =>
     post<QueueActionResult>('/queue/next', { issue, force }),
   queueReady: (issue: number) => post<QueueActionResult>('/queue/ready', { issue }),
   // Intent actions — 202 accepted, applied by the next dispatcher pass.
-  reply: (issue: number, text: string) =>
-    post<IntentAccepted>(`/task/${issue}/reply`, { text }),
-  park: (issue: number) => post<IntentAccepted>(`/task/${issue}/park`, {}),
-  kill: (issue: number) => post<IntentAccepted>(`/task/${issue}/kill`, {}),
-  // target is only needed for a backlog card with no task file.
-  cancel: (issue: number, target?: string) =>
-    post<IntentAccepted>(`/task/${issue}/cancel`, target ? { target } : {}),
-  retry: (issue: number) => post<IntentAccepted>(`/task/${issue}/retry`, {}),
-  resume: (issue: number, text?: string) =>
-    post<IntentAccepted>(`/task/${issue}/resume`, text ? { text } : {}),
-  taskDescription: (issue: number) => request<IssueDescription>(`/task/${issue}/description`),
+  reply: (target: string, issue: number, text: string) =>
+    post<IntentAccepted>(`/task/${target}/${issue}/reply`, { text }),
+  park: (target: string, issue: number) =>
+    post<IntentAccepted>(`/task/${target}/${issue}/park`, {}),
+  kill: (target: string, issue: number) =>
+    post<IntentAccepted>(`/task/${target}/${issue}/kill`, {}),
+  // No _require_task server-side: a backlog card with no task file cancels too.
+  cancel: (target: string, issue: number) =>
+    post<IntentAccepted>(`/task/${target}/${issue}/cancel`, {}),
+  retry: (target: string, issue: number) =>
+    post<IntentAccepted>(`/task/${target}/${issue}/retry`, {}),
+  resume: (target: string, issue: number, text?: string) =>
+    post<IntentAccepted>(`/task/${target}/${issue}/resume`, text ? { text } : {}),
+  taskDescription: (target: string, issue: number) =>
+    request<IssueDescription>(`/task/${target}/${issue}/description`),
 }

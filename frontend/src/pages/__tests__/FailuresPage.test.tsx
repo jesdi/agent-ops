@@ -23,7 +23,7 @@ it('blocker_open null renders "blocker state unknown"', async () => {
     http.get('/api/failures', () =>
       HttpResponse.json({
         quarantined: [{
-          target: 'jesdi/widget', task_issue: 38, blocker_repo: 'jesdi/widget',
+          target: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
           blocker_issue: 39, fingerprint: 'f', created_at: '2026-07-24T22:10:00Z',
           blocker_open: null,
         }],
@@ -42,7 +42,7 @@ it('blocker_open false renders "blocker closed" and not "blocker state unknown"'
     http.get('/api/failures', () =>
       HttpResponse.json({
         quarantined: [{
-          target: 'jesdi/widget', task_issue: 38, blocker_repo: 'jesdi/widget',
+          target: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
           blocker_issue: 39, fingerprint: 'f', created_at: '2026-07-24T22:10:00Z',
           blocker_open: false,
         }],
@@ -60,7 +60,7 @@ it('blocker_open false renders "blocker closed" and not "blocker state unknown"'
 it('retry posts the intent for the quarantined task', async () => {
   let retried = false
   server.use(
-    http.post('/api/task/38/retry', () => {
+    http.post('/api/task/widget/38/retry', () => {
       retried = true
       return HttpResponse.json(
         { status: 'pending', intent: '175-38-retry' }, { status: 202 },
@@ -77,7 +77,7 @@ it('retry posts the intent for the quarantined task', async () => {
 
 it('a failing retry surfaces the API detail inline instead of looking like success', async () => {
   server.use(
-    http.post('/api/task/38/retry', () =>
+    http.post('/api/task/widget/38/retry', () =>
       HttpResponse.json(
         { detail: 'issue 38 is not quarantined' }, { status: 404 },
       ),

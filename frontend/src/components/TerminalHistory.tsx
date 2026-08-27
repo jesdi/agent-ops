@@ -10,9 +10,11 @@ import { useTaskHistory } from '../hooks/useResources'
  * and momentum for free.
  */
 export function TerminalHistory({
+  target,
   issue,
   onClose,
 }: {
+  target: string
   issue: number
   onClose: () => void
 }) {
@@ -35,7 +37,7 @@ export function TerminalHistory({
     }
   }
 
-  const query = useTaskHistory(issue, true)
+  const query = useTaskHistory(target, issue, true)
 
   useEffect(() => {
     const el = paneRef.current

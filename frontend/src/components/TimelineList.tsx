@@ -26,7 +26,7 @@ export function TimelineList({ events }: { events: EventEntry[] }) {
           <span className={`rounded px-1.5 text-xs ${EVENT_COLORS[e.event] ?? 'bg-gray-100'}`}>
             {e.event}
           </span>
-          <Link to={`/task/${e.issue}`} className="text-blue-600 hover:underline">
+          <Link to={`/task/${e.target}/${e.issue}`} className="text-blue-600 hover:underline">
             {e.target}#{e.issue}
           </Link>
           {e.stage && <span className="text-gray-500">{e.stage}</span>}

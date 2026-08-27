@@ -31,20 +31,20 @@ export function useTimeline() {
   })
 }
 
-export function useTaskDetail(issue: number) {
+export function useTaskDetail(target: string, issue: number) {
   const refetchInterval = useFallbackInterval()
   return useQuery({
-    queryKey: queryKeys.task(issue),
-    queryFn: () => api.taskDetail(issue),
+    queryKey: queryKeys.task(target, issue),
+    queryFn: () => api.taskDetail(target, issue),
     refetchInterval,
   })
 }
 
 /** retry:false — a 404 means "no spec recorded", not a transient failure. */
-export function useTaskSpec(issue: number) {
+export function useTaskSpec(target: string, issue: number) {
   return useQuery({
-    queryKey: queryKeys.spec(issue),
-    queryFn: () => api.taskSpec(issue),
+    queryKey: queryKeys.spec(target, issue),
+    queryFn: () => api.taskSpec(target, issue),
     retry: false,
   })
 }
@@ -54,10 +54,10 @@ export function useTaskSpec(issue: number) {
  * polled task-detail path — a 2000-line tail is ~150KB. staleTime:0 because
  * the live screen has moved on every time the view is reopened.
  */
-export function useTaskHistory(issue: number, enabled: boolean) {
+export function useTaskHistory(target: string, issue: number, enabled: boolean) {
   return useQuery({
-    queryKey: queryKeys.taskHistory(issue),
-    queryFn: () => api.taskHistory(issue),
+    queryKey: queryKeys.taskHistory(target, issue),
+    queryFn: () => api.taskHistory(target, issue),
     enabled,
     staleTime: 0,
   })
@@ -65,10 +65,10 @@ export function useTaskHistory(issue: number, enabled: boolean) {
 
 /** Lazy: `enabled` gates the fetch so a collapsed panel costs nothing.
  *  retry:false — the backend already degrades gh failures into the payload. */
-export function useIssueDescription(issue: number, enabled: boolean) {
+export function useIssueDescription(target: string, issue: number, enabled: boolean) {
   return useQuery({
-    queryKey: queryKeys.description(issue),
-    queryFn: () => api.taskDescription(issue),
+    queryKey: queryKeys.description(target, issue),
+    queryFn: () => api.taskDescription(target, issue),
     enabled,
     retry: false,
   })

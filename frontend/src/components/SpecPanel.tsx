@@ -4,12 +4,13 @@ import { useTaskSpec } from '../hooks/useResources'
 
 /** Rendered only at the awaiting-spec-review gate. Approve is two-step for
  *  the same reason kill is on TaskPage: a phone mis-tap must not approve. */
-export function SpecPanel({ issue, busy, onApprove }: {
+export function SpecPanel({ target, issue, busy, onApprove }: {
+  target: string
   issue: number
   busy: boolean
   onApprove: () => void
 }) {
-  const spec = useTaskSpec(issue)
+  const spec = useTaskSpec(target, issue)
   const [armed, setArmed] = useState(false)
 
   return (

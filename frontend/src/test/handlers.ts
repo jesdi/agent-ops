@@ -7,5 +7,5 @@ export const defaultHandlers = [
   http.get('/api/failures', () => HttpResponse.json(fx.failures)),
   http.get('/api/history', () => HttpResponse.json(fx.history)),
   http.get('/api/pending-intents', () => HttpResponse.json(fx.noPendingIntents)),
-  http.get('/api/task/:issue', () => HttpResponse.json(fx.taskDetail)),
+  http.get('/api/task/:target/:issue', () => HttpResponse.json(fx.taskDetail)),
 ]
