@@ -487,7 +487,7 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
     liveness is what this park protects, and the marker has no part in it."""
     msg_id = deps.notifier.send(
         "needs_relogin", issue=task.issue, title=task.title,
-        url=_url(target, task.issue),
+        url=_url(target, task.issue), target=target.name,
         login_url=login.url or "(attach to the session to see the URL)",
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     if msg_id == 0:
@@ -813,7 +813,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                              model)
         deps.notifier.send("resumed_for_attach", issue=task.issue,
                            title=task.title, url=_url(target, task.issue),
-                           note="")
+                           target=target.name, note="")
     else:
         deps.sessions.resume(task.target, task.issue, task.worktree,
                              block or "Continue.", model)
