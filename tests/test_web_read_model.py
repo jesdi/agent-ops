@@ -18,6 +18,7 @@ STAGE_COLUMNS = {
     Stage.FAILED: "failed",
     Stage.BLOCKED: "failed",         # legacy stage: surfaced, not hidden
     Stage.STALLED_ON_BUDGET: "stalled",
+    Stage.CANCELED: "wont-do",
 }
 
 
@@ -162,12 +163,18 @@ def test_board_column_order_is_stable():
                         claims_paused=False, triage_running=False)
     assert [c.key for c in board.columns] == [
         "queued", "in-progress", "needs-review", "pr-open", "done", "parked",
-        "awaiting-ci", "resuming", "stalled", "failed"]
+        "awaiting-ci", "resuming", "stalled", "failed", "wont-do"]
 
 
 def test_new_stage_columns():
     assert column_for("address-review", "") == "in-progress"
     assert column_for("done", "") == "done"
+
+
+def test_wont_do_column_titled_and_last():
+    keys = [k for k, _ in COLUMNS]
+    assert keys[-1] == "wont-do"
+    assert dict(COLUMNS)["wont-do"] == "Wont do"
 
 
 def test_done_column_present_after_pr_review():
@@ -663,7 +670,7 @@ def test_delivery_contract_unclaimed_issue():
         "will deliver when this task is claimed")
 
 
-@pytest.mark.parametrize("stage", [Stage.DONE, Stage.FAILED])
+@pytest.mark.parametrize("stage", [Stage.DONE, Stage.FAILED, Stage.CANCELED])
 def test_delivery_contract_finished_task(stage):
     t = make_task(stage=stage)
     assert delivery_contract(t, wake_blocked=False) == (

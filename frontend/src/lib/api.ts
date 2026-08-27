@@ -101,6 +101,9 @@ export const api = {
     post<IntentAccepted>(`/task/${issue}/reply`, { text }),
   park: (issue: number) => post<IntentAccepted>(`/task/${issue}/park`, {}),
   kill: (issue: number) => post<IntentAccepted>(`/task/${issue}/kill`, {}),
+  // target is only needed for a backlog card with no task file.
+  cancel: (issue: number, target?: string) =>
+    post<IntentAccepted>(`/task/${issue}/cancel`, target ? { target } : {}),
   retry: (issue: number) => post<IntentAccepted>(`/task/${issue}/retry`, {}),
   resume: (issue: number, text?: string) =>
     post<IntentAccepted>(`/task/${issue}/resume`, text ? { text } : {}),

@@ -95,6 +95,50 @@ it('a failing intent surfaces the API detail inline instead of looking like succ
   expect(screen.queryByTestId('pending-badge')).not.toBeInTheDocument()
 })
 
+it('won\'t-do is two-step: no intent until the operator confirms', async () => {
+  const posts: string[] = []
+  server.use(
+    http.post('/api/task/42/cancel', () => {
+      posts.push('cancel')
+      return HttpResponse.json(
+        { status: 'pending', intent: '1-42-cancel.json' },
+        { status: 202 },
+      )
+    }),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),
+  )
+  await userEvent.click(screen.getByRole('button', { name: "Won't do" }))
+  expect(posts).toEqual([]) // armed, not fired — the double check
+  await userEvent.click(screen.getByRole('button', { name: "Confirm won't do?" }))
+  await waitFor(() => expect(posts).toEqual(['cancel']))
+})
+
+it('arming won\'t-do can be backed out without firing', async () => {
+  const posts: string[] = []
+  server.use(
+    http.post('/api/task/42/cancel', () => {
+      posts.push('cancel')
+      return HttpResponse.json(
+        { status: 'pending', intent: '1-42-cancel.json' },
+        { status: 202 },
+      )
+    }),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),
+  )
+  await userEvent.click(screen.getByRole('button', { name: "Won't do" }))
+  await userEvent.click(screen.getByRole('button', { name: "Keep task" }))
+  expect(posts).toEqual([])
+  expect(
+    screen.queryByRole('button', { name: "Confirm won't do?" }),
+  ).not.toBeInTheDocument()
+})
+
 it('a 422 with an array-shaped detail renders readable text, not [object Object]', async () => {
   server.use(
     http.post('/api/task/42/park', () =>

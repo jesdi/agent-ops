@@ -13,7 +13,7 @@ from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               Stage, TaskState, active, consumes_capacity,
                               holds_slot, max_slots)
 
-FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED})
+FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
 
 # (key, title) in display order — the single place column semantics live.
 COLUMNS: tuple[tuple[str, str], ...] = (
@@ -27,6 +27,7 @@ COLUMNS: tuple[tuple[str, str], ...] = (
     ("resuming", "Resuming"),
     ("stalled", "Stalled on budget"),
     ("failed", "Failed"),
+    ("wont-do", "Wont do"),
 )
 
 # PARK_LOGIN shares the Parked column: it is a task waiting on the operator,
@@ -50,6 +51,7 @@ _STAGE_COLUMN = {
     Stage.FAILED.value: "failed",
     Stage.BLOCKED.value: "failed",  # legacy stage, surfaced not hidden
     Stage.STALLED_ON_BUDGET.value: "stalled",
+    Stage.CANCELED.value: "wont-do",
 }
 
 

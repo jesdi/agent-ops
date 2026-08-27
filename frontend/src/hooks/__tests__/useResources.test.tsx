@@ -18,7 +18,7 @@ it('useTasks resolves the board view', async () => {
   const { result } = renderHook(() => useTasks(), { wrapper })
   await waitFor(() => expect(result.current.isSuccess).toBe(true))
   expect(result.current.data?.capacity.max_slots).toBe(3)
-  expect(result.current.data?.columns).toHaveLength(10)
+  expect(result.current.data?.columns).toHaveLength(11)
 })
 
 it('useTaskDetail(42) resolves the parked task', async () => {

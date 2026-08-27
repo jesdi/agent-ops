@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 INTENTS_DIR = "intents"
-ACTIONS = ("reply", "park", "kill", "retry", "resume")
+ACTIONS = ("reply", "park", "kill", "retry", "resume", "cancel")
 
 
 @dataclass(frozen=True)

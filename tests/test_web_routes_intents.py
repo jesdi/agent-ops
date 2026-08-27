@@ -56,6 +56,24 @@ def test_park_kill_resume(tmp_path):
         ("park", {}), ("kill", {}), ("resume", {"text": "go on"})]
 
 
+def test_cancel_writes_intent_for_a_live_task(tmp_path):
+    fake, client = rig(tmp_path)
+    r = client.post("/api/task/7/cancel", headers=HEADERS, json={})
+    assert r.status_code == 202
+    assert fake.intents == [("cancel", 7, {}, "jesdi@github")]
+
+
+def test_cancel_accepts_an_unclaimed_backlog_issue_with_target(tmp_path):
+    # A backlog card has no task file; the target rides the payload so the
+    # dispatcher can still retire the board card and close the issue.
+    fake, client = rig(tmp_path)
+    r = client.post("/api/task/999/cancel", headers=HEADERS,
+                    json={"target": "portfolio_eval"})
+    assert r.status_code == 202
+    assert fake.intents == [("cancel", 999, {"target": "portfolio_eval"},
+                             "jesdi@github")]
+
+
 def test_retry_validates_against_quarantine_not_tasks(tmp_path):
     fake, client = rig(tmp_path)
     # issue 12 has no task-12.json but IS quarantined -> allowed

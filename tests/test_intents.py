@@ -25,6 +25,12 @@ def test_write_intent_file_body_schema(tmp_path):
     assert d["action"] == "kill" and d["issue"] == 7 and d["payload"] == {}
 
 
+def test_write_intent_accepts_cancel_action(tmp_path):
+    p = intents.write_intent(tmp_path, "cancel", 7, {}, "op", 1)
+    [it] = intents.list_intents(tmp_path)
+    assert it.action == "cancel" and it.path == p
+
+
 def test_write_intent_rejects_unknown_action(tmp_path):
     with pytest.raises(ValueError):
         intents.write_intent(tmp_path, "explode", 42, {}, "op", 1)

@@ -20,6 +20,7 @@ class Stage(str, Enum):
     FAILED = "failed"
     STALLED_ON_BUDGET = "stalled-on-budget"
     DONE = "done"
+    CANCELED = "canceled"  # operator won't-do; terminal like FAILED/DONE
 
 
 # Stages that occupy capacity and an E2E slot. BLOCKED and

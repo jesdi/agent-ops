@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import logging
 import shlex
 import subprocess
 from dataclasses import dataclass
 
 from dispatcher.config import Target
+
+log = logging.getLogger(__name__)
 
 
 def _run(args: list[str], cwd: str | None = None,
@@ -207,6 +210,23 @@ class GitHubClient:
                      f"🤖 agent-ops released this task: {reason}. "
                      f"Worktree preserved for autopsy.")
         self.set_status(target, issue, target.status_ready_option_id)
+
+    def cancel(self, target: Target, issue: int) -> None:
+        """Operator won't-do: unlike release(), the card leaves the claim
+        pool for good (Wont do, not Ready) and the issue closes as not
+        planned."""
+        if self.dry_run:
+            print(f"[dry-run] cancel #{issue}")
+            return
+        self.comment(target, issue,
+                     "🤖 canceled by operator — moved to Wont do.")
+        if target.status_wont_do_option_id:
+            self.set_status(target, issue, target.status_wont_do_option_id)
+        else:
+            log.warning("%s: status_wont_do_option_id unset — board not "
+                        "updated for canceled #%d", target.name, issue)
+        _run(["gh", "issue", "close", str(issue), "--repo", target.repo,
+              "--reason", "not planned"])
 
     def delete_branch(self, target: Target, branch: str) -> None:
         """Best-effort: repos with delete-branch-on-merge already removed

@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
@@ -9,12 +9,12 @@ import { BoardPage } from '../BoardPage'
 
 beforeEach(() => server.use(...defaultHandlers))
 
-it('renders all ten columns with cards and capacity', async () => {
+it('renders all eleven columns with cards and capacity', async () => {
   renderWithProviders(<BoardPage />)
   await waitFor(() =>
     expect(screen.getByTestId('column-parked')).toBeInTheDocument(),
   )
-  expect(screen.getAllByTestId(/^column-/)).toHaveLength(10)
+  expect(screen.getAllByTestId(/^column-/)).toHaveLength(11)
   expect(screen.getByText('Fix login redirect')).toBeInTheDocument()
   expect(screen.getByText('Add CSV export')).toBeInTheDocument()
   expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
@@ -40,6 +40,64 @@ it('renders a column\'s cards in the order the API returns (server sorts by scor
     .getAllByTestId(/^card-/)
     .map((el) => el.getAttribute('data-testid'))
   expect(order).toEqual(['card-42', 'card-45'])
+})
+
+function fakeDataTransfer() {
+  const data: Record<string, string> = {}
+  return {
+    data,
+    setData: (k: string, v: string) => { data[k] = v },
+    getData: (k: string) => data[k] ?? '',
+    effectAllowed: '',
+    dropEffect: '',
+    types: [] as string[],
+  }
+}
+
+it('dropping a card on Wont do asks for confirmation before any intent fires', async () => {
+  const posts: unknown[] = []
+  server.use(
+    http.post('/api/task/42/cancel', async ({ request }) => {
+      posts.push(await request.json())
+      return HttpResponse.json(
+        { status: 'pending', intent: '1-42-cancel.json' },
+        { status: 202 },
+      )
+    }),
+  )
+  renderWithProviders(<BoardPage />)
+  await waitFor(() => expect(screen.getByTestId('card-42')).toBeInTheDocument())
+  const dt = fakeDataTransfer()
+  fireEvent.dragStart(screen.getByTestId('card-42'), { dataTransfer: dt })
+  fireEvent.dragOver(screen.getByTestId('column-wont-do'), { dataTransfer: dt })
+  fireEvent.drop(screen.getByTestId('column-wont-do'), { dataTransfer: dt })
+  // the double check: nothing fires until the operator confirms
+  expect(posts).toEqual([])
+  expect(screen.getByTestId('wont-do-confirm')).toHaveTextContent('#42')
+  await userEvent.click(screen.getByRole('button', { name: "Confirm won't do?" }))
+  await waitFor(() => expect(posts).toEqual([{ target: 'jesdi/widget' }]))
+  expect(screen.queryByTestId('wont-do-confirm')).not.toBeInTheDocument()
+})
+
+it('backing out of the drop confirmation fires nothing', async () => {
+  const posts: unknown[] = []
+  server.use(
+    http.post('/api/task/42/cancel', () => {
+      posts.push('cancel')
+      return HttpResponse.json(
+        { status: 'pending', intent: '1-42-cancel.json' },
+        { status: 202 },
+      )
+    }),
+  )
+  renderWithProviders(<BoardPage />)
+  await waitFor(() => expect(screen.getByTestId('card-42')).toBeInTheDocument())
+  const dt = fakeDataTransfer()
+  fireEvent.dragStart(screen.getByTestId('card-42'), { dataTransfer: dt })
+  fireEvent.drop(screen.getByTestId('column-wont-do'), { dataTransfer: dt })
+  await userEvent.click(screen.getByRole('button', { name: 'Keep task' }))
+  expect(posts).toEqual([])
+  expect(screen.queryByTestId('wont-do-confirm')).not.toBeInTheDocument()
 })
 
 it('AWKWARD: budget source unavailable shows the consequence, not a gauge', async () => {

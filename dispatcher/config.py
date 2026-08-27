@@ -26,6 +26,7 @@ class Target:
     status_in_progress_option_id: str
     boost_field_id: str = ""
     status_done_option_id: str = ""  # "" = never write Done to the board
+    status_wont_do_option_id: str = ""  # "" = cancel never touches the board
     models: ModelPolicy | None = None  # None = inherit the global policy
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import shutil
 import socket
@@ -26,6 +27,8 @@ from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher import (eventlog, failures, intents, messages, pr_poll,
                         queue_ops, relogin, triage)
 from dispatcher.github import GitHubClient
+
+log = logging.getLogger(__name__)
 from dispatcher import spec_publish
 from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
@@ -1032,17 +1035,33 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
 
 
 def _claim_new(cfg: Config, deps: Deps, target: Target,
-               dry_run: bool) -> None:
+               dry_run: bool, pass_started: str = "") -> None:
     tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
     free = cfg.capacity - len(active(tasks))
     if free <= 0:
         return
     known = {t.issue for t in tasks}
+    by_issue = {t.issue: t for t in tasks}
     for cand in deps.github.candidates(target):
         if free <= 0:
             break
         if cand.number in known:
-            continue
+            stale = by_issue.get(cand.number)
+            if (stale is None or stale.stage is not Stage.CANCELED
+                    or (pass_started and stale.updated_at >= pass_started)):
+                continue
+            # Reopened won't-do: rank drops CLOSED issues, so this candidate
+            # row proves the operator reopened the issue and moved the card
+            # back to Ready. Sweep the tombstone and fall through to a fresh
+            # claim. The pass_started guard keeps a tombstone written by THIS
+            # pass's cancel intent (its board write lagging or failed) from
+            # resurrecting the task it just retired.
+            delete(cfg.state_dir, cand.number)
+            known.discard(cand.number)
+            eventlog.append_event(cfg.state_dir, "reopened",
+                                  target=target.name, issue=cand.number,
+                                  detail="canceled task ranked again — "
+                                         "reopened by operator")
         if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
                                      cand.number):
             continue
@@ -1148,6 +1167,40 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
                               target=task.target if task else "", issue=issue,
                               stage=task.stage.value if task else "",
                               actor=intent.actor, detail="killed by operator")
+    elif intent.action == "cancel":
+        # Operator won't-do. Unlike kill, the card is retired (Wont do +
+        # issue closed as not planned), never released back to Ready. Also
+        # unlike kill, it works for cards with no task file (a backlog card
+        # canceled from the board) — the web UI names the target in the
+        # payload since there is no state file to read it from.
+        deps.sessions.end(issue)
+        target = by_name.get(task.target if task is not None
+                             else str(intent.payload.get("target", "")))
+        if target is not None:
+            try:
+                deps.github.cancel(target, issue)
+            except Exception:
+                log.warning("github cancel failed for #%d", issue,
+                            exc_info=True)
+        else:
+            log.warning("cancel intent for #%d: unknown target — board/issue "
+                        "untouched", issue)
+        if task is not None:
+            # CANCELED tombstone, same reasoning as kill's FAILED one: the
+            # board write can lag or fail, so _claim_new's known-issues guard
+            # must contain the issue this same pass. Park cleared with it,
+            # and the slot released at transition time (park precedent) so
+            # the capacity view never shows a retired task holding one.
+            save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
+                                        hold_for_attach=False, slot=NO_SLOT,
+                                        updated_at=_now()))
+        clear_waiting(cfg.state_dir, issue)
+        eventlog.append_event(cfg.state_dir, "canceled",
+                              target=target.name if target else "",
+                              issue=issue,
+                              stage=task.stage.value if task else "",
+                              actor=intent.actor,
+                              detail="canceled by operator")
     elif intent.action == "retry":
         # Mirror check_quarantine's clear path (failures.py:160): drop the
         # fingerprint marker too, or the dedupe silently swallows the next
@@ -1365,7 +1418,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         _resume_woken(eff, deps, target, budget_ok, dry_run)
         _spawn_feedback(eff, deps, target, budget_ok)
         if budget_ok and not claims_paused:
-            _claim_new(eff, deps, target, dry_run)
+            _claim_new(eff, deps, target, dry_run, pass_started)
     _flush_done(cfg)
     _write_heartbeat(cfg, pass_started)
 
