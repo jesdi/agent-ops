@@ -170,3 +170,10 @@ class Sessions:
         _tmux(["tmux", "kill-session", "-t", name])
         subprocess.run(["podman", "rm", "-f", name],
                        capture_output=True, timeout=60)
+        # Containers created pre-deploy are named task-<issue> (no target),
+        # and unlike the tmux session above nothing ever renames them on
+        # adoption — so a wedged legacy container is never targeted again
+        # and leaks until reboot. Best-effort, same as the call above: safe
+        # forever, since a bare task-<issue> name cannot exist post-migration.
+        subprocess.run(["podman", "rm", "-f", f"task-{issue}"],
+                       capture_output=True, timeout=60)

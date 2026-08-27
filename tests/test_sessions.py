@@ -99,6 +99,36 @@ def test_end_kills_session(monkeypatch):
     assert ["podman", "rm", "-f", "task-acme-42"] in subprocess_calls
 
 
+def test_end_also_removes_legacy_pre_deploy_container_name(monkeypatch):
+    """Containers created before the (target, issue) rekey are named
+    task-<issue> (no target). Adoption renames the tmux session, but
+    nothing ever renames the container — end() must reach for both names
+    or a wedged legacy container leaks until reboot."""
+    monkeypatch.setattr(sessions, "_tmux", lambda args: 0)
+
+    subprocess_calls = []
+    def fake_subprocess_run(args, **kw):
+        subprocess_calls.append(args)
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(sessions.subprocess, "run", fake_subprocess_run)
+    sessions.Sessions().end("acme", 42)
+
+    assert ["podman", "rm", "-f", "task-acme-42"] in subprocess_calls
+    assert ["podman", "rm", "-f", "task-42"] in subprocess_calls
+
+
+def test_end_dry_run_does_not_remove_either_container_name(monkeypatch):
+    calls = []
+    def boom(args, **kw):
+        calls.append(args)
+        raise AssertionError("dry-run must not call podman")
+
+    monkeypatch.setattr(sessions.subprocess, "run", boom)
+    sessions.Sessions(dry_run=True).end("acme", 42)
+    assert calls == []
+
+
 def test_podman_cmd_mounts_and_caps(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
