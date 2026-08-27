@@ -79,5 +79,6 @@ def render(template: str, **ctx) -> str:
                               ctx.get("triage_dir") or "<state_dir>/triage/")
     text = _TEMPLATES[template].format(**ctx)
     if template in ("awaiting_spec_review", "spec_parked") and ctx.get("console"):
-        text += f"\nread & approve: {ctx['console']}/task/{ctx['issue']}"
+        text += (f"\nread & approve: {ctx['console']}/task/"
+                 f"{ctx['target']}/{ctx['issue']}")
     return text

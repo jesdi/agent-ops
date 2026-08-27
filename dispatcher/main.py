@@ -355,7 +355,8 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
 def _notify(deps: Deps, target: Target, task: TaskState, template: str,
             note: str = "") -> None:
     deps.notifier.send(template, issue=task.issue, title=task.title,
-                       url=_url(target, task.issue), note=note)
+                       url=_url(target, task.issue), note=note,
+                       target=target.name)
 
 
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -595,7 +596,7 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     # This matches the same reasoning in _park_for_input.
     msg_id = deps.notifier.send(
         "spec_parked", issue=task.issue, title=task.title,
-        url=_url(target, task.issue), note=note)
+        url=_url(target, task.issue), note=note, target=target.name)
     deps.sessions.end(task.target, task.issue)
     clear_waiting(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,

@@ -78,8 +78,8 @@ def test_queue_template_joins_lines():
 def test_awaiting_spec_review_includes_console_link_when_configured():
     msg = render("awaiting_spec_review", issue=42, title="Add widget",
                  url="https://github.com/x/y/issues/42", note="n",
-                 console="https://box.tail.ts.net")
-    assert "read & approve: https://box.tail.ts.net/task/42" in msg
+                 target="acme", console="https://box.tail.ts.net")
+    assert "read & approve: https://box.tail.ts.net/task/acme/42" in msg
 
 
 def test_awaiting_spec_review_unchanged_without_console():
@@ -98,8 +98,9 @@ def test_notifier_injects_console_url(monkeypatch):
     monkeypatch.setattr(notify, "_http_post",
                         lambda url, payload: seen.update(payload=payload) or {})
     notify.Notifier(console_url="https://box.tail.ts.net").send(
-        "awaiting_spec_review", issue=42, title="t", url="u", note="")
-    assert "read & approve: https://box.tail.ts.net/task/42" in seen["payload"]["text"]
+        "awaiting_spec_review", issue=42, title="t", url="u", note="",
+        target="acme")
+    assert "read & approve: https://box.tail.ts.net/task/acme/42" in seen["payload"]["text"]
 
 
 def test_needs_relogin_template():
@@ -123,8 +124,8 @@ def test_spec_parked_message_explains_the_park_and_the_way_back():
 
 def test_spec_parked_carries_the_console_deep_link_when_configured():
     msg = render("spec_parked", issue=42, title="t", url="u", note="n",
-                 console="https://box.ts.net")
-    assert "https://box.ts.net/task/42" in msg
+                 target="acme", console="https://box.ts.net")
+    assert "https://box.ts.net/task/acme/42" in msg
 
 
 @pytest.mark.parametrize("template,frag", [
