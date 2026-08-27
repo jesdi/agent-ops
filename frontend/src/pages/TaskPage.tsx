@@ -54,7 +54,11 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
   const terminalOpenFor = useUiStore((s) => s.terminalOpenFor)
   const setTerminalOpenFor = useUiStore((s) => s.setTerminalOpenFor)
   const { ref: paneWrapRef, height: terminalHeight } = usePersistedTerminalHeight()
-  const terminalOpen = terminalOpenFor === issue
+  // Composite key: two targets can hold the same issue number, and an
+  // issue-only key would auto-attach this task's terminal after navigating
+  // here from an unrelated task that happens to share the number.
+  const terminalKey = `${target}#${issue}`
+  const terminalOpen = terminalOpenFor === terminalKey
 
   const intent = useMutation({
     mutationFn: ({ run }: { run: () => Promise<unknown>; isReply?: boolean }) => run(),
@@ -216,7 +220,7 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
           type="button"
           className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
           disabled={!session_alive && !terminalOpen}
-          onClick={() => setTerminalOpenFor(terminalOpen ? null : issue)}
+          onClick={() => setTerminalOpenFor(terminalOpen ? null : terminalKey)}
         >
           {terminalOpen ? 'Detach terminal' : 'Attach terminal'}
         </button>

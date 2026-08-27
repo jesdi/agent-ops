@@ -21,6 +21,7 @@ function renderTask(route = '/task/widget/42') {
   return renderWithProviders(
     <>
       <Link to="/task/widget/43">go to 43</Link>
+      <Link to="/task/other/42">go to other/42</Link>
       <Routes>
         <Route path="/task/:target/:issue" element={<TaskPage />} />
       </Routes>
@@ -197,6 +198,25 @@ it('an attached terminal does not carry over to the next task navigated to', asy
   // Navigating to another task must NOT auto-attach it: an attach writes the
   // `attached-<N>` marker and the dispatcher then declines to drive the task.
   await userEvent.click(screen.getByRole('link', { name: 'go to 43' }))
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Attach terminal' })).toBeInTheDocument(),
+  )
+  expect(screen.queryByTestId('terminal')).not.toBeInTheDocument()
+  expect(screen.getByTestId('pane-tail')).toBeInTheDocument()
+})
+
+it('an attached terminal does not carry over to the same issue number on a different target', async () => {
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Attach terminal' }))
+  expect(screen.getByTestId('terminal')).toHaveAttribute('data-issue', '42')
+
+  // widget#42 and other#42 are different tasks that happen to share an
+  // issue number — attaching one must not auto-attach the other, a task
+  // the operator never asked for.
+  await userEvent.click(screen.getByRole('link', { name: 'go to other/42' }))
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Attach terminal' })).toBeInTheDocument(),
   )
