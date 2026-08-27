@@ -38,7 +38,9 @@ thing that desyncs. Git and GitHub are ground truth. All seven must hold:
    and falls back to matching any target for a worktree provisioned before
    the (target, issue) rekey)
 7. no `<state>/attached-<target>-N` marker, or its legacy `<state>/attached-N`
-   form (you are not attached to it)
+   form (you are not attached to it) — when the worktree's target can't be
+   resolved (see below), the sweeper falls back to an anchored
+   `attached-*-N` match rather than skipping the new-style marker entirely
 
 `--sweep` adds an eighth: last commit **and** worktree mtime both older
 than `AGENT_OPS_WORKTREE_STALE_DAYS` (default 7). Naming a single target
@@ -57,10 +59,17 @@ nothing rather than guessing.
 On removal, in order: snapshot `.agent/` to
 `<state>/autopsy/task-N-agent/`, remove the worktree, delete the local
 branch, delete the remote branch if it survives, drop an orphaned
-`<state>/task-N.json` **and** its `<state>/task-<target>-N.json` twin
-(the target comes from the worktree's own `.agent/task.json`, not the
-target's current config name — a rename since provisioning must not orphan
-the cleanup), append a `worktree_swept` event.
+`<state>/task-N.json` **and** its `<state>/task-<target>-N.json` twin,
+append a `worktree_swept` event.
+
+The target for that twin comes from the worktree's own `.agent/task.json`
+when it has one — not the target's current config name, so a rename since
+provisioning can't orphan the cleanup. When task.json is silent (a
+worktree from before the (target, issue) rekey, or one missing task.json
+entirely), the fallback is the *config* target this worktree is physically
+under, never a wildcard across targets: two targets can share an issue
+number, and a wildcard state-file delete could destroy a live, unrelated
+task's state file in a completely different target.
 
 The `.agent/` snapshot is what keeps the `workspace.py` autopsy rule
 honest: the plan, stage signal and model log survive the deletion, and

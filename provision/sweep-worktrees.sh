@@ -169,7 +169,16 @@ evaluate() {
   if [ -e "$STATE_DIR/attached-$issue" ]; then
     echo "operator attached"; return 1
   fi
-  if [ -n "$target" ] && [ -e "$STATE_DIR/attached-$target-$issue" ]; then
+  if [ -n "$target" ]; then
+    if [ -e "$STATE_DIR/attached-$target-$issue" ]; then
+      echo "operator attached"; return 1
+    fi
+  # mark_attached (dispatcher/state.py) writes the new-style marker
+  # unconditionally regardless of when the worktree was provisioned, so a
+  # pre-Task-3 worktree (unknown target) can still pick one up. Unlike the
+  # removal fallback above, a false positive here only causes a SKIP, not
+  # a delete — an anchored wildcard is safe.
+  elif ls "$STATE_DIR"/attached-*-"$issue" >/dev/null 2>&1; then
     echo "operator attached"; return 1
   fi
 
@@ -280,11 +289,16 @@ remove_worktree() {
   if [ -n "$target" ]; then
     rm -f "$STATE_DIR/task-$target-$issue.json"
   else
-    # Unknown target: match the new-style filename for this exact issue,
-    # whatever target it was under. The literal ".json" suffix anchors the
-    # issue number — it cannot match a longer number sharing the same
-    # tail (task-foo-1162.json survives a sweep of issue 162).
-    rm -f "$STATE_DIR"/task-*-"$issue".json
+    # Unknown target (task.json predates the target field, or is missing
+    # entirely): fall back to $name, the config target this worktree is
+    # PHYSICALLY under — it lives inside $name's worktrees_path, so that is
+    # the only target this deletion may ever touch. NOT a cross-target
+    # wildcard: a glob here could delete a live, in-flight task's state
+    # file in an unrelated target that happens to share this issue number
+    # (evaluate()'s anchored-regex fallback is safe to guess broadly
+    # because a false positive there only causes a SKIP; this is a
+    # deletion, so it must never guess past what we structurally know).
+    rm -f "$STATE_DIR/task-$name-$issue.json"
   fi
 
   _log_event "$issue" "$name" "swept worktree $wt ($size)"

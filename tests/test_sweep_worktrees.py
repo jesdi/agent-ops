@@ -382,9 +382,37 @@ def test_anchored_fallback_does_not_false_positive_on_a_different_issue(rig):
     assert not wt.exists()
 
 
+def test_refuses_live_podman_container_via_anchored_fallback_when_target_unknown(rig):
+    """Isolate the podman anchored-fallback branch from the tmux one:
+    Rig.live() would also populate the tmux fixture, and the session check
+    returns before evaluate() ever reaches the container check, leaving
+    that branch dead code as far as coverage goes — write only the
+    containers fixture so it is actually exercised."""
+    wt = rig.task(162, task_json="legacy")
+    rig.containers.write_text("task-fake-162\ntask-foo-1162\n")
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "live" in proc.stdout
+
+
 def test_new_style_attached_marker_refuses_removal(rig):
     wt = rig.task(200)
     rig.attach_new("fake", 200)
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "attached" in proc.stdout
+
+
+def test_refuses_new_style_attached_marker_with_unknown_target(rig):
+    """IMPORTANT: mark_attached (dispatcher/state.py) writes the new-style
+    attached-<target>-<issue> marker unconditionally regardless of when the
+    worktree was provisioned, so even a pre-Task-3 worktree (task.json has
+    no target) can pick one up. The sweeper must not be blind to it just
+    because it can't resolve the exact target name — a false positive here
+    only causes a SKIP, so an anchored wildcard is the safe answer, same as
+    the tmux/podman liveness fallback."""
+    wt = rig.task(162, task_json="legacy")
+    rig.attach_new("fake", 162)
     proc = rig.run("--sweep", expect=0)
     assert wt.exists()
     assert "attached" in proc.stdout
@@ -402,7 +430,12 @@ def test_removal_drops_both_legacy_and_new_style_state_files(rig):
     assert not (rig.state / "task-fake-162.json").exists()
 
 
-def test_removal_drops_new_style_state_file_via_anchored_glob_when_target_unknown(rig):
+def test_removal_falls_back_to_the_configured_target_when_task_json_is_silent(rig):
+    """When task.json can't tell us the target, the fallback resolves it
+    from $name — the config target this worktree physically lives under —
+    not a wildcard. Within a single target this still drops the new-style
+    state file for this exact issue, and never touches a different issue's
+    file that merely ends the same."""
     wt = rig.task(162, task_json="legacy")
     (rig.state / "task-fake-162.json").write_text("{}")
     (rig.state / "task-fake-1162.json").write_text("{}")  # distractor issue
@@ -410,6 +443,27 @@ def test_removal_drops_new_style_state_file_via_anchored_glob_when_target_unknow
     assert not wt.exists()
     assert not (rig.state / "task-fake-162.json").exists()
     assert (rig.state / "task-fake-1162.json").exists()
+
+
+def test_removal_state_file_fallback_never_crosses_targets(rig):
+    """CRITICAL: when task.json's target is unknown, the state-file cleanup
+    fallback must be bounded to $name — the config target this worktree is
+    physically under — never a cross-target wildcard. Scenario: targets
+    fake and beta both happen to have issue 162; fake's worktree is a
+    pre-Task-3 leftover (task.json has no target) and is safe to sweep;
+    beta's task 162 is a live, unrelated, in-flight task. A wildcard
+    fallback would delete beta's state file collaterally — slot leak, an
+    unmanaged session, and a possible duplicate claim on the board."""
+    wt = rig.task(162, task_json="legacy")  # target "fake", issue 162
+    (rig.state / "task-beta-162.json").write_text(json.dumps({
+        "issue": 162, "target": "beta", "stage": "implement", "slot": 0,
+        "worktree": "/some/other/clone/.worktrees/task-162",
+        "branch": "agent/task-162", "title": "unrelated live task",
+        "updated_at": "2026-08-01T00:00:00Z",
+    }))
+    rig.run("--sweep", expect=0)
+    assert not wt.exists()                              # fake/162 swept
+    assert (rig.state / "task-beta-162.json").exists()   # beta/162 survives
 
 
 def test_sweep_refuses_worktree_newer_than_the_threshold(rig):
