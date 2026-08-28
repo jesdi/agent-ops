@@ -1061,7 +1061,7 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
             # claim. The pass_started guard keeps a tombstone written by THIS
             # pass's cancel intent (its board write lagging or failed) from
             # resurrecting the task it just retired.
-            delete(cfg.state_dir, cand.number)
+            delete(cfg.state_dir, target.name, cand.number)
             known.discard(cand.number)
             eventlog.append_event(cfg.state_dir, "reopened",
                                   target=target.name, issue=cand.number,
@@ -1204,20 +1204,27 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         # Operator won't-do. Unlike kill, the card is retired (Wont do +
         # issue closed as not planned), never released back to Ready. Also
         # unlike kill, it works for cards with no task file (a backlog card
-        # canceled from the board) — the web UI names the target in the
-        # payload since there is no state file to read it from.
-        deps.sessions.end(issue)
-        target = by_name.get(task.target if task is not None
-                             else str(intent.payload.get("target", "")))
+        # canceled from the board): the intent carries its target, so no
+        # state file is needed to know which board to write. Only a
+        # legacy/ambiguous intent (target == "", no unique task match) has
+        # nothing to act on — same rule as kill's kill_target.
+        cancel_target = intent.target or (
+            task.target if task is not None else "")
+        if not cancel_target:
+            log.warning("cancel intent for #%d: no unique matching task "
+                        "— skipped", issue)
+            return
+        deps.sessions.end(cancel_target, issue)
+        target = by_name.get(cancel_target)
         if target is not None:
             try:
                 deps.github.cancel(target, issue)
             except Exception:
-                log.warning("github cancel failed for #%d", issue,
-                            exc_info=True)
+                log.warning("github cancel failed for %s/#%d",
+                            cancel_target, issue, exc_info=True)
         else:
-            log.warning("cancel intent for #%d: unknown target — board/issue "
-                        "untouched", issue)
+            log.warning("cancel intent for %s/#%d: target left the config "
+                        "— board/issue untouched", cancel_target, issue)
         if task is not None:
             # CANCELED tombstone, same reasoning as kill's FAILED one: the
             # board write can lag or fail, so _claim_new's known-issues guard
@@ -1227,10 +1234,9 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
                                         hold_for_attach=False, slot=NO_SLOT,
                                         updated_at=_now()))
-        clear_waiting(cfg.state_dir, issue)
+        clear_waiting(cfg.state_dir, cancel_target, issue)
         eventlog.append_event(cfg.state_dir, "canceled",
-                              target=target.name if target else "",
-                              issue=issue,
+                              target=cancel_target, issue=issue,
                               stage=task.stage.value if task else "",
                               actor=intent.actor,
                               detail="canceled by operator")

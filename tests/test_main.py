@@ -1757,15 +1757,15 @@ def test_cancel_intent_ends_session_moves_board_and_tombstones(tmp_path, monkeyp
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42)
-    mark_waiting(c.state_dir, 42)
-    intents_mod.write_intent(c.state_dir, "cancel", 42, {}, "op", 1)
+    mark_waiting(c.state_dir, "portfolio_eval", 42)
+    intents_mod.write_intent(c.state_dir, "cancel", "portfolio_eval", 42, {}, "op", 1)
     gh = FakeGitHub()
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(gh, sess))
     assert sess.ended == [42]
     assert gh.canceled == [42]
-    assert load(c.state_dir, 42).stage is Stage.CANCELED
-    assert not has_waiting(c.state_dir, 42)
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.CANCELED
+    assert not has_waiting(c.state_dir, "portfolio_eval", 42)
     ev = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "canceled"]
     assert ev[0]["detail"] == "canceled by operator"
 
@@ -1780,11 +1780,11 @@ def test_cancel_intent_survives_github_failure(tmp_path, monkeypatch):
         def cancel(self, target, issue):
             raise RuntimeError("gh outage")
 
-    intents_mod.write_intent(c.state_dir, "cancel", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "cancel", "portfolio_eval", 42, {}, "op", 1)
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(CancelFailsGitHub(), sess))  # must not raise
     assert sess.ended == [42]
-    assert load(c.state_dir, 42).stage is Stage.CANCELED
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.CANCELED
 
 
 def test_cancel_intent_does_not_reclaim_issue_same_pass(tmp_path, monkeypatch):
@@ -1792,13 +1792,13 @@ def test_cancel_intent_does_not_reclaim_issue_same_pass(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42)
-    intents_mod.write_intent(c.state_dir, "cancel", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "cancel", "portfolio_eval", 42, {}, "op", 1)
     # The board write can lag (or fail): #42 may still rank as a candidate
     # this pass; the CANCELED tombstone must stop _claim_new.
     gh = FakeGitHub([Candidate(42, "Canceled but still on board", "u42")])
     main.run_pass(c, deps(gh, FakeSessions(alive={42})))
     assert gh.claimed == []
-    assert load(c.state_dir, 42).stage is Stage.CANCELED
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.CANCELED
 
 
 def test_cancel_tombstone_releases_the_slot_immediately(tmp_path, monkeypatch):
@@ -1809,9 +1809,9 @@ def test_cancel_tombstone_releases_the_slot_immediately(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=1)
-    intents_mod.write_intent(c.state_dir, "cancel", 42, {}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "cancel", "portfolio_eval", 42, {}, "op", 1)
     main.run_pass(c, deps(FakeGitHub(), FakeSessions(alive={42})))
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.CANCELED
     assert t.slot == NO_SLOT
 
@@ -1829,25 +1829,41 @@ def test_reopened_canceled_issue_is_claimed_again(tmp_path, monkeypatch):
     gh = FakeGitHub([Candidate(42, "Conditions changed", "u42")])
     main.run_pass(c, deps(gh, FakeSessions()))
     assert gh.claimed == [42]
-    t = load(c.state_dir, 42)
+    t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is not Stage.CANCELED
     reopened = [e for e in eventlog.read_tail(c.state_dir)
                 if e["event"] == "reopened"]
     assert reopened and reopened[0]["issue"] == 42
 
 
-def test_cancel_intent_without_task_file_uses_payload_target(tmp_path, monkeypatch):
-    # A backlog card has no task file; the web UI names the target in the
-    # payload so the board/issue side still happens. No tombstone is written.
+def test_cancel_intent_without_task_file_uses_intent_target(tmp_path, monkeypatch):
+    # A backlog card has no task file; the intent itself names the target
+    # so the board/issue side still happens. No tombstone is written.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    intents_mod.write_intent(c.state_dir, "cancel", 99,
-                             {"target": "portfolio_eval"}, "op", 1)
+    intents_mod.write_intent(c.state_dir, "cancel", "portfolio_eval", 99,
+                             {}, "op", 1)
     gh = FakeGitHub()
-    main.run_pass(c, deps(gh, FakeSessions()))
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
     assert gh.canceled == [99]
-    assert load(c.state_dir, 99) is None
+    assert sess.end_calls == [("portfolio_eval", 99)]
+    assert load(c.state_dir, "portfolio_eval", 99) is None
+
+
+def test_legacy_cancel_intent_with_no_matching_task_is_skipped(tmp_path, monkeypatch):
+    # A pre-target intent file names no target; with no unique task to
+    # borrow one from there is no board to write and no session to end.
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    intents_mod.write_intent(c.state_dir, "cancel", "", 99, {}, "op", 1)
+    gh = FakeGitHub()
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    assert gh.canceled == []
+    assert sess.end_calls == []
 
 
 def test_retry_intent_clears_quarantine_and_fingerprint(tmp_path, monkeypatch):

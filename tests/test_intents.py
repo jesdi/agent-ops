@@ -31,7 +31,7 @@ def test_write_intent_file_body_schema(tmp_path):
 
 
 def test_write_intent_accepts_cancel_action(tmp_path):
-    p = intents.write_intent(tmp_path, "cancel", 7, {}, "op", 1)
+    p = intents.write_intent(tmp_path, "cancel", "portfolio_eval", 7, {}, "op", 1)
     [it] = intents.list_intents(tmp_path)
     assert it.action == "cancel" and it.path == p
 
