@@ -15,7 +15,7 @@ const DIST = fileURLToPath(new URL('../dist/', import.meta.url))
 const PORT = 8481
 
 const parkedCard = {
-  issue: 42, target: 'jesdi/widget', title: 'Fix login redirect',
+  issue: 42, target: 'widget', title: 'Fix login redirect',
   stage: 'implement', park: 'question', column: 'parked', slot: -1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?',
@@ -42,9 +42,9 @@ const state = {
     ],
     capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 5, slots_held: [] },
     upcoming: [
-      { number: 73, target: 'jesdi/widget', title: 'Ship dark mode',
+      { number: 73, target: 'widget', title: 'Ship dark mode',
         url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
-      { number: 74, target: 'jesdi/widget', title: 'Fix flaky test',
+      { number: 74, target: 'widget', title: 'Fix flaky test',
         url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
     ],
     upcoming_stale: false,
@@ -52,7 +52,7 @@ const state = {
     next_claim: {
       verdict: 'will-claim',
       next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
-      next_issue: 73, next_target: 'jesdi/widget', minutes_to_reset: 0,
+      next_issue: 73, next_target: 'widget', minutes_to_reset: 0,
     },
   },
   queue: { targets: [] },
@@ -96,10 +96,10 @@ function contractFor(card) {
   return 'will deliver at the next session boundary — this session is still running'
 }
 
-function taskDetail(issue) {
+function taskDetail(target, issue) {
   const card = state.board.columns
     .flatMap((c) => c.cards)
-    .find((c) => c.issue === issue)
+    .find((c) => c.target === target && c.issue === issue)
   if (!card) return null
   return {
     card,
@@ -151,28 +151,31 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/api/pending-intents') {
     return json(200, { intents: state.intents })
   }
-  const detailMatch = url.pathname.match(/^\/api\/task\/(\d+)$/)
+  // Task routes are keyed by (target, issue), mirroring web/app.py.
+  const detailMatch = url.pathname.match(/^\/api\/task\/([^/]+)\/(\d+)$/)
   if (detailMatch && req.method === 'GET') {
-    const detail = taskDetail(Number(detailMatch[1]))
+    const detail = taskDetail(detailMatch[1], Number(detailMatch[2]))
     return detail ? json(200, detail) : json(404, { detail: 'unknown task' })
   }
-  const descMatch = url.pathname.match(/^\/api\/task\/(\d+)\/description$/)
+  const descMatch = url.pathname.match(/^\/api\/task\/([^/]+)\/(\d+)\/description$/)
   if (descMatch && req.method === 'GET') {
-    const n = Number(descMatch[1])
+    const target = descMatch[1]
+    const n = Number(descMatch[2])
     // Mirror real backend precedence: claimed task first, then queue ghost,
     // then 404 — identical to web/app.py task_description().
     const claimedCard = state.board.columns
       .flatMap((c) => c.cards)
-      .find((c) => c.issue === n)
+      .find((c) => c.target === target && c.issue === n)
     if (claimedCard) {
       return json(200, {
         title: claimedCard.title,
         body: `## Goal\nBody of issue ${n}.`,
-        url: `https://github.com/${claimedCard.target}/issues/${n}`,
+        url: `https://github.com/jesdi/widget/issues/${n}`,
         fetched_at: new Date().toISOString(), error: '',
       })
     }
-    const ghost = state.board.upcoming.find((g) => g.number === n)
+    const ghost = state.board.upcoming.find(
+      (g) => g.target === target && g.number === n)
     if (ghost) {
       return json(200, {
         title: ghost.title, body: `## Goal\nBody of issue ${n}.`,
@@ -182,22 +185,24 @@ const server = createServer(async (req, res) => {
     return json(404, { detail: `issue ${n} is neither a task nor on any queue` })
   }
   const intentMatch = url.pathname.match(
-    /^\/api\/task\/(\d+)\/(reply|park|kill|retry|resume)$/,
+    /^\/api\/task\/([^/]+)\/(\d+)\/(reply|park|kill|cancel|retry|resume)$/,
   )
   if (intentMatch && req.method === 'POST') {
-    const issue = Number(intentMatch[1])
-    const action = intentMatch[2]
+    const target = intentMatch[1]
+    const issue = Number(intentMatch[2])
+    const action = intentMatch[3]
     let body = ''
     req.on('data', (c) => { body += c })
     req.on('end', () => {
       let text = ''
       try { text = (JSON.parse(body || '{}').text) ?? '' } catch { /* no body */ }
       state.intents.push({
-        action, issue, actor: 'dev@localhost', text,
+        action, target, issue, actor: 'dev@localhost', text,
         created_at: new Date().toISOString(),
       })
       push(['board'])
-      json(202, { status: 'pending', intent: `${Date.now()}-${issue}-${action}` })
+      json(202, { status: 'pending',
+                  intent: `${Date.now()}-${target}-${issue}-${action}` })
     })
     return
   }
@@ -234,15 +239,15 @@ const server = createServer(async (req, res) => {
   // spec is idempotent across Playwright retries (workers:1, no parallel runs).
   if (url.pathname === '/__control__/reset-queue' && req.method === 'POST') {
     state.board.upcoming = [
-      { number: 73, target: 'jesdi/widget', title: 'Ship dark mode',
+      { number: 73, target: 'widget', title: 'Ship dark mode',
         url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
-      { number: 74, target: 'jesdi/widget', title: 'Fix flaky test',
+      { number: 74, target: 'widget', title: 'Fix flaky test',
         url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
     ]
     state.board.next_claim = {
       verdict: 'will-claim',
       next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
-      next_issue: 73, next_target: 'jesdi/widget', minutes_to_reset: 0,
+      next_issue: 73, next_target: 'widget', minutes_to_reset: 0,
     }
     return json(200, { ok: true })
   }
@@ -314,10 +319,10 @@ const server = createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ noServer: true })
 server.on('upgrade', (req, socket, head) => {
-  const match = req.url?.match(/^\/api\/task\/(\d+)\/terminal$/)
+  const match = req.url?.match(/^\/api\/task\/([^/]+)\/(\d+)\/terminal$/)
   if (!match) return socket.destroy()
   wss.handleUpgrade(req, socket, head, (ws) => {
-    const issue = match[1]
+    const issue = match[2]
     ws.send(Buffer.from(`agent-ops $ hello from task ${issue}\r\n`))
     ws.on('message', (data, isBinary) => {
       if (isBinary) ws.send(data) // echo terminal bytes

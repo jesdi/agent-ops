@@ -23,7 +23,7 @@ test('ghosts -> slim view -> description -> boost reorders', async ({ page }) =>
 
   // Open the slim view: description is expanded, body rendered.
   await queued.getByText('Ship dark mode').click()
-  await expect(page).toHaveURL(/\/task\/73$/)
+  await expect(page).toHaveURL(/\/task\/widget\/73$/)
   await expect(page.getByTestId('ghost-task-view')).toBeVisible()
   await expect(page.getByText('Body of issue 73.')).toBeVisible()
 

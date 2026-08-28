@@ -12,7 +12,7 @@ test('park -> reply -> pending -> confirmed', async ({ page, request }) => {
 
   // Open the task and send a reply.
   await parkedColumn.getByText('Fix login redirect').click()
-  await expect(page).toHaveURL(/\/task\/42$/)
+  await expect(page).toHaveURL(/\/task\/widget\/42$/)
   await page.getByLabel('Reply').fill('use the staging redirect URL')
   await page.getByRole('button', { name: 'Send reply & wake' }).click()
 
