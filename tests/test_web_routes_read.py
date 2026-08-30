@@ -73,7 +73,7 @@ def test_task_detail_and_404(tmp_path):
         _intent("reply", 8, "another task's reply", iid="i2"),  # wrong issue
         _intent("kill", 7, "", iid="i3"),                       # not a message
     ]
-    body = client.get("/api/task/7", headers=HEADERS).json()
+    body = client.get("/api/task/alpha/7", headers=HEADERS).json()
     assert body["card"]["issue"] == 7
     assert body["pane_tail"].endswith("3 passed")
     assert body["session_alive"] is True
@@ -89,14 +89,46 @@ def test_task_detail_and_404(tmp_path):
     assert body["delivery_contract"] == (
         "will deliver at the next session boundary — this session is still "
         "running")
-    assert client.get("/api/task/999", headers=HEADERS).status_code == 404
+    assert client.get("/api/task/alpha/999", headers=HEADERS).status_code == 404
+
+
+def test_task_detail_scoped_by_target(tmp_path):
+    """Same issue number claimed on two different targets: the route must
+    disambiguate on the full (target, issue) pair, not the bare issue
+    number — this is the scenario the old /api/task/{issue} route could
+    never resolve correctly."""
+    from tests.webfakes import make_target
+    fake = FakeSources()
+    cfg = make_config(tmp_path, targets=[
+        make_target("agent_ops", "jesdi/agent-ops"),
+        make_target("portfolio_eval", "jesdi/portfolio-eval")])
+    client = TestClient(create_app(cfg, fake))
+    fake.tasks_list = [
+        make_task(issue=42, target="agent_ops",
+                  worktree="/tmp/worktrees/agent_ops/42"),
+        make_task(issue=42, target="portfolio_eval",
+                  worktree="/tmp/worktrees/portfolio_eval/42"),
+    ]
+    r = client.get("/api/task/agent_ops/42", headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["card"]["target"] == "agent_ops"
+    r2 = client.get("/api/task/portfolio_eval/42", headers=HEADERS)
+    assert r2.status_code == 200
+    assert r2.json()["worktree"] != r.json()["worktree"]
+
+
+def test_task_detail_unknown_target_is_404(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7)]
+    assert client.get("/api/task/nonexistent/7",
+                      headers=HEADERS).status_code == 404
 
 
 def test_task_detail_reports_a_starved_wake(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7, park=PARK_HUMAN)]
-    fake.blocked_wakes.add(7)
-    body = client.get("/api/task/7", headers=HEADERS).json()
+    fake.blocked_wakes.add(("alpha", 7))
+    body = client.get("/api/task/alpha/7", headers=HEADERS).json()
     assert body["card"]["wake_blocked"] is True
     assert body["delivery_contract"] == (
         "will deliver when the session resumes — waiting for a free slot")
@@ -170,7 +202,7 @@ def test_task_spec_served_from_worktree(tmp_path):
     fake.tasks_list = [make_task(issue=7, worktree=str(wt),
                                  stage=Stage.AWAITING_SPEC_REVIEW,
                                  artifact=str(spec))]
-    body = client.get("/api/task/7/spec", headers=HEADERS).json()
+    body = client.get("/api/task/alpha/7/spec", headers=HEADERS).json()
     assert body["path"] == "docs/superpowers/specs/x-design.md"
     assert body["markdown"].startswith("# Widget spec")
 
@@ -188,7 +220,7 @@ def test_task_spec_404s(tmp_path):
         make_task(issue=3, worktree=str(wt), artifact=str(outside)),  # escapes worktree
     ]
     for issue in (1, 2, 3, 999):                                    # 999: unknown task
-        assert client.get(f"/api/task/{issue}/spec",
+        assert client.get(f"/api/task/alpha/{issue}/spec",
                           headers=HEADERS).status_code == 404
 
 
@@ -201,7 +233,7 @@ def test_task_spec_non_utf8_is_404(tmp_path):
     fake.tasks_list = [make_task(issue=7, worktree=str(wt),
                                  stage=Stage.AWAITING_SPEC_REVIEW,
                                  artifact=str(spec))]
-    assert client.get("/api/task/7/spec",
+    assert client.get("/api/task/alpha/7/spec",
                       headers=HEADERS).status_code == 404
 
 
@@ -209,7 +241,7 @@ def test_task_history_returns_pane_history(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7)]
     fake.pane_histories[7] = "old line\nnewer line"
-    body = client.get("/api/task/7/history", headers=HEADERS).json()
+    body = client.get("/api/task/alpha/7/history", headers=HEADERS).json()
     assert body == {"text": "old line\nnewer line"}
     assert fake.history_calls == [(7, 2000)]  # default lines
 
@@ -217,14 +249,14 @@ def test_task_history_returns_pane_history(tmp_path):
 def test_task_history_honours_lines_and_clamps(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7)]
-    client.get("/api/task/7/history?lines=500", headers=HEADERS)
-    client.get("/api/task/7/history?lines=99999", headers=HEADERS)
+    client.get("/api/task/alpha/7/history?lines=500", headers=HEADERS)
+    client.get("/api/task/alpha/7/history?lines=99999", headers=HEADERS)
     assert fake.history_calls == [(7, 500), (7, 10000)]  # clamped to max
 
 
 def test_task_history_404_for_unknown_task(tmp_path):
     fake, client = rig(tmp_path)
-    assert client.get("/api/task/999/history",
+    assert client.get("/api/task/alpha/999/history",
                       headers=HEADERS).status_code == 404
 
 
@@ -248,7 +280,7 @@ def test_board_carries_next_claim_upcoming_and_timeline(tmp_path):
     assert [g["number"] for g in body["upcoming"]] == [73]
     card = [c for col in body["columns"] for c in col["cards"]][0]
     assert card["claimed_at"] == "2026-07-31T10:00:00+00:00"
-    detail = client.get("/api/task/7", headers=HEADERS).json()
+    detail = client.get("/api/task/alpha/7", headers=HEADERS).json()
     assert detail["timeline"][0]["label"] == "queued"
     assert detail["timeline"][0]["ongoing"] is True
 
@@ -323,7 +355,7 @@ def test_task_detail_200_with_mixed_timezone_events(tmp_path):
          "target": "alpha", "issue": 7, "stage": "spec", "model": "",
          "actor": "dispatcher", "detail": ""},
     ]
-    resp = client.get("/api/task/7", headers=HEADERS)
+    resp = client.get("/api/task/alpha/7", headers=HEADERS)
     assert resp.status_code == 200
     assert isinstance(resp.json()["timeline"], list)
 
@@ -355,7 +387,13 @@ def test_board_degrades_to_200_on_corrupt_events(tmp_path):
     assert card["claimed_at"] == ""
 
 
-def test_description_for_task_ghost_and_unknown(tmp_path):
+def test_description_for_task_and_ghost(tmp_path):
+    """With `target` in the path there is no cross-target ambiguity to
+    resolve: a claimed issue and a ghost (not yet claimed, still on the
+    target's queue) both resolve straight to targets_by_name[target].repo.
+    An issue that is neither a task nor on this target's queue is still a
+    true 404 — target-scoping removed the old ambiguity check, not the
+    existence check."""
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7)]
     fake.rank["alpha"] = ([{"number": 73, "title": "t", "url": "u",
@@ -368,19 +406,31 @@ def test_description_for_task_ghost_and_unknown(tmp_path):
     fake.descriptions[("jesdi/alpha", 73)] = {
         "title": "T73", "body": "B", "url": "u73",
         "fetched_at": "2026-08-01T12:00:00+00:00", "error": ""}
-    assert client.get("/api/task/7/description",
+    assert client.get("/api/task/alpha/7/description",
                       headers=HEADERS).json()["title"] == "T7"
-    assert client.get("/api/task/73/description",
+    assert client.get("/api/task/alpha/73/description",
                       headers=HEADERS).json()["title"] == "T73"
-    assert client.get("/api/task/999/description",
+    assert client.get("/api/task/alpha/999/description",
                       headers=HEADERS).status_code == 404
 
 
-def test_description_refuses_a_number_on_two_queues(tmp_path):
-    """Both alpha#73 and beta#73 can be ghosts. Serving the first hit could
-    hand back the WRONG repo's body; the routing scheme is issue-number-only
-    so there is nothing to disambiguate on — report 409 (same contract as
-    _locate_row) instead of guessing."""
+def test_description_404_on_unknown_target(tmp_path):
+    """The old issue-only route had to scan every target's queue for a hit
+    and could find the number on two of them at once — hence the old 409
+    ambiguity contract. With `target` in the path that scan (and the
+    ambiguity it could hit) is gone; an unrecognised target name is still a
+    404, same as any target-scoped route."""
+    fake, client = rig(tmp_path)
+    resp = client.get("/api/task/nonexistent-target/73/description",
+                      headers=HEADERS)
+    assert resp.status_code == 404
+
+
+def test_description_resolves_each_targets_own_repo(tmp_path):
+    """Two targets can both hold issue #73 as a claimed task (or a ghost) —
+    the old issue-only route could only guess (or 409) which repo's body to
+    serve. With `target` in the path each call must resolve strictly to
+    THAT target's repo, never the other one's, even for the same number."""
     from tests.webfakes import make_target
     fake = FakeSources()
     cfg = make_config(tmp_path, targets=[make_target("alpha", "jesdi/alpha"),
@@ -390,8 +440,17 @@ def test_description_refuses_a_number_on_two_queues(tmp_path):
             "labels": ["auto"], "blocked": False, "score": 1.0, "boost": 0}]
     fake.rank["alpha"] = (r73, "2026-08-01T12:00:00+00:00", False)
     fake.rank["beta"] = (r73, "2026-08-01T12:00:00+00:00", False)
-    resp = client.get("/api/task/73/description", headers=HEADERS)
-    assert resp.status_code == 409 and "ambiguous" in resp.json()["detail"]
+    fake.descriptions[("jesdi/alpha", 73)] = {
+        "title": "alpha-73", "body": "", "url": "",
+        "fetched_at": "2026-08-01T12:00:00+00:00", "error": ""}
+    fake.descriptions[("jesdi/beta", 73)] = {
+        "title": "beta-73", "body": "", "url": "",
+        "fetched_at": "2026-08-01T12:00:00+00:00", "error": ""}
+    a = client.get("/api/task/alpha/73/description", headers=HEADERS)
+    b = client.get("/api/task/beta/73/description", headers=HEADERS)
+    assert a.status_code == 200 and b.status_code == 200
+    assert a.json()["title"] == "alpha-73"
+    assert b.json()["title"] == "beta-73"
 
 
 def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):

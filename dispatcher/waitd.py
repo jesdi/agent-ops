@@ -15,11 +15,18 @@ from dispatcher.state import mark_waiting
 
 def handle_ping(body: bytes, state_dir) -> None:
     try:
-        issue = int(json.loads(body)["issue"])
+        rec = json.loads(body)
+        issue = int(rec["issue"])
+        target = str(rec.get("target", ""))
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         print(f"waitd: dropping corrupt ping: {body!r}", file=sys.stderr)
         return
-    mark_waiting(state_dir, issue)
+    if target:
+        mark_waiting(state_dir, target, issue)
+    else:  # ping from a pre-rename worktree — legacy marker, read via fallback
+        p = Path(state_dir) / f"waiting-{issue}"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
 
 
 class _Server(UnixStreamServer):

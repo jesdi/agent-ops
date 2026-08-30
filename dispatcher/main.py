@@ -175,14 +175,15 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     enforce — no waiting marker, a `working` signal — or the very next pass
     re-reads blocked/awaiting-ci, re-parks, and ENDS the session that was
     just re-authenticated."""
-    if relogin.classify_login(deps.sessions.capture_tail(task.issue)) is None:
+    if relogin.classify_login(
+            deps.sessions.capture_tail(task.target, task.issue)) is None:
         deps.notifier.send("status", lines=[
             f"#{task.issue} is no longer at a login prompt — code NOT typed "
             f"(the pane would have run it as a shell command). Still parked; "
             f"attach to the session to sort it out."])
         return
-    deps.sessions.send_text(task.issue, code.strip())
-    clear_waiting(cfg.state_dir, task.issue)
+    deps.sessions.send_text(task.target, task.issue, code.strip())
+    clear_waiting(cfg.state_dir, task.target, task.issue)
     signal = read_stage_signal(task.worktree)
     if signal is not None and signal.status != "working":
         by_name = {t.name: t for t in cfg.targets}
@@ -354,7 +355,8 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
 def _notify(deps: Deps, target: Target, task: TaskState, template: str,
             note: str = "") -> None:
     deps.notifier.send(template, issue=task.issue, title=task.title,
-                       url=_url(target, task.issue), note=note)
+                       url=_url(target, task.issue), note=note,
+                       target=target.name)
 
 
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -380,7 +382,8 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     (agent_dir / "stage.json").write_text(json.dumps(
         {"stage": stage.value, "status": "working", "model": model}))
     _log_model(task.worktree, stage, model)
-    deps.sessions.spawn_stage(task.issue, task.worktree, prompt, stage.value, model)
+    deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
+                              stage.value, model)
     messages.mark_delivered(cfg.state_dir, task.issue, drained)
     task = replace(task, stage=stage, artifact="", updated_at=_now())
     save(cfg.state_dir, task)
@@ -448,7 +451,7 @@ def _auth_dark_edge(cfg: Config, deps: Deps, usage: UsageSnapshot) -> None:
 
 def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     note: str) -> None:
-    tail = deps.sessions.capture_tail(task.issue)
+    tail = deps.sessions.capture_tail(task.target, task.issue)
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, target, task, note,
                                              tail, login):
@@ -457,8 +460,8 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         "parked_question", issue=task.issue, title=task.title,
         url=_url(target, task.issue),
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
-    deps.sessions.end(task.issue)
-    clear_waiting(cfg.state_dir, task.issue)
+    deps.sessions.end(task.target, task.issue)
+    clear_waiting(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT,
                                 updated_at=_now()))
@@ -484,12 +487,12 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
     liveness is what this park protects, and the marker has no part in it."""
     msg_id = deps.notifier.send(
         "needs_relogin", issue=task.issue, title=task.title,
-        url=_url(target, task.issue),
+        url=_url(target, task.issue), target=target.name,
         login_url=login.url or "(attach to the session to see the URL)",
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     if msg_id == 0:
         return False
-    clear_waiting(cfg.state_dir, task.issue)
+    clear_waiting(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
                                 park_note=note, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
@@ -513,8 +516,8 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     (agent_dir / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "working", "model": model}))
     _log_model(task.worktree, Stage.PLAN, model)
-    clear_waiting(cfg.state_dir, task.issue)
-    deps.sessions.end(task.issue)
+    clear_waiting(cfg.state_dir, task.target, task.issue)
+    deps.sessions.end(task.target, task.issue)
     block, drained = _drain(cfg, task.issue)
     retry_text = (
         f"Your .agent/plan.md failed the pipeline's mechanical format check: "
@@ -524,7 +527,8 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
         f'status "done". Do not re-plan from scratch; only fix the formatting.')
     if block:
         retry_text = f"{retry_text}\n\n{block}"
-    deps.sessions.resume(task.issue, task.worktree, retry_text, model)
+    deps.sessions.resume(task.target, task.issue, task.worktree, retry_text,
+                         model)
     messages.mark_delivered(cfg.state_dir, task.issue, drained)
     save(cfg.state_dir, replace(task, plan_retries=task.plan_retries + 1,
                                 updated_at=_now()))
@@ -533,8 +537,8 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  run_id: int) -> None:
-    deps.sessions.end(task.issue)
-    clear_waiting(cfg.state_dir, task.issue)
+    deps.sessions.end(task.target, task.issue)
+    clear_waiting(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_CI, ci_run_id=run_id,
                                 slot=NO_SLOT, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
@@ -578,7 +582,7 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     slot's ports and worktrees are per-issue, so resume can take any free
     slot — and freeing it is the whole point, since a held slot would cap the
     overnight run at max_slots(capacity) specs."""
-    tail = deps.sessions.capture_tail(task.issue)
+    tail = deps.sessions.capture_tail(task.target, task.issue)
     note = tail.strip() or "(no detail)"
     if task.artifact:
         pub = spec_publish.ensure_published(
@@ -592,9 +596,9 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     # This matches the same reasoning in _park_for_input.
     msg_id = deps.notifier.send(
         "spec_parked", issue=task.issue, title=task.title,
-        url=_url(target, task.issue), note=note)
-    deps.sessions.end(task.issue)
-    clear_waiting(cfg.state_dir, task.issue)
+        url=_url(target, task.issue), note=note, target=target.name)
+    deps.sessions.end(task.target, task.issue)
+    clear_waiting(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,
                                 park_note="spec ready for review",
                                 slot=NO_SLOT, updated_at=_now()))
@@ -659,7 +663,7 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
             # isn't in IN_FLIGHT_STAGES), so its tmux session and container
             # would otherwise hold their memory/cpu reservation until the box
             # reboots. The worktree stays for autopsy.
-            deps.sessions.end(task.issue)
+            deps.sessions.end(task.target, task.issue)
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
                                         updated_at=_now()))
             eventlog.append_event(cfg.state_dir, "pr-closed",
@@ -684,7 +688,7 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
     """Ordered so a mid-sequence gh failure retries next pass (a merged PR
     still reads merged): board first (the raising step), then teardown
     (best-effort by construction), then the state flip that stops polling."""
-    if has_attached(cfg.state_dir, task.issue):
+    if has_attached(cfg.state_dir, task.target, task.issue):
         # A human is in this task's web terminal. `attached-<N>` is not
         # advisory (web/terminal.py): the dispatcher declines to drive the
         # task while it exists, and AttachRegistry puts no stage restriction
@@ -697,7 +701,7 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
     else:
         print(f"[warn] {target.name}: status_done_option_id unset — board "
               f"not updated for #{task.issue}", file=sys.stderr)
-    deps.sessions.end(task.issue)
+    deps.sessions.end(task.target, task.issue)
     remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
     deps.github.delete_branch(target, task.branch)
     save(cfg.state_dir, replace(task, stage=Stage.DONE, park="",
@@ -746,7 +750,7 @@ def _flush_done(cfg: Config) -> None:
             since = since.replace(tzinfo=timezone.utc)
         if (datetime.now(timezone.utc) - since).total_seconds() >= cutoff:
             _clear_wake_blocked(cfg, task.issue)
-            delete(cfg.state_dir, task.issue)
+            delete(cfg.state_dir, task.target, task.issue)
             eventlog.append_event(cfg.state_dir, "flushed",
                                   target=task.target, issue=task.issue,
                                   stage=Stage.DONE.value)
@@ -762,7 +766,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         key=lambda t: t.updated_at,
     )
     for task in woken:
-        if has_attached(cfg.state_dir, task.issue):
+        if has_attached(cfg.state_dir, task.target, task.issue):
             continue  # a human is typing in this session — do not resume over them
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
@@ -798,19 +802,20 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
     # running claude (the failure _retry_plan and SpawnStage guard).
-    deps.sessions.end(task.issue)
+    deps.sessions.end(task.target, task.issue)
     block, drained = _drain(cfg, task.issue)
     if task.hold_for_attach:
         text = ("The operator is attaching to talk to you directly. "
                 "Wait for their input.")
         if block:
             text = f"{text}\n\n{block}"
-        deps.sessions.resume(task.issue, task.worktree, text, model)
+        deps.sessions.resume(task.target, task.issue, task.worktree, text,
+                             model)
         deps.notifier.send("resumed_for_attach", issue=task.issue,
                            title=task.title, url=_url(target, task.issue),
-                           note="")
+                           target=target.name, note="")
     else:
-        deps.sessions.resume(task.issue, task.worktree,
+        deps.sessions.resume(task.target, task.issue, task.worktree,
                              block or "Continue.", model)
     messages.mark_delivered(cfg.state_dir, task.issue, drained)
     _clear_wake_blocked(cfg, task.issue)
@@ -842,7 +847,7 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
     except Exception as exc:
         print(f"[warn] release failed for #{task.issue}: {exc}", file=sys.stderr)
     try:
-        log_tail = deps.sessions.capture_tail(task.issue, lines=30)
+        log_tail = deps.sessions.capture_tail(task.target, task.issue, lines=30)
     except Exception:
         log_tail = ""
     save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
@@ -875,7 +880,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
          and t.feedback_pending],
         key=lambda t: t.updated_at)
     for task in pending:
-        if has_attached(cfg.state_dir, task.issue):
+        if has_attached(cfg.state_dir, task.target, task.issue):
             # A human is in this task's web terminal (attach carries no
             # stage restriction, and the implement session is still alive at
             # pr-open). Ending it and spawning address-review into the same
@@ -903,20 +908,20 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
         # The implement session is still alive at pr-open (the pr-open
         # transition never ends it). End first so _launch doesn't type
         # the podman command into the live claude's input box.
-        deps.sessions.end(task.issue)
+        deps.sessions.end(task.target, task.issue)
         _spawn_stage(cfg, deps, target, task, Stage.ADDRESS_REVIEW)
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 budget_ok: bool, dry_run: bool = False) -> None:
-    if has_attached(cfg.state_dir, task.issue):
+    if has_attached(cfg.state_dir, task.target, task.issue):
         return  # held for a live human attach: no park, no reap, no spawn
     signal = read_stage_signal(task.worktree)
-    alive = deps.sessions.is_alive(task.issue)
-    waiting = has_waiting(cfg.state_dir, task.issue)
+    alive = deps.sessions.is_alive(task.target, task.issue)
+    waiting = has_waiting(cfg.state_dir, task.target, task.issue)
     # Query tmux idle only when it can matter: detection enabled and the
     # session alive (the crash path owns dead sessions).
-    idle = (deps.sessions.idle_seconds(task.issue)
+    idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and cfg.stall_after_seconds > 0 else None)
     spec_line = ""
     for act in next_actions(task, signal, alive, waiting=waiting,
@@ -940,7 +945,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             _retry_plan(cfg, deps, target, task, act.reason)
             return
         if isinstance(act, SetTaskStage):
-            clear_waiting(cfg.state_dir, task.issue)
+            clear_waiting(cfg.state_dir, task.target, task.issue)
             extra: dict = {}
             if act.stage is Stage.PR_OPEN and signal is not None:
                 m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
@@ -974,12 +979,12 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
         elif isinstance(act, SpawnStage):
             if not budget_ok:
                 return  # signal persists; retried next pass
-            clear_waiting(cfg.state_dir, task.issue)
+            clear_waiting(cfg.state_dir, task.target, task.issue)
             # The previous stage's claude is usually still alive here — an
             # interactive session cannot exit itself. _launch would type
             # the next stage's podman command INTO it (and the container
             # name would collide). End it first; no-op when already dead.
-            deps.sessions.end(task.issue)
+            deps.sessions.end(task.target, task.issue)
             spec_path = signal.artifact if act.stage is Stage.PLAN else ""
             task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path)
         elif isinstance(act, HandleCrash):
@@ -1000,7 +1005,7 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
         title=f"session crashed during {task.stage.value}: {task.title}",
         error=(f"tmux session task-{task.issue} died during stage "
                f"{task.stage.value}"),
-        log_tail=deps.sessions.capture_tail(task.issue, lines=30),
+        log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
         repro=f"cd {task.worktree} && claude --continue  # inside session image",
         worktree=task.worktree)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
@@ -1056,7 +1061,7 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
             # claim. The pass_started guard keeps a tombstone written by THIS
             # pass's cancel intent (its board write lagging or failed) from
             # resurrecting the task it just retired.
-            delete(cfg.state_dir, cand.number)
+            delete(cfg.state_dir, target.name, cand.number)
             known.discard(cand.number)
             eventlog.append_event(cfg.state_dir, "reopened",
                                   target=target.name, issue=cand.number,
@@ -1100,10 +1105,23 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         free -= 1
 
 
+def _task_for_intent(cfg: Config, intent: intents.Intent) -> TaskState | None:
+    """Resolve an intent to the task it targets. A target-carrying intent
+    (every intent the console writes now) is an exact lookup. A legacy
+    intent (target == "", written before this keying existed) falls back to
+    matching by issue number alone — ambiguous when more than one target has
+    a task with that number, in which case there is no safe task to act on
+    and the intent is skipped rather than guessed at."""
+    if intent.target:
+        return load(cfg.state_dir, intent.target, intent.issue)
+    hits = [t for t in load_all(cfg.state_dir) if t.issue == intent.issue]
+    return hits[0] if len(hits) == 1 else None   # ambiguous legacy → skip
+
+
 def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
                       intent: intents.Intent) -> None:
     issue = intent.issue
-    task = load(cfg.state_dir, issue)
+    task = _task_for_intent(cfg, intent)
     if intent.action == "reply":
         # One exception to "every reply is a message": a reply to a login
         # park is the OAuth authorization code, and the only thing that can
@@ -1129,7 +1147,7 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
                                         updated_at=_now()))
     elif intent.action == "park":
         if (task is None or task.stage not in IN_FLIGHT_STAGES or task.park
-                or not deps.sessions.is_alive(issue)):
+                or not deps.sessions.is_alive(task.target, issue)):
             print(f"[warn] park intent for #{issue}: no live unparked task "
                   f"— skipped", file=sys.stderr)
             return
@@ -1140,7 +1158,20 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             return
         _park_for_input(cfg, deps, target, task, note="parked by operator")
     elif intent.action == "kill":
-        deps.sessions.end(issue)
+        # A target-carrying intent always knows which session to end, even
+        # with no state file at all — e.g. _flush_done deletes a DONE task's
+        # state, but a leaked tmux session can still be sitting there, and
+        # the operator needs to be able to kill it. Only a legacy/ambiguous
+        # intent (target == "", no unique task match) has no knowable
+        # target — that is the one case with nothing to act on, so it alone
+        # is skipped, same as every other action _task_for_intent can't
+        # resolve.
+        kill_target = intent.target or (task.target if task is not None else "")
+        if not kill_target:
+            print(f"[warn] kill intent for #{issue}: no unique matching "
+                  f"task — skipped", file=sys.stderr)
+            return
+        deps.sessions.end(kill_target, issue)
         if task is not None:
             target = by_name.get(task.target)
             if target is not None:
@@ -1154,37 +1185,46 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             # the issue becomes a live candidate again. Without a tombstone,
             # _claim_new's guard (known = {t.issue for t in tasks}) would not
             # contain it and would re-claim the just-killed issue the same pass.
-            # The park is cleared with it: a killed task waits for nothing, so
-            # it must leave the wake queue (_resume_woken filters on park
-            # alone) — otherwise a killed PARK_WAKE task keeps asking for a
-            # slot it will never use, re-arming the wake-blocked marker every
-            # pass that _reconcile_slots clears it.
             save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
                                         hold_for_attach=False,
                                         updated_at=_now()))
-        clear_waiting(cfg.state_dir, issue)
+        # The park is cleared with it: a killed task waits for nothing, so it
+        # must leave the wake queue (_resume_woken filters on park alone) —
+        # otherwise a killed PARK_WAKE task keeps asking for a slot it will
+        # never use, re-arming the wake-blocked marker every pass that
+        # _reconcile_slots clears it. Cleared unconditionally on kill_target:
+        # a stray session with no task can't have parked in the first place,
+        # so this is a no-op for it, not a risk.
+        clear_waiting(cfg.state_dir, kill_target, issue)
         eventlog.append_event(cfg.state_dir, "failed",
-                              target=task.target if task else "", issue=issue,
-                              stage=task.stage.value if task else "",
+                              target=kill_target, issue=issue,
+                              stage=task.stage.value if task is not None else "",
                               actor=intent.actor, detail="killed by operator")
     elif intent.action == "cancel":
         # Operator won't-do. Unlike kill, the card is retired (Wont do +
         # issue closed as not planned), never released back to Ready. Also
         # unlike kill, it works for cards with no task file (a backlog card
-        # canceled from the board) — the web UI names the target in the
-        # payload since there is no state file to read it from.
-        deps.sessions.end(issue)
-        target = by_name.get(task.target if task is not None
-                             else str(intent.payload.get("target", "")))
+        # canceled from the board): the intent carries its target, so no
+        # state file is needed to know which board to write. Only a
+        # legacy/ambiguous intent (target == "", no unique task match) has
+        # nothing to act on — same rule as kill's kill_target.
+        cancel_target = intent.target or (
+            task.target if task is not None else "")
+        if not cancel_target:
+            log.warning("cancel intent for #%d: no unique matching task "
+                        "— skipped", issue)
+            return
+        deps.sessions.end(cancel_target, issue)
+        target = by_name.get(cancel_target)
         if target is not None:
             try:
                 deps.github.cancel(target, issue)
             except Exception:
-                log.warning("github cancel failed for #%d", issue,
-                            exc_info=True)
+                log.warning("github cancel failed for %s/#%d",
+                            cancel_target, issue, exc_info=True)
         else:
-            log.warning("cancel intent for #%d: unknown target — board/issue "
-                        "untouched", issue)
+            log.warning("cancel intent for %s/#%d: target left the config "
+                        "— board/issue untouched", cancel_target, issue)
         if task is not None:
             # CANCELED tombstone, same reasoning as kill's FAILED one: the
             # board write can lag or fail, so _claim_new's known-issues guard
@@ -1194,10 +1234,9 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
                                         hold_for_attach=False, slot=NO_SLOT,
                                         updated_at=_now()))
-        clear_waiting(cfg.state_dir, issue)
+        clear_waiting(cfg.state_dir, cancel_target, issue)
         eventlog.append_event(cfg.state_dir, "canceled",
-                              target=target.name if target else "",
-                              issue=issue,
+                              target=cancel_target, issue=issue,
                               stage=task.stage.value if task else "",
                               actor=intent.actor,
                               detail="canceled by operator")
@@ -1239,9 +1278,16 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
     for intent in intents.list_intents(cfg.state_dir):
         try:
             _apply_one_intent(cfg, deps, by_name, intent)
+            # A legacy intent (target == "") carries no target of its own;
+            # if it resolved unambiguously to one task, use THAT task's
+            # target so the console's /task/{target}/{issue} link is never
+            # blank. Same fallback idiom as the "kill" action's kill_target.
+            resolved = _task_for_intent(cfg, intent)
+            target = intent.target or (
+                resolved.target if resolved is not None else "")
             eventlog.append_event(cfg.state_dir, "intent-applied",
-                                  issue=intent.issue, actor=intent.actor,
-                                  detail=intent.action)
+                                  target=target, issue=intent.issue,
+                                  actor=intent.actor, detail=intent.action)
         except Exception as exc:
             print(f"[warn] intent {intent.path.name} failed: {exc}",
                   file=sys.stderr)
@@ -1272,21 +1318,27 @@ def _write_heartbeat(cfg: Config, started_at: str) -> None:
 def _prune_snapshots(cfg: Config) -> None:
     """A snapshot outlives its task by at most a week. In-flight tasks keep
     theirs regardless of age — the console may need it while they are
-    parked. Every pass checks; ~200 KB per file makes eagerness cheap."""
+    parked. Every pass checks; ~200 KB per file makes eagerness cheap.
+
+    The live set is built from state, not parsed from the stem: a
+    "task-<target>-<issue>.txt" stem can't be split back into (target,
+    issue) unambiguously (a target name may itself contain digits and
+    hyphens), so identity comes from load_all() same as everywhere else,
+    same as _task_for_intent. The legacy "task-<issue>.txt" form is kept
+    alive too, for any snapshot still sitting under its pre-rename name."""
     root = Path(cfg.state_dir) / "snapshots"
     if not root.exists():
         return
+    try:
+        in_flight = [t for t in load_all(cfg.state_dir)
+                     if t.stage in IN_FLIGHT_STAGES]
+    except Exception:
+        return  # unreadable/corrupt state dir: skip, never abort the sweep
+    live = {f"task-{t.target}-{t.issue}.txt" for t in in_flight} \
+         | {f"task-{t.issue}.txt" for t in in_flight}
     now = time.time()
     for p in root.glob("task-*.txt"):
-        try:
-            issue = int(p.stem.removeprefix("task-"))
-        except ValueError:
-            continue
-        try:
-            t = load(cfg.state_dir, issue)
-        except Exception:
-            continue  # unreadable/corrupt state file: skip, never abort the sweep
-        if t is not None and t.stage in IN_FLIGHT_STAGES:
+        if p.name in live:
             continue
         try:
             if now - p.stat().st_mtime > SNAPSHOT_TTL_SECONDS:

@@ -46,13 +46,13 @@ class FakeSessions:
         self.histories = {}
         self.alive = set()
 
-    def capture_tail(self, issue, lines=25):
+    def capture_tail(self, target, issue, lines=25):
         return self.tails.get(issue, "")
 
-    def capture_history(self, issue, lines=2000):
+    def capture_history(self, target, issue, lines=2000):
         return self.histories.get(issue, "")
 
-    def is_alive(self, issue):
+    def is_alive(self, target, issue):
         return issue in self.alive
 
 
@@ -177,7 +177,7 @@ def test_submit_intent_writes_file_and_kicks_dispatcher(tmp_path):
     _, src = make_sources(
         tmp_path,
         systemctl=("sh", "-c", f"echo kicked >> {kick_log}"))
-    name = src.submit_intent("reply", 7, {"text": "hi"}, "jesdi@github")
+    name = src.submit_intent("reply", "alpha", 7, {"text": "hi"}, "jesdi@github")
     assert name.endswith("-7-reply.json")
     assert (tmp_path / "intents" / name).exists()
     assert kick_log.read_text().strip() == "kicked"
@@ -189,7 +189,7 @@ def test_submit_intent_writes_file_and_kicks_dispatcher(tmp_path):
 def test_submit_intent_survives_kick_failure(tmp_path):
     _, src = make_sources(tmp_path,
                           systemctl=("/nonexistent-binary-xyz",))
-    name = src.submit_intent("park", 7, {}, "jesdi@github")
+    name = src.submit_intent("park", "alpha", 7, {}, "jesdi@github")
     assert (tmp_path / "intents" / name).exists()
 
 
@@ -216,11 +216,11 @@ def test_state_fingerprint_tracks_categories(tmp_path):
 
 def test_attached_markers_roundtrip(tmp_path):
     _, src = make_sources(tmp_path)
-    assert src.has_attached(7) is False
-    src.mark_attached(7)
-    assert src.has_attached(7) is True
-    src.clear_attached(7)
-    assert src.has_attached(7) is False
+    assert src.has_attached("alpha", 7) is False
+    src.mark_attached("alpha", 7)
+    assert src.has_attached("alpha", 7) is True
+    src.clear_attached("alpha", 7)
+    assert src.has_attached("alpha", 7) is False
 
 
 def test_quarantine_and_intent_entries_tolerate_oserror(tmp_path):
@@ -258,7 +258,7 @@ def test_quarantine_and_intent_entries_tolerate_oserror(tmp_path):
 class WedgedSessions(FakeSessions):
     """tmux server that never answers: capture_tail RAISES TimeoutExpired."""
 
-    def capture_tail(self, issue, lines=25):
+    def capture_tail(self, target, issue, lines=25):
         raise subprocess.TimeoutExpired(["tmux", "capture-pane"], 30)
 
 
@@ -268,7 +268,7 @@ def test_pane_tail_degrades_to_empty_when_tmux_is_wedged(tmp_path):
     sess = WedgedSessions()
     sess.alive.add(7)
     _, src = make_sources(tmp_path, sessions=sess)
-    assert src.pane_tail(7) == ""
+    assert src.pane_tail("alpha", 7) == ""
 
 
 def test_pane_history_delegates_to_capture_history(tmp_path):
@@ -276,17 +276,17 @@ def test_pane_history_delegates_to_capture_history(tmp_path):
     sessions.alive.add(7)
     sessions.histories = {7: "old\nnew"}
     _, src = make_sources(tmp_path, sessions=sessions)
-    assert src.pane_history(7) == "old\nnew"
+    assert src.pane_history("alpha", 7) == "old\nnew"
 
 
 def test_pane_history_degrades_to_empty_on_tmux_error(tmp_path):
     class BoomSessions(FakeSessions):
-        def capture_history(self, issue, lines=2000):
+        def capture_history(self, target, issue, lines=2000):
             raise TimeoutError("tmux wedged")
     sess = BoomSessions()
     sess.alive.add(7)
     _, src = make_sources(tmp_path, sessions=sess)
-    assert src.pane_history(7) == ""
+    assert src.pane_history("alpha", 7) == ""
 
 
 def _write_snapshot(tmp_path, issue, text):
@@ -299,7 +299,7 @@ def _write_snapshot(tmp_path, issue, text):
 def test_pane_tail_falls_back_to_snapshot_when_dead(tmp_path):
     _write_snapshot(tmp_path, 7, "old output\nlast line")
     _, src = make_sources(tmp_path)  # 7 not in alive set
-    assert src.pane_tail(7) == "old output\nlast line"
+    assert src.pane_tail("alpha", 7) == "old output\nlast line"
 
 
 def test_pane_tail_prefers_live_capture(tmp_path):
@@ -308,28 +308,28 @@ def test_pane_tail_prefers_live_capture(tmp_path):
     sess.alive.add(7)
     sess.tails[7] = "live output"
     _, src = make_sources(tmp_path, sessions=sess)
-    assert src.pane_tail(7) == "live output"
+    assert src.pane_tail("alpha", 7) == "live output"
 
 
 def test_pane_tail_dead_and_no_snapshot_degrades_to_empty(tmp_path):
     _, src = make_sources(tmp_path)
-    assert src.pane_tail(7) == ""
+    assert src.pane_tail("alpha", 7) == ""
 
 
 def test_pane_history_falls_back_to_snapshot_when_dead(tmp_path):
     _write_snapshot(tmp_path, 7, "l1\nl2\nl3")
     _, src = make_sources(tmp_path)
-    assert src.pane_history(7) == "l1\nl2\nl3"
+    assert src.pane_history("alpha", 7) == "l1\nl2\nl3"
 
 
 def test_pane_tail_wedged_is_alive_degrades_to_empty(tmp_path):
     class WedgedSessions(FakeSessions):
-        def is_alive(self, issue):
+        def is_alive(self, target, issue):
             raise subprocess.TimeoutExpired(cmd="tmux", timeout=30)
 
     _write_snapshot(tmp_path, 7, "snapshot")
     _, src = make_sources(tmp_path, sessions=WedgedSessions())
-    assert src.pane_tail(7) == ""
+    assert src.pane_tail("alpha", 7) == ""
 
 
 def test_pane_tail_corrupt_snapshot_degrades_to_empty(tmp_path):
@@ -339,7 +339,7 @@ def test_pane_tail_corrupt_snapshot_degrades_to_empty(tmp_path):
     snap.parent.mkdir(parents=True, exist_ok=True)
     snap.write_bytes(b"\xff\xfe\xff")  # Invalid UTF-8 sequence
     _, src = make_sources(tmp_path)
-    assert src.pane_tail(7) == ""
+    assert src.pane_tail("alpha", 7) == ""
 
 
 def test_pane_history_corrupt_snapshot_degrades_to_empty(tmp_path):
@@ -348,7 +348,7 @@ def test_pane_history_corrupt_snapshot_degrades_to_empty(tmp_path):
     snap.parent.mkdir(parents=True, exist_ok=True)
     snap.write_bytes(b"\x80\x81\x82")  # Invalid UTF-8 sequence
     _, src = make_sources(tmp_path)
-    assert src.pane_history(7) == ""
+    assert src.pane_history("alpha", 7) == ""
 
 
 def test_pass_heartbeat_reads_and_degrades(tmp_path):

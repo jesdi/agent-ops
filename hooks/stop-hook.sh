@@ -13,9 +13,12 @@
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 0
 ISSUE=$(python3 -c "import json;print(json.load(open('$HERE/task.json'))['issue'])" 2>/dev/null) || exit 0
+# Old worktrees' task.json predates the target field — default to empty so
+# they still ping (waitd reads an absent/empty target as a legacy ping).
+TARGET=$(python3 -c "import json;print(json.load(open('$HERE/task.json')).get('target', ''))" 2>/dev/null) || TARGET=""
 SOCK="${AGENT_OPS_STATE_DIR:-$HOME/agent-ops-state}/wait/wait.sock"
 curl --silent --max-time 5 --unix-socket "$SOCK" \
   -X POST "http://localhost/waiting" \
   -H 'Content-Type: application/json' \
-  -d "{\"issue\": $ISSUE}" >/dev/null 2>&1 || true
+  -d "{\"issue\": $ISSUE, \"target\": \"$TARGET\"}" >/dev/null 2>&1 || true
 exit 0

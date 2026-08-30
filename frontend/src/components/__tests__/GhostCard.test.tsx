@@ -6,7 +6,7 @@ import { GhostCardView } from '../GhostCard'
 import type { GhostCard } from '../../lib/api'
 
 const ghost: GhostCard = {
-  number: 73, target: 'jesdi/widget', title: 'Ship dark mode',
+  number: 73, target: 'widget', title: 'Ship dark mode',
   url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 2,
 }
 
@@ -19,7 +19,7 @@ test('renders muted upcoming card with rank data and links to the task view', ()
   expect(card).toHaveTextContent('Ship dark mode')
   expect(card).toHaveTextContent('score 8.5')
   expect(card).toHaveTextContent('boost 2')
-  expect(screen.getByRole('link')).toHaveAttribute('href', '/task/73')
+  expect(screen.getByRole('link')).toHaveAttribute('href', '/task/widget/73')
   expect(screen.queryByText('next')).not.toBeInTheDocument()
 })
 

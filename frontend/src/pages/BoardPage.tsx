@@ -26,7 +26,7 @@ export function BoardPage() {
   const [wontDoCandidate, setWontDoCandidate] = useState<DraggedCard | null>(null)
   const [wontDoError, setWontDoError] = useState<string | null>(null)
   const cancelMutation = useMutation({
-    mutationFn: (card: DraggedCard) => api.cancel(card.issue, card.target),
+    mutationFn: (card: DraggedCard) => api.cancel(card.target, card.issue),
     onSuccess: () => {
       setWontDoCandidate(null)
       setWontDoError(null)
@@ -44,10 +44,14 @@ export function BoardPage() {
   const { columns, capacity, upcoming, upcoming_stale, next_claim } = boardQuery.data
   // An issue can carry several pending intents at once (park then kill).
   // Collapsing to one would silently drop the rest — and TaskPage renders
-  // all of them, so the board must too.
-  const pendingByIssue = new Map<number, string[]>()
+  // all of them, so the board must too. Keyed `${target}#${issue}` — issue
+  // numbers are per-target, so alpha#73 and beta#73 must not share a bucket.
+  // A legacy (target-less) intent lands under `#${issue}` (empty target) and
+  // BoardColumn matches it against any card with that issue number.
+  const pendingByKey = new Map<string, string[]>()
   for (const i of intentsQuery.data?.intents ?? []) {
-    pendingByIssue.set(i.issue, [...(pendingByIssue.get(i.issue) ?? []), i.action])
+    const key = `${i.target}#${i.issue}`
+    pendingByKey.set(key, [...(pendingByKey.get(key) ?? []), i.action])
   }
   // Stale indicator and action error live in the column header so they are
   // visible even when Queued is collapsed (headerExtra survives collapse).
@@ -123,7 +127,7 @@ export function BoardPage() {
           <BoardColumn
             key={column.key}
             column={column}
-            pendingByIssue={pendingByIssue}
+            pendingByKey={pendingByKey}
             collapsed={collapsedColumns[column.key] ?? false}
             onToggle={() => toggleColumn(column.key)}
             extra={column.key === 'queued' ? ghostStack : undefined}

@@ -88,11 +88,13 @@ def test_build_board_groups_and_counts():
         make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN),
         make_task(issue=3, stage=Stage.PR_OPEN, slot=0),
     ]
-    board = build_board(tasks, capacity=2,
-                        models={1: "a", 2: "b", 3: "c"}, attached={1},
-                        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
-                        queues=[], queue_stale=False,
-                        claims_paused=False, triage_running=False)
+    board = build_board(
+        tasks, capacity=2,
+        models={("alpha", 1): "a", ("alpha", 2): "b", ("alpha", 3): "c"},
+        attached={("alpha", 1)},
+        events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
+        queues=[], queue_stale=False,
+        claims_paused=False, triage_running=False)
     by_key = {c.key: c for c in board.columns}
     assert [c.issue for c in by_key["in-progress"].cards] == [1]
     assert [c.issue for c in by_key["parked"].cards] == [2]
@@ -358,7 +360,7 @@ def test_stage_timeline_stages_parks_and_merge():
               ev(T1, "parked", 7, "spec"),          # spec 40m
               ev(T2, "resumed", 7, "spec"),         # parked 20m
               ev(T3, "merged", 7)]                  # spec (resumed) 1h
-    tl = stage_timeline(events, 7, now=NOW)
+    tl = stage_timeline(events, "alpha", 7, now=NOW)
     assert [(e.label, e.seconds, e.kind, e.ongoing) for e in tl] == [
         ("spec", 2400.0, "stage", False),
         ("parked", 1200.0, "parked", False),
@@ -368,14 +370,14 @@ def test_stage_timeline_stages_parks_and_merge():
 def test_stage_timeline_open_segment_is_ongoing_and_other_issues_ignored():
     events = [ev(T0, "claimed", 7), ev(T0, "stage-started", 7, "implement"),
               ev(T1, "stage-started", 9, "spec")]
-    tl = stage_timeline(events, 7, now=NOW)
+    tl = stage_timeline(events, "alpha", 7, now=NOW)
     assert [(e.label, e.kind, e.ongoing) for e in tl] == [
         ("implement", "stage", True)]
     assert tl[0].seconds == 9000.0  # T0 -> NOW
 
 
 def test_stage_timeline_empty_for_unknown_or_rotated_issue():
-    assert stage_timeline([], 7, now=NOW) == []
+    assert stage_timeline([], "alpha", 7, now=NOW) == []
 
 
 def test_stage_timeline_drops_segments_with_mixed_awareness():
@@ -387,7 +389,7 @@ def test_stage_timeline_drops_segments_with_mixed_awareness():
               ev(T1, "stage-started", 7, "spec"),            # aware, 40m
               ev("2026-08-01T11:00:00", "parked", 7, "spec"),  # NAIVE
               ev(T3, "resumed", 7, "spec")]                  # aware
-    tl = stage_timeline(events, 7, now=NOW)
+    tl = stage_timeline(events, "alpha", 7, now=NOW)
     # spec (T0->T1 via claimed->stage-started is queued 40m), then the two
     # segments touching the naive timestamp vanish, then the open tail.
     labels = [(e.label, e.ongoing) for e in tl]
@@ -402,10 +404,40 @@ def test_stage_timeline_all_naive_still_works():
     and must not be dropped just because `now` is aware elsewhere."""
     events = [{**ev("2026-08-01T10:00:00", "claimed", 7)},
               {**ev("2026-08-01T10:40:00", "stage-started", 7, "spec")}]
-    tl = stage_timeline(events, 7,
+    tl = stage_timeline(events, "alpha", 7,
                         now=datetime.fromisoformat("2026-08-01T11:00:00"))
     assert [(e.label, e.seconds) for e in tl] == [("queued", 2400.0),
                                                   ("spec", 1200.0)]
+
+
+def test_stage_timeline_separates_targets_sharing_an_issue_number():
+    """Two targets can claim the same issue number (issues are per-repo).
+    Their event streams must not interleave — same rationale as
+    claimed_at_index. beta's merged event must not close alpha's open
+    stage-started segment, and vice versa."""
+    events = [ev(T0, "claimed", 7),                         # alpha
+              ev(T0, "stage-started", 7, "spec"),            # alpha
+              {**ev(T1, "claimed", 7), "target": "beta"},
+              {**ev(T2, "stage-started", 7, "implement"),
+               "target": "beta"},
+              {**ev(T3, "merged", 7), "target": "beta"}]     # beta only
+    alpha_tl = stage_timeline(events, "alpha", 7, now=NOW)
+    beta_tl = stage_timeline(events, "beta", 7, now=NOW)
+    assert [(e.label, e.ongoing) for e in alpha_tl] == [("spec", True)]
+    assert [(e.label, e.ongoing) for e in beta_tl] == [
+        ("queued", False), ("implement", False)]
+
+
+def test_stage_timeline_keeps_legacy_targetless_rows_for_any_target():
+    """Events logged before `target` existed on the schema land with no
+    target key at all and must still surface for whichever target asks —
+    the same fallback convention as claimed_at()."""
+    events = [{**ev(T0, "claimed", 7), "target": ""},
+              {**ev(T1, "stage-started", 7, "spec"), "target": ""}]
+    tl = stage_timeline(events, "alpha", 7, now=NOW)
+    assert [(e.label, e.ongoing) for e in tl] == [
+        ("queued", False), ("spec", True)]
+    assert tl[0].seconds == 2400.0
 
 
 from web.read_model import BudgetView, next_claim
@@ -544,7 +576,8 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
     events = [ev(T0, "claimed", 7), ev(T0, "claimed", 9),
               ev("2026-08-01T12:00:00+00:00", "merged", 9)]
     board = build_board(
-        tasks, capacity=2, models={7: "opus", 9: "opus"}, attached=set(),
+        tasks, capacity=2,
+        models={("alpha", 7): "opus", ("alpha", 9): "opus"}, attached=set(),
         events=events, heartbeat=HB, now=NOW, budget=BUDGET_OK,
         queues=[("alpha", [row(7), row(73), row(74, blocked=True)])],
         queue_stale=False, claims_paused=False, triage_running=False)
@@ -704,6 +737,30 @@ def test_task_detail_carries_thread_and_contract():
         "will deliver when the session resumes")
 
 
+def test_task_detail_timeline_does_not_interleave_targets_sharing_an_issue():
+    """alpha#7 and beta#7 are different tasks (issue numbers are per-repo).
+    Each task_detail must see only its own target's transition events, plus
+    any legacy target-less rows — never the other target's."""
+    events = [ev(T0, "claimed", 7),                        # alpha
+              ev(T0, "stage-started", 7, "spec"),           # alpha
+              {**ev(T1, "claimed", 7), "target": "beta"},
+              {**ev(T2, "stage-started", 7, "implement"),
+               "target": "beta"},
+              {**ev(T3, "merged", 7), "target": "beta"}]
+    alpha = make_task(issue=7, target="alpha")
+    beta = make_task(issue=7, target="beta")
+    alpha_detail = task_detail(alpha, model="m", attached=False,
+                               pane_tail="", session_alive=False,
+                               events=events, now=NOW)
+    beta_detail = task_detail(beta, model="m", attached=False,
+                              pane_tail="", session_alive=False,
+                              events=events, now=NOW)
+    assert [(e.label, e.ongoing) for e in alpha_detail.timeline] == [
+        ("spec", True)]
+    assert [(e.label, e.ongoing) for e in beta_detail.timeline] == [
+        ("queued", False), ("implement", False)]
+
+
 def test_card_carries_undelivered_count_and_blocked_flag():
     tasks = [make_task(issue=7)]
     board = build_board(tasks, capacity=2, models={}, attached=set(),
@@ -711,7 +768,8 @@ def test_card_carries_undelivered_count_and_blocked_flag():
                         now=NOW,
                         budget=BUDGET_OK, queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
-                        undelivered={7: 3}, wake_blocked={7})
+                        undelivered={("alpha", 7): 3},
+                        wake_blocked={("alpha", 7)})
     card = [c for col in board.columns for c in col.cards][0]
     assert card.undelivered_messages == 3
     assert card.wake_blocked is True

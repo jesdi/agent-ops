@@ -10,7 +10,13 @@ export interface DraggedCard {
 
 export interface ColumnProps {
   column: { key: string; title: string; cards: TaskCard[] }
-  pendingByIssue: ReadonlyMap<number, readonly string[]>
+  /**
+   * Keyed `${target}#${issue}`. A legacy (target-less) pending intent is
+   * stored under the key `#${issue}` (empty target) and applies to any card
+   * with that issue number, since the intent file predates the target field
+   * and cannot be attributed to one target over another.
+   */
+  pendingByKey: ReadonlyMap<string, readonly string[]>
   collapsed: boolean
   onToggle: () => void
   /** Extra content (e.g. ghost cards) rendered after the task cards, hidden when collapsed. */
@@ -27,7 +33,7 @@ export interface ColumnProps {
   onCardDrop?: (card: DraggedCard) => void
 }
 
-export function BoardColumn({ column, pendingByIssue, collapsed, onToggle, extra, extraCount, headerExtra, onCardDrop }: ColumnProps) {
+export function BoardColumn({ column, pendingByKey, collapsed, onToggle, extra, extraCount, headerExtra, onCardDrop }: ColumnProps) {
   return (
     <section
       data-testid={`column-${column.key}`}
@@ -57,9 +63,14 @@ export function BoardColumn({ column, pendingByIssue, collapsed, onToggle, extra
         <div className="mt-2 flex flex-col gap-2">
           {column.cards.map((card) => (
             <TaskCardView
-              key={card.issue}
+              // Issue numbers are per-target: alpha#73 and beta#73 must not
+              // collide on one React key.
+              key={`${card.target}#${card.issue}`}
               card={card}
-              pendingActions={pendingByIssue.get(card.issue)}
+              pendingActions={[
+                ...(pendingByKey.get(`${card.target}#${card.issue}`) ?? []),
+                ...(pendingByKey.get(`#${card.issue}`) ?? []),
+              ]}
             />
           ))}
           {extra}

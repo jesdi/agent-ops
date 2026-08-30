@@ -3,16 +3,20 @@ import { persist } from 'zustand/middleware'
 
 interface UiState {
   /**
-   * Issue whose terminal is attached, or null. NEVER persisted (see
-   * partialize below): attaching writes the `attached-<N>` marker and the
-   * dispatcher declines to drive a task while it exists, so re-establishing
-   * it on page load would silently stall that task.
+   * `${target}#${issue}` of the task whose terminal is attached, or null.
+   * Keyed on the composite, not the bare issue: two targets can hold the
+   * same issue number, and an issue-only key would auto-attach a terminal
+   * on a task the operator never asked for after navigating from one to
+   * the other. NEVER persisted (see partialize below): attaching writes
+   * the `attached-<target>-<issue>` marker and the dispatcher declines to
+   * drive a task while it exists, so re-establishing it on page load would
+   * silently stall that task.
    */
-  terminalOpenFor: number | null
+  terminalOpenFor: string | null
   /** Operator-dragged terminal/history height in px. Persisted. */
   terminalHeight: number
   collapsedColumns: Record<string, boolean>
-  setTerminalOpenFor: (issue: number | null) => void
+  setTerminalOpenFor: (key: string | null) => void
   setTerminalHeight: (px: number) => void
   toggleColumn: (key: string) => void
 }

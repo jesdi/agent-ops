@@ -96,6 +96,28 @@ PY
 
 _mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 
+# The target a worktree was actually PROVISIONED under (workspace.py writes
+# .agent/task.json at create_workspace time), not the target's current
+# config name — a target renamed after provisioning must not orphan the
+# session/state-file names still in use by a task that predates the rename.
+# Empty output means "unknown": either the worktree predates Task 3's
+# target field, or task.json itself, or is unreadable. Callers must treat
+# unknown as "match by anchored issue number instead of exact name".
+_task_target() {
+  local tj="$1/.agent/task.json"
+  [ -f "$tj" ] || return 0
+  "$PY_BIN" - "$tj" 2>/dev/null <<'PY' || true
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(0)
+t = d.get("target")
+if t:
+    print(t)
+PY
+}
+
 _default_branch() {
   local clone=$1 ref
   ref=$(git -C "$clone" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
@@ -133,6 +155,11 @@ PY
 evaluate() {
   local clone=$1 repo=$2 wt=$3 issue=$4 check_age=$5
   local branch="agent/task-$issue" main dirty ahead unpushed newest age state
+  # "" means unknown (pre-Task-3 worktree, or no task.json at all) — every
+  # check below falls back to an anchored task-<anything>-<issue> match
+  # when target is unknown, rather than skipping the new-style name outright.
+  local target
+  target=$(_task_target "$wt")
 
   if ! git -C "$clone" worktree list --porcelain \
        | grep -Fxq "worktree $(realpath "$wt")"; then
@@ -142,14 +169,43 @@ evaluate() {
   if [ -e "$STATE_DIR/attached-$issue" ]; then
     echo "operator attached"; return 1
   fi
+  if [ -n "$target" ]; then
+    if [ -e "$STATE_DIR/attached-$target-$issue" ]; then
+      echo "operator attached"; return 1
+    fi
+  # mark_attached (dispatcher/state.py) writes the new-style marker
+  # unconditionally regardless of when the worktree was provisioned, so a
+  # pre-Task-3 worktree (unknown target) can still pick one up. Unlike the
+  # removal fallback above, a false positive here only causes a SKIP, not
+  # a delete — an anchored wildcard is safe.
+  elif ls "$STATE_DIR"/attached-*-"$issue" >/dev/null 2>&1; then
+    echo "operator attached"; return 1
+  fi
 
-  if { "$TMUX" list-sessions -F '#{session_name}' 2>/dev/null || true; } \
-       | grep -Fxq "task-$issue"; then
+  local sessions containers
+  sessions=$("$TMUX" list-sessions -F '#{session_name}' 2>/dev/null || true)
+  containers=$("$PODMAN" ps --format '{{.Names}}' 2>/dev/null || true)
+
+  if echo "$sessions" | grep -Fxq "task-$issue"; then
     echo "session task-$issue is live"; return 1
   fi
-  if { "$PODMAN" ps --format '{{.Names}}' 2>/dev/null || true; } \
-       | grep -Fxq "task-$issue"; then
+  if [ -n "$target" ]; then
+    if echo "$sessions" | grep -Fxq "task-$target-$issue"; then
+      echo "session task-$target-$issue is live"; return 1
+    fi
+  elif echo "$sessions" | grep -Eq "^task-.+-$issue\$"; then
+    echo "session task-<target>-$issue is live"; return 1
+  fi
+
+  if echo "$containers" | grep -Fxq "task-$issue"; then
     echo "container task-$issue is live"; return 1
+  fi
+  if [ -n "$target" ]; then
+    if echo "$containers" | grep -Fxq "task-$target-$issue"; then
+      echo "container task-$target-$issue is live"; return 1
+    fi
+  elif echo "$containers" | grep -Eq "^task-.+-$issue\$"; then
+    echo "container task-<target>-$issue is live"; return 1
   fi
 
   if [ "$check_age" -eq 1 ]; then
@@ -199,7 +255,11 @@ evaluate() {
 
 remove_worktree() {
   local clone=$1 name=$2 wt=$3 issue=$4
-  local branch="agent/task-$issue" size
+  local branch="agent/task-$issue" size target
+  # Resolved before anything below touches/removes .agent/ — same source
+  # evaluate() used, so a target rename mid-life can't make the two checks
+  # disagree about which state file/session name belongs to this task.
+  target=$(_task_target "$wt")
   size=$(du -sh "$wt" 2>/dev/null | cut -f1 || echo "?")
 
   if [ "$DRY" -eq 1 ]; then
@@ -226,6 +286,20 @@ remove_worktree() {
     git -C "$clone" push origin --delete "$branch" >/dev/null 2>&1 || true
   fi
   rm -f "$STATE_DIR/task-$issue.json"
+  if [ -n "$target" ]; then
+    rm -f "$STATE_DIR/task-$target-$issue.json"
+  else
+    # Unknown target (task.json predates the target field, or is missing
+    # entirely): fall back to $name, the config target this worktree is
+    # PHYSICALLY under — it lives inside $name's worktrees_path, so that is
+    # the only target this deletion may ever touch. NOT a cross-target
+    # wildcard: a glob here could delete a live, in-flight task's state
+    # file in an unrelated target that happens to share this issue number
+    # (evaluate()'s anchored-regex fallback is safe to guess broadly
+    # because a false positive there only causes a SKIP; this is a
+    # deletion, so it must never guess past what we structurally know).
+    rm -f "$STATE_DIR/task-$name-$issue.json"
+  fi
 
   _log_event "$issue" "$name" "swept worktree $wt ($size)"
   echo "REMOVED task-$issue ($size freed)"

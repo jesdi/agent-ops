@@ -191,7 +191,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}": {
+    "/api/task/{target}/{issue}": {
         parameters: {
             query?: never;
             header?: never;
@@ -199,7 +199,7 @@ export interface paths {
             cookie?: never;
         };
         /** Task Detail */
-        get: operations["task_detail_api_task__issue__get"];
+        get: operations["task_detail_api_task__target___issue__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -208,7 +208,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}/cancel": {
+    "/api/task/{target}/{issue}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -218,14 +218,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Cancel */
-        post: operations["intent_cancel_api_task__issue__cancel_post"];
+        post: operations["intent_cancel_api_task__target___issue__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}/description": {
+    "/api/task/{target}/{issue}/description": {
         parameters: {
             query?: never;
             header?: never;
@@ -233,7 +233,7 @@ export interface paths {
             cookie?: never;
         };
         /** Task Description */
-        get: operations["task_description_api_task__issue__description_get"];
+        get: operations["task_description_api_task__target___issue__description_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -242,7 +242,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}/history": {
+    "/api/task/{target}/{issue}/history": {
         parameters: {
             query?: never;
             header?: never;
@@ -250,7 +250,7 @@ export interface paths {
             cookie?: never;
         };
         /** Task History */
-        get: operations["task_history_api_task__issue__history_get"];
+        get: operations["task_history_api_task__target___issue__history_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -259,7 +259,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}/kill": {
+    "/api/task/{target}/{issue}/kill": {
         parameters: {
             query?: never;
             header?: never;
@@ -269,14 +269,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Kill */
-        post: operations["intent_kill_api_task__issue__kill_post"];
+        post: operations["intent_kill_api_task__target___issue__kill_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}/park": {
+    "/api/task/{target}/{issue}/park": {
         parameters: {
             query?: never;
             header?: never;
@@ -286,14 +286,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Park */
-        post: operations["intent_park_api_task__issue__park_post"];
+        post: operations["intent_park_api_task__target___issue__park_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}/reply": {
+    "/api/task/{target}/{issue}/reply": {
         parameters: {
             query?: never;
             header?: never;
@@ -303,14 +303,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Reply */
-        post: operations["intent_reply_api_task__issue__reply_post"];
+        post: operations["intent_reply_api_task__target___issue__reply_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}/resume": {
+    "/api/task/{target}/{issue}/resume": {
         parameters: {
             query?: never;
             header?: never;
@@ -320,14 +320,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Resume */
-        post: operations["intent_resume_api_task__issue__resume_post"];
+        post: operations["intent_resume_api_task__target___issue__resume_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}/retry": {
+    "/api/task/{target}/{issue}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -337,14 +337,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Retry */
-        post: operations["intent_retry_api_task__issue__retry_post"];
+        post: operations["intent_retry_api_task__target___issue__retry_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{issue}/spec": {
+    "/api/task/{target}/{issue}/spec": {
         parameters: {
             query?: never;
             header?: never;
@@ -352,7 +352,7 @@ export interface paths {
             cookie?: never;
         };
         /** Task Spec */
-        get: operations["task_spec_api_task__issue__spec_get"];
+        get: operations["task_spec_api_task__target___issue__spec_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -397,14 +397,6 @@ export interface components {
             utilization: number;
             /** Would Spawn */
             would_spawn: boolean;
-        };
-        /** CancelReq */
-        CancelReq: {
-            /**
-             * Target
-             * @default
-             */
-            target: string;
         };
         /** CapacityView */
         CapacityView: {
@@ -1018,11 +1010,12 @@ export interface operations {
             };
         };
     };
-    task_detail_api_task__issue__get: {
+    task_detail_api_task__target___issue__get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;
@@ -1049,20 +1042,17 @@ export interface operations {
             };
         };
     };
-    intent_cancel_api_task__issue__cancel_post: {
+    intent_cancel_api_task__target___issue__cancel_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CancelReq"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             202: {
@@ -1084,11 +1074,12 @@ export interface operations {
             };
         };
     };
-    task_description_api_task__issue__description_get: {
+    task_description_api_task__target___issue__description_get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;
@@ -1115,13 +1106,14 @@ export interface operations {
             };
         };
     };
-    task_history_api_task__issue__history_get: {
+    task_history_api_task__target___issue__history_get: {
         parameters: {
             query?: {
                 lines?: number;
             };
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;
@@ -1148,11 +1140,12 @@ export interface operations {
             };
         };
     };
-    intent_kill_api_task__issue__kill_post: {
+    intent_kill_api_task__target___issue__kill_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;
@@ -1179,11 +1172,12 @@ export interface operations {
             };
         };
     };
-    intent_park_api_task__issue__park_post: {
+    intent_park_api_task__target___issue__park_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;
@@ -1210,11 +1204,12 @@ export interface operations {
             };
         };
     };
-    intent_reply_api_task__issue__reply_post: {
+    intent_reply_api_task__target___issue__reply_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;
@@ -1245,11 +1240,12 @@ export interface operations {
             };
         };
     };
-    intent_resume_api_task__issue__resume_post: {
+    intent_resume_api_task__target___issue__resume_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;
@@ -1280,11 +1276,12 @@ export interface operations {
             };
         };
     };
-    intent_retry_api_task__issue__retry_post: {
+    intent_retry_api_task__target___issue__retry_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;
@@ -1311,11 +1308,12 @@ export interface operations {
             };
         };
     };
-    task_spec_api_task__issue__spec_get: {
+    task_spec_api_task__target___issue__spec_get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
+                target: string;
                 issue: number;
             };
             cookie?: never;

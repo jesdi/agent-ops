@@ -85,9 +85,19 @@ class Rig:
 
     def task(self, n, *, merged=True, closed=True, dirty=False,
              skills_drift=False, unpushed=False, age_days=30,
-             push=True, agent_dir=True, state_stage=None):
+             push=True, agent_dir=True, state_stage=None,
+             task_json="new"):
         """Create worktree task-<n> on agent/task-<n> in whatever shape
-        the test needs."""
+        the test needs.
+
+        task_json controls what .agent/task.json (written by
+        workspace.create_workspace) looks like inside it:
+          "new"    - {"issue": n, "target": "fake"} — every worktree
+                     provisioned after the (target, issue) rekey (Task 3).
+          "legacy" - {"issue": n} — provisioned before Task 3 added target.
+          "missing"- no task.json at all — provisioned before task.json
+                     itself existed.
+        """
         br = f"agent/task-{n}"
         wt = self.worktrees / f"task-{n}"
         _git(self.clone, "worktree", "add", "-b", br, str(wt), "main")
@@ -116,6 +126,14 @@ class Rig:
             (wt / ".agent" / "stage.json").write_text(
                 json.dumps({"stage": "implement", "status": "done"}))
             (wt / ".agent" / "plan.md").write_text("# plan\n")
+            if task_json == "new":
+                (wt / ".agent" / "task.json").write_text(
+                    json.dumps({"issue": n, "target": "fake"}))
+            elif task_json == "legacy":
+                (wt / ".agent" / "task.json").write_text(
+                    json.dumps({"issue": n}))
+            elif task_json != "missing":
+                raise ValueError(f"unknown task_json mode: {task_json!r}")
         if state_stage:
             (self.state / f"task-{n}.json").write_text(json.dumps({
                 "issue": n, "target": "fake", "stage": state_stage,
@@ -135,6 +153,9 @@ class Rig:
 
     def attach(self, n):
         (self.state / f"attached-{n}").write_text("")
+
+    def attach_new(self, target, n):
+        (self.state / f"attached-{target}-{n}").write_text("")
 
     # --- running -------------------------------------------------------
     def run(self, *args, expect=None):
@@ -297,6 +318,152 @@ def test_refuses_when_operator_attached(rig):
     proc = rig.run("--sweep", expect=0)
     assert wt.exists()
     assert "attached" in proc.stdout
+
+
+# --- (target, issue) rekey awareness ------------------------------------
+# Post-rekey, live tmux sessions and podman containers are named
+# task-<target>-<issue>, not the legacy task-<issue>; a sweeper that only
+# ever checked the legacy name would false-negative its liveness guard for
+# every task created after this deploy and rm -rf a live worktree.
+
+def test_refuses_new_style_live_tmux_session(rig):
+    wt = rig.task(162)  # task_json="new" by default -> target "fake"
+    rig.live("task-fake-162")
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "live" in proc.stdout
+
+
+def test_refuses_new_style_live_podman_container(rig):
+    wt = rig.task(162)
+    rig.containers.write_text("task-fake-162\n")
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "live" in proc.stdout
+
+
+def test_still_refuses_legacy_live_session_name(rig):
+    """A session not yet touched since the deploy (no adoption rename yet)
+    is still named the old way — must still be caught."""
+    wt = rig.task(162)
+    rig.live("task-162")
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "live" in proc.stdout
+
+
+def test_refuses_live_session_via_anchored_fallback_when_target_unknown(rig):
+    """A worktree provisioned before Task 3 has no target in task.json — the
+    sweeper cannot build the exact task-<target>-<issue> name, so it must
+    fall back to an anchored task-<anything>-<issue> match. The anchor must
+    not fire on an unrelated issue whose number merely ends the same
+    (task-foo-1162 must never stand in for issue 162)."""
+    wt = rig.task(162, task_json="legacy")
+    rig.live("task-fake-162", "task-foo-1162")
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "live" in proc.stdout
+
+
+def test_missing_task_json_also_uses_the_anchored_fallback(rig):
+    wt = rig.task(162, task_json="missing")
+    rig.live("task-fake-162")
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "live" in proc.stdout
+
+
+def test_anchored_fallback_does_not_false_positive_on_a_different_issue(rig):
+    """The mirror of the anchoring test above: with no OTHER live session
+    around, a worktree whose target is unknown must still sweep cleanly."""
+    wt = rig.task(162, task_json="legacy")
+    rig.live("task-fake-1162")  # a different issue number, not 162
+    rig.run("--sweep", expect=0)
+    assert not wt.exists()
+
+
+def test_refuses_live_podman_container_via_anchored_fallback_when_target_unknown(rig):
+    """Isolate the podman anchored-fallback branch from the tmux one:
+    Rig.live() would also populate the tmux fixture, and the session check
+    returns before evaluate() ever reaches the container check, leaving
+    that branch dead code as far as coverage goes — write only the
+    containers fixture so it is actually exercised."""
+    wt = rig.task(162, task_json="legacy")
+    rig.containers.write_text("task-fake-162\ntask-foo-1162\n")
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "live" in proc.stdout
+
+
+def test_new_style_attached_marker_refuses_removal(rig):
+    wt = rig.task(200)
+    rig.attach_new("fake", 200)
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "attached" in proc.stdout
+
+
+def test_refuses_new_style_attached_marker_with_unknown_target(rig):
+    """IMPORTANT: mark_attached (dispatcher/state.py) writes the new-style
+    attached-<target>-<issue> marker unconditionally regardless of when the
+    worktree was provisioned, so even a pre-Task-3 worktree (task.json has
+    no target) can pick one up. The sweeper must not be blind to it just
+    because it can't resolve the exact target name — a false positive here
+    only causes a SKIP, so an anchored wildcard is the safe answer, same as
+    the tmux/podman liveness fallback."""
+    wt = rig.task(162, task_json="legacy")
+    rig.attach_new("fake", 162)
+    proc = rig.run("--sweep", expect=0)
+    assert wt.exists()
+    assert "attached" in proc.stdout
+
+
+def test_removal_drops_both_legacy_and_new_style_state_files(rig):
+    wt = rig.task(162, state_stage="failed")
+    (rig.state / "task-fake-162.json").write_text(json.dumps({
+        "issue": 162, "target": "fake", "stage": "failed", "slot": -1,
+        "worktree": str(wt), "branch": "agent/task-162", "title": "t",
+        "updated_at": "2026-07-01T00:00:00Z",
+    }))
+    rig.run("--sweep", expect=0)
+    assert not (rig.state / "task-162.json").exists()
+    assert not (rig.state / "task-fake-162.json").exists()
+
+
+def test_removal_falls_back_to_the_configured_target_when_task_json_is_silent(rig):
+    """When task.json can't tell us the target, the fallback resolves it
+    from $name — the config target this worktree physically lives under —
+    not a wildcard. Within a single target this still drops the new-style
+    state file for this exact issue, and never touches a different issue's
+    file that merely ends the same."""
+    wt = rig.task(162, task_json="legacy")
+    (rig.state / "task-fake-162.json").write_text("{}")
+    (rig.state / "task-fake-1162.json").write_text("{}")  # distractor issue
+    rig.run("--sweep", expect=0)
+    assert not wt.exists()
+    assert not (rig.state / "task-fake-162.json").exists()
+    assert (rig.state / "task-fake-1162.json").exists()
+
+
+def test_removal_state_file_fallback_never_crosses_targets(rig):
+    """CRITICAL: when task.json's target is unknown, the state-file cleanup
+    fallback must be bounded to $name — the config target this worktree is
+    physically under — never a cross-target wildcard. Scenario: targets
+    fake and beta both happen to have issue 162; fake's worktree is a
+    pre-Task-3 leftover (task.json has no target) and is safe to sweep;
+    beta's task 162 is a live, unrelated, in-flight task. A wildcard
+    fallback would delete beta's state file collaterally — slot leak, an
+    unmanaged session, and a possible duplicate claim on the board."""
+    wt = rig.task(162, task_json="legacy")  # target "fake", issue 162
+    (rig.state / "task-beta-162.json").write_text(json.dumps({
+        "issue": 162, "target": "beta", "stage": "implement", "slot": 0,
+        "worktree": "/some/other/clone/.worktrees/task-162",
+        "branch": "agent/task-162", "title": "unrelated live task",
+        "updated_at": "2026-08-01T00:00:00Z",
+    }))
+    rig.run("--sweep", expect=0)
+    assert not wt.exists()                              # fake/162 swept
+    assert (rig.state / "task-beta-162.json").exists()   # beta/162 survives
 
 
 def test_sweep_refuses_worktree_newer_than_the_threshold(rig):

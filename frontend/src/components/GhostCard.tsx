@@ -33,7 +33,7 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
           </span>
         )}
       </div>
-      <Link to={`/task/${ghost.number}`} className="mt-1 block text-sm font-medium hover:underline">
+      <Link to={`/task/${ghost.target}/${ghost.number}`} className="mt-1 block text-sm font-medium hover:underline">
         {ghost.title}
       </Link>
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-400">

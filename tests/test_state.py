@@ -43,14 +43,14 @@ def make(issue=101, stage=Stage.SPEC, slot=0, **kw):
 def test_save_load_roundtrip(tmp_path: Path):
     ts = make()
     save(tmp_path, ts)
-    assert (tmp_path / "task-101.json").exists()
-    loaded = load(tmp_path, 101)
+    assert (tmp_path / "task-portfolio_eval-101.json").exists()
+    loaded = load(tmp_path, "portfolio_eval", 101)
     assert loaded == ts
     assert loaded.stage is Stage.SPEC
 
 
 def test_load_missing_returns_none(tmp_path: Path):
-    assert load(tmp_path, 999) is None
+    assert load(tmp_path, "portfolio_eval", 999) is None
 
 
 def test_load_all_sorted_by_issue(tmp_path: Path):
@@ -126,14 +126,14 @@ def test_old_state_file_without_park_fields_loads(tmp_path):
         "issue": 7, "target": "t", "stage": "implement", "slot": 0,
         "worktree": "/tmp/wt", "branch": "agent/task-7", "title": "x",
         "updated_at": "2026-07-14T00:00:00+00:00"}))
-    ts = load(tmp_path, 7)
+    ts = load(tmp_path, "t", 7)
     assert ts.park == "" and ts.ci_run_id == 0 and ts.park_msg_id == 0
     assert ts.hold_for_attach is False
 
 
 def test_park_fields_roundtrip(tmp_path):
     save(tmp_path, _task(park=PARK_CI))
-    assert load(tmp_path, 1).park == PARK_CI
+    assert load(tmp_path, "t", 1).park == PARK_CI
 
 
 def test_active_excludes_parked_and_parked_releases_its_slot():
@@ -173,12 +173,12 @@ def test_stage_signal_run_id_defaults_zero(tmp_path):
 
 
 def test_waiting_marker_lifecycle(tmp_path):
-    assert not has_waiting(tmp_path, 9)
-    mark_waiting(tmp_path, 9)
-    assert has_waiting(tmp_path, 9)
-    clear_waiting(tmp_path, 9)
-    assert not has_waiting(tmp_path, 9)
-    clear_waiting(tmp_path, 9)  # idempotent
+    assert not has_waiting(tmp_path, "t", 9)
+    mark_waiting(tmp_path, "t", 9)
+    assert has_waiting(tmp_path, "t", 9)
+    clear_waiting(tmp_path, "t", 9)
+    assert not has_waiting(tmp_path, "t", 9)
+    clear_waiting(tmp_path, "t", 9)  # idempotent
 
 
 def test_effort_and_labels_roundtrip(tmp_path: Path):
@@ -189,7 +189,7 @@ def test_effort_and_labels_roundtrip(tmp_path: Path):
         effort=3, labels=("auto", "frontend"),
     )
     save(tmp_path, ts)
-    loaded = load(tmp_path, 101)
+    loaded = load(tmp_path, "portfolio_eval", 101)
     assert loaded.effort == 3
     assert loaded.labels == ("auto", "frontend")   # tuple, not list
     assert loaded == ts
@@ -202,7 +202,7 @@ def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
         "updated_at": "2026-07-01T00:00:00+00:00", "park": "", "ci_run_id": 0,
         "park_msg_id": 0, "hold_for_attach": False,
     }))
-    loaded = load(tmp_path, 55)
+    loaded = load(tmp_path, "portfolio_eval", 55)
     assert loaded.effort is None
     assert loaded.labels == ()
 
@@ -211,20 +211,20 @@ from dispatcher.state import clear_attached, has_attached, mark_attached
 
 
 def test_attached_marker_roundtrip(tmp_path):
-    assert not has_attached(tmp_path, 42)
-    mark_attached(tmp_path, 42)
-    assert has_attached(tmp_path, 42)
-    assert (tmp_path / "attached-42").exists()
-    assert not has_attached(tmp_path, 43)  # per-issue
-    clear_attached(tmp_path, 42)
-    assert not has_attached(tmp_path, 42)
-    clear_attached(tmp_path, 42)  # idempotent
+    assert not has_attached(tmp_path, "t", 42)
+    mark_attached(tmp_path, "t", 42)
+    assert has_attached(tmp_path, "t", 42)
+    assert (tmp_path / "attached-t-42").exists()
+    assert not has_attached(tmp_path, "t", 43)  # per-issue
+    clear_attached(tmp_path, "t", 42)
+    assert not has_attached(tmp_path, "t", 42)
+    clear_attached(tmp_path, "t", 42)  # idempotent
 
 
 def test_mark_attached_creates_state_dir(tmp_path):
     sd = tmp_path / "fresh"
-    mark_attached(sd, 7)
-    assert has_attached(sd, 7)
+    mark_attached(sd, "t", 7)
+    assert has_attached(sd, "t", 7)
 
 
 def test_artifact_round_trips(tmp_path):
@@ -233,7 +233,7 @@ def test_artifact_round_trips(tmp_path):
                    updated_at="2026-07-28T10:00:00+00:00",
                    artifact="/tmp/wt/docs/superpowers/specs/x-design.md")
     save(tmp_path, ts)
-    assert load(tmp_path, 7).artifact == ts.artifact
+    assert load(tmp_path, "alpha", 7).artifact == ts.artifact
 
 
 def test_legacy_state_file_without_artifact_loads(tmp_path):
@@ -242,11 +242,11 @@ def test_legacy_state_file_without_artifact_loads(tmp_path):
                    updated_at="2026-07-28T10:00:00+00:00")
     save(tmp_path, ts)
     # Simulate a state file written before the field existed.
-    p = tmp_path / "task-8.json"
+    p = tmp_path / "task-alpha-8.json"
     d = json.loads(p.read_text())
     del d["artifact"]
     p.write_text(json.dumps(d))
-    assert load(tmp_path, 8).artifact == ""
+    assert load(tmp_path, "alpha", 8).artifact == ""
 
 
 def test_allocate_slot_ignores_slot_less_holders():
@@ -272,7 +272,7 @@ def test_slot_less_state_round_trips(tmp_path):
     ts = replace(make(issue=77, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT),
                  park=PARK_REVIEW)
     save(tmp_path, ts)
-    assert load(tmp_path, 77) == ts
+    assert load(tmp_path, "portfolio_eval", 77) == ts
 
 
 def test_park_note_roundtrips_and_defaults_empty(tmp_path):
@@ -281,7 +281,7 @@ def test_park_note_roundtrips_and_defaults_empty(tmp_path):
                   updated_at="2026-07-30T00:00:00+00:00")
     assert t.park_note == ""
     save(tmp_path, replace(t, park_note="need a decision"))
-    assert load(tmp_path, 9).park_note == "need a decision"
+    assert load(tmp_path, "alpha", 9).park_note == "need a decision"
 
 
 def test_load_tolerates_state_files_without_park_note(tmp_path):
@@ -290,11 +290,11 @@ def test_load_tolerates_state_files_without_park_note(tmp_path):
                   worktree="/w", branch="b", title="t",
                   updated_at="2026-07-30T00:00:00+00:00")
     save(tmp_path, t)
-    p = tmp_path / "task-9.json"
+    p = tmp_path / "task-alpha-9.json"
     d = json.loads(p.read_text())
     del d["park_note"]
     p.write_text(json.dumps(d))
-    assert load(tmp_path, 9).park_note == ""
+    assert load(tmp_path, "alpha", 9).park_note == ""
 
 
 def test_new_stages_exist_and_flight_membership():
@@ -314,7 +314,7 @@ def test_pr_fields_default_and_roundtrip(tmp_path):
     save(tmp_path, replace(ts, pr_number=12, feedback_pending=True,
                            feedback_cursor="2026-07-30T01:00:00+00:00",
                            done_at="2026-07-30T02:00:00+00:00"))
-    got = load(tmp_path, 7)
+    got = load(tmp_path, "t", 7)
     assert got.pr_number == 12 and got.feedback_pending is True
     assert got.feedback_cursor == "2026-07-30T01:00:00+00:00"
     assert got.done_at == "2026-07-30T02:00:00+00:00"
@@ -325,12 +325,12 @@ def test_old_state_file_without_pr_fields_loads(tmp_path):
                    worktree="w", branch="b", title="x",
                    updated_at="2026-07-30T00:00:00+00:00")
     save(tmp_path, ts)
-    p = tmp_path / "task-8.json"
+    p = tmp_path / "task-t-8.json"
     d = json.loads(p.read_text())
     for k in ("pr_number", "feedback_cursor", "feedback_pending", "done_at"):
         d.pop(k)
     p.write_text(json.dumps(d))
-    assert load(tmp_path, 8).pr_number == 0
+    assert load(tmp_path, "t", 8).pr_number == 0
 
 
 def test_delete_removes_state_file_and_is_idempotent(tmp_path):
@@ -338,9 +338,9 @@ def test_delete_removes_state_file_and_is_idempotent(tmp_path):
                    worktree="w", branch="b", title="x",
                    updated_at="2026-07-30T00:00:00+00:00")
     save(tmp_path, ts)
-    delete(tmp_path, 9)
-    assert load(tmp_path, 9) is None
-    delete(tmp_path, 9)  # no raise
+    delete(tmp_path, "t", 9)
+    assert load(tmp_path, "t", 9) is None
+    delete(tmp_path, "t", 9)  # no raise
 
 
 def test_consumes_capacity_unparked_in_flight_task():
@@ -398,11 +398,11 @@ def test_load_tolerates_a_retired_pending_reply_key(tmp_path):
     save(tmp_path, TaskState(issue=5, target="t", stage=Stage.IMPLEMENT,
                              slot=0, worktree="/w", branch="b", title="x",
                              updated_at="2026-08-12T00:00:00+00:00"))
-    p = tmp_path / "task-5.json"
+    p = tmp_path / "task-t-5.json"
     d = json.loads(p.read_text())
     d["pending_reply"] = "left over from the old schema"
     p.write_text(json.dumps(d))
-    assert load(tmp_path, 5).issue == 5
+    assert load(tmp_path, "t", 5).issue == 5
 
 
 def test_max_slots_is_capacity_plus_headroom():
@@ -466,3 +466,61 @@ def test_the_two_predicates_agree_over_the_mixed_fixture():
     ]
     assert ([t.issue for t in tasks if holds_slot(t)]
             == [t.issue for t in tasks if consumes_capacity(t)] == [1, 2, 7])
+
+
+# Tests for (target, issue) keying with legacy fallback
+def _ts(issue, target, **kw):
+    from dispatcher.state import Stage, TaskState
+    base = dict(issue=issue, target=target, stage=Stage.SPEC, slot=0,
+                worktree=f"/wt/{target}-{issue}", branch=f"agent/task-{issue}",
+                title="t", updated_at="2026-08-26T00:00:00+00:00")
+    base.update(kw)
+    return TaskState(**base)
+
+
+def test_same_issue_number_two_targets_coexist(tmp_path):
+    from dispatcher import state
+    state.save(tmp_path, _ts(42, "portfolio_eval"))
+    state.save(tmp_path, _ts(42, "agent_ops"))
+    assert (tmp_path / "task-portfolio_eval-42.json").exists()
+    assert (tmp_path / "task-agent_ops-42.json").exists()
+    loaded = state.load_all(tmp_path)
+    assert {(t.target, t.issue) for t in loaded} == {
+        ("portfolio_eval", 42), ("agent_ops", 42)}
+    assert state.load(tmp_path, "agent_ops", 42).worktree == "/wt/agent_ops-42"
+
+
+def test_legacy_state_file_read_and_upgraded_on_save(tmp_path):
+    import json
+    from dispatcher import state
+    legacy = tmp_path / "task-7.json"
+    d = state.asdict(_ts(7, "portfolio_eval")); d["stage"] = "spec"
+    legacy.write_text(json.dumps(d))
+    # load_all sees it; load() with the right target finds it, wrong target misses
+    assert [t.issue for t in state.load_all(tmp_path)] == [7]
+    assert state.load(tmp_path, "portfolio_eval", 7) is not None
+    assert state.load(tmp_path, "agent_ops", 7) is None
+    # save() writes new-style and removes the legacy twin
+    state.save(tmp_path, _ts(7, "portfolio_eval"))
+    assert not legacy.exists()
+    assert (tmp_path / "task-portfolio_eval-7.json").exists()
+
+
+def test_delete_removes_both_stylings(tmp_path):
+    import json
+    from dispatcher import state
+    d = state.asdict(_ts(9, "portfolio_eval")); d["stage"] = "spec"
+    (tmp_path / "task-9.json").write_text(json.dumps(d))
+    state.delete(tmp_path, "portfolio_eval", 9)
+    assert not (tmp_path / "task-9.json").exists()
+
+
+def test_waiting_marker_target_scoped_with_legacy_fallback(tmp_path):
+    from dispatcher import state
+    state.mark_waiting(tmp_path, "agent_ops", 5)
+    assert state.has_waiting(tmp_path, "agent_ops", 5)
+    assert not state.has_waiting(tmp_path, "portfolio_eval", 5)
+    (tmp_path / "waiting-6").touch()          # legacy marker
+    assert state.has_waiting(tmp_path, "portfolio_eval", 6)
+    state.clear_waiting(tmp_path, "portfolio_eval", 6)
+    assert not (tmp_path / "waiting-6").exists()

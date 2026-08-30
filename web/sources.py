@@ -16,6 +16,7 @@ from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
+from dispatcher.sessions import session_name
 from dispatcher.state import TaskState
 
 RANK_TTL_SECONDS = 15.0
@@ -201,41 +202,48 @@ class Sources:
         except (OSError, ValueError):
             return []
 
-    def pane_tail(self, issue: int) -> str:
+    def pane_tail(self, target: str, issue: int) -> str:
         try:
-            if self._sessions.is_alive(issue):
-                return self._sessions.capture_tail(issue)
+            if self._sessions.is_alive(target, issue):
+                return self._sessions.capture_tail(target, issue)
         except Exception:
             # capture runs tmux with timeout=30, which RAISES on a wedged
             # server. A missing tail degrades the task view; it must never
             # 500 it (cf. issue_open degrading to None).
             return ""
-        return self._read_snapshot(issue)
+        return self._read_snapshot(target, issue)
 
-    def pane_history(self, issue: int, lines: int = 2000) -> str:
+    def pane_history(self, target: str, issue: int, lines: int = 2000) -> str:
         try:
-            if self._sessions.is_alive(issue):
-                return self._sessions.capture_history(issue, lines)
+            if self._sessions.is_alive(target, issue):
+                return self._sessions.capture_history(target, issue, lines)
         except Exception:
             # Same degrade contract as pane_tail: a wedged tmux server
             # (capture_history runs with timeout=30 and RAISES) must never
             # 500 the history view.
             return ""
-        return self._read_snapshot(issue)
+        return self._read_snapshot(target, issue)
 
-    def _read_snapshot(self, issue: int) -> str:
-        """Dead session: serve the scrollback Sessions.end() persisted.
+    def _read_snapshot(self, target: str, issue: int) -> str:
+        """Dead session: serve the scrollback Sessions.end() persisted, keyed
+        by the tmux session name (task-<target>-<issue>.txt). Falls back to
+        the legacy task-<issue>.txt for a snapshot written before this
+        deploy — Sessions.end() only ever writes the modern name, so a
+        legacy file only exists from before the (target, issue) rekey.
         Missing/unreadable file (pre-feature parks) degrades to ''."""
-        try:
-            return (self.state_dir / "snapshots"
-                    / f"task-{issue}.txt").read_text()
-        except (OSError, ValueError):
-            # OSError: file missing or unreadable.
-            # ValueError: includes UnicodeDecodeError when snapshot is corrupt/truncated mid-UTF-8.
-            return ""
+        for name in (f"{session_name(target, issue)}.txt",
+                    f"task-{issue}.txt"):
+            try:
+                return (self.state_dir / "snapshots" / name).read_text()
+            except (OSError, ValueError):
+                # OSError: file missing or unreadable.
+                # ValueError: includes UnicodeDecodeError when snapshot is
+                # corrupt/truncated mid-UTF-8.
+                continue
+        return ""
 
-    def session_alive(self, issue: int) -> bool:
-        return self._sessions.is_alive(issue)
+    def session_alive(self, target: str, issue: int) -> bool:
+        return self._sessions.is_alive(target, issue)
 
     def pending_intents(self) -> list[dict]:
         root = self.state_dir / "intents"
@@ -246,6 +254,7 @@ class Sources:
             except (json.JSONDecodeError, OSError):
                 continue
             out.append({"action": d.get("action", ""),
+                        "target": d.get("target", ""),
                         "issue": d.get("issue", 0),
                         "actor": d.get("actor", ""),
                         "created_at": d.get("created_at", ""),
@@ -290,8 +299,8 @@ class Sources:
                            "budget": budget_d, "failures": failures,
                            "history": history}, sort_keys=True)
 
-    def has_attached(self, issue: int) -> bool:
-        return state.has_attached(self._cfg.state_dir, issue)
+    def has_attached(self, target: str, issue: int) -> bool:
+        return state.has_attached(self._cfg.state_dir, target, issue)
 
     def messages(self, issue: int) -> list:
         return msgq.all_messages(self._cfg.state_dir, issue)
@@ -299,21 +308,35 @@ class Sources:
     def undelivered_counts(self) -> dict[int, int]:
         return msgq.undelivered_counts(self._cfg.state_dir)
 
-    def wake_blocked_issues(self) -> set[int]:
-        out = set()
+    def wake_blocked_issues(self) -> set[tuple[str, int]]:
+        """(target, issue) pairs currently denied a wake for want of a free
+        slot/capacity.
+
+        The on-disk marker (wake-blocked-<issue>) predates the (target,
+        issue) rekey and is still bare-issue-keyed (dispatcher/main.py) — a
+        known, tracked gap (deferred rekey of this one marker format). A
+        marker therefore cannot say WHICH target it belongs to, so it is
+        read here as blocking that issue number on every configured target,
+        matching the marker's pre-existing any-target semantics rather than
+        inventing a new file layout for it.
+        """
+        issues: set[int] = set()
         for p in self.state_dir.glob("wake-blocked-*"):
             try:
-                out.add(int(p.name.removeprefix("wake-blocked-")))
+                issues.add(int(p.name.removeprefix("wake-blocked-")))
             except ValueError:
                 continue
-        return out
+        if not issues:
+            return set()
+        return {(target.name, issue)
+                for target in self._cfg.targets for issue in issues}
 
     # -- writes ----------------------------------------------------------
 
-    def submit_intent(self, action: str, issue: int, payload: dict,
-                      actor: str) -> str:
-        path = write_intent(self._cfg.state_dir, action, issue, payload,
-                            actor, int(self._clock() * 1000))
+    def submit_intent(self, action: str, target: str, issue: int,
+                      payload: dict, actor: str) -> str:
+        path = write_intent(self._cfg.state_dir, action, target, issue,
+                            payload, actor, int(self._clock() * 1000))
         try:  # best-effort kick; the 10-minute timer is the floor
             subprocess.run(self._systemctl, capture_output=True, timeout=30)
         except (OSError, subprocess.SubprocessError) as e:
@@ -329,8 +352,8 @@ class Sources:
         eventlog.append_event(self._cfg.state_dir, event, target=target,
                               issue=issue, actor=actor, detail=detail)
 
-    def mark_attached(self, issue: int) -> None:
-        state.mark_attached(self._cfg.state_dir, issue)
+    def mark_attached(self, target: str, issue: int) -> None:
+        state.mark_attached(self._cfg.state_dir, target, issue)
 
-    def clear_attached(self, issue: int) -> None:
-        state.clear_attached(self._cfg.state_dir, issue)
+    def clear_attached(self, target: str, issue: int) -> None:
+        state.clear_attached(self._cfg.state_dir, target, issue)

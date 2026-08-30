@@ -4,14 +4,27 @@ from telegram.templates import render
 
 
 def test_templates_carry_url_session_and_attach_hint():
+    # The tmux session name is now task-<target>-<issue> (Task 2's rekey); a
+    # legacy-adopted session is renamed to this on first touch, so this is
+    # the correct name for the operator-facing text to print.
     for name in ["awaiting_spec_review", "stage_blocked", "pr_opened",
-                 "artifact_failed", "session_crashed", "budget_stall",
-                 "budget_resume"]:
+                 "artifact_failed", "session_crashed"]:
         msg = render(name, issue=42, title="Add widget",
-                     url="https://github.com/x/y/issues/42", note="n")
+                     url="https://github.com/x/y/issues/42", note="n",
+                     target="acme")
         assert "https://github.com/x/y/issues/42" in msg
-        assert "task-42" in msg
-        assert "mosh agent-vps -- tmux attach -t task-42" in msg
+        assert "task-acme-42" in msg
+        assert "mosh agent-vps -- tmux attach -t task-acme-42" in msg
+
+
+def test_budget_templates_do_not_reference_a_fictitious_session():
+    # budget_stall/budget_resume are box-wide events (issue=0, no target) —
+    # there is no single task's session to attach to, so unlike the
+    # per-task templates above these must never grow a session/attach line.
+    for name in ["budget_stall", "budget_resume"]:
+        msg = render(name, issue=0, title="(all tasks)", url="", note="n")
+        assert "task-" not in msg
+        assert "attach:" not in msg
 
 
 def test_daily_digest_lists_tasks():
@@ -27,10 +40,11 @@ def test_send_posts_to_bot_api(monkeypatch):
         seen.update(url=url, payload=payload)
         return {}
     monkeypatch.setattr(notify, "_http_post", capture_and_return)
-    notify.Notifier().send("pr_opened", issue=42, title="t", url="u", note="")
+    notify.Notifier().send("pr_opened", issue=42, title="t", url="u", note="",
+                           target="acme")
     assert seen["url"] == "https://api.telegram.org/botTOK/sendMessage"
     assert seen["payload"]["chat_id"] == "CHAT"
-    assert "task-42" in seen["payload"]["text"]
+    assert "task-acme-42" in seen["payload"]["text"]
 
 
 def test_missing_env_drops_quietly(monkeypatch, capsys):
@@ -38,14 +52,16 @@ def test_missing_env_drops_quietly(monkeypatch, capsys):
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     monkeypatch.setattr(notify, "_http_post",
                         lambda url, payload: (_ for _ in ()).throw(AssertionError))
-    notify.Notifier().send("pr_opened", issue=42, title="t", url="u", note="")
+    notify.Notifier().send("pr_opened", issue=42, title="t", url="u", note="",
+                           target="acme")
     assert "TELEGRAM" in capsys.readouterr().err
 
 
 def test_dry_run_prints(monkeypatch, capsys):
     monkeypatch.setattr(notify, "_http_post",
                         lambda url, payload: (_ for _ in ()).throw(AssertionError))
-    notify.Notifier(dry_run=True).send("pr_opened", issue=42, title="t", url="u", note="")
+    notify.Notifier(dry_run=True).send("pr_opened", issue=42, title="t", url="u",
+                                       note="", target="acme")
     assert "[dry-run]" in capsys.readouterr().out
 
 
@@ -78,15 +94,15 @@ def test_queue_template_joins_lines():
 def test_awaiting_spec_review_includes_console_link_when_configured():
     msg = render("awaiting_spec_review", issue=42, title="Add widget",
                  url="https://github.com/x/y/issues/42", note="n",
-                 console="https://box.tail.ts.net")
-    assert "read & approve: https://box.tail.ts.net/task/42" in msg
+                 target="acme", console="https://box.tail.ts.net")
+    assert "read & approve: https://box.tail.ts.net/task/acme/42" in msg
 
 
 def test_awaiting_spec_review_unchanged_without_console():
     with_empty = render("awaiting_spec_review", issue=42, title="t",
-                        url="u", note="n", console="")
+                        url="u", note="n", target="acme", console="")
     without = render("awaiting_spec_review", issue=42, title="t",
-                     url="u", note="n")
+                     url="u", note="n", target="acme")
     assert with_empty == without
     assert "read & approve" not in with_empty
 
@@ -98,33 +114,35 @@ def test_notifier_injects_console_url(monkeypatch):
     monkeypatch.setattr(notify, "_http_post",
                         lambda url, payload: seen.update(payload=payload) or {})
     notify.Notifier(console_url="https://box.tail.ts.net").send(
-        "awaiting_spec_review", issue=42, title="t", url="u", note="")
-    assert "read & approve: https://box.tail.ts.net/task/42" in seen["payload"]["text"]
+        "awaiting_spec_review", issue=42, title="t", url="u", note="",
+        target="acme")
+    assert "read & approve: https://box.tail.ts.net/task/acme/42" in seen["payload"]["text"]
 
 
 def test_needs_relogin_template():
     text = render("needs_relogin", issue=42, title="t",
                   url="https://github.com/o/r/issues/42",
                   login_url="https://claude.ai/oauth/authorize?x=1",
-                  note="(no session output for 10m)")
+                  note="(no session output for 10m)", target="acme")
     assert "https://claude.ai/oauth/authorize?x=1" in text
-    assert "task-42" in text
+    assert "task-acme-42" in text
     assert "claude-home" in text
     assert "Reply to THIS message" in text
 
 
 def test_spec_parked_message_explains_the_park_and_the_way_back():
     msg = render("spec_parked", issue=42, title="Add widget",
-                 url="https://github.com/x/y/issues/42", note="…pane tail…")
+                 url="https://github.com/x/y/issues/42", note="…pane tail…",
+                 target="acme")
     assert "#42" in msg and "https://github.com/x/y/issues/42" in msg
     assert "Reply to THIS message" in msg   # the wake path
-    assert "task-42" in msg                 # /attach hint carries the session
+    assert "task-acme-42" in msg            # /attach hint carries the session
 
 
 def test_spec_parked_carries_the_console_deep_link_when_configured():
     msg = render("spec_parked", issue=42, title="t", url="u", note="n",
-                 console="https://box.ts.net")
-    assert "https://box.ts.net/task/42" in msg
+                 target="acme", console="https://box.ts.net")
+    assert "https://box.ts.net/task/acme/42" in msg
 
 
 @pytest.mark.parametrize("template,frag", [
@@ -134,8 +152,22 @@ def test_spec_parked_carries_the_console_deep_link_when_configured():
     ("pr_closed", "closed without merge"),
 ])
 def test_pr_lifecycle_templates_render(template, frag):
-    text = render(template, issue=7, title="Add widget", url="u", note="n")
+    text = render(template, issue=7, title="Add widget", url="u", note="n",
+                  target="acme")
     assert "#7" in text and "Add widget" in text and frag in text
+
+
+def test_pr_updated_carries_the_new_style_session_name():
+    text = render("pr_updated", issue=7, title="t", url="u", note="n",
+                  target="acme")
+    assert "task-acme-7" in text
+
+
+def test_resumed_for_attach_carries_the_new_style_session_name():
+    text = render("resumed_for_attach", issue=42, title="t", url="u",
+                  target="acme")
+    assert "task-acme-42" in text
+    assert "mosh agent-vps -- tmux attach -t task-acme-42" in text
 
 
 def test_triage_report_template():

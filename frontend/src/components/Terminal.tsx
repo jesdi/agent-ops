@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { TerminalHistory } from './TerminalHistory'
 import { usePersistedTerminalHeight } from '../hooks/usePersistedTerminalHeight'
 
-export function Terminal({ issue }: { issue: number }) {
+export function Terminal({ target, issue }: { target: string; issue: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
   // Held in a ref so closeHistory can restore keyboard focus after the overlay
   // closes without capturing a stale instance from the setup effect's closure.
@@ -42,7 +42,7 @@ export function Terminal({ issue }: { issue: number }) {
 
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const ws = new WebSocket(
-      `${proto}://${window.location.host}/api/task/${issue}/terminal`,
+      `${proto}://${window.location.host}/api/task/${target}/${issue}/terminal`,
     )
     ws.binaryType = 'arraybuffer'
 
@@ -113,7 +113,7 @@ export function Terminal({ issue }: { issue: number }) {
       ws.close()
       term.dispose()
     }
-  }, [issue])
+  }, [target, issue])
 
   // The container div is always mounted so containerRef.current is never null
   // when the effect runs after an issue change. The dead fallback is rendered
@@ -148,6 +148,7 @@ export function Terminal({ issue }: { issue: number }) {
       {showHistory && (
         <div className="absolute inset-0">
           <TerminalHistory
+            target={target}
             issue={issue}
             onClose={closeHistory}
           />

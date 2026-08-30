@@ -3,7 +3,9 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
-import { board as fx_board, budgetUnavailable, pendingReplyIntent } from '../../test/fixtures'
+import {
+  board as fx_board, budgetUnavailable, inProgressCard, pendingReplyIntent,
+} from '../../test/fixtures'
 import { renderWithProviders } from '../../test/render'
 import { BoardPage } from '../BoardPage'
 
@@ -57,7 +59,7 @@ function fakeDataTransfer() {
 it('dropping a card on Wont do asks for confirmation before any intent fires', async () => {
   const posts: unknown[] = []
   server.use(
-    http.post('/api/task/42/cancel', async ({ request }) => {
+    http.post('/api/task/widget/42/cancel', async ({ request }) => {
       posts.push(await request.json())
       return HttpResponse.json(
         { status: 'pending', intent: '1-42-cancel.json' },
@@ -75,14 +77,14 @@ it('dropping a card on Wont do asks for confirmation before any intent fires', a
   expect(posts).toEqual([])
   expect(screen.getByTestId('wont-do-confirm')).toHaveTextContent('#42')
   await userEvent.click(screen.getByRole('button', { name: "Confirm won't do?" }))
-  await waitFor(() => expect(posts).toEqual([{ target: 'jesdi/widget' }]))
+  await waitFor(() => expect(posts).toEqual([{}]))
   expect(screen.queryByTestId('wont-do-confirm')).not.toBeInTheDocument()
 })
 
 it('backing out of the drop confirmation fires nothing', async () => {
   const posts: unknown[] = []
   server.use(
-    http.post('/api/task/42/cancel', () => {
+    http.post('/api/task/widget/42/cancel', () => {
       posts.push('cancel')
       return HttpResponse.json(
         { status: 'pending', intent: '1-42-cancel.json' },
@@ -132,9 +134,9 @@ it('several pending intents on one issue all render — none silently dropped', 
     http.get('/api/pending-intents', () =>
       HttpResponse.json({
         intents: [
-          { action: 'reply', issue: 42, actor: 'dev@localhost',
+          { action: 'reply', target: 'widget', issue: 42, actor: 'dev@localhost',
             created_at: '2026-07-25T11:58:00Z' },
-          { action: 'kill', issue: 42, actor: 'dev@localhost',
+          { action: 'kill', target: 'widget', issue: 42, actor: 'dev@localhost',
             created_at: '2026-07-25T11:59:00Z' },
         ],
       }),
@@ -190,11 +192,11 @@ test('queued column renders ghost cards in rank order with count and stale hint'
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     upcoming: [
-      { number: 73, target: 'jesdi/widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
-      { number: 74, target: 'jesdi/widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
+      { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 74, target: 'widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
     ],
     upcoming_stale: true,
-    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'jesdi/widget' },
+    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'widget' },
   })))
   renderWithProviders(<BoardPage />)
   const queued = await screen.findByTestId('column-queued')
@@ -212,10 +214,10 @@ test('same issue number on two targets renders two distinct ghosts', async () =>
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     upcoming: [
-      { number: 73, target: 'jesdi/alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
-      { number: 73, target: 'jesdi/beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
+      { number: 73, target: 'alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, target: 'beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
     ],
-    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'jesdi/beta' },
+    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'beta' },
   })))
   renderWithProviders(<BoardPage />)
   const queued = await screen.findByTestId('column-queued')
@@ -229,7 +231,7 @@ test('stale indicator survives collapsing the Queued column', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     upcoming: [
-      { number: 73, target: 'jesdi/widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
     ],
     upcoming_stale: true,
     next_claim: { ...fx_board.next_claim, verdict: 'no-candidates' },
@@ -248,6 +250,51 @@ test('stale indicator survives collapsing the Queued column', async () => {
 
   // Stale indicator must still be visible in the header.
   expect(within(queued).getByTestId('queue-stale')).toBeInTheDocument()
+})
+
+it('a task card links to /task/{target}/{issue}', async () => {
+  renderWithProviders(<BoardPage />)
+  await waitFor(() => expect(screen.getByTestId('card-41')).toBeInTheDocument())
+  expect(screen.getByTestId('card-41')).toHaveAttribute('href', '/task/widget/41')
+})
+
+it('two claimed cards sharing an issue number across targets both render with distinct keys', async () => {
+  // Issue numbers are per-target: alpha#73 and beta#73 are different work.
+  // BoardColumn's card key must include the target, or React would collapse
+  // one card into the other (silently dropping it, not just warning).
+  const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const cardA = { ...inProgressCard, target: 'alpha', issue: 73, title: 'Alpha claimed work' }
+  const cardB = { ...inProgressCard, target: 'beta', issue: 73, title: 'Beta claimed work' }
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    columns: fx_board.columns.map((c) =>
+      c.key === 'in-progress' ? { ...c, cards: [cardA, cardB] } : c,
+    ),
+  })))
+  renderWithProviders(<BoardPage />)
+  await waitFor(() => expect(screen.getByText('Alpha claimed work')).toBeInTheDocument())
+  expect(screen.getByText('Beta claimed work')).toBeInTheDocument()
+  const keyWarning = errorSpy.mock.calls.some((args) =>
+    String(args[0]).includes('same key'),
+  )
+  expect(keyWarning).toBe(false)
+  errorSpy.mockRestore()
+})
+
+it('a legacy target-less pending intent still badges the card by issue', async () => {
+  server.use(
+    http.get('/api/pending-intents', () => HttpResponse.json({
+      intents: [{ action: 'reply', target: '', issue: 42, actor: 'dev@localhost',
+                  created_at: '2026-07-25T11:58:00Z' }],
+    })),
+  )
+  renderWithProviders(<BoardPage />)
+  await waitFor(() =>
+    expect(screen.getByTestId('pending-badge')).toBeInTheDocument(),
+  )
+  expect(screen.getByTestId('card-42')).toContainElement(
+    screen.getByTestId('pending-badge'),
+  )
 })
 
 test('header shows next-claim line and median cycle', async () => {

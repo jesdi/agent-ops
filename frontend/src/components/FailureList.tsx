@@ -3,9 +3,14 @@ import { relativeTime } from '../lib/format'
 
 export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
   failures: FailuresView
-  onRetry: (issue: number) => void
-  /** Per-task inline retry errors, same convention as GhostCard. */
-  errors?: Readonly<Record<number, string | null>>
+  onRetry: (target: string, issue: number) => void
+  /**
+   * Per-task inline retry errors, same convention as GhostCard. Keyed
+   * `${target}#${task_issue}` — issue numbers are per-target, so two
+   * quarantined tasks sharing a number on different targets must not share
+   * an error slot.
+   */
+  errors?: Readonly<Record<string, string | null>>
   busy?: boolean
 }) {
   return (
@@ -17,10 +22,10 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
         )}
         <ul className="mt-2 flex flex-col gap-2">
           {failures.quarantined.map((q) => {
-            const error = errors[q.task_issue] ?? null
+            const error = errors[`${q.target}#${q.task_issue}`] ?? null
             return (
             <li
-              key={`${q.target}-${q.task_issue}`}
+              key={`${q.target}#${q.task_issue}`}
               className="flex flex-wrap items-center gap-2 rounded border border-gray-200 bg-white p-3 text-sm"
             >
               <span className="font-mono text-xs">{q.fingerprint}</span>
@@ -41,7 +46,7 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
                 type="button"
                 className="ml-auto rounded border px-2 py-0.5 text-xs disabled:opacity-50"
                 disabled={busy}
-                onClick={() => onRetry(q.task_issue)}
+                onClick={() => onRetry(q.target, q.task_issue)}
               >
                 Retry
               </button>

@@ -70,16 +70,16 @@ afterEach(() => vi.unstubAllGlobals())
 
 it('connects to the task terminal WS and sends an initial resize', async () => {
   const { Terminal } = await import('../Terminal')
-  render(<Terminal issue={42} />)
+  render(<Terminal target="widget" issue={42} />)
   const ws = FakeWebSocket.instances[0]!
-  expect(ws.url).toContain('/api/task/42/terminal')
+  expect(ws.url).toContain('/api/task/widget/42/terminal')
   act(() => { ws.onopen?.() })
   expect(ws.sent[0]).toBe(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }))
 })
 
 it('writes binary frames into xterm', async () => {
   const { Terminal } = await import('../Terminal')
-  render(<Terminal issue={42} />)
+  render(<Terminal target="widget" issue={42} />)
   const ws = FakeWebSocket.instances[0]!
   const bytes = new TextEncoder().encode('hello').buffer
   act(() => { ws.onmessage?.({ data: bytes }) })
@@ -88,7 +88,7 @@ it('writes binary frames into xterm', async () => {
 
 it('AWKWARD: dead message renders the fallback with the pane tail', async () => {
   const { Terminal } = await import('../Terminal')
-  render(<Terminal issue={42} />)
+  render(<Terminal target="widget" issue={42} />)
   const ws = FakeWebSocket.instances[0]!
   act(() => {
     ws.onmessage?.({
@@ -105,7 +105,7 @@ it('AWKWARD: dead message renders the fallback with the pane tail', async () => 
 
 it('a dropped connection shows a disconnect overlay, distinct from a dead session', async () => {
   const { Terminal } = await import('../Terminal')
-  render(<Terminal issue={42} />)
+  render(<Terminal target="widget" issue={42} />)
   const ws = FakeWebSocket.instances[0]!
   act(() => { ws.onclose?.() })
   expect(screen.getByTestId('terminal-disconnected')).toBeInTheDocument()
@@ -121,7 +121,7 @@ it('a dropped connection shows a disconnect overlay, distinct from a dead sessio
 
 it('stops forwarding keystrokes into a closed socket', async () => {
   const { Terminal } = await import('../Terminal')
-  render(<Terminal issue={42} />)
+  render(<Terminal target="widget" issue={42} />)
   const ws = FakeWebSocket.instances[0]!
   const forward = onData.mock.calls[0]![0]
   act(() => { forward('a') })
@@ -133,7 +133,7 @@ it('stops forwarding keystrokes into a closed socket', async () => {
 
 it('a dead session does not also claim the connection dropped', async () => {
   const { Terminal } = await import('../Terminal')
-  render(<Terminal issue={42} />)
+  render(<Terminal target="widget" issue={42} />)
   const ws = FakeWebSocket.instances[0]!
   act(() => {
     ws.onmessage?.({ data: JSON.stringify({ type: 'dead', tail: 'bye\n' }) })
@@ -144,7 +144,7 @@ it('a dead session does not also claim the connection dropped', async () => {
 
 it('dead → live navigation: re-render with new issue connects new WS and clears fallback', async () => {
   const { Terminal } = await import('../Terminal')
-  const { rerender } = render(<Terminal issue={42} />)
+  const { rerender } = render(<Terminal target="widget" issue={42} />)
   const ws42 = FakeWebSocket.instances[0]!
   // drive the dead frame on issue 42
   act(() => {
@@ -154,17 +154,17 @@ it('dead → live navigation: re-render with new issue connects new WS and clear
   })
   expect(screen.getByText('session task-42 is not running')).toBeInTheDocument()
   // navigate to issue 43
-  act(() => { rerender(<Terminal issue={43} />) })
+  act(() => { rerender(<Terminal target="widget" issue={43} />) })
   // a second WebSocket must have been created for task 43
   expect(FakeWebSocket.instances).toHaveLength(2)
-  expect(FakeWebSocket.instances[1]!.url).toContain('/api/task/43/terminal')
+  expect(FakeWebSocket.instances[1]!.url).toContain('/api/task/widget/43/terminal')
   // dead fallback must be gone
   expect(screen.queryByTestId('terminal-dead')).not.toBeInTheDocument()
 })
 
 it('MOST IMPORTANT: the wheel handler emits nothing to the socket', async () => {
   const { Terminal } = await import('../Terminal')
-  render(<Terminal issue={42} />)
+  render(<Terminal target="widget" issue={42} />)
   const ws = FakeWebSocket.instances[0]!
   act(() => { ws.onopen?.() })
   const sentAfterOpen = ws.sent.length // just the initial resize
@@ -180,7 +180,7 @@ it('MOST IMPORTANT: the wheel handler emits nothing to the socket', async () => 
 
 it('an upward wheel opens the history view', async () => {
   const { Terminal } = await import('../Terminal')
-  render(<Terminal issue={42} />)
+  render(<Terminal target="widget" issue={42} />)
   const handler = attachCustomWheelEventHandler.mock.calls[0]![0] as (
     e: WheelEvent,
   ) => boolean
@@ -190,7 +190,7 @@ it('an upward wheel opens the history view', async () => {
 
 it('closing the history overlay re-focuses the xterm terminal', async () => {
   const { Terminal } = await import('../Terminal')
-  render(<Terminal issue={42} />)
+  render(<Terminal target="widget" issue={42} />)
 
   // Open the history overlay via an upward wheel event.
   const handler = attachCustomWheelEventHandler.mock.calls[0]![0] as (

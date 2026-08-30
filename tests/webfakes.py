@@ -59,7 +59,7 @@ class FakeSources:
         self._triage_running = False
         self.messages_by_issue = {}   # issue -> list[msgq.Message]
         self.undelivered = {}         # issue -> int
-        self.blocked_wakes = set()    # issues with a wake-blocked marker
+        self.blocked_wakes = set()    # (target, issue) with a wake-blocked marker
 
     def tasks(self):
         return list(self.tasks_list)
@@ -89,19 +89,19 @@ class FakeSources:
     def events_tail(self, limit):
         return self.events[-limit:]
 
-    def pane_tail(self, issue):
+    def pane_tail(self, target, issue):
         return self.pane_tails.get(issue, "")
 
-    def pane_history(self, issue, lines=2000):
+    def pane_history(self, target, issue, lines=2000):
         self.history_calls.append((issue, lines))
         return self.pane_histories.get(issue, "")
 
-    def session_alive(self, issue):
+    def session_alive(self, target, issue):
         return issue in self.alive
 
-    def submit_intent(self, action, issue, payload, actor):
-        self.intents.append((action, issue, payload, actor))
-        return f"1753430000000-{issue}-{action}.json"
+    def submit_intent(self, action, target, issue, payload, actor):
+        self.intents.append((action, target, issue, payload, actor))
+        return f"1753430000000-{target}-{issue}-{action}.json"
 
     def pending_intents(self):
         return list(self.pending)
@@ -116,13 +116,13 @@ class FakeSources:
     def state_fingerprint(self):
         return self.fingerprint
 
-    def mark_attached(self, issue):
+    def mark_attached(self, target, issue):
         self.attached.add(issue)
 
-    def clear_attached(self, issue):
+    def clear_attached(self, target, issue):
         self.attached.discard(issue)
 
-    def has_attached(self, issue):
+    def has_attached(self, target, issue):
         return issue in self.attached
 
     def issue_description(self, repo, number):

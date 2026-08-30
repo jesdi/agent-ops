@@ -22,7 +22,7 @@ createRoot(document.getElementById('root')!).render(
           <AppShell>
             <Routes>
               <Route path="/" element={<BoardPage />} />
-              <Route path="/task/:issue" element={<TaskPage />} />
+              <Route path="/task/:target/:issue" element={<TaskPage />} />
               <Route path="/failures" element={<FailuresPage />} />
               <Route path="/history" element={<HistoryPage />} />
             </Routes>

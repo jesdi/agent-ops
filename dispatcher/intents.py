@@ -19,6 +19,7 @@ ACTIONS = ("reply", "park", "kill", "retry", "resume", "cancel")
 @dataclass(frozen=True)
 class Intent:
     action: str
+    target: str                       # "" = legacy file, predates target-keying
     issue: int
     payload: dict
     actor: str
@@ -30,16 +31,17 @@ def _dir(state_dir: str | Path) -> Path:
     return Path(state_dir) / INTENTS_DIR
 
 
-def write_intent(state_dir: str | Path, action: str, issue: int, payload: dict,
-                 actor: str, epoch_ms: int) -> Path:
+def write_intent(state_dir: str | Path, action: str, target: str, issue: int,
+                 payload: dict, actor: str, epoch_ms: int) -> Path:
     if action not in ACTIONS:
         raise ValueError(f"unknown intent action: {action!r}")
     d = _dir(state_dir)
     d.mkdir(parents=True, exist_ok=True)
-    p = d / f"{epoch_ms}-{issue}-{action}.json"
+    p = d / f"{epoch_ms}-{target}-{issue}-{action}.json"
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps({
         "action": action,
+        "target": target,
         "issue": issue,
         "payload": payload,
         "actor": actor,
@@ -57,7 +59,10 @@ def list_intents(state_dir: str | Path) -> list[Intent]:
     for p in sorted(d.glob("*.json")):
         try:
             rec = json.loads(p.read_text())
-            out.append(Intent(action=rec["action"], issue=int(rec["issue"]),
+            # Identity comes from the JSON, never the filename stem.
+            out.append(Intent(action=rec["action"],
+                              target=str(rec.get("target", "")),
+                              issue=int(rec["issue"]),
                               payload=dict(rec.get("payload") or {}),
                               actor=str(rec.get("actor", "")),
                               created_at=str(rec.get("created_at", "")),

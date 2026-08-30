@@ -9,7 +9,7 @@ const stateOf = (page: Page, id: string) =>
 
 test('reply to a starved parked task: sending -> queued -> delivered', async ({ page, request }) => {
   await request.post('/__control__/reset-messages')
-  await page.goto('/task/42')
+  await page.goto('/task/widget/42')
 
   // The compose box states the contract before anything is sent.
   await expect(page.getByTestId('delivery-contract')).toHaveText(
@@ -39,7 +39,7 @@ test('reply to a starved parked task: sending -> queued -> delivered', async ({ 
 
   // A slot frees: the task resumes and the message is delivered and stamped.
   await request.post('/__control__/free-slot')
-  await page.goto('/task/42')
+  await page.goto('/task/widget/42')
   await expect(stateOf(page, 'm1')).toContainText('delivered')
   await page.goto('/')
   await expect(page.getByTestId('card-42').getByTestId('mail-badge')).toBeHidden()

@@ -7,14 +7,14 @@ import { TerminalHistory } from '../TerminalHistory'
 
 beforeEach(() => {
   server.use(
-    http.get('/api/task/42/history', () =>
+    http.get('/api/task/widget/42/history', () =>
       HttpResponse.json({ text: 'first line\nlast line' }),
     ),
   )
 })
 
 it('renders fetched history text', async () => {
-  renderWithProviders(<TerminalHistory issue={42} onClose={() => {}} />)
+  renderWithProviders(<TerminalHistory target="widget" issue={42} onClose={() => {}} />)
   await waitFor(() =>
     expect(screen.getByTestId('terminal-history-pane').textContent).toContain(
       'last line',
@@ -24,7 +24,7 @@ it('renders fetched history text', async () => {
 
 it('the back control returns to live', async () => {
   const onClose = vi.fn()
-  renderWithProviders(<TerminalHistory issue={42} onClose={onClose} />)
+  renderWithProviders(<TerminalHistory target="widget" issue={42} onClose={onClose} />)
   await userEvent.click(
     screen.getByRole('button', { name: 'Return to live terminal' }),
   )
@@ -33,7 +33,7 @@ it('the back control returns to live', async () => {
 
 it('Escape returns to live', async () => {
   const onClose = vi.fn()
-  renderWithProviders(<TerminalHistory issue={42} onClose={onClose} />)
+  renderWithProviders(<TerminalHistory target="widget" issue={42} onClose={onClose} />)
   await userEvent.keyboard('{Escape}')
   expect(onClose).toHaveBeenCalledTimes(1)
 })
@@ -45,7 +45,7 @@ function makeScrollable(el: HTMLElement) {
 
 it('scrolling back to the bottom returns to live', async () => {
   const onClose = vi.fn()
-  renderWithProviders(<TerminalHistory issue={42} onClose={onClose} />)
+  renderWithProviders(<TerminalHistory target="widget" issue={42} onClose={onClose} />)
   const pane = screen.getByTestId('terminal-history-pane')
   makeScrollable(pane)
 
@@ -62,7 +62,7 @@ it('scrolling back to the bottom returns to live', async () => {
 
 it('does not close from scroll events while still at the bottom', async () => {
   const onClose = vi.fn()
-  renderWithProviders(<TerminalHistory issue={42} onClose={onClose} />)
+  renderWithProviders(<TerminalHistory target="widget" issue={42} onClose={onClose} />)
   const pane = screen.getByTestId('terminal-history-pane')
   makeScrollable(pane)
 
@@ -76,7 +76,7 @@ it('does not close from scroll events while still at the bottom', async () => {
 
 it('onClose fires exactly once even if multiple scroll events hit the bottom after a single arm', async () => {
   const onClose = vi.fn()
-  renderWithProviders(<TerminalHistory issue={42} onClose={onClose} />)
+  renderWithProviders(<TerminalHistory target="widget" issue={42} onClose={onClose} />)
   const pane = screen.getByTestId('terminal-history-pane')
   makeScrollable(pane)
 
@@ -100,7 +100,7 @@ it('onClose fires exactly once even if multiple scroll events hit the bottom aft
 
 it('stays open while scrolled up reading history', async () => {
   const onClose = vi.fn()
-  renderWithProviders(<TerminalHistory issue={42} onClose={onClose} />)
+  renderWithProviders(<TerminalHistory target="widget" issue={42} onClose={onClose} />)
   const pane = screen.getByTestId('terminal-history-pane')
   makeScrollable(pane)
 
@@ -114,7 +114,7 @@ it('stays open while scrolled up reading history', async () => {
 it('refetch while reading history does not close the overlay', async () => {
   const onClose = vi.fn()
   const { queryClient } = renderWithProviders(
-    <TerminalHistory issue={42} onClose={onClose} />,
+    <TerminalHistory target="widget" issue={42} onClose={onClose} />,
   )
   const pane = screen.getByTestId('terminal-history-pane')
   makeScrollable(pane)
@@ -131,14 +131,14 @@ it('refetch while reading history does not close the overlay', async () => {
 
   // simulate new session output: change the MSW handler and refetch
   server.use(
-    http.get('/api/task/42/history', () =>
+    http.get('/api/task/widget/42/history', () =>
       HttpResponse.json({
         text: 'first line\nmore output\neven more\nlast line',
       }),
     ),
   )
   const { queryKeys } = await import('../../hooks/queryKeys')
-  await queryClient.invalidateQueries({ queryKey: queryKeys.taskHistory(42) })
+  await queryClient.invalidateQueries({ queryKey: queryKeys.taskHistory('widget', 42) })
 
   // wait for new content to load
   await waitFor(() =>
