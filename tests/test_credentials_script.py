@@ -28,6 +28,10 @@ def rig(tmp_path):
 echo "op $@ token=$OP_SERVICE_ACCOUNT_TOKEN" >> "{calls}"
 case "$*" in
   *agent-ops-github/GH_REPO_TOKEN*) echo "FAKE_REPO_PAT" ;;
+  *agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN*)
+    if [ -f "{tmp_path}/CLAUDE_TOKEN_EMPTY" ]; then echo ""; exit 0; fi
+    [ -f "{tmp_path}/CLAUDE_TOKEN" ] || exit 1
+    echo "FAKE_LONG_LIVED_TOKEN" ;;
   *agent-ops-claude*)
     [ -f "{tmp_path}/CLAUDE_CREDS" ] || exit 1
     echo '{{"fake": "claude-creds"}}' ;;
@@ -142,3 +146,30 @@ def test_git_signing_key_absent_skips_signing_config_not_fatal(rig):
     assert not (rig.state / "git-signing-key").exists()
     assert git_config(rig, "commit.gpgsign") == ""
     assert "git-signing" in (r.stdout + r.stderr).lower()
+
+
+def test_claude_long_lived_token_checked_but_never_written_to_disk(rig):
+    # The token is resolved from 1P at spawn time (with-claude-token.sh,
+    # budget.py); credentials.sh only verifies the field exists so a
+    # missing token is caught at provisioning, not by hourly keepalive
+    # alerts. Nothing may persist it on the box.
+    (rig.tmp / "CLAUDE_TOKEN").touch()
+    r = run(rig)
+    assert r.returncode == 0, r.stderr
+    assert not (rig.state / "claude-token.env").exists()
+    assert "long-lived claude token present" in r.stdout
+
+
+def test_missing_long_lived_token_prints_setup_token_guidance(rig):
+    r = run(rig)
+    assert r.returncode == 0, r.stderr
+    assert not (rig.state / "claude-token.env").exists()
+    assert "setup-token" in r.stdout
+
+
+def test_empty_long_lived_token_field_treated_as_missing(rig):
+    (rig.tmp / "CLAUDE_TOKEN_EMPTY").touch()
+    r = run(rig)
+    assert r.returncode == 0, r.stderr
+    assert not (rig.state / "claude-token.env").exists()
+    assert "setup-token" in r.stdout

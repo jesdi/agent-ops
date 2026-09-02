@@ -333,7 +333,9 @@ def test_run_session_timeout_kills_and_raises(tmp_path):
 
     def fake_run(args, capture_output=True, text=True, timeout=None):
         calls.append(args)
-        if args[0] == "podman" and args[1] == "run":
+        # The spawn argv is wrapper-prefixed (with-claude-token.sh); the
+        # kill argv is bare podman — match the run form positionally.
+        if "podman" in args and args[args.index("podman") + 1] == "run":
             raise _subprocess.TimeoutExpired(args, timeout)
         return _subprocess.CompletedProcess(args, 0, "", "")
 
