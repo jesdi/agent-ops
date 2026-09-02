@@ -28,6 +28,9 @@ def rig(tmp_path):
 echo "op $@ token=$OP_SERVICE_ACCOUNT_TOKEN" >> "{calls}"
 case "$*" in
   *agent-ops-github/GH_REPO_TOKEN*) echo "FAKE_REPO_PAT" ;;
+  *agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN*)
+    [ -f "{tmp_path}/CLAUDE_TOKEN" ] || exit 1
+    echo "FAKE_LONG_LIVED_TOKEN" ;;
   *agent-ops-claude*)
     [ -f "{tmp_path}/CLAUDE_CREDS" ] || exit 1
     echo '{{"fake": "claude-creds"}}' ;;
@@ -142,3 +145,24 @@ def test_git_signing_key_absent_skips_signing_config_not_fatal(rig):
     assert not (rig.state / "git-signing-key").exists()
     assert git_config(rig, "commit.gpgsign") == ""
     assert "git-signing" in (r.stdout + r.stderr).lower()
+
+
+def test_claude_long_lived_token_materialized_to_env_file(rig):
+    # The 1P-backed `claude setup-token` output becomes claude-token.env —
+    # the single static-token source the units (EnvironmentFile) and the
+    # session containers (podman --env-file) all read, replacing the
+    # refresh-rotation race on claude-home/.credentials.json.
+    (rig.tmp / "CLAUDE_TOKEN").touch()
+    r = run(rig)
+    assert r.returncode == 0, r.stderr
+    env_file = rig.state / "claude-token.env"
+    assert env_file.read_text() == (
+        "CLAUDE_CODE_OAUTH_TOKEN=FAKE_LONG_LIVED_TOKEN\n")
+    assert (env_file.stat().st_mode & 0o777) == 0o600
+
+
+def test_missing_long_lived_token_prints_setup_token_guidance(rig):
+    r = run(rig)
+    assert r.returncode == 0, r.stderr
+    assert not (rig.state / "claude-token.env").exists()
+    assert "setup-token" in r.stdout

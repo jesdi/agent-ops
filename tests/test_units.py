@@ -60,3 +60,18 @@ def test_bootstrap_installs_and_enables_the_sweep_timer():
     assert "provision/agent-ops-sweep.service" in text
     assert "provision/agent-ops-sweep.timer" in text
     assert "enable --now agent-ops-sweep.timer" in text
+
+
+def test_keepalive_service_loads_long_lived_token_env_file():
+    """With CLAUDE_CODE_OAUTH_TOKEN in its env the keepalive stops competing
+    for the single-use refresh token in claude-home (the rotation race that
+    killed the box's login every 8-16h) and becomes a pure auth canary. The
+    '-' prefix keeps the unit alive on boxes without the token yet."""
+    assert ("EnvironmentFile=-%h/agent-ops-state/claude-token.env"
+            in unit_text("agent-ops-keepalive.service"))
+
+
+def test_dispatcher_service_loads_long_lived_token_env_file():
+    # The dispatcher's budget check calls the usage API with the same token.
+    assert ("EnvironmentFile=-%h/agent-ops-state/claude-token.env"
+            in unit_text("agent-ops-dispatcher.service"))

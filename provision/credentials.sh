@@ -39,6 +39,24 @@ else
   echo "  cp -r ~/.claude/. $STATE_DIR/claude-home/"
 fi
 
+# --- claude: long-lived OAuth token -> claude-token.env ---------------------
+# `claude setup-token` output, saved to 1P (item agent-ops-claude, field
+# CLAUDE_CODE_OAUTH_TOKEN). Materialized as an env file the units load via
+# EnvironmentFile and the session containers via podman --env-file — a
+# static token with no refresh step, so nothing races the single-use
+# refresh token in claude-home/.credentials.json. Absence is fine: the
+# fleet then falls back to the shared OAuth store as before.
+if tok=$($OP read "op://agent-ops/agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN" \
+    2>/dev/null); then
+  umask 077
+  printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$tok" > "$STATE_DIR/claude-token.env"
+  echo "claude long-lived token restored to $STATE_DIR/claude-token.env"
+else
+  echo "no long-lived claude token in 1P — run 'claude setup-token', save the"
+  echo "token to 1P item agent-ops-claude field CLAUDE_CODE_OAUTH_TOKEN, then"
+  echo "re-run this script"
+fi
+
 # --- git: SSH commit signing ------------------------------------------------
 # Signing is only enabled once the key materializes; setting commit.gpgsign
 # with no key on disk would break every commit on the box.

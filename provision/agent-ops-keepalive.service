@@ -11,6 +11,13 @@ Type=oneshot
 # claude-home lapses, and a failed refresh zeroes it, stranding every
 # session at the login prompt.
 Environment=CLAUDE_CONFIG_DIR=%h/agent-ops-state/claude-home
+# Long-lived setup-token (spec: OAuth refresh-rotation race). With
+# CLAUDE_CODE_OAUTH_TOKEN in env, claude authenticates statically and stops
+# competing for the single-use refresh token in the claude-home store — the
+# race that invalidated the box login every 8-16h. The '-' keeps the unit
+# alive on boxes that have not materialized the token yet; the run then
+# still exercises (and refreshes) the claude-home store as before.
+EnvironmentFile=-%h/agent-ops-state/claude-token.env
 # -p (print/headless): skips the workspace-trust dialog — the host cwd is
 # not a trusted project inside claude-home, so an interactive run blocks
 # there forever and never reaches the API call that refreshes the token —
