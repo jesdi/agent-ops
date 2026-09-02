@@ -118,3 +118,30 @@ def test_default_falls_back_to_host_store(tmp_path, monkeypatch):
     u = budget.fetch_usage(tmp_path)  # no claude-home store in state_dir
     assert u.source == "oauth"
     assert seen["headers"]["Authorization"] == "Bearer tok-host"
+
+
+def test_env_token_preferred_over_credentials_store(tmp_path, monkeypatch):
+    # The long-lived setup-token (claude-token.env, injected by the unit's
+    # EnvironmentFile) outlives the claude-home store, which lapses ~8h
+    # after the last refresh once the fleet stops renewing it.
+    seen = {}
+
+    def fake_get(url, headers):
+        seen["headers"] = headers
+        return oauth_response()
+
+    monkeypatch.setattr(budget, "_http_get_json", fake_get)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "long-lived-tok")
+    u = budget.fetch_usage(tmp_path, credentials_path=creds(tmp_path))
+    assert u.source == "oauth"
+    assert seen["headers"]["Authorization"] == "Bearer long-lived-tok"
+
+
+def test_env_token_suffices_without_credentials_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(budget, "_http_get_json",
+                        lambda url, headers: oauth_response())
+    monkeypatch.setattr(budget, "HOST_CREDENTIALS",
+                        str(tmp_path / "absent.json"), raising=True)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "long-lived-tok")
+    u = budget.fetch_usage(tmp_path)
+    assert u.source == "oauth"

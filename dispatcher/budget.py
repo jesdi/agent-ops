@@ -28,6 +28,7 @@ def should_spawn(
 
 
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -130,7 +131,11 @@ def fetch_usage(
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
-    token = _read_token(_resolve_credentials(state_dir, credentials_path))
+    # The long-lived setup-token (claude-token.env via the unit's
+    # EnvironmentFile) outlives every credentials store, which lapses once
+    # the fleet stops refreshing it — prefer it when present.
+    token = (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+             or _read_token(_resolve_credentials(state_dir, credentials_path)))
     if token is not None:
         try:
             data = _http_get_json(USAGE_URL, {
