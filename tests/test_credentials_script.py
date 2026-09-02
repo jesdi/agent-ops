@@ -148,18 +148,16 @@ def test_git_signing_key_absent_skips_signing_config_not_fatal(rig):
     assert "git-signing" in (r.stdout + r.stderr).lower()
 
 
-def test_claude_long_lived_token_materialized_to_env_file(rig):
-    # The 1P-backed `claude setup-token` output becomes claude-token.env —
-    # the single static-token source the units (EnvironmentFile) and the
-    # session containers (podman --env-file) all read, replacing the
-    # refresh-rotation race on claude-home/.credentials.json.
+def test_claude_long_lived_token_checked_but_never_written_to_disk(rig):
+    # The token is resolved from 1P at spawn time (with-claude-token.sh,
+    # budget.py); credentials.sh only verifies the field exists so a
+    # missing token is caught at provisioning, not by hourly keepalive
+    # alerts. Nothing may persist it on the box.
     (rig.tmp / "CLAUDE_TOKEN").touch()
     r = run(rig)
     assert r.returncode == 0, r.stderr
-    env_file = rig.state / "claude-token.env"
-    assert env_file.read_text() == (
-        "CLAUDE_CODE_OAUTH_TOKEN=FAKE_LONG_LIVED_TOKEN\n")
-    assert (env_file.stat().st_mode & 0o777) == 0o600
+    assert not (rig.state / "claude-token.env").exists()
+    assert "long-lived claude token present" in r.stdout
 
 
 def test_missing_long_lived_token_prints_setup_token_guidance(rig):
@@ -169,21 +167,9 @@ def test_missing_long_lived_token_prints_setup_token_guidance(rig):
     assert "setup-token" in r.stdout
 
 
-def test_empty_long_lived_token_field_writes_no_env_file(rig):
-    # An empty-but-present 1P field must not inject an empty
-    # CLAUDE_CODE_OAUTH_TOKEN into every container.
+def test_empty_long_lived_token_field_treated_as_missing(rig):
     (rig.tmp / "CLAUDE_TOKEN_EMPTY").touch()
     r = run(rig)
     assert r.returncode == 0, r.stderr
     assert not (rig.state / "claude-token.env").exists()
-
-
-def test_stale_token_env_file_kept_with_warning_when_field_gone(rig):
-    # Never auto-delete (a transient 1P outage would drop a working token),
-    # but say the file was left so a revoked token gets cleaned up by hand.
-    (rig.state / "claude-token.env").write_text(
-        "CLAUDE_CODE_OAUTH_TOKEN=old\n")
-    r = run(rig)
-    assert r.returncode == 0, r.stderr
-    assert (rig.state / "claude-token.env").exists()
-    assert "left in place" in r.stdout
+    assert "setup-token" in r.stdout

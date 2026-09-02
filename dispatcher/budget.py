@@ -103,15 +103,24 @@ def _parse_ccusage(data: dict) -> UsageSnapshot | None:
     )
 
 
-def _token_from_env_file(state_dir: str | Path) -> str | None:
-    """Long-lived setup-token from claude-token.env (credentials.sh)."""
-    p = Path(state_dir) / "claude-token.env"
-    if not p.exists():
+def _token_from_op() -> str | None:
+    """Long-lived setup-token, read from 1P at fetch time — never persisted
+    on the box. Only attempted when the caller already carries op service
+    auth (dispatcher and triage units remap it into env); web has no op
+    plumbing and must not shell out to an op that can only hang or prompt.
+    The ≥180s fetch cache bounds the 1P call rate."""
+    if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         return None
-    for line in p.read_text().splitlines():
-        if line.startswith("CLAUDE_CODE_OAUTH_TOKEN="):
-            return line.split("=", 1)[1].strip() or None
-    return None
+    try:
+        r = subprocess.run(
+            [os.environ.get("AGENT_OPS_OP", "op"), "read",
+             "op://agent-ops/agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN"],
+            capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
 
 
 def _resolve_credentials(state_dir: str | Path,
@@ -143,15 +152,13 @@ def fetch_usage(
             pass
 
     # Token preference: explicit env override, then the box's long-lived
-    # setup-token (read from claude-token.env here rather than injected via
-    # unit EnvironmentFile, so triage and web — the other fetch_usage
-    # callers — get it too and no unit carries the secret in its process
-    # env, which tmux new-session would inherit), then the shared OAuth
-    # store. The store stays as a live fallback: the usage endpoint is
-    # unofficial and may reject the static token.
+    # setup-token read from 1P at fetch time (no unit carries the secret in
+    # its process env — tmux new-session would inherit the dispatcher's),
+    # then the shared OAuth store. The store stays as a live fallback: the
+    # usage endpoint is unofficial and may reject the static token.
     candidates = [t for t in (
         os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
-        _token_from_env_file(state_dir),
+        _token_from_op(),
         _read_token(_resolve_credentials(state_dir, credentials_path)),
     ) if t]
     for token in candidates:

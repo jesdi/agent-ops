@@ -22,8 +22,11 @@ def _no_ambient_claude_token(monkeypatch):
     """Session containers carry CLAUDE_CODE_OAUTH_TOKEN (podman --env-file),
     and budget.fetch_usage prefers it over any credentials_path fixture — an
     ambient token would flip every Authorization assertion in the suite.
-    Tests exercising the env path set it explicitly."""
+    Tests exercising the env path set it explicitly. OP_SERVICE_ACCOUNT_TOKEN
+    likewise: with it present, budget.fetch_usage would shell out to the real
+    `op` binary mid-suite."""
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
 
 
 @pytest.fixture(autouse=True)

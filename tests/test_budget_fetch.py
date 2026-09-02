@@ -147,10 +147,22 @@ def test_env_token_suffices_without_credentials_store(tmp_path, monkeypatch):
     assert u.source == "oauth"
 
 
-def test_token_env_file_in_state_dir_preferred_over_store(tmp_path, monkeypatch):
-    # File-based resolution reaches triage and web (which also call
-    # fetch_usage) without loading the secret into any unit's process env —
-    # tmux new-session would inherit the dispatcher's env into every pane.
+def fake_op(tmp_path, output="op-tok", fail=False):
+    """Fake `op` binary logging calls; AGENT_OPS_OP points budget at it."""
+    calls = tmp_path / "op-calls.log"
+    op = tmp_path / "op"
+    body = "exit 1" if fail else f"echo '{output}'"
+    op.write_text("#!/bin/sh\n"
+                  f"echo \"op $@ token=$OP_SERVICE_ACCOUNT_TOKEN\" >> {calls}\n"
+                  f"{body}\n")
+    op.chmod(0o755)
+    return op, calls
+
+
+def test_op_token_preferred_over_credentials_store(tmp_path, monkeypatch):
+    # The token is resolved from 1P at fetch time — never persisted on the
+    # box — which also covers triage and web (the other fetch_usage
+    # callers) with no unit carrying the secret in its process env.
     seen = {}
 
     def fake_get(url, headers):
@@ -158,33 +170,38 @@ def test_token_env_file_in_state_dir_preferred_over_store(tmp_path, monkeypatch)
         return oauth_response()
 
     monkeypatch.setattr(budget, "_http_get_json", fake_get)
-    (tmp_path / "claude-token.env").write_text(
-        "CLAUDE_CODE_OAUTH_TOKEN=file-tok\n")
+    op, calls = fake_op(tmp_path)
+    monkeypatch.setenv("AGENT_OPS_OP", str(op))
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "svc-tok")
     u = budget.fetch_usage(tmp_path, credentials_path=creds(tmp_path))
     assert u.source == "oauth"
-    assert seen["headers"]["Authorization"] == "Bearer file-tok"
+    assert seen["headers"]["Authorization"] == "Bearer op-tok"
+    assert "agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN" in calls.read_text()
 
 
-def test_static_token_failure_falls_back_to_store_token(tmp_path, monkeypatch):
+def test_op_token_failure_falls_back_to_store_token(tmp_path, monkeypatch):
     # The usage endpoint is unofficial; if it rejects the setup-token the
     # budget gate must not go dark while a valid store token exists.
-    calls = []
+    tried = []
 
     def fake_get(url, headers):
-        calls.append(headers["Authorization"])
-        if headers["Authorization"] == "Bearer file-tok":
+        tried.append(headers["Authorization"])
+        if headers["Authorization"] == "Bearer op-tok":
             raise budget.UsageFetchError("401")
         return oauth_response()
 
     monkeypatch.setattr(budget, "_http_get_json", fake_get)
-    (tmp_path / "claude-token.env").write_text(
-        "CLAUDE_CODE_OAUTH_TOKEN=file-tok\n")
+    op, _ = fake_op(tmp_path)
+    monkeypatch.setenv("AGENT_OPS_OP", str(op))
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "svc-tok")
     u = budget.fetch_usage(tmp_path, credentials_path=creds(tmp_path))
     assert u.source == "oauth"
-    assert calls == ["Bearer file-tok", "Bearer tok-123"]
+    assert tried == ["Bearer op-tok", "Bearer tok-123"]
 
 
-def test_empty_token_env_file_is_ignored(tmp_path, monkeypatch):
+def test_op_skipped_without_service_account_token(tmp_path, monkeypatch):
+    # web has no op plumbing; budget must not shell out to an op that can
+    # only hang or prompt — it falls straight to the store.
     seen = {}
 
     def fake_get(url, headers):
@@ -192,6 +209,24 @@ def test_empty_token_env_file_is_ignored(tmp_path, monkeypatch):
         return oauth_response()
 
     monkeypatch.setattr(budget, "_http_get_json", fake_get)
-    (tmp_path / "claude-token.env").write_text("CLAUDE_CODE_OAUTH_TOKEN=\n")
+    op, calls = fake_op(tmp_path)
+    monkeypatch.setenv("AGENT_OPS_OP", str(op))
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    u = budget.fetch_usage(tmp_path, credentials_path=creds(tmp_path))
+    assert seen["headers"]["Authorization"] == "Bearer tok-123"
+    assert not calls.exists()
+
+
+def test_op_empty_or_failing_read_is_ignored(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_get(url, headers):
+        seen["headers"] = headers
+        return oauth_response()
+
+    monkeypatch.setattr(budget, "_http_get_json", fake_get)
+    op, _ = fake_op(tmp_path, output="")
+    monkeypatch.setenv("AGENT_OPS_OP", str(op))
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "svc-tok")
     u = budget.fetch_usage(tmp_path, credentials_path=creds(tmp_path))
     assert seen["headers"]["Authorization"] == "Bearer tok-123"

@@ -39,28 +39,20 @@ else
   echo "  cp -r ~/.claude/. $STATE_DIR/claude-home/"
 fi
 
-# --- claude: long-lived OAuth token -> claude-token.env ---------------------
+# --- claude: long-lived OAuth token (check only, never written) -------------
 # `claude setup-token` output, saved to 1P (item agent-ops-claude, field
-# CLAUDE_CODE_OAUTH_TOKEN). Materialized as an env file the units load via
-# EnvironmentFile and the session containers via podman --env-file — a
-# static token with no refresh step, so nothing races the single-use
-# refresh token in claude-home/.credentials.json. Absence is fine: the
-# fleet then falls back to the shared OAuth store as before.
+# CLAUDE_CODE_OAUTH_TOKEN). Deliberately NOT materialized on disk: the
+# with-claude-token.sh wrapper and budget.py resolve it from 1P at spawn/
+# fetch time, so the secret exists only in process env. This check just
+# surfaces a missing token at provisioning instead of via hourly keepalive
+# alerts. Absence is fine: the fleet then falls back to the shared OAuth
+# store (and its refresh-rotation race) as before.
 if tok=$($OP read "op://agent-ops/agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN" \
     2>/dev/null) && [ -n "$tok" ]; then
-  umask 077
-  printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$tok" > "$STATE_DIR/claude-token.env"
-  echo "claude long-lived token restored to $STATE_DIR/claude-token.env"
+  echo "long-lived claude token present in 1P (resolved at spawn; never on disk)"
 else
   echo "no long-lived claude token in 1P — run 'claude setup-token', save the"
-  echo "token to 1P item agent-ops-claude field CLAUDE_CODE_OAUTH_TOKEN, then"
-  echo "re-run this script"
-  # Never auto-delete an existing file: a transient 1P outage must not
-  # drop a working token. A deliberately revoked token needs a manual rm.
-  if [ -f "$STATE_DIR/claude-token.env" ]; then
-    echo "existing $STATE_DIR/claude-token.env left in place — remove it if"
-    echo "the token was revoked"
-  fi
+  echo "token to 1P item agent-ops-claude field CLAUDE_CODE_OAUTH_TOKEN"
 fi
 
 # --- git: SSH commit signing ------------------------------------------------
