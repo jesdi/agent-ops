@@ -150,3 +150,53 @@ def test_triage_cmd_quotes_prompt_path_and_model(monkeypatch, tmp_path):
     shell_line = cmd[-1]
     assert "'/triage/a b; rm -rf /.md'" in shell_line
     assert "'m; rm -rf /'" in shell_line
+
+
+def test_session_cmd_passes_claude_token_env_file_when_present(
+        monkeypatch, tmp_path):
+    # Spec: long-lived OAuth token (claude setup-token) reaches the session
+    # container via podman --env-file, never via argv or the tmux env — the
+    # dispatcher composes the flag, podman reads the secret at run time.
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "claude-token.env").write_text("CLAUDE_CODE_OAUTH_TOKEN=t\n")
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(state))
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    wt, _ = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
+                                 "P")
+    assert f"--env-file {state}/claude-token.env" in cmd
+
+
+def test_session_cmd_omits_token_env_file_when_absent(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(state))
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    wt, _ = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
+                                 "P")
+    assert "--env-file" not in cmd
+
+
+def test_triage_cmd_passes_claude_token_env_file_when_present(
+        monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "claude-token.env").write_text("CLAUDE_CODE_OAUTH_TOKEN=t\n")
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(state))
+    cmd = containers.triage_cmd(
+        "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+        "claude-opus-4-8", "/triage/p.md")
+    i = cmd.index("--env-file")
+    assert cmd[i + 1] == f"{state}/claude-token.env"
+
+
+def test_triage_cmd_omits_token_env_file_when_absent(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(state))
+    cmd = containers.triage_cmd(
+        "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+        "claude-opus-4-8", "/triage/p.md")
+    assert "--env-file" not in cmd

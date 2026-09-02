@@ -23,6 +23,16 @@ def _state_dir() -> str:
                           str(Path.home() / "agent-ops-state"))
 
 
+def _token_env_file() -> str | None:
+    """Path to claude-token.env when the box has a long-lived OAuth token
+    (credentials.sh materializes it from 1P). Passed to podman as
+    --env-file so the secret never appears in argv or the tmux env; when
+    present, claude uses CLAUDE_CODE_OAUTH_TOKEN and stops competing for
+    the single-use refresh token in the shared claude-home store."""
+    p = Path(_state_dir(), "claude-token.env")
+    return str(p) if p.exists() else None
+
+
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 claude_args: str) -> str:
     clone = clone_root(worktree)
@@ -35,6 +45,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         Path(_state_dir(), "wait").mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
+    token_env = _token_env_file()
     return (
         f"podman run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
@@ -54,6 +65,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         f"-v {worktree}:{worktree} -w {worktree} "
         f"-v {clone}:{clone} "
         f"-v {_state_dir()}/claude-home:/root/.claude "
+        + (f"--env-file {token_env} " if token_env else "") +
         f"-v {home}/.config/gh:/root/.config/gh:ro "
         f"-v {home}/.gitconfig:/root/.gitconfig:ro "
         # auto: the classifier approves routine actions and stops only for
@@ -96,10 +108,12 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     home = str(Path.home())
     claude = (f"claude -p \"$(cat {shlex.quote(prompt_path)})\" "
               f"--permission-mode auto --model {shlex.quote(model)}")
+    token_env = _token_env_file()
     return [
         "podman", "run", "--rm", "--name", name,
         "--memory", memory, "--cpus", cpus,
         "-e", "CLAUDE_CONFIG_DIR=/root/.claude",
+    ] + (["--env-file", token_env] if token_env else []) + [
         "-v", f"{clone}:{clone}:ro", "-w", clone,
         "-v", f"{_state_dir()}/claude-home:/root/.claude",
         "-v", f"{home}/.config/gh:/root/.config/gh:ro",
