@@ -145,3 +145,53 @@ def test_env_token_suffices_without_credentials_store(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "long-lived-tok")
     u = budget.fetch_usage(tmp_path)
     assert u.source == "oauth"
+
+
+def test_token_env_file_in_state_dir_preferred_over_store(tmp_path, monkeypatch):
+    # File-based resolution reaches triage and web (which also call
+    # fetch_usage) without loading the secret into any unit's process env —
+    # tmux new-session would inherit the dispatcher's env into every pane.
+    seen = {}
+
+    def fake_get(url, headers):
+        seen["headers"] = headers
+        return oauth_response()
+
+    monkeypatch.setattr(budget, "_http_get_json", fake_get)
+    (tmp_path / "claude-token.env").write_text(
+        "CLAUDE_CODE_OAUTH_TOKEN=file-tok\n")
+    u = budget.fetch_usage(tmp_path, credentials_path=creds(tmp_path))
+    assert u.source == "oauth"
+    assert seen["headers"]["Authorization"] == "Bearer file-tok"
+
+
+def test_static_token_failure_falls_back_to_store_token(tmp_path, monkeypatch):
+    # The usage endpoint is unofficial; if it rejects the setup-token the
+    # budget gate must not go dark while a valid store token exists.
+    calls = []
+
+    def fake_get(url, headers):
+        calls.append(headers["Authorization"])
+        if headers["Authorization"] == "Bearer file-tok":
+            raise budget.UsageFetchError("401")
+        return oauth_response()
+
+    monkeypatch.setattr(budget, "_http_get_json", fake_get)
+    (tmp_path / "claude-token.env").write_text(
+        "CLAUDE_CODE_OAUTH_TOKEN=file-tok\n")
+    u = budget.fetch_usage(tmp_path, credentials_path=creds(tmp_path))
+    assert u.source == "oauth"
+    assert calls == ["Bearer file-tok", "Bearer tok-123"]
+
+
+def test_empty_token_env_file_is_ignored(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_get(url, headers):
+        seen["headers"] = headers
+        return oauth_response()
+
+    monkeypatch.setattr(budget, "_http_get_json", fake_get)
+    (tmp_path / "claude-token.env").write_text("CLAUDE_CODE_OAUTH_TOKEN=\n")
+    u = budget.fetch_usage(tmp_path, credentials_path=creds(tmp_path))
+    assert seen["headers"]["Authorization"] == "Bearer tok-123"

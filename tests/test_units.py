@@ -71,7 +71,11 @@ def test_keepalive_service_loads_long_lived_token_env_file():
             in unit_text("agent-ops-keepalive.service"))
 
 
-def test_dispatcher_service_loads_long_lived_token_env_file():
-    # The dispatcher's budget check calls the usage API with the same token.
-    assert ("EnvironmentFile=-%h/agent-ops-state/claude-token.env"
-            in unit_text("agent-ops-dispatcher.service"))
+def test_dispatcher_service_does_not_carry_the_long_lived_token():
+    """The dispatcher must NOT load claude-token.env into its process env:
+    sessions.py's `tmux new-session` starts the tmux server from the
+    dispatcher's environment, which would expose the secret to every pane
+    shell (`tmux show-environment`). The budget check reads the token file
+    from the state dir instead, which also covers triage and web — the
+    other fetch_usage callers — without touching their units."""
+    assert "claude-token.env" not in unit_text("agent-ops-dispatcher.service")

@@ -18,6 +18,15 @@ if root not in sys.path:
 
 
 @pytest.fixture(autouse=True)
+def _no_ambient_claude_token(monkeypatch):
+    """Session containers carry CLAUDE_CODE_OAUTH_TOKEN (podman --env-file),
+    and budget.fetch_usage prefers it over any credentials_path fixture — an
+    ambient token would flip every Authorization assertion in the suite.
+    Tests exercising the env path set it explicitly."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_state_dir(tmp_path, monkeypatch):
     """Point AGENT_OPS_STATE_DIR at a per-test tmp dir so no test can ever
     read or write the box's real state (claude-home seeding in

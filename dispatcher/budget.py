@@ -103,6 +103,17 @@ def _parse_ccusage(data: dict) -> UsageSnapshot | None:
     )
 
 
+def _token_from_env_file(state_dir: str | Path) -> str | None:
+    """Long-lived setup-token from claude-token.env (credentials.sh)."""
+    p = Path(state_dir) / "claude-token.env"
+    if not p.exists():
+        return None
+    for line in p.read_text().splitlines():
+        if line.startswith("CLAUDE_CODE_OAUTH_TOKEN="):
+            return line.split("=", 1)[1].strip() or None
+    return None
+
+
 def _resolve_credentials(state_dir: str | Path,
                          credentials_path: str | Path | None) -> str | Path:
     # The claude-home store (mounted into every session container, renewed
@@ -131,12 +142,19 @@ def fetch_usage(
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
-    # The long-lived setup-token (claude-token.env via the unit's
-    # EnvironmentFile) outlives every credentials store, which lapses once
-    # the fleet stops refreshing it — prefer it when present.
-    token = (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-             or _read_token(_resolve_credentials(state_dir, credentials_path)))
-    if token is not None:
+    # Token preference: explicit env override, then the box's long-lived
+    # setup-token (read from claude-token.env here rather than injected via
+    # unit EnvironmentFile, so triage and web — the other fetch_usage
+    # callers — get it too and no unit carries the secret in its process
+    # env, which tmux new-session would inherit), then the shared OAuth
+    # store. The store stays as a live fallback: the usage endpoint is
+    # unofficial and may reject the static token.
+    candidates = [t for t in (
+        os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
+        _token_from_env_file(state_dir),
+        _read_token(_resolve_credentials(state_dir, credentials_path)),
+    ) if t]
+    for token in candidates:
         try:
             data = _http_get_json(USAGE_URL, {
                 "Authorization": f"Bearer {token}",
@@ -150,7 +168,8 @@ def fetch_usage(
             }))
             return snap
         except (UsageFetchError, KeyError, ValueError, TypeError):
-            pass  # fall through to ccusage; no retry storm — next pass backs off
+            continue  # next token, then ccusage; no retry storm — the
+            # cache spaces passes ≥180s apart either way
 
     cc = _ccusage_json()
     if cc is not None:
