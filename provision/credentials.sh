@@ -39,6 +39,22 @@ else
   echo "  cp -r ~/.claude/. $STATE_DIR/claude-home/"
 fi
 
+# --- claude: long-lived OAuth token (check only, never written) -------------
+# `claude setup-token` output, saved to 1P (item agent-ops-claude, field
+# CLAUDE_CODE_OAUTH_TOKEN). Deliberately NOT materialized on disk: the
+# with-claude-token.sh wrapper and budget.py resolve it from 1P at spawn/
+# fetch time, so the secret exists only in process env. This check just
+# surfaces a missing token at provisioning instead of via hourly keepalive
+# alerts. Absence is fine: the fleet then falls back to the shared OAuth
+# store (and its refresh-rotation race) as before.
+if tok=$($OP read "op://agent-ops/agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN" \
+    2>/dev/null) && [ -n "$tok" ]; then
+  echo "long-lived claude token present in 1P (resolved at spawn; never on disk)"
+else
+  echo "no long-lived claude token in 1P — run 'claude setup-token', save the"
+  echo "token to 1P item agent-ops-claude field CLAUDE_CODE_OAUTH_TOKEN"
+fi
+
 # --- git: SSH commit signing ------------------------------------------------
 # Signing is only enabled once the key materializes; setting commit.gpgsign
 # with no key on disk would break every commit on the box.

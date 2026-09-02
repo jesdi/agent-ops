@@ -29,7 +29,7 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     wt, clone = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
                                  "--continue 'hi'")
-    assert cmd.startswith("podman run --rm -it --name task-42 ")
+    assert "podman run --rm -it --name task-42 " in cmd
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd and f"-w {wt}" in cmd
     assert f"-v {clone}:{clone}" in cmd
@@ -125,7 +125,8 @@ def test_triage_cmd_read_only_clone_and_report_mount(monkeypatch, tmp_path):
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
         "claude-opus-4-8", "/triage/o-r-2026-07-30-prompt.md")
-    assert cmd[:3] == ["podman", "run", "--rm"]
+    assert cmd[0].endswith("provision/with-claude-token.sh")
+    assert cmd[1:4] == ["podman", "run", "--rm"]
     assert "-it" not in cmd
     assert "/repos/r:/repos/r:ro" in cmd
     assert "/state/triage:/triage" in cmd
@@ -150,3 +151,35 @@ def test_triage_cmd_quotes_prompt_path_and_model(monkeypatch, tmp_path):
     shell_line = cmd[-1]
     assert "'/triage/a b; rm -rf /.md'" in shell_line
     assert "'m; rm -rf /'" in shell_line
+
+
+def test_session_cmd_resolves_claude_token_at_spawn_via_wrapper(
+        monkeypatch, tmp_path):
+    # The long-lived token is never persisted on the box: the wrapper
+    # resolves it from 1P at spawn time and execs podman with it exported;
+    # bare `-e CLAUDE_CODE_OAUTH_TOKEN` forwards it into the container
+    # (podman omits the flag's var when unset, so a box without the token
+    # degrades to the shared claude-home store).
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    wt, _ = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
+                                 "P")
+    wrapper = str(Path(containers.__file__).resolve().parents[1]
+                  / "provision" / "with-claude-token.sh")
+    assert cmd.startswith(f"{wrapper} podman run --rm -it --name task-42 ")
+    assert "-e CLAUDE_CODE_OAUTH_TOKEN " in cmd
+    assert "claude-token.env" not in cmd
+
+
+def test_triage_cmd_resolves_claude_token_at_spawn_via_wrapper(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    cmd = containers.triage_cmd(
+        "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+        "claude-opus-4-8", "/triage/p.md")
+    wrapper = str(Path(containers.__file__).resolve().parents[1]
+                  / "provision" / "with-claude-token.sh")
+    assert cmd[0] == wrapper
+    assert cmd[1:4] == ["podman", "run", "--rm"]
+    i = cmd.index("-e", cmd.index("CLAUDE_CONFIG_DIR=/root/.claude"))
+    assert cmd[i + 1] == "CLAUDE_CODE_OAUTH_TOKEN"

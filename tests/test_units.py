@@ -60,3 +60,25 @@ def test_bootstrap_installs_and_enables_the_sweep_timer():
     assert "provision/agent-ops-sweep.service" in text
     assert "provision/agent-ops-sweep.timer" in text
     assert "enable --now agent-ops-sweep.timer" in text
+
+
+def test_keepalive_service_resolves_token_via_wrapper():
+    """With CLAUDE_CODE_OAUTH_TOKEN in its env the keepalive stops competing
+    for the single-use refresh token in claude-home (the rotation race that
+    killed the box's login every 8-16h) and becomes a pure auth canary. The
+    wrapper resolves the token from 1P per run — nothing persists on disk,
+    and a box without the token degrades to today's behavior."""
+    text = unit_text("agent-ops-keepalive.service")
+    assert ("ExecStart=%h/agent-ops/provision/with-claude-token.sh "
+            "%h/.local/bin/claude -p") in text
+    assert "claude-token.env" not in text
+
+
+def test_dispatcher_service_does_not_carry_the_long_lived_token():
+    """The dispatcher must NOT load claude-token.env into its process env:
+    sessions.py's `tmux new-session` starts the tmux server from the
+    dispatcher's environment, which would expose the secret to every pane
+    shell (`tmux show-environment`). The budget check reads the token file
+    from the state dir instead, which also covers triage and web — the
+    other fetch_usage callers — without touching their units."""
+    assert "claude-token.env" not in unit_text("agent-ops-dispatcher.service")

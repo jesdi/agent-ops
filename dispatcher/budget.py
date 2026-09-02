@@ -28,6 +28,7 @@ def should_spawn(
 
 
 import json
+import os
 import subprocess
 import time
 import urllib.error
@@ -102,6 +103,26 @@ def _parse_ccusage(data: dict) -> UsageSnapshot | None:
     )
 
 
+def _token_from_op() -> str | None:
+    """Long-lived setup-token, read from 1P at fetch time — never persisted
+    on the box. Only attempted when the caller already carries op service
+    auth (dispatcher and triage units remap it into env); web has no op
+    plumbing and must not shell out to an op that can only hang or prompt.
+    The ≥180s fetch cache bounds the 1P call rate."""
+    if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        return None
+    try:
+        r = subprocess.run(
+            [os.environ.get("AGENT_OPS_OP", "op"), "read",
+             "op://agent-ops/agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN"],
+            capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
 def _resolve_credentials(state_dir: str | Path,
                          credentials_path: str | Path | None) -> str | Path:
     # The claude-home store (mounted into every session container, renewed
@@ -130,8 +151,17 @@ def fetch_usage(
         except (json.JSONDecodeError, KeyError, TypeError):
             pass
 
-    token = _read_token(_resolve_credentials(state_dir, credentials_path))
-    if token is not None:
+    # Token preference: explicit env override, then the box's long-lived
+    # setup-token read from 1P at fetch time (no unit carries the secret in
+    # its process env — tmux new-session would inherit the dispatcher's),
+    # then the shared OAuth store. The store stays as a live fallback: the
+    # usage endpoint is unofficial and may reject the static token.
+    candidates = [t for t in (
+        os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
+        _token_from_op(),
+        _read_token(_resolve_credentials(state_dir, credentials_path)),
+    ) if t]
+    for token in candidates:
         try:
             data = _http_get_json(USAGE_URL, {
                 "Authorization": f"Bearer {token}",
@@ -145,7 +175,8 @@ def fetch_usage(
             }))
             return snap
         except (UsageFetchError, KeyError, ValueError, TypeError):
-            pass  # fall through to ccusage; no retry storm — next pass backs off
+            continue  # next token, then ccusage; no retry storm — the
+            # cache spaces passes ≥180s apart either way
 
     cc = _ccusage_json()
     if cc is not None:
