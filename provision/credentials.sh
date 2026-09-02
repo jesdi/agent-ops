@@ -47,7 +47,7 @@ fi
 # refresh token in claude-home/.credentials.json. Absence is fine: the
 # fleet then falls back to the shared OAuth store as before.
 if tok=$($OP read "op://agent-ops/agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN" \
-    2>/dev/null); then
+    2>/dev/null) && [ -n "$tok" ]; then
   umask 077
   printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$tok" > "$STATE_DIR/claude-token.env"
   echo "claude long-lived token restored to $STATE_DIR/claude-token.env"
@@ -55,6 +55,12 @@ else
   echo "no long-lived claude token in 1P — run 'claude setup-token', save the"
   echo "token to 1P item agent-ops-claude field CLAUDE_CODE_OAUTH_TOKEN, then"
   echo "re-run this script"
+  # Never auto-delete an existing file: a transient 1P outage must not
+  # drop a working token. A deliberately revoked token needs a manual rm.
+  if [ -f "$STATE_DIR/claude-token.env" ]; then
+    echo "existing $STATE_DIR/claude-token.env left in place — remove it if"
+    echo "the token was revoked"
+  fi
 fi
 
 # --- git: SSH commit signing ------------------------------------------------

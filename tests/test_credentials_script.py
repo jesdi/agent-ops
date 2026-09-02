@@ -29,6 +29,7 @@ echo "op $@ token=$OP_SERVICE_ACCOUNT_TOKEN" >> "{calls}"
 case "$*" in
   *agent-ops-github/GH_REPO_TOKEN*) echo "FAKE_REPO_PAT" ;;
   *agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN*)
+    if [ -f "{tmp_path}/CLAUDE_TOKEN_EMPTY" ]; then echo ""; exit 0; fi
     [ -f "{tmp_path}/CLAUDE_TOKEN" ] || exit 1
     echo "FAKE_LONG_LIVED_TOKEN" ;;
   *agent-ops-claude*)
@@ -166,3 +167,23 @@ def test_missing_long_lived_token_prints_setup_token_guidance(rig):
     assert r.returncode == 0, r.stderr
     assert not (rig.state / "claude-token.env").exists()
     assert "setup-token" in r.stdout
+
+
+def test_empty_long_lived_token_field_writes_no_env_file(rig):
+    # An empty-but-present 1P field must not inject an empty
+    # CLAUDE_CODE_OAUTH_TOKEN into every container.
+    (rig.tmp / "CLAUDE_TOKEN_EMPTY").touch()
+    r = run(rig)
+    assert r.returncode == 0, r.stderr
+    assert not (rig.state / "claude-token.env").exists()
+
+
+def test_stale_token_env_file_kept_with_warning_when_field_gone(rig):
+    # Never auto-delete (a transient 1P outage would drop a working token),
+    # but say the file was left so a revoked token gets cleaned up by hand.
+    (rig.state / "claude-token.env").write_text(
+        "CLAUDE_CODE_OAUTH_TOKEN=old\n")
+    r = run(rig)
+    assert r.returncode == 0, r.stderr
+    assert (rig.state / "claude-token.env").exists()
+    assert "left in place" in r.stdout
