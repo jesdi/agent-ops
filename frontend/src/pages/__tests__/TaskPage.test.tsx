@@ -6,16 +6,7 @@ import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
 import { pendingReplyIntent, taskDetail } from '../../test/fixtures'
 import { renderWithProviders } from '../../test/render'
-import { useUiStore } from '../../store/ui'
 import { TaskPage } from '../TaskPage'
-
-// Real xterm + a real WebSocket in jsdom would be noise here; these tests
-// only ever ask WHETHER the terminal attached, never what it renders.
-vi.mock('../../components/Terminal', () => ({
-  Terminal: ({ issue }: { issue: number }) => (
-    <div data-testid="terminal" data-issue={issue} />
-  ),
-}))
 
 function renderTask(route = '/task/widget/42') {
   return renderWithProviders(
@@ -32,7 +23,6 @@ function renderTask(route = '/task/widget/42') {
 
 beforeEach(() => {
   server.use(...defaultHandlers)
-  useUiStore.setState({ terminalOpenFor: null })
 })
 
 it('renders card, pane tail, and worktree', async () => {
@@ -187,44 +177,7 @@ it('a later success clears the inline error', async () => {
   )
 })
 
-it('an attached terminal does not carry over to the next task navigated to', async () => {
-  renderTask()
-  await waitFor(() =>
-    expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),
-  )
-  await userEvent.click(screen.getByRole('button', { name: 'Attach terminal' }))
-  expect(screen.getByTestId('terminal')).toHaveAttribute('data-issue', '42')
-
-  // Navigating to another task must NOT auto-attach it: an attach writes the
-  // `attached-<N>` marker and the dispatcher then declines to drive the task.
-  await userEvent.click(screen.getByRole('link', { name: 'go to 43' }))
-  await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Attach terminal' })).toBeInTheDocument(),
-  )
-  expect(screen.queryByTestId('terminal')).not.toBeInTheDocument()
-  expect(screen.getByTestId('pane-tail')).toBeInTheDocument()
-})
-
-it('an attached terminal does not carry over to the same issue number on a different target', async () => {
-  renderTask()
-  await waitFor(() =>
-    expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),
-  )
-  await userEvent.click(screen.getByRole('button', { name: 'Attach terminal' }))
-  expect(screen.getByTestId('terminal')).toHaveAttribute('data-issue', '42')
-
-  // widget#42 and other#42 are different tasks that happen to share an
-  // issue number — attaching one must not auto-attach the other, a task
-  // the operator never asked for.
-  await userEvent.click(screen.getByRole('link', { name: 'go to other/42' }))
-  await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Attach terminal' })).toBeInTheDocument(),
-  )
-  expect(screen.queryByTestId('terminal')).not.toBeInTheDocument()
-  expect(screen.getByTestId('pane-tail')).toBeInTheDocument()
-})
-
-it('a dead session explains itself on load and disables the attach button', async () => {
+it('a dead session explains itself on load and still offers history', async () => {
   server.use(
     http.get('/api/task/:target/:issue', () =>
       HttpResponse.json({
@@ -238,7 +191,51 @@ it('a dead session explains itself on load and disables the attach button', asyn
   await waitFor(() =>
     expect(screen.getByText('session task-42 is not running')).toBeInTheDocument(),
   )
-  expect(screen.getByRole('button', { name: 'Attach terminal' })).toBeDisabled()
+  // History falls back to the snapshot server-side, so it is never disabled.
+  expect(screen.getByRole('button', { name: 'Show history' })).toBeEnabled()
+  expect(screen.getByTestId('pane-tail')).toBeInTheDocument()
+})
+
+it('shows the console read-only with the external attach recipe', async () => {
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),
+  )
+  expect(screen.queryByRole('button', { name: /attach terminal/i })).not.toBeInTheDocument()
+  expect(screen.getByTestId('attach-guidance').textContent).toContain('herdr --remote box')
+  expect(screen.getByTestId('attach-guidance').textContent).toContain('Moshi')
+})
+
+it('toggles between the live tail and the scrollable history', async () => {
+  server.use(
+    http.get('/api/task/:target/:issue/history', () =>
+      HttpResponse.json({ text: 'older line\nstaging redirect URL' }),
+    ),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByTestId('pane-tail')).toBeInTheDocument(),
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Show history' }))
+  expect(screen.queryByTestId('pane-tail')).not.toBeInTheDocument()
+  await waitFor(() =>
+    expect(screen.getByTestId('terminal-history-pane').textContent).toContain('older line'),
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Live view' }))
+  expect(screen.getByTestId('pane-tail')).toBeInTheDocument()
+  expect(screen.queryByTestId('terminal-history')).not.toBeInTheDocument()
+})
+
+it('history state does not carry over to the next task navigated to', async () => {
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Show history' }))
+  await userEvent.click(screen.getByRole('link', { name: 'go to 43' }))
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Show history' })).toBeInTheDocument(),
+  )
   expect(screen.getByTestId('pane-tail')).toBeInTheDocument()
 })
 
@@ -354,16 +351,6 @@ it('hides the spec panel off the review gate', async () => {
   expect(screen.queryByTestId('spec-panel')).not.toBeInTheDocument()
 })
 
-it('the unattached tail renders at the persisted terminal height', async () => {
-  useUiStore.setState({ terminalHeight: 560 })
-  renderTask()
-  const tail = await screen.findByTestId('pane-tail')
-  // height comes from the store, not a hardcoded max-h-80
-  expect(tail.closest('[data-testid="terminal-pane-wrap"]')).toHaveStyle({
-    height: '560px',
-  })
-})
-
 it('a parked task shows the parked panel with the note, not the dead banner', async () => {
   server.use(
     http.get('/api/task/:target/:issue', () =>
@@ -425,11 +412,11 @@ it('shows the attach fallback when the spec 404s', async () => {
     ),
   )
   expect(screen.getByTestId('spec-panel').textContent).toContain(
-    'mosh agent-vps -- tmux attach -t task-42',
+    'herdr --remote box',
   )
 })
 
-it('links to claude.ai/code so mobile can use the Claude app instead of xterm', async () => {
+it('links to claude.ai/code so mobile can use the Claude app instead of a terminal', async () => {
   renderTask()
   await waitFor(() =>
     expect(screen.getByText('Fix login redirect')).toBeInTheDocument(),

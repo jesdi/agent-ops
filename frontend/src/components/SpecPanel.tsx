@@ -45,7 +45,7 @@ export function SpecPanel({ target, issue, busy, onApprove }: {
       {spec.isError && (
         <p className="text-sm text-amber-800">
           {spec.error.message} — fallback:{' '}
-          <code>mosh agent-vps -- tmux attach -t task-{issue}</code>
+          <code>herdr --remote box</code> and open the task-{issue} tab
         </p>
       )}
       {spec.data && (

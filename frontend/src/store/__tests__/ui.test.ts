@@ -1,29 +1,17 @@
 import { useUiStore } from '../ui'
 
 beforeEach(() => {
-  localStorage.clear()
-  useUiStore.setState({ terminalOpenFor: null, terminalHeight: 384 })
+  useUiStore.setState({ collapsedColumns: {} })
 })
 
-it('persists terminalHeight to localStorage', () => {
-  useUiStore.getState().setTerminalHeight(560)
-  expect(useUiStore.getState().terminalHeight).toBe(560)
-  const stored = JSON.parse(localStorage.getItem('agent-ops-ui') ?? '{}')
-  expect(stored.state.terminalHeight).toBe(560)
+it('toggles a column collapsed and back', () => {
+  useUiStore.getState().toggleColumn('parked')
+  expect(useUiStore.getState().collapsedColumns.parked).toBe(true)
+  useUiStore.getState().toggleColumn('parked')
+  expect(useUiStore.getState().collapsedColumns.parked).toBe(false)
 })
 
-it('never persists terminalOpenFor (a persisted attach would stall a task)', () => {
-  useUiStore.getState().setTerminalOpenFor('widget#7')
-  useUiStore.getState().setTerminalHeight(400)
-  const stored = JSON.parse(localStorage.getItem('agent-ops-ui') ?? '{}')
-  expect(stored.state.terminalHeight).toBe(400)
-  expect(stored.state).not.toHaveProperty('terminalOpenFor')
-})
-
-it('keys terminalOpenFor by target and issue, not issue alone', () => {
-  // Two targets can hold the same issue number; the key must distinguish
-  // them or attaching one auto-attaches the other on navigation.
-  useUiStore.getState().setTerminalOpenFor('widget#7')
-  expect(useUiStore.getState().terminalOpenFor).toBe('widget#7')
-  expect(useUiStore.getState().terminalOpenFor).not.toBe('other#7')
+it('never persists column state (transient by design)', () => {
+  useUiStore.getState().toggleColumn('parked')
+  expect(localStorage.getItem('agent-ops-ui')).toBeNull()
 })

@@ -79,11 +79,6 @@ export function TaskCardView({ card, pendingActions }: {
             waiting for a free slot
           </span>
         )}
-        {card.attached && (
-          <span className="rounded bg-emerald-100 px-1.5 text-emerald-700">
-            attached
-          </span>
-        )}
         {card.stage === 'done' && card.cycle_seconds != null ? (
           <span>took {formatDuration(card.cycle_seconds)}</span>
         ) : (

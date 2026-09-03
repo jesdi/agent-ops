@@ -1,18 +1,16 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router'
 import { DescriptionPanel } from '../components/DescriptionPanel'
 import { MessageThread } from '../components/MessageThread'
 import { PendingBadge } from '../components/PendingBadge'
 import { SpecPanel } from '../components/SpecPanel'
-import { Terminal } from '../components/Terminal'
+import { TerminalHistory } from '../components/TerminalHistory'
 import { queryKeys } from '../hooks/queryKeys'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useIssueDescription, usePendingIntents, useTaskDetail } from '../hooks/useResources'
-import { usePersistedTerminalHeight } from '../hooks/usePersistedTerminalHeight'
 import { api, ApiError } from '../lib/api'
 import { formatDuration, relativeTime, stageLabel } from '../lib/format'
-import { useUiStore } from '../store/ui'
 
 export function TaskPage() {
   const { target, issue: rawIssue } = useParams()
@@ -29,7 +27,7 @@ export function TaskPage() {
   if (!Number.isInteger(issue) || issue <= 0) {
     return (
       <p className="p-4 text-red-600">
-        not found — “{rawIssue}” is not a task number
+        not found — "{rawIssue}" is not a task number
       </p>
     )
   }
@@ -51,14 +49,10 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
   // Won't-do retires the task for good (board → Wont do, issue closed as
   // not planned), so it takes the same two-step confirm as kill.
   const [wontDoArmed, setWontDoArmed] = useState(false)
-  const terminalOpenFor = useUiStore((s) => s.terminalOpenFor)
-  const setTerminalOpenFor = useUiStore((s) => s.setTerminalOpenFor)
-  const { ref: paneWrapRef, height: terminalHeight } = usePersistedTerminalHeight()
-  // Composite key: two targets can hold the same issue number, and an
-  // issue-only key would auto-attach this task's terminal after navigating
-  // here from an unrelated task that happens to share the number.
-  const terminalKey = `${target}#${issue}`
-  const terminalOpen = terminalOpenFor === terminalKey
+  // Local, not in the store: navigating to another task must open on its
+  // live tail, never on a history view left behind by the previous one.
+  const [showHistory, setShowHistory] = useState(false)
+  useEffect(() => setShowHistory(false), [target, issue])
 
   const intent = useMutation({
     mutationFn: ({ run }: { run: () => Promise<unknown>; isReply?: boolean }) => run(),
@@ -143,8 +137,8 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
         />
       )}
 
-      {/* Terminal.tsx's dead overlay only fires when a session dies WHILE
-          attached; on the load path the page owns this state. */}
+      {/* On the load path the page owns the dead/parked state; the console
+          below is read-only either way. */}
       {card.park !== '' ? (
         <div
           data-testid="parked-panel"
@@ -168,23 +162,27 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
         )
       )}
 
-      {terminalOpen && session_alive ? (
-        <Terminal target={target} issue={issue} />
-      ) : (
-        <div
-          ref={paneWrapRef}
-          data-testid="terminal-pane-wrap"
-          className="w-full resize-y overflow-auto"
-          style={{ height: terminalHeight }}
-        >
+      {/* Read-only console: the polled pane tail, or the scrollable history
+          (snapshot-backed once the session is dead). Interactive attach is
+          external — herdr from a terminal — so the board never holds a PTY
+          and the dispatcher never waits on a viewer. */}
+      <div data-testid="console" className="h-96 w-full">
+        {showHistory ? (
+          <TerminalHistory target={target} issue={issue} onClose={() => setShowHistory(false)} />
+        ) : (
           <pre
             data-testid="pane-tail"
             className="h-full overflow-auto rounded bg-gray-900 p-3 font-mono text-xs text-gray-100"
           >
             {pane_tail}
           </pre>
-        </div>
-      )}
+        )}
+      </div>
+      <p data-testid="attach-guidance" className="text-xs text-gray-500">
+        To interact with the session, attach from a terminal:{' '}
+        <code>herdr --remote box</code> (desktop) or Moshi (phone). Attach to
+        watch; reply here or on Telegram.
+      </p>
 
       {actionError && (
         <p data-testid="action-error" className="text-sm text-red-600">
@@ -218,17 +216,16 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
         </button>
         <button
           type="button"
-          className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
-          disabled={!session_alive && !terminalOpen}
-          onClick={() => setTerminalOpenFor(terminalOpen ? null : terminalKey)}
+          className="rounded border px-3 py-1.5 text-sm"
+          onClick={() => setShowHistory((v) => !v)}
         >
-          {terminalOpen ? 'Detach terminal' : 'Attach terminal'}
+          {showHistory ? 'Live view' : 'Show history'}
         </button>
         {/* Sessions are launched with --remote-control task-<N>, so they are
             reachable from claude.ai/code and the Claude mobile app by name.
-            This is the mobile interaction path — the embedded terminal is the
+            This is the mobile interaction path — `herdr --remote box` is the
             desktop escape hatch. Not gated on session_alive: the conversation
-            stays readable there after the tmux session dies. */}
+            stays readable there after the session dies. */}
         <a
           href="https://claude.ai/code"
           target="_blank"
