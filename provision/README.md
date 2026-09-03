@@ -39,6 +39,12 @@ never touched mid-task). Updater and dispatcher pass share a flock so code
 never swaps mid-pass. Merging to main (CI-gated) IS the deploy — no
 CI→VPS push, no GitHub-held deploy credentials.
 
+**First deploy carrying herdr:** the updater's guarded migration hunk ends
+every in-flight tmux session, parks its task (`unpark-requested`), and
+re-enqueues any live triage sweep; the next dispatcher pass resumes each
+task in herdr with `claude --continue`. Expect one interrupted turn per
+in-flight task, once.
+
 Claude sessions run in rootless Podman containers: the `agent-ops-session`
 image (node + Claude Code CLI, git, gh, python/pipenv, pnpm) is launched
 per task with the task worktree, `~/agent-ops-state/claude-home`
@@ -58,14 +64,31 @@ path inside the fresh container. Woken tasks are always head-of-queue.
 ## herdr: the session layer
 
 `agent-ops-herdr.service` runs `herdr server` as `agent`. **Every live
-session is a child of that server: stopping or restarting the unit kills
-every session.** herdr restores its layout on restart, so each task's
-tab comes back as an empty shell: the dispatcher reads it as alive but
-idle and the stall timer parks it after `stall_after_seconds`; resume
-recreates the container with `claude --continue`. Upgrade with `herdr
-update` as `agent` instead of a unit restart. The dispatcher, web, waitd
-and triage units `Want` the unit and start after it; while the server is
-down every task reads as dead, until `Restart=always` brings it back.
+session is a child of that server: stopping or restarting the unit — or a
+`herdr update` that fails its in-place handoff — kills every session, and
+nothing brings the tasks back.** herdr restores its layout on restart, so
+each task's tab comes back as a bare shell: the dispatcher reads it as
+dead (liveness = busy shell; a bare shell is not busy) → the crash path
+files a diagnosis issue, releases the board card and moves the task to
+**Failed**. Nothing resumes a Failed task; recovery is manual, per task:
+`Cancel` it on the console task page (card → Wont do, issue closed as not
+planned), then reopen the issue and move it back to `Ready` — the
+dispatcher sweeps the canceled tombstone and claims it fresh, and the
+preserved worktree keeps the transcript. So the cost of a restart is one
+Failed card per live task: upgrade with `herdr update` as `agent` instead
+of a unit restart, and prefer doing either when no task is running. The
+dispatcher, web, waitd and triage units `Want` the unit and start after
+it; while the server is down every task reads as dead, until
+`Restart=always` brings it back.
+
+**Deploy order, once only:** the unit's `herdr server` must own
+`~/.config/herdr/herdr.sock` *before* the commit carrying the tmux→herdr
+migration lands — stop any hand-started spike server and
+`systemctl --user enable --now agent-ops-herdr.service` first. The
+migration hands every in-flight task to the park/resume path, so the very
+next pass resumes them in herdr; with no server answering, `Tab.ensure`
+returns `None`, the tasks read dead, and the crash path Fails every one of
+them.
 
 Attach from your desktop with `herdr --remote box` (herdr installed
 locally at the same version; `box` = an SSH host alias for `agent@<box>`

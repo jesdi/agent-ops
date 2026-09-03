@@ -1,4 +1,4 @@
-"""Classify a captured tmux pane tail as the interactive `claude /login`
+"""Classify a captured pane tail as the interactive `claude /login`
 prompt. The regex set is deliberately small and documented: the terminal
 login flow prints (a) the claude.ai OAuth authorize URL and (b) a
 "Paste code here if prompted" input line. Anything else is not a login
@@ -8,8 +8,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# The authorize URL as printed by `claude /login`. tmux hard-wraps it at the
-# pane width, so the tail is un-wrapped first (see _rejoin_wrapped_lines).
+# The authorize URL as printed by `claude /login`. The terminal hard-wraps
+# it at the pane width, so the tail is un-wrapped first (see
+# _rejoin_wrapped_lines).
 _OAUTH_URL_RE = re.compile(r"https://claude\.ai/oauth/authorize[^\s\"'<>]*")
 _PASTE_RE = re.compile(r"paste code here", re.IGNORECASE)
 
@@ -20,7 +21,7 @@ class LoginPrompt:
 
 
 def _rejoin_wrapped_lines(tail: str) -> str:
-    """Rejoin hard-wrapped lines caused by tmux pane width limits.
+    """Rejoin hard-wrapped lines caused by pane width limits.
 
     The pane width is inferred as the longest row in the tail — nothing can
     exceed it, and a wrapped URL always reaches it. A row of exactly that

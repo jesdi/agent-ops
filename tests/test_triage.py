@@ -20,11 +20,20 @@ H_TRIAGE_TAB = ('{"id":"i","result":{"tabs":[{"label":"triage","tab_id":"w9:t2",
 H_SYS_WS = ('{"id":"i","result":{"type":"workspace_list","workspaces":[{"label":"agent-ops",'
             '"workspace_id":"w9","number":9,"focused":false,"pane_count":1,'
             '"tab_count":1,"active_tab_id":"w9:t1","agent_status":"unknown"}]}}')
+H_NO_WS = '{"id":"i","result":{"type":"workspace_list","workspaces":[]}}'
 H_TAB_CREATED = ('{"id":"i","result":{"tab":{"label":"triage","tab_id":"w9:t2",'
                  '"workspace_id":"w9","number":2,"focused":false,"pane_count":1,'
                  '"agent_status":"unknown"},"root_pane":{"pane_id":"w9:p2",'
                  '"tab_id":"w9:t2","workspace_id":"w9","agent_status":"unknown",'
                  '"focused":false,"revision":0,"terminal_id":"t"},"type":"tab_created"}}')
+H_WS_CREATED = ('{"id":"i","result":{"workspace":{"workspace_id":"w9","label":"agent-ops",'
+                '"number":9,"focused":false,"pane_count":1,"tab_count":1,'
+                '"active_tab_id":"w9:t1","agent_status":"unknown"},'
+                '"tab":{"label":"1","tab_id":"w9:t1","workspace_id":"w9",'
+                '"number":1,"focused":false,"pane_count":1,"agent_status":"unknown"},'
+                '"root_pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9",'
+                '"agent_status":"unknown","focused":false,"revision":0,"terminal_id":"t"},'
+                '"type":"workspace_created"}}')
 
 
 def _herdr_fake(monkeypatch, table, calls=None):
@@ -52,10 +61,42 @@ def _busy(shell_pid, pgid):
             '"type":"pane_process_info"}}' % (pgid, shell_pid))
 
 
-LAUNCH_OK = [(("tab", "list"), 0, H_NO_TABS), (("workspace", "list"), 0, H_SYS_WS),
-             (("tab", "create"), 0, H_TAB_CREATED), (("pane", "run"), 0, "")]
+def _herdr_fake_creating(monkeypatch, calls, workspace=None, pane_run_ok=True):
+    """Stateful fake for Tab.ensure: first `tab list` returns H_NO_TABS;
+    after `tab create` flips the flag, subsequent `tab list` calls return
+    H_TRIAGE_TAB (the re-resolve step Tab.ensure performs after creating).
+    Any `pane list` returns H_SYS_PANES. Pass workspace=H_NO_WS to
+    exercise the workspace-create path; default (None) uses H_SYS_WS."""
+    ws_resp = H_SYS_WS if workspace is None else workspace
+    made = {"tab": False}
 
-_REAL_RUNNING = triage.running  # captured before conftest's autouse stub replaces it
+    def _run(args):
+        calls.append(args)
+
+        def ok(out):
+            return _subprocess.CompletedProcess(["herdr", *args], 0, out, "")
+
+        head = args[:2]
+        if head == ["tab", "list"]:
+            return ok(H_TRIAGE_TAB if made["tab"] else H_NO_TABS)
+        if head == ["pane", "list"]:
+            return ok(H_SYS_PANES)
+        if head == ["workspace", "list"]:
+            return ok(ws_resp)
+        if head == ["workspace", "create"]:
+            return ok(H_WS_CREATED)
+        if head == ["tab", "create"]:
+            made["tab"] = True
+            return ok(H_TAB_CREATED)
+        if head == ["pane", "run"]:
+            if not pane_run_ok:
+                return _subprocess.CompletedProcess(
+                    ["herdr", *args], 1,
+                    '{"error":{"code":"pane_not_found","message":"x"},"id":"i"}', "")
+            return ok("")
+        return None
+
+    monkeypatch.setattr(herdr, "_run", _run)
 
 
 def _cfg(tmp_path, targets=(), infra=""):
@@ -531,53 +572,45 @@ def _spy_launch(monkeypatch):
     return calls
 
 
-def test_running_is_true_for_a_busy_herdr_tab_or_a_legacy_tmux_session(monkeypatch):
-    tmux_alive = {"value": 1}
-    monkeypatch.setattr(triage.subprocess, "run",
-                        lambda args, **k: _subprocess.CompletedProcess(args, tmux_alive["value"], "", ""))
+def test_running_is_true_only_for_a_busy_triage_tab(monkeypatch):
+    # Busy tab → running.
     _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_TRIAGE_TAB),
                               (("pane", "list"), 0, H_SYS_PANES), _busy(100, 200)])
-    assert _REAL_RUNNING() is True
+    assert triage.running() is True
     # Tab present but idle at its prompt (runner finished, or a fresh shell
     # restored after a server restart) is NOT running.
     _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_TRIAGE_TAB),
                               (("pane", "list"), 0, H_SYS_PANES), _busy(100, 100)])
-    assert _REAL_RUNNING() is False
+    assert triage.running() is False
+    # No tab → not running.
     _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_NO_TABS)])
-    assert _REAL_RUNNING() is False
-    tmux_alive["value"] = 0          # a sweep started before the herdr deploy
-    assert _REAL_RUNNING() is True
-    _herdr_fake(monkeypatch, [])     # herdr server down + no tmux
-    tmux_alive["value"] = 1
-    assert _REAL_RUNNING() is False
+    assert triage.running() is False
+    # Server down → not running.
+    _herdr_fake(monkeypatch, [])
+    assert triage.running() is False
 
 
 def test_running_treats_unknown_busyness_as_running(monkeypatch):
     """process-info failing on a tab that exists must not launch a second
     sweep on top of a possibly-live one: fail closed to 'running'."""
-    monkeypatch.setattr(triage.subprocess, "run",
-                        lambda args, **k: _subprocess.CompletedProcess(args, 1, "", ""))
     _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_TRIAGE_TAB),
                               (("pane", "list"), 0, H_SYS_PANES)])
-    assert _REAL_RUNNING() is True
-
-
-def test_running_survives_a_missing_tmux_binary(monkeypatch):
-    def no_tmux(*a, **k):
-        raise FileNotFoundError("tmux")
-    monkeypatch.setattr(triage.subprocess, "run", no_tmux)
-    _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_NO_TABS)])
-    assert _REAL_RUNNING() is False
+    assert triage.running() is True
 
 
 def test_tick_replaces_a_stale_idle_triage_tab(tmp_path, monkeypatch):
     """After a herdr server restart the `triage` tab is restored as a bare
-    shell. tick() must close it and create a fresh one, never a second
-    tab with the same label."""
+    shell wearing its old label. Tab.ensure detects it is idle and closes it
+    before creating a fresh one, so the label never carries two tabs."""
     cfg = _sweep_cfg(tmp_path)
     monkeypatch.setattr(triage, "running", lambda: False)
     calls = []
+    # Stale tab: Tab.find resolves it (tab list + pane list), alive check says
+    # idle (shell_pid == pgid), Tab.ensure closes it, then creates fresh one.
+    # Tab.ensure re-resolves after create (second tab list + pane list).
     _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_TRIAGE_TAB),
+                              (("pane", "list"), 0, H_SYS_PANES),
+                              _busy(100, 100),  # idle: pgid == shell_pid
                               (("tab", "close"), 0, '{"id":"i","result":{"type":"ok"}}'),
                               (("workspace", "list"), 0, H_SYS_WS),
                               (("tab", "create"), 0, H_TAB_CREATED),
@@ -588,6 +621,7 @@ def test_tick_replaces_a_stale_idle_triage_tab(tmp_path, monkeypatch):
     close_i = calls.index(["tab", "close", "w9:t2"])
     create_i = next(i for i, c in enumerate(calls) if c[:2] == ["tab", "create"])
     assert close_i < create_i
+    assert sum(1 for c in calls if c[:2] == ["tab", "create"]) == 1
 
 
 def test_tick_launches_runner_in_a_herdr_tab_when_capacity_free(tmp_path, monkeypatch):
@@ -597,7 +631,7 @@ def test_tick_launches_runner_in_a_herdr_tab_when_capacity_free(tmp_path, monkey
     for var in triage.LAUNCH_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     calls = []
-    _herdr_fake(monkeypatch, LAUNCH_OK, calls)
+    _herdr_fake_creating(monkeypatch, calls)
     triage.enqueue(tmp_path)
     triage.tick(cfg, deps, "/etc/targets.yaml")
     create = next(c for c in calls if c[:2] == ["tab", "create"])
@@ -608,9 +642,8 @@ def test_tick_launches_runner_in_a_herdr_tab_when_capacity_free(tmp_path, monkey
     assert "--triage-run" in run[3]
     assert "/etc/targets.yaml" in run[3]
     assert sys.executable in run[3]
-    # The tab must close when the runner ends (a tmux session died with its
-    # command; a herdr tab's shell has to be told), or running() would read
-    # the finished sweep as still running.
+    # The tab must close when the runner ends (the shell does not exit on its
+    # own), or running() would read the finished sweep as still running.
     assert run[3].endswith("; exit")
     # request stays until the runner consumes it → claims stay paused
     assert triage.load_request(tmp_path) is not None
@@ -620,18 +653,7 @@ def test_tick_creates_the_system_workspace_on_first_use(tmp_path, monkeypatch):
     cfg = _sweep_cfg(tmp_path)
     monkeypatch.setattr(triage, "running", lambda: False)
     calls = []
-    _herdr_fake(monkeypatch, [
-        (("tab", "list"), 0, H_NO_TABS),
-        (("workspace", "list"), 0, '{"id":"i","result":{"type":"workspace_list","workspaces":[]}}'),
-        (("workspace", "create"), 0,
-         '{"id":"i","result":{"workspace":{"workspace_id":"w9","label":"agent-ops",'
-         '"number":9,"focused":false,"pane_count":1,"tab_count":1,"active_tab_id":"w9:t1",'
-         '"agent_status":"unknown"},"tab":{"label":"1","tab_id":"w9:t1","workspace_id":"w9",'
-         '"number":1,"focused":false,"pane_count":1,"agent_status":"unknown"},'
-         '"root_pane":{"pane_id":"w9:p1","tab_id":"w9:t1","workspace_id":"w9",'
-         '"agent_status":"unknown","focused":false,"revision":0,"terminal_id":"t"},'
-         '"type":"workspace_created"}}'),
-        (("tab", "create"), 0, H_TAB_CREATED), (("pane", "run"), 0, "")], calls)
+    _herdr_fake_creating(monkeypatch, calls, workspace=H_NO_WS)
     triage.enqueue(tmp_path)
     triage.tick(cfg, FakeDeps(), "targets.yaml")
     assert ["workspace", "create", "--label", "agent-ops", "--cwd",
@@ -640,15 +662,15 @@ def test_tick_creates_the_system_workspace_on_first_use(tmp_path, monkeypatch):
 
 def test_tick_forwards_dispatcher_env_to_the_runner(tmp_path, monkeypatch):
     """The herdr server's environment is the user unit's — no Telegram
-    credentials — so the runner's env must be forwarded explicitly, as
-    tmux's -e did."""
+    credentials — so the runner's env must be forwarded explicitly via the
+    tab's --env pairs."""
     cfg = _sweep_cfg(tmp_path)
     monkeypatch.setattr(triage, "running", lambda: False)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path))
     calls = []
-    _herdr_fake(monkeypatch, LAUNCH_OK, calls)
+    _herdr_fake_creating(monkeypatch, calls)
     triage.enqueue(tmp_path)
     triage.tick(cfg, FakeDeps(), "targets.yaml")
     create = next(c for c in calls if c[:2] == ["tab", "create"])
@@ -665,7 +687,7 @@ def test_tick_launch_omits_unset_env_vars(tmp_path, monkeypatch):
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     calls = []
-    _herdr_fake(monkeypatch, LAUNCH_OK, calls)
+    _herdr_fake_creating(monkeypatch, calls)
     triage.enqueue(tmp_path)
     triage.tick(cfg, deps, "targets.yaml")  # no crash on the unset ones
     create = next(c for c in calls if c[:2] == ["tab", "create"])
@@ -690,8 +712,7 @@ def test_tick_pane_run_failure_clears_and_notifies(tmp_path, monkeypatch):
     cfg = _sweep_cfg(tmp_path)
     deps = FakeDeps()
     monkeypatch.setattr(triage, "running", lambda: False)
-    _herdr_fake(monkeypatch, LAUNCH_OK[:-1] + [(("pane", "run"), 1,
-                '{"error":{"code":"pane_not_found","message":"x"},"id":"i"}')])
+    _herdr_fake_creating(monkeypatch, [], pane_run_ok=False)
     triage.enqueue(tmp_path)
     triage.tick(cfg, deps, "targets.yaml")
     assert triage.load_request(tmp_path) is None

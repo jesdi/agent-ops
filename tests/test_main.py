@@ -137,6 +137,7 @@ class FakeSessions:
         self.spawned, self.resumed, self.ended = [], [], []
         self.sent_text = []
         self.end_calls = []  # (target, issue) — the target end() actually got
+        self.call_log = []  # ("capture_tail"|"end", target, issue) — ordered
         # Issues whose launch explodes the way a vanished worktree does:
         # containers.clone_root reads <worktree>/.git to find the clone to
         # mount, so a swept or half-removed checkout raises here.
@@ -170,11 +171,13 @@ class FakeSessions:
         self.resumed.append((issue, message, model))
 
     def capture_tail(self, target, issue, lines=25):
+        self.call_log.append(("capture_tail", target, issue))
         return self.tail
 
     def end(self, target, issue):
         self.ended.append(issue)
         self.end_calls.append((target, issue))
+        self.call_log.append(("end", target, issue))
 
 
 class FakeNotifier:
@@ -554,6 +557,35 @@ def test_dead_session_files_diagnosis_issue_and_blocks(tmp_path, monkeypatch):
     # existing crash handling still intact
     assert gh.released == [(42, "session crashed mid-stage")]
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+
+
+def test_crash_path_ends_the_session_after_reporting(tmp_path, monkeypatch):
+    """HandleCrash must call end() after _report_session_crash so the pane
+    tail is captured first (for the web console) and the dead tab is closed."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    gh = FakeGitHub()
+    sess = FakeSessions(alive=set())  # session reads dead → HandleCrash
+    d = deps(gh, sess)
+    main.run_pass(c, d)
+
+    # end() must have been called for (target, issue)
+    assert ("portfolio_eval", 42) in sess.end_calls, "end() not called on crash"
+
+    # capture_tail must precede end in the unified call log
+    ct_idx = next(
+        (i for i, e in enumerate(sess.call_log) if e[0] == "capture_tail" and e[2] == 42),
+        None,
+    )
+    end_idx = next(
+        (i for i, e in enumerate(sess.call_log) if e[0] == "end" and e[2] == 42),
+        None,
+    )
+    assert ct_idx is not None, "capture_tail was never called"
+    assert end_idx is not None, "end() was never called"
+    assert ct_idx < end_idx, "capture_tail must precede end() in call log"
 
 
 def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monkeypatch):
@@ -3588,3 +3620,49 @@ def test_console_reply_to_a_human_park_still_queues(tmp_path, monkeypatch):
     assert sess.sent_text == []
     assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
         "use oauth"]
+
+
+# --- CLI wiring: --migrate-tmux (delete with dispatcher/tmux_migration.py) ---
+
+def test_migrate_tmux_flag_migrates_and_its_callback_really_wakes(
+        tmp_path, monkeypatch):
+    """provision/update.sh runs this under `set -e`, so a wiring slip here
+    fails the whole convergence pass on every firing while any tmux session
+    exists. Assert the flag reaches tmux_migration.migrate with the state
+    dir and a wake callable that IS `_wake` — park=PARK_WAKE plus a queued
+    message — and that the branch takes no pass_lock (update.sh already
+    holds that file; flock is per open-file-description, so re-taking it
+    would block forever)."""
+    import sys as _sys
+    from dispatcher import messages
+
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    monkeypatch.setattr(main, "load_config", lambda path: c)
+
+    def _no_lock(state_dir):
+        raise AssertionError("--migrate-tmux must not take pass_lock")
+
+    monkeypatch.setattr(main, "pass_lock", _no_lock)
+
+    seen = {}
+
+    def fake_migrate(state_dir, wake):
+        seen["state_dir"], seen["wake"] = state_dir, wake
+        return ["killed tmux session task-portfolio_eval-42"]
+
+    monkeypatch.setattr(main.tmux_migration, "migrate", fake_migrate)
+    monkeypatch.setattr(_sys, "argv",
+                        ["agent-ops-dispatcher", "--config",
+                         str(tmp_path / "targets.yaml"), "--migrate-tmux"])
+
+    main.main()
+
+    assert seen["state_dir"] == c.state_dir
+    assert callable(seen["wake"])
+    # The callback is the real _wake: driving it must park the task for a
+    # resume and queue the text the resumed claude will be handed.
+    seen["wake"](load(c.state_dir, "portfolio_eval", 42), "moved to herdr")
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
+    assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
+        "moved to herdr"]

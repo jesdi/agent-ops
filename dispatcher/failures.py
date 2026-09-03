@@ -25,7 +25,7 @@ class FailureReport:
     issue: int     # task issue number, 0 for pass crashes
     title: str     # human summary; used in the issue title and Telegram ping
     error: str     # exception text / traceback
-    log_tail: str  # last ~30 lines of setup.log / tmux tail, "" if none
+    log_tail: str  # last ~30 lines of setup.log / pane tail, "" if none
     repro: str     # exact command that reproduces the failure
     worktree: str  # path or ""
 

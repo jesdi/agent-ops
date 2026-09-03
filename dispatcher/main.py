@@ -25,7 +25,7 @@ from dispatcher.budget import UsageSnapshot, fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher import (eventlog, failures, intents, messages, pr_poll,
-                        queue_ops, relogin, triage)
+                        queue_ops, relogin, tmux_migration, triage)
 from dispatcher.github import GitHubClient
 
 log = logging.getLogger(__name__)
@@ -167,9 +167,10 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     leaves the screen static and the stall detector simply re-fires.
 
     The reply may arrive hours later, so the prompt is re-verified first: the
-    session's pane is a HOST shell (is_alive only means `has-session`), and once
-    claude has exited the pane is back at the host shell, where send_text
-    would execute the operator's text as a shell command outside the sandbox.
+    session's pane is a HOST shell (is_alive means the tab's shell is busy,
+    not that claude is at a prompt), and once claude has exited the pane is
+    back at the host shell, where send_text would execute the operator's text
+    as a shell command outside the sandbox.
 
     Un-parking then restores the same invariant _resume_woken and _retry_plan
     enforce — no waiting marker, a `working` signal — or the very next pass
@@ -977,6 +978,11 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                   issue=task.issue, stage=task.stage.value,
                                   detail="session crashed mid-stage")
             _report_session_crash(cfg, deps, target, task, dry_run)
+            # End last: _report_session_crash reads the pane first. end()
+            # snapshots the crash output for the console and closes the
+            # dead tab — the one session-ending transition that otherwise
+            # left both behind.
+            deps.sessions.end(task.target, task.issue)
 
 
 def _report_session_crash(cfg: Config, deps: Deps, target: Target,
@@ -984,8 +990,6 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
     rep = failures.FailureReport(
         klass="session-crash", target=target.name, issue=task.issue,
         title=f"session crashed during {task.stage.value}: {task.title}",
-        # Backend-neutral: the session may be a herdr tab or, until the
-        # tmux retirement, a legacy tmux session.
         error=(f"session task-{task.target}-{task.issue} died during stage "
                f"{task.stage.value}"),
         log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
@@ -1483,6 +1487,7 @@ def main() -> None:
     ap.add_argument("--digest", action="store_true")
     ap.add_argument("--triage", action="store_true")
     ap.add_argument("--triage-run", action="store_true")
+    ap.add_argument("--migrate-tmux", action="store_true")
     args = ap.parse_args()
     cfg = load_config(args.config)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
@@ -1498,6 +1503,14 @@ def main() -> None:
             print("triage already pending or running; not enqueued")
     elif args.triage_run:
         triage.guarded_sweep(cfg, deps)
+    elif args.migrate_tmux:
+        # Called by provision/update.sh, which already holds convergence.lock
+        # (the same file pass_lock flocks — taking it here again would block
+        # forever, flock being per open-file-description). Never run by hand
+        # while the dispatcher timer is live.
+        for line in tmux_migration.migrate(
+                cfg.state_dir, lambda task, text: _wake(cfg, task, text)):
+            print(line)
     else:
         with pass_lock(cfg.state_dir):
             guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)

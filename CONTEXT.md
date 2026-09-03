@@ -11,7 +11,7 @@ The dedicated VPS that runs the dispatcher and all sessions. There is exactly on
 _Avoid_: server, host, VPS (in prose — "box" everywhere)
 
 **Session**:
-One `podman run … claude` invocation wrapped in tmux, working a single stage of
+One `podman run … claude` invocation in a herdr tab, working a single stage of
 one task. Sessions are disposable; state lives in artifacts and claude-home.
 _Avoid_: agent (that's the OS user), container (that's the isolation layer only)
 
