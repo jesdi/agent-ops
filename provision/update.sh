@@ -82,11 +82,15 @@ fi
 # Sessions started by the pre-herdr dispatcher live in tmux. Hand each to
 # the park/resume path so the next pass resumes it in herdr (`claude
 # --continue`; one interrupted turn per in-flight task, once). Guarded on
-# `tmux ls` succeeding, so this is a no-op the moment tmux has no session
-# and a pure deletion once tmux leaves the box (with dispatcher/
-# tmux_migration.py and the tmux apt line in bootstrap.sh).
+# an agent-ops-shaped session actually existing — NOT on a tmux server
+# being up: an operator's own `tmux` as `agent` would otherwise re-run the
+# migration on every pass, forever. So this is a no-op the moment no
+# `task-*`/`triage` session remains, and a pure deletion once tmux leaves
+# the box (with dispatcher/tmux_migration.py and the tmux apt line in
+# bootstrap.sh).
 TMUX="${AGENT_OPS_TMUX:-tmux}"
-if command -v "$TMUX" >/dev/null 2>&1 && "$TMUX" ls >/dev/null 2>&1; then
+if command -v "$TMUX" >/dev/null 2>&1 && "$TMUX" ls -F '#{session_name}' 2>/dev/null \
+     | grep -Eq '^(task-.*|triage)$'; then
   .venv/bin/python -m dispatcher.main --config "$STATE_DIR/targets.yaml" --migrate-tmux
 fi
 

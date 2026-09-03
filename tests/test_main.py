@@ -3620,3 +3620,49 @@ def test_console_reply_to_a_human_park_still_queues(tmp_path, monkeypatch):
     assert sess.sent_text == []
     assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
         "use oauth"]
+
+
+# --- CLI wiring: --migrate-tmux (delete with dispatcher/tmux_migration.py) ---
+
+def test_migrate_tmux_flag_migrates_and_its_callback_really_wakes(
+        tmp_path, monkeypatch):
+    """provision/update.sh runs this under `set -e`, so a wiring slip here
+    fails the whole convergence pass on every firing while any tmux session
+    exists. Assert the flag reaches tmux_migration.migrate with the state
+    dir and a wake callable that IS `_wake` — park=PARK_WAKE plus a queued
+    message — and that the branch takes no pass_lock (update.sh already
+    holds that file; flock is per open-file-description, so re-taking it
+    would block forever)."""
+    import sys as _sys
+    from dispatcher import messages
+
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    monkeypatch.setattr(main, "load_config", lambda path: c)
+
+    def _no_lock(state_dir):
+        raise AssertionError("--migrate-tmux must not take pass_lock")
+
+    monkeypatch.setattr(main, "pass_lock", _no_lock)
+
+    seen = {}
+
+    def fake_migrate(state_dir, wake):
+        seen["state_dir"], seen["wake"] = state_dir, wake
+        return ["killed tmux session task-portfolio_eval-42"]
+
+    monkeypatch.setattr(main.tmux_migration, "migrate", fake_migrate)
+    monkeypatch.setattr(_sys, "argv",
+                        ["agent-ops-dispatcher", "--config",
+                         str(tmp_path / "targets.yaml"), "--migrate-tmux"])
+
+    main.main()
+
+    assert seen["state_dir"] == c.state_dir
+    assert callable(seen["wake"])
+    # The callback is the real _wake: driving it must park the task for a
+    # resume and queue the text the resumed claude will be handed.
+    seen["wake"](load(c.state_dir, "portfolio_eval", 42), "moved to herdr")
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
+    assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
+        "moved to herdr"]

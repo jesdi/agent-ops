@@ -86,14 +86,16 @@ def box(tmp_path):
     herdr = bin_dir / "herdr"
     herdr.write_text('#!/bin/sh\necho "herdr 0.8.2"\n')
     herdr.chmod(0o755)
-    # tmux: the one-shot migration is gated on `tmux ls` succeeding, so the
-    # default is "no sessions" (exit 1) and the migration tests flip the rc
-    # file. Silent like herdr, so the "no calls" assertions stay exact.
-    tmux_ls_rc = tmp_path / "tmux-ls-rc"
-    tmux_ls_rc.write_text("1\n")
+    # tmux: the one-shot migration is gated on an agent-ops-shaped session
+    # (`task-*` / `triage`) appearing in `tmux ls -F '#{session_name}'`, so
+    # the fake just prints the names in a file the migration tests write.
+    # Default: empty, i.e. a live tmux server with nothing of ours in it.
+    # Silent like herdr, so the "no calls" assertions stay exact.
+    tmux_sessions = tmp_path / "tmux-sessions"
+    tmux_sessions.write_text("")
     tmux = bin_dir / "tmux"
     tmux.write_text(
-        f'#!/bin/sh\n[ "$1" = "ls" ] && exit "$(cat "{tmux_ls_rc}")"\nexit 0\n')
+        f'#!/bin/sh\n[ "$1" = "ls" ] && exec cat "{tmux_sessions}"\nexit 0\n')
     tmux.chmod(0o755)
     # The dispatcher entrypoint the migration invokes. Recording argv is the
     # whole point: the test asserts on the flag and the --config path.
@@ -147,7 +149,7 @@ def box(tmp_path):
     )
     return SimpleNamespace(origin=origin, repo=repo, state=state,
                            units=units, calls=calls, env=env,
-                           tmux_ls_rc=tmux_ls_rc)
+                           tmux_sessions=tmux_sessions)
 
 
 def run_update(box, **env_extra):
@@ -652,7 +654,7 @@ def test_tmux_migration_runs_once_when_tmux_has_sessions(box):
     """Sessions the pre-herdr dispatcher left in tmux are handed to the
     park/resume path BEFORE any unit restart, so the dispatcher's next pass
     already sees them queued for a herdr resume."""
-    box.tmux_ls_rc.write_text("0\n")
+    box.tmux_sessions.write_text("task-acme-42\n")
     (box.origin / "provision" / "agent-ops-waitd.service").write_text(
         "[Unit]\nDescription=waitd v2\n")
     commit_all(box.origin, "unit change")
@@ -671,3 +673,20 @@ def test_no_tmux_migration_without_sessions(box):
     r = run_update(box)
     assert r.returncode == 0, r.stderr
     assert "--migrate-tmux" not in calls(box)
+
+
+def test_no_tmux_migration_for_an_operators_own_session(box):
+    """The guard is on a `task-*`/`triage` session, not on a tmux server
+    being up: an operator's own tmux as `agent` must not re-run the
+    migration on every convergence pass, forever."""
+    box.tmux_sessions.write_text("foo\n0\nmytask\n")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "--migrate-tmux" not in calls(box)
+
+
+def test_tmux_migration_runs_for_a_live_triage_session(box):
+    box.tmux_sessions.write_text("foo\ntriage\n")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "--migrate-tmux" in calls(box)
