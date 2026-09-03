@@ -58,6 +58,13 @@ class Sessions:
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
                 claude_args: str) -> None:
+        # Build the command FIRST: containers.clone_root reads
+        # <worktree>/.git and raises on a vanished worktree (the case
+        # _fail_task_crash exists for). Doing it before Tab.ensure means
+        # that raise leaves no workspace and no empty tab behind for a task
+        # that will never launch.
+        cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
+                         model, claude_args)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,
             # herdr's hint for detecting an agent behind a wrapper (podman
@@ -69,8 +76,7 @@ class Sessions:
             env={"HERDR_AGENT": "claude"})
         if tab is None:
             return  # server down: the task reads dead, the crash path owns it
-        tab.run(podman_cmd(target, issue, worktree, self.memory, self.cpus,
-                           model, claude_args))
+        tab.run(cmd)
 
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str) -> None:
@@ -118,7 +124,8 @@ class Sessions:
         herdr error) — callers must not treat it as stalled. Computed from
         the agent lifecycle, not screen activity: `working` is never idle,
         however long it lasts; any other status (idle / blocked / done /
-        unknown, or no agent at all — the pane back at the host shell)
+        unknown, or no agent at all — a busy shell that has not reached
+        claude yet, podman still starting or the wrapper still running)
         accumulates from the moment herdr last changed its mind. herdr
         exposes the transition counter but no timestamp, so the moment is
         remembered in a sidecar keyed by (seq, status)."""

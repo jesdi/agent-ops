@@ -99,8 +99,6 @@ def _herdr_fake_creating(monkeypatch, calls, workspace=None, pane_run_ok=True):
     monkeypatch.setattr(herdr, "_run", _run)
 
 
-
-
 def _cfg(tmp_path, targets=(), infra=""):
     return Config(
         state_dir=str(tmp_path), capacity=2, budget_threshold=0.8,

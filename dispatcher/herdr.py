@@ -6,9 +6,9 @@ reads as None / False, and mutations are best-effort.
 
 IDs (`w1`, `w1:t3`, `w1:p3`) are opaque and are never persisted: `Tab` is
 the way callers resolve by label on every operation (workspace = target,
-tab = task-<target>-<issue>) rather than holding an id. This module
-knows nothing about tasks;
-dispatcher/sessions.py and triage.py own that mapping."""
+tab = task-<target>-<issue>) rather than holding an id. This module knows
+nothing about tasks; dispatcher/sessions.py and triage.py own that
+mapping."""
 from __future__ import annotations
 
 import json
@@ -236,10 +236,8 @@ class Tab:
         (a finished command at its prompt, or a fresh shell restored after
         a server restart wearing the old label) is closed first so the
         label never carries two tabs and a restored tab never hosts a new
-        launch without `env`. Creates the workspace on first use (at
-        `cwd`'s clone root is the caller's concern — pass the cwd the
-        workspace should open at as `cwd` when creating; this function
-        passes the same `cwd` to both). None when the server is down or
+        launch without `env`. Creates the workspace on first use, opening
+        it at the same `cwd` the tab gets. None when the server is down or
         creation failed."""
         existing = cls.find(label)
         if existing is not None:

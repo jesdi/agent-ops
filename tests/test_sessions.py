@@ -5,6 +5,8 @@ CLI calls are asserted."""
 import json as _json
 import subprocess as _sp
 
+import pytest
+
 import dispatcher.sessions as sessions
 from dispatcher import herdr
 from dispatcher.sessions import Sessions, podman_cmd
@@ -254,6 +256,20 @@ def test_spawn_stage_on_a_busy_tab_reuses_it(tmp_path, monkeypatch):
     assert calls[-1][:3] == ["pane", "run", "w1:p2"]
 
 
+def test_spawn_stage_on_a_vanished_worktree_creates_no_tab(tmp_path, monkeypatch):
+    """containers.clone_root reads <worktree>/.git and raises when the
+    worktree is gone (_fail_task_crash owns that raise). The command is
+    built before Tab.ensure, so the raise leaves no orphan workspace or
+    empty tab behind for a task that will never launch."""
+    wt = str(tmp_path / "gone")
+    (tmp_path / "gone").mkdir()           # a worktree with no .git file
+    calls = []
+    herdr_fake_creating(monkeypatch, calls)
+    with pytest.raises(OSError):
+        Sessions().spawn_stage("acme", 42, wt, "P", "spec", "claude-fable-5")
+    assert calls == []
+
+
 def test_spawn_stage_when_the_server_is_down_runs_nothing(tmp_path, monkeypatch):
     wt = _worktree(tmp_path)
     calls = []
@@ -396,8 +412,11 @@ def test_idle_resets_when_seq_or_status_changes(tmp_path, monkeypatch):
 
 
 def test_idle_missing_agent_accumulates_like_a_static_screen(tmp_path, monkeypatch):
-    # claude exited: the pane is back at the host shell, herdr sees no agent.
-    # That is "static" — idle time must accumulate so the stall timer parks it.
+    # A busy shell that has not reached claude yet — podman starting, the
+    # token wrapper running — so herdr sees no agent behind it. (An EXITED
+    # claude is not this case: that pane is not busy, so it reads dead and
+    # _drive_task never asks for its idle time.) That is "static" — idle
+    # time must accumulate so the stall timer parks it.
     herdr_fake(monkeypatch, LIVE + [(("agent", "get"), 1,
                '{"error":{"code":"agent_not_found","message":"x"},"id":"i"}')])
     s = Sessions(state_dir=tmp_path)
@@ -524,12 +543,17 @@ def test_end_empty_capture_keeps_the_existing_snapshot(tmp_path, monkeypatch):
     assert snap.read_text() == "the parked question"
 
 
-def test_end_without_state_dir_writes_no_snapshot(tmp_path, monkeypatch):
+def test_end_without_state_dir_captures_nothing(tmp_path, monkeypatch):
+    """No state_dir, nowhere to write: _snapshot returns before it captures,
+    so end() must not spend a `pane read` on output it would throw away —
+    and it still closes the tab."""
+    calls = []
     herdr_fake(monkeypatch, LIVE + [(("pane", "read"), 0, "last words\n"),
-                                    (("tab", "close"), 0, CLOSE_OK)])
+                                    (("tab", "close"), 0, CLOSE_OK)], calls)
     _fake_podman(monkeypatch)
     Sessions().end("acme", 42)
-    assert not (tmp_path / "snapshots").exists()
+    assert not any(c[:2] == ["pane", "read"] for c in calls), calls
+    assert ["tab", "close", "w1:t2"] in calls
 
 
 def test_end_snapshot_write_failure_still_closes_the_tab(tmp_path, monkeypatch):
