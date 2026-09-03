@@ -277,7 +277,6 @@ class Sources:
 
         board = digest(
             list(root.glob("task-*.json")) + list(root.glob("waiting-*"))
-            + list(root.glob("attached-*"))
             + list(root.glob("wake-blocked-*"))
             + list((root / "messages").glob("*.jsonl"))
             + [root / "pass.json"])
@@ -298,9 +297,6 @@ class Sources:
         return json.dumps({"board": board, "queue": board,
                            "budget": budget_d, "failures": failures,
                            "history": history}, sort_keys=True)
-
-    def has_attached(self, target: str, issue: int) -> bool:
-        return state.has_attached(self._cfg.state_dir, target, issue)
 
     def messages(self, issue: int) -> list:
         return msgq.all_messages(self._cfg.state_dir, issue)
@@ -352,8 +348,3 @@ class Sources:
         eventlog.append_event(self._cfg.state_dir, event, target=target,
                               issue=issue, actor=actor, detail=detail)
 
-    def mark_attached(self, target: str, issue: int) -> None:
-        state.mark_attached(self._cfg.state_dir, target, issue)
-
-    def clear_attached(self, target: str, issue: int) -> None:
-        state.clear_attached(self._cfg.state_dir, target, issue)

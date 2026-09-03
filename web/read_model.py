@@ -126,7 +126,6 @@ class TaskCard(BaseModel):
     park_note_pending: bool
     feedback_pending: bool
     updated_at: str
-    attached: bool
     # Whether this card holds one of the dispatcher's capacity units. Derived
     # server-side so the console cannot disagree with the dispatcher about a
     # rule with a real exception (parked-login still counts).
@@ -177,7 +176,7 @@ class BoardView(BaseModel):
     median_cycle_seconds: float | None
 
 
-def task_card(t: TaskState, *, model: str, attached: bool,
+def task_card(t: TaskState, *, model: str,
               claimed_at: str = "",
               cycle_seconds: float | None = None,
               score: float | None = None,
@@ -195,7 +194,7 @@ def task_card(t: TaskState, *, model: str, attached: bool,
         # and CI/wake parks ask the operator nothing.
         park_note_pending=(t.park == PARK_HUMAN and t.park_msg_id == 0),
         feedback_pending=t.feedback_pending,
-        updated_at=t.updated_at, attached=attached,
+        updated_at=t.updated_at,
         consuming_capacity=consumes_capacity(t),
         claimed_at=claimed_at, cycle_seconds=cycle_seconds, score=score,
         undelivered_messages=undelivered_messages,
@@ -204,7 +203,6 @@ def task_card(t: TaskState, *, model: str, attached: bool,
 
 def build_board(tasks: list[TaskState], *, capacity: int,
                 models: dict[tuple[str, int], str],
-                attached: set[tuple[str, int]],
                 events: list[dict], heartbeat: dict | None, now: datetime,
                 budget: BudgetView, queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
@@ -224,7 +222,6 @@ def build_board(tasks: list[TaskState], *, capacity: int,
         key = (t.target, t.issue)
         at = claimed_at(claimed, t.target, t.issue)
         cards.append(task_card(t, model=models.get(key, ""),
-                               attached=key in attached,
                                claimed_at=at,
                                cycle_seconds=cycle_seconds(at, t.done_at),
                                score=scores.get(key),
@@ -288,7 +285,7 @@ class TaskDetail(BaseModel):
     timeline: list[TimelineEntry]
 
 
-def task_detail(t: TaskState, *, model: str, attached: bool,
+def task_detail(t: TaskState, *, model: str,
                 pane_tail: str, session_alive: bool,
                 events: list[dict], now: datetime,
                 messages: list[msgq.Message] | None = None,
@@ -297,7 +294,7 @@ def task_detail(t: TaskState, *, model: str, attached: bool,
     at = claimed_at(claimed_at_index(events), t.target, t.issue)
     msgs = messages or []
     return TaskDetail(
-        card=task_card(t, model=model, attached=attached,
+        card=task_card(t, model=model,
                        claimed_at=at,
                        cycle_seconds=cycle_seconds(at, t.done_at),
                        undelivered_messages=len(

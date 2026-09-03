@@ -41,26 +41,25 @@ def test_unparked_column_per_stage(stage):
 def test_task_card_fields():
     t = make_task(issue=7, stage=Stage.SPEC, slot=1, park=PARK_HUMAN,
                   park_msg_id=0)
-    card = task_card(t, model="claude-sonnet-4-5", attached=True)
+    card = task_card(t, model="claude-sonnet-4-5")
     assert card.issue == 7
     assert card.stage == "spec"
     assert card.park == "parked"
     assert card.column == "parked"
     assert card.model == "claude-sonnet-4-5"
-    assert card.attached is True
     # parked-for-human with no Telegram message id yet -> note pending
     assert card.park_note_pending is True
 
 
 def test_park_note_not_pending_once_notified():
     t = make_task(park=PARK_HUMAN, park_msg_id=123)
-    assert task_card(t, model="m", attached=False).park_note_pending is False
+    assert task_card(t, model="m").park_note_pending is False
 
 
 def test_login_park_card_shows_its_park_kind_in_the_parked_column():
     t = make_task(issue=9, stage=Stage.IMPLEMENT, park=PARK_LOGIN,
                   park_msg_id=77)
-    card = task_card(t, model="m", attached=False)
+    card = task_card(t, model="m")
     assert card.column == "parked"
     assert card.park == PARK_LOGIN  # the card still distinguishes the kind
     # a login park always has a Telegram message to reply to (a failed send
@@ -71,7 +70,7 @@ def test_login_park_card_shows_its_park_kind_in_the_parked_column():
 def test_login_park_counts_towards_active_capacity():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0, park=PARK_LOGIN),
              make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
-    board = build_board(tasks, capacity=2, models={}, attached=set(),
+    board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
@@ -91,7 +90,6 @@ def test_build_board_groups_and_counts():
     board = build_board(
         tasks, capacity=2,
         models={("alpha", 1): "a", ("alpha", 2): "b", ("alpha", 3): "c"},
-        attached={("alpha", 1)},
         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
         queues=[], queue_stale=False,
         claims_paused=False, triage_running=False)
@@ -99,7 +97,6 @@ def test_build_board_groups_and_counts():
     assert [c.issue for c in by_key["in-progress"].cards] == [1]
     assert [c.issue for c in by_key["parked"].cards] == [2]
     assert [c.issue for c in by_key["pr-open"].cards] == [3]
-    assert by_key["in-progress"].cards[0].attached is True
     # capacity: parked releases capacity AND its slot; pr-open is not
     # in-flight at all. max_slots derives from capacity: capacity + 2 = 4.
     assert board.capacity.active == 1
@@ -122,7 +119,7 @@ def _scored_queue(*pairs):
 
 def test_task_cards_carry_their_backlog_score():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT)]
-    board = build_board(tasks, capacity=2, models={}, attached=set(),
+    board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
                         queues=_scored_queue(("alpha", 1, 4.2)),
                         queue_stale=False, claims_paused=False,
@@ -134,7 +131,7 @@ def test_task_cards_carry_their_backlog_score():
 def test_task_card_score_is_none_when_not_in_ranking():
     """A claimed task that dropped off the backlog board has no score."""
     tasks = [make_task(issue=5, stage=Stage.DONE)]
-    board = build_board(tasks, capacity=2, models={}, attached=set(),
+    board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
@@ -149,7 +146,7 @@ def test_cards_sort_by_score_descending_nulls_last_within_a_column():
         make_task(issue=4, stage=Stage.IMPLEMENT),   # score None
     ]
     board = build_board(
-        tasks, capacity=9, models={}, attached=set(), events=[],
+        tasks, capacity=9, models={}, events=[],
         heartbeat=None, now=NOW, budget=BUDGET_OK,
         queues=_scored_queue(("alpha", 1, 2.0), ("alpha", 3, 9.0)),
         queue_stale=False, claims_paused=False, triage_running=False)
@@ -159,7 +156,7 @@ def test_cards_sort_by_score_descending_nulls_last_within_a_column():
 
 
 def test_board_column_order_is_stable():
-    board = build_board([], capacity=2, models={}, attached=set(),
+    board = build_board([], capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
@@ -188,13 +185,13 @@ def test_done_column_present_after_pr_review():
 
 def test_task_card_carries_feedback_pending():
     t = make_task(stage=Stage.PR_OPEN, feedback_pending=True)
-    assert task_card(t, model="", attached=False).feedback_pending is True
+    assert task_card(t, model="").feedback_pending is True
 
 
 def test_review_park_shows_in_the_needs_review_column():
     t = make_task(issue=9, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
                   park=PARK_REVIEW, park_msg_id=77)
-    card = task_card(t, model="m", attached=False)
+    card = task_card(t, model="m")
     assert card.column == "needs-review"
     assert card.park == PARK_REVIEW   # the card still distinguishes the kind
     assert card.park_note_pending is False
@@ -204,7 +201,7 @@ def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
              make_task(issue=2, stage=Stage.AWAITING_SPEC_REVIEW,
                        slot=NO_SLOT, park=PARK_REVIEW)]
-    board = build_board(tasks, capacity=2, models={}, attached=set(),
+    board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
@@ -214,19 +211,18 @@ def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
 
 def test_task_card_carries_park_note():
     t = make_task(park="parked", park_note="which URL?")
-    card = task_card(t, model="opus", attached=False)
+    card = task_card(t, model="opus")
     assert card.park_note == "which URL?"
 
 
 def test_task_card_flags_an_unparked_in_flight_task():
-    card = task_card(make_task(stage=Stage.IMPLEMENT), model="opus",
-                     attached=False)
+    card = task_card(make_task(stage=Stage.IMPLEMENT), model="opus")
     assert card.consuming_capacity is True
 
 
 def test_task_card_does_not_flag_a_ci_parked_task():
     card = task_card(make_task(stage=Stage.IMPLEMENT, park=PARK_CI),
-                     model="opus", attached=False)
+                     model="opus")
     assert card.consuming_capacity is False
 
 
@@ -234,7 +230,7 @@ def test_task_card_flags_a_login_parked_task():
     """The card the operator most needs to spot: parked, yet still holding a
     unit, which is why the dispatcher has stopped claiming."""
     card = task_card(make_task(stage=Stage.SPEC, park=PARK_LOGIN),
-                     model="opus", attached=False)
+                     model="opus")
     assert card.consuming_capacity is True
 
 
@@ -250,7 +246,7 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
         make_task(issue=6, stage=Stage.FAILED),
         make_task(issue=7, stage=Stage.QUEUED),
     ]
-    board = build_board(tasks, capacity=3, models={}, attached=set(),
+    board = build_board(tasks, capacity=3, models={},
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
@@ -577,7 +573,7 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
               ev("2026-08-01T12:00:00+00:00", "merged", 9)]
     board = build_board(
         tasks, capacity=2,
-        models={("alpha", 7): "opus", ("alpha", 9): "opus"}, attached=set(),
+        models={("alpha", 7): "opus", ("alpha", 9): "opus"},
         events=events, heartbeat=HB, now=NOW, budget=BUDGET_OK,
         queues=[("alpha", [row(7), row(73), row(74, blocked=True)])],
         queue_stale=False, claims_paused=False, triage_running=False)
@@ -595,7 +591,7 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
 
 def test_build_board_degrades_without_events_or_heartbeat():
     board = build_board(
-        [make_task(issue=7)], capacity=2, models={}, attached=set(),
+        [make_task(issue=7)], capacity=2, models={},
         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
         queues=[("alpha", [])], queue_stale=True,
         claims_paused=False, triage_running=False)
@@ -618,7 +614,7 @@ def test_build_board_cross_target_ghost_not_suppressed():
         ("beta",  [row(73)]),   # beta#73 is a different issue — should ghost
     ]
     board = build_board(
-        tasks, capacity=4, models={}, attached=set(),
+        tasks, capacity=4, models={},
         events=[], heartbeat=HB, now=NOW, budget=BUDGET_OK,
         queues=queues, queue_stale=False,
         claims_paused=False, triage_running=False)
@@ -634,7 +630,7 @@ def test_build_board_same_target_still_excluded():
     guard: the fix must not accidentally stop excluding same-target issues)."""
     tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
     board = build_board(
-        tasks, capacity=4, models={}, attached=set(),
+        tasks, capacity=4, models={},
         events=[], heartbeat=HB, now=NOW, budget=BUDGET_OK,
         queues=[("alpha", [row(73), row(74)])], queue_stale=False,
         claims_paused=False, triage_running=False)
@@ -727,7 +723,7 @@ def test_delivery_contract_running_session():
 
 def test_task_detail_carries_thread_and_contract():
     t = make_task(issue=7, park=PARK_HUMAN)
-    detail = task_detail(t, model="m", attached=False, pane_tail="",
+    detail = task_detail(t, model="m", pane_tail="",
                          session_alive=False, events=[],
                          now=NOW,
                          messages=[_msg("a", "hi")], pending_sends=[],
@@ -749,10 +745,10 @@ def test_task_detail_timeline_does_not_interleave_targets_sharing_an_issue():
               {**ev(T3, "merged", 7), "target": "beta"}]
     alpha = make_task(issue=7, target="alpha")
     beta = make_task(issue=7, target="beta")
-    alpha_detail = task_detail(alpha, model="m", attached=False,
+    alpha_detail = task_detail(alpha, model="m",
                                pane_tail="", session_alive=False,
                                events=events, now=NOW)
-    beta_detail = task_detail(beta, model="m", attached=False,
+    beta_detail = task_detail(beta, model="m",
                               pane_tail="", session_alive=False,
                               events=events, now=NOW)
     assert [(e.label, e.ongoing) for e in alpha_detail.timeline] == [
@@ -763,7 +759,7 @@ def test_task_detail_timeline_does_not_interleave_targets_sharing_an_issue():
 
 def test_card_carries_undelivered_count_and_blocked_flag():
     tasks = [make_task(issue=7)]
-    board = build_board(tasks, capacity=2, models={}, attached=set(),
+    board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None,
                         now=NOW,
                         budget=BUDGET_OK, queues=[], queue_stale=False,
@@ -777,7 +773,7 @@ def test_card_carries_undelivered_count_and_blocked_flag():
 
 def test_capacity_view_reports_held_slots_and_derived_max():
     tasks = [make_task(issue=7, slot=0), make_task(issue=8, slot=2)]
-    board = build_board(tasks, capacity=3, models={}, attached=set(),
+    board = build_board(tasks, capacity=3, models={},
                         events=[], heartbeat=None,
                         now=NOW,
                         budget=BUDGET_OK, queues=[], queue_stale=False,
@@ -806,7 +802,7 @@ def test_slots_used_never_disagrees_with_the_lit_segments():
     "1/4" with zero segments lit. One derivation, one truth."""
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
              make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
-    board = build_board(tasks, capacity=2, models={}, attached=set(),
+    board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, budget=BUDGET_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
