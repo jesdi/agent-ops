@@ -207,26 +207,6 @@ def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
     assert loaded.labels == ()
 
 
-from dispatcher.state import clear_attached, has_attached, mark_attached
-
-
-def test_attached_marker_roundtrip(tmp_path):
-    assert not has_attached(tmp_path, "t", 42)
-    mark_attached(tmp_path, "t", 42)
-    assert has_attached(tmp_path, "t", 42)
-    assert (tmp_path / "attached-t-42").exists()
-    assert not has_attached(tmp_path, "t", 43)  # per-issue
-    clear_attached(tmp_path, "t", 42)
-    assert not has_attached(tmp_path, "t", 42)
-    clear_attached(tmp_path, "t", 42)  # idempotent
-
-
-def test_mark_attached_creates_state_dir(tmp_path):
-    sd = tmp_path / "fresh"
-    mark_attached(sd, "t", 7)
-    assert has_attached(sd, "t", 7)
-
-
 def test_artifact_round_trips(tmp_path):
     ts = TaskState(issue=7, target="alpha", stage=Stage.AWAITING_SPEC_REVIEW,
                    slot=0, worktree="/tmp/wt", branch="task/7", title="t",

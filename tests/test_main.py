@@ -17,7 +17,7 @@ from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                PARK_REVIEW, PARK_WAKE, Stage,
                                TaskState, clear_waiting, has_waiting, load,
-                               load_all, mark_attached, mark_waiting, save)
+                               load_all, mark_waiting, save)
 
 POLICY = parse_policy({
     "default": "claude-opus-4-8",
@@ -1954,55 +1954,20 @@ def test_dry_run_does_not_drain_intents(tmp_path, monkeypatch):
     assert len(intents_mod.list_intents(c.state_dir)) == 1  # untouched
 
 
-from dispatcher.state import clear_attached, mark_attached
-
-
-def test_attached_marker_holds_resume(tmp_path, monkeypatch):
+def test_a_stale_attached_marker_no_longer_holds_anything(tmp_path, monkeypatch):
+    """Regression test: now that attached markers are gone, a stale file
+    on disk has no power. Tasks resume and drive normally."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE)
-    mark_attached(c.state_dir, "portfolio_eval", 42)
+    # Simulate a stale marker file left from old runs
+    (Path(c.state_dir) / "attached-portfolio_eval-42").touch()
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
-    assert sess.resumed == []
-    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE  # still queued to wake
-
-
-def test_attached_marker_holds_drive_no_crash_no_park(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    patch_workspace(monkeypatch, tmp_path)
-    c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT)
-    # Session dead AND a blocked signal: without the marker this pass would
-    # crash-handle or park. With it: nothing happens.
-    (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "implement", "status": "blocked", "note": "q"}))
-    mark_attached(c.state_dir, "portfolio_eval", 42)
-    gh = FakeGitHub()
-    sess = FakeSessions(alive=set())
-    d = deps(gh, sess)
-    main.run_pass(c, d)
-    t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.stage is Stage.IMPLEMENT and t.park == ""  # untouched
-    assert gh.released == [] and sess.ended == []
-    assert "session_crashed" not in d.notifier.sent
-    assert "parked_question" not in d.notifier.sent
-
-
-def test_clearing_attached_marker_releases_the_hold(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    patch_workspace(monkeypatch, tmp_path)
-    c = cfg(tmp_path)
-    make_task(c, issue=42, park=PARK_WAKE)
-    mark_attached(c.state_dir, "portfolio_eval", 42)
-    sess = FakeSessions()
-    d = deps(sess=sess)
-    main.run_pass(c, d)
-    assert sess.resumed == []
-    clear_attached(c.state_dir, "portfolio_eval", 42)
-    main.run_pass(c, d)
+    # The stale marker is ignored; the task resumes normally
     assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
 def test_stalled_working_session_parks(tmp_path, monkeypatch):
@@ -2301,21 +2266,6 @@ def test_gate_holds_inside_the_grace_period(tmp_path, monkeypatch):
     assert t.park == "" and t.slot == 0
     assert sess.ended == []
     assert "spec_parked" not in d.notifier.sent
-
-
-def test_attached_operator_suspends_the_grace_timer(tmp_path, monkeypatch):
-    # A human reviewing in the live session must never be parked out from
-    # under; has_attached blocks _drive_task entirely.
-    patch_usage(monkeypatch)
-    patch_workspace(monkeypatch, tmp_path)
-    c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW)
-    gate_signal(wt)
-    mark_attached(c.state_dir, "portfolio_eval", 42)
-    sess = FakeSessions(alive={42})
-    main.run_pass(c, deps(sess=sess))
-    assert load(c.state_dir, "portfolio_eval", 42).park == ""
-    assert sess.ended == []
 
 
 def test_gate_parked_task_does_not_block_new_claims(tmp_path, monkeypatch):
@@ -2968,49 +2918,6 @@ def test_remove_workspace_dry_run_flag_reaches_the_real_teardown(
     # performs it and never records it as performed.
     assert "[dry-run] remove worktree" in capsys.readouterr().out
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PR_OPEN
-
-
-def test_merged_task_with_a_human_attached_is_left_alone(tmp_path, monkeypatch):
-    """attached-<N> is not advisory. A teammate merging while the operator
-    sits in #42's web terminal must not kill the session and delete the
-    worktree out from under the live pty — skip, retry next pass (a merged
-    PR still reads merged)."""
-    patch_usage(monkeypatch)
-    removed = patch_teardown(monkeypatch)
-    c = merged_cfg(tmp_path)
-    pr_open_task(c)
-    mark_attached(c.state_dir, "portfolio_eval", 42)
-    gh = FakeGitHub()
-    gh.pr_payloads[12] = payload(state="MERGED",
-                                 merged_at="2026-07-30T10:00:00Z")
-    sess = FakeSessions(alive=(42,))
-    notif = FakeNotifier()
-    main.run_pass(c, deps(gh, sess, notifier=notif))
-    got = load(c.state_dir, "portfolio_eval", 42)
-    assert got.stage is Stage.PR_OPEN          # still polled next pass
-    assert removed == []                       # worktree intact
-    assert sess.ended == []                    # pty untouched
-    assert gh.statused == [] and gh.deleted_branches == []
-    assert "task_done" not in notif.sent
-
-
-def test_pending_feedback_not_spawned_while_a_human_is_attached(
-        tmp_path, monkeypatch):
-    """Feedback arriving while the operator is in the web terminal must not
-    end their session and spawn address-review into the same worktree.
-    feedback_pending persists on disk, so the round happens after detach."""
-    patch_usage(monkeypatch)
-    c = cfg(tmp_path)
-    pr_open_task(c, feedback_pending=True)
-    mark_attached(c.state_dir, "portfolio_eval", 42)
-    gh = FakeGitHub()
-    gh.pr_payloads[12] = payload()
-    sess = FakeSessions(alive=(42,))
-    main.run_pass(c, deps(gh, sess))
-    got = load(c.state_dir, "portfolio_eval", 42)
-    assert got.stage is Stage.PR_OPEN and got.feedback_pending is True
-    assert got.feedback_cursor == ""   # cursor NOT advanced by a skipped spawn
-    assert sess.spawned == [] and sess.ended == []
 
 
 def test_address_review_resolves_the_implement_model(tmp_path, monkeypatch):

@@ -40,7 +40,7 @@ from dispatcher.sessions import Sessions
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, allocate_slot,
-                              clear_waiting, delete, has_attached, has_waiting,
+                              clear_waiting, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
                               read_stage_signal, save)
 from dispatcher.workspace import create_workspace, remove_workspace
@@ -688,14 +688,6 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
     """Ordered so a mid-sequence gh failure retries next pass (a merged PR
     still reads merged): board first (the raising step), then teardown
     (best-effort by construction), then the state flip that stops polling."""
-    if has_attached(cfg.state_dir, task.target, task.issue):
-        # A human is in this task's web terminal. `attached-<N>` is not
-        # advisory (web/terminal.py): the dispatcher declines to drive the
-        # task while it exists, and AttachRegistry puts no stage restriction
-        # on pr-open. Ending the session and deleting the worktree out from
-        # under a live pty is exactly what the marker exists to prevent —
-        # skip and retry next pass, a merged PR still reads merged.
-        return
     if target.status_done_option_id:
         deps.github.set_status(target, task.issue, target.status_done_option_id)
     else:
@@ -766,8 +758,6 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         key=lambda t: t.updated_at,
     )
     for task in woken:
-        if has_attached(cfg.state_dir, task.target, task.issue):
-            continue  # a human is typing in this session — do not resume over them
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             _mark_wake_blocked(cfg, target, task, "capacity full")
@@ -880,13 +870,6 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
          and t.feedback_pending],
         key=lambda t: t.updated_at)
     for task in pending:
-        if has_attached(cfg.state_dir, task.target, task.issue):
-            # A human is in this task's web terminal (attach carries no
-            # stage restriction, and the implement session is still alive at
-            # pr-open). Ending it and spawning address-review into the same
-            # worktree mid-investigation is what the marker forbids —
-            # feedback_pending persists on disk, so this retries next pass.
-            continue
         tasks = [t for t in load_all(cfg.state_dir)
                  if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
@@ -914,8 +897,6 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 budget_ok: bool, dry_run: bool = False) -> None:
-    if has_attached(cfg.state_dir, task.target, task.issue):
-        return  # held for a live human attach: no park, no reap, no spawn
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
@@ -1355,7 +1336,7 @@ def _sandboxed_state(cfg: Config):
 
     --dry-run stubs every I/O *dependency* (GitHubClient, Sessions, Notifier,
     remove_workspace), but the pass also writes locally — state files, the
-    event log, waiting/attached markers, failure reports, the intent queue,
+    event log, waiting markers, failure reports, the intent queue,
     the usage cache — and those writes were unguarded, so a dry run advanced
     tasks to terminal stages and wrote history for real. Guarding each call
     site is what already rotted: `dry_run` is threaded by hand into some
