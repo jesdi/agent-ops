@@ -54,7 +54,7 @@ flowchart LR
 
     subgraph box["The box — compute (VPS, Tailscale-only)"]
         dispatcher["Dispatcher"]
-        session["Sessions<br/>(podman + tmux, one per task)"]
+        session["Sessions<br/>(podman + herdr, one per task)"]
         console["Web console"]
         telegram["Telegram bot"]
         updater["Updater timer"]
@@ -97,7 +97,7 @@ flowchart LR
   real tokens on them.
 - **Sessions** run in rootless Podman containers (the `agent-ops-session`
   image: Node + Claude Code CLI, git, gh, Python/pipenv, pnpm), one per task,
-  each wrapped in tmux for TTY persistence and reply injection. Sessions are
+  each in a tab of the box's [herdr](https://herdr.dev) server — the agent-aware multiplexer that gives the dispatcher the agent's real lifecycle (`working` / `idle` / `blocked`) instead of screen-activity heuristics, plus TTY persistence and reply injection. Sessions are
   disposable; state lives in artifacts and the persistent claude-home.
 - **Park / resume** — when a session needs human input or is waiting on a CI
   run, the dispatcher stops the container, frees the slot, and resumes via
@@ -137,8 +137,7 @@ gh label create human-required --repo OWNER/REPO \
 ## Two ways to drive it from your phone
 
 **Web console** (`web/` + `frontend/`) — the board view above, plus per-task
-pages with the stage timeline, the spec awaiting your approval, and a live
-read-only terminal streaming the session's tmux pane over WebSocket. Reply to
+pages with the stage timeline, the spec awaiting your approval, and a read-only console (pane tail plus scrollable history, snapshot-backed once the session ends). To interact with a session, attach from a terminal: `herdr --remote box` on the desktop (herdr installed locally, same version as the box, `box` an SSH alias over the tailnet), or [Moshi](https://getmoshi.app) on a phone. Operating rule: attach to watch; reply through Telegram or the board — the dispatcher may park a session while you are typing in it. Reply to
 a parked agent, park, kill, retry, or resume a task, and manage the queue —
 all from the same UI. Failures and history get their own pages, so nothing
 silently disappears.

@@ -6,9 +6,9 @@
 # failure mode degrades to plain exec: the wrapped claude then falls back
 # to the shared claude-home OAuth store, i.e. today's behavior.
 #
-# Callers: session containers (tmux pane -> podman, via bare
+# Callers: session containers (herdr pane -> podman, via bare
 # `-e CLAUDE_CODE_OAUTH_TOKEN` passthrough), triage containers, and the
-# keepalive unit. tmux panes have no op auth of their own, so the wrapper
+# keepalive unit. herdr panes have no op auth of their own, so the wrapper
 # sources op-token.env itself when needed.
 set -u
 

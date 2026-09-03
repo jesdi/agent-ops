@@ -1,7 +1,7 @@
 """One dispatcher pass: candidates → capacity → budget → claim → drive.
 
 Stateless per pass — the view is rebuilt every time from the board (via
-candidates), state files, stage.json signals, and tmux liveness. Run by a
+candidates), state files, stage.json signals, and session liveness. Run by a
 systemd timer; one invocation = one pass."""
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     leaves the screen static and the stall detector simply re-fires.
 
     The reply may arrive hours later, so the prompt is re-verified first: the
-    tmux session is a HOST one (is_alive only means `has-session`), and once
+    session's pane is a HOST shell (is_alive only means `has-session`), and once
     claude has exited the pane is back at the host shell, where send_text
     would execute the operator's text as a shell command outside the sandbox.
 
@@ -210,7 +210,7 @@ def _status_lines(cfg: Config) -> list[str]:
                      + (f" [{t.park}]" if t.park else "") + f" {slot}")
     lines = lines or ["(nothing in flight)"]
     # The sweep holds a real capacity unit that active() cannot see (its work
-    # is a tmux session, not a TaskState) — _run_pass reduces effective
+    # is a herdr tab, not a TaskState) — _run_pass reduces effective
     # capacity for it, so status must count it too or it reports 1/2 on a full
     # box for as long as the sweep runs.
     held = 1 if triage.running() else 0
@@ -660,7 +660,7 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
         elif res.kind == "closed":
             # End the session too: the implement session is still alive at
             # pr-open, and nothing will ever drive this task again (FAILED
-            # isn't in IN_FLIGHT_STAGES), so its tmux session and container
+            # isn't in IN_FLIGHT_STAGES), so its session and container
             # would otherwise hold their memory/cpu reservation until the box
             # reboots. The worktree stays for autopsy.
             deps.sessions.end(task.target, task.issue)
@@ -900,7 +900,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
-    # Query tmux idle only when it can matter: detection enabled and the
+    # Query idle only when it can matter: detection enabled and the
     # session alive (the crash path owns dead sessions).
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and cfg.stall_after_seconds > 0 else None)
@@ -1143,7 +1143,7 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
     elif intent.action == "kill":
         # A target-carrying intent always knows which session to end, even
         # with no state file at all — e.g. _flush_done deletes a DONE task's
-        # state, but a leaked tmux session can still be sitting there, and
+        # state, but a leaked session can still be sitting there, and
         # the operator needs to be able to kill it. Only a legacy/ambiguous
         # intent (target == "", no unique task match) has no knowable
         # target — that is the one case with nothing to act on, so it alone
@@ -1423,7 +1423,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
         triage.tick(cfg, deps, config_path)
-    # Evaluate each triage signal once — triage.running() is a real tmux
+    # Evaluate each triage signal once — triage.running() is a real herdr
     # subprocess; calling it per target would spawn (1 + len(targets)) processes
     # each pass. The two signals are semantically distinct: eff is reduced when
     # the sweep is running (it holds a real capacity unit active() cannot see);

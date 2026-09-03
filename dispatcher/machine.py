@@ -1,4 +1,4 @@
-"""Pure per-task state machine: (state, stage signal, tmux liveness) → actions.
+"""Pure per-task state machine: (state, stage signal, session liveness) → actions.
 
 queued → spec → awaiting-spec-review → plan → implement → pr-open
                                     ↘ blocked (any stage) ↗    ⇅

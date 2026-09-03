@@ -125,7 +125,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 sources.usage(), cfg.budget_threshold, cfg.racing_minutes,
                 cfg.racing_threshold),
             queues=queues, queue_stale=stale_any,
-            # One tmux probe for both signals (cf. dispatcher run_pass).
+            # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,
             undelivered={(t.target, t.issue): mail.get(t.issue, 0)
                         for t in tasks},
@@ -208,7 +208,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                      op: Operator = Depends(current_operator)):
         _find_task(target, issue)
         # Unbounded `lines` would let one request pull an entire pane history
-        # into memory and over the wire; clamp before hitting tmux.
+        # into memory and over the wire; clamp before hitting the session layer.
         clamped = max(1, min(lines, HISTORY_MAX_LINES))
         return read_model.PaneHistory(
             text=sources.pane_history(target, issue, clamped))

@@ -167,13 +167,13 @@ class Sources:
         return d if isinstance(d, dict) else None
 
     def triage_state(self) -> tuple[bool, bool]:
-        """(claims_paused, triage_running) from exactly ONE tmux probe.
+        """(claims_paused, triage_running) from exactly ONE session-layer probe.
 
         Mirrors dispatcher/main.py:1135-1137, which evaluates triage.running()
         once per pass for the reason its comment gives: running() is a real
         subprocess with timeout=30. triage.pending() calls running() itself, so
         asking sources for the two signals separately ran it twice per board
-        request — a wedged tmux server stalled the hottest route for up to 60 s
+        request — a wedged session server stalled the hottest route for up to 60 s
         per connected client. Composed here from the same primitives instead.
 
         Degrades to (False, False) on any error: False is the non-blocking
@@ -207,7 +207,7 @@ class Sources:
             if self._sessions.is_alive(target, issue):
                 return self._sessions.capture_tail(target, issue)
         except Exception:
-            # capture runs tmux with timeout=30, which RAISES on a wedged
+            # capture runs the session CLI with timeout=30, which RAISES on a wedged
             # server. A missing tail degrades the task view; it must never
             # 500 it (cf. issue_open degrading to None).
             return ""
@@ -218,7 +218,7 @@ class Sources:
             if self._sessions.is_alive(target, issue):
                 return self._sessions.capture_history(target, issue, lines)
         except Exception:
-            # Same degrade contract as pane_tail: a wedged tmux server
+            # Same degrade contract as pane_tail: a wedged session server
             # (capture_history runs with timeout=30 and RAISES) must never
             # 500 the history view.
             return ""
@@ -226,7 +226,7 @@ class Sources:
 
     def _read_snapshot(self, target: str, issue: int) -> str:
         """Dead session: serve the scrollback Sessions.end() persisted, keyed
-        by the tmux session name (task-<target>-<issue>.txt). Falls back to
+        by the session name (task-<target>-<issue>.txt). Falls back to
         the legacy task-<issue>.txt for a snapshot written before this
         deploy — Sessions.end() only ever writes the modern name, so a
         legacy file only exists from before the (target, issue) rekey.
