@@ -167,9 +167,10 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     leaves the screen static and the stall detector simply re-fires.
 
     The reply may arrive hours later, so the prompt is re-verified first: the
-    session's pane is a HOST shell (is_alive only means `has-session`), and once
-    claude has exited the pane is back at the host shell, where send_text
-    would execute the operator's text as a shell command outside the sandbox.
+    session's pane is a HOST shell (is_alive means the tab's shell is busy,
+    not that claude is at a prompt), and once claude has exited the pane is
+    back at the host shell, where send_text would execute the operator's text
+    as a shell command outside the sandbox.
 
     Un-parking then restores the same invariant _resume_woken and _retry_plan
     enforce — no waiting marker, a `working` signal — or the very next pass

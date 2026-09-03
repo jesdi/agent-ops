@@ -39,17 +39,6 @@ def _isolated_state_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _stub_triage_running(monkeypatch):
-    """Prevent unit tests from exec-ing tmux. triage.running() shells out
-    to `tmux has-session`; without this every run_pass call would spawn a
-    subprocess (and fail on machines without tmux on PATH). Tests that need
-    a specific liveness value override this with their own monkeypatch call,
-    which takes precedence because it is applied after this fixture."""
-    from dispatcher import triage
-    monkeypatch.setattr(triage, "running", lambda: False)
-
-
-@pytest.fixture(autouse=True)
 def _no_herdr_server(monkeypatch):
     """The dev machine runs a real herdr server. Every herdr call in the
     suite must be an explicit fake: default to "no server" so an unstubbed

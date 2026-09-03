@@ -39,6 +39,12 @@ never touched mid-task). Updater and dispatcher pass share a flock so code
 never swaps mid-pass. Merging to main (CI-gated) IS the deploy — no
 CI→VPS push, no GitHub-held deploy credentials.
 
+**First deploy carrying herdr:** the updater's guarded migration hunk ends
+every in-flight tmux session, parks its task (`unpark-requested`), and
+re-enqueues any live triage sweep; the next dispatcher pass resumes each
+task in herdr with `claude --continue`. Expect one interrupted turn per
+in-flight task, once.
+
 Claude sessions run in rootless Podman containers: the `agent-ops-session`
 image (node + Claude Code CLI, git, gh, python/pipenv, pnpm) is launched
 per task with the task worktree, `~/agent-ops-state/claude-home`
@@ -60,12 +66,13 @@ path inside the fresh container. Woken tasks are always head-of-queue.
 `agent-ops-herdr.service` runs `herdr server` as `agent`. **Every live
 session is a child of that server: stopping or restarting the unit kills
 every session.** herdr restores its layout on restart, so each task's
-tab comes back as an empty shell: the dispatcher reads it as alive but
-idle and the stall timer parks it after `stall_after_seconds`; resume
-recreates the container with `claude --continue`. Upgrade with `herdr
-update` as `agent` instead of a unit restart. The dispatcher, web, waitd
-and triage units `Want` the unit and start after it; while the server is
-down every task reads as dead, until `Restart=always` brings it back.
+tab comes back as a bare shell: the dispatcher reads it as dead (liveness
+= busy shell; a bare shell is not busy) → crash path reports it, and
+`resume` recreates the container with `claude --continue`. Upgrade with
+`herdr update` as `agent` instead of a unit restart. The dispatcher, web,
+waitd and triage units `Want` the unit and start after it; while the
+server is down every task reads as dead, until `Restart=always` brings it
+back.
 
 Attach from your desktop with `herdr --remote box` (herdr installed
 locally at the same version; `box` = an SSH host alias for `agent@<box>`

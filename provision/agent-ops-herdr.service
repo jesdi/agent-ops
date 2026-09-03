@@ -14,9 +14,9 @@ After=network-online.target
 # handoff) over a unit restart for upgrades. See provision/README.md.
 #
 # On restart herdr restores its saved layout (~/.config/herdr/session.json):
-# every task-* tab comes back as a fresh shell with no container behind
-# it. The dispatcher reads those as alive-but-idle and the stall timer
-# parks them (stall_after_seconds); resume recreates the container.
+# every task-* tab comes back as a bare shell with no container behind it.
+# The dispatcher reads those as dead (liveness = busy shell; a bare shell
+# is not busy) → crash path reports and `resume` recreates the container.
 ExecStart=%h/.local/bin/herdr server
 Restart=always
 RestartSec=2
