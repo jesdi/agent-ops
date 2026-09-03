@@ -38,7 +38,7 @@ IN_FLIGHT_STAGES = frozenset({
 
 # A task that holds no E2E slot. Every session-ending park releases its slot
 # back to the pool; only PARK_LOGIN keeps a slot because it keeps a live
-# container and tmux session running (the pane is where the operator types the
+# container and session running (the pane is where the operator types the
 # OAuth code). PARK_REVIEW is the original exception that freed the slot; the
 # rule now applies to all session-ending parks, so slots are never leaked.
 NO_SLOT = -1
@@ -46,7 +46,7 @@ NO_SLOT = -1
 # Park lifecycle (orthogonal to stage — the stage is preserved while parked).
 # "" = not parked. Parked tasks release CAPACITY. Every park that ends the
 # session also releases its SLOT — the only exception is PARK_LOGIN, which
-# keeps a live container and tmux session and therefore keeps both capacity
+# keeps a live container and session and therefore keeps both capacity
 # and the slot (see active() and holds_slot()).
 PARK_HUMAN = "parked"            # waiting for operator input
 PARK_CI = "awaiting-ci"          # waiting for a GitHub Actions run

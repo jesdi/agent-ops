@@ -25,7 +25,7 @@ from dispatcher.budget import UsageSnapshot, fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher import (eventlog, failures, intents, messages, pr_poll,
-                        queue_ops, relogin, triage)
+                        queue_ops, relogin, tmux_migration, triage)
 from dispatcher.github import GitHubClient
 
 log = logging.getLogger(__name__)
@@ -984,8 +984,6 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
     rep = failures.FailureReport(
         klass="session-crash", target=target.name, issue=task.issue,
         title=f"session crashed during {task.stage.value}: {task.title}",
-        # Backend-neutral: the session may be a herdr tab or, until the
-        # tmux retirement, a legacy tmux session.
         error=(f"session task-{task.target}-{task.issue} died during stage "
                f"{task.stage.value}"),
         log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
@@ -1483,6 +1481,7 @@ def main() -> None:
     ap.add_argument("--digest", action="store_true")
     ap.add_argument("--triage", action="store_true")
     ap.add_argument("--triage-run", action="store_true")
+    ap.add_argument("--migrate-tmux", action="store_true")
     args = ap.parse_args()
     cfg = load_config(args.config)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
@@ -1498,6 +1497,14 @@ def main() -> None:
             print("triage already pending or running; not enqueued")
     elif args.triage_run:
         triage.guarded_sweep(cfg, deps)
+    elif args.migrate_tmux:
+        # Called by provision/update.sh, which already holds convergence.lock
+        # (the same file pass_lock flocks — taking it here again would block
+        # forever, flock being per open-file-description). Never run by hand
+        # while the dispatcher timer is live.
+        for line in tmux_migration.migrate(
+                cfg.state_dir, lambda task, text: _wake(cfg, task, text)):
+            print(line)
     else:
         with pass_lock(cfg.state_dir):
             guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)

@@ -26,7 +26,7 @@ def _state_dir() -> str:
 def _wrapper() -> str:
     """with-claude-token.sh resolves the long-lived OAuth token from 1P at
     spawn time and execs podman with it exported — the secret is never
-    persisted on the box and never appears in argv or the tmux env. Bare
+    persisted on the box and never appears in argv or the pane env. Bare
     `-e CLAUDE_CODE_OAUTH_TOKEN` forwards it into the container (podman
     omits an unset passthrough var, so a box without the token degrades to
     the shared claude-home store); with it, claude authenticates statically
@@ -88,7 +88,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
 
 def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
                cpus: str, model: str, prompt_path: str) -> list[str]:
-    """Headless read-only triage session: argv for subprocess.run (no tmux,
+    """Headless read-only triage session: argv for subprocess.run (no pane,
     no -it). The clone is :ro — the session decides, it never writes; its
     only writable surface is /triage, where the prompt is read from and the
     decisions file lands.

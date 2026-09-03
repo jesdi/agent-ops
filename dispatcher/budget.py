@@ -153,7 +153,7 @@ def fetch_usage(
 
     # Token preference: explicit env override, then the box's long-lived
     # setup-token read from 1P at fetch time (no unit carries the secret in
-    # its process env — tmux new-session would inherit the dispatcher's),
+    # its process env — a session shell would inherit the dispatcher's),
     # then the shared OAuth store. The store stays as a live fallback: the
     # usage endpoint is unofficial and may reject the static token.
     candidates = [t for t in (

@@ -1,13 +1,13 @@
 """herdr socket-CLI adapter. One `herdr …` subprocess per call, JSON reply
-parsed, and the degrade contract the tmux calls had: any failure — a
+parsed, and one degrade contract throughout: any failure — a
 non-zero exit (server error, JSON on stdout, exit 1; CLI syntax error,
 plain text, exit 2), a timeout, a missing binary, an unparseable reply —
 reads as None / False, and mutations are best-effort.
 
 IDs (`w1`, `w1:t3`, `w1:p3`) are opaque and are never persisted: `Tab` is
 the way callers resolve by label on every operation (workspace = target,
-tab = task-<target>-<issue>), exactly as `tmux has-session -t name`
-resolved by name. This module knows nothing about tasks;
+tab = task-<target>-<issue>) rather than holding an id. This module
+knows nothing about tasks;
 dispatcher/sessions.py and triage.py own that mapping."""
 from __future__ import annotations
 

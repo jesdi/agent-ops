@@ -86,6 +86,20 @@ def box(tmp_path):
     herdr = bin_dir / "herdr"
     herdr.write_text('#!/bin/sh\necho "herdr 0.8.2"\n')
     herdr.chmod(0o755)
+    # tmux: the one-shot migration is gated on `tmux ls` succeeding, so the
+    # default is "no sessions" (exit 1) and the migration tests flip the rc
+    # file. Silent like herdr, so the "no calls" assertions stay exact.
+    tmux_ls_rc = tmp_path / "tmux-ls-rc"
+    tmux_ls_rc.write_text("1\n")
+    tmux = bin_dir / "tmux"
+    tmux.write_text(
+        f'#!/bin/sh\n[ "$1" = "ls" ] && exit "$(cat "{tmux_ls_rc}")"\nexit 0\n')
+    tmux.chmod(0o755)
+    # The dispatcher entrypoint the migration invokes. Recording argv is the
+    # whole point: the test asserts on the flag and the --config path.
+    py = venv_bin / "python"
+    py.write_text(f'#!/bin/sh\necho "python $@" >> "{calls}"\n')
+    py.chmod(0o755)
 
     # Seed + sync script + fake claude so the claude-home sync works.
     prov_src = Path(__file__).resolve().parent.parent / "provision"
@@ -123,6 +137,7 @@ def box(tmp_path):
         AGENT_OPS_PODMAN=str(podman),
         AGENT_OPS_PNPM=str(pnpm),
         AGENT_OPS_HERDR=str(herdr),
+        AGENT_OPS_TMUX=str(tmux),
         AGENT_OPS_CLAUDE=str(claude),
         # Point the creds-convergence step at a non-existent path so
         # pre-existing tests are a clean no-op regardless of the developer's
@@ -131,7 +146,8 @@ def box(tmp_path):
         AGENT_OPS_HOST_CREDS=str(tmp_path / "nohost" / ".credentials.json"),
     )
     return SimpleNamespace(origin=origin, repo=repo, state=state,
-                           units=units, calls=calls, env=env)
+                           units=units, calls=calls, env=env,
+                           tmux_ls_rc=tmux_ls_rc)
 
 
 def run_update(box, **env_extra):
@@ -628,3 +644,30 @@ def test_failed_herdr_install_aborts_before_unit_sync(box, tmp_path):
     assert "installer exploded" in r.stderr
     assert "daemon-reload" not in calls(box)
     assert "waitd v1" in (box.units / "agent-ops-waitd.service").read_text()
+
+
+# --- one-shot tmux → herdr migration (delete with dispatcher/tmux_migration.py)
+
+def test_tmux_migration_runs_once_when_tmux_has_sessions(box):
+    """Sessions the pre-herdr dispatcher left in tmux are handed to the
+    park/resume path BEFORE any unit restart, so the dispatcher's next pass
+    already sees them queued for a herdr resume."""
+    box.tmux_ls_rc.write_text("0\n")
+    (box.origin / "provision" / "agent-ops-waitd.service").write_text(
+        "[Unit]\nDescription=waitd v2\n")
+    commit_all(box.origin, "unit change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    log = calls(box).splitlines()
+    migrations = [i for i, l in enumerate(log) if "--migrate-tmux" in l]
+    assert len(migrations) == 1, log
+    assert f"--config {box.state}/targets.yaml" in log[migrations[0]]
+    restarts = [i for i, l in enumerate(log) if "try-restart" in l]
+    assert restarts, log
+    assert migrations[0] < restarts[0], log
+
+
+def test_no_tmux_migration_without_sessions(box):
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "--migrate-tmux" not in calls(box)

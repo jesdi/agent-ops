@@ -7,7 +7,7 @@ Because it deletes, every refusal reason gets its own test: the gate is
 the feature.
 
 Rig shape: a bare `origin`, a clone with `main`, and per-task worktrees,
-plus fake gh/tmux/podman on PATH. Git is real — merge/ancestry checks are
+plus fake gh/herdr/podman on PATH. Git is real — merge/ancestry checks are
 what we are testing, so stubbing git would test nothing.
 """
 import json
@@ -51,10 +51,8 @@ class Rig:
         self.worktrees = self.clone / ".worktrees"
         self.repo = "fake/repo"
         self.closed_issues = set()
-        self.sessions = tmp_path / "tmux-sessions"
         self.containers = tmp_path / "podman-names"
         self.herdr_tabs = tmp_path / "herdr-tabs"
-        self.sessions.write_text("")
         self.containers.write_text("")
         self.herdr_tabs.write_text("")
 
@@ -149,10 +147,6 @@ class Rig:
         when = time.time() - days * DAY
         os.utime(wt, (when, when))
 
-    def live(self, *names):
-        self.sessions.write_text("".join(f"{n}\n" for n in names))
-        self.containers.write_text("".join(f"{n}\n" for n in names))
-
     def herdr_live(self, *labels):
         tabs = [{"label": l, "tab_id": f"w1:t{i + 2}", "workspace_id": "w1",
                  "number": i + 2, "focused": False, "pane_count": 1,
@@ -194,9 +188,6 @@ fi
 exit 1
 """)
         gh.chmod(0o755)
-        tmux = self.bin / "tmux"
-        tmux.write_text(f'#!/bin/sh\ncat "{self.sessions}"\n')
-        tmux.chmod(0o755)
         podman = self.bin / "podman"
         podman.write_text(f'#!/bin/sh\ncat "{self.containers}"\n')
         podman.chmod(0o755)
@@ -311,27 +302,11 @@ def test_refuses_open_issue(rig):
     assert "issue" in proc.stdout
 
 
-def test_refuses_live_tmux_session(rig):
-    wt = rig.task(162)
-    rig.live("task-162")
-    proc = rig.run("--sweep", expect=0)
-    assert wt.exists()
-    assert "live" in proc.stdout
-
-
 # --- (target, issue) rekey awareness ------------------------------------
-# Post-rekey, live tmux sessions and podman containers are named
+# Post-rekey, live herdr tabs and podman containers are named
 # task-<target>-<issue>, not the legacy task-<issue>; a sweeper that only
 # ever checked the legacy name would false-negative its liveness guard for
 # every task created after this deploy and rm -rf a live worktree.
-
-def test_refuses_new_style_live_tmux_session(rig):
-    wt = rig.task(162)  # task_json="new" by default -> target "fake"
-    rig.live("task-fake-162")
-    proc = rig.run("--sweep", expect=0)
-    assert wt.exists()
-    assert "live" in proc.stdout
-
 
 def test_refuses_new_style_live_podman_container(rig):
     wt = rig.task(162)
@@ -342,10 +317,10 @@ def test_refuses_new_style_live_podman_container(rig):
 
 
 def test_still_refuses_legacy_live_session_name(rig):
-    """A session not yet touched since the deploy (no adoption rename yet)
-    is still named the old way — must still be caught."""
+    """A session started before the (target, issue) rekey is still named
+    the old way — must still be caught."""
     wt = rig.task(162)
-    rig.live("task-162")
+    rig.herdr_live("task-162")
     proc = rig.run("--sweep", expect=0)
     assert wt.exists()
     assert "live" in proc.stdout
@@ -358,7 +333,7 @@ def test_refuses_live_session_via_anchored_fallback_when_target_unknown(rig):
     not fire on an unrelated issue whose number merely ends the same
     (task-foo-1162 must never stand in for issue 162)."""
     wt = rig.task(162, task_json="legacy")
-    rig.live("task-fake-162", "task-foo-1162")
+    rig.herdr_live("task-fake-162", "task-foo-1162")
     proc = rig.run("--sweep", expect=0)
     assert wt.exists()
     assert "live" in proc.stdout
@@ -366,7 +341,7 @@ def test_refuses_live_session_via_anchored_fallback_when_target_unknown(rig):
 
 def test_missing_task_json_also_uses_the_anchored_fallback(rig):
     wt = rig.task(162, task_json="missing")
-    rig.live("task-fake-162")
+    rig.herdr_live("task-fake-162")
     proc = rig.run("--sweep", expect=0)
     assert wt.exists()
     assert "live" in proc.stdout
@@ -376,17 +351,17 @@ def test_anchored_fallback_does_not_false_positive_on_a_different_issue(rig):
     """The mirror of the anchoring test above: with no OTHER live session
     around, a worktree whose target is unknown must still sweep cleanly."""
     wt = rig.task(162, task_json="legacy")
-    rig.live("task-fake-1162")  # a different issue number, not 162
+    rig.herdr_live("task-fake-1162")  # a different issue number, not 162
     rig.run("--sweep", expect=0)
     assert not wt.exists()
 
 
 def test_refuses_live_podman_container_via_anchored_fallback_when_target_unknown(rig):
-    """Isolate the podman anchored-fallback branch from the tmux one:
-    Rig.live() would also populate the tmux fixture, and the session check
-    returns before evaluate() ever reaches the container check, leaving
-    that branch dead code as far as coverage goes — write only the
-    containers fixture so it is actually exercised."""
+    """Isolate the podman anchored-fallback branch from the session one:
+    the session check returns before evaluate() ever reaches the container
+    check, so leave the herdr fixture empty and write only the containers
+    fixture — otherwise that branch is dead code as far as coverage
+    goes."""
     wt = rig.task(162, task_json="legacy")
     rig.containers.write_text("task-fake-162\ntask-foo-1162\n")
     proc = rig.run("--sweep", expect=0)

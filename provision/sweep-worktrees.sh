@@ -29,7 +29,6 @@ STATE_DIR="${AGENT_OPS_STATE_DIR:-$HOME/agent-ops-state}"
 TARGETS="${AGENT_OPS_TARGETS:-$STATE_DIR/targets.yaml}"
 STALE_DAYS="${AGENT_OPS_WORKTREE_STALE_DAYS:-7}"
 GH="${AGENT_OPS_GH:-gh}"
-TMUX="${AGENT_OPS_TMUX:-tmux}"
 # The herdr binary is a per-user install in ~/.local/bin, which the user
 # manager's PATH does not include (same rule as claude).
 HERDR="${AGENT_OPS_HERDR:-$HOME/.local/bin/herdr}"
@@ -135,10 +134,10 @@ _default_branch() {
 
 # One label per line for every herdr tab on the server: task-<target>-<n>
 # for sessions, `triage` for the sweep. herdr is the session layer (spec
-# 2026-09-03); a tab exists for exactly as long as the dispatcher considers
-# the session alive, so it is checked exactly as a tmux session is. Empty
-# when the server or the binary is absent — the podman check still covers a
-# live container in that case.
+# 2026-09-03) and a tab exists for exactly as long as the dispatcher
+# considers the session alive, so this list IS the set of live sessions.
+# Empty when the server or the binary is absent — the podman check still
+# covers a live container in that case.
 _herdr_tabs() {
   "$HERDR" tab list 2>/dev/null | "$PY_BIN" -c '
 import json, sys
@@ -188,9 +187,7 @@ evaluate() {
   fi
 
   local sessions containers
-  sessions=$(printf '%s\n' \
-    "$("$TMUX" list-sessions -F '#{session_name}' 2>/dev/null || true)" \
-    "$(_herdr_tabs)")
+  sessions=$(_herdr_tabs)
   containers=$("$PODMAN" ps --format '{{.Names}}' 2>/dev/null || true)
 
   if echo "$sessions" | grep -Fxq "task-$issue"; then
