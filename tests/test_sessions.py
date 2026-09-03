@@ -333,3 +333,182 @@ def test_end_wedged_tmux_still_kills(tmp_path, monkeypatch):
     sessions.Sessions(state_dir=tmp_path).end("acme", 42)
     assert ["tmux", "kill-session", "-t", "task-acme-42"] in calls
     assert not (tmp_path / "snapshots").exists()
+
+
+# --- herdr backend (spec §2) -------------------------------------------------
+import subprocess as _sp
+
+from dispatcher import herdr
+from dispatcher.sessions import _HerdrBackend
+
+H_TABS = ('{"id":"i","result":{"tabs":[{"label":"1","tab_id":"w1:t1",'
+          '"workspace_id":"w1","number":1,"focused":true,"pane_count":1,'
+          '"agent_status":"unknown"},{"label":"task-acme-42","tab_id":"w1:t2",'
+          '"workspace_id":"w1","number":2,"focused":false,"pane_count":1,'
+          '"agent_status":"working"}],"type":"tab_list"}}')
+H_NO_TABS = '{"id":"i","result":{"tabs":[],"type":"tab_list"}}'
+H_PANES = ('{"id":"i","result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1",'
+           '"workspace_id":"w1","agent_status":"unknown","focused":true,'
+           '"revision":0,"terminal_id":"a"},{"pane_id":"w1:p2","tab_id":"w1:t2",'
+           '"workspace_id":"w1","agent_status":"working","focused":false,'
+           '"revision":5,"terminal_id":"b"}],"type":"pane_list"}}')
+H_WS = ('{"id":"i","result":{"type":"workspace_list","workspaces":[{"label":"acme",'
+        '"workspace_id":"w1","number":1,"focused":true,"pane_count":2,'
+        '"tab_count":2,"active_tab_id":"w1:t1","agent_status":"unknown"}]}}')
+H_NO_WS = '{"id":"i","result":{"type":"workspace_list","workspaces":[]}}'
+H_WS_CREATED = ('{"id":"i","result":{"workspace":{"label":"acme","workspace_id":"w1",'
+                '"number":1,"focused":false,"pane_count":1,"tab_count":1,'
+                '"active_tab_id":"w1:t1","agent_status":"unknown"},'
+                '"tab":{"label":"1","tab_id":"w1:t1","workspace_id":"w1","number":1,'
+                '"focused":false,"pane_count":1,"agent_status":"unknown"},'
+                '"root_pane":{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1",'
+                '"agent_status":"unknown","focused":false,"revision":0,"terminal_id":"a"},'
+                '"type":"workspace_created"}}')
+H_TAB_CREATED = ('{"id":"i","result":{"tab":{"label":"task-acme-42","tab_id":"w1:t2",'
+                 '"workspace_id":"w1","number":2,"focused":false,"pane_count":1,'
+                 '"agent_status":"unknown"},"root_pane":{"pane_id":"w1:p2",'
+                 '"tab_id":"w1:t2","workspace_id":"w1","agent_status":"unknown",'
+                 '"focused":false,"revision":0,"terminal_id":"b"},"type":"tab_created"}}')
+
+
+def herdr_fake(monkeypatch, table, calls=None):
+    """argv-prefix -> (rc, stdout) table for herdr._run; unmatched -> None."""
+    def _run(args):
+        if calls is not None:
+            calls.append(args)
+        for prefix, rc, out in table:
+            if args[:len(prefix)] == list(prefix):
+                return _sp.CompletedProcess(["herdr", *args], rc, out, "")
+        return None
+    monkeypatch.setattr(herdr, "_run", _run)
+
+
+LIVE = [(("tab", "list"), 0, H_TABS), (("pane", "list"), 0, H_PANES),
+        (("workspace", "list"), 0, H_WS)]
+
+
+def _worktree(tmp_path):
+    (tmp_path / ".git").write_text(
+        f"gitdir: {tmp_path}/clone/.git/worktrees/task-42\n")
+    return str(tmp_path)
+
+
+def test_herdr_is_alive_means_tab_by_label_exists(monkeypatch):
+    herdr_fake(monkeypatch, LIVE)
+    assert _HerdrBackend("2g", "2", None).is_alive("acme", 42) is True
+    assert _HerdrBackend("2g", "2", None).is_alive("acme", 43) is False
+    herdr_fake(monkeypatch, [])  # server down reads dead, as a dead tmux server did
+    assert _HerdrBackend("2g", "2", None).is_alive("acme", 42) is False
+
+
+def test_herdr_launch_creates_workspace_and_tab_on_first_use(tmp_path, monkeypatch):
+    wt = _worktree(tmp_path)
+    calls = []
+    herdr_fake(monkeypatch, [
+        (("tab", "list"), 0, H_NO_TABS), (("workspace", "list"), 0, H_NO_WS),
+        (("workspace", "create"), 0, H_WS_CREATED),
+        (("tab", "create"), 0, H_TAB_CREATED), (("pane", "run"), 0, "")], calls)
+    _HerdrBackend("2g", "2", None).launch("acme", 42, wt, "claude-fable-5",
+                                          '"$(cat .agent/prompt-spec.md)"')
+    assert ["workspace", "create", "--label", "acme",
+            "--cwd", f"{tmp_path}/clone", "--no-focus"] in calls
+    assert ["tab", "create", "--workspace", "w1", "--label", "task-acme-42",
+            "--cwd", wt, "--no-focus"] in calls
+    run = next(c for c in calls if c[:2] == ["pane", "run"])
+    assert run[2] == "w1:p2"
+    assert run[3].startswith("HERDR_AGENT=claude ")
+    assert "with-claude-token.sh podman run --rm -it --name task-acme-42 " in run[3]
+    assert ('claude --remote-control task-acme-42 --permission-mode auto '
+            '--model claude-fable-5 "$(cat .agent/prompt-spec.md)"') in run[3]
+
+
+def test_herdr_launch_reuses_existing_workspace_and_tab(tmp_path, monkeypatch):
+    wt = _worktree(tmp_path)
+    calls = []
+    herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
+    _HerdrBackend("2g", "2", None).launch("acme", 42, wt, "m", "--continue x")
+    assert not any(c[:2] in (["workspace", "create"], ["tab", "create"])
+                   for c in calls)
+    assert calls[-1][:3] == ["pane", "run", "w1:p2"]
+
+
+def test_herdr_launch_is_a_noop_when_the_server_is_down(tmp_path, monkeypatch):
+    wt = _worktree(tmp_path)
+    calls = []
+    herdr_fake(monkeypatch, [], calls)
+    _HerdrBackend("2g", "2", None).launch("acme", 42, wt, "m", "x")  # no raise
+    assert not any(c[:2] == ["pane", "run"] for c in calls)
+
+
+def test_herdr_agent_prefix_is_not_in_containers_session_cmd(tmp_path):
+    wt = _worktree(tmp_path)
+    assert "HERDR_AGENT" not in podman_cmd("acme", 42, wt, "2g", "2", "m", "x")
+
+
+def test_herdr_capture_tail_reads_visible_and_trims(monkeypatch):
+    body = "\n".join(str(n) for n in range(40)) + "\n"
+    calls = []
+    herdr_fake(monkeypatch, LIVE + [(("pane", "read"), 0, body)], calls)
+    out = _HerdrBackend("2g", "2", None).capture_tail("acme", 42)
+    assert calls[-1] == ["pane", "read", "w1:p2", "--source", "visible",
+                         "--lines", "25"]
+    assert out.splitlines() == [str(n) for n in range(15, 40)]
+
+
+def test_herdr_capture_history_reads_recent_unwrapped(monkeypatch):
+    calls = []
+    herdr_fake(monkeypatch, LIVE + [(("pane", "read"), 0, "line1\nline2\n")], calls)
+    out = _HerdrBackend("2g", "2", None).capture_history("acme", 42, lines=500)
+    assert out == "line1\nline2"
+    assert calls[-1] == ["pane", "read", "w1:p2", "--source", "recent-unwrapped",
+                         "--lines", "500"]
+
+
+def test_herdr_capture_empty_on_failure_or_dead(monkeypatch):
+    herdr_fake(monkeypatch, LIVE + [(("pane", "read"), 1, '{"error":{"code":"pane_not_found"},"id":"i"}')])
+    b = _HerdrBackend("2g", "2", None)
+    assert b.capture_tail("acme", 42) == ""
+    assert b.capture_history("acme", 42) == ""
+    herdr_fake(monkeypatch, [(("tab", "list"), 0, H_NO_TABS)])
+    assert b.capture_tail("acme", 42) == ""
+    herdr_fake(monkeypatch, [])
+    assert b.capture_history("acme", 42) == ""
+
+
+def test_herdr_send_text_types_literal_then_enter(monkeypatch):
+    calls = []
+    herdr_fake(monkeypatch, LIVE + [(("pane", "send-text"), 0, ""),
+                                    (("pane", "send-keys"), 0, "")], calls)
+    _HerdrBackend("2g", "2", None).send_text("acme", 42, "abc#123-code")
+    assert calls[-2:] == [["pane", "send-text", "w1:p2", "abc#123-code"],
+                          ["pane", "send-keys", "w1:p2", "enter"]]
+
+
+def test_herdr_send_text_noop_when_dead(monkeypatch):
+    calls = []
+    herdr_fake(monkeypatch, [(("tab", "list"), 0, H_NO_TABS)], calls)
+    _HerdrBackend("2g", "2", None).send_text("acme", 42, "code")
+    assert not any(c[1].startswith("send") for c in calls)
+
+
+def test_herdr_end_closes_tab_then_removes_both_container_names(monkeypatch):
+    calls = []
+    herdr_fake(monkeypatch, LIVE + [(("tab", "close"), 0, '{"id":"i","result":{"type":"ok"}}')], calls)
+    podman = []
+    monkeypatch.setattr(sessions.subprocess, "run",
+                        lambda args, **kw: podman.append(args) or _sp.CompletedProcess(args, 0, "", ""))
+    _HerdrBackend("2g", "2", None).end("acme", 42)
+    assert ["tab", "close", "w1:t2"] in calls
+    assert podman == [["podman", "rm", "-f", "task-acme-42"],
+                      ["podman", "rm", "-f", "task-42"]]
+
+
+def test_herdr_end_on_a_dead_task_still_removes_containers(monkeypatch):
+    calls = []
+    herdr_fake(monkeypatch, [(("tab", "list"), 0, H_NO_TABS)], calls)
+    podman = []
+    monkeypatch.setattr(sessions.subprocess, "run",
+                        lambda args, **kw: podman.append(args) or _sp.CompletedProcess(args, 0, "", ""))
+    _HerdrBackend("2g", "2", None).end("acme", 42)
+    assert not any(c[:2] == ["tab", "close"] for c in calls)
+    assert ["podman", "rm", "-f", "task-acme-42"] in podman
