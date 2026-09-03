@@ -512,3 +512,110 @@ def test_herdr_end_on_a_dead_task_still_removes_containers(monkeypatch):
     _HerdrBackend("2g", "2", None).end("acme", 42)
     assert not any(c[:2] == ["tab", "close"] for c in calls)
     assert ["podman", "rm", "-f", "task-acme-42"] in podman
+
+
+# --- herdr idle_seconds (spec §3) --------------------------------------------
+import json as _json
+
+
+def _agent(status, seq):
+    return (("agent", "get"), 0,
+            '{"id":"i","result":{"agent":{"agent_status":"%s","state_change_seq":%d,'
+            '"pane_id":"w1:p2"},"type":"agent_info"}}' % (status, seq))
+
+
+def test_idle_working_is_zero_and_writes_no_sidecar(tmp_path, monkeypatch):
+    herdr_fake(monkeypatch, LIVE + [_agent("working", 3)])
+    monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
+    assert _HerdrBackend("2g", "2", tmp_path).idle_seconds("acme", 42) == 0.0
+    assert not (tmp_path / "herdr-status").exists()
+
+
+def test_idle_new_status_pair_starts_the_clock(tmp_path, monkeypatch):
+    herdr_fake(monkeypatch, LIVE + [_agent("idle", 4)])
+    monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
+    assert _HerdrBackend("2g", "2", tmp_path).idle_seconds("acme", 42) == 0.0
+    side = _json.loads((tmp_path / "herdr-status" / "task-acme-42.json").read_text())
+    assert side == {"seq": 4, "status": "idle", "since": 1000.0}
+
+
+def test_idle_same_pair_accumulates_elapsed(tmp_path, monkeypatch):
+    herdr_fake(monkeypatch, LIVE + [_agent("blocked", 4)])
+    b = _HerdrBackend("2g", "2", tmp_path)
+    monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
+    assert b.idle_seconds("acme", 42) == 0.0
+    monkeypatch.setattr(sessions.time, "time", lambda: 1650.0)
+    assert b.idle_seconds("acme", 42) == 650.0
+
+
+def test_idle_resets_when_seq_or_status_changes(tmp_path, monkeypatch):
+    b = _HerdrBackend("2g", "2", tmp_path)
+    monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
+    herdr_fake(monkeypatch, LIVE + [_agent("idle", 4)])
+    b.idle_seconds("acme", 42)
+    monkeypatch.setattr(sessions.time, "time", lambda: 1500.0)
+    herdr_fake(monkeypatch, LIVE + [_agent("idle", 5)])   # new seq, same status
+    assert b.idle_seconds("acme", 42) == 0.0
+    monkeypatch.setattr(sessions.time, "time", lambda: 1600.0)
+    herdr_fake(monkeypatch, LIVE + [_agent("blocked", 5)])  # same seq, new status
+    assert b.idle_seconds("acme", 42) == 0.0
+    monkeypatch.setattr(sessions.time, "time", lambda: 1700.0)
+    assert b.idle_seconds("acme", 42) == 100.0
+
+
+def test_idle_missing_agent_accumulates_like_a_static_screen(tmp_path, monkeypatch):
+    # claude exited: the pane is back at the host shell, herdr sees no
+    # agent. That is "static" — idle time must accumulate so the stall
+    # timer eventually parks it, exactly as tmux's window_activity did.
+    herdr_fake(monkeypatch, LIVE + [(("agent", "get"), 1,
+               '{"error":{"code":"agent_not_found","message":"x"},"id":"i"}')])
+    b = _HerdrBackend("2g", "2", tmp_path)
+    monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
+    assert b.idle_seconds("acme", 42) == 0.0
+    monkeypatch.setattr(sessions.time, "time", lambda: 1900.0)
+    assert b.idle_seconds("acme", 42) == 900.0
+
+
+def test_idle_none_when_dead_server_down_or_no_state_dir(tmp_path, monkeypatch):
+    herdr_fake(monkeypatch, [(("tab", "list"), 0, H_NO_TABS)])
+    assert _HerdrBackend("2g", "2", tmp_path).idle_seconds("acme", 42) is None
+    herdr_fake(monkeypatch, LIVE + [(("agent", "get"), 1,
+               '{"error":{"code":"server_not_running"},"id":"i"}')])
+    assert _HerdrBackend("2g", "2", tmp_path).idle_seconds("acme", 42) is None
+    herdr_fake(monkeypatch, LIVE + [_agent("idle", 1)])
+    assert _HerdrBackend("2g", "2", None).idle_seconds("acme", 42) is None
+
+
+def test_idle_none_on_sidecar_write_failure_never_a_stale_number(tmp_path, monkeypatch):
+    (tmp_path / "herdr-status").write_text("not a dir")  # mkdir/write -> OSError
+    herdr_fake(monkeypatch, LIVE + [_agent("idle", 1)])
+    assert _HerdrBackend("2g", "2", tmp_path).idle_seconds("acme", 42) is None
+
+
+def test_idle_corrupt_sidecar_is_rewritten_not_fatal(tmp_path, monkeypatch):
+    side = tmp_path / "herdr-status" / "task-acme-42.json"
+    side.parent.mkdir()
+    side.write_text("{garbage")
+    herdr_fake(monkeypatch, LIVE + [_agent("idle", 1)])
+    monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
+    assert _HerdrBackend("2g", "2", tmp_path).idle_seconds("acme", 42) == 0.0
+    assert _json.loads(side.read_text())["since"] == 1000.0
+
+
+def test_idle_clamps_clock_skew_to_zero(tmp_path, monkeypatch):
+    side = tmp_path / "herdr-status" / "task-acme-42.json"
+    side.parent.mkdir()
+    side.write_text(_json.dumps({"seq": 1, "status": "idle", "since": 2000.0}))
+    herdr_fake(monkeypatch, LIVE + [_agent("idle", 1)])
+    monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
+    assert _HerdrBackend("2g", "2", tmp_path).idle_seconds("acme", 42) == 0.0
+
+
+def test_forget_status_removes_the_sidecar(tmp_path):
+    side = tmp_path / "herdr-status" / "task-acme-42.json"
+    side.parent.mkdir()
+    side.write_text("{}")
+    _HerdrBackend("2g", "2", tmp_path).forget_status("acme", 42)
+    assert not side.exists()
+    _HerdrBackend("2g", "2", tmp_path).forget_status("acme", 42)  # idempotent
+    _HerdrBackend("2g", "2", None).forget_status("acme", 42)      # no state dir

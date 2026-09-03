@@ -6,6 +6,7 @@ they die together at park and are recreated together at resume (claude
 worktree cwd, which is mounted at the same path inside the container)."""
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 import time
@@ -88,6 +89,58 @@ class _HerdrBackend:
         text = herdr.read(pane, "recent-unwrapped", lines) if pane else None
         return "" if text is None else text.rstrip()
 
+    def idle_seconds(self, target: str, issue: int) -> float | None:
+        """Seconds the session has been static; None = unknown. Computed
+        from the agent lifecycle, not screen activity: `working` is never
+        idle, however long it lasts; any other status (idle / blocked /
+        done / unknown, or no agent at all — the pane back at the host
+        shell) accumulates from the moment herdr last changed its mind.
+        herdr exposes the transition counter but no timestamp, so the
+        moment is remembered in a sidecar keyed by (seq, status)."""
+        pane = self._pane(target, issue)
+        state = herdr.agent_state(pane) if pane else None
+        if state is None:
+            return None
+        status, seq = state
+        if status == "working":
+            return 0.0
+        return self._since_change(target, issue, status, seq)
+
+    def _sidecar(self, target: str, issue: int) -> Path | None:
+        if self.state_dir is None:
+            return None
+        return (self.state_dir / "herdr-status"
+                / f"{session_name(target, issue)}.json")
+
+    def _since_change(self, target: str, issue: int, status: str,
+                      seq: int) -> float | None:
+        path = self._sidecar(target, issue)
+        if path is None:
+            return None
+        now = time.time()
+        try:
+            try:
+                stored = json.loads(path.read_text())
+            except (FileNotFoundError, ValueError):
+                stored = None  # absent or corrupt: start the clock afresh
+            if (isinstance(stored, dict) and stored.get("seq") == seq
+                    and stored.get("status") == status):
+                return max(0.0, now - float(stored["since"]))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(
+                {"seq": seq, "status": status, "since": now}))
+            return 0.0
+        except (OSError, KeyError, TypeError, ValueError):
+            return None  # unknown, never a stale number
+
+    def forget_status(self, target: str, issue: int) -> None:
+        path = self._sidecar(target, issue)
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def send_text(self, target: str, issue: int, text: str) -> None:
         pane = self._pane(target, issue)
         if pane is None:
@@ -107,6 +160,7 @@ class _HerdrBackend:
         # _TmuxBackend.end for the history.
         subprocess.run(["podman", "rm", "-f", f"task-{issue}"],
                        capture_output=True, timeout=60)
+        self.forget_status(target, issue)
 
 
 class Sessions:
