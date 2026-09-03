@@ -214,13 +214,13 @@ def test_state_fingerprint_tracks_categories(tmp_path):
     assert f3["history"] != f2["history"]
 
 
-def test_attached_markers_roundtrip(tmp_path):
+def test_fingerprint_ignores_attached_markers(tmp_path):
+    """attached-* is no longer state the console reads: a stale marker from
+    a pre-deploy console must not keep the board SSE key churning."""
     _, src = make_sources(tmp_path)
-    assert src.has_attached("alpha", 7) is False
-    src.mark_attached("alpha", 7)
-    assert src.has_attached("alpha", 7) is True
-    src.clear_attached("alpha", 7)
-    assert src.has_attached("alpha", 7) is False
+    f1 = json.loads(src.state_fingerprint())
+    (tmp_path / "attached-alpha-7").write_text("")
+    assert json.loads(src.state_fingerprint())["board"] == f1["board"]
 
 
 def test_quarantine_and_intent_entries_tolerate_oserror(tmp_path):

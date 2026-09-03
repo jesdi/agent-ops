@@ -30,6 +30,9 @@ TARGETS="${AGENT_OPS_TARGETS:-$STATE_DIR/targets.yaml}"
 STALE_DAYS="${AGENT_OPS_WORKTREE_STALE_DAYS:-7}"
 GH="${AGENT_OPS_GH:-gh}"
 TMUX="${AGENT_OPS_TMUX:-tmux}"
+# The herdr binary is a per-user install in ~/.local/bin, which the user
+# manager's PATH does not include (same rule as claude).
+HERDR="${AGENT_OPS_HERDR:-$HOME/.local/bin/herdr}"
 PODMAN="${AGENT_OPS_PODMAN:-podman}"
 
 PY_BIN="${AGENT_OPS_PYTHON:-}"
@@ -130,6 +133,24 @@ _default_branch() {
   echo origin/main
 }
 
+# One label per line for every herdr tab on the server: task-<target>-<n>
+# for sessions, `triage` for the sweep. herdr is the session layer (spec
+# 2026-09-03); a tab exists for exactly as long as the dispatcher considers
+# the session alive, so it is checked exactly as a tmux session is. Empty
+# when the server or the binary is absent — the podman check still covers a
+# live container in that case.
+_herdr_tabs() {
+  "$HERDR" tab list 2>/dev/null | "$PY_BIN" -c '
+import json, sys
+try:
+    tabs = json.load(sys.stdin)["result"]["tabs"]
+except Exception:
+    sys.exit(0)
+for t in tabs:
+    print(t.get("label", ""))
+' 2>/dev/null || true
+}
+
 # Event schema is owned by dispatcher/eventlog.py; kept in sync by hand so
 # this script stays dependency-free (it runs before/without the venv).
 _log_event() {
@@ -166,24 +187,10 @@ evaluate() {
     echo "not registered as a worktree of $clone"; return 1
   fi
 
-  if [ -e "$STATE_DIR/attached-$issue" ]; then
-    echo "operator attached"; return 1
-  fi
-  if [ -n "$target" ]; then
-    if [ -e "$STATE_DIR/attached-$target-$issue" ]; then
-      echo "operator attached"; return 1
-    fi
-  # mark_attached (dispatcher/state.py) writes the new-style marker
-  # unconditionally regardless of when the worktree was provisioned, so a
-  # pre-Task-3 worktree (unknown target) can still pick one up. Unlike the
-  # removal fallback above, a false positive here only causes a SKIP, not
-  # a delete — an anchored wildcard is safe.
-  elif ls "$STATE_DIR"/attached-*-"$issue" >/dev/null 2>&1; then
-    echo "operator attached"; return 1
-  fi
-
   local sessions containers
-  sessions=$("$TMUX" list-sessions -F '#{session_name}' 2>/dev/null || true)
+  sessions=$(printf '%s\n' \
+    "$("$TMUX" list-sessions -F '#{session_name}' 2>/dev/null || true)" \
+    "$(_herdr_tabs)")
   containers=$("$PODMAN" ps --format '{{.Names}}' 2>/dev/null || true)
 
   if echo "$sessions" | grep -Fxq "task-$issue"; then

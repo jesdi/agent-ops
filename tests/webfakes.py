@@ -47,7 +47,6 @@ class FakeSources:
         self.pane_histories = {}
         self.history_calls = []   # (issue, lines) recorded for clamp tests
         self.alive = set()
-        self.attached = set()
         self.intents = []         # (action, issue, payload, actor)
         self.pending = []
         self.applied_plans = []   # (target_name, issue, plan)
@@ -115,15 +114,6 @@ class FakeSources:
 
     def state_fingerprint(self):
         return self.fingerprint
-
-    def mark_attached(self, target, issue):
-        self.attached.add(issue)
-
-    def clear_attached(self, target, issue):
-        self.attached.discard(issue)
-
-    def has_attached(self, target, issue):
-        return issue in self.attached
 
     def issue_description(self, repo, number):
         return self.descriptions.get(

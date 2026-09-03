@@ -89,7 +89,7 @@ it('GET task detail hits /api/task/{target}/{issue}', async () => {
         card: { issue: 42, target: 'agent_ops', title: 't', stage: 's',
           park: '', park_note: '', column: 'c', slot: -1, branch: 'b',
           model: 'm', park_note_pending: false, feedback_pending: false,
-          updated_at: '', attached: false, consuming_capacity: false,
+          updated_at: '', consuming_capacity: false,
           claimed_at: '', cycle_seconds: null, score: null,
           undelivered_messages: 0, wake_blocked: false },
         pane_tail: '', session_alive: true, worktree: '', messages: [],

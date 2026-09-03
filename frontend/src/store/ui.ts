@@ -1,47 +1,18 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
 
 interface UiState {
-  /**
-   * `${target}#${issue}` of the task whose terminal is attached, or null.
-   * Keyed on the composite, not the bare issue: two targets can hold the
-   * same issue number, and an issue-only key would auto-attach a terminal
-   * on a task the operator never asked for after navigating from one to
-   * the other. NEVER persisted (see partialize below): attaching writes
-   * the `attached-<target>-<issue>` marker and the dispatcher declines to
-   * drive a task while it exists, so re-establishing it on page load would
-   * silently stall that task.
-   */
-  terminalOpenFor: string | null
-  /** Operator-dragged terminal/history height in px. Persisted. */
-  terminalHeight: number
+  /** Board columns the operator collapsed. Transient: never persisted. */
   collapsedColumns: Record<string, boolean>
-  setTerminalOpenFor: (key: string | null) => void
-  setTerminalHeight: (px: number) => void
   toggleColumn: (key: string) => void
 }
 
-export const useUiStore = create<UiState>()(
-  persist(
-    (set) => ({
-      terminalOpenFor: null,
-      terminalHeight: 384, // was h-96
-      collapsedColumns: {},
-      setTerminalOpenFor: (terminalOpenFor) => set({ terminalOpenFor }),
-      setTerminalHeight: (terminalHeight) => set({ terminalHeight }),
-      toggleColumn: (key) =>
-        set((s) => ({
-          collapsedColumns: {
-            ...s.collapsedColumns,
-            [key]: !s.collapsedColumns[key],
-          },
-        })),
-    }),
-    {
-      name: 'agent-ops-ui',
-      // Only the height survives reloads. terminalOpenFor and transient
-      // column state must not.
-      partialize: (s) => ({ terminalHeight: s.terminalHeight }),
-    },
-  ),
-)
+export const useUiStore = create<UiState>()((set) => ({
+  collapsedColumns: {},
+  toggleColumn: (key) =>
+    set((s) => ({
+      collapsedColumns: {
+        ...s.collapsedColumns,
+        [key]: !s.collapsedColumns[key],
+      },
+    })),
+}))

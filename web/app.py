@@ -11,15 +11,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
-from starlette.websockets import WebSocket
-
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve
 from web import read_model
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
                       current_operator)
-from web.terminal import AttachRegistry, run_terminal
 
 DEFAULT_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
@@ -121,8 +118,6 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.build_board(
             tasks, capacity=cfg.capacity,
             models={(t.target, t.issue): _model_for(t) for t in tasks},
-            attached={(t.target, t.issue) for t in tasks
-                      if sources.has_attached(t.target, t.issue)},
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=sources.pass_heartbeat(),
             now=datetime.now(timezone.utc),
@@ -130,7 +125,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 sources.usage(), cfg.budget_threshold, cfg.racing_minutes,
                 cfg.racing_threshold),
             queues=queues, queue_stale=stale_any,
-            # One tmux probe for both signals (cf. dispatcher run_pass).
+            # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,
             undelivered={(t.target, t.issue): mail.get(t.issue, 0)
                         for t in tasks},
@@ -151,7 +146,6 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                    and i.get("action") in ("reply", "resume")]
         return read_model.task_detail(
             t, model=_model_for(t),
-            attached=sources.has_attached(target, issue),
             pane_tail=sources.pane_tail(target, issue),
             session_alive=sources.session_alive(target, issue),
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
@@ -214,7 +208,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                      op: Operator = Depends(current_operator)):
         _find_task(target, issue)
         # Unbounded `lines` would let one request pull an entire pane history
-        # into memory and over the wire; clamp before hitting tmux.
+        # into memory and over the wire; clamp before hitting the session layer.
         clamped = max(1, min(lines, HISTORY_MAX_LINES))
         return read_model.PaneHistory(
             text=sources.pane_history(target, issue, clamped))
@@ -411,15 +405,6 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             headers={"Cache-Control": "no-cache",
                      "X-Accel-Buffering": "no"},
         )
-
-    viewers = AttachRegistry(sources)
-
-    @app.websocket("/api/task/{target}/{issue}/terminal")
-    async def terminal(ws: WebSocket, target: str, issue: int):
-        # auth and same-origin already enforced by TailscaleAuthMiddleware
-        # (4401 / 4403 close); the header is present by that point.
-        await run_terminal(ws, target, issue, sources, viewers,
-                           actor=ws.headers.get(HEADER, ""))
 
     dist = frontend_dist if frontend_dist is not None else DEFAULT_DIST
     if dist.is_dir():

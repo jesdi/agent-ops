@@ -15,7 +15,7 @@ root. `agent` is in no privileged group — the docker-group gap from
 ADR 0001 is closed (Podman, not Docker, is used; no Docker daemon exists
 on the box).
 
-Bootstrap installs **Podman** and tmux; enables **zram swap (~2 GB)** for
+Bootstrap installs **Podman**, **herdr** (per-user, `~/.local/bin/herdr`, like claude) and — until the tmux retirement — tmux; enables **zram swap (~2 GB)** for
 the memory cushion that absorbs session RSS spikes and makes capacity 2
 (the seeded default) survivable on 4 GB.
 
@@ -44,8 +44,7 @@ image (node + Claude Code CLI, git, gh, python/pipenv, pnpm) is launched
 per task with the task worktree, `~/agent-ops-state/claude-home`
 (Claude auth + transcripts), and gh credentials (read-only) mounted;
 `--memory 1500m --cpus 2` (the memory cap comes from `session_memory`,
-sized so two active sessions fit the 4 GB box). A tmux
-session wraps each container for TTY persistence and reply-injection. E2E
+sized so two active sessions fit the 4 GB box). Each container runs in a tab of the `agent-ops-herdr.service` herdr server (workspace per target, tab `task-<target>-<issue>`), which provides TTY persistence, reply injection and the agent lifecycle the stall detector reads. E2E
 runs off-box on GitHub Actions (`e2e.yml` in portfolio_eval, dispatched via
 `gh workflow run`); there is no nested-container machinery on the box.
 
@@ -55,6 +54,27 @@ the dispatcher stops the container, frees the slot, and resumes via
 CI completion). No session ID is recorded; `--continue` reuses the most
 recent transcript keyed by the worktree cwd, which is mounted at the same
 path inside the fresh container. Woken tasks are always head-of-queue.
+
+## herdr: the session layer
+
+`agent-ops-herdr.service` runs `herdr server` as `agent`. **Every live
+session is a child of that server: stopping or restarting the unit kills
+every session.** herdr restores its layout on restart, so each task's
+tab comes back as an empty shell: the dispatcher reads it as alive but
+idle and the stall timer parks it after `stall_after_seconds`; resume
+recreates the container with `claude --continue`. Upgrade with `herdr
+update` as `agent` instead of a unit restart. The dispatcher, web, waitd
+and triage units `Want` the unit and start after it; while the server is
+down every task reads as dead, until `Restart=always` brings it back.
+
+Attach from your desktop with `herdr --remote box` (herdr installed
+locally at the same version; `box` = an SSH host alias for `agent@<box>`
+over the tailnet — `~/.local/bin` must be on the non-interactive PATH of
+`agent`'s shell, which bootstrap's `.profile` line and a `.bashrc` PATH
+export above the interactive guard provide), or from a phone with
+[Moshi](https://getmoshi.app) over SSH. Tabs are labelled
+`task-<target>-<issue>` under a workspace per target; the triage sweep is
+the `triage` tab in the `agent-ops` workspace.
 
 GitHub auth is split across two tokens: gh's stored auth is a fine-grained
 PAT scoped to target repos (contents/issues/PRs/actions, nothing on

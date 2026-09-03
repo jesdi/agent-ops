@@ -81,6 +81,11 @@ def box(tmp_path):
     pnpm = bin_dir / "pnpm"
     pnpm.write_text(f'#!/bin/sh\necho "pnpm $@" >> "{calls}"\n')
     pnpm.chmod(0o755)
+    # herdr is present on a converged box; the fake is silent so the
+    # "no calls" assertions above stay exact.
+    herdr = bin_dir / "herdr"
+    herdr.write_text('#!/bin/sh\necho "herdr 0.8.2"\n')
+    herdr.chmod(0o755)
 
     # Seed + sync script + fake claude so the claude-home sync works.
     prov_src = Path(__file__).resolve().parent.parent / "provision"
@@ -117,6 +122,7 @@ def box(tmp_path):
         AGENT_OPS_SYSTEMCTL=f"{sysctl} --user",
         AGENT_OPS_PODMAN=str(podman),
         AGENT_OPS_PNPM=str(pnpm),
+        AGENT_OPS_HERDR=str(herdr),
         AGENT_OPS_CLAUDE=str(claude),
         # Point the creds-convergence step at a non-existent path so
         # pre-existing tests are a clean no-op regardless of the developer's
@@ -582,3 +588,43 @@ def test_first_ever_convergence_creates_dir_and_sets_mode(box, tmp_path):
     assert ch.exists(), "claude-home/.credentials.json was not created"
     assert "sk-live" in ch.read_text()
     assert (ch.stat().st_mode & 0o777) == 0o600
+
+
+def test_herdr_present_is_left_alone(box):
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "herdr-installer" not in calls(box)
+
+
+def test_missing_herdr_is_installed_before_unit_sync(box, tmp_path):
+    missing = tmp_path / "nowhere" / "herdr"
+    installer = tmp_path / "bin" / "herdr-installer"
+    installer.write_text(
+        f'#!/bin/sh\necho "herdr-installer HERDR_INSTALL_DIR=$HERDR_INSTALL_DIR" >> "{box.calls}"\n'
+        f'mkdir -p "$HERDR_INSTALL_DIR"\n'
+        f'printf \'#!/bin/sh\\necho herdr 0.8.2\\n\' > "$HERDR_INSTALL_DIR/herdr"\n'
+        f'chmod +x "$HERDR_INSTALL_DIR/herdr"\n')
+    installer.chmod(0o755)
+    r = run_update(box, AGENT_OPS_HERDR=str(missing),
+                   AGENT_OPS_HERDR_INSTALL=str(installer))
+    assert r.returncode == 0, r.stderr
+    assert f"herdr-installer HERDR_INSTALL_DIR={missing.parent}" in calls(box)
+    assert missing.exists()
+
+
+def test_failed_herdr_install_aborts_before_unit_sync(box, tmp_path):
+    """Unlike a missing pnpm (warn and skip), code that needs herdr has
+    already been pulled: a failed install must fail the pass loudly, and
+    before the unit sync so no unit is restarted onto a box without it."""
+    installer = tmp_path / "bin" / "herdr-installer"
+    installer.write_text('#!/bin/sh\necho "installer exploded" >&2\nexit 1\n')
+    installer.chmod(0o755)
+    (box.origin / "provision" / "agent-ops-waitd.service").write_text(
+        "[Unit]\nDescription=waitd v2\n")
+    commit_all(box.origin, "unit change")
+    r = run_update(box, AGENT_OPS_HERDR=str(tmp_path / "nowhere" / "herdr"),
+                   AGENT_OPS_HERDR_INSTALL=str(installer))
+    assert r.returncode != 0
+    assert "installer exploded" in r.stderr
+    assert "daemon-reload" not in calls(box)
+    assert "waitd v1" in (box.units / "agent-ops-waitd.service").read_text()

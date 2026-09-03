@@ -1,0 +1,333 @@
+# herdr as the session layer (tmux → herdr) — design
+
+Date: 2026-09-03
+Status: approved (brainstorm 2026-09-02/03; box spike 2026-09-03)
+
+## Problem
+
+Every box session today lives in a tmux session the dispatcher creates
+(`dispatcher/sessions.py`: one `task-<target>-<issue>` per task, a
+`podman run … claude` per stage inside it). tmux is a generic multiplexer:
+it knows a pane changed (`window_activity`), not what the agent in it is
+doing. Three consequences:
+
+1. **Stall and blocked detection are heuristics.** "Idle for
+   `stall_after_seconds`" is the only signal that a session is stuck; a
+   permission/trust/login dialog with nobody attached looks the same as
+   thinking. The `/login` case needed its own screen classifier
+   (`dispatcher/relogin.py`).
+2. **Operator access is bespoke.** The board embeds its own PTY bridge
+   (`web/terminal.py`, `Terminal.tsx`, grouped tmux view sessions, the
+   `attached-*` hold marker) because plain tmux has no mobile story. That is
+   ~200 lines of concurrency-sensitive code plus a frontend component, and
+   the only attach path the dispatcher knows about — an operator in
+   `ssh + tmux attach` gets no protection at all.
+3. **Nothing on the box shows the fleet.** An operator at a terminal sees
+   tmux session names; agent state is only on the board.
+
+[herdr](https://herdr.dev) (0.8.2, Apache-2.0, Rust) is an agent-aware
+multiplexer: it detects the coding agent in each pane and exposes its
+lifecycle (`idle | working | blocked | done | unknown`) and a JSON socket
+API (`herdr pane …`, `herdr agent …`) covering everything `sessions.py`
+does with tmux. A spike on the box (2026-09-03) confirmed the parts that
+matter for us:
+
+- A Claude running **inside `podman run -it`** is detected when the host
+  wrapper command carries `HERDR_AGENT=claude` (herdr reads the pane's
+  foreground process env; the wrapper hides the real binary otherwise).
+  The trust prompt classified as `blocked`; after `send-keys enter`,
+  `agent wait --until idle` returned `idle`.
+- `pane run` / `pane read` / `pane send-text` / `pane send-keys` map onto
+  `send-keys` / `capture-pane` / `send-keys -l`.
+- `herdr agent attach <pane>` under a PTY renders a single pane — the
+  equivalent of a grouped tmux view session — and `herdr --remote box`
+  from a Mac terminal attaches to the box server over plain SSH.
+- The server survives SSH disconnects; 10 MB scrollback per pane.
+
+## Decisions (agreed)
+
+- **herdr replaces tmux as the session layer on the box.** Sessions,
+  the triage sweep, and operator attach all go through the herdr server
+  running as user `agent`. tmux is retired from the box once no legacy
+  session remains (see §7).
+- **The `Sessions` interface does not change.** `is_alive`, `spawn_stage`,
+  `resume`, `capture_tail`, `capture_history`, `idle_seconds`,
+  `send_text`, `end` keep their signatures and degrade contracts; only the
+  backend changes. `machine.py` and every caller stay as they are.
+- **The board's live terminal is removed, not ported.** Operator attach
+  is externalised: `herdr --remote box` from a desktop terminal,
+  [Moshi](https://getmoshi.app) (herdr-aware iOS/Android client over SSH
+  via the tailnet) from a phone. The board keeps the read-only console
+  view (pane tail + scrollable history, live or snapshot).
+- **The attach hold is dropped, not re-implemented.** `attached-*`
+  markers and the five `has_attached` gates in `main.py` go away.
+  Known limitation: the dispatcher may park (stop the container) while
+  an operator is typing in an attached pane — recoverable via the
+  designed reply path (Telegram / board message → `--continue`).
+  Operating rule: *attach to watch; reply through Telegram or the board.*
+  If this bites, the follow-up is a hold keyed on herdr's pane `focused`
+  state, which would also cover Ghostty/Moshi attaches that were never
+  protected under tmux.
+- **In-flight tasks migrate by adopt-on-touch (dual backend), not by a
+  drain.** Deploys are pull-based and automatic (ADR 0001); there is no
+  operator-controlled moment to drain the queue, so the code must land
+  while tasks may be mid-stage in tmux.
+
+## 1. herdr topology and naming
+
+| herdr object | agent-ops meaning | label |
+|---|---|---|
+| server (default session) | the box | — |
+| workspace | one per target, plus one `agent-ops` system workspace | `<target>` / `agent-ops` |
+| tab | one per task (or the triage sweep) | `task-<target>-<issue>` / `triage` |
+| root pane | the shell that hosts `podman run … claude` (or the sweep) | — |
+
+Workspaces are created on first use (`herdr workspace create --label
+<target> --cwd <clone root> --no-focus`) and never closed by the
+dispatcher. Tabs are created at spawn and closed at `end()`. All herdr IDs
+(`w1`, `w1:t3`, `w1:p3`) are opaque and are **never persisted**: every
+call resolves `(target, issue)` → tab → root pane by label, exactly as
+`tmux has-session -t name` resolves by name today. A missing tab means
+"dead", the same as a missing tmux session.
+
+Resolution is one `herdr tab list --workspace <w>` + one `herdr pane list
+--workspace <w>` (root pane = the pane whose `tab_id` matches). Both are
+local socket calls; the dispatcher pass already makes several tmux calls
+per task, so cost is comparable.
+
+## 2. `dispatcher/sessions.py` — the herdr backend
+
+`Sessions` becomes a thin facade over two backends (`_TmuxBackend`,
+`_HerdrBackend`, same module) selected per task (§7). This section is the
+herdr backend; the tmux backend is today's code, unchanged.
+
+| method | herdr calls | notes |
+|---|---|---|
+| `is_alive` | tab-by-label exists | pane back at the host shell after claude exits still reads alive — identical to tmux (`main.py:170` relies on this) |
+| `_launch` | `tab create --workspace <w> --label <name> --cwd <worktree> --no-focus` if missing; then `pane run <pane> "<cmd>"` | `cmd = "HERDR_AGENT=claude " + containers.session_cmd(...)`. The env prefix goes in front of `with-claude-token.sh`, which `exec`s podman with it inherited — this is the "set it on the wrapper" case from the herdr docs. |
+| `spawn_stage`, `resume` | unchanged: write the prompt file, call `_launch` | |
+| `capture_tail(lines)` | `pane read <pane> --source visible --lines <lines>` | tail of the rendered viewport, as `capture-pane -p` today |
+| `capture_history(lines)` | `pane read <pane> --source recent-unwrapped --lines <lines>` | console history; soft wraps joined (an improvement over tmux, which hard-wraps and made `relogin.py` rejoin lines) |
+| `idle_seconds` | `pane get <pane>` → `agent`, `agent_status`, `state_change_seq` | see §3 |
+| `send_text(text)` | `pane send-text <pane> <text>`; `pane send-keys <pane> enter` | literal text then a separate Enter, as today |
+| `end` | `_snapshot()`; `tab close <tab>`; `podman rm -f <name>` (+ legacy `task-<issue>`) | closing the tab HUPs the shell and the `-it` podman; the explicit `rm -f` stays as the belt-and-braces it is today |
+
+Every herdr invocation is `subprocess.run([...], capture_output=True,
+timeout=30)`. The CLI reports server errors as JSON on stderr with exit 1
+and syntax errors with exit 2; the backend treats any non-zero exit
+exactly as it treats a tmux failure today: `is_alive → False`,
+`capture_* → ""`, `idle_seconds → None`, mutations best-effort. A herdr
+server that is down therefore reads every task as dead — the same
+failure mode as a dead tmux server, but now behind a `Restart=always`
+unit (§6) rather than a server that is only ever started as a side
+effect of a spawn.
+
+`HERDR_AGENT=claude` is a herdr concern and is added by the herdr backend,
+not by `containers.session_cmd` (the triage command shares that module and
+runs headless `-p`; herdr never sees it as an agent, which is correct).
+
+## 3. Liveness and stalls: `agent_status` instead of `window_activity`
+
+`idle_seconds` keeps its contract — *seconds the session has been
+static; `None` = unknown* — so `machine.py`'s stall rule is untouched.
+The herdr backend computes it from the agent lifecycle rather than from
+screen activity:
+
+- `agent_status == "working"` → `0.0` (not idle, regardless of how long).
+- Anything else (`idle`, `blocked`, `done`, `unknown`, or no agent at all —
+  e.g. the pane is back at the host shell) → seconds since the pane last
+  changed status.
+
+herdr exposes the transition counter (`state_change_seq`) but not a
+timestamp, so the backend keeps a sidecar
+`<state_dir>/herdr-status/<session name>.json` = `{"seq", "status",
+"since"}`: if `(seq, status)` matches the stored pair, return
+`now - since`; otherwise overwrite with `since = now` and return `0.0`.
+The sidecar is removed in `end()` alongside the snapshot write, and a
+read/write failure returns `None` (unknown), never a stale number.
+
+This is strictly more accurate than tmux's heuristic: Claude Code's
+status line redraws every second while working, which is what made
+`window_activity` usable, but a `blocked` dialog also redraws its cursor
+and could read as "active". Using `blocked` for anything smarter than
+"idle time accumulates" (e.g. parking immediately with the dialog text)
+is a follow-up, not part of this change.
+
+## 4. Web console: read-only
+
+Removed:
+
+- `web/terminal.py` (PTY bridge, `AttachRegistry`), the
+  `/api/task/{target}/{issue}/terminal` websocket route, and their tests.
+- `frontend/src/components/Terminal.tsx`,
+  `hooks/usePersistedTerminalHeight.ts`, the terminal-height UI store
+  state, and their tests; `TaskPage.tsx` renders the pane tail where the
+  live terminal was, with `TerminalHistory` as the scrollable view.
+- `state.mark_attached / has_attached / clear_attached`, the
+  `attached-*` glob in `web/sources.py`'s change digest, `attached` in the
+  task-card read model and its frontend rendering, and the five
+  `has_attached` gates in `dispatcher/main.py` (`_flush_done`,
+  `_resume_woken`, `_spawn_feedback`, `_drive_task`, pr-open teardown).
+  `terminal-attach` / `terminal-detach` event kinds stop being emitted;
+  existing history rows keep rendering.
+
+Kept, unchanged: `sources.pane_tail` / `pane_history` /
+`session_alive`, the `/history` route, the snapshot fallback for dead
+sessions, `TerminalHistory.tsx`. The task page gains one line of
+operator guidance next to the console: `herdr --remote box` (desktop) /
+Moshi (phone) — text only, no deep links (Moshi's
+`moshi://herdr?workspace=` needs the workspace id, which the board does
+not track; add it if the plain picker proves annoying).
+
+## 5. Triage sweep
+
+`dispatcher/triage.py` moves from a detached tmux session to a tab
+labelled `triage` in the `agent-ops` workspace: `running()` = tab
+exists; launch = `tab create --workspace <w> --label triage --cwd <repo>
+--env VAR=value …` then `pane run <pane> "<python> -m dispatcher.main
+--triage-run …"`. `--env` carries `LAUNCH_ENV_VARS` exactly as tmux's
+`-e` did — the herdr server's environment is the user unit's, which has
+no Telegram credentials, so the explicit forwarding remains necessary
+for the same reason the existing comment gives.
+
+The sweep itself is a headless `claude -p` inside podman; herdr will show
+it as a plain pane (no `HERDR_AGENT`), which is accurate.
+
+## 6. Provisioning and units
+
+- **Binary.** `provision/bootstrap.sh` installs herdr for `agent` via the
+  official installer into `~/.local/bin` (already on `.profile`'s PATH)
+  and asserts `herdr --version`. `provision/update.sh` gains an "ensure
+  herdr" step that runs the same installer when the binary is missing —
+  the pass has already pulled code that needs it, so unlike the pnpm
+  check (warn and skip) the converging move is to install; the installer
+  is idempotent, sudo-free and writes only under `agent`'s home. If the
+  install fails the pass aborts before the unit sync, as a missing pnpm
+  does today. No version pin beyond "whatever the installer resolves at
+  install time"; the box updates herdr only when an operator runs
+  `herdr update` (background `version_check` only notifies).
+- **Server unit.** New `provision/agent-ops-herdr.service` (user unit,
+  synced by `update.sh` like every other `provision/*.service`):
+  `ExecStart=%h/.local/bin/herdr server`, `Restart=always`,
+  `WantedBy=default.target`. Every session pane, its shell and its podman
+  process are children of this server, so they live in this unit's
+  cgroup: **stopping or restarting the unit kills every live session**,
+  the same as killing the tmux server today. Document it in the unit and
+  in `provision/README.md`; the sessions are recoverable (park/resume
+  already tolerates a dead container via `claude --continue`).
+- **Dependent units.** `agent-ops-dispatcher.service`,
+  `agent-ops-web.service`, `agent-ops-waitd.service`,
+  `agent-ops-triage.service`: `After=agent-ops-herdr.service`,
+  `Wants=agent-ops-herdr.service`.
+- **`KillMode=process` goes.** The dispatcher unit carries that setting
+  (and a long comment) only because a oneshot pass spawned tmux servers
+  that had to outlive it. Panes now belong to the herdr unit, so the
+  default `KillMode` is correct again and the comment is deleted.
+- **tmux stays installed until §7 retires it.** `bootstrap.sh`'s
+  `apt-get install … tmux …` and the "run bootstrap inside tmux or mosh"
+  advice are untouched by this spec.
+- **Docs.** `README.md` / `provision/README.md` / `CONTEXT.md` replace
+  "tmux session wraps each container" with the herdr wording and add
+  the operator attach recipe (`herdr --remote box`; Moshi).
+
+The box already has herdr 0.8.2 at `~agent/.local/bin` and a
+hand-started `herdr server` from the spike, owning the default socket.
+The plan's deploy step stops that process (`herdr server stop`) right
+before the unit is enabled, so the unit's server is the only one on the
+socket.
+
+## 7. In-flight migration: adopt-on-touch, then retire tmux
+
+The pattern already exists in `sessions.py`: `_resolve()` adopts a
+pre-rename `task-<issue>` tmux session on first touch, and `end()` still
+removes the legacy container name. The same idea, one level up:
+
+```
+Sessions.<method>(target, issue, …)
+  if tmux has-session task-<target>-<issue>  (or legacy task-<issue>):
+      → _TmuxBackend            # a session that predates the deploy
+  else:
+      → _HerdrBackend           # everything else, including every new launch
+```
+
+- A task mid-stage in tmux keeps being driven by tmux — `capture_tail`,
+  `idle_seconds`, `send_text`, and finally `end()` — until that stage
+  ends. `end()` kills the tmux session, so the **next** `spawn_stage` /
+  `resume` for the same task finds no tmux session and lands in herdr.
+  Stage boundaries and park/resume are where migration happens, and
+  nothing about the task's state, worktree, slot, or transcript changes
+  (`--continue` keys on the worktree path, which is the same in both).
+- A parked task has no live session in either backend; its resume goes
+  to herdr. `is_alive` for a parked task is `False` in both, as today.
+- The tmux probe (`has-session`) is one extra local call per operation,
+  only while tmux is installed; when the `tmux` binary is absent the
+  probe fails closed to herdr.
+- The web console's `pane_tail` / `pane_history` go through the same
+  facade, so a legacy task's history stays readable until it ends.
+- `triage.running()` checks both the legacy tmux session and the herdr
+  tab during the transition, so a sweep started before the deploy is
+  neither duplicated nor orphaned.
+
+**Retirement.** A follow-up PR deletes `_TmuxBackend`, the probe, the
+legacy-name adoption, `relogin.py`'s hard-wrap rejoin, the tmux `apt`
+line in `bootstrap.sh`, and every tmux mention in docs, once the box
+reports no `task-*` tmux session (`tmux ls` on the box, or simply: every
+task that was active at deploy time has ended). That is an ops
+observation, not a code signal; it is expected within a day of the
+deploy.
+
+## 8. Error handling
+
+- Degrade contracts are the tmux ones, verbatim (§2). No new exception
+  types cross the `Sessions` boundary.
+- `_launch` failure (tab created, `pane run` failed) leaves an empty tab
+  that reads alive-but-idle; the stall timer parks it and `end()` cleans
+  it — the same outcome as a tmux session whose `send-keys` never
+  produced a container.
+- A herdr server restart mid-stage kills the session; the crash path
+  (`_report_session_crash`) fires as for any dead session. Its message
+  changes from "tmux session … died" to "session … died" (backend-neutral).
+- A tab whose label exists twice (should never happen: labels are
+  created only by the dispatcher, and only when absent) resolves to the
+  first match; `end()` closes only that one. Not defended further.
+
+## 9. Testing
+
+- **Unit (`tests/test_sessions.py`).** Fake `subprocess.run` recording
+  argv, as the tmux tests do. Cover: label resolution (workspace and tab
+  created on first use, reused after), `HERDR_AGENT=claude` prefix,
+  `idle_seconds` from `(seq, status)` with the sidecar (working → 0,
+  same pair → elapsed, new pair → 0, missing agent → accumulates, sidecar
+  error → `None`), degrade on exit 1 / exit 2 / timeout, `end()` ordering
+  (snapshot before close; sidecar removed), and the backend selection
+  table (§7) including the legacy `task-<issue>` name and "tmux binary
+  absent".
+- **Triage (`tests/test_triage.py`).** `running()` dual check; launch
+  argv carries `--env` for each set `LAUNCH_ENV_VARS`.
+- **Web / dispatcher.** Delete terminal and attach tests; the fakes in
+  `tests/test_main.py` / `tests/test_web_sources.py` drop
+  `attached`; `_drive_task` etc. no longer read markers.
+- **Frontend.** Delete `Terminal`/`usePersistedTerminalHeight` tests;
+  `TaskPage` test asserts the console view and guidance line.
+- **Provisioning.** `tests/test_credentials_script.py`-style shell test
+  for `update.sh`'s ensure-herdr branch (present / missing).
+- **Box verification (plan step, manual).** After the first converged
+  deploy: one task spawned end-to-end in herdr; `herdr --remote box`
+  shows it under the target workspace with `working`; park → resume
+  lands in herdr; a legacy tmux task (if any) finishes on tmux and its
+  next stage appears in herdr.
+
+## Out of scope / follow-ups
+
+- Moshi setup on the phone and `moshi-hook` on the box (notifications):
+  operator-side; a `provision/README.md` recipe at most.
+- Using `blocked` semantically (park immediately with the dialog text;
+  answer trust/login prompts) — replaces `relogin.py`'s screen
+  classifier; separate spec.
+- Attach hold keyed on herdr `focused` — only if the dropped hold bites.
+- herdr's Claude integration (`herdr integration install claude` writes
+  Claude hooks that report session identity to the socket): would need
+  the herdr binary and socket inside the container. Screen detection is
+  sufficient; revisit only if `[session]` resume-after-restart becomes
+  worth having.
+- Local (Mac) herdr for desktop agents: unrelated to the box.

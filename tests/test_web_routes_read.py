@@ -33,11 +33,11 @@ def test_board_resolves_model_and_columns(tmp_path):
     fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT),
                        make_task(issue=8, stage=Stage.SPEC,
                                  park=PARK_HUMAN)]
-    fake.attached.add(7)
     body = client.get("/api/board", headers=HEADERS).json()
     cols = {c["key"]: c for c in body["columns"]}
     card7 = cols["in-progress"]["cards"][0]
-    assert card7["issue"] == 7 and card7["attached"] is True
+    assert card7["issue"] == 7
+    assert "attached" not in card7
     assert card7["model"]  # resolved via the config's model policy
     assert cols["parked"]["cards"][0]["issue"] == 8
     # #8 is question-parked: it released both its capacity unit and its slot,
@@ -480,3 +480,13 @@ def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
     resp = client2.get("/api/failures", headers=HEADERS)
     assert resp.status_code == 200
     assert [q["task_issue"] for q in resp.json()["quarantined"]] == [75]
+
+
+def test_terminal_websocket_route_is_gone(tmp_path):
+    """The board's PTY bridge was removed with the herdr migration; attach
+    is `herdr --remote box` from a terminal. The path must 404 (a plain
+    HTTP GET on a former websocket route), never upgrade."""
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7)]
+    r = client.get("/api/task/alpha/7/terminal", headers=HEADERS)
+    assert r.status_code == 404

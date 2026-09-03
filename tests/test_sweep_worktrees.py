@@ -53,8 +53,10 @@ class Rig:
         self.closed_issues = set()
         self.sessions = tmp_path / "tmux-sessions"
         self.containers = tmp_path / "podman-names"
+        self.herdr_tabs = tmp_path / "herdr-tabs"
         self.sessions.write_text("")
         self.containers.write_text("")
+        self.herdr_tabs.write_text("")
 
     # --- fixture construction ------------------------------------------
     def build(self):
@@ -151,11 +153,12 @@ class Rig:
         self.sessions.write_text("".join(f"{n}\n" for n in names))
         self.containers.write_text("".join(f"{n}\n" for n in names))
 
-    def attach(self, n):
-        (self.state / f"attached-{n}").write_text("")
-
-    def attach_new(self, target, n):
-        (self.state / f"attached-{target}-{n}").write_text("")
+    def herdr_live(self, *labels):
+        tabs = [{"label": l, "tab_id": f"w1:t{i + 2}", "workspace_id": "w1",
+                 "number": i + 2, "focused": False, "pane_count": 1,
+                 "agent_status": "working"} for i, l in enumerate(labels)]
+        self.herdr_tabs.write_text(json.dumps(
+            {"id": "cli:tab:list", "result": {"tabs": tabs, "type": "tab_list"}}))
 
     # --- running -------------------------------------------------------
     def run(self, *args, expect=None):
@@ -166,6 +169,7 @@ class Rig:
             "AGENT_OPS_STATE_DIR": str(self.state),
             "AGENT_OPS_TARGETS": str(self.tmp / "targets.yaml"),
             "AGENT_OPS_FLOCK_WAIT": "5",
+            "AGENT_OPS_HERDR": str(self.bin / "herdr"),
         }
         proc = subprocess.run(["bash", str(SCRIPT), *args], env=env,
                               capture_output=True, text=True)
@@ -196,6 +200,9 @@ exit 1
         podman = self.bin / "podman"
         podman.write_text(f'#!/bin/sh\ncat "{self.containers}"\n')
         podman.chmod(0o755)
+        herdr = self.bin / "herdr"
+        herdr.write_text(f'#!/bin/sh\n[ "$1 $2" = "tab list" ] || exit 2\ncat "{self.herdr_tabs}"\n')
+        herdr.chmod(0o755)
 
     # --- assertions helpers --------------------------------------------
     def branch_exists(self, n):
@@ -312,14 +319,6 @@ def test_refuses_live_tmux_session(rig):
     assert "live" in proc.stdout
 
 
-def test_refuses_when_operator_attached(rig):
-    wt = rig.task(162)
-    rig.attach(162)
-    proc = rig.run("--sweep", expect=0)
-    assert wt.exists()
-    assert "attached" in proc.stdout
-
-
 # --- (target, issue) rekey awareness ------------------------------------
 # Post-rekey, live tmux sessions and podman containers are named
 # task-<target>-<issue>, not the legacy task-<issue>; a sweeper that only
@@ -395,27 +394,34 @@ def test_refuses_live_podman_container_via_anchored_fallback_when_target_unknown
     assert "live" in proc.stdout
 
 
-def test_new_style_attached_marker_refuses_removal(rig):
-    wt = rig.task(200)
-    rig.attach_new("fake", 200)
+def test_refuses_when_a_herdr_tab_is_live(rig):
+    wt = rig.task(162)
+    rig.herdr_live("task-fake-162")
     proc = rig.run("--sweep", expect=0)
     assert wt.exists()
-    assert "attached" in proc.stdout
+    assert "session task-fake-162 is live" in proc.stdout
 
 
-def test_refuses_new_style_attached_marker_with_unknown_target(rig):
-    """IMPORTANT: mark_attached (dispatcher/state.py) writes the new-style
-    attached-<target>-<issue> marker unconditionally regardless of when the
-    worktree was provisioned, so even a pre-Task-3 worktree (task.json has
-    no target) can pick one up. The sweeper must not be blind to it just
-    because it can't resolve the exact target name — a false positive here
-    only causes a SKIP, so an anchored wildcard is the safe answer, same as
-    the tmux/podman liveness fallback."""
+def test_herdr_tab_for_unknown_target_worktree_matches_by_issue(rig):
     wt = rig.task(162, task_json="legacy")
-    rig.attach_new("fake", 162)
+    rig.herdr_live("task-whatever-162")
     proc = rig.run("--sweep", expect=0)
     assert wt.exists()
-    assert "attached" in proc.stdout
+    assert "live" in proc.stdout
+
+
+def test_herdr_server_down_does_not_block_or_crash(rig):
+    wt = rig.task(162)
+    rig.herdr_tabs.write_text('{"error":{"code":"server_not_running"},"id":"i"}')
+    rig.run("--sweep", expect=0)
+    assert not wt.exists()
+
+
+def test_stale_attached_marker_no_longer_protects(rig):
+    wt = rig.task(162)
+    (rig.state / "attached-fake-162").write_text("")
+    rig.run("--sweep", expect=0)
+    assert not wt.exists()
 
 
 def test_removal_drops_both_legacy_and_new_style_state_files(rig):

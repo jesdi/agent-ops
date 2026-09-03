@@ -47,3 +47,14 @@ def _stub_triage_running(monkeypatch):
     which takes precedence because it is applied after this fixture."""
     from dispatcher import triage
     monkeypatch.setattr(triage, "running", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def _no_herdr_server(monkeypatch):
+    """The dev machine runs a real herdr server. Every herdr call in the
+    suite must be an explicit fake: default to "no server" so an unstubbed
+    call degrades (None/False) instead of creating tabs on the developer's
+    desktop. Tests that exercise herdr monkeypatch herdr._run themselves,
+    which takes precedence because it is applied after this fixture."""
+    from dispatcher import herdr
+    monkeypatch.setattr(herdr, "_run", lambda args: None)

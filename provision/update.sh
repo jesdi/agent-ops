@@ -16,6 +16,8 @@ UNIT_DIR="${AGENT_OPS_UNIT_DIR:-$HOME/.config/systemd/user}"
 SYSTEMCTL="${AGENT_OPS_SYSTEMCTL:-systemctl --user}"
 PODMAN="${AGENT_OPS_PODMAN:-podman}"
 PNPM="${AGENT_OPS_PNPM:-pnpm}"
+HERDR="${AGENT_OPS_HERDR:-$HOME/.local/bin/herdr}"
+HERDR_INSTALL="${AGENT_OPS_HERDR_INSTALL:-curl -fsSL https://herdr.dev/install.sh | sh}"
 
 mkdir -p "$STATE_DIR" "$UNIT_DIR"
 
@@ -60,6 +62,20 @@ if [ "$old" != "$new" ]; then
   if ! git diff --quiet "$old" "$new" -- web/ dispatcher/ telegram/ pyproject.toml; then
     $SYSTEMCTL try-restart agent-ops-web.service
   fi
+fi
+
+# --- herdr: the session layer's server binary -------------------------------
+# A box provisioned before the herdr migration has no binary, yet the pass
+# above has already pulled code that needs one. Unlike pnpm (warn and skip)
+# the converging move is to install: the official installer is idempotent,
+# sudo-free and writes only under $HOME. A failed install fails the pass
+# here — before the unit sync, so no unit is restarted onto a box that
+# cannot run sessions. No version pin: whatever the installer resolves;
+# upgrades are an operator's `herdr update`.
+if [ ! -x "$HERDR" ]; then
+  echo "agent-ops update: herdr not found at $HERDR — installing" >&2
+  HERDR_INSTALL_DIR="$(dirname "$HERDR")" sh -c "$HERDR_INSTALL"
+  [ -x "$HERDR" ] || { echo "agent-ops update: herdr install did not produce $HERDR" >&2; exit 1; }
 fi
 
 # Frontend build runs outside the rev-delta block for the same reason unit

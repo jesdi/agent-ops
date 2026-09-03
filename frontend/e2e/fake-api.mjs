@@ -1,6 +1,6 @@
 // Seeded fake backend for Playwright E2E. Serves frontend/dist with SPA
-// fallback, the /api contract from mutable seed state, SSE, and the
-// terminal WebSocket. POST /__control__/apply-intents plays the dispatcher:
+// fallback, the /api contract from mutable seed state, and SSE.
+// POST /__control__/apply-intents plays the dispatcher:
 // drains intents into the durable message queue (without resuming the starved
 // task). POST /__control__/free-slot simulates a slot becoming available:
 // the parked task resumes and all queued messages are delivered.
@@ -9,7 +9,6 @@ import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { WebSocketServer } from 'ws'
 
 const DIST = fileURLToPath(new URL('../dist/', import.meta.url))
 const PORT = 8481
@@ -20,7 +19,7 @@ const parkedCard = {
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?',
   feedback_pending: false,
-  updated_at: '2026-07-25T10:00:00Z', attached: false,
+  updated_at: '2026-07-25T10:00:00Z',
   // question-parked: container stopped, unit AND slot released
   consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
@@ -315,19 +314,6 @@ const server = createServer(async (req, res) => {
     'Content-Type': MIME[extname(file)] ?? 'application/octet-stream',
   })
   res.end(await readFile(file))
-})
-
-const wss = new WebSocketServer({ noServer: true })
-server.on('upgrade', (req, socket, head) => {
-  const match = req.url?.match(/^\/api\/task\/([^/]+)\/(\d+)\/terminal$/)
-  if (!match) return socket.destroy()
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    const issue = match[2]
-    ws.send(Buffer.from(`agent-ops $ hello from task ${issue}\r\n`))
-    ws.on('message', (data, isBinary) => {
-      if (isBinary) ws.send(data) // echo terminal bytes
-    })
-  })
 })
 
 server.listen(PORT, '127.0.0.1', () => {

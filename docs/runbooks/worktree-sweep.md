@@ -33,16 +33,12 @@ thing that desyncs. Git and GitHub are ground truth. All seven must hold:
 3. no uncommitted tracked changes — `.my-skills.json` excepted, see below
 4. no unpushed commits versus its remote branch
 5. its GitHub issue is CLOSED
-6. no live `task-<target>-N` tmux session and no running `task-<target>-N`
-   container (the sweeper also still recognizes the legacy `task-N` form,
-   and falls back to matching any target for a worktree provisioned before
-   the (target, issue) rekey)
-7. no `<state>/attached-<target>-N` marker, or its legacy `<state>/attached-N`
-   form (you are not attached to it) — when the worktree's target can't be
-   resolved (see below), the sweeper falls back to an anchored
-   `attached-*-N` match rather than skipping the new-style marker entirely
+6. no live `task-<target>-N` session (herdr tab, or a pre-herdr tmux session)
+   and no running `task-<target>-N` container (the sweeper also still recognizes
+   the legacy `task-N` form, and falls back to matching any target for a
+   worktree provisioned before the (target, issue) rekey)
 
-`--sweep` adds an eighth: last commit **and** worktree mtime both older
+`--sweep` adds a seventh: last commit **and** worktree mtime both older
 than `AGENT_OPS_WORKTREE_STALE_DAYS` (default 7). Naming a single target
 skips that one — "is this safe to remove" is a different question from
 "has this been abandoned".
@@ -103,9 +99,6 @@ midway through creating and delete it for having no commits.
   the PR was probably squash-merged, or the branch was re-pushed after
   the merge. Confirm with `gh pr list --head <branch> --state all` before
   deleting anything manually.
-- **`operator attached`** — clear `<state>/attached-<target>-N` (or the
-  legacy `<state>/attached-N`) only if you are certain no one is in that
-  session.
 
 ## Adding it to a box provisioned before 2026-08-14
 

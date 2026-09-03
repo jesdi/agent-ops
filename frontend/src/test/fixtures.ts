@@ -8,7 +8,7 @@ export const parkedCard: TaskCard = {
   stage: 'implement', park: 'question', column: 'parked', slot: 1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?', feedback_pending: false,
-  updated_at: '2026-07-25T10:00:00Z', attached: false, consuming_capacity: false,
+  updated_at: '2026-07-25T10:00:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
   undelivered_messages: 0, wake_blocked: false,
 }
@@ -19,7 +19,7 @@ export const reviewCard: TaskCard = {
   slot: -1,
   branch: 'feat/search', model: 'opus', park_note_pending: false,
   park_note: 'spec ready for review', feedback_pending: false,
-  updated_at: '2026-07-25T09:00:00Z', attached: false, consuming_capacity: false,
+  updated_at: '2026-07-25T09:00:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
   undelivered_messages: 0, wake_blocked: false,
 }
@@ -29,7 +29,7 @@ export const inProgressCard: TaskCard = {
   stage: 'implement', park: '', column: 'in-progress', slot: 2,
   branch: 'feat/csv-export', model: 'opus', park_note_pending: false,
   park_note: '', feedback_pending: false,
-  updated_at: '2026-07-25T11:30:00Z', attached: false, consuming_capacity: true,
+  updated_at: '2026-07-25T11:30:00Z', consuming_capacity: true,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
   undelivered_messages: 0, wake_blocked: false,
 }
@@ -40,7 +40,7 @@ export const loginParkedCard: TaskCard = {
   stage: 'spec', park: 'parked-login', column: 'parked', slot: 0,
   branch: 'feat/rate-limit', model: 'opus', park_note_pending: false,
   park_note: '', feedback_pending: false,
-  updated_at: '2026-07-25T11:00:00Z', attached: false, consuming_capacity: true,
+  updated_at: '2026-07-25T11:00:00Z', consuming_capacity: true,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
   undelivered_messages: 0, wake_blocked: false,
 }
@@ -50,7 +50,7 @@ export const ciParkedCard: TaskCard = {
   stage: 'implement', park: 'awaiting-ci', column: 'awaiting-ci', slot: 1,
   branch: 'fix/nightly-digest', model: 'sonnet', park_note_pending: false,
   park_note: '', feedback_pending: false,
-  updated_at: '2026-07-25T10:30:00Z', attached: false, consuming_capacity: false,
+  updated_at: '2026-07-25T10:30:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
   undelivered_messages: 0, wake_blocked: false,
 }

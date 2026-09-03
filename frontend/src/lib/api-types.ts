@@ -635,8 +635,6 @@ export interface components {
         };
         /** TaskCard */
         TaskCard: {
-            /** Attached */
-            attached: boolean;
             /** Branch */
             branch: string;
             /** Claimed At */

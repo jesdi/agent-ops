@@ -1,6 +1,8 @@
 [Unit]
 Description=agent-ops web console (loopback :8481, published via tailscale serve)
 After=network-online.target
+After=agent-ops-herdr.service
+Wants=agent-ops-herdr.service
 
 [Service]
 Environment=AGENT_OPS_STATE_DIR=%h/agent-ops-state

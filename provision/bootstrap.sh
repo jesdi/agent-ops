@@ -109,6 +109,16 @@ if [ ! -x $AGENT_HOME/.local/bin/claude ]; then
   as_agent bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
 fi
 
+# herdr: the session layer's server (spec 2026-09-03-herdr-sessions). Same
+# per-user native install as claude, same PATH rule: units reference
+# %h/.local/bin/herdr explicitly. The official installer is sudo-free,
+# sha256-verified and idempotent; agent-ops-update.sh re-runs it whenever
+# the binary is missing. Upgrades are an operator's `herdr update`.
+if [ ! -x $AGENT_HOME/.local/bin/herdr ]; then
+  as_agent bash -c 'curl -fsSL https://herdr.dev/install.sh | sh'
+fi
+as_agent $AGENT_HOME/.local/bin/herdr --version
+
 # >>> agent-ops claude-config >>>
 # Spec 2026-07-31-auth-resilience §4: interactive `claude` logins must land
 # in the claude-home store the fleet reads, not the ~/.claude default.
@@ -160,7 +170,8 @@ fi
 
 # --- systemd user units ------------------------------------------------------
 # Initial install; from here on agent-ops-update.timer keeps them in sync.
-as_agent cp provision/agent-ops-dispatcher.service \
+as_agent cp provision/agent-ops-herdr.service \
+   provision/agent-ops-dispatcher.service \
    provision/agent-ops-dispatcher.timer \
    provision/agent-ops-waitd.service \
    provision/agent-ops-keepalive.service \
@@ -176,7 +187,10 @@ as_agent cp provision/agent-ops-dispatcher.service \
    provision/agent-ops-web.service \
    $AGENT_HOME/.config/systemd/user/
 as_agent systemctl --user daemon-reload
-# Timers first: they must be up even though the services they trigger
+# Herdr first: the consumers Want it, and though bootstrap should not rely
+# on that, it's a precaution.
+as_agent systemctl --user enable --now agent-ops-herdr.service
+# Timers next: they must be up even though the services they trigger
 # cannot succeed until the credential follow-ups below are done. waitd
 # (start attempted immediately) fails on a fresh box for the same reason —
 # tolerated so bootstrap completes; restart it after the follow-ups.
