@@ -977,6 +977,11 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                   issue=task.issue, stage=task.stage.value,
                                   detail="session crashed mid-stage")
             _report_session_crash(cfg, deps, target, task, dry_run)
+            # End last: _report_session_crash reads the pane first. end()
+            # snapshots the crash output for the console and closes the
+            # dead tab — the one session-ending transition that otherwise
+            # left both behind.
+            deps.sessions.end(task.target, task.issue)
 
 
 def _report_session_crash(cfg: Config, deps: Deps, target: Target,
