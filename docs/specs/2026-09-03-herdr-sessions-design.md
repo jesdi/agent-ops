@@ -54,7 +54,7 @@ matter for us:
   `resume`, `capture_tail`, `capture_history`, `idle_seconds`,
   `send_text`, `end` keep their signatures and degrade contracts. The
   meaning of `is_alive` narrows (busy shell, not merely present), which
-  routes exited clades through `HandleCrash`; `HandleCrash` now also calls
+  routes exited claudes through `HandleCrash`; `HandleCrash` now also calls
   `sessions.end()` to snapshot and close the dead tab.
 - **The board's live terminal is removed, not ported.** Operator attach
   is externalised: `herdr --remote box` from a desktop terminal,
@@ -91,14 +91,15 @@ dispatcher. Tabs are created at spawn and closed at `end()`. All herdr IDs
 (`w1`, `w1:t3`, `w1:p3`) are opaque and are **never persisted**: every
 call resolves `(target, issue)` → tab → root pane by label, exactly as
 `tmux has-session -t name` resolves by name today. A missing tab means
-"dead", the same as a missing tmux session.
+"dead" — and so does a tab whose shell is not busy (§2): a bare shell
+carrying the label is not a live session.
 
 Resolution is one `herdr tab list --workspace <w>` + one `herdr pane list
 --workspace <w>` (root pane = the pane whose `tab_id` matches). Both are
 local socket calls; the dispatcher pass already makes several tmux calls
 per task, so cost is comparable.
 
-## 2. `dispatcher/sessions.py` — the herdr backend
+## 2. `dispatcher/sessions.py` — `Sessions`
 
 `Sessions` is one class over `herdr.Tab`. Liveness = the tab exists and
 its shell is busy (`Tab.alive`); a claude that has exited back to the host
@@ -114,7 +115,7 @@ container shares that module and must not read as an agent.
 | `spawn_stage`, `resume` | unchanged: write the prompt file, call `_launch` | |
 | `capture_tail(lines)` | `pane read <pane> --source visible --lines <lines>` | tail of the rendered viewport, as `capture-pane -p` today |
 | `capture_history(lines)` | `pane read <pane> --source recent-unwrapped --lines <lines>` | console history; soft wraps joined (an improvement over tmux, which hard-wraps and made `relogin.py` rejoin lines) |
-| `idle_seconds` | `pane get <pane>` → `agent`, `agent_status`, `state_change_seq` | see §3 |
+| `idle_seconds` | `agent get <pane>` → `agent_status`, `state_change_seq` | see §3 |
 | `send_text(text)` | `pane send-text <pane> <text>`; `pane send-keys <pane> enter` | literal text then a separate Enter, as today |
 | `end` | `_snapshot()`; `tab close <tab>`; `podman rm -f <name>` (+ legacy `task-<issue>`) | closing the tab HUPs the shell and the `-it` podman; the explicit `rm -f` stays as the belt-and-braces it is today |
 
@@ -132,13 +133,14 @@ effect of a spawn.
 
 `idle_seconds` keeps its contract — *seconds the session has been
 static; `None` = unknown* — so `machine.py`'s stall rule is untouched.
-The herdr backend computes it from the agent lifecycle rather than from
-screen activity:
+`Sessions` computes it from the agent lifecycle rather than from screen
+activity:
 
 - `agent_status == "working"` → `0.0` (not idle, regardless of how long).
 - Anything else (`idle`, `blocked`, `done`, `unknown`, or no agent at all —
-  e.g. the pane is back at the host shell) → seconds since the pane last
-  changed status.
+  a busy shell that has not reached claude yet, podman still starting or
+  the token wrapper still running) → seconds since the pane last changed
+  status.
 
 A claude that exits back to the host shell reads dead (`is_alive` = False)
 and goes to `HandleCrash` (`_report_session_crash`), no longer stall-park
@@ -147,7 +149,7 @@ container is gone and the session needs a fresh `claude --continue`, not a
 stall signal.
 
 herdr exposes the transition counter (`state_change_seq`) but not a
-timestamp, so the backend keeps a sidecar
+timestamp, so `Sessions` keeps a sidecar
 `<state_dir>/herdr-status/<session name>.json` = `{"seq", "status",
 "since"}`: if `(seq, status)` matches the stored pair, return
 `now - since`; otherwise overwrite with `since = now` and return `0.0`.
@@ -221,9 +223,13 @@ it as a plain pane (no `HERDR_AGENT`), which is accurate.
   `WantedBy=default.target`. Every session pane, its shell and its podman
   process are children of this server, so they live in this unit's
   cgroup: **stopping or restarting the unit kills every live session**,
-  the same as killing the tmux server today. Document it in the unit and
-  in `provision/README.md`; the sessions are recoverable (park/resume
-  already tolerates a dead container via `claude --continue`).
+  the same as killing the tmux server today — and nothing resumes them.
+  A restored tab is a bare shell, which §2's liveness reads as dead, so
+  the crash path reports each task and moves it to FAILED; recovery is
+  the operator's (cancel the card, reopen the issue into Ready, and the
+  dispatcher claims it fresh against the preserved worktree). Document
+  that cost in the unit and in `provision/README.md`, with `herdr update`
+  as the upgrade path instead of a unit restart.
 - **Dependent units.** `agent-ops-dispatcher.service`,
   `agent-ops-web.service`, `agent-ops-waitd.service`,
   `agent-ops-triage.service`: `After=agent-ops-herdr.service`,
@@ -252,13 +258,23 @@ socket.
 
 `dispatcher/tmux_migration.py` + `python -m dispatcher.main --migrate-tmux`
 do the migration; `update.sh` calls it once in a guarded hunk (idempotent
-— the hunk is skipped once no tmux sessions remain). Per live task:
+— the hunk is skipped once no `task-*`/`triage` tmux session remains).
+Per live task:
 
 1. `tmux kill-session` on both the `task-<target>-<issue>` and legacy
-   `task-<issue>` names.
+   `task-<issue>` names, using tmux's exact-match target form `-t =<name>`
+   (a bare `-t` falls back to prefix matching, so `task-acme-4` would
+   resolve to a live `task-acme-42` and kill the wrong task's session).
 2. `podman rm -f` both container names.
-3. `_wake(cfg, task, MESSAGE)` queues the message and sets `park=PARK_WAKE`
-   — the same state a normal reply-wake leaves a task in.
+3. Only if `state.consumes_capacity(task)` — an in-flight stage, unparked
+   or `PARK_LOGIN` — `_wake(cfg, task, MESSAGE)` queues the message and
+   sets `park=PARK_WAKE`, the same state a normal reply-wake leaves a task
+   in. Every other live session (PR_OPEN, a FAILED/DONE tombstone, a
+   gate-parked task with an anomalous session) is ended and logged as "not
+   resumed": `_resume_woken` has no stage filter, so waking one would run
+   `claude --continue` in a transcript nothing is waiting on — pushing to
+   a PR under review, or standing a container up outside capacity
+   accounting.
 
 A live `triage` session is killed and the sweep re-enqueued as a fresh
 request.

@@ -64,15 +64,31 @@ path inside the fresh container. Woken tasks are always head-of-queue.
 ## herdr: the session layer
 
 `agent-ops-herdr.service` runs `herdr server` as `agent`. **Every live
-session is a child of that server: stopping or restarting the unit kills
-every session.** herdr restores its layout on restart, so each task's
-tab comes back as a bare shell: the dispatcher reads it as dead (liveness
-= busy shell; a bare shell is not busy) → crash path reports it, and
-`resume` recreates the container with `claude --continue`. Upgrade with
-`herdr update` as `agent` instead of a unit restart. The dispatcher, web,
-waitd and triage units `Want` the unit and start after it; while the
-server is down every task reads as dead, until `Restart=always` brings it
-back.
+session is a child of that server: stopping or restarting the unit — or a
+`herdr update` that fails its in-place handoff — kills every session, and
+nothing brings the tasks back.** herdr restores its layout on restart, so
+each task's tab comes back as a bare shell: the dispatcher reads it as
+dead (liveness = busy shell; a bare shell is not busy) → the crash path
+files a diagnosis issue, releases the board card and moves the task to
+**Failed**. Nothing resumes a Failed task; recovery is manual, per task:
+`Cancel` it on the console task page (card → Wont do, issue closed as not
+planned), then reopen the issue and move it back to `Ready` — the
+dispatcher sweeps the canceled tombstone and claims it fresh, and the
+preserved worktree keeps the transcript. So the cost of a restart is one
+Failed card per live task: upgrade with `herdr update` as `agent` instead
+of a unit restart, and prefer doing either when no task is running. The
+dispatcher, web, waitd and triage units `Want` the unit and start after
+it; while the server is down every task reads as dead, until
+`Restart=always` brings it back.
+
+**Deploy order, once only:** the unit's `herdr server` must own
+`~/.config/herdr/herdr.sock` *before* the commit carrying the tmux→herdr
+migration lands — stop any hand-started spike server and
+`systemctl --user enable --now agent-ops-herdr.service` first. The
+migration hands every in-flight task to the park/resume path, so the very
+next pass resumes them in herdr; with no server answering, `Tab.ensure`
+returns `None`, the tasks read dead, and the crash path Fails every one of
+them.
 
 Attach from your desktop with `herdr --remote box` (herdr installed
 locally at the same version; `box` = an SSH host alias for `agent@<box>`
