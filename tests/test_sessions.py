@@ -526,6 +526,7 @@ def test_herdr_end_on_a_dead_task_still_removes_containers(monkeypatch):
     _HerdrBackend("2g", "2", None).end("acme", 42)
     assert not any(c[:2] == ["tab", "close"] for c in calls)
     assert ["podman", "rm", "-f", "task-acme-42"] in podman
+    assert ["podman", "rm", "-f", "task-42"] in podman
 
 
 # --- herdr idle_seconds (spec §3) --------------------------------------------

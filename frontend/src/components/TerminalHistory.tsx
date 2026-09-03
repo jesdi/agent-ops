@@ -2,12 +2,10 @@ import { useEffect, useRef } from 'react'
 import { useTaskHistory } from '../hooks/useResources'
 
 /**
- * Explicit, natively-scrollable pane history. The live terminal has no
- * scrollback (tmux holds the alternate screen); this is where "scroll up"
- * goes. Opens scrolled to the bottom so the transition from the live screen
- * reads as continuous upward scrolling; scrolling back down to the bottom
- * auto-returns to the live terminal. Native scroll = trackpad precision
- * and momentum for free.
+ * Scrollable pane history. Shows a polled snapshot of the session's
+ * scrollback (live view during the session, static snapshot after end).
+ * The embedded terminal was removed with the tmux→herdr migration.
+ * Attach is external via `herdr --remote box`.
  */
 export function TerminalHistory({
   target,
