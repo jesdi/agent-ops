@@ -1,7 +1,7 @@
 """Daily backlog triage: request/cursor state, repo enumeration, and the
-sweep runner. The systemd timer enqueues a request; the dispatcher pass
+sweep runner. The systemd timer enqueues a request; each dispatcher pass
 launches the sweep in a herdr tab labelled `triage` (in the `agent-ops`
-workspace), whose liveness is the capacity signal."""
+workspace) via `Tab.ensure`; the tab's liveness is the capacity signal."""
 from __future__ import annotations
 
 import json
@@ -22,7 +22,6 @@ REQUEST_FILE = "triage-request.json"
 CURSORS_FILE = "triage_cursors.json"
 TRIAGE_DIR = "triage"
 TAB_LABEL = "triage"
-TMUX_SESSION = "triage"  # pre-herdr sweeps; drop with the tmux retirement
 ACQUIRE_TIMEOUT_SECONDS = 2 * 3600
 SESSION_TIMEOUT_SECONDS = 20 * 60
 
@@ -69,29 +68,14 @@ def _normalize_cursor(value: str) -> str | None:
 
 
 def running() -> bool:
-    """True while the sweep runs — a `triage` herdr tab whose shell is busy,
-    or (until the tmux retirement) a tmux session started before the herdr
-    deploy, so a sweep in flight across the deploy is neither duplicated
-    nor orphaned.
-
-    Busy, not merely present: a tab whose command finished sits at a shell
-    prompt (the launch appends `; exit` so that is rare), and a herdr
-    server restart restores every tab as a fresh shell wearing its old
-    label — either would otherwise read as a sweep that never ends and
-    pause claims forever. Unknown busyness on an existing tab fails closed
-    to running: a duplicate sweep is worse than a late one."""
-    found = herdr.tab(TAB_LABEL)
-    if found is not None:
-        pane = herdr.root_pane(*found)
-        busy = herdr.pane_busy(pane) if pane else None
-        if busy is not False:
-            return True
-    try:
-        return subprocess.run(
-            ["tmux", "has-session", "-t", TMUX_SESSION],
-            capture_output=True, timeout=30).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+    """True while the sweep runs — the `triage` tab exists and its shell
+    is busy. Busy, not merely present: a finished runner sits at its
+    prompt (rare — the launch appends `; exit`) and a herdr server
+    restart restores every tab as a fresh shell wearing its old label;
+    either would otherwise read as a sweep that never ends and pause
+    claims forever. Unknown busyness fails closed to running."""
+    tab = herdr.Tab.find(TAB_LABEL)
+    return tab is not None and tab.alive
 
 
 def load_request(state_dir: str | Path) -> str | None:
@@ -301,7 +285,7 @@ def _repo_dir() -> str:
 
 def _launch_env() -> dict[str, str]:
     """The dispatcher's own credentials, forwarded into the sweep's tab as
-    `--env` pairs (herdr's `tab create --env`, the equivalent of tmux's -e).
+    `--env` pairs (herdr's `tab create --env`).
 
     Sessions.launch only ever starts podman, whose credentials arrive
     through mounted volumes; the sweep runner is a dispatcher *Python*
@@ -345,24 +329,17 @@ def tick(cfg: Config, deps, config_path: str) -> None:
     # sweep never over-commits the box); the model is deliberately left alone.
     if len(active(load_all(cfg.state_dir))) >= cfg.capacity:
         return  # wait for a natural release; never preempt
-    # running() said no sweep is live, so a `triage` tab that still exists
-    # is a stale shell (finished runner, or restored after a server
-    # restart): close it rather than stack a second tab under the label.
-    stale = herdr.tab(TAB_LABEL)
-    if stale is not None:
-        herdr.close_tab(stale[1])
-    workspace = herdr.ensure_workspace(herdr.SYSTEM_WORKSPACE, _repo_dir())
-    pane = (herdr.create_tab(workspace, TAB_LABEL, _repo_dir(), env=_launch_env())
-            if workspace else None)
-    if pane is None:
+    tab = herdr.Tab.ensure(herdr.SYSTEM_WORKSPACE, TAB_LABEL, _repo_dir(),
+                           env=_launch_env())
+    if tab is None:
         clear_request(cfg.state_dir)
         deps.notifier.send("triage_report",
                            lines=["launch failed: herdr tab could not be created"])
         return
-    # `; exit`: the tab closes with the runner, as the tmux session did.
-    if not herdr.run_command(
-            pane, f"{shlex.quote(sys.executable)} -m dispatcher.main "
-                  f"--config {shlex.quote(config_path)} --triage-run; exit"):
+    # `; exit`: the tab's shell exits with the runner, so running() reads
+    # the finished sweep as idle rather than still running.
+    if not tab.run(f"{shlex.quote(sys.executable)} -m dispatcher.main "
+                   f"--config {shlex.quote(config_path)} --triage-run; exit"):
         clear_request(cfg.state_dir)
         deps.notifier.send("triage_report",
                            lines=["launch failed: herdr pane run failed"])
