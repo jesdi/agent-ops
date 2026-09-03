@@ -4,15 +4,16 @@ non-zero exit (server error, JSON on stdout, exit 1; CLI syntax error,
 plain text, exit 2), a timeout, a missing binary, an unparseable reply —
 reads as None / False, and mutations are best-effort.
 
-IDs (`w1`, `w1:t3`, `w1:p3`) are opaque and are never persisted: callers
-resolve by label on every call (workspace = target, tab = task-<target>-
-<issue>), exactly as `tmux has-session -t name` resolved by name. This
-module knows nothing about tasks; dispatcher/sessions.py and triage.py own
-that mapping."""
+IDs (`w1`, `w1:t3`, `w1:p3`) are opaque and are never persisted: `Tab` is
+the way callers resolve by label on every operation (workspace = target,
+tab = task-<target>-<issue>), exactly as `tmux has-session -t name`
+resolved by name. This module knows nothing about tasks;
+dispatcher/sessions.py and triage.py own that mapping."""
 from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import dataclass
 
 TIMEOUT = 30
 SYSTEM_WORKSPACE = "agent-ops"
@@ -189,3 +190,98 @@ def agent_state(pane_id: str) -> tuple[str, int] | None:
     if _error_code(proc) == "agent_not_found":
         return "none", 0
     return None
+
+
+# -- Tab: one labelled tab hosting one command ---------------------------------
+
+# Aliases so the Tab class methods call these module functions by unambiguous
+# names (read, agent_state, send_text, send_keys each share their name with a
+# Tab method; Python's LEGB rule would resolve them to the module globals
+# inside method bodies regardless, but these aliases make the intent explicit).
+_read_pane = read
+_agent_state_pane = agent_state
+_send_text_pane = send_text
+_send_keys_pane = send_keys
+
+
+@dataclass(frozen=True)
+class Tab:
+    """A labelled tab and its root pane, resolved by label once per
+    operation and never persisted. `label` is the only identity; the ids
+    are a snapshot of the server's current numbering."""
+    label: str
+    workspace_id: str
+    tab_id: str
+    pane_id: str
+
+    @classmethod
+    def find(cls, label: str) -> "Tab | None":
+        """The tab labelled `label`, or None when absent or the server
+        cannot be asked. One `tab list` + one `pane list`."""
+        loc = tab(label)
+        if loc is None:
+            return None
+        ws, tab_id = loc
+        pane = root_pane(ws, tab_id)
+        if pane is None:
+            return None
+        return cls(label, ws, tab_id, pane)
+
+    @classmethod
+    def ensure(cls, workspace_label: str, label: str, cwd: str,
+               env: dict[str, str] | None = None) -> "Tab | None":
+        """A tab under `label` whose shell can take a command: an existing
+        busy tab (never killed — the caller decides what to do with live
+        work); otherwise a fresh one. An existing tab that is NOT busy
+        (a finished command at its prompt, or a fresh shell restored after
+        a server restart wearing the old label) is closed first so the
+        label never carries two tabs and a restored tab never hosts a new
+        launch without `env`. Creates the workspace on first use (at
+        `cwd`'s clone root is the caller's concern — pass the cwd the
+        workspace should open at as `cwd` when creating; this function
+        passes the same `cwd` to both). None when the server is down or
+        creation failed."""
+        existing = cls.find(label)
+        if existing is not None:
+            if existing.alive:
+                return existing
+            existing.close()  # best-effort; fall through to create a fresh tab
+        ws = ensure_workspace(workspace_label, cwd)
+        if ws is None:
+            return None
+        pane = create_tab(ws, label, cwd, env)
+        if pane is None:
+            return None
+        return cls.find(label)  # re-resolve: create_tab returns only the pane id
+
+    @property
+    def alive(self) -> bool:
+        """Exists (this object was resolved) AND its shell is busy — the
+        foreground process group is not the shell. Unknown busyness reads
+        alive (fail closed: a false "dead" fires the crash path or a
+        duplicate sweep). A restored tab is a bare shell -> not alive."""
+        return pane_busy(self.pane_id) is not False
+
+    def run(self, command: str) -> bool:
+        """Type `command` and Enter into the pane's shell."""
+        return run_command(self.pane_id, command)
+
+    def read(self, source: str, lines: int) -> str | None:
+        """Pane text snapshot."""
+        return _read_pane(self.pane_id, source, lines)
+
+    def agent_state(self) -> tuple[str, int] | None:
+        """Agent status and state-change sequence for the pane."""
+        return _agent_state_pane(self.pane_id)
+
+    def send_text(self, text: str) -> bool:
+        """Send raw text to the pane."""
+        return _send_text_pane(self.pane_id, text)
+
+    def send_keys(self, *keys: str) -> bool:
+        """Send key sequences to the pane."""
+        return _send_keys_pane(self.pane_id, *keys)
+
+    def close(self) -> bool:
+        """Close the tab."""
+        return close_tab(self.tab_id)
