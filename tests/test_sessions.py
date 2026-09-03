@@ -32,7 +32,29 @@ def test_is_alive(monkeypatch):
     assert not sessions.Sessions().is_alive("acme", 42)
 
 
-def test_spawn_stage_writes_prompt_and_sends_keys(tmp_path: Path, monkeypatch):
+def test_spawn_stage_writes_prompt_and_launches_in_the_task_backend(tmp_path: Path, monkeypatch):
+    (tmp_path / ".git").write_text(f"gitdir: {tmp_path}/clone/.git/worktrees/task-42\n")
+    calls = []
+
+    def fake_tmux(args):
+        calls.append(args)
+        return 0  # a live tmux session -> the tmux backend keeps driving it
+
+    monkeypatch.setattr(sessions, "_tmux", fake_tmux)
+    sessions.Sessions().spawn_stage("acme", 42, str(tmp_path), "PROMPT BODY",
+                                    "spec", "claude-fable-5")
+    prompt_file = tmp_path / ".agent" / "prompt-spec.md"
+    assert prompt_file.read_text() == "PROMPT BODY"
+    send = next(c for c in calls if "send-keys" in c)
+    cmd = send[-2]
+    assert ('claude --remote-control task-acme-42 --permission-mode auto '
+            '--model claude-fable-5') in cmd
+    assert '.agent/prompt-spec.md' in cmd
+    assert send[-1] == "Enter"
+    assert "HERDR_AGENT" not in cmd
+
+
+def test_tmux_backend_launch_creates_the_session_when_missing(tmp_path: Path, monkeypatch):
     (tmp_path / ".git").write_text(f"gitdir: {tmp_path}/clone/.git/worktrees/task-42\n")
     calls = []
 
@@ -41,20 +63,12 @@ def test_spawn_stage_writes_prompt_and_sends_keys(tmp_path: Path, monkeypatch):
         return 1 if args[:2] == ["tmux", "has-session"] else 0
 
     monkeypatch.setattr(sessions, "_tmux", fake_tmux)
-    sessions.Sessions().spawn_stage("acme", 42, str(tmp_path), "PROMPT BODY",
-                                    "spec", "claude-fable-5")
-
-    prompt_file = tmp_path / ".agent" / "prompt-spec.md"
-    assert prompt_file.read_text() == "PROMPT BODY"
+    sessions._TmuxBackend("2g", "2", None).launch(
+        "acme", 42, str(tmp_path), "claude-fable-5", '"$(cat .agent/prompt-spec.md)"')
     new = next(c for c in calls if "new-session" in c)
     assert ["-s", "task-acme-42"] == new[new.index("-s"): new.index("-s") + 2]
     assert ["-c", str(tmp_path)] == new[new.index("-c"): new.index("-c") + 2]
-    send = next(c for c in calls if "send-keys" in c)
-    cmd = send[-2]
-    assert ('claude --remote-control task-acme-42 --permission-mode auto '
-            '--model claude-fable-5') in cmd
-    assert '.agent/prompt-spec.md' in cmd
-    assert send[-1] == "Enter"
+    assert any("send-keys" in c for c in calls)
 
 
 def test_spawn_stage_reuses_existing_session(tmp_path: Path, monkeypatch):
@@ -619,3 +633,96 @@ def test_forget_status_removes_the_sidecar(tmp_path):
     assert not side.exists()
     _HerdrBackend("2g", "2", tmp_path).forget_status("acme", 42)  # idempotent
     _HerdrBackend("2g", "2", None).forget_status("acme", 42)      # no state dir
+
+
+# --- backend selection: adopt-on-touch (spec §7) -----------------------------
+
+def _tmux_table(monkeypatch, alive: set[str], calls=None):
+    """`tmux has-session -t <name>` succeeds for names in `alive`."""
+    def fake_tmux(args):
+        if calls is not None:
+            calls.append(args)
+        if args[:2] == ["tmux", "has-session"]:
+            return 0 if args[-1] in alive else 1
+        return 0
+    monkeypatch.setattr(sessions, "_tmux", fake_tmux)
+
+
+def test_live_tmux_session_selects_the_tmux_backend(monkeypatch):
+    _tmux_table(monkeypatch, {"task-acme-42"})
+    s = sessions.Sessions()
+    assert isinstance(s._backend("acme", 42), sessions._TmuxBackend)
+
+
+def test_legacy_tmux_name_selects_the_tmux_backend(monkeypatch):
+    _tmux_table(monkeypatch, {"task-42"})
+    s = sessions.Sessions()
+    assert isinstance(s._backend("acme", 42), sessions._TmuxBackend)
+
+
+def test_no_tmux_session_selects_herdr(monkeypatch):
+    _tmux_table(monkeypatch, set())
+    s = sessions.Sessions()
+    assert isinstance(s._backend("acme", 42), sessions._HerdrBackend)
+
+
+def test_tmux_binary_absent_fails_closed_to_herdr(monkeypatch):
+    def no_tmux(*a, **k):
+        raise FileNotFoundError("tmux")
+    monkeypatch.setattr(sessions.subprocess, "run", no_tmux)
+    s = sessions.Sessions()
+    assert isinstance(s._backend("acme", 42), sessions._HerdrBackend)
+
+
+def test_parked_task_resumes_in_herdr_even_if_another_task_is_on_tmux(tmp_path, monkeypatch):
+    (tmp_path / ".git").write_text(f"gitdir: {tmp_path}/clone/.git/worktrees/task-42\n")
+    _tmux_table(monkeypatch, {"task-acme-41"})
+    calls = []
+    herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
+    sessions.Sessions().resume("acme", 42, str(tmp_path), "carry on", "claude-sonnet-5")
+    run = next(c for c in calls if c[:2] == ["pane", "run"])
+    assert "--continue" in run[3] and "--model claude-sonnet-5" in run[3]
+
+
+def test_facade_routes_every_method_to_the_selected_backend(tmp_path, monkeypatch):
+    class Spy:
+        def __init__(self):
+            self.calls = []
+        def __getattr__(self, name):
+            def rec(*a, **k):
+                self.calls.append((name, a))
+                return {"is_alive": True, "capture_tail": "t",
+                        "capture_history": "h", "idle_seconds": 1.0}.get(name)
+            return rec
+
+    spy = Spy()
+    s = sessions.Sessions(state_dir=tmp_path)  # a state_dir so end() snapshots
+    monkeypatch.setattr(s, "_backend", lambda target, issue: spy)
+    assert s.is_alive("acme", 42) is True
+    assert s.capture_tail("acme", 42) == "t"
+    assert s.capture_history("acme", 42, lines=10) == "h"
+    assert s.idle_seconds("acme", 42) == 1.0
+    s.send_text("acme", 42, "x")
+    s.end("acme", 42)
+    names = [n for n, _ in spy.calls]
+    assert names == ["is_alive", "capture_tail", "capture_history",
+                     "idle_seconds", "send_text", "capture_history", "end"]
+    # end() snapshots (capture_history) BEFORE the backend end — same order as today
+
+
+def test_end_on_herdr_snapshots_then_closes_and_forgets_status(tmp_path, monkeypatch):
+    _tmux_table(monkeypatch, set())
+    side = tmp_path / "herdr-status" / "task-acme-42.json"
+    side.parent.mkdir()
+    side.write_text("{}")
+    calls = []
+    herdr_fake(monkeypatch, LIVE + [(("pane", "read"), 0, "last words\n"),
+                                    (("tab", "close"), 0, '{"id":"i","result":{"type":"ok"}}')], calls)
+    monkeypatch.setattr(sessions.subprocess, "run",
+                        lambda args, **kw: _sp.CompletedProcess(args, 0, "", ""))
+    sessions.Sessions(state_dir=tmp_path).end("acme", 42)
+    assert (tmp_path / "snapshots" / "task-acme-42.txt").read_text() == "last words"
+    read_i = next(i for i, c in enumerate(calls) if c[:2] == ["pane", "read"])
+    close_i = next(i for i, c in enumerate(calls) if c[:2] == ["tab", "close"])
+    assert read_i < close_i
+    assert not side.exists()

@@ -1003,7 +1003,9 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
     rep = failures.FailureReport(
         klass="session-crash", target=target.name, issue=task.issue,
         title=f"session crashed during {task.stage.value}: {task.title}",
-        error=(f"tmux session task-{task.issue} died during stage "
+        # Backend-neutral: the session may be a herdr tab or, until the
+        # tmux retirement, a legacy tmux session.
+        error=(f"session task-{task.target}-{task.issue} died during stage "
                f"{task.stage.value}"),
         log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
         repro=f"cd {task.worktree} && claude --continue  # inside session image",
