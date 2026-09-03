@@ -99,7 +99,6 @@ def _herdr_fake_creating(monkeypatch, calls, workspace=None, pane_run_ok=True):
     monkeypatch.setattr(herdr, "_run", _run)
 
 
-_REAL_RUNNING = triage.running  # captured before conftest's autouse stub replaces it
 
 
 def _cfg(tmp_path, targets=(), infra=""):
@@ -579,18 +578,18 @@ def test_running_is_true_only_for_a_busy_triage_tab(monkeypatch):
     # Busy tab → running.
     _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_TRIAGE_TAB),
                               (("pane", "list"), 0, H_SYS_PANES), _busy(100, 200)])
-    assert _REAL_RUNNING() is True
+    assert triage.running() is True
     # Tab present but idle at its prompt (runner finished, or a fresh shell
     # restored after a server restart) is NOT running.
     _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_TRIAGE_TAB),
                               (("pane", "list"), 0, H_SYS_PANES), _busy(100, 100)])
-    assert _REAL_RUNNING() is False
+    assert triage.running() is False
     # No tab → not running.
     _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_NO_TABS)])
-    assert _REAL_RUNNING() is False
+    assert triage.running() is False
     # Server down → not running.
     _herdr_fake(monkeypatch, [])
-    assert _REAL_RUNNING() is False
+    assert triage.running() is False
 
 
 def test_running_treats_unknown_busyness_as_running(monkeypatch):
@@ -598,7 +597,7 @@ def test_running_treats_unknown_busyness_as_running(monkeypatch):
     sweep on top of a possibly-live one: fail closed to 'running'."""
     _herdr_fake(monkeypatch, [(("tab", "list"), 0, H_TRIAGE_TAB),
                               (("pane", "list"), 0, H_SYS_PANES)])
-    assert _REAL_RUNNING() is True
+    assert triage.running() is True
 
 
 def test_tick_replaces_a_stale_idle_triage_tab(tmp_path, monkeypatch):
