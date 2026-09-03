@@ -64,12 +64,12 @@ def test_run_degrades_on_missing_binary_and_timeout(monkeypatch):
     def boom(*a, **k):
         raise FileNotFoundError("herdr")
     monkeypatch.setattr(herdr.subprocess, "run", boom)
-    assert herdr._run(["tab", "list"]) is None
+    assert real_run(["tab", "list"]) is None
 
     def slow(*a, **k):
         raise subprocess.TimeoutExpired(cmd="herdr", timeout=30)
     monkeypatch.setattr(herdr.subprocess, "run", slow)
-    assert herdr._run(["tab", "list"]) is None
+    assert real_run(["tab", "list"]) is None
 
 
 def test_run_invokes_herdr_with_capture_text_and_timeout(monkeypatch):
@@ -79,7 +79,7 @@ def test_run_invokes_herdr_with_capture_text_and_timeout(monkeypatch):
         seen["args"], seen["kw"] = args, kw
         return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(herdr.subprocess, "run", run)
-    herdr._run(["tab", "list"])
+    real_run(["tab", "list"])
     assert seen["args"] == ["herdr", "tab", "list"]
     assert seen["kw"] == {"capture_output": True, "text": True,
                           "timeout": herdr.TIMEOUT}

@@ -49,16 +49,6 @@ def _stub_triage_running(monkeypatch):
     monkeypatch.setattr(triage, "running", lambda: False)
 
 
-# Store real _run reference before any tests can monkeypatch it
-_REAL_HERDR_RUN = None
-
-def _init_real_run():
-    global _REAL_HERDR_RUN
-    if _REAL_HERDR_RUN is None:
-        from dispatcher.herdr import _run
-        _REAL_HERDR_RUN = _run
-
-
 @pytest.fixture(autouse=True)
 def _no_herdr_server(monkeypatch):
     """The dev machine runs a real herdr server. Every herdr call in the
@@ -66,16 +56,5 @@ def _no_herdr_server(monkeypatch):
     call degrades (None/False) instead of creating tabs on the developer's
     desktop. Tests that exercise herdr monkeypatch herdr._run themselves,
     which takes precedence because it is applied after this fixture."""
-    _init_real_run()
     from dispatcher import herdr
     monkeypatch.setattr(herdr, "_run", lambda args: None)
-
-
-@pytest.fixture(autouse=True)
-def _restore_herdr_run_for_run_tests(monkeypatch, request):
-    """For tests in test_herdr.py that test _run directly, restore the real
-    _run so they can test its behavior by mocking subprocess.run."""
-    if "test_herdr.py" in str(request.fspath):
-        if any(name in request.node.name for name in ["test_run_degrades", "test_run_invokes"]):
-            from dispatcher import herdr
-            monkeypatch.setattr(herdr, "_run", _REAL_HERDR_RUN)
