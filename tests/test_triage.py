@@ -624,6 +624,7 @@ def test_tick_replaces_a_stale_idle_triage_tab(tmp_path, monkeypatch):
     close_i = calls.index(["tab", "close", "w9:t2"])
     create_i = next(i for i, c in enumerate(calls) if c[:2] == ["tab", "create"])
     assert close_i < create_i
+    assert sum(1 for c in calls if c[:2] == ["tab", "create"]) == 1
 
 
 def test_tick_launches_runner_in_a_herdr_tab_when_capacity_free(tmp_path, monkeypatch):
