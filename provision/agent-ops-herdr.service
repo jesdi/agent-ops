@@ -1,0 +1,29 @@
+[Unit]
+Description=agent-ops herdr server (the session layer: one tab per task)
+# The dispatcher, web console, waitd and the triage runner all resolve
+# sessions through this server's socket (~/.config/herdr/herdr.sock).
+After=network-online.target
+
+[Service]
+# Every session pane, its shell and its `podman run … claude` are children
+# of this server, so they live in THIS unit's cgroup: stopping or restarting
+# agent-ops-herdr.service kills every live session — the same blast radius
+# as killing the tmux server used to have. Sessions are recoverable: the
+# dispatcher's crash path reports them, and park/resume tolerates a dead
+# container via `claude --continue`. Prefer `herdr update` (in-place
+# handoff) over a unit restart for upgrades. See provision/README.md.
+#
+# On restart herdr restores its saved layout (~/.config/herdr/session.json):
+# every task-* tab comes back as a fresh shell with no container behind
+# it. The dispatcher reads those as alive-but-idle and the stall timer
+# parks them (stall_after_seconds); resume recreates the container.
+ExecStart=%h/.local/bin/herdr server
+Restart=always
+RestartSec=2
+# Panes need a sane locale/terminal type for claude's TUI; the user
+# manager's environment has neither.
+Environment=TERM=xterm-256color
+Environment=LANG=C.UTF-8
+
+[Install]
+WantedBy=default.target

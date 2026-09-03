@@ -82,3 +82,42 @@ def test_dispatcher_service_does_not_carry_the_long_lived_token():
     from the state dir instead, which also covers triage and web — the
     other fetch_usage callers — without touching their units."""
     assert "claude-token.env" not in unit_text("agent-ops-dispatcher.service")
+
+
+def test_herdr_server_unit_runs_the_server_and_always_restarts():
+    """Spec 2026-09-03-herdr-sessions §6: every session pane, its shell and
+    its podman process live in this unit's cgroup — the unit says so, and
+    it restarts unconditionally so a dead server never reads every task as
+    dead for longer than RestartSec."""
+    text = unit_text("agent-ops-herdr.service")
+    assert "ExecStart=%h/.local/bin/herdr server" in text
+    assert "Restart=always" in text
+    assert "WantedBy=default.target" in text
+    assert "kills every live session" in text     # the operator warning
+    assert "op run" not in text and "EnvironmentFile" not in text
+
+
+def test_session_consumers_start_after_the_herdr_server():
+    for unit in ("agent-ops-dispatcher.service", "agent-ops-web.service",
+                 "agent-ops-waitd.service", "agent-ops-triage.service"):
+        text = unit_text(unit)
+        assert "After=agent-ops-herdr.service" in text, unit
+        assert "Wants=agent-ops-herdr.service" in text, unit
+
+
+def test_dispatcher_unit_no_longer_needs_kill_mode_process():
+    """Panes belong to the herdr unit now; the oneshot pass leaves nothing
+    behind that must outlive it, so the default KillMode is correct again."""
+    text = unit_text("agent-ops-dispatcher.service")
+    assert "KillMode" not in text
+    assert "tmux" not in text
+
+
+def test_bootstrap_installs_herdr_and_enables_the_server_unit():
+    text = (PROVISION / "bootstrap.sh").read_text()
+    assert "https://herdr.dev/install.sh" in text
+    assert "$AGENT_HOME/.local/bin/herdr --version" in text
+    assert "provision/agent-ops-herdr.service" in text
+    assert "enable --now agent-ops-herdr.service" in text
+    # tmux stays until the retirement PR (spec §7)
+    assert "apt-get install -y git tmux" in text

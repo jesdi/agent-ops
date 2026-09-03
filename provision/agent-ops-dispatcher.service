@@ -1,16 +1,11 @@
 [Unit]
 Description=agent-ops dispatcher pass
 After=network-online.target
+After=agent-ops-herdr.service
+Wants=agent-ops-herdr.service
 
 [Service]
 Type=oneshot
-# The pass spawns detached tmux servers hosting the per-task Claude
-# sessions; they must OUTLIVE the pass. The default KillMode
-# (control-group) reaps every process left in the unit's cgroup the
-# moment the oneshot deactivates — observed on task #192's first-ever
-# spawn: the tmux server died within seconds of "Finished ... dispatcher
-# pass". KillMode=process only ever kills ExecStart's main process.
-KillMode=process
 WorkingDirectory=%h/agent-ops
 Environment=AGENT_OPS_STATE_DIR=%h/agent-ops-state
 # op resolves TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID from the agent-ops
