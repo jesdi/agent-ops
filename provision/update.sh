@@ -129,29 +129,28 @@ done
 if [ -n "$changed" ]; then
   $SYSTEMCTL daemon-reload
   for unit in $changed; do
-    # try-restart: no-op for units that are not running (oneshots between
-    # timer firings); restarts long-running services and live timers.
+    # try-restart restarts long-running services and live timers. Two kinds
+    # of unit are copied and daemon-reloaded above but never restarted here:
     #
-    # KNOWN EDGE CASE — self-restart: if agent-ops-update.service or
-    # agent-ops-update.timer is among the changed units, try-restarting it
-    # here will kill or reschedule the running instance of this very script.
-    # Any unit whose name sorts after the updater's own units in $changed will
-    # not be restarted this pass.  This is accepted behaviour (plan-mandated
-    # verbatim): the next timer firing will see old==new for those units and
-    # skip them, so a co-changed service may run stale code for one deploy
-    # cycle until its own file changes again.  Template units are filtered
-    # from this loop (see below) but no other filtering applies.
+    # Template units (`foo@.service`): systemd rejects `try-restart` without
+    # an instance name, and under `set -euo pipefail` that non-zero exit
+    # would abort the pass — the glob sorts agent-ops-alert@.service first,
+    # so the pass would die before the remaining restarts, the credential
+    # convergence and the claude-home sync, silently (no OnFailure here).
     #
-    # Template units (`foo@.service`) are the one exception, and only in this
-    # RESTART loop — they are still copied above and picked up by the
-    # daemon-reload. systemd rejects `try-restart foo@.service` ("missing the
-    # instance name") with a non-zero exit, which under `set -euo pipefail`
-    # would abort the pass. The glob sorts agent-ops-alert@.service first, so
-    # the deploy pass would die before the keepalive timer restart, the
-    # credential convergence and claude-home sync — silently, since the
-    # updater unit has no OnFailure of its own.  Template units are skipped
-    # here with `continue`.
+    # Oneshots (`Type=oneshot`: the dispatcher, triage, sweep, digest,
+    # keepalive and this updater): each timer firing already runs the
+    # current checkout under the reloaded unit, so a restart buys nothing,
+    # and restarting a RUNNING oneshot from here deadlocks — this script
+    # holds convergence.lock for the whole pass, the replacement dispatcher
+    # pass blocks in pass_lock on that same file, and try-restart waits for
+    # it. On 2026-09-03 that hung the deploy for ten hours, stopped both
+    # timers, and left the next merge unpulled. Skipping oneshots also
+    # retires the old self-restart edge case for agent-ops-update.service.
+    # Restarting agent-ops-update.timer still reschedules the timer, which
+    # is harmless: the running pass is not its child.
     case "$unit" in *@.service) continue ;; esac
+    if grep -q '^Type=oneshot' "$UNIT_DIR/$unit"; then continue; fi
     $SYSTEMCTL try-restart "$unit"
   done
 fi

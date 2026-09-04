@@ -233,6 +233,32 @@ def test_template_unit_change_syncs_without_aborting_the_pass(box):
     assert (box.state / "claude-home" / "CLAUDE.md").exists()
 
 
+def test_oneshot_unit_change_is_synced_but_never_restarted(box):
+    # 2026-09-03 deploy deadlock: this script holds convergence.lock for the
+    # whole pass, and `try-restart` of a RUNNING oneshot (the dispatcher pass)
+    # starts a replacement that blocks in pass_lock on that same file while
+    # try-restart waits for it to finish — the pass hung for 10 hours, both
+    # timers stopped firing, and the next merge was never pulled. A oneshot
+    # needs no restart anyway: each timer firing runs the current checkout
+    # under the freshly reloaded unit. So a oneshot is copied and
+    # daemon-reloaded, never try-restarted; long-running units still are.
+    unit = "agent-ops-dispatcher.service"
+    src = box.origin / "provision" / unit
+    assert "Type=oneshot" in src.read_text(), "fixture must ship the real unit"
+    src.write_text(src.read_text() + "# deploy comment v2\n")
+    (box.origin / "provision" / "agent-ops-waitd.service").write_text(
+        "[Unit]\nDescription=waitd v2\n")
+    commit_all(box.origin, "oneshot + long-running unit change")
+    r = run_update(box)
+    assert r.returncode == 0, r.stderr
+    assert "deploy comment v2" in (box.units / unit).read_text()
+    log = calls(box)
+    assert "systemctl --user daemon-reload" in log
+    assert f"try-restart {unit}" not in log
+    assert "try-restart agent-ops-waitd.service" in log
+    assert (box.state / "claude-home" / "CLAUDE.md").exists()
+
+
 def test_unit_drift_heals_without_new_commits(box):
     # Installed unit drifts from the checkout (e.g. a manual pull carried the
     # unit change through a pass that saw old==new). Convergence must repair
