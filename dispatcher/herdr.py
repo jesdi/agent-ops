@@ -12,19 +12,50 @@ mapping."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 TIMEOUT = 30
 SYSTEM_WORKSPACE = "agent-ops"
 
+# Every consumer (dispatcher, web, waitd, the triage runner) is a systemd
+# user unit and runs with the user manager's PATH, which has no ~/.local/bin
+# — where the official installer puts herdr. A bare `herdr` there raised
+# FileNotFoundError, which the degrade contract read as "server down": no
+# session launched for a day and nothing said why. Same rule as
+# provision/sweep-worktrees.sh: AGENT_OPS_HERDR, else ~/.local/bin/herdr,
+# else the PATH lookup (a dev box with herdr installed elsewhere).
+_missing_warned = False
+
+
+def binary() -> str:
+    override = os.environ.get("AGENT_OPS_HERDR")
+    if override:
+        return override
+    local = Path.home() / ".local" / "bin" / "herdr"
+    return str(local) if local.exists() else "herdr"
+
 
 def _run(args: list[str]) -> subprocess.CompletedProcess | None:
     """One CLI call; None when it could not even be made (no binary, hung
-    server). Callers read returncode/stdout from the CompletedProcess."""
+    server). Callers read returncode/stdout from the CompletedProcess. A
+    missing binary is the one failure that is not transient, so it is
+    named on stderr once per process — everything else degrades quietly."""
+    global _missing_warned
+    cmd = binary()
     try:
-        return subprocess.run(["herdr", *args], capture_output=True,
+        return subprocess.run([cmd, *args], capture_output=True,
                               text=True, timeout=TIMEOUT)
+    except FileNotFoundError:
+        if not _missing_warned:
+            _missing_warned = True
+            print(f"[warn] herdr binary not found: {cmd} — every session "
+                  f"reads dead and nothing launches until it is installed "
+                  f"or AGENT_OPS_HERDR points at it", file=sys.stderr)
+        return None
     except (OSError, subprocess.SubprocessError):
         return None
 
