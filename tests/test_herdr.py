@@ -72,6 +72,40 @@ def test_run_degrades_on_missing_binary_and_timeout(monkeypatch):
     assert real_run(["tab", "list"]) is None
 
 
+def test_run_warns_once_when_the_binary_is_missing(monkeypatch, capsys):
+    """2026-09-04: the dispatcher ran for a day with no herdr on its PATH.
+    Every call degraded to "server down" exactly as designed, so nothing
+    launched and nothing said why. A missing binary is not a transient
+    server hiccup — say so, once per process, where the journal shows it."""
+    monkeypatch.setattr(herdr, "_missing_warned", False)
+
+    def boom(*a, **k):
+        raise FileNotFoundError(2, "No such file or directory", "herdr")
+    monkeypatch.setattr(herdr.subprocess, "run", boom)
+    assert real_run(["tab", "list"]) is None
+    assert real_run(["pane", "list"]) is None
+    err = capsys.readouterr().err
+    assert err.count("herdr binary not found") == 1
+    assert herdr.binary() in err
+
+
+def test_binary_prefers_override_then_local_bin_then_path(monkeypatch, tmp_path):
+    """systemd user units run with the user manager's PATH, which has no
+    ~/.local/bin — where the official installer puts herdr. Same rule as
+    provision/sweep-worktrees.sh: AGENT_OPS_HERDR, else ~/.local/bin/herdr,
+    else a bare PATH lookup."""
+    monkeypatch.setenv("AGENT_OPS_HERDR", "/opt/herdr/bin/herdr")
+    assert herdr.binary() == "/opt/herdr/bin/herdr"
+
+    monkeypatch.delenv("AGENT_OPS_HERDR")
+    monkeypatch.setattr(herdr.Path, "home", lambda: tmp_path)
+    assert herdr.binary() == "herdr"
+    local = tmp_path / ".local" / "bin" / "herdr"
+    local.parent.mkdir(parents=True)
+    local.write_text("#!/bin/sh\n")
+    assert herdr.binary() == str(local)
+
+
 def test_run_invokes_herdr_with_capture_text_and_timeout(monkeypatch):
     seen = {}
 
@@ -79,8 +113,9 @@ def test_run_invokes_herdr_with_capture_text_and_timeout(monkeypatch):
         seen["args"], seen["kw"] = args, kw
         return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(herdr.subprocess, "run", run)
+    monkeypatch.setenv("AGENT_OPS_HERDR", "/opt/herdr/bin/herdr")
     real_run(["tab", "list"])
-    assert seen["args"] == ["herdr", "tab", "list"]
+    assert seen["args"] == ["/opt/herdr/bin/herdr", "tab", "list"]
     assert seen["kw"] == {"capture_output": True, "text": True,
                           "timeout": herdr.TIMEOUT}
 

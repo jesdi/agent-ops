@@ -26,7 +26,13 @@ fails ("no write permission to npm prefix") and the box silently pins to a
 stale version. Login shells find it via `~/.profile`; systemd user units and
 convergence scripts must reference `%h/.local/bin/claude` /
 `$HOME/.local/bin/claude` explicitly — the user manager's PATH excludes
-`~/.local/bin`. Bootstrap uninstalls any leftover root npm copy on re-run.
+`~/.local/bin`. The same rule covers herdr: the units, `dispatcher/herdr.py`
+(`AGENT_OPS_HERDR`, else `~/.local/bin/herdr`, else PATH) and
+`sweep-worktrees.sh` all name the binary explicitly, because a bare `herdr`
+in a unit fails with "no such file" and, under the adapter's degrade
+contract, that read as "server down" for a whole day of silently
+non-launching sessions. Bootstrap uninstalls any leftover root npm copy on
+re-run.
 (The npm install inside the `agent-ops-session` container image is fine: the
 image is rebuilt by the updater, nothing auto-updates in-place there.)
 
