@@ -35,7 +35,7 @@ _TEMPLATES = {
     "stage_blocked": "🚧 #{issue} {title} — stage blocked: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "pr_opened": "✅ #{issue} {title} — PR opened: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "artifact_failed": "❌ #{issue} {title} — artifact sanity check failed: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "plan_retry": "🔁 #{issue} {title} — plan format check failed; resuming the session to fix it: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "plan_retry": "🔁 #{issue} {title} — ticket set failed its format check; resuming the session to fix it: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "session_crashed": "💀 #{issue} {title} — session died mid-stage. Worktree preserved for autopsy.\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     # Box-wide events (issue=0, no single owning task) — never had a real
     # session to attach to, so unlike every per-task template above these
@@ -57,6 +57,9 @@ _TEMPLATES = {
                       + _ATTACH),
     "resumed_for_attach": "🎹 #{issue} {title} — session resumed and holding for you.\n{url}\n" + _ATTACH,
     "task_failed": "🔥 #{issue} {title} — {note}\n{url}",
+    "review_started": "🔍 #{issue} {title} — every ticket landed; review started. {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "last_round": "⚠️ #{issue} {title} — {note}: last round before this task parks.\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "pr_attention": "🔴 #{issue} {title} — PR needs attention ({note}); queued for rework.\n{url}",
     "pr_feedback": "💬 #{issue} {title} — review feedback on the PR; queued for rework.\n{note}\n{url}",
     "pr_updated": "🔁 #{issue} {title} — feedback addressed, PR updated: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "task_done": "🎉 #{issue} {title} — PR merged; task done. {note}\n{url}",
@@ -81,7 +84,7 @@ def render(template: str, **ctx) -> str:
         return _triage_report(list(ctx["lines"]),
                               ctx.get("triage_dir") or "<state_dir>/triage/")
     text = _TEMPLATES[template].format(**ctx)
-    if template in ("awaiting_spec_review", "spec_parked") and ctx.get("console"):
+    if template in ("awaiting_spec_review", "spec_parked", "parked_question") and ctx.get("console"):
         text += (f"\nread & approve: {ctx['console']}/task/"
                  f"{ctx['target']}/{ctx['issue']}")
     return text

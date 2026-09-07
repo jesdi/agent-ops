@@ -30,10 +30,11 @@ from dispatcher.github import GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish
-from dispatcher.machine import (HandleCrash, NoOp, Notify, ParkForCI,
+from dispatcher.artifacts import TICKETS_DIR, ticket_files
+from dispatcher.machine import (HandleCrash, LOOP_FIELDS, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
-                                RetryStage, SetTaskStage, SpawnStage,
-                                next_actions)
+                                RecordRound, RetryStage, SetTaskStage, SetTickets,
+                                SpawnStage, next_actions)
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
@@ -75,6 +76,10 @@ def _cursor_now() -> str:
     return (datetime.now(timezone.utc).replace(microsecond=0)
             - timedelta(seconds=1)).isoformat()
 
+
+# Zeroed on every operator wake: a human intervening is a fresh budget for
+# every loop. Never applied on a CI wake — that IS a round.
+_FRESH_ROUNDS = dict(review_rounds=0, gate_rounds=0, e2e_rounds=0, ci_rounds=0)
 
 # Stages that aren't policy stages but hold a live session from one: a
 # claimed task is about to spawn spec, and a task at the spec-review gate
@@ -155,7 +160,7 @@ def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
           actor: str = "dispatcher") -> None:
     _queue_message(cfg, task.issue, text, actor)
     save(cfg.state_dir, replace(task, park=PARK_WAKE, hold_for_attach=hold,
-                                updated_at=_now()))
+                                **_FRESH_ROUNDS, updated_at=_now()))
 
 
 def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
@@ -361,23 +366,33 @@ def _notify(deps: Deps, target: Target, task: TaskState, template: str,
 
 
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                 stage: Stage, spec_path: str = "") -> TaskState:
+                 stage: Stage, spec_path: str = "", ticket: int = 0) -> TaskState:
+    ticket_path = ""
+    if ticket:
+        files = ticket_files(Path(task.worktree) / TICKETS_DIR)
+        if ticket > len(files):
+            raise RuntimeError(f"ticket {ticket} of {task.ticket_count} missing "
+                               f"under {task.worktree}/{TICKETS_DIR}")
+        ticket_path = str(files[ticket - 1].relative_to(task.worktree))
     ctx = dict(
         issue_number=task.issue, issue_title=task.title,
         issue_url=_url(target, task.issue), repo=target.repo,
         branch=task.branch, slot=task.slot,
         backend_port=8100 + task.slot, frontend_port=5200 + task.slot,
         verify_cmd=target.verify_cmd.format(slot=task.slot),
-        spec_path=spec_path,
+        gate_cmd=target.gate_cmd.format(slot=task.slot),
+        spec_path=spec_path or task.spec_path,
+        tickets_dir=TICKETS_DIR, ticket_number=ticket,
+        ticket_count=task.ticket_count, ticket_path=ticket_path,
         pr_number=task.pr_number,
+        reason=task.attention or "feedback",
+        labels=", ".join(task.labels),
     )
     prompt = render_stage_prompt(stage, ctx)
     block, drained = _drain(cfg, task.issue)
     if block:
         prompt = f"{prompt}\n\n{block}\n"
     model = _model_for(cfg, target, task, stage)
-    # Reset the signal BEFORE spawning, or the next pass re-reads the
-    # previous stage's `done` and advances again.
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "stage.json").write_text(json.dumps(
@@ -386,10 +401,14 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model)
     messages.mark_delivered(cfg.state_dir, task.issue, drained)
-    task = replace(task, stage=stage, artifact="", updated_at=_now())
+    # A fresh stage is a fresh budget for the loops it runs; ci_rounds belongs
+    # to the PR, not the stage, and is reset by _poll_prs/_resume_one.
+    task = replace(task, stage=stage, artifact="", spec_path=spec_path or task.spec_path,
+                   review_rounds=0, gate_rounds=0, e2e_rounds=0, updated_at=_now())
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
-                          issue=task.issue, stage=stage.value, model=model)
+                          issue=task.issue, stage=stage.value, model=model,
+                          detail=f"ticket {ticket}/{task.ticket_count} {ticket_path}" if ticket else "")
     return task
 
 
@@ -451,7 +470,7 @@ def _auth_dark_edge(cfg: Config, deps: Deps, usage: UsageSnapshot) -> None:
 
 
 def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                    note: str) -> None:
+                    note: str, artifact: str = "") -> None:
     tail = deps.sessions.capture_tail(task.target, task.issue)
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, target, task, note,
@@ -459,15 +478,48 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         return
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
-        url=_url(target, task.issue),
+        url=_url(target, task.issue), target=target.name,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     deps.sessions.end(task.target, task.issue)
     clear_waiting(cfg.state_dir, task.target, task.issue)
+    resolved = ""
+    if artifact:
+        p = Path(artifact)
+        resolved = str(p if p.is_absolute() else Path(task.worktree) / p)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT,
+                                artifact=resolved or task.artifact,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
+
+
+def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                    note: str) -> None:
+    """A bounded loop hit its cap with no live session to end (a CI park, or
+    a pr-open task): park for the operator. Their reply wakes it with a
+    fresh budget (_wake / the reply intent zero the counters)."""
+    msg_id = deps.notifier.send(
+        "parked_question", issue=task.issue, title=task.title,
+        url=_url(target, task.issue), target=target.name, note=note)
+    save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
+                                park_note=note, slot=NO_SLOT, ci_run_id=0,
+                                feedback_pending=False, updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail="loop exhausted: " + note)
+
+
+def _count_round(cfg: Config, target: Target, task: TaskState, loop: str,
+                 detail: str) -> tuple[TaskState, int, int]:
+    """Bump one loop counter and write its event. Returns (task, n, cap)."""
+    field, cap = LOOP_FIELDS[loop], getattr(cfg.loop_caps, loop)
+    n = getattr(task, field) + 1
+    task = replace(task, **{field: n})
+    eventlog.append_event(cfg.state_dir, "round", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail=f"{loop} round {n}/{cap}" + (f": {detail}" if detail else ""))
+    return task, n, cap
 
 
 def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -521,11 +573,12 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     deps.sessions.end(task.target, task.issue)
     block, drained = _drain(cfg, task.issue)
     retry_text = (
-        f"Your .agent/plan.md failed the pipeline's mechanical format check: "
-        f"{reason}. Fix it in place — every task needs an H3 heading of exactly "
-        f"`### Task N:` (not `## Task N:`) and the plan must contain a "
-        f"`**Goal:**` line — then re-write .agent/stage.json with "
-        f'status "done". Do not re-plan from scratch; only fix the formatting.')
+        f"Your ticket set under .agent/tickets/ failed the pipeline's mechanical "
+        f"check: {reason}. Fix it in place — files named NN-slug.md numbered "
+        f"contiguously from 01 with no gaps or duplicates, each with a "
+        f"'What to build' section, a 'Blocked by' line and at least one "
+        f"unchecked '- [ ]' criterion — then re-write .agent/stage.json with "
+        f'status "done". Do not re-plan from scratch; only fix the set.')
     if block:
         retry_text = f"{retry_text}\n\n{block}"
     deps.sessions.resume(task.target, task.issue, task.worktree, retry_text,
@@ -620,6 +673,19 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
             continue
         if not conclusion:
             continue
+        if conclusion != "success":
+            # A red run is one round of the stage's fix loop: e2e for the
+            # implement/review stages, ci for a PR already open.
+            loop = "ci" if task.stage is Stage.ADDRESS_REVIEW else "e2e"
+            task, n, cap = _count_round(cfg, target, task, loop,
+                                        f"run {task.ci_run_id} {conclusion}")
+            if n > cap:
+                _park_exhausted(cfg, deps, target, task,
+                                f"{loop} loop exceeded its cap of {cap} rounds "
+                                f"(run {task.ci_run_id} {conclusion})")
+                continue
+            if n == cap:
+                _notify(deps, target, task, "last_round", f"{loop} round {n}/{cap}")
         reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
                  f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
         _queue_message(cfg, task.issue, reply, "dispatcher")
@@ -646,7 +712,9 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
                 save(cfg.state_dir, task)
             res = pr_poll.classify(deps.github.pr_view(target, task.pr_number),
                                    task.feedback_cursor,
-                                   deps.github.viewer_login())
+                                   deps.github.viewer_login(),
+                                   check_cursor=task.check_cursor,
+                                   conflict_cursor=task.conflict_cursor)
         except (subprocess.CalledProcessError, OSError) as exc:
             print(f"[warn] PR poll failed for #{task.issue}: {exc}",
                   file=sys.stderr)
@@ -673,8 +741,11 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
                                   detail=f"PR #{task.pr_number} closed unmerged")
             _notify(deps, target, task, "pr_closed",
                     f"PR #{task.pr_number}. Worktree preserved for autopsy.")
+        elif task.park:
+            continue   # exhausted-loop park: only merge/close still matter
         elif res.kind == "feedback" and not task.feedback_pending:
             save(cfg.state_dir, replace(task, feedback_pending=True,
+                                        attention="feedback", ci_rounds=0,
                                         updated_at=_now()))
             eventlog.append_event(cfg.state_dir, "pr-feedback",
                                   target=target.name, issue=task.issue,
@@ -682,6 +753,33 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
                                   detail=f"newest {res.latest_ts}")
             _notify(deps, target, task, "pr_feedback",
                     f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
+        elif res.kind in ("check-failed", "conflict") and not task.feedback_pending:
+            _pr_attention(cfg, deps, target, task, res)
+
+
+def _pr_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                  res: "pr_poll.PollResult") -> None:
+    """A red check or a conflict on the open PR: one round of the ci loop,
+    address-review queued with the reason, cursor advanced so the same
+    condition never re-triggers."""
+    cursor = ({"check-failed": dict(check_cursor=res.latest_ts),
+               "conflict": dict(conflict_cursor=res.latest_ts)}[res.kind])
+    task = replace(task, **cursor)
+    task, n, cap = _count_round(cfg, target, task, "ci",
+                                f"{res.kind} on PR #{task.pr_number}")
+    if n > cap:
+        _park_exhausted(cfg, deps, target, task,
+                        f"ci loop exceeded its cap of {cap} rounds "
+                        f"({res.kind} on PR #{task.pr_number})")
+        return
+    save(cfg.state_dir, replace(task, feedback_pending=True, attention=res.kind,
+                                updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "pr-attention", target=target.name,
+                          issue=task.issue, stage=Stage.PR_OPEN.value,
+                          detail=res.kind)
+    if n == cap:
+        _notify(deps, target, task, "last_round", f"ci round {n}/{cap}")
+    _notify(deps, target, task, "pr_attention", f"{res.kind} on PR #{task.pr_number}")
 
 
 def _finish_merged(cfg: Config, deps: Deps, target: Target,
@@ -794,6 +892,18 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # LIVE, and _launch would then type the podman command INTO the
     # running claude (the failure _retry_plan and SpawnStage guard).
     deps.sessions.end(task.target, task.issue)
+    if task.stage is Stage.PR_OPEN:
+        # No session to continue at pr-open: an operator wake on a parked
+        # pr-open task is a fresh address-review round carrying their message.
+        task = replace(task, park="", park_msg_id=0, park_note="",
+                       hold_for_attach=False, feedback_pending=False, ci_rounds=0,
+                       attention="operator", feedback_cursor=_cursor_now())
+        _clear_wake_blocked(cfg, task.issue)
+        _spawn_stage(cfg, deps, target, task, Stage.ADDRESS_REVIEW)
+        eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
+                              issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
+                              model=model)
+        return
     block, drained = _drain(cfg, task.issue)
     if task.hold_for_attach:
         text = ("The operator is attaching to talk to you directly. "
@@ -909,11 +1019,29 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     for act in next_actions(task, signal, alive, waiting=waiting,
                             idle_seconds=idle,
                             stall_after=cfg.stall_after_seconds,
-                            grace_elapsed=_grace_elapsed(cfg, task)):
+                            grace_elapsed=_grace_elapsed(cfg, task),
+                            caps=cfg.loop_caps):
         if isinstance(act, NoOp):
             continue
+        if isinstance(act, SetTickets):
+            task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count,
+                           updated_at=_now())
+            save(cfg.state_dir, task)
+            eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
+                                  issue=task.issue, stage=Stage.IMPLEMENT.value,
+                                  detail=f"ticket {act.cursor}/{act.count}")
+            continue
+        if isinstance(act, RecordRound):
+            field = LOOP_FIELDS[act.loop]
+            task = replace(task, **{field: act.round}, updated_at=_now())
+            save(cfg.state_dir, task)
+            eventlog.append_event(cfg.state_dir, "round", target=target.name,
+                                  issue=task.issue, stage=task.stage.value,
+                                  detail=f"{act.loop} round {act.round}/"
+                                         f"{getattr(cfg.loop_caps, act.loop)}")
+            continue
         if isinstance(act, ParkForInput):
-            _park_for_input(cfg, deps, target, task, act.note)
+            _park_for_input(cfg, deps, target, task, act.note, artifact=act.artifact)
             return
         if isinstance(act, ParkForReview):
             _park_for_review(cfg, deps, target, task, dry_run=dry_run)
@@ -968,7 +1096,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             # name would collide). End it first; no-op when already dead.
             deps.sessions.end(task.target, task.issue)
             spec_path = signal.artifact if act.stage is Stage.PLAN else ""
-            task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path)
+            task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path,
+                                ticket=act.ticket)
         elif isinstance(act, HandleCrash):
             _notify(deps, target, task, "session_crashed")
             deps.github.release(target, task.issue, "session crashed mid-stage")
@@ -1131,7 +1260,7 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
                        intent.actor or "operator")
         if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
             save(cfg.state_dir, replace(task, park=PARK_WAKE,
-                                        updated_at=_now()))
+                                        **_FRESH_ROUNDS, updated_at=_now()))
     elif intent.action == "park":
         if (task is None or task.stage not in IN_FLIGHT_STAGES or task.park
                 or not deps.sessions.is_alive(task.target, issue)):
