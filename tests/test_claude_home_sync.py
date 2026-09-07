@@ -205,7 +205,7 @@ def test_missing_declared_plugin_installed_into_claude_home(rig):
     r = run_sync(rig)
     assert r.returncode == 0, r.stderr
     log = calls(rig)
-    assert "plugin install superpowers@claude-plugins-official" in log
+    assert "plugin install frontend-design@claude-plugins-official" in log
     # Every claude call must target claude-home, not the agent user's ~/.claude.
     for line in log.splitlines():
         assert f"CONFIG={rig.home}" in line
@@ -250,15 +250,15 @@ def test_satisfied_state_only_lists(rig):
 
 def test_declaration_change_updates_latest_plugins(rig):
     run_sync(rig)                       # stamp written for current set
-    declare(rig, {"superpowers@claude-plugins-official": True,
+    declare(rig, {"frontend-design@claude-plugins-official": True,
                   "extra@claude-plugins-official": True})
     rig.calls.write_text("")
     r = run_sync(rig)
     assert r.returncode == 0, r.stderr
     log = calls(rig)
     assert "plugin install extra@claude-plugins-official" in log
-    # superpowers tracks latest and the declared set changed → update it.
-    assert "plugin update superpowers@claude-plugins-official" in log
+    # frontend-design tracks latest and the declared set changed → update it.
+    assert "plugin update frontend-design@claude-plugins-official" in log
 
 
 def test_project_scope_install_reconverged_at_user_scope(rig):
@@ -272,19 +272,19 @@ def test_project_scope_install_reconverged_at_user_scope(rig):
     stamp was never written, so EVERY later pass repeated it. Credential
     convergence and unit sync sat behind that dead pass."""
     rig.plugin_list.write_text(json.dumps([
-        {"id": "superpowers@claude-plugins-official", "version": "4.0.0",
+        {"id": "frontend-design@claude-plugins-official", "version": "1.0.0",
          "scope": "project", "projectPath": "/home/agent"}]))
 
     r = run_sync(rig)
 
     assert r.returncode == 0, r.stderr
     # A foreign-scope copy does not satisfy the declaration: install at user.
-    assert ("plugin install superpowers@claude-plugins-official --scope user"
+    assert ("plugin install frontend-design@claude-plugins-official --scope user"
             in calls(rig))
-    assert installed(rig)["superpowers@claude-plugins-official"] == "9.9.9"
+    assert installed(rig)["frontend-design@claude-plugins-official"] == "9.9.9"
     # And the stray is named, since only a human standing in the project dir
     # can remove it.
-    assert "project" in r.stderr and "superpowers@claude-plugins-official" in r.stderr
+    assert "project" in r.stderr and "frontend-design@claude-plugins-official" in r.stderr
 
 
 def test_every_mutating_plugin_call_names_its_scope(rig):
@@ -341,3 +341,25 @@ def test_stamp_written(rig):
     r = run_sync(rig)
     assert r.returncode == 0, r.stderr
     assert (rig.state / "claude-home-plugins.stamp").read_text().strip()
+
+
+def test_real_seed_uninstalls_superpowers_and_keeps_frontend_design(rig):
+    rig.plugin_list.write_text(json.dumps([
+        {"id": "superpowers@claude-plugins-official", "version": "4.0.0"},
+        {"id": "frontend-design@claude-plugins-official", "version": "1.0.0"}]))
+    r = run_sync(rig)
+    assert r.returncode == 0, r.stderr
+    assert "plugin uninstall superpowers@claude-plugins-official --scope user" in calls(rig)
+    assert "superpowers@claude-plugins-official" not in installed(rig)
+    assert "frontend-design@claude-plugins-official" in installed(rig)
+
+
+def test_vendored_skill_files_reach_claude_home(rig):
+    skill = rig.seed / "skills" / "to-tickets"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: to-tickets\n---\nvendored")
+    (rig.seed / "skills" / "VENDORED.json").write_text('{"skills": {"to-tickets": "x@1"}}')
+    r = run_sync(rig)
+    assert r.returncode == 0, r.stderr
+    assert (rig.home / "skills" / "to-tickets" / "SKILL.md").read_text().endswith("vendored")
+    assert (rig.home / "skills" / "VENDORED.json").is_file()

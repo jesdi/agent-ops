@@ -19,15 +19,35 @@ def test_seed_tree_complete():
 
 def test_enabled_plugins_values_are_latest_or_pinned():
     plugins = settings()["enabledPlugins"]
-    assert plugins, "seed must declare at least the superpowers plugin"
+    assert plugins, "seed must declare at least one plugin"
     for pid, want in plugins.items():
         assert "@" in pid, f"{pid}: must be plugin@marketplace"
         assert want is True or re.fullmatch(r"\d+\.\d+\.\d+", want), \
             f"{pid}: value must be true (latest) or 'x.y.z' (pinned)"
 
 
-def test_superpowers_declared():
-    assert "superpowers@claude-plugins-official" in settings()["enabledPlugins"]
+def test_superpowers_is_gone_and_frontend_design_stays():
+    plugins = settings()["enabledPlugins"]
+    assert "superpowers@claude-plugins-official" not in plugins
+    assert "frontend-design@claude-plugins-official" in plugins
+
+
+def test_vendored_skills_are_complete_and_listed():
+    skills = SEED / "skills"
+    dirs = sorted(p.name for p in skills.iterdir() if p.is_dir())
+    listed = {}
+    if (skills / "VENDORED.json").is_file():
+        listed = json.loads((skills / "VENDORED.json").read_text())["skills"]
+    for name in dirs:
+        assert (skills / name / "SKILL.md").is_file(), f"{name}: no SKILL.md"
+        assert name in listed, f"{name}: not recorded in VENDORED.json — run make vendor-skills"
+    assert set(listed) == set(dirs), "VENDORED.json lists a skill that is not on disk"
+
+
+def test_claude_md_names_the_lease_push_and_ticket_discipline():
+    text = (SEED / "CLAUDE.md").read_text()
+    assert "--force-with-lease" in text
+    assert ".agent/" in text and "stage.json" in text
 
 
 def test_no_memory_plugins():
