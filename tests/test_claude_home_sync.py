@@ -355,11 +355,13 @@ def test_real_seed_uninstalls_superpowers_and_keeps_frontend_design(rig):
 
 
 def test_vendored_skill_files_reach_claude_home(rig):
-    skill = rig.seed / "skills" / "to-tickets"
+    # A synthetic probe skill, not a real vendored one: the rig copies the
+    # actual seed, so reusing a name now present under skills/ would collide.
+    skill = rig.seed / "skills" / "probe-skill"
     skill.mkdir()
-    (skill / "SKILL.md").write_text("---\nname: to-tickets\n---\nvendored")
-    (rig.seed / "skills" / "VENDORED.json").write_text('{"skills": {"to-tickets": "x@1"}}')
+    (skill / "SKILL.md").write_text("---\nname: probe-skill\n---\nvendored")
+    (rig.seed / "skills" / "VENDORED.json").write_text('{"skills": {"probe-skill": "x@1"}}')
     r = run_sync(rig)
     assert r.returncode == 0, r.stderr
-    assert (rig.home / "skills" / "to-tickets" / "SKILL.md").read_text().endswith("vendored")
+    assert (rig.home / "skills" / "probe-skill" / "SKILL.md").read_text().endswith("vendored")
     assert (rig.home / "skills" / "VENDORED.json").is_file()
