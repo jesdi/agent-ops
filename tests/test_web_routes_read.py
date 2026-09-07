@@ -490,3 +490,45 @@ def test_terminal_websocket_route_is_gone(tmp_path):
     fake.tasks_list = [make_task(issue=7)]
     r = client.get("/api/task/alpha/7/terminal", headers=HEADERS)
     assert r.status_code == 404
+
+
+def test_task_artifact_served_from_worktree_as_markdown(tmp_path):
+    fake, client = rig(tmp_path)
+    wt = tmp_path / "wt"
+    q = wt / ".agent" / "questionnaire.md"
+    q.parent.mkdir(parents=True)
+    q.write_text("# Questions\n\n1. Redirect host?")
+    fake.tasks_list = [make_task(issue=7, worktree=str(wt), park=PARK_HUMAN,
+                                 artifact=str(q))]
+    body = client.get("/api/task/alpha/7/artifact", headers=HEADERS).json()
+    assert body == {"path": ".agent/questionnaire.md", "media_type": "text/markdown",
+                    "text": "# Questions\n\n1. Redirect host?"}
+
+
+def test_task_artifact_media_type_follows_the_extension(tmp_path):
+    fake, client = rig(tmp_path)
+    wt = tmp_path / "wt"
+    (wt / ".agent").mkdir(parents=True)
+    for name, media in (("prototype.html", "text/html"),
+                        ("wizard.sh", "application/octet-stream")):
+        (wt / ".agent" / name).write_text("x")
+        fake.tasks_list = [make_task(issue=7, worktree=str(wt), park=PARK_HUMAN,
+                                     artifact=str(wt / ".agent" / name))]
+        assert client.get("/api/task/alpha/7/artifact",
+                          headers=HEADERS).json()["media_type"] == media
+
+
+def test_task_artifact_404s(tmp_path):
+    fake, client = rig(tmp_path)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    outside = tmp_path / "evil.md"
+    outside.write_text("nope")
+    fake.tasks_list = [
+        make_task(issue=1, worktree=str(wt)),                          # nothing recorded
+        make_task(issue=2, worktree=str(wt), artifact=str(wt / "gone.md")),
+        make_task(issue=3, worktree=str(wt), artifact=str(outside)),   # escapes the worktree
+    ]
+    for issue in (1, 2, 3, 999):
+        assert client.get(f"/api/task/alpha/{issue}/artifact",
+                          headers=HEADERS).status_code == 404

@@ -74,6 +74,17 @@ export function useIssueDescription(target: string, issue: number, enabled: bool
   })
 }
 
+/** The file a parked session is waiting on. retry:false — a 404 means
+ *  "nothing awaited", not a transient failure. */
+export function useTaskArtifact(target: string, issue: number, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.artifact(target, issue),
+    queryFn: () => api.taskArtifact(target, issue),
+    enabled,
+    retry: false,
+  })
+}
+
 /** Pending intents always poll: they clear only when a dispatcher pass runs. */
 export function usePendingIntents() {
   return useQuery({

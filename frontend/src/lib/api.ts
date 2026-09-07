@@ -17,6 +17,7 @@ export type GhostCard = components['schemas']['GhostCard']
 export type TimelineEntry = components['schemas']['TimelineEntry']
 export type IssueDescription = components['schemas']['IssueDescription']
 export type MessageView = components['schemas']['MessageView']
+export type ArtifactView = components['schemas']['ArtifactView']
 
 export interface PendingIntent {
   action: string
@@ -116,4 +117,6 @@ export const api = {
     post<IntentAccepted>(`/task/${target}/${issue}/resume`, text ? { text } : {}),
   taskDescription: (target: string, issue: number) =>
     request<IssueDescription>(`/task/${target}/${issue}/description`),
+  taskArtifact: (target: string, issue: number) =>
+    request<ArtifactView>(`/task/${target}/${issue}/artifact`),
 }

@@ -496,3 +496,59 @@ it('a failing queue action from the ghost view surfaces its error text', async (
     expect(screen.getByTestId('queue-error')).toHaveTextContent('queue locked'),
   )
 })
+
+it('renders the artifact a parked task is waiting on, above the reply box', async () => {
+  server.use(
+    http.get('/api/task/widget/42/artifact', () =>
+      HttpResponse.json({
+        path: '.agent/questionnaire.md',
+        media_type: 'text/markdown',
+        text: '# Questions\n\nPick the redirect host.',
+      }),
+    ),
+  )
+  renderTask() // default fixture: parked
+  await waitFor(() =>
+    expect(screen.getByTestId('artifact-panel').textContent).toContain('Pick the redirect host.'),
+  )
+  const panel = screen.getByTestId('artifact-panel')
+  const reply = screen.getByLabelText('Reply')
+  expect(panel.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+})
+
+it('renders an html artifact in a sandboxed frame', async () => {
+  server.use(
+    http.get('/api/task/widget/42/artifact', () =>
+      HttpResponse.json({
+        path: '.agent/prototype.html', media_type: 'text/html',
+        text: '<h1>variant A</h1>',
+      }),
+    ),
+  )
+  renderTask()
+  await waitFor(() => expect(screen.getByTitle('prototype.html')).toBeInTheDocument())
+  const frame = screen.getByTitle('prototype.html') as HTMLIFrameElement
+  expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+  expect(frame.getAttribute('srcdoc')).toContain('variant A')
+})
+
+it('offers any other artifact as a download', async () => {
+  server.use(
+    http.get('/api/task/widget/42/artifact', () =>
+      HttpResponse.json({
+        path: '.agent/wizard.sh', media_type: 'application/octet-stream',
+        text: '#!/bin/sh\necho hi',
+      }),
+    ),
+  )
+  renderTask()
+  const link = await screen.findByRole('link', { name: 'download wizard.sh' })
+  expect(link).toHaveAttribute('download', 'wizard.sh')
+  expect(link.getAttribute('href')).toMatch(/^data:application\/octet-stream/)
+})
+
+it('shows no artifact panel when the task has none', async () => {
+  renderTask() // default handler 404s the artifact
+  await waitFor(() => expect(screen.getByText('Fix login redirect')).toBeInTheDocument())
+  expect(screen.queryByTestId('artifact-panel')).not.toBeInTheDocument()
+})

@@ -179,26 +179,40 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.IssueDescription(
             **sources.issue_description(tgt.repo, issue))
 
+    def _artifact_file(t, what: str) -> tuple[Path, str]:
+        """(absolute path, worktree-relative path) of the task's recorded
+        artifact, or a 404. The artifact path is dispatcher-written state,
+        not user input, but the worktree check keeps a corrupted state
+        file from reading /etc."""
+        wt = Path(t.worktree).resolve()
+        p = Path(t.artifact).resolve() if t.artifact else None
+        if p is None or not p.is_relative_to(wt) or not p.is_file():
+            raise HTTPException(404, f"no {what} recorded for task {t.target}/{t.issue}")
+        return p, str(p.relative_to(wt))
+
+    def _read_text(p: Path, what: str, t) -> str:
+        try:
+            return p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            raise HTTPException(404, f"{what} file missing for task {t.target}/{t.issue}")
+
     @app.get("/api/task/{target}/{issue}/spec",
              response_model=read_model.SpecView)
     def task_spec(target: str, issue: int,
                   op: Operator = Depends(current_operator)):
         t = _find_task(target, issue)
-        wt = Path(t.worktree).resolve()
-        p = Path(t.artifact).resolve() if t.artifact else None
-        # Anything short of a readable file inside the worktree is "no spec":
-        # the artifact path is dispatcher-written state, not user input, but
-        # the worktree check keeps a corrupted state file from reading /etc.
-        if p is None or not p.is_relative_to(wt):
-            raise HTTPException(
-                404, f"no spec recorded for task {target}/{issue}")
-        try:
-            markdown = p.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            raise HTTPException(
-                404, f"spec file missing for task {target}/{issue}")
-        return read_model.SpecView(path=str(p.relative_to(wt)),
-                                   markdown=markdown)
+        p, rel = _artifact_file(t, "spec")
+        return read_model.SpecView(path=rel, markdown=_read_text(p, "spec", t))
+
+    @app.get("/api/task/{target}/{issue}/artifact",
+             response_model=read_model.ArtifactView)
+    def task_artifact(target: str, issue: int,
+                      op: Operator = Depends(current_operator)):
+        t = _find_task(target, issue)
+        p, rel = _artifact_file(t, "artifact")
+        return read_model.ArtifactView(path=rel,
+                                       media_type=read_model.media_type_for(rel),
+                                       text=_read_text(p, "artifact", t))
 
     HISTORY_MAX_LINES = 10000
 

@@ -3,6 +3,7 @@ Pydantic responses. NO I/O in this module — construction only."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -320,6 +321,23 @@ class IssueDescription(BaseModel):
 class SpecView(BaseModel):
     path: str      # worktree-relative
     markdown: str
+
+
+class ArtifactView(BaseModel):
+    """The .agent file a parked session is waiting on: questionnaire,
+    prototype or generated wizard. The console picks the rendering by
+    media type; the dispatcher only records where the file lives."""
+    path: str        # worktree-relative
+    media_type: str  # text/markdown | text/html | application/octet-stream
+    text: str
+
+
+_MEDIA_TYPES = {".md": "text/markdown", ".markdown": "text/markdown",
+                ".html": "text/html", ".htm": "text/html"}
+
+
+def media_type_for(path: str) -> str:
+    return _MEDIA_TYPES.get(Path(path).suffix.lower(), "application/octet-stream")
 
 
 class PaneHistory(BaseModel):

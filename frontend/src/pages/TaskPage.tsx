@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router'
+import { ArtifactPanel } from '../components/ArtifactPanel'
 import { DescriptionPanel } from '../components/DescriptionPanel'
 import { MessageThread } from '../components/MessageThread'
 import { PendingBadge } from '../components/PendingBadge'
@@ -190,6 +191,7 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
         </p>
       )}
 
+      <ArtifactPanel target={target} issue={issue} enabled={card.park !== ''} />
       <MessageThread messages={messages} />
 
       <div className="flex flex-wrap items-end gap-2">

@@ -208,6 +208,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{target}/{issue}/artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Task Artifact */
+        get: operations["task_artifact_api_task__target___issue__artifact_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{target}/{issue}/cancel": {
         parameters: {
             query?: never;
@@ -365,6 +382,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ArtifactView
+         * @description The .agent file a parked session is waiting on: questionnaire,
+         *     prototype or generated wizard. The console picks the rendering by
+         *     media type; the dispatcher only records where the file lives.
+         */
+        ArtifactView: {
+            /** Media Type */
+            media_type: string;
+            /** Path */
+            path: string;
+            /** Text */
+            text: string;
+        };
         /** BoardView */
         BoardView: {
             capacity: components["schemas"]["CapacityView"];
@@ -1027,6 +1058,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    task_artifact_api_task__target___issue__artifact_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+                issue: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactView"];
                 };
             };
             /** @description Validation Error */
