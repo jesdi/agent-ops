@@ -4,6 +4,7 @@ clone at their host paths — a worktree's .git is a file pointing into
 <clone>/.git/worktrees/<name>, so git inside the container needs both."""
 from __future__ import annotations
 
+import json
 import os
 import shlex
 from pathlib import Path
@@ -12,6 +13,17 @@ from pathlib import Path
 def clone_root(worktree: str) -> str:
     gitdir = (Path(worktree) / ".git").read_text().split("gitdir:", 1)[1].strip()
     return str(Path(gitdir).parents[2])
+
+
+def task_branch(worktree: str) -> str:
+    """The branch create_workspace recorded in .agent/task.json — injected
+    into the session as AGENT_OPS_TASK_BRANCH for the guardrail's lease-push
+    exception. "" for a worktree provisioned before the field existed."""
+    try:
+        d = json.loads((Path(worktree) / ".agent" / "task.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    return str(d.get("branch") or "")
 
 
 def image() -> str:
@@ -38,6 +50,8 @@ def _wrapper() -> str:
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 claude_args: str) -> str:
     clone = clone_root(worktree)
+    branch = task_branch(worktree)
+    branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
     home = str(Path.home())
     # podman errors on a missing bind source; waitd only creates the dir
     # when it (re)starts with the new socket path, which a spawn can race
@@ -62,6 +76,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         # it, so waiting parks only ever happened via the stall timer.
         # Mount only the wait dir: the state dir also holds op-token.env.
         f"-e AGENT_OPS_STATE_DIR={_state_dir()} "
+        f"{branch_env}"
         f"-v {_state_dir()}/wait:{_state_dir()}/wait "
         f"-v {worktree}:{worktree} -w {worktree} "
         f"-v {clone}:{clone} "

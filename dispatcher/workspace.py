@@ -231,7 +231,7 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     agent_dir = Path(wt) / ".agent"
     agent_dir.mkdir(exist_ok=True)
     (agent_dir / "task.json").write_text(
-        json.dumps({"issue": issue, "target": target.name}))
+        json.dumps({"issue": issue, "target": target.name, "branch": branch}))
 
     exclude = Path(target.clone_path) / ".git" / "worktrees" / f"task-{issue}" / "info"
     exclude.mkdir(parents=True, exist_ok=True)

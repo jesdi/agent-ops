@@ -52,7 +52,7 @@ def test_create_workspace(tmp_path: Path, monkeypatch):
     assert setup_cwd == wt
     assert setup_timeout == 1800
 
-    assert json.loads((Path(wt) / ".agent" / "task.json").read_text()) == {"issue": 42, "target": "portfolio_eval"}
+    assert json.loads((Path(wt) / ".agent" / "task.json").read_text()) == {"issue": 42, "target": "portfolio_eval", "branch": "agent/task-42"}
     hook = Path(wt) / ".agent" / "stop-hook.sh"
     assert hook.exists() and hook.stat().st_mode & 0o111
     settings = json.loads((Path(wt) / ".claude" / "settings.local.json").read_text())
@@ -111,7 +111,7 @@ def test_create_workspace_reuses_existing_worktree_dir(tmp_path: Path, monkeypat
     assert not any(a[:3] == ["git", "worktree", "add"] for a in calls), \
         "worktree already exists; git worktree add must be skipped entirely"
     assert any(a[0] == "podman" for a in calls), "setup step must still run"
-    assert json.loads((wt_path / ".agent" / "task.json").read_text()) == {"issue": 42, "target": "portfolio_eval"}
+    assert json.loads((wt_path / ".agent" / "task.json").read_text()) == {"issue": 42, "target": "portfolio_eval", "branch": "agent/task-42"}
 
 
 def test_create_workspace_raises_on_unhealthy_reused_worktree(tmp_path: Path, monkeypatch):
@@ -241,7 +241,7 @@ def test_create_workspace_reuses_worktree_marked_provisioned_despite_deleted_fil
     assert not any(a[:3] == ["git", "worktree", "add"] for a in calls), \
         "worktree is marked provisioned; git worktree add must be skipped"
     assert any(a[0] == "podman" for a in calls), "setup step must still run"
-    assert json.loads((wt_path / ".agent" / "task.json").read_text()) == {"issue": 42, "target": "portfolio_eval"}
+    assert json.loads((wt_path / ".agent" / "task.json").read_text()) == {"issue": 42, "target": "portfolio_eval", "branch": "agent/task-42"}
 
 
 def test_create_workspace_raises_on_deleted_file_without_marker(
