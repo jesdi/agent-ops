@@ -77,24 +77,29 @@ flowchart LR
     queued["Queued"] --> gate{"Budget &<br/>capacity gate"}
     gate --> spec["Spec stage"]
     spec --> review{"Human review<br/>(from your phone)"}
-    review -- approved --> plan["Plan stage"]
-    plan --> implement["Implement stage"]
-    implement --> pr["PR open"]
+    review -- approved --> plan["Plan stage<br/>(tickets)"]
+    plan --> implement["Implement<br/>(one session per ticket)"]
+    implement -- last ticket --> codereview["Review stage<br/>(rebase, gates, PR)"]
+    codereview --> pr["PR open"]
     pr -- "CI green, you merge" --> done(["Merged"])
 
     spec -. "needs input" .-> parked["Parked<br/>(slot freed)"]
     plan -. "needs input" .-> parked
     implement -. "needs input" .-> parked
+    codereview -. "needs input / cap hit" .-> parked
     parked -. "your reply / CI event" .-> queued
 ```
 
 - **Dispatcher** (`dispatcher/`) — polls the backlog, ranks it, selects the
   next task within budget and capacity limits, provisions a git worktree, and
   launches a Claude Code session for it.
-- **Staged pipeline** — each task moves through **spec → plan → implement**,
+- **Staged pipeline** — each task moves through **spec → plan → implement (one fresh session per ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
   artifact. Specs pause at a human review gate before implementation spends
   real tokens on them.
+- **Bounded loops** — review fixes, gate failures, end-to-end fixes and CI
+  fixes on an open PR each have a configured cap; hitting it parks the task
+  with the finished tickets intact and pings you, it never fails the task.
 - **Sessions** run in rootless Podman containers (the `agent-ops-session`
   image: Node + Claude Code CLI, git, gh, Python/pipenv, pnpm), one per task,
   each in a tab of the box's [herdr](https://herdr.dev) server — the agent-aware multiplexer that gives the dispatcher the agent's real lifecycle (`working` / `idle` / `blocked`) instead of screen-activity heuristics, plus TTY persistence and reply injection. Sessions are
@@ -158,7 +163,7 @@ are never forceable).
 | `frontend/`     | React SPA — board, task pages, queue, failures, history      |
 | `telegram/`     | Outbound notifications/digests and inbound reply handling    |
 | `provision/`    | `bootstrap.sh`, systemd units, and the pull-based updater    |
-| `prompts/`      | Stage prompts (spec, plan, implement) and the triage prompt   |
+| `prompts/`      | Stage prompts (spec, plan, implement, review, address-review) and the triage prompt   |
 | `docs/adr/`     | Architecture decision records                                |
 | `tests/`        | pytest suite                                                 |
 | `Containerfile` | The per-session sandbox image                                |

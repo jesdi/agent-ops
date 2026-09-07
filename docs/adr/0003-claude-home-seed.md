@@ -61,3 +61,12 @@ Additionally, `~/.claude` inside the container is a runtime mount
 - Vendor superpowers skills as plain files in the seed — fallback only if
   CLI version pinning proves impossible and tracking latest is deemed
   unacceptable.
+
+## Amendment 2026-09-07
+
+The superpowers plugin is no longer declared: its session-start rule (invoke
+any applicable skill; brainstorm before creative work) pulled the spec stage
+back toward the interview the batched questionnaire replaces. Process skills
+are now the "vendor as plain files" fallback from the options above, refreshed
+deliberately via `make vendor-skills` from `provision/skills-pins.json`
+(spec: docs/superpowers/specs/2026-09-07-agentic-orchestration-design.md).
