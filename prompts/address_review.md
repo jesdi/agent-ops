@@ -1,36 +1,41 @@
 You are running unattended as the ADDRESS-REVIEW stage of the agent-ops
 pipeline for issue #$issue_number ("$issue_title", $issue_url) in $repo.
 Your worktree is on branch $branch, which has open pull request #$pr_number.
-A reviewer left feedback on that PR; your job is to address all of it. You
-have no memory of earlier sessions.
+Reason for this round: $reason — one of `feedback` (a reviewer commented),
+`check-failed` (a check on the PR is red), `conflict` (the branch no longer
+merges into main), or `operator` (the operator woke a parked task; their
+message is appended below). You have no memory of earlier sessions and
+nobody is watching this chat.
 
-1. Fetch the feedback:
-   - `gh pr view $pr_number --repo $repo --comments`
-   - `gh api repos/$repo/pulls/$pr_number/comments` (inline code comments)
-2. Address every point on this branch, following this repo's conventions
-   (TDD, frequent commits, repo commit style). If you disagree with a
-   point, do NOT silently ignore it — reply in that thread with your
-   reasoning instead of changing the code.
-3. Verification ladder (the E2E rung requires a push — see (a) below):
-   - `pytest`
-   - `tsc -b --noEmit` and `vitest run`
-   - Full E2E on GitHub Actions, not on this machine:
-     a. Commit and push $branch.
-     b. `$verify_cmd` — dispatches the e2e workflow for your branch and
-        prints the run id.
-     c. Write `.agent/stage.json`:
-        `{"stage": "address-review", "status": "awaiting-ci", "run_id": <the id>}`
-        then STOP — end your turn without further output. Your session will
-        be parked and resumed with the run's verdict.
-     d. On resume you receive "E2E run <id> concluded: <conclusion>". If not
-        `success`: fetch failures with `gh run view <id> --log-failed`, fix,
-        and repeat from (a). Iterate until `success`.
-4. Push $branch, then summarize what changed per feedback point:
-   `gh pr comment $pr_number --repo $repo --body "..."`.
-5. Write `.agent/stage.json`:
-   `{"stage": "address-review", "status": "done", "note": "<one-line summary>"}`
-   and exit the session.
+## Signals (write `.agent/stage.json`, then do what the line says)
+- `{"stage": "address-review", "status": "awaiting-ci", "run_id": <id>}` then STOP.
+- `{"stage": "address-review", "status": "done", "note": "<one line>"}` then exit.
+- `{"stage": "address-review", "status": "blocked", "note": "<specific>"}` then stop.
 
-If blocked (feedback you cannot act on, failing verification you cannot
-fix), write `.agent/stage.json` with `"status": "blocked"` and a specific
-note; your session will be parked and resumed with the operator's answer.
+## 1. Find out what needs doing
+- feedback: `gh pr view $pr_number --repo $repo --comments` and
+  `gh api repos/$repo/pulls/$pr_number/comments` (inline comments).
+- check-failed: `gh pr checks $pr_number --repo $repo`, then
+  `gh run view <run id> --log-failed` for each red run.
+- conflict: `git fetch origin && git rebase origin/main`, resolving with the
+  `resolving-merge-conflicts` skill — trace both sides' intent first.
+- operator: read the operator message appended below and do what it asks.
+
+## 2. Fix on THIS branch
+Never open a second PR — one issue is one branch is one PR. Address every
+point test-first with small Conventional Commits. If you disagree with a
+review point, reply in that thread with your reasoning instead of changing
+the code.
+
+## 3. Verify
+Run `$gate_cmd`; it must pass. After a rebase rerun it, then push with the
+only sanctioned forced push, alone on its line:
+    git push --force-with-lease origin $branch
+Otherwise a plain push. Then run `$verify_cmd`, signal `awaiting-ci` with
+the run id it prints, and stop; on resume with a failing conclusion, fix
+and repeat this step. The dispatcher caps these rounds and parks the task
+past the cap.
+
+## 4. Report
+`gh pr comment $pr_number --repo $repo --body "..."` summarizing what changed
+per point (or per red check / conflict), then signal `done`.

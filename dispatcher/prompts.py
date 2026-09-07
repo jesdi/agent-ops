@@ -12,6 +12,7 @@ _TEMPLATE_FILES = {
     Stage.SPEC: "spec.md",
     Stage.PLAN: "plan.md",
     Stage.IMPLEMENT: "implement.md",
+    Stage.REVIEW: "review.md",
     Stage.ADDRESS_REVIEW: "address_review.md",
 }
 
