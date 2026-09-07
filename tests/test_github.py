@@ -483,7 +483,7 @@ def test_pr_view_fetches_expected_fields(monkeypatch):
     d = gh.pr_view(TARGET, 12)
     assert d["state"] == "OPEN"
     assert seen[0] == ["gh", "pr", "view", "12", "--repo", TARGET.repo,
-                       "--json", "state,mergedAt,reviewDecision,reviews,comments"]
+                       "--json", "state,mergedAt,reviewDecision,reviews,comments,statusCheckRollup,mergeable,headRefOid"]
 
 
 def test_pr_number_for_branch(monkeypatch):
