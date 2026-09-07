@@ -11,6 +11,7 @@ STAGE_COLUMNS = {
     Stage.SPEC: "in-progress",
     Stage.PLAN: "in-progress",
     Stage.IMPLEMENT: "in-progress",
+    Stage.REVIEW: "in-progress",
     Stage.AWAITING_SPEC_REVIEW: "needs-review",
     Stage.PR_OPEN: "pr-open",
     Stage.ADDRESS_REVIEW: "in-progress",
@@ -808,3 +809,8 @@ def test_slots_used_never_disagrees_with_the_lit_segments():
                         claims_paused=False, triage_running=False)
     assert board.capacity.slots_held == [0]
     assert board.capacity.slots_used == len(board.capacity.slots_held)
+
+
+def test_review_stage_sits_in_the_in_progress_column():
+    from web.read_model import column_for
+    assert column_for("review", "") == "in-progress"

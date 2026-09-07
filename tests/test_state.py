@@ -504,3 +504,56 @@ def test_waiting_marker_target_scoped_with_legacy_fallback(tmp_path):
     assert state.has_waiting(tmp_path, "portfolio_eval", 6)
     state.clear_waiting(tmp_path, "portfolio_eval", 6)
     assert not (tmp_path / "waiting-6").exists()
+
+
+def test_review_stage_is_in_flight():
+    from dispatcher.state import IN_FLIGHT_STAGES, Stage
+    assert Stage.REVIEW.value == "review"
+    assert Stage.REVIEW in IN_FLIGHT_STAGES
+
+
+def test_loop_caps_defaults_match_the_spec():
+    from dispatcher.state import LoopCaps
+    assert LoopCaps() == LoopCaps(review=2, gate=2, e2e=3, ci=3)
+
+
+def test_orchestration_fields_default_and_round_trip(tmp_path):
+    from dataclasses import replace
+    from dispatcher.state import Stage, TaskState, load, save
+    ts = TaskState(issue=9, target="t", stage=Stage.IMPLEMENT, slot=0,
+                   worktree="/wt", branch="agent/task-9", title="t",
+                   updated_at="2026-09-07T00:00:00+00:00")
+    assert (ts.spec_path, ts.ticket_cursor, ts.ticket_count) == ("", 0, 0)
+    assert (ts.review_rounds, ts.gate_rounds, ts.e2e_rounds, ts.ci_rounds) == (0, 0, 0, 0)
+    assert (ts.check_cursor, ts.conflict_cursor, ts.attention) == ("", "", "")
+    full = replace(ts, spec_path="docs/specs/x.md", ticket_cursor=2,
+                   ticket_count=5, gate_rounds=1, e2e_rounds=2, ci_rounds=3,
+                   review_rounds=1, check_cursor="2026-09-07T01:00:00Z",
+                   conflict_cursor="abc123", attention="conflict")
+    save(tmp_path, full)
+    assert load(tmp_path, "t", 9) == full
+
+
+def test_legacy_state_file_without_orchestration_fields_loads(tmp_path):
+    import json
+    from dispatcher.state import Stage, load
+    (tmp_path / "task-t-9.json").write_text(json.dumps({
+        "issue": 9, "target": "t", "stage": "implement", "slot": 0,
+        "worktree": "/wt", "branch": "b", "title": "t",
+        "updated_at": "2026-09-07T00:00:00+00:00"}))
+    ts = load(tmp_path, "t", 9)
+    assert ts.stage is Stage.IMPLEMENT and ts.ticket_count == 0
+
+
+def test_read_stage_signal_parses_loop_and_round(tmp_path):
+    import json
+    from dispatcher.state import read_stage_signal
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "working", "loop": "gate", "round": "2"}))
+    sig = read_stage_signal(tmp_path)
+    assert (sig.loop, sig.round) == ("gate", 2)
+    (tmp_path / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "working"}))
+    sig = read_stage_signal(tmp_path)
+    assert (sig.loop, sig.round) == ("", 0)

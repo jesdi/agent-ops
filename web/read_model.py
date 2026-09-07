@@ -44,6 +44,7 @@ _STAGE_COLUMN = {
     Stage.SPEC.value: "in-progress",
     Stage.PLAN.value: "in-progress",
     Stage.IMPLEMENT.value: "in-progress",
+    Stage.REVIEW.value: "in-progress",
     Stage.AWAITING_SPEC_REVIEW.value: "needs-review",
     Stage.PR_OPEN.value: "pr-open",
     Stage.ADDRESS_REVIEW.value: "in-progress",

@@ -14,27 +14,33 @@ class Stage(str, Enum):
     AWAITING_SPEC_REVIEW = "awaiting-spec-review"
     PLAN = "plan"
     IMPLEMENT = "implement"
+    REVIEW = "review"           # fresh-eyes review; rebases, verifies, opens the PR
     PR_OPEN = "pr-open"
     ADDRESS_REVIEW = "address-review"
     BLOCKED = "blocked"
     FAILED = "failed"
     STALLED_ON_BUDGET = "stalled-on-budget"
     DONE = "done"
-    CANCELED = "canceled"  # operator won't-do; terminal like FAILED/DONE
+    CANCELED = "canceled"
 
 
 # Stages that occupy capacity and an E2E slot. BLOCKED and
 # STALLED_ON_BUDGET still hold a live session/worktree, so they count.
 IN_FLIGHT_STAGES = frozenset({
-    Stage.QUEUED,
-    Stage.SPEC,
-    Stage.AWAITING_SPEC_REVIEW,
-    Stage.PLAN,
-    Stage.IMPLEMENT,
-    Stage.ADDRESS_REVIEW,
-    Stage.BLOCKED,
+    Stage.QUEUED, Stage.SPEC, Stage.AWAITING_SPEC_REVIEW, Stage.PLAN,
+    Stage.IMPLEMENT, Stage.REVIEW, Stage.ADDRESS_REVIEW, Stage.BLOCKED,
     Stage.STALLED_ON_BUDGET,
 })
+
+
+@dataclass(frozen=True)
+class LoopCaps:
+    """Rounds each bounded loop may run before the task parks. Defaults are
+    the spec's; targets.yaml `loop_caps:` overrides any of them."""
+    review: int = 2   # review-stage fix rounds
+    gate: int = 2     # gate_cmd failures per ticket
+    e2e: int = 3      # failed end-to-end runs (implement/review)
+    ci: int = 3       # fixes on an open PR (red check, conflict, failed run)
 
 # A task that holds no E2E slot. Every session-ending park releases its slot
 # back to the pool; only PARK_LOGIN keeps a slot because it keeps a live
@@ -78,6 +84,18 @@ class TaskState:
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
     feedback_pending: bool = False       # feedback seen, address-review deferred
     done_at: str = ""                    # merge-detection time; drives the flush
+    spec_path: str = ""                  # approved spec, worktree-relative or absolute
+    ticket_cursor: int = 0               # 1-based ticket the implement session works; 0 = none yet
+    ticket_count: int = 0                # size of .agent/tickets/ at plan done
+    # Round counters, one per bounded loop. Owned by the dispatcher: a
+    # session reports rounds but can never lower these.
+    review_rounds: int = 0
+    gate_rounds: int = 0
+    e2e_rounds: int = 0
+    ci_rounds: int = 0
+    check_cursor: str = ""               # completedAt of the newest red check acted on
+    conflict_cursor: str = ""            # head sha of the last conflict acted on
+    attention: str = ""                  # why address-review is pending: feedback|check-failed|conflict|operator
 
 
 @dataclass(frozen=True)
@@ -87,6 +105,8 @@ class StageSignal:
     note: str = ""
     artifact: str = ""
     run_id: int = 0
+    loop: str = ""    # bounded loop a working session is in: review | gate
+    round: int = 0    # 1-based round of that loop
 
 
 def _path(state_dir: str | Path, target: str, issue: int) -> Path:
@@ -196,8 +216,10 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
             note=str(d.get("note", "")),
             artifact=str(d.get("artifact", "")),
             run_id=int(d.get("run_id", 0) or 0),
+            loop=str(d.get("loop", "") or ""),
+            round=int(d.get("round", 0) or 0),
         )
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy
+from dispatcher.state import LoopCaps
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class Target:
     status_field_id: str
     status_ready_option_id: str
     status_in_progress_option_id: str
+    gate_cmd: str = ""  # repo-owned gate (tests/lint/CRAP); "{slot}" like verify_cmd. Required by load_config.
     boost_field_id: str = ""
     status_done_option_id: str = ""  # "" = never write Done to the board
     status_wont_do_option_id: str = ""  # "" = cancel never touches the board
@@ -57,17 +59,31 @@ class Config:
     # provision/agent-ops-dispatcher.timer — change both together; the web
     # console's next-pass countdown is computed from this value.
     pass_interval_minutes: int = 10
+    loop_caps: LoopCaps = LoopCaps()
+
+
+def _loop_caps(raw: object) -> LoopCaps:
+    if not raw:
+        return LoopCaps()
+    if not isinstance(raw, dict):
+        raise ValueError(f"loop_caps: must be a mapping, got {raw!r}")
+    unknown = set(raw) - set(LoopCaps.__dataclass_fields__)
+    if unknown:
+        raise ValueError(f"loop_caps: unknown key(s) {sorted(unknown)}; "
+                         f"expected any of {sorted(LoopCaps.__dataclass_fields__)}")
+    for k, v in raw.items():
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError(f"loop_caps: {k} must be a non-negative integer, got {v!r}")
+    return LoopCaps(**raw)
 
 
 def _target(raw: dict) -> Target:
     fields = dict(raw)
     has_models = "models" in fields
     models = fields.pop("models", None)
-    # The key's PRESENCE decides override vs. inherit, not its truthiness —
-    # `models: {}` must opt the target OUT of the global policy (empty rules,
-    # plain default), not silently inherit it. Any other falsy value (`[]`,
-    # `null`, `0`) means the same thing, since parse_policy maps them all to
-    # DEFAULT_POLICY; a non-empty malformed value (`models: "x"`) still raises.
+    if not str(fields.get("gate_cmd") or "").strip():
+        raise ValueError(f"target {fields.get('name')!r}: gate_cmd is required "
+                         "(the session runs it after every ticket)")
     return Target(**fields, models=parse_policy(models) if has_models else None)
 
 
@@ -90,6 +106,7 @@ def load_config(path: str | Path) -> Config:
         done_retention_days=int(raw.get("done_retention_days", 7)),
         triage_model=str(raw.get("triage_model", "")),
         pass_interval_minutes=int(raw.get("pass_interval_minutes", 10)),
+        loop_caps=_loop_caps(raw.get("loop_caps")),
     )
 
 
