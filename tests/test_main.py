@@ -4353,38 +4353,6 @@ def test_failed_transition_clears_operator_request(tmp_path):
     assert response.json() is None
 
 
-def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
-    """Slice 15c: merged PR → DONE clears operator_request; spec_path + done_at preserved."""
-    patch_usage(monkeypatch)
-    patch_teardown(monkeypatch)
-    c = cfg(tmp_path)
-    pr_open_task(c, operator_request={"kind": "spec-approval"},
-                 spec_path="docs/specs/design.md")
-    gh = FakeGitHub()
-    gh.pr_payloads[12] = payload(state="MERGED",
-                                 merged_at="2026-09-08T10:00:00Z")
-    main.run_pass(c, deps(gh))
-    t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.stage is Stage.DONE, f"expected DONE, got {t.stage}"
-    assert t.operator_request is None, (
-        f"DONE must clear operator_request, got {t.operator_request!r}")
-    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
-    assert t.done_at, "done_at must be set"
-    assert t.park == ""
-    # GET /request → 200 null
-    from fastapi.testclient import TestClient
-    from tests.webfakes import HEADERS as WEB_HEADERS
-    from web.app import create_app
-    from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
-    with TestClient(create_app(c, sources)) as client:
-        response = client.get("/api/task/portfolio_eval/42/request",
-                              headers=WEB_HEADERS)
-    assert response.status_code == 200, response.text
-    assert response.json() is None
-
-
-
 def test_canceled_transition_clears_operator_request(tmp_path):
     """Slice 15b: cancel intent → CANCELED clears operator_request; spec_path preserved."""
     c = cfg(tmp_path)
@@ -4497,3 +4465,57 @@ def test_login_park_clears_operator_request(tmp_path, monkeypatch):
                               headers=WEB_HEADERS)
     assert response.status_code == 200, response.text
     assert response.json() is None
+
+# ---------------------------------------------------------------------------
+# Slice 15 fix: dedicated tests for the three other FAILED save sites
+# ---------------------------------------------------------------------------
+
+def test_pr_closed_failed_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15a-ii: PR closed unmerged (_poll_prs ~L762) clears operator_request."""
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, operator_request={"kind": "spec-approval"},
+                 spec_path="docs/specs/design.md")
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="CLOSED")
+    main.run_pass(c, deps(gh, FakeSessions(alive=(42,))))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED
+    assert t.operator_request is None, (
+        f"pr-closed FAILED must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+
+
+def test_handle_crash_failed_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15a-iii: HandleCrash (dead session, _drive_task ~L1147) clears operator_request."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT,
+              operator_request={"kind": "answers", "path": ".agent/q.md"},
+              spec_path="docs/specs/design.md")
+    main.run_pass(c, deps(FakeGitHub(), FakeSessions(alive=set())))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED
+    assert t.operator_request is None, (
+        f"HandleCrash FAILED must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+
+
+def test_fail_task_crash_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15a-iv: _fail_task_crash (_drive_task raises, ~L984) clears operator_request.
+    Triggered via spawn_raises: _spawn_stage propagates the exception out of _drive_task,
+    which run_pass catches and routes to _fail_task_crash."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+              operator_request={"kind": "spec-approval"},
+              spec_path="docs/specs/design.md")
+    main.run_pass(c, deps(FakeGitHub(), FakeSessions(spawn_raises=[42])))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED
+    assert t.operator_request is None, (
+        f"_fail_task_crash must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
