@@ -208,23 +208,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/artifact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Task Artifact */
-        get: operations["task_artifact_api_task__target___issue__artifact_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/task/{target}/{issue}/cancel": {
         parameters: {
             query?: never;
@@ -378,41 +361,10 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/spec": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Task Spec */
-        get: operations["task_spec_api_task__target___issue__spec_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /**
-         * ArtifactView
-         * @description The .agent file a parked session is waiting on: questionnaire,
-         *     prototype or generated wizard. The console picks the rendering by
-         *     media type; the dispatcher only records where the file lives.
-         */
-        ArtifactView: {
-            /** Media Type */
-            media_type: string;
-            /** Path */
-            path: string;
-            /** Text */
-            text: string;
-        };
         /** BoardView */
         BoardView: {
             capacity: components["schemas"]["CapacityView"];
@@ -683,13 +635,6 @@ export interface components {
              * @default
              */
             text: string;
-        };
-        /** SpecView */
-        SpecView: {
-            /** Markdown */
-            markdown: string;
-            /** Path */
-            path: string;
         };
         /** TargetQueue */
         TargetQueue: {
@@ -1124,38 +1069,6 @@ export interface operations {
             };
         };
     };
-    task_artifact_api_task__target___issue__artifact_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                target: string;
-                issue: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ArtifactView"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     intent_cancel_api_task__target___issue__cancel_post: {
         parameters: {
             query?: never;
@@ -1441,38 +1354,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    task_spec_api_task__target___issue__spec_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                target: string;
-                issue: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SpecView"];
                 };
             };
             /** @description Validation Error */

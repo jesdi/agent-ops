@@ -320,19 +320,6 @@ class IssueDescription(BaseModel):
     error: str  # "" = ok; non-empty = fetch failed and no cache existed
 
 
-class SpecView(BaseModel):
-    path: str      # worktree-relative
-    markdown: str
-
-
-class ArtifactView(BaseModel):
-    """The .agent file a parked session is waiting on: questionnaire,
-    prototype or generated wizard. The console picks the rendering by
-    media type; the dispatcher only records where the file lives."""
-    path: str        # worktree-relative
-    media_type: str  # text/markdown | text/html | application/octet-stream
-    text: str
-
 
 _MEDIA_TYPES = {".md": "text/markdown", ".markdown": "text/markdown",
                 ".html": "text/html", ".htm": "text/html"}

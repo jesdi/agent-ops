@@ -179,44 +179,17 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.IssueDescription(
             **sources.issue_description(tgt.repo, issue))
 
-    def _artifact_file(t, what: str) -> tuple[Path, str]:
-        """(absolute path, worktree-relative path) of the task's recorded
-        artifact, or a 404. The artifact path is dispatcher-written state,
-        not user input, but the worktree check keeps a corrupted state
-        file from reading /etc."""
-        wt = Path(t.worktree).resolve()
-        p = Path(t.artifact).resolve() if t.artifact else None
-        if p is None or not p.is_relative_to(wt) or not p.is_file():
-            raise HTTPException(404, f"no {what} recorded for task {t.target}/{t.issue}")
-        return p, str(p.relative_to(wt))
-
     def _read_text(p: Path, what: str, t) -> str:
         try:
             return p.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             raise HTTPException(404, f"{what} file missing for task {t.target}/{t.issue}")
 
-    @app.get("/api/task/{target}/{issue}/spec",
-             response_model=read_model.SpecView)
-    def task_spec(target: str, issue: int,
-                  op: Operator = Depends(current_operator)):
-        t = _find_task(target, issue)
-        p, rel = _artifact_file(t, "spec")
-        return read_model.SpecView(path=rel, markdown=_read_text(p, "spec", t))
-
-    def _readable_content(t, abs_path: Path, wt_rel: str,
-                          what: str) -> read_model.ReadableContent:
-        return read_model.ReadableContent(
-            path=wt_rel,
-            media_type=read_model.media_type_for(wt_rel),
-            text=_read_text(abs_path, what, t),
-        )
-
     def _readable_or_unavailable(
         p: Path, rel: str
     ) -> read_model.ReadableContent | read_model.UnavailableContent:
         """Try to read p as UTF-8; return ReadableContent or UnavailableContent.
-        Transport errors (p.resolve() failing) propagate as server errors."""
+        File-missing or non-UTF-8 → UnavailableContent; unexpected exceptions propagate."""
         if not p.is_file():
             return read_model.UnavailableContent(path=rel, reason="file-missing")
         try:
@@ -228,6 +201,20 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.ReadableContent(
             path=rel, media_type=read_model.media_type_for(rel), text=text)
 
+    def _resolve_content(
+        raw_path: str, wt: Path
+    ) -> read_model.ReadableContent | read_model.UnavailableContent:
+        """Resolve raw_path (absolute or worktree-relative) against wt;
+        containment guard runs once; delegates read to _readable_or_unavailable."""
+        if not raw_path:
+            return read_model.UnavailableContent(path="", reason="file-missing")
+        sp = Path(raw_path)
+        p = (sp if sp.is_absolute() else wt / raw_path).resolve()
+        if not p.is_relative_to(wt):
+            return read_model.UnavailableContent(
+                path=raw_path, reason="path-escapes-worktree")
+        return _readable_or_unavailable(p, str(p.relative_to(wt)))
+
     @app.get("/api/task/{target}/{issue}/request",
              response_model=read_model.OperatorRequest | None)
     def task_request(target: str, issue: int,
@@ -237,45 +224,14 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if req is None:
             return None
         kind = req.get("kind")
+        wt = Path(t.worktree).resolve()
         if kind == "spec-approval":
-            wt = Path(t.worktree).resolve()
-            spec_path = t.spec_path or ""
-            if not spec_path:
-                content: read_model.ReadableContent | read_model.UnavailableContent = (
-                    read_model.UnavailableContent(path="", reason="file-missing"))
-            else:
-                sp = Path(spec_path)
-                p = (sp if sp.is_absolute() else wt / spec_path).resolve()
-                if not p.is_relative_to(wt):
-                    content = read_model.UnavailableContent(
-                        path=spec_path, reason="path-escapes-worktree")
-                else:
-                    content = _readable_or_unavailable(p, str(p.relative_to(wt)))
+            content = _resolve_content(t.spec_path or "", wt)
             return read_model.OperatorRequest(kind="spec-approval", content=content)
         if kind == "answers":
-            path = req.get("path", "")
-            wt = Path(t.worktree).resolve()
-            p = (wt / path).resolve() if path else None
-            if p is None:
-                content = read_model.UnavailableContent(
-                    path=path, reason="file-missing")
-            elif not p.is_relative_to(wt):
-                content = read_model.UnavailableContent(
-                    path=path, reason="path-escapes-worktree")
-            else:
-                content = _readable_or_unavailable(p, str(p.relative_to(wt)))
+            content = _resolve_content(req.get("path", ""), wt)
             return read_model.OperatorRequest(kind="answers", content=content)
         raise HTTPException(500, f"unrecognized operator_request kind {kind!r}")
-
-    @app.get("/api/task/{target}/{issue}/artifact",
-             response_model=read_model.ArtifactView)
-    def task_artifact(target: str, issue: int,
-                      op: Operator = Depends(current_operator)):
-        t = _find_task(target, issue)
-        p, rel = _artifact_file(t, "artifact")
-        return read_model.ArtifactView(path=rel,
-                                       media_type=read_model.media_type_for(rel),
-                                       text=_read_text(p, "artifact", t))
 
     HISTORY_MAX_LINES = 10000
 
