@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from pydantic import BaseModel
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field
 
 from dispatcher import messages as msgq
 from dispatcher.budget import UsageSnapshot, should_spawn
@@ -341,15 +343,22 @@ def media_type_for(path: str) -> str:
 
 
 class ReadableContent(BaseModel):
-    kind: str = "readable"
+    kind: Literal["readable"] = "readable"
     path: str        # worktree-relative
     media_type: str
     text: str
 
 
+class UnavailableContent(BaseModel):
+    """File exists as a request but cannot be read: missing, non-UTF-8, or containment violation."""
+    kind: Literal["unavailable"] = "unavailable"
+    path: str        # stored path (wt-relative or raw)
+    reason: str      # "file-missing" | "not-utf8" | "path-escapes-worktree"
+
+
 class OperatorRequest(BaseModel):
     kind: str        # e.g. "spec-approval"
-    content: ReadableContent
+    content: Annotated[ReadableContent | UnavailableContent, Field(discriminator="kind")]
 
 
 class PaneHistory(BaseModel):
