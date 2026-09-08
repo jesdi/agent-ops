@@ -31,14 +31,12 @@ from dispatcher.github import GitHubClient
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
+import dispatcher.loops as loops
 from dispatcher.loops import Decision, Outcome
 from dispatcher.machine import (ApplyDecision, HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
                                 RetryStage, SetTaskStage, SetTickets,
                                 SpawnStage, next_actions)
-# Loop name → TaskState counter field (used by _count_round; Tasks 3-5 migrate this).
-LOOP_FIELDS = {"review": "review_rounds", "gate": "gate_rounds",
-               "e2e": "e2e_rounds", "ci": "ci_rounds"}
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
@@ -542,18 +540,6 @@ def _apply_loop_decision(cfg: Config, deps: Deps, target: Target,
     return task, False
 
 
-def _count_round(cfg: Config, target: Target, task: TaskState, loop: str,
-                 detail: str) -> tuple[TaskState, int, int]:
-    """Bump one loop counter and write its event. Returns (task, n, cap)."""
-    field, cap = LOOP_FIELDS[loop], getattr(cfg.loop_caps, loop)
-    n = getattr(task, field) + 1
-    task = replace(task, **{field: n})
-    eventlog.append_event(cfg.state_dir, "round", target=target.name,
-                          issue=task.issue, stage=task.stage.value,
-                          detail=f"{loop} round {n}/{cap}" + (f": {detail}" if detail else ""))
-    return task, n, cap
-
-
 def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     note: str, tail: str, login: relogin.LoginPrompt) -> bool:
     """Unlike every other park, the session is NOT ended: the reply path
@@ -791,21 +777,20 @@ def _pr_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
     condition never re-triggers."""
     cursor = ({"check-failed": dict(check_cursor=res.latest_ts),
                "conflict": dict(conflict_cursor=res.latest_ts)}[res.kind])
-    task = replace(task, **cursor)
-    task, n, cap = _count_round(cfg, target, task, "ci",
-                                f"{res.kind} on PR #{task.pr_number}")
-    if n > cap:
-        _park_exhausted(cfg, deps, target, task,
-                        f"ci loop exceeded its cap of {cap} rounds "
-                        f"({res.kind} on PR #{task.pr_number})")
-        return
+    task = replace(task, **cursor)          # advance cursor FIRST
+    dec = loops.evaluate(task, loops.PRAttention(f"{res.kind} on PR #{task.pr_number}"),
+                         cfg.loop_caps)
+    task, parked = _apply_loop_decision(
+        cfg, deps, target, task, dec,
+        park_exhausted=lambda t, note: _park_exhausted(cfg, deps, target, t, note))
+    if parked:
+        return          # cursor already applied; _park_exhausted saved the cursor-advanced task
+    # not exhausted: set feedback_pending + attention, emit pr-attention event, pr_attention notify
     save(cfg.state_dir, replace(task, feedback_pending=True, attention=res.kind,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "pr-attention", target=target.name,
                           issue=task.issue, stage=Stage.PR_OPEN.value,
                           detail=res.kind)
-    if n == cap:
-        _notify(deps, target, task, "last_round", f"ci round {n}/{cap}")
     _notify(deps, target, task, "pr_attention", f"{res.kind} on PR #{task.pr_number}")
 
 
