@@ -225,3 +225,68 @@ def test_existing_non_gate_task_returns_null_request(tmp_path):
 
     assert response.status_code == 200, response.text
     assert response.json() is None
+
+
+# ---------------------------------------------------------------------------
+# Slice 14: spec content owned by spec_path; legacy backfill in _read
+# ---------------------------------------------------------------------------
+
+def test_spec_approval_reads_from_spec_path_not_artifact(tmp_path):
+    """Slice 14: endpoint must resolve spec content from spec_path, ignoring artifact."""
+    cfg = make_config(tmp_path)
+    wt = tmp_path / "worktree"
+    spec = wt / "docs" / "specs" / "design.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("# Real spec\n\nContent from spec_path.")
+    (tmp_path / "task-alpha-30.json").write_text(json.dumps({
+        "issue": 30, "target": "alpha", "stage": "awaiting-spec-review",
+        "slot": -1, "worktree": str(wt),
+        "branch": "agent/task-30", "title": "Spec path test",
+        "updated_at": "2026-09-08T10:00:00+00:00",
+        "park": "awaiting-review",
+        "spec_path": "docs/specs/design.md",   # worktree-relative — endpoint resolves this
+        "artifact": "",                         # empty decoy — endpoint must NOT use this
+        "operator_request": {"kind": "spec-approval"},
+    }))
+    sources = Sources(cfg, sessions=None, github=None)
+    with TestClient(create_app(cfg, sources)) as client:
+        response = client.get("/api/task/alpha/30/request", headers=HEADERS)
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "kind": "spec-approval",
+        "content": {
+            "kind": "readable",
+            "path": "docs/specs/design.md",
+            "media_type": "text/markdown",
+            "text": "# Real spec\n\nContent from spec_path.",
+        },
+    }
+
+
+def test_legacy_gate_record_with_backfilled_spec_path_serves_content(tmp_path):
+    """Slice 14: legacy record (absolute artifact, no spec_path, no operator_request)
+    loads with spec_path backfilled so endpoint resolves and serves the spec."""
+    cfg = make_config(tmp_path)
+    wt = tmp_path / "worktree"
+    spec = wt / "docs" / "specs" / "login.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("# Login spec\n\nBody.")
+    (tmp_path / "task-alpha-32.json").write_text(json.dumps({
+        "issue": 32, "target": "alpha", "stage": "awaiting-spec-review",
+        "slot": -1, "worktree": str(wt),
+        "branch": "agent/task-32", "title": "Legacy gate",
+        "updated_at": "2026-09-08T10:00:00+00:00",
+        "park": "awaiting-review",
+        "artifact": str(spec),   # absolute path — no spec_path, no operator_request
+    }))
+    sources = Sources(cfg, sessions=None, github=None)
+    with TestClient(create_app(cfg, sources)) as client:
+        response = client.get("/api/task/alpha/32/request", headers=HEADERS)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["kind"] == "spec-approval"
+    assert body["content"]["kind"] == "readable"
+    assert body["content"]["path"] == "docs/specs/login.md"
+    assert body["content"]["text"] == "# Login spec\n\nBody."

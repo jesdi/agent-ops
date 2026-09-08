@@ -634,3 +634,23 @@ def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):
     got = load(tmp_path, "alpha", 20)
     assert got.operator_request == {"kind": "answers", "path": ".agent/questionnaire.md"}
     assert (got.review_rounds, got.gate_rounds, got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
+
+
+# ---------------------------------------------------------------------------
+# Slice 14: legacy gate record backfills spec_path from artifact in _read
+# ---------------------------------------------------------------------------
+
+def test_legacy_gate_record_backfills_spec_path_from_artifact(tmp_path):
+    """Slice 14: _read must backfill spec_path from artifact when deriving
+    spec-approval for a legacy record (no operator_request key, no spec_path)."""
+    (tmp_path / "task-alpha-31.json").write_text(json.dumps({
+        "issue": 31, "target": "alpha", "stage": "awaiting-spec-review",
+        "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
+        "updated_at": "2026-09-08T00:00:00+00:00",
+        "artifact": "/abs/path/to/spec.md",
+        # NO operator_request key, NO spec_path — legacy record
+    }))
+    ts = load(tmp_path, "alpha", 31)
+    assert ts.operator_request == {"kind": "spec-approval"}
+    assert ts.spec_path == "/abs/path/to/spec.md", (
+        f"spec_path must be backfilled from artifact in legacy records, got {ts.spec_path!r}")

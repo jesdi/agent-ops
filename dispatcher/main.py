@@ -403,7 +403,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # to the PR, not the stage, and is reset by _poll_prs/_resume_one.
     task = loops.reset(task, ResetCause.STAGE_STARTED)
     task = replace(task, stage=stage, artifact="", spec_path=spec_path or task.spec_path,
-                   updated_at=_now())
+                   operator_request=None, updated_at=_now())
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
                           issue=task.issue, stage=stage.value, model=model,

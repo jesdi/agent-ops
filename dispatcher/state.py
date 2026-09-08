@@ -139,10 +139,14 @@ def _read(p: Path) -> TaskState | None:
     d.pop("pending_reply", None)   # retired field, see original comment
     if "operator_request" not in d:
         # Legacy record: derive from unambiguous gate evidence.
-        d["operator_request"] = (
-            {"kind": "spec-approval"}
-            if d["stage"] is Stage.AWAITING_SPEC_REVIEW else None
-        )
+        if d["stage"] is Stage.AWAITING_SPEC_REVIEW:
+            d["operator_request"] = {"kind": "spec-approval"}
+            # Backfill spec_path so the /request endpoint can resolve content
+            # without reading the overloaded artifact field (slice 14).
+            if not d.get("spec_path"):
+                d["spec_path"] = d.get("artifact", "")
+        else:
+            d["operator_request"] = None
     return TaskState(**d)
 
 

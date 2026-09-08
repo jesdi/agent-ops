@@ -239,16 +239,18 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         kind = req.get("kind")
         if kind == "spec-approval":
             wt = Path(t.worktree).resolve()
-            p = Path(t.artifact).resolve() if t.artifact else None
-            raw = t.artifact or ""
-            if p is None:
+            spec_path = t.spec_path or ""
+            if not spec_path:
                 content: read_model.ReadableContent | read_model.UnavailableContent = (
-                    read_model.UnavailableContent(path=raw, reason="file-missing"))
-            elif not p.is_relative_to(wt):
-                content = read_model.UnavailableContent(
-                    path=raw, reason="path-escapes-worktree")
+                    read_model.UnavailableContent(path="", reason="file-missing"))
             else:
-                content = _readable_or_unavailable(p, str(p.relative_to(wt)))
+                sp = Path(spec_path)
+                p = (sp if sp.is_absolute() else wt / spec_path).resolve()
+                if not p.is_relative_to(wt):
+                    content = read_model.UnavailableContent(
+                        path=spec_path, reason="path-escapes-worktree")
+                else:
+                    content = _readable_or_unavailable(p, str(p.relative_to(wt)))
             return read_model.OperatorRequest(kind="spec-approval", content=content)
         if kind == "answers":
             path = req.get("path", "")

@@ -4300,3 +4300,25 @@ def test_loop_exhaustion_park_clears_stale_operator_request(tmp_path):
     assert t.park == PARK_HUMAN
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 0, 2, 0), (
         "loop counters must be unchanged by the clear")
+
+
+# ---------------------------------------------------------------------------
+# Slice 14: stage advance clears operator_request, preserves spec_path
+# ---------------------------------------------------------------------------
+
+def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
+    """Slice 14: advancing stage via _spawn_stage must clear operator_request
+    while preserving spec_path and clearing artifact."""
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+                   operator_request={"kind": "spec-approval"},
+                   spec_path="docs/specs/design.md",
+                   artifact="/abs/path/design.md")
+    d = deps()
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._spawn_stage(c, d, c.targets[0], task, Stage.IMPLEMENT)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, (
+        f"stage advance must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved on stage advance"
+    assert t.artifact == "", "artifact must be cleared on stage advance"
