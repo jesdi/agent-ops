@@ -206,7 +206,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.SpecView(path=rel, markdown=_read_text(p, "spec", t))
 
     @app.get("/api/task/{target}/{issue}/request",
-             response_model=read_model.OperatorRequest)
+             response_model=read_model.OperatorRequest | None)
     def task_request(target: str, issue: int,
                      op: Operator = Depends(current_operator)):
         t = _find_task(target, issue)
@@ -218,7 +218,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 text=_read_text(p, "spec", t),
             )
             return read_model.OperatorRequest(kind="spec-approval", content=content)
-        raise HTTPException(404, f"no request pending for task {target}/{issue}")
+        return None
 
     @app.get("/api/task/{target}/{issue}/artifact",
              response_model=read_model.ArtifactView)
