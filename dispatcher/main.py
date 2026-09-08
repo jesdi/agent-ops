@@ -34,7 +34,7 @@ from dispatcher.artifacts import TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoOp, Notify,
                                 ParkForCI, ParkForInput, ParkForReview, PublishSpec,
-                                RetryStage, SetTaskStage, SetTickets, StartTicket,
+                                RetryStage, SetTaskStage, StartTicket,
                                 SpawnStage, next_actions)
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
@@ -1053,14 +1053,6 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             grace_elapsed=_grace_elapsed(cfg, task),
                             caps=cfg.loop_caps):
         if isinstance(act, NoOp):
-            continue
-        if isinstance(act, SetTickets):
-            task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count,
-                           updated_at=_now())
-            save(cfg.state_dir, task)
-            eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
-                                  issue=task.issue, stage=Stage.IMPLEMENT.value,
-                                  detail=f"ticket {act.cursor}/{act.count}")
             continue
         if isinstance(act, StartTicket):
             if not budget_ok:

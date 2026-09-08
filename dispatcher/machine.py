@@ -23,14 +23,6 @@ class SpawnStage:
 
 
 @dataclass(frozen=True)
-class SetTickets:
-    """Move the ticket cursor: `cursor` is the ticket about to be implemented,
-    `count` the size of the set. Emitted before the SpawnStage it feeds."""
-    cursor: int
-    count: int
-
-
-@dataclass(frozen=True)
 class StartTicket:
     """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
     and session spawn happen together. The executor checks budget_ok first and
@@ -231,7 +223,7 @@ def next_actions(
                 if task.plan_retries < PLAN_RETRY_LIMIT:
                     return [RetryStage(Stage.PLAN, result.reason)]
                 return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-            return [SetTickets(1, result.count), SpawnStage(Stage.IMPLEMENT, ticket=1),
+            return [StartTicket(1, result.count),
                     Notify("implement_started", f"{result.count} ticket(s)")]
         if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
             result = check_spec(_artifact_path(task, signal))

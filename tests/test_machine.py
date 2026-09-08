@@ -17,7 +17,6 @@ from dispatcher.machine import (
     PublishSpec,
     RetryStage,
     SetTaskStage,
-    SetTickets,
     StartTicket,
     SpawnStage,
     next_actions,
@@ -131,8 +130,7 @@ def test_plan_done_valid_tickets_starts_ticket_one(tmp_path):
     tickets(tmp_path, n=3)
     acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)),
                         sig("plan", "done", ".agent/tickets"), True)
-    assert acts == [SetTickets(1, 3), SpawnStage(Stage.IMPLEMENT, ticket=1),
-                    Notify("implement_started", "3 ticket(s)")]
+    assert acts == [StartTicket(1, 3), Notify("implement_started", "3 ticket(s)")]
 
 
 def test_plan_done_malformed_tickets_retries_then_fails(tmp_path):
@@ -170,7 +168,7 @@ def test_blocked_ticket_parks_without_touching_the_cursor():
     t = replace(task(Stage.IMPLEMENT), ticket_cursor=2, ticket_count=5)
     acts = next_actions(t, StageSignal("implement", "blocked", note="secret missing"), True)
     assert acts == [ParkForInput("secret missing")]
-    assert not any(isinstance(a, (SetTickets, SetTaskStage)) for a in acts)
+    assert not any(isinstance(a, (StartTicket, SetTaskStage)) for a in acts)
 
 
 def test_review_done_is_pr_open():

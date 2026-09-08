@@ -70,3 +70,37 @@ def test_denied_pass_emits_no_ticket_started_and_keeps_session(tmp_path, monkeyp
     assert started == []
 
     assert sessions.ended == []
+
+
+def test_plan_done_denied_then_recovered_starts_ticket_one(tmp_path, monkeypatch):
+    """Plan-completion denied by budget later starts ticket 1 with correct set size."""
+    config = cfg(tmp_path)
+    wt = make_task(config, stage=Stage.PLAN)
+    write_tickets(wt, 3)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "plan", "status": "done", "note": "3 tickets", "artifact": ".agent/tickets",
+    }))
+    sessions = FakeSessions(alive={42})
+    dependencies = deps(sess=sessions)
+
+    patch_usage(monkeypatch, util=0.99)
+    main.run_pass(config, dependencies)
+    assert sessions.spawned == []
+    started = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "ticket-started"]
+    assert started == []
+    task = load(config.state_dir, "portfolio_eval", 42)
+    assert task.ticket_cursor == 0
+
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(config, dependencies)
+    assert len(sessions.spawned) == 1
+    issue, stage, _model, prompt = sessions.spawned[0]
+    assert (issue, stage) == (42, "implement")
+    assert ".agent/tickets/01-t1.md" in prompt
+    task = load(config.state_dir, "portfolio_eval", 42)
+    assert task.ticket_cursor == 1
+    assert task.ticket_count == 3
+    assert task.stage == Stage.IMPLEMENT
+    started = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "ticket-started"]
+    assert len(started) == 1
+    assert started[0]["detail"] == "ticket 1/3"
