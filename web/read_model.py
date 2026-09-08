@@ -340,6 +340,18 @@ def media_type_for(path: str) -> str:
     return _MEDIA_TYPES.get(Path(path).suffix.lower(), "application/octet-stream")
 
 
+class ReadableContent(BaseModel):
+    kind: str = "readable"
+    path: str        # worktree-relative
+    media_type: str
+    text: str
+
+
+class OperatorRequest(BaseModel):
+    kind: str        # e.g. "spec-approval"
+    content: ReadableContent
+
+
 class PaneHistory(BaseModel):
     text: str
 
