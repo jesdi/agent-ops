@@ -581,6 +581,44 @@ it('shows no request panel when /request returns null', async () => {
 
 // --- RequestPanel (slice 16) ---
 
+// --- Slice 17: answers request renders reply-only, NO approval control ---
+
+it('answers request renders content and reply box; no approve control (regression lock)', async () => {
+  let replied: unknown = null
+  server.use(
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json({
+        kind: 'answers',
+        content: {
+          kind: 'readable',
+          path: '.agent/questions.md',
+          media_type: 'text/markdown',
+          text: '# Questions\n\nWhich host?',
+        },
+      }),
+    ),
+    http.post('/api/task/widget/42/reply', async ({ request }) => {
+      replied = await request.json()
+      return HttpResponse.json(
+        { status: 'pending', intent: '175-42-reply' }, { status: 202 },
+      )
+    }),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByTestId('request-panel')).toBeInTheDocument(),
+  )
+  // content renders
+  expect(screen.getByTestId('request-panel').textContent).toContain('Which host?')
+  // NO approve control — action is driven by kind only
+  expect(screen.queryByRole('button', { name: 'approve spec' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'tap again to approve' })).not.toBeInTheDocument()
+  // reply box is present and functional
+  await userEvent.type(screen.getByLabelText('Reply'), 'use staging')
+  await userEvent.click(screen.getByRole('button', { name: 'Send reply & wake' }))
+  await waitFor(() => expect(replied).toEqual({ text: 'use staging' }))
+})
+
 it('request-panel shows spec markdown once and two-step approve for spec-approval kind', async () => {
   let replied: unknown = null
   server.use(
