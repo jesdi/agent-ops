@@ -576,7 +576,8 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
         return False
     clear_waiting(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
-                                park_note=note, updated_at=_now()))
+                                park_note=note, operator_request=None,
+                                updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="needs re-login: " + note)
@@ -623,7 +624,8 @@ def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
     deps.sessions.end(task.target, task.issue)
     clear_waiting(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_CI, ci_run_id=run_id,
-                                slot=NO_SLOT, updated_at=_now()))
+                                slot=NO_SLOT, operator_request=None,
+                                updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=f"awaiting CI run {run_id}")
@@ -758,6 +760,7 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
             # reboots. The worktree stays for autopsy.
             deps.sessions.end(task.target, task.issue)
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
+                                        operator_request=None,
                                         updated_at=_now()))
             eventlog.append_event(cfg.state_dir, "pr-closed",
                                   target=target.name, issue=task.issue,
@@ -820,8 +823,8 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
     remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
     deps.github.delete_branch(target, task.branch)
     save(cfg.state_dir, replace(task, stage=Stage.DONE, park="",
-                                feedback_pending=False, done_at=_now(),
-                                updated_at=_now()))
+                                feedback_pending=False, operator_request=None,
+                                done_at=_now(), updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "merged", target=target.name,
                           issue=task.issue, stage=Stage.DONE.value,
                           detail=f"PR #{task.pr_number}")
@@ -979,7 +982,8 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
     except Exception:
         log_tail = ""
     save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
-                                hold_for_attach=False, updated_at=_now()))
+                                hold_for_attach=False, operator_request=None,
+                                updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "failed", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="task crashed mid-pass")
@@ -1141,6 +1145,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             _notify(deps, target, task, "session_crashed")
             deps.github.release(target, task.issue, "session crashed mid-stage")
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
+                                        operator_request=None,
                                         updated_at=_now()))
             eventlog.append_event(cfg.state_dir, "failed", target=target.name,
                                   issue=task.issue, stage=task.stage.value,
@@ -1342,6 +1347,7 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             # contain it and would re-claim the just-killed issue the same pass.
             save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
                                         hold_for_attach=False,
+                                        operator_request=None,
                                         updated_at=_now()))
         # The park is cleared with it: a killed task waits for nothing, so it
         # must leave the wake queue (_resume_woken filters on park alone) —
@@ -1388,6 +1394,7 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             # the capacity view never shows a retired task holding one.
             save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
                                         hold_for_attach=False, slot=NO_SLOT,
+                                        operator_request=None,
                                         updated_at=_now()))
         clear_waiting(cfg.state_dir, cancel_target, issue)
         eventlog.append_event(cfg.state_dir, "canceled",

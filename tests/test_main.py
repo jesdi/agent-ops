@@ -4322,3 +4322,178 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
         f"stage advance must clear operator_request, got {t.operator_request!r}")
     assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved on stage advance"
     assert t.artifact == "", "artifact must be cleared on stage advance"
+
+
+# ---------------------------------------------------------------------------
+# Slice 15: terminal and superseding transitions clear operator_request
+# ---------------------------------------------------------------------------
+
+def test_failed_transition_clears_operator_request(tmp_path):
+    """Slice 15a: kill intent → FAILED clears operator_request; spec_path preserved."""
+    c = cfg(tmp_path)
+    make_task(c, issue=42, operator_request={"kind": "spec-approval"},
+              spec_path="docs/specs/design.md")
+    intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
+    main._apply_intents(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED, f"expected FAILED, got {t.stage}"
+    assert t.operator_request is None, (
+        f"FAILED must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15c: merged PR → DONE clears operator_request; spec_path + done_at preserved."""
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, operator_request={"kind": "spec-approval"},
+                 spec_path="docs/specs/design.md")
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-09-08T10:00:00Z")
+    main.run_pass(c, deps(gh))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.DONE, f"expected DONE, got {t.stage}"
+    assert t.operator_request is None, (
+        f"DONE must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert t.done_at, "done_at must be set"
+    assert t.park == ""
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+
+def test_canceled_transition_clears_operator_request(tmp_path):
+    """Slice 15b: cancel intent → CANCELED clears operator_request; spec_path preserved."""
+    c = cfg(tmp_path)
+    make_task(c, issue=42, operator_request={"kind": "answers", "path": ".agent/q.md"},
+              spec_path="docs/specs/design.md")
+    intents_mod.write_intent(c.state_dir, "cancel", "portfolio_eval", 42, {}, "op", 1)
+    main._apply_intents(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.CANCELED, f"expected CANCELED, got {t.stage}"
+    assert t.operator_request is None, (
+        f"CANCELED must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert t.park == "" and t.slot == NO_SLOT
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15c: merged PR → DONE clears operator_request; spec_path + done_at preserved."""
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, operator_request={"kind": "spec-approval"},
+                 spec_path="docs/specs/design.md")
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-09-08T10:00:00Z")
+    main.run_pass(c, deps(gh))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.DONE, f"expected DONE, got {t.stage}"
+    assert t.operator_request is None, (
+        f"DONE must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert t.done_at, "done_at must be set"
+    assert t.park == ""
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_ci_park_clears_operator_request(tmp_path):
+    """Slice 15d: _park_for_ci clears operator_request; spec_path + ci_run_id preserved."""
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, operator_request={"kind": "spec-approval"},
+                   spec_path="docs/specs/design.md",
+                   review_rounds=1, gate_rounds=0, e2e_rounds=0, ci_rounds=2)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._park_for_ci(c, deps(sess=FakeSessions(alive={42})),
+                      c.targets[0], task, run_id=9999)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_CI and t.ci_run_id == 9999
+    assert t.operator_request is None, (
+        f"CI park must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 0, 0, 2), (
+        "loop counters must be unchanged")
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_login_park_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15e: login stall → PARK_LOGIN clears operator_request; spec_path preserved."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC,
+              operator_request={"kind": "spec-approval"},
+              spec_path="docs/specs/design.md")
+    sess = FakeSessions(alive=[42], idle={42: 999999.0}, tail=LOGIN_TAIL)
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_LOGIN
+    assert t.operator_request is None, (
+        f"login park must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
