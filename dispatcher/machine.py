@@ -90,6 +90,15 @@ class ParkForCI:
 
 
 @dataclass(frozen=True)
+class ArmSpecApproval:
+    """Re-establish the spec-approval operator_request on a resumed gate task
+    whose operator_request was cleared by the resume (slice 12). Does NOT
+    re-stamp updated_at (grace clock must not restart) and does NOT emit
+    SetTaskStage (no stage transition, no re-publish, no re-notify)."""
+    artifact: str = ""
+
+
+@dataclass(frozen=True)
 class ParkForReview:
     """Grace expired at the spec-review gate. Unlike every other park this
     one releases the E2E slot too, so the dispatcher can spend it on the next
@@ -187,6 +196,8 @@ def next_actions(
         if task.stage == Stage.AWAITING_SPEC_REVIEW:
             if grace_elapsed:
                 return [ParkForReview()]
+            if not task.operator_request:
+                return [ArmSpecApproval(artifact=signal.artifact)]
             return [NoOp()]  # already notified on a previous pass
         if task.stage != Stage.SPEC:
             return [NoOp()]  # only the SPEC stage emits awaiting-review

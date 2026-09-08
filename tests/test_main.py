@@ -4217,3 +4217,40 @@ def test_successful_pr_open_resume_clears_operator_request(tmp_path, monkeypatch
     assert t.operator_request is None, f"expected cleared on pr-open resume, got {t.operator_request}"
     assert t.spec_path == "docs/spec.md", "spec_path must be preserved"
     assert t.park == ""
+
+
+# Slice 12 tests
+
+def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
+    """Slice 12: task at gate with operator_request=None (cleared by resume) + fresh
+    updated_at; SPEC session re-signals awaiting-review → operator_request set, spec_path
+    refreshed, stage unchanged, updated_at NOT restarted. GET /request → spec-approval body."""
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    spec_artifact = "docs/superpowers/specs/x-design.md"
+    # Fresh updated_at so grace is NOT elapsed (15-minute window).
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+                   operator_request=None,
+                   spec_path="docs/old-spec.md",
+                   updated_at=fresh_ts)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "",
+         "artifact": spec_artifact}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.AWAITING_SPEC_REVIEW, "stage must stay unchanged"
+    assert t.operator_request == {"kind": "spec-approval"}, "must re-arm approval"
+    assert t.spec_path == spec_artifact, "spec_path must be refreshed from signal artifact"
+    assert t.updated_at == fresh_ts, "updated_at must NOT be restarted (grace preserved)"
+    # GET /request must return spec-approval once re-armed
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request", headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["kind"] == "spec-approval"

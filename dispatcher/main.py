@@ -32,8 +32,8 @@ log = logging.getLogger(__name__)
 from dispatcher import spec_publish
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
-from dispatcher.machine import (ApplyDecision, HandleCrash, NoOp, Notify, ParkForCI,
-                                ParkForInput, ParkForReview, PublishSpec,
+from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoOp, Notify,
+                                ParkForCI, ParkForInput, ParkForReview, PublishSpec,
                                 RetryStage, SetTaskStage, SetTickets,
                                 SpawnStage, next_actions)
 from dispatcher.models import resolve
@@ -1068,6 +1068,15 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             _park_for_input(cfg, deps, target, task, act.note, artifact=act.artifact,
                             is_answers=act.is_answers)
             return
+        if isinstance(act, ArmSpecApproval):
+            # Re-establish spec-approval request cleared by a prior resume.
+            # Do NOT touch updated_at — the resume already stamped it; leaving it
+            # preserves the grace deadline (slice 12). No stage transition.
+            task = replace(task,
+                           operator_request={"kind": "spec-approval"},
+                           spec_path=act.artifact or task.spec_path)
+            save(cfg.state_dir, task)
+            continue
         if isinstance(act, ParkForReview):
             _park_for_review(cfg, deps, target, task, dry_run=dry_run)
             return
