@@ -179,12 +179,6 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.IssueDescription(
             **sources.issue_description(tgt.repo, issue))
 
-    def _read_text(p: Path, what: str, t) -> str:
-        try:
-            return p.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            raise HTTPException(404, f"{what} file missing for task {t.target}/{t.issue}")
-
     def _readable_or_unavailable(
         p: Path, rel: str
     ) -> read_model.ReadableContent | read_model.UnavailableContent:

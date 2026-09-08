@@ -338,7 +338,7 @@ def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_SPEC_REVIEW
-    assert t.artifact == spec_path
+    assert t.spec_path == spec_path
 
 
 SPEC_URL = ("https://github.com/jesdi/portfolio_eval/blob/agent/task-42/"
@@ -459,17 +459,14 @@ def test_repeated_awaiting_review_preserves_grace_and_request(tmp_path, monkeypa
 
 
 def test_gate_respawn_clears_stale_artifact(tmp_path, monkeypatch):
-    # Reboot recovery: gate-parked task with a dead session re-spawns SPEC;
-    # the stale artifact path must not survive into the fresh attempt.
+    # Reboot recovery: gate-parked task with a dead session re-spawns SPEC.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
-              artifact=str(tmp_path / "old-spec.md"))
+    make_task(c, stage=Stage.AWAITING_SPEC_REVIEW)
     sess = FakeSessions()  # session not alive
     main.run_pass(c, deps(sess=sess))
     assert [(s[0], s[1]) for s in sess.spawned] == [(42, "spec")]
-    assert load(c.state_dir, "portfolio_eval", 42).artifact == ""
 
 
 def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
@@ -2403,15 +2400,14 @@ def test_grace_expiry_park_preserves_spec_approval_request(tmp_path, monkeypatch
     spec.write_text("# X Design\n\nApprove me.")
     wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
                    operator_request={"kind": "spec-approval"},
-                   spec_path="docs/specs/x-design.md",
-                   artifact=str(spec))
+                   spec_path="docs/specs/x-design.md")
     gate_signal(wt)  # status=awaiting-review, grace already elapsed → ParkForReview
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_REVIEW
     assert t.operator_request == {"kind": "spec-approval"}, "operator_request must survive park"
     assert t.spec_path == "docs/specs/x-design.md", "spec_path must survive park"
-    # GET /request must serve the spec-approval body (endpoint reads t.operator_request + t.artifact)
+    # GET /request must serve the spec-approval body (endpoint reads t.operator_request + t.spec_path)
     sources = Sources(c, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request", headers=HEADERS)
@@ -2480,7 +2476,7 @@ def test_spec_parked_ping_links_spec(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
     wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
-                   artifact="docs/superpowers/specs/x-design.md")
+                   spec_path="docs/superpowers/specs/x-design.md")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "ready",
          "artifact": "docs/superpowers/specs/x-design.md"}))
@@ -2500,7 +2496,7 @@ def test_spec_parked_note_says_local_only_when_publish_fails(
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
     wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
-                   artifact="docs/superpowers/specs/x-design.md")
+                   spec_path="docs/superpowers/specs/x-design.md")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "ready",
          "artifact": "docs/superpowers/specs/x-design.md"}))
@@ -3866,7 +3862,8 @@ def test_awaiting_answers_parks_and_records_the_artifact(tmp_path, monkeypatch):
     notif = FakeNotifier(); sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess, notifier=notif))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_HUMAN and t.artifact == str(wt / ".agent" / "questionnaire.md")
+    assert t.park == PARK_HUMAN
+    assert t.operator_request == {"kind": "answers", "path": ".agent/questionnaire.md"}
     assert 42 in sess.ended and "parked_question" in notif.sent
 
 
@@ -4308,12 +4305,11 @@ def test_loop_exhaustion_park_clears_stale_operator_request(tmp_path):
 
 def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
     """Slice 14: advancing stage via _spawn_stage must clear operator_request
-    while preserving spec_path and clearing artifact."""
+    while preserving spec_path."""
     c = cfg(tmp_path)
     wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
                    operator_request={"kind": "spec-approval"},
-                   spec_path="docs/specs/design.md",
-                   artifact="/abs/path/design.md")
+                   spec_path="docs/specs/design.md")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task, Stage.IMPLEMENT)
@@ -4321,7 +4317,6 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
     assert t.operator_request is None, (
         f"stage advance must clear operator_request, got {t.operator_request!r}")
     assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved on stage advance"
-    assert t.artifact == "", "artifact must be cleared on stage advance"
 
 
 # ---------------------------------------------------------------------------

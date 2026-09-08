@@ -79,7 +79,6 @@ class TaskState:
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time
     plan_retries: int = 0                # in-session plan-format retries used
-    artifact: str = ""                   # spec path while at the review gate
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
     feedback_pending: bool = False       # feedback seen, address-review deferred
@@ -147,6 +146,7 @@ def _read(p: Path) -> TaskState | None:
                 d["spec_path"] = d.get("artifact", "")
         else:
             d["operator_request"] = None
+    d.pop("artifact", None)        # retired field (slice 24); backfill above used it
     return TaskState(**d)
 
 

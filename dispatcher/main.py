@@ -402,7 +402,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # A fresh stage is a fresh budget for the loops it runs; ci_rounds belongs
     # to the PR, not the stage, and is reset by _poll_prs/_resume_one.
     task = loops.reset(task, ResetCause.STAGE_STARTED)
-    task = replace(task, stage=stage, artifact="", spec_path=spec_path or task.spec_path,
+    task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
                    operator_request=None, updated_at=_now())
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
@@ -499,7 +499,6 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     clear_waiting(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT,
-                                artifact=resolved or task.artifact,
                                 operator_request=answers_request,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
@@ -669,11 +668,11 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     overnight run at max_slots(capacity) specs."""
     tail = deps.sessions.capture_tail(task.target, task.issue)
     note = tail.strip() or "(no detail)"
-    if task.artifact:
+    if task.spec_path:
         pub = spec_publish.ensure_published(
             worktree=task.worktree, branch=task.branch,
             repo=target.repo, issue=task.issue,
-            artifact=task.artifact, dry_run=dry_run)
+            artifact=task.spec_path, dry_run=dry_run)
         note += f"\n{_spec_note(pub)}"
     # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
     # the task is not stranded — the session is ended and the operator can still
@@ -1105,7 +1104,6 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 if act.artifact:
                     extra["spec_path"] = act.artifact
             task = replace(task, stage=act.stage,
-                           artifact=act.artifact or task.artifact,
                            updated_at=_now(), **extra)
             save(cfg.state_dir, task)
             if act.stage is Stage.PR_OPEN:
