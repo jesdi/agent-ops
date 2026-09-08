@@ -480,7 +480,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if artifact:
         p = Path(artifact)
         resolved = str(p if p.is_absolute() else Path(task.worktree) / p)
-    answers_request: dict | None = None
+    answers_request: dict | None = None if is_answers else task.operator_request
     if resolved:
         wt_abs = Path(task.worktree).resolve()
         try:
