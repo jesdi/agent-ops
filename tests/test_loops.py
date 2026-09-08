@@ -3,7 +3,7 @@ mocking, no inspecting the private field mapping — only the public interface
 (SessionRound / evaluate / apply / Decision / Outcome)."""
 from dataclasses import replace
 
-from dispatcher.loops import (Decision, Outcome, SessionRound, apply, evaluate)
+from dispatcher.loops import (Decision, FailedRun, Outcome, SessionRound, apply, evaluate)
 from dispatcher.state import LoopCaps, Stage, TaskState
 
 
@@ -108,3 +108,35 @@ def test_apply_records_a_jump_value():
 def test_apply_is_a_noop_for_unchanged():
     t = task(gate_rounds=1)
     assert apply(t, Decision("", Outcome.UNCHANGED)) is t
+
+
+# --- FailedRun: increment observation ---------------------------------------
+
+def fr(loop, detail="run 7 failure"):
+    return FailedRun(loop=loop, detail=detail)
+
+
+def test_failed_run_e2e_increments_e2e_counter():
+    d = evaluate(task(e2e_rounds=0), fr("e2e"), LoopCaps(e2e=3))
+    assert d == Decision("e2e", Outcome.WITHIN_LIMIT, round=1, cap=3, detail="run 7 failure")
+
+
+def test_failed_run_ci_increments_ci_counter():
+    d = evaluate(task(ci_rounds=2), fr("ci"), LoopCaps(ci=5))
+    assert d == Decision("ci", Outcome.WITHIN_LIMIT, round=3, cap=5, detail="run 7 failure")
+
+
+def test_failed_run_last_round_at_cap():
+    d = evaluate(task(e2e_rounds=1), fr("e2e"), LoopCaps(e2e=2))
+    assert d == Decision("e2e", Outcome.LAST_ROUND, round=2, cap=2, detail="run 7 failure")
+
+
+def test_failed_run_exhaustion_over_cap():
+    d = evaluate(task(e2e_rounds=2), fr("e2e"), LoopCaps(e2e=2))
+    assert d == Decision("e2e", Outcome.EXHAUSTED, round=3, cap=2, detail="run 7 failure")
+
+
+def test_failed_run_zero_cap_exhausts_immediately_no_last_round():
+    d = evaluate(task(e2e_rounds=0), fr("e2e"), LoopCaps(e2e=0))
+    assert d.outcome is Outcome.EXHAUSTED
+    assert d.outcome is not Outcome.LAST_ROUND

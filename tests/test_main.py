@@ -3795,6 +3795,7 @@ def test_gate_round_is_counted_pinged_and_parked_past_the_cap(tmp_path, monkeypa
     sig.write_text(json.dumps({"stage": "implement", "status": "working", "loop": "gate", "round": 2}))
     d = deps(sess=FakeSessions(alive={42})); main.run_pass(c, d)
     assert "last_round" in d.notifier.sent
+    assert next(ctx["note"] for tmpl, ctx in d.notifier.calls if tmpl == "last_round") == "gate round 2/2"  # last_round note lock
     sig.write_text(json.dumps({"stage": "implement", "status": "working", "loop": "gate", "round": 3}))
     d = deps(sess=FakeSessions(alive={42})); main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -3980,6 +3981,7 @@ def test_zero_cap_parks_without_last_round_warning(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN          # parked immediately
     assert t.review_rounds == 1          # counter bumped before park
+    assert t.park_note == "review loop exceeded its cap of 0 rounds"  # exhaustion note lock
     assert "parked_question" in d.notifier.sent
     assert "last_round" not in d.notifier.sent   # no last-round warning at cap=0
 

@@ -36,10 +36,18 @@ class SessionRound:
     status: str
 
 
-# The observation union `evaluate` accepts. Tasks 3/4 widen this with their own
-# observation types (a failed CI run, fresh PR attention — both INCREMENT the
-# counter rather than adopting an absolute N).
-Observation = SessionRound
+@dataclass(frozen=True)
+class FailedRun:
+    """A CI run completed with a non-success conclusion. INCREMENT: the counter
+    goes up by 1 from wherever it currently sits (not an absolute report).
+    The caller picks the loop name: "e2e" for implement/review stages,
+    "ci" for address-review."""
+    loop: str    # "e2e" or "ci"
+    detail: str  # e.g. "run 123 failure"
+
+
+# The observation union `evaluate` accepts.
+Observation = SessionRound | FailedRun
 
 
 class Outcome(Enum):
@@ -77,6 +85,9 @@ def evaluate(task: TaskState, obs: Observation, caps: LoopCaps) -> Decision:
         if obs.round <= have:
             return _UNCHANGED   # absolute: an equal/lower report never advances
         return _classify(obs.loop, obs.round, getattr(caps, obs.loop))
+    if isinstance(obs, FailedRun):
+        n = getattr(task, _FIELDS[obs.loop]) + 1
+        return _classify(obs.loop, n, getattr(caps, obs.loop), obs.detail)
     raise TypeError(f"unsupported observation: {obs!r}")
 
 
