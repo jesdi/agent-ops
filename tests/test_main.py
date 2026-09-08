@@ -430,6 +430,34 @@ def test_awaiting_review_sets_operator_request_and_spec_path(tmp_path, monkeypat
     assert t.spec_path == spec_artifact
 
 
+def test_repeated_awaiting_review_preserves_grace_and_request(tmp_path, monkeypatch):
+    """Slice 8: a second awaiting-review signal while already at the gate must
+    not restart the grace clock (updated_at unchanged) and must not overwrite
+    operator_request or spec_path.  Machine returns NoOp on repeat → no save."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    spec_artifact = "docs/superpowers/specs/x-design.md"
+    wt = make_task(c, stage=Stage.SPEC)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
+         "artifact": spec_artifact}))
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
+    sess = FakeSessions(alive={42})
+    # First pass: SPEC → AWAITING_SPEC_REVIEW, operator_request + spec_path set, updated_at stamped.
+    main.run_pass(c, deps(sess=sess))
+    t1 = load(c.state_dir, "portfolio_eval", 42)
+    assert t1.stage is Stage.AWAITING_SPEC_REVIEW
+    assert t1.operator_request == {"kind": "spec-approval"}
+    assert t1.spec_path == spec_artifact
+    # Second pass: same signal, grace not elapsed → NoOp; nothing should change.
+    main.run_pass(c, deps(sess=sess))
+    t2 = load(c.state_dir, "portfolio_eval", 42)
+    assert t2.updated_at == t1.updated_at, "grace deadline must not be restarted"
+    assert t2.operator_request == {"kind": "spec-approval"}, "operator_request must not change"
+    assert t2.spec_path == spec_artifact, "spec_path must not change"
+
+
 def test_gate_respawn_clears_stale_artifact(tmp_path, monkeypatch):
     # Reboot recovery: gate-parked task with a dead session re-spawns SPEC;
     # the stale artifact path must not survive into the fresh attempt.
