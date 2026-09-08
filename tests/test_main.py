@@ -412,6 +412,24 @@ def test_comment_failure_is_best_effort(tmp_path, monkeypatch):
     assert f"spec: {SPEC_URL}" in ctx["note"]
 
 
+def test_awaiting_review_sets_operator_request_and_spec_path(tmp_path, monkeypatch):
+    """Slice 4: awaiting-review must set operator_request + spec_path on saved task."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    spec_artifact = "docs/superpowers/specs/x-design.md"
+    wt = make_task(c, stage=Stage.SPEC)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
+         "artifact": spec_artifact}))
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.AWAITING_SPEC_REVIEW
+    assert t.operator_request == {"kind": "spec-approval"}
+    assert t.spec_path == spec_artifact
+
+
 def test_gate_respawn_clears_stale_artifact(tmp_path, monkeypatch):
     # Reboot recovery: gate-parked task with a dead session re-spawns SPEC;
     # the stale artifact path must not survive into the fresh attempt.

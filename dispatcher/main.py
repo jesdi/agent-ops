@@ -1070,6 +1070,10 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
                 if m:
                     extra["pr_number"] = int(m.group(1))
+            if act.stage is Stage.AWAITING_SPEC_REVIEW:
+                extra["operator_request"] = {"kind": "spec-approval"}
+                if act.artifact:
+                    extra["spec_path"] = act.artifact
             task = replace(task, stage=act.stage,
                            artifact=act.artifact or task.artifact,
                            updated_at=_now(), **extra)
