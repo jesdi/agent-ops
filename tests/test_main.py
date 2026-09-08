@@ -3795,6 +3795,7 @@ def test_gate_round_is_counted_pinged_and_parked_past_the_cap(tmp_path, monkeypa
     sig.write_text(json.dumps({"stage": "implement", "status": "working", "loop": "gate", "round": 2}))
     d = deps(sess=FakeSessions(alive={42})); main.run_pass(c, d)
     assert "last_round" in d.notifier.sent
+    assert next(ctx["note"] for tmpl, ctx in d.notifier.calls if tmpl == "last_round") == "gate round 2/2"  # last_round note lock
     sig.write_text(json.dumps({"stage": "implement", "status": "working", "loop": "gate", "round": 3}))
     d = deps(sess=FakeSessions(alive={42})); main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -3904,3 +3905,197 @@ def test_human_feedback_resets_ci_rounds(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.attention, t.ci_rounds) == ("feedback", 0)
+
+
+# --- Characterization tests: budget lifecycle (Task 1 — observable outcomes only) ---
+
+def test_round_jump_persists_reported_value(tmp_path, monkeypatch):
+    # Row 1: a jump (round=5 when stored=2) records 5, not have+1=3.
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(gate=10))
+    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2,
+                   gate_rounds=2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "working", "loop": "gate", "round": 5}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.gate_rounds == 5  # jump: reported 5, not have+1=3
+    round_evts = events(c, "round")
+    assert round_evts[-1]["detail"] == "gate round 5/10"  # not 3/10
+
+
+def test_non_working_signal_with_loop_not_counted(tmp_path, monkeypatch):
+    # Row 2: loop+round on a non-working signal (awaiting-ci) is ignored.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+                   gate_rounds=0)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "awaiting-ci",
+         "run_id": 9, "loop": "gate", "round": 1}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.gate_rounds == 0   # loop field on non-working signal never counts
+    assert t.park == PARK_CI and t.ci_run_id == 9
+
+
+def test_failed_ci_during_address_review_increments_ci_not_e2e(tmp_path, monkeypatch):
+    # Row 3: non-success CI in ADDRESS_REVIEW stage → ci_rounds++, e2e_rounds unchanged.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.ADDRESS_REVIEW, park=PARK_CI, ci_run_id=7,
+              slot=NO_SLOT, ci_rounds=0, e2e_rounds=0)
+    gh = FakeGitHub(run_conclusion="failure")
+    d = deps(gh)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.ci_rounds == 1 and t.e2e_rounds == 0
+    # Woken and resumed in the same pass (park clears to "" after _resume_woken).
+    assert t.park == "" and d.sessions.resumed
+
+
+def test_successful_ci_wake_preserves_counters(tmp_path, monkeypatch):
+    # Row 11: a successful CI run wakes the task without touching loop counters.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.REVIEW, park=PARK_CI, ci_run_id=7, slot=NO_SLOT,
+              gate_rounds=2, e2e_rounds=1, review_rounds=3, ci_rounds=0)
+    gh = FakeGitHub(run_conclusion="success")
+    d = deps(gh)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    # Counters untouched; woken and resumed in the same pass.
+    assert (t.gate_rounds, t.e2e_rounds, t.review_rounds, t.ci_rounds) == (2, 1, 3, 0)
+    assert t.park == "" and d.sessions.resumed
+
+
+def test_zero_cap_parks_without_last_round_warning(tmp_path, monkeypatch):
+    # Row 7: cap=0 → round 1 exceeds cap immediately; no last_round ping.
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(review=0))
+    wt = make_task(c, stage=Stage.REVIEW)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "review", "status": "working", "loop": "review", "round": 1}))
+    d = deps(sess=FakeSessions(alive={42}))
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN          # parked immediately
+    assert t.review_rounds == 1          # counter bumped before park
+    assert t.park_note == "review loop exceeded its cap of 0 rounds"  # exhaustion note lock
+    assert "parked_question" in d.notifier.sent
+    assert "last_round" not in d.notifier.sent   # no last-round warning at cap=0
+
+
+def test_fresh_stage_resets_review_gate_e2e_retains_ci(tmp_path, monkeypatch):
+    # Row 8: advancing to the next implement ticket resets review/gate/e2e, keeps ci.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2,
+                   review_rounds=2, gate_rounds=1, e2e_rounds=3, ci_rounds=4)
+    write_tickets(wt, 2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "done", "note": "ticket 1 green"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
+    assert t.ci_rounds == 4             # ci belongs to the PR, not the stage
+
+
+def test_operator_wake_resets_all_four_counters(tmp_path, monkeypatch):
+    # Row 9: Telegram reply to a parked task zeroes all four loop counters.
+    # Woken and resumed in the same pass (park clears to "" after _resume_woken).
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT, park=PARK_HUMAN, park_msg_id=77,
+              slot=NO_SLOT, review_rounds=1, gate_rounds=2, e2e_rounds=3, ci_rounds=4)
+    monkeypatch.setattr(main.inbound, "fetch_events", lambda state_dir: [
+        Reply(reply_to_msg_id=77, text="carry on")])  # Reply imported at module level
+    d = deps(sess=FakeSessions())
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (0, 0, 0, 0)
+    assert t.park == "" and d.sessions.resumed
+
+
+def test_console_reply_to_park_resets_all_four_counters(tmp_path, monkeypatch):
+    # Row 10: console (intent) reply to a PARK_HUMAN task zeroes all four counters.
+    # Woken and resumed in the same pass (park clears to "" after _resume_woken).
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT, park=PARK_HUMAN, park_msg_id=55,
+              slot=NO_SLOT, review_rounds=1, gate_rounds=2, e2e_rounds=3, ci_rounds=4)
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+                             {"text": "carry on"}, "jesdi@github", 1)
+    d = deps(sess=FakeSessions())
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (0, 0, 0, 0)
+    assert t.park == "" and d.sessions.resumed
+
+
+def test_check_cursor_preserved_when_ci_loop_exhausted(tmp_path, monkeypatch):
+    # Row 4: even when the ci loop is exhausted, the check_cursor is saved so
+    # the same red check never re-triggers after an operator wake.
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(ci=1))
+    pr_open_task(c, ci_rounds=1)   # already at cap
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(checks=[{"__typename": "CheckRun",
+                                          "conclusion": "FAILURE",
+                                          "completedAt": "2026-09-07T11:00:00Z"}])
+    main.run_pass(c, deps(gh))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN                             # exhausted → parked
+    assert t.check_cursor == "2026-09-07T11:00:00Z"        # cursor preserved
+
+
+def test_ci_last_round_warning_before_exhaustion(tmp_path, monkeypatch):
+    # Row 5: when a red check brings ci_rounds to exactly the cap, a last_round
+    # warning is sent and the task moves to address-review (continuation allowed).
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(ci=2))
+    pr_open_task(c, ci_rounds=1)   # one round already counted; cap is 2
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(checks=[{"__typename": "CheckRun",
+                                          "conclusion": "FAILURE",
+                                          "completedAt": "2026-09-07T10:30:00Z"}])
+    d = deps(gh, FakeSessions())
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.ci_rounds == 2
+    assert "last_round" in d.notifier.sent        # last-round warning sent
+    assert t.park != PARK_HUMAN                  # NOT parked — continuation allowed
+    assert t.stage == Stage.ADDRESS_REVIEW        # queued for address-review
+
+
+def test_ordinary_working_signal_preserves_counters(tmp_path, monkeypatch):
+    # Row 11: a plain working signal without loop/round leaves all counters intact.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+                   review_rounds=1, gate_rounds=2, e2e_rounds=3, ci_rounds=4)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "working"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 2, 3, 4)
+
+
+def test_plan_retry_preserves_counters(tmp_path, monkeypatch):
+    # Row 11: a plan-format retry (RetryStage) leaves loop counters intact.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = Path(c.targets[0].worktrees_path) / "task-42"
+    (wt / ".agent" / "tickets").mkdir(parents=True)
+    (wt / ".agent" / "tickets" / "01-bad.md").write_text("# tiny\n")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "done", "note": "", "artifact": ".agent/tickets"}))
+    ts = TaskState(issue=42, target="portfolio_eval", stage=Stage.PLAN, slot=0,
+                   worktree=str(wt), branch="agent/task-42", title="t",
+                   updated_at="2026-07-14T00:00:00+00:00",
+                   review_rounds=1, gate_rounds=2, e2e_rounds=3, ci_rounds=4)
+    save(c.state_dir, ts)
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.plan_retries == 1                        # retry happened
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 2, 3, 4)

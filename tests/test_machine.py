@@ -5,6 +5,7 @@ import pytest
 from dataclasses import replace
 
 from dispatcher.machine import (
+    ApplyRound,
     HandleCrash,
     NoOp,
     Notify,
@@ -12,14 +13,18 @@ from dispatcher.machine import (
     ParkForInput,
     ParkForReview,
     PublishSpec,
-    RecordRound,
     RetryStage,
     SetTaskStage,
     SetTickets,
     SpawnStage,
     next_actions,
 )
+from dispatcher.loops import Decision, Outcome
 from dispatcher.state import LoopCaps, Stage, StageSignal, TaskState
+
+
+def applied(loop, outcome, round, cap):
+    return ApplyRound(Decision(loop, outcome, round=round, cap=cap))
 
 GOOD_SPEC = "# t — design\n\n## Problem\n\n" + ("x " * 400) + "\n\n## Decisions\n\n" + ("y " * 400)
 GOOD_TICKET = ("# 01 — thing\n\n**What to build:** " + ("behaviour " * 30)
@@ -196,19 +201,21 @@ def loop_sig(loop, n, stage="implement"):
 
 def test_new_gate_round_is_recorded():
     acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True)
-    assert acts == [RecordRound("gate", 1)]
+    assert acts == [applied("gate", Outcome.WITHIN_LIMIT, 1, 2)]
 
 
 def test_last_gate_round_records_and_pings():
+    # The last-round outcome now rides in the decision; the executor turns it
+    # into the `last_round` ping.
     acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 2), True)
-    assert acts == [RecordRound("gate", 2), Notify("last_round", "gate round 2/2")]
+    assert acts == [applied("gate", Outcome.LAST_ROUND, 2, 2)]
 
 
 def test_gate_round_past_the_cap_parks():
+    # Exhaustion is carried by the decision; the executor parks on it.
     t = replace(task(Stage.IMPLEMENT), gate_rounds=2)
     acts = next_actions(t, loop_sig("gate", 3), True)
-    assert acts == [RecordRound("gate", 3),
-                    ParkForInput("gate loop exceeded its cap of 2 rounds")]
+    assert acts == [applied("gate", Outcome.EXHAUSTED, 3, 2)]
 
 
 def test_counters_survive_a_resume():
@@ -223,8 +230,7 @@ def test_review_loop_uses_its_own_cap():
     t = replace(task(Stage.REVIEW), review_rounds=1)
     acts = next_actions(t, loop_sig("review", 2, stage="review"), True,
                         caps=LoopCaps(review=1))
-    assert acts == [RecordRound("review", 2),
-                    ParkForInput("review loop exceeded its cap of 1 rounds")]
+    assert acts == [applied("review", Outcome.EXHAUSTED, 2, 1)]
 
 
 def test_unknown_loop_is_ignored():
@@ -233,7 +239,7 @@ def test_unknown_loop_is_ignored():
 
 def test_round_report_then_waiting_records_and_parks_for_input():
     acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True, waiting=True)
-    assert acts == [RecordRound("gate", 1),
+    assert acts == [applied("gate", Outcome.WITHIN_LIMIT, 1, 2),
                     ParkForInput("(session stopped mid-stage waiting for input)")]
 
 
@@ -457,3 +463,25 @@ def test_address_review_blocked_parks_for_input():
 def test_address_review_dead_session_is_crash():
     acts = next_actions(task(Stage.ADDRESS_REVIEW), None, False)
     assert acts == [HandleCrash()]
+
+
+# --- Characterization tests: budget lifecycle (Task 1 — observable outcomes only) ---
+
+def test_round_jump_parks_at_reported_value_not_incremented_value():
+    # Row 1: a jump (round=5 when have=2) records the reported value (5), not
+    # have+1 (3). With cap=4, round=5 is past the cap → exhausted (the executor
+    # parks). If the code stored 3 instead of 5, 3 < cap=4 → within-limit.
+    # (Migrated from asserting the machine's ParkForInput action — an internal
+    # name — to the decision the machine now carries; the observable park is
+    # covered dispatcher-side by test_main.test_round_jump_persists_reported_value.)
+    t = replace(task(Stage.IMPLEMENT), gate_rounds=2)
+    acts = next_actions(t, loop_sig("gate", 5), True, caps=LoopCaps(gate=4))
+    assert acts == [applied("gate", Outcome.EXHAUSTED, 5, 4)]
+
+
+def test_zero_cap_first_round_parks_without_last_round_warning():
+    # Row 7: cap=0 → first positive round (1 > 0) exhausts immediately, with no
+    # last-round warning (that requires round == cap, i.e. 1 == 0, false).
+    acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True,
+                        caps=LoopCaps(gate=0))
+    assert acts == [applied("gate", Outcome.EXHAUSTED, 1, 0)]
