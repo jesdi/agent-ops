@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
@@ -36,6 +36,40 @@ test('text/html readable request renders a sandboxed iframe with allow-scripts o
   expect(iframe).toHaveAttribute('sandbox', 'allow-scripts')
   // No allow-same-origin: that attribute value must not be present
   expect(iframe.getAttribute('sandbox')).not.toContain('allow-same-origin')
+})
+
+// Cycle 19a: unavailable spec-approval — recovery visible, no approve, panel stays
+test('spec-approval with unavailable content shows recovery, no approve button', async () => {
+  server.use(
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json({
+        kind: 'spec-approval',
+        content: {
+          kind: 'unavailable',
+          path: 'ops/42/spec.md',
+          reason: 'file not found',
+        },
+      }),
+    ),
+  )
+  renderPanel()
+  const recovery = await screen.findByTestId('unavailable-recovery')
+  expect(recovery).toBeInTheDocument()
+  expect(within(recovery).getByText(/file not found/i)).toBeInTheDocument()
+  expect(within(recovery).getByText(/ops\/42\/spec\.md/i)).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /approve/i })).not.toBeInTheDocument()
+})
+
+// Cycle 19b: transport error — ERROR state, not the unavailable presentation
+test('/request 500 shows request-error, not unavailable-recovery', async () => {
+  server.use(
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json({ detail: 'internal error' }, { status: 500 }),
+    ),
+  )
+  renderPanel()
+  expect(await screen.findByTestId('request-error')).toBeInTheDocument()
+  expect(screen.queryByTestId('unavailable-recovery')).not.toBeInTheDocument()
 })
 
 // Cycle 2: downloadable-text variant — download affordance

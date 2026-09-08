@@ -14,6 +14,15 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
   const req = useTaskRequest(target, issue)
   const [armed, setArmed] = useState(false)
 
+  if (req.isError) {
+    return (
+      <section data-testid="request-error" className="rounded border border-red-300 bg-red-50 p-4">
+        <p className="text-sm text-red-700">
+          failed to load request: {req.error instanceof Error ? req.error.message : 'unknown error'}
+        </p>
+      </section>
+    )
+  }
   if (!req.data) return null
   const { kind, content } = req.data
   const name = content.path.split('/').pop() ?? content.path
@@ -43,7 +52,15 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
         )}
       </header>
       {content.kind === 'unavailable' && (
-        <p className="text-sm text-gray-500">content unavailable ({content.reason})</p>
+        <div data-testid="unavailable-recovery" className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <p className="font-medium">content unavailable</p>
+          <p className="mt-1 font-mono text-xs">{content.path}</p>
+          <p className="mt-1 text-xs text-amber-700">{content.reason}</p>
+          <p className="mt-2 text-xs text-gray-600">
+            The spec file could not be read. Use{' '}
+            <code>herdr --remote box</code> to inspect the worktree, then reply here once resolved.
+          </p>
+        </div>
       )}
       {content.kind === 'readable' && (
         <>
