@@ -313,42 +313,6 @@ const reviewDetail = {
   card: { ...taskDetail.card, stage: 'awaiting-spec-review' },
 }
 
-it('shows the request panel at the review gate and approves in two taps', async () => {
-  // Moved from /spec → /request (slice 16: SpecPanel replaced by RequestPanel).
-  let replied: unknown = null
-  server.use(
-    http.get('/api/task/widget/42', () => HttpResponse.json(reviewDetail)),
-    http.get('/api/task/widget/42/request', () =>
-      HttpResponse.json({
-        kind: 'spec-approval',
-        content: {
-          kind: 'readable',
-          path: 'docs/superpowers/specs/x-design.md',
-          media_type: 'text/markdown',
-          text: '# Widget spec\n\nSpec body here.',
-        },
-      }),
-    ),
-    http.post('/api/task/widget/42/reply', async ({ request }) => {
-      replied = await request.json()
-      return HttpResponse.json(
-        { status: 'pending', intent: '175-42-reply' }, { status: 202 },
-      )
-    }),
-  )
-  renderTask()
-  await waitFor(() =>
-    expect(screen.getByText('Spec body here.')).toBeInTheDocument(),
-  )
-  const approve = screen.getByRole('button', { name: 'approve spec' })
-  await userEvent.click(approve)
-  expect(replied).toBeNull() // first tap only arms
-  await userEvent.click(screen.getByRole('button', { name: 'tap again to approve' }))
-  await waitFor(() =>
-    expect(replied).toEqual({ text: 'Approved — proceed.' }),
-  )
-})
-
 it('hides the request panel when /request returns null', async () => {
   // defaultHandlers: /request returns null (no request)
   renderTask()

@@ -16,6 +16,7 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
 
   const contentText = req.data?.content.kind === 'readable' ? req.data.content.text : null
   // Reset armed when the spec content changes so the operator must re-confirm the revised text.
+  // ponytail: fires on first load (contentText: null→null is a no-op); harmless but not free.
   useEffect(() => { setArmed(false) }, [contentText])
 
   if (req.isError) {
