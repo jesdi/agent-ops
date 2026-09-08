@@ -457,3 +457,24 @@ def test_address_review_blocked_parks_for_input():
 def test_address_review_dead_session_is_crash():
     acts = next_actions(task(Stage.ADDRESS_REVIEW), None, False)
     assert acts == [HandleCrash()]
+
+
+# --- Characterization tests: budget lifecycle (Task 1 — observable outcomes only) ---
+
+def test_round_jump_parks_at_reported_value_not_incremented_value():
+    # Row 1: a jump (round=5 when have=2) records the reported value (5), not
+    # have+1 (3). With cap=4, round=5 is past the cap → park. If the code
+    # incorrectly stored 3 instead of 5, 3 < cap=4 → no park; test would fail.
+    t = replace(task(Stage.IMPLEMENT), gate_rounds=2)
+    acts = next_actions(t, loop_sig("gate", 5), True, caps=LoopCaps(gate=4))
+    assert any(isinstance(a, ParkForInput) for a in acts)
+    assert not any(isinstance(a, Notify) and a.template == "last_round" for a in acts)
+
+
+def test_zero_cap_first_round_parks_without_last_round_warning():
+    # Row 7: cap=0 → first positive round (1 > 0) exhausts immediately.
+    # There must be no last_round warning (that requires round == cap, i.e. 1==0, which is false).
+    acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True,
+                        caps=LoopCaps(gate=0))
+    assert any(isinstance(a, ParkForInput) for a in acts)
+    assert not any(isinstance(a, Notify) and a.template == "last_round" for a in acts)
