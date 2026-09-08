@@ -164,3 +164,75 @@ def test_last_ticket_completion_launches_review_deferred_under_denial(tmp_path, 
     assert task.stage == Stage.REVIEW
     started = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "ticket-started"]
     assert started == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 8: missing requested ticket → failure, no ticket-started, no review
+# ---------------------------------------------------------------------------
+
+def test_missing_requested_ticket_fails_without_start_or_review(tmp_path, monkeypatch):
+    """StartTicket for a missing ticket file: task fails, no ticket-started, no review spawn.
+
+    Validation must happen BEFORE ending the previous session — so
+    sessions.ended must be empty when the requested ticket file is absent.
+    """
+    config = cfg(tmp_path)
+    # cursor=1, count=2 with ONLY 01-t1.md on disk; 02-t2.md is absent
+    wt = make_task(config, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2)
+    write_tickets(wt, 1)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "implement", "status": "done", "note": "ticket 1 complete",
+    }))
+    sessions = FakeSessions(alive={42})
+    dependencies = deps(sess=sessions)
+    patch_usage(monkeypatch, util=0.2)
+
+    main.run_pass(config, dependencies)
+
+    # No ticket-started event
+    started = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "ticket-started"]
+    assert started == []
+    # Task did not advance cursor past 1
+    task = load(config.state_dir, "portfolio_eval", 42)
+    assert task.ticket_cursor == 1
+    # No review spawn
+    assert (42, "review") not in [(i, s) for i, s, _, _ in sessions.spawned]
+    # Existing failure outcome: task marked FAILED with a "failed" event
+    assert task.stage == Stage.FAILED
+    failed_events = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "failed"]
+    assert len(failed_events) >= 1
+    # Previous session must NOT have been ended before the validation fires
+    assert sessions.ended == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 9: launcher raising does not record the next ticket as started
+# ---------------------------------------------------------------------------
+
+def test_launcher_raise_does_not_record_ticket_started(tmp_path, monkeypatch):
+    """spawn_stage raising (e.g. missing worktree .git) must not emit ticket-started
+    and must not persist an advanced cursor — the start did not commit.
+    """
+    config = cfg(tmp_path)
+    wt = make_task(config, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2)
+    write_tickets(wt, 2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "implement", "status": "done", "note": "ticket 1 complete",
+    }))
+    # Launcher raises FileNotFoundError on issue 42
+    sessions = FakeSessions(alive={42}, spawn_raises={42})
+    dependencies = deps(sess=sessions)
+    patch_usage(monkeypatch, util=0.2)
+
+    main.run_pass(config, dependencies)
+
+    # No ticket-started event
+    started = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "ticket-started"]
+    assert started == []
+    # Cursor not advanced to 2
+    task = load(config.state_dir, "portfolio_eval", 42)
+    assert task.ticket_cursor == 1
+    # Existing failure outcome fires
+    assert task.stage == Stage.FAILED
+    failed_events = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "failed"]
+    assert len(failed_events) >= 1

@@ -1057,6 +1057,15 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
         if isinstance(act, StartTicket):
             if not budget_ok:
                 return  # nothing mutated; the done-signal persists; retried next pass
+            # Validate the requested ticket exists before any destructive side
+            # effects (ending the previous session, advancing the cursor).
+            # Missing file → raise now so _run_pass routes to _fail_task_crash
+            # without having killed the old session or mutated state.
+            _files = ticket_files(Path(task.worktree) / TICKETS_DIR)
+            if act.cursor > len(_files):
+                raise RuntimeError(
+                    f"ticket {act.cursor} of {act.count} missing "
+                    f"under {task.worktree}/{TICKETS_DIR}")
             clear_waiting(cfg.state_dir, task.target, task.issue)
             deps.sessions.end(task.target, task.issue)
             task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count)
