@@ -3801,6 +3801,30 @@ def test_gate_round_is_counted_pinged_and_parked_past_the_cap(tmp_path, monkeypa
     assert t.park == PARK_HUMAN and t.gate_rounds == 3 and "parked_question" in d.notifier.sent
 
 
+def test_session_exhaustion_ends_session_and_clears_waiting(tmp_path, monkeypatch):
+    """Session path: exhausted cap must park via _park_for_input, not _park_exhausted.
+    That means: session.end() is called, waiting marker is cleared, parked event
+    detail is plain note (no 'loop exhausted: ' prefix)."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1, gate_rounds=2)
+    mark_waiting(c.state_dir, "portfolio_eval", 42)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "working", "loop": "gate", "round": 3}))
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN, "task must be parked"
+    assert 42 in sess.ended, "session container must be ended on exhaustion"
+    assert not has_waiting(c.state_dir, "portfolio_eval", 42), "waiting marker must be cleared"
+    parked_events = events(c, "parked")
+    assert parked_events, "parked event must be written"
+    detail = parked_events[-1]["detail"]
+    assert detail == "gate loop exceeded its cap of 2 rounds", (
+        f"parked detail must be plain note (no 'loop exhausted: ' prefix); got: {detail!r}")
+
+
 def test_failed_e2e_runs_count_and_park_past_the_cap(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(e2e=1))

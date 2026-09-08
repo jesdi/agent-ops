@@ -31,7 +31,7 @@ from dispatcher.github import GitHubClient
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
-from dispatcher.loops import Outcome
+from dispatcher.loops import Decision, Outcome
 from dispatcher.machine import (ApplyDecision, HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
                                 RetryStage, SetTaskStage, SetTickets,
@@ -515,9 +515,14 @@ def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 
 def _apply_loop_decision(cfg: Config, deps: Deps, target: Target,
-                         task: TaskState, decision) -> tuple[TaskState, bool]:
+                         task: TaskState, decision: Decision,
+                         park_exhausted) -> tuple[TaskState, bool]:
     """Shared executor for a loop policy Decision (from machine.ApplyDecision).
-    Returns (updated_task, parked). Parked=True means the caller must return."""
+    Returns (updated_task, parked). Parked=True means the caller must return.
+
+    park_exhausted(task, note) is injected by the caller: session path passes
+    _park_for_input (live container — ends session, clears waiting, captures tail);
+    CI/PR paths pass _park_exhausted (no live session)."""
     if decision.outcome is Outcome.UNCHANGED:
         return task, False
     task = replace(decision.apply_to(task), updated_at=_now())
@@ -526,11 +531,10 @@ def _apply_loop_decision(cfg: Config, deps: Deps, target: Target,
                           issue=task.issue, stage=task.stage.value,
                           detail=decision.description)
     if decision.outcome is Outcome.EXHAUSTED:
-        loop, cap = decision.loop.value, decision.cap
-        note = f"{loop} loop exceeded its cap of {cap} rounds"
+        note = f"{decision.loop.value} loop exceeded its cap of {decision.cap} rounds"
         if decision.detail:
             note += f" ({decision.detail})"
-        _park_exhausted(cfg, deps, target, task, note)
+        park_exhausted(task, note)
         return task, True
     if decision.outcome is Outcome.LAST_ROUND:
         _notify(deps, target, task, "last_round", decision.description)
@@ -1059,7 +1063,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                   detail=f"ticket {act.cursor}/{act.count}")
             continue
         if isinstance(act, ApplyDecision):
-            task, parked = _apply_loop_decision(cfg, deps, target, task, act.decision)
+            task, parked = _apply_loop_decision(
+                cfg, deps, target, task, act.decision,
+                park_exhausted=lambda t, note: _park_for_input(cfg, deps, target, t, note))
             if parked:
                 return
             continue
