@@ -2382,6 +2382,47 @@ def test_unparseable_timestamp_never_expires(tmp_path, monkeypatch):
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
+def test_grace_expiry_park_preserves_spec_approval_request(tmp_path, monkeypatch):
+    """Slice 9 lock-in: _park_for_review's plain replace() at main.py:684
+    does NOT touch operator_request or spec_path, so both survive the park.
+    GET /request returns the spec-approval body even when park==PARK_REVIEW,
+    proving request presence is independent of park==""."""
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
+    c = cfg(tmp_path)
+    # Build the spec file before make_task so we can pass its absolute path as artifact.
+    issue_wt = Path(c.targets[0].worktrees_path) / "task-42"
+    spec = issue_wt / "docs" / "specs" / "x-design.md"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("# X Design\n\nApprove me.")
+    wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+                   operator_request={"kind": "spec-approval"},
+                   spec_path="docs/specs/x-design.md",
+                   artifact=str(spec))
+    gate_signal(wt)  # status=awaiting-review, grace already elapsed → ParkForReview
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_REVIEW
+    assert t.operator_request == {"kind": "spec-approval"}, "operator_request must survive park"
+    assert t.spec_path == "docs/specs/x-design.md", "spec_path must survive park"
+    # GET /request must serve the spec-approval body (endpoint reads t.operator_request + t.artifact)
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request", headers=HEADERS)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["kind"] == "spec-approval"
+    assert body["content"]["kind"] == "readable"
+    assert body["content"]["path"] == "docs/specs/x-design.md"
+    assert body["content"]["text"] == "# X Design\n\nApprove me."
+
+
 def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
