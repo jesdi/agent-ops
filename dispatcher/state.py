@@ -95,7 +95,11 @@ class TaskState:
     check_cursor: str = ""               # completedAt of the newest red check acted on
     conflict_cursor: str = ""            # head sha of the last conflict acted on
     attention: str = ""                  # why address-review is pending: feedback|check-failed|conflict|operator
-    operator_request: dict | None = None  # None=no request; {"kind":"spec-approval"} while at gate
+    # None=no request; {"kind":"spec-approval"} while at gate; answers variant
+    # ({"kind":"answers","path":<wt-relative>}) written ONLY by _park_for_input
+    # in dispatcher/main.py, and only when a worktree-contained path resolves —
+    # so an answers request never exists without a valid path.
+    operator_request: dict | None = None
 
 
 @dataclass(frozen=True)

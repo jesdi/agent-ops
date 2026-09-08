@@ -344,7 +344,7 @@ class UnavailableContent(BaseModel):
 
 
 class OperatorRequest(BaseModel):
-    kind: str        # e.g. "spec-approval"
+    kind: Literal["spec-approval", "answers"]
     content: Annotated[ReadableContent | UnavailableContent, Field(discriminator="kind")]
 
 

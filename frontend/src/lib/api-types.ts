@@ -553,8 +553,11 @@ export interface components {
         OperatorRequest: {
             /** Content */
             content: components["schemas"]["ReadableContent"] | components["schemas"]["UnavailableContent"];
-            /** Kind */
-            kind: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "spec-approval" | "answers";
         };
         /** PaneHistory */
         PaneHistory: {
