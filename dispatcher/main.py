@@ -480,7 +480,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if artifact:
         p = Path(artifact)
         resolved = str(p if p.is_absolute() else Path(task.worktree) / p)
-    answers_request: dict | None = None if is_answers else task.operator_request
+    answers_request: dict | None = None  # cleared unless valid answers path is resolved below
     if resolved:
         wt_abs = Path(task.worktree).resolve()
         try:
@@ -516,7 +516,8 @@ def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
         url=_url(target, task.issue), target=target.name, note=note)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT, ci_run_id=0,
-                                feedback_pending=False, updated_at=_now()))
+                                feedback_pending=False, operator_request=None,
+                                updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="loop exhausted: " + note)

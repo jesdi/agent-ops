@@ -4254,3 +4254,49 @@ def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["kind"] == "spec-approval"
+
+
+# ---------------------------------------------------------------------------
+# Slice 13: ordinary input park + loop-exhaustion park clear stale operator_request
+# ---------------------------------------------------------------------------
+
+def test_ordinary_blocked_park_clears_stale_operator_request(tmp_path):
+    """Slice 13: _park_for_input(is_answers=False) clears a stale operator_request.
+    spec_path and counters must be preserved."""
+    c = cfg(tmp_path)
+    stale_req = {"kind": "spec-approval"}
+    wt = make_task(c, stage=Stage.IMPLEMENT,
+                   operator_request=stale_req,
+                   spec_path="docs/specs/design.md",
+                   review_rounds=1, gate_rounds=2, e2e_rounds=0, ci_rounds=1)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._park_for_input(c, deps(notifier=FakeNotifier()), c.targets[0],
+                         task, "blocked by test", is_answers=False)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, (
+        f"ordinary park must clear stale request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert t.park == PARK_HUMAN
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 2, 0, 1), (
+        "loop counters must be unchanged")
+
+
+def test_loop_exhaustion_park_clears_stale_operator_request(tmp_path):
+    """Slice 13: _park_exhausted clears a stale operator_request.
+    spec_path and loop counters must be preserved."""
+    c = cfg(tmp_path)
+    stale_req = {"kind": "answers", "path": ".agent/old-q.md"}
+    make_task(c, stage=Stage.REVIEW, park=PARK_CI, slot=NO_SLOT,
+              operator_request=stale_req,
+              spec_path="docs/specs/design.md",
+              review_rounds=1, gate_rounds=0, e2e_rounds=2, ci_rounds=0)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._park_exhausted(c, deps(notifier=FakeNotifier()), c.targets[0],
+                         task, "e2e loop exceeded its cap of 2 rounds")
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, (
+        f"exhaustion park must clear stale request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert t.park == PARK_HUMAN
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 0, 2, 0), (
+        "loop counters must be unchanged by the clear")
