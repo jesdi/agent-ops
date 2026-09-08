@@ -3932,3 +3932,53 @@ def test_human_feedback_resets_ci_rounds(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.attention, t.ci_rounds) == ("feedback", 0)
+
+
+def test_console_reply_operator_wake_clears_all_four_counters(tmp_path, monkeypatch):
+    from dispatcher import intents as intents_mod
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55,
+              review_rounds=1, gate_rounds=2, e2e_rounds=1, ci_rounds=3)
+    make_task(c, issue=43)  # holds the only slot → 42 stays at PARK_WAKE
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+                             {"text": "try again"}, "op", 1)
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_WAKE
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (0, 0, 0, 0)
+
+
+def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.QUEUED, review_rounds=1, gate_rounds=2,
+              e2e_rounds=1, ci_rounds=3)
+    d = deps()
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._spawn_stage(c, d, c.targets[0], task, Stage.SPEC)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
+    assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
+
+
+def test_successful_ci_wake_preserves_all_counters(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT, park=PARK_CI, ci_run_id=99,
+              review_rounds=1, gate_rounds=1, e2e_rounds=2, ci_rounds=1)
+    main._wake_ci(c, deps(gh=FakeGitHub(run_conclusion="success")), c.targets[0])
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_WAKE
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 1, 2, 1)
+
+
+def test_resume_woken_does_not_reset_counters(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT, park=PARK_WAKE,
+              review_rounds=1, gate_rounds=1, e2e_rounds=2, ci_rounds=1)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == "" and sess.resumed
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 1, 2, 1)
