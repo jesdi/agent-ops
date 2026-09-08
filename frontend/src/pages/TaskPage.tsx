@@ -61,9 +61,12 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
       // Only the reply action owns the textarea — park/kill/retry must not
       // wipe text the operator already typed.
       if (isReply) setReplyText('')
-      // Only refetch pending intents; task state changes when the
-      // dispatcher applies the intent — never optimistically.
+      // Refetch pending intents; task state changes when the dispatcher
+      // applies the intent — never optimistically.
       void queryClient.invalidateQueries({ queryKey: queryKeys.pendingIntents })
+      // A reply/resume can clear or replace the operator_request, so
+      // invalidate it so stale approval/answers content disappears.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.request(target, issue) })
     },
     onError: (err) =>
       setActionError(err instanceof ApiError ? err.detail : String(err)),

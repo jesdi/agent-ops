@@ -661,3 +661,52 @@ it('request-panel shows spec markdown once and two-step approve for spec-approva
     expect(replied).toEqual({ text: 'Approved — proceed.' }),
   )
 })
+
+// --- Slice 20: request query invalidated after intent ---
+
+it('reply clears stale request panel — cached approval disappears after invalidation/refetch', async () => {
+  let replyCount = 0
+  server.use(
+    http.get('/api/task/widget/42', () =>
+      HttpResponse.json({
+        ...taskDetail,
+        card: { ...taskDetail.card, stage: 'awaiting-spec-review' },
+      }),
+    ),
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json(
+        replyCount === 0
+          ? {
+              kind: 'spec-approval',
+              content: {
+                kind: 'readable',
+                path: 'docs/spec.md',
+                media_type: 'text/markdown',
+                text: '# Spec\n\nApprove me.',
+              },
+            }
+          : null,
+      ),
+    ),
+    http.post('/api/task/widget/42/reply', async () => {
+      replyCount++
+      return HttpResponse.json(
+        { status: 'pending', intent: '175-42-reply' },
+        { status: 202 },
+      )
+    }),
+  )
+  renderTask()
+  // Spec-approval panel is visible before reply
+  await waitFor(() =>
+    expect(screen.getByTestId('request-panel')).toBeInTheDocument(),
+  )
+  // Approve (two-step)
+  await userEvent.click(screen.getByRole('button', { name: 'approve spec' }))
+  await userEvent.click(screen.getByRole('button', { name: 'tap again to approve' }))
+  await waitFor(() => expect(replyCount).toBe(1))
+  // After invalidation + refetch the panel must disappear (server now returns null)
+  await waitFor(() =>
+    expect(screen.queryByTestId('request-panel')).not.toBeInTheDocument(),
+  )
+})
