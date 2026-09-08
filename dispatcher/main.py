@@ -34,7 +34,7 @@ from dispatcher.artifacts import TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoOp, Notify,
                                 ParkForCI, ParkForInput, ParkForReview, PublishSpec,
-                                RetryStage, SetTaskStage, SetTickets,
+                                RetryStage, SetTaskStage, SetTickets, StartTicket,
                                 SpawnStage, next_actions)
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
@@ -1058,6 +1058,17 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count,
                            updated_at=_now())
             save(cfg.state_dir, task)
+            eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
+                                  issue=task.issue, stage=Stage.IMPLEMENT.value,
+                                  detail=f"ticket {act.cursor}/{act.count}")
+            continue
+        if isinstance(act, StartTicket):
+            if not budget_ok:
+                return  # nothing mutated; the done-signal persists; retried next pass
+            clear_waiting(cfg.state_dir, task.target, task.issue)
+            deps.sessions.end(task.target, task.issue)
+            task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count)
+            task = _spawn_stage(cfg, deps, target, task, Stage.IMPLEMENT, ticket=act.cursor)
             eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
                                   issue=task.issue, stage=Stage.IMPLEMENT.value,
                                   detail=f"ticket {act.cursor}/{act.count}")

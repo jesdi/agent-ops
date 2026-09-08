@@ -31,6 +31,15 @@ class SetTickets:
 
 
 @dataclass(frozen=True)
+class StartTicket:
+    """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
+    and session spawn happen together. The executor checks budget_ok first and
+    makes no state mutation when denied."""
+    cursor: int
+    count: int
+
+
+@dataclass(frozen=True)
 class ApplyDecision:
     """A loop policy decision that the executor must apply: save the counter,
     emit the round event, and (for LAST_ROUND/EXHAUSTED) notify / park."""
@@ -209,8 +218,7 @@ def next_actions(
         if task.stage == Stage.IMPLEMENT:
             if task.ticket_cursor < task.ticket_count:
                 nxt = task.ticket_cursor + 1
-                return [SetTickets(nxt, task.ticket_count),
-                        SpawnStage(Stage.IMPLEMENT, ticket=nxt)]
+                return [StartTicket(nxt, task.ticket_count)]
             return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
         if task.stage == Stage.REVIEW:
             return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]

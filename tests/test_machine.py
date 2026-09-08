@@ -18,6 +18,7 @@ from dispatcher.machine import (
     RetryStage,
     SetTaskStage,
     SetTickets,
+    StartTicket,
     SpawnStage,
     next_actions,
 )
@@ -156,7 +157,7 @@ def test_plan_done_with_a_numbering_gap_is_malformed(tmp_path):
 def test_implement_done_advances_the_ticket_cursor():
     t = replace(task(Stage.IMPLEMENT), ticket_cursor=1, ticket_count=3)
     acts = next_actions(t, sig("implement", "done"), True)
-    assert acts == [SetTickets(2, 3), SpawnStage(Stage.IMPLEMENT, ticket=2)]
+    assert acts == [StartTicket(2, 3)]
 
 
 def test_last_ticket_done_spawns_review():
