@@ -3801,6 +3801,22 @@ def test_awaiting_answers_parks_and_records_the_artifact(tmp_path, monkeypatch):
     assert 42 in sess.ended and "parked_question" in notif.sent
 
 
+def test_awaiting_answers_sets_answers_operator_request(tmp_path, monkeypatch):
+    """Slice 5: awaiting-answers with valid artifact → operator_request set, spec_path unchanged."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.SPEC, spec_path="docs/specs/design.md")
+    (wt / ".agent" / "questionnaire.md").write_text("# Q\n")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-answers", "note": "answer me",
+         "artifact": ".agent/questionnaire.md"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42}), notifier=FakeNotifier()))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request == {"kind": "answers", "path": ".agent/questionnaire.md"}
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be unchanged"
+    assert t.park == PARK_HUMAN
+
+
 def test_gate_round_is_counted_pinged_and_parked_past_the_cap(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)

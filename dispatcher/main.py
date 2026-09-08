@@ -485,9 +485,16 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if artifact:
         p = Path(artifact)
         resolved = str(p if p.is_absolute() else Path(task.worktree) / p)
+    if resolved:
+        wt_abs = Path(task.worktree).resolve()
+        wt_rel = str(Path(resolved).resolve().relative_to(wt_abs))
+        answers_request: dict | None = {"kind": "answers", "path": wt_rel}
+    else:
+        answers_request = task.operator_request
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT,
                                 artifact=resolved or task.artifact,
+                                operator_request=answers_request,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)

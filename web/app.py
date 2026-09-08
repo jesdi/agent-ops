@@ -204,6 +204,14 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         p, rel = _artifact_file(t, "spec")
         return read_model.SpecView(path=rel, markdown=_read_text(p, "spec", t))
 
+    def _readable_content(t, abs_path: Path, wt_rel: str,
+                          what: str) -> read_model.ReadableContent:
+        return read_model.ReadableContent(
+            path=wt_rel,
+            media_type=read_model.media_type_for(wt_rel),
+            text=_read_text(abs_path, what, t),
+        )
+
     @app.get("/api/task/{target}/{issue}/request",
              response_model=read_model.OperatorRequest | None)
     def task_request(target: str, issue: int,
@@ -212,15 +220,25 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         req = t.operator_request
         if req is None:
             return None
-        if req.get("kind") == "spec-approval":
+        kind = req.get("kind")
+        if kind == "spec-approval":
             p, rel = _artifact_file(t, "spec")
-            content = read_model.ReadableContent(
-                path=rel,
-                media_type=read_model.media_type_for(rel),
-                text=_read_text(p, "spec", t),
+            return read_model.OperatorRequest(
+                kind="spec-approval",
+                content=_readable_content(t, p, rel, "spec"),
             )
-            return read_model.OperatorRequest(kind="spec-approval", content=content)
-        return None
+        if kind == "answers":
+            path = req.get("path", "")
+            wt = Path(t.worktree).resolve()
+            p = (wt / path).resolve() if path else None
+            if p is None or not p.is_relative_to(wt) or not p.is_file():
+                raise HTTPException(404, f"no answers file for task {t.target}/{t.issue}")
+            rel = str(p.relative_to(wt))
+            return read_model.OperatorRequest(
+                kind="answers",
+                content=_readable_content(t, p, rel, "answers"),
+            )
+        raise HTTPException(500, f"unrecognized operator_request kind {kind!r}")
 
     @app.get("/api/task/{target}/{issue}/artifact",
              response_model=read_model.ArtifactView)

@@ -619,3 +619,18 @@ def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
     assert (got.review_rounds, got.gate_rounds,
             got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
     assert got.operator_request == {"kind": "spec-approval"}
+
+
+def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):
+    """M1: save() -> load() round-trip preserves answers operator_request + counters."""
+    ts = TaskState(
+        issue=20, target="alpha", stage=Stage.SPEC, slot=-1,
+        worktree=str(tmp_path), branch="b", title="t",
+        updated_at="2026-09-08T00:00:00+00:00",
+        review_rounds=1, gate_rounds=2, e2e_rounds=3, ci_rounds=4,
+        operator_request={"kind": "answers", "path": ".agent/questionnaire.md"},
+    )
+    save(tmp_path, ts)
+    got = load(tmp_path, "alpha", 20)
+    assert got.operator_request == {"kind": "answers", "path": ".agent/questionnaire.md"}
+    assert (got.review_rounds, got.gate_rounds, got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
