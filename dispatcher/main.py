@@ -31,7 +31,6 @@ from dispatcher.github import GitHubClient
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
-import dispatcher.loops as loops
 from dispatcher.loops import Decision, Outcome
 from dispatcher.machine import (ApplyDecision, HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,

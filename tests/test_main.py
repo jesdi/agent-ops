@@ -3902,6 +3902,7 @@ def test_ci_rounds_past_the_cap_park_the_pr_open_task(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess, notifier=notif))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.park, t.feedback_pending) == (Stage.PR_OPEN, PARK_HUMAN, False)
+    assert t.check_cursor == "2026-09-07T10:00:00Z"  # cursor persisted on exhaustion
     assert "parked_question" in notif.sent and not sess.spawned
     # Still polled for merge while parked.
     gh.pr_payloads[12] = payload(state="MERGED", merged_at="2026-09-07T12:00:00Z")
