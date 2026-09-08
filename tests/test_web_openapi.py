@@ -16,11 +16,13 @@ def test_openapi_export_prints_schema_with_contract_paths():
     for p in ("/api/board", "/api/queue", "/api/budget", "/api/failures",
               "/api/history", "/api/pending-intents",
               "/api/task/{target}/{issue}",
-              "/api/task/{target}/{issue}/artifact"):
+              "/api/task/{target}/{issue}/artifact",
+              "/api/task/{target}/{issue}/request"):
         assert p in paths, f"missing {p}"
     names = schema["components"]["schemas"]
     for n in ("BoardView", "QueueView", "TaskDetail", "BudgetView",
-              "FailuresView", "HistoryView", "ArtifactView"):
+              "FailuresView", "HistoryView", "ArtifactView",
+              "OperatorRequest", "ReadableContent", "UnavailableContent"):
         assert n in names, f"missing schema {n}"
 
 

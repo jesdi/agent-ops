@@ -18,6 +18,9 @@ export type TimelineEntry = components['schemas']['TimelineEntry']
 export type IssueDescription = components['schemas']['IssueDescription']
 export type MessageView = components['schemas']['MessageView']
 export type ArtifactView = components['schemas']['ArtifactView']
+export type OperatorRequest = components['schemas']['OperatorRequest']
+export type ReadableContent = components['schemas']['ReadableContent']
+export type UnavailableContent = components['schemas']['UnavailableContent']
 
 export interface PendingIntent {
   action: string
@@ -119,4 +122,6 @@ export const api = {
     request<IssueDescription>(`/task/${target}/${issue}/description`),
   taskArtifact: (target: string, issue: number) =>
     request<ArtifactView>(`/task/${target}/${issue}/artifact`),
+  taskRequest: (target: string, issue: number) =>
+    request<OperatorRequest | null>(`/task/${target}/${issue}/request`),
 }

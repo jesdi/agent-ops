@@ -327,6 +327,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{target}/{issue}/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Task Request */
+        get: operations["task_request_api_task__target___issue__request_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{target}/{issue}/resume": {
         parameters: {
             query?: never;
@@ -580,6 +597,13 @@ export interface components {
             /** Issue */
             issue: number;
         };
+        /** OperatorRequest */
+        OperatorRequest: {
+            /** Content */
+            content: components["schemas"]["ReadableContent"] | components["schemas"]["UnavailableContent"];
+            /** Kind */
+            kind: string;
+        };
         /** PaneHistory */
         PaneHistory: {
             /** Text */
@@ -627,6 +651,20 @@ export interface components {
         QueueView: {
             /** Targets */
             targets: components["schemas"]["TargetQueue"][];
+        };
+        /** ReadableContent */
+        ReadableContent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "readable";
+            /** Media Type */
+            media_type: string;
+            /** Path */
+            path: string;
+            /** Text */
+            text: string;
         };
         /** ReadyReq */
         ReadyReq: {
@@ -746,6 +784,21 @@ export interface components {
             ongoing: boolean;
             /** Seconds */
             seconds: number;
+        };
+        /**
+         * UnavailableContent
+         * @description File exists as a request but cannot be read: missing, non-UTF-8, or containment violation.
+         */
+        UnavailableContent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "unavailable";
+            /** Path */
+            path: string;
+            /** Reason */
+            reason: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -1288,6 +1341,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    task_request_api_task__target___issue__request_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+                issue: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorRequest"] | null;
                 };
             };
             /** @description Validation Error */

@@ -74,6 +74,16 @@ export function useIssueDescription(target: string, issue: number, enabled: bool
   })
 }
 
+/** The unified operator request (spec-approval or answers). retry:false —
+ *  null = no request, not a transient failure. */
+export function useTaskRequest(target: string, issue: number) {
+  return useQuery({
+    queryKey: queryKeys.request(target, issue),
+    queryFn: () => api.taskRequest(target, issue),
+    retry: false,
+  })
+}
+
 /** The file a parked session is waiting on. retry:false — a 404 means
  *  "nothing awaited", not a transient failure. */
 export function useTaskArtifact(target: string, issue: number, enabled: boolean) {

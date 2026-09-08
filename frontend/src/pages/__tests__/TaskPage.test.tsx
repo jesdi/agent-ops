@@ -313,14 +313,20 @@ const reviewDetail = {
   card: { ...taskDetail.card, stage: 'awaiting-spec-review' },
 }
 
-it('shows the spec panel at the review gate and approves in two taps', async () => {
+it('shows the request panel at the review gate and approves in two taps', async () => {
+  // Moved from /spec → /request (slice 16: SpecPanel replaced by RequestPanel).
   let replied: unknown = null
   server.use(
     http.get('/api/task/widget/42', () => HttpResponse.json(reviewDetail)),
-    http.get('/api/task/widget/42/spec', () =>
+    http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        path: 'docs/superpowers/specs/x-design.md',
-        markdown: '# Widget spec\n\nSpec body here.',
+        kind: 'spec-approval',
+        content: {
+          kind: 'readable',
+          path: 'docs/superpowers/specs/x-design.md',
+          media_type: 'text/markdown',
+          text: '# Widget spec\n\nSpec body here.',
+        },
       }),
     ),
     http.post('/api/task/widget/42/reply', async ({ request }) => {
@@ -343,12 +349,13 @@ it('shows the spec panel at the review gate and approves in two taps', async () 
   )
 })
 
-it('hides the spec panel off the review gate', async () => {
-  renderTask() // defaultHandlers: stage is not awaiting-spec-review
+it('hides the request panel when /request returns null', async () => {
+  // defaultHandlers: /request returns null (no request)
+  renderTask()
   await waitFor(() =>
     expect(screen.getByTestId('pane-tail')).toBeInTheDocument(),
   )
-  expect(screen.queryByTestId('spec-panel')).not.toBeInTheDocument()
+  expect(screen.queryByTestId('request-panel')).not.toBeInTheDocument()
 })
 
 it('a parked task shows the parked panel with the note, not the dead banner', async () => {
@@ -398,21 +405,24 @@ it('an unparked task keeps the plain send label and no parked panel', async () =
   expect(screen.queryByTestId('parked-panel')).not.toBeInTheDocument()
 })
 
-it('shows the attach fallback when the spec 404s', async () => {
+it('shows unavailable placeholder when /request returns unavailable content', async () => {
+  // Replaces the old "spec 404" test: RequestPanel shows a minimal placeholder
+  // for unavailable content (slice 19 refines the full recovery presentation).
   server.use(
     http.get('/api/task/widget/42', () => HttpResponse.json(reviewDetail)),
-    http.get('/api/task/widget/42/spec', () =>
-      HttpResponse.json({ detail: 'no spec recorded for task 42' }, { status: 404 }),
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json({
+        kind: 'spec-approval',
+        content: { kind: 'unavailable', path: '', reason: 'file-missing' },
+      }),
     ),
   )
   renderTask()
   await waitFor(() =>
-    expect(screen.getByTestId('spec-panel').textContent).toContain(
-      'no spec recorded for task 42',
-    ),
+    expect(screen.getByTestId('request-panel')).toBeInTheDocument(),
   )
-  expect(screen.getByTestId('spec-panel').textContent).toContain(
-    'herdr --remote box',
+  expect(screen.getByTestId('request-panel').textContent).toContain(
+    'content unavailable',
   )
 })
 
@@ -498,30 +508,40 @@ it('a failing queue action from the ghost view surfaces its error text', async (
 })
 
 it('renders the artifact a parked task is waiting on, above the reply box', async () => {
+  // Moved from /artifact → /request answers kind (slice 16: ArtifactPanel replaced by RequestPanel).
   server.use(
-    http.get('/api/task/widget/42/artifact', () =>
+    http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        path: '.agent/questionnaire.md',
-        media_type: 'text/markdown',
-        text: '# Questions\n\nPick the redirect host.',
+        kind: 'answers',
+        content: {
+          kind: 'readable',
+          path: '.agent/questionnaire.md',
+          media_type: 'text/markdown',
+          text: '# Questions\n\nPick the redirect host.',
+        },
       }),
     ),
   )
   renderTask() // default fixture: parked
   await waitFor(() =>
-    expect(screen.getByTestId('artifact-panel').textContent).toContain('Pick the redirect host.'),
+    expect(screen.getByTestId('request-panel').textContent).toContain('Pick the redirect host.'),
   )
-  const panel = screen.getByTestId('artifact-panel')
+  const panel = screen.getByTestId('request-panel')
   const reply = screen.getByLabelText('Reply')
   expect(panel.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 })
 
 it('renders an html artifact in a sandboxed frame', async () => {
   server.use(
-    http.get('/api/task/widget/42/artifact', () =>
+    http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        path: '.agent/prototype.html', media_type: 'text/html',
-        text: '<h1>variant A</h1>',
+        kind: 'answers',
+        content: {
+          kind: 'readable',
+          path: '.agent/prototype.html',
+          media_type: 'text/html',
+          text: '<h1>variant A</h1>',
+        },
       }),
     ),
   )
@@ -534,10 +554,15 @@ it('renders an html artifact in a sandboxed frame', async () => {
 
 it('offers any other artifact as a download', async () => {
   server.use(
-    http.get('/api/task/widget/42/artifact', () =>
+    http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        path: '.agent/wizard.sh', media_type: 'application/octet-stream',
-        text: '#!/bin/sh\necho hi',
+        kind: 'answers',
+        content: {
+          kind: 'readable',
+          path: '.agent/wizard.sh',
+          media_type: 'application/octet-stream',
+          text: '#!/bin/sh\necho hi',
+        },
       }),
     ),
   )
@@ -547,8 +572,54 @@ it('offers any other artifact as a download', async () => {
   expect(link.getAttribute('href')).toMatch(/^data:application\/octet-stream/)
 })
 
-it('shows no artifact panel when the task has none', async () => {
-  renderTask() // default handler 404s the artifact
+it('shows no request panel when /request returns null', async () => {
+  // default handler returns null for /request
+  renderTask()
   await waitFor(() => expect(screen.getByText('Fix login redirect')).toBeInTheDocument())
-  expect(screen.queryByTestId('artifact-panel')).not.toBeInTheDocument()
+  expect(screen.queryByTestId('request-panel')).not.toBeInTheDocument()
+})
+
+// --- RequestPanel (slice 16) ---
+
+it('request-panel shows spec markdown once and two-step approve for spec-approval kind', async () => {
+  let replied: unknown = null
+  server.use(
+    http.get('/api/task/widget/42', () =>
+      HttpResponse.json({
+        ...taskDetail,
+        card: { ...taskDetail.card, stage: 'awaiting-spec-review' },
+      }),
+    ),
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json({
+        kind: 'spec-approval',
+        content: {
+          kind: 'readable',
+          path: 'docs/specs/x-design.md',
+          media_type: 'text/markdown',
+          text: '# Widget spec\n\nSpec body here.',
+        },
+      }),
+    ),
+    http.post('/api/task/widget/42/reply', async ({ request }) => {
+      replied = await request.json()
+      return HttpResponse.json(
+        { status: 'pending', intent: '175-42-reply' }, { status: 202 },
+      )
+    }),
+  )
+  renderTask()
+  await waitFor(() =>
+    expect(screen.getByTestId('request-panel')).toBeInTheDocument(),
+  )
+  // spec markdown renders exactly once — no duplicate approval panel
+  expect(screen.getAllByText('Spec body here.').length).toBe(1)
+  // two-step approve
+  const approve = screen.getByRole('button', { name: 'approve spec' })
+  await userEvent.click(approve)
+  expect(replied).toBeNull()
+  await userEvent.click(screen.getByRole('button', { name: 'tap again to approve' }))
+  await waitFor(() =>
+    expect(replied).toEqual({ text: 'Approved — proceed.' }),
+  )
 })
