@@ -120,3 +120,26 @@ def apply(task: TaskState, decision: Decision) -> TaskState:
     if decision.outcome is Outcome.UNCHANGED:
         return task
     return replace(task, **{_FIELDS[decision.loop]: decision.round})
+
+
+class ResetCause(Enum):
+    """Named lifecycle events that own a specific set of loop counters.
+    Callers pass a cause; this module decides which fields to zero."""
+    STAGE_STARTED = "stage-started"        # new stage/ticket begins
+    OPERATOR_WAKE = "operator-wake"        # human intervenes via wake/reply
+    PR_CYCLE_STARTED = "pr-cycle-started"  # fresh PR feedback or operator-started PR rework
+
+
+# Which counter fields each cause owns. PRIVATE: the point is that callers
+# never name fields directly — they name a lifecycle event.
+_RESET_FIELDS: dict[ResetCause, tuple[str, ...]] = {
+    ResetCause.STAGE_STARTED:    ("review_rounds", "gate_rounds", "e2e_rounds"),
+    ResetCause.OPERATOR_WAKE:    ("review_rounds", "gate_rounds", "e2e_rounds", "ci_rounds"),
+    ResetCause.PR_CYCLE_STARTED: ("ci_rounds",),
+}
+
+
+def reset(task: TaskState, cause: ResetCause) -> TaskState:
+    """Zero only the counters that *cause* owns; every other field is preserved.
+    Does NOT touch park/stage/updated_at — callers set those via replace()."""
+    return replace(task, **{f: 0 for f in _RESET_FIELDS[cause]})

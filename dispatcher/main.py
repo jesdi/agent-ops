@@ -78,10 +78,6 @@ def _cursor_now() -> str:
             - timedelta(seconds=1)).isoformat()
 
 
-# Zeroed on every operator wake: a human intervening is a fresh budget for
-# every loop. Never applied on a CI wake — that IS a round.
-_FRESH_ROUNDS = dict(review_rounds=0, gate_rounds=0, e2e_rounds=0, ci_rounds=0)
-
 # Stages that aren't policy stages but hold a live session from one: a
 # claimed task is about to spawn spec, and a task at the spec-review gate
 # still has its spec session running. ADDRESS_REVIEW is an implement-shaped
@@ -160,8 +156,9 @@ def _drain(cfg: Config, issue: int) -> tuple[str, list[str]]:
 def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
           actor: str = "dispatcher") -> None:
     _queue_message(cfg, task.issue, text, actor)
+    task = loops.reset(task, loops.ResetCause.OPERATOR_WAKE)
     save(cfg.state_dir, replace(task, park=PARK_WAKE, hold_for_attach=hold,
-                                **_FRESH_ROUNDS, updated_at=_now()))
+                                updated_at=_now()))
 
 
 def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
@@ -404,8 +401,9 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     messages.mark_delivered(cfg.state_dir, task.issue, drained)
     # A fresh stage is a fresh budget for the loops it runs; ci_rounds belongs
     # to the PR, not the stage, and is reset by _poll_prs/_resume_one.
+    task = loops.reset(task, loops.ResetCause.STAGE_STARTED)
     task = replace(task, stage=stage, artifact="", spec_path=spec_path or task.spec_path,
-                   review_rounds=0, gate_rounds=0, e2e_rounds=0, updated_at=_now())
+                   updated_at=_now())
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
                           issue=task.issue, stage=stage.value, model=model,
@@ -509,7 +507,6 @@ def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="loop exhausted: " + note)
-
 
 
 def _apply_round(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -755,9 +752,9 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
         elif task.park:
             continue   # exhausted-loop park: only merge/close still matter
         elif res.kind == "feedback" and not task.feedback_pending:
+            task = loops.reset(task, loops.ResetCause.PR_CYCLE_STARTED)
             save(cfg.state_dir, replace(task, feedback_pending=True,
-                                        attention="feedback", ci_rounds=0,
-                                        updated_at=_now()))
+                                        attention="feedback", updated_at=_now()))
             eventlog.append_event(cfg.state_dir, "pr-feedback",
                                   target=target.name, issue=task.issue,
                                   stage=Stage.PR_OPEN.value,
@@ -900,8 +897,9 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     if task.stage is Stage.PR_OPEN:
         # No session to continue at pr-open: an operator wake on a parked
         # pr-open task is a fresh address-review round carrying their message.
+        task = loops.reset(task, loops.ResetCause.PR_CYCLE_STARTED)
         task = replace(task, park="", park_msg_id=0, park_note="",
-                       hold_for_attach=False, feedback_pending=False, ci_rounds=0,
+                       hold_for_attach=False, feedback_pending=False,
                        attention="operator", feedback_cursor=_cursor_now())
         _clear_wake_blocked(cfg, task.issue)
         _spawn_stage(cfg, deps, target, task, Stage.ADDRESS_REVIEW)
@@ -1261,8 +1259,8 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         _queue_message(cfg, issue, intent.payload.get("text", ""),
                        intent.actor or "operator")
         if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
-            save(cfg.state_dir, replace(task, park=PARK_WAKE,
-                                        **_FRESH_ROUNDS, updated_at=_now()))
+            task = loops.reset(task, loops.ResetCause.OPERATOR_WAKE)
+            save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
     elif intent.action == "park":
         if (task is None or task.stage not in IN_FLIGHT_STAGES or task.park
                 or not deps.sessions.is_alive(task.target, issue)):

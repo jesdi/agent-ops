@@ -1,9 +1,12 @@
 """Pure loop-policy tests: concrete TaskState in, expected Decision out. No
 mocking, no inspecting the private field mapping — only the public interface
-(SessionRound / evaluate / apply / Decision / Outcome)."""
+(SessionRound / evaluate / apply / Decision / Outcome / ResetCause / reset)."""
 from dataclasses import replace
 
-from dispatcher.loops import (Decision, FailedRun, Outcome, PRAttention, SessionRound, apply, evaluate)
+import pytest
+
+from dispatcher.loops import (Decision, FailedRun, Outcome, PRAttention, ResetCause,
+                               SessionRound, apply, evaluate, reset)
 from dispatcher.state import LoopCaps, Stage, TaskState
 
 
@@ -176,3 +179,49 @@ def test_pr_attention_only_touches_ci_counter():
     out = apply(t, d)
     assert out.ci_rounds == 1
     assert (out.review_rounds, out.gate_rounds, out.check_cursor) == (3, 1, "ts1")
+
+
+# --- reset: named lifecycle causes -------------------------------------------
+
+def dirty_task():
+    """A task with all four counters non-zero plus an unrelated PR field."""
+    return task(review_rounds=2, gate_rounds=3, e2e_rounds=4, ci_rounds=5,
+                check_cursor="abc123", feedback_pending=True)
+
+
+@pytest.mark.parametrize("cause,cleared,retained", [
+    (
+        ResetCause.STAGE_STARTED,
+        ("review_rounds", "gate_rounds", "e2e_rounds"),
+        ("ci_rounds",),
+    ),
+    (
+        ResetCause.OPERATOR_WAKE,
+        ("review_rounds", "gate_rounds", "e2e_rounds", "ci_rounds"),
+        (),
+    ),
+    (
+        ResetCause.PR_CYCLE_STARTED,
+        ("ci_rounds",),
+        ("review_rounds", "gate_rounds", "e2e_rounds"),
+    ),
+])
+def test_reset_cause_clears_exactly_owned_counters(cause, cleared, retained):
+    t = dirty_task()
+    out = reset(t, cause)
+    for field in cleared:
+        assert getattr(out, field) == 0, f"{cause}: {field} should be 0"
+    for field in retained:
+        assert getattr(out, field) == getattr(t, field), f"{cause}: {field} should be retained"
+    # Unrelated fields always survive.
+    assert out.check_cursor == "abc123"
+    assert out.feedback_pending is True
+
+
+def test_reset_does_not_touch_park_stage_updated_at():
+    """reset() must leave park/stage/updated_at for the caller to set."""
+    t = task(review_rounds=1, ci_rounds=2)
+    out = reset(t, ResetCause.OPERATOR_WAKE)
+    assert out.park == t.park
+    assert out.stage == t.stage
+    assert out.updated_at == t.updated_at
