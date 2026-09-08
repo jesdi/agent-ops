@@ -96,6 +96,7 @@ class TaskState:
     check_cursor: str = ""               # completedAt of the newest red check acted on
     conflict_cursor: str = ""            # head sha of the last conflict acted on
     attention: str = ""                  # why address-review is pending: feedback|check-failed|conflict|operator
+    operator_request: dict | None = None  # None=no request; {"kind":"spec-approval"} while at gate
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,12 @@ def _read(p: Path) -> TaskState | None:
     d["stage"] = Stage(d["stage"])
     d["labels"] = tuple(d.get("labels", ()))
     d.pop("pending_reply", None)   # retired field, see original comment
+    if "operator_request" not in d:
+        # Legacy record: derive from unambiguous gate evidence.
+        d["operator_request"] = (
+            {"kind": "spec-approval"}
+            if d["stage"] is Stage.AWAITING_SPEC_REVIEW else None
+        )
     return TaskState(**d)
 
 

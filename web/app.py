@@ -14,7 +14,6 @@ from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve
-from dispatcher.state import Stage
 from web import read_model
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
                       current_operator)
@@ -210,7 +209,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def task_request(target: str, issue: int,
                      op: Operator = Depends(current_operator)):
         t = _find_task(target, issue)
-        if t.stage is Stage.AWAITING_SPEC_REVIEW:
+        req = t.operator_request
+        if req is None:
+            return None
+        if req.get("kind") == "spec-approval":
             p, rel = _artifact_file(t, "spec")
             content = read_model.ReadableContent(
                 path=rel,

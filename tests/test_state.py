@@ -557,3 +557,65 @@ def test_read_stage_signal_parses_loop_and_round(tmp_path):
         {"stage": "implement", "status": "working"}))
     sig = read_stage_signal(tmp_path)
     assert (sig.loop, sig.round) == ("", 0)
+
+
+# ---------------------------------------------------------------------------
+# Slice 3: operator_request field — decode-seam tests
+# ---------------------------------------------------------------------------
+
+def test_explicit_null_operator_request_suppresses_legacy_derivation(tmp_path):
+    """A record AT the gate with operator_request: null must load with no
+    request, even though a leftover artifact is present. The explicit null
+    wins; the legacy artifact must not resurrect a request."""
+    (tmp_path / "task-alpha-7.json").write_text(json.dumps({
+        "issue": 7, "target": "alpha", "stage": "awaiting-spec-review",
+        "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
+        "updated_at": "2026-09-08T00:00:00+00:00",
+        "artifact": "/wt/docs/specs/x.md",
+        "operator_request": None,   # explicit null — new-format record
+    }))
+    ts = load(tmp_path, "alpha", 7)
+    assert ts.operator_request is None
+
+
+def test_legacy_record_at_gate_derives_spec_approval(tmp_path):
+    """A record at AWAITING_SPEC_REVIEW without an operator_request key must
+    derive a spec-approval request (legacy-compat path in _read)."""
+    (tmp_path / "task-alpha-8.json").write_text(json.dumps({
+        "issue": 8, "target": "alpha", "stage": "awaiting-spec-review",
+        "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
+        "updated_at": "2026-09-08T00:00:00+00:00",
+        "artifact": "/wt/docs/specs/x.md",
+        # NO operator_request key — legacy record
+    }))
+    ts = load(tmp_path, "alpha", 8)
+    assert ts.operator_request == {"kind": "spec-approval"}
+
+
+def test_legacy_record_not_at_gate_derives_none(tmp_path):
+    """A legacy record in any stage other than AWAITING_SPEC_REVIEW must
+    derive operator_request=None (no request)."""
+    (tmp_path / "task-alpha-9.json").write_text(json.dumps({
+        "issue": 9, "target": "alpha", "stage": "implement",
+        "slot": 0, "worktree": "/wt", "branch": "b", "title": "t",
+        "updated_at": "2026-09-08T00:00:00+00:00",
+        # NO operator_request key — legacy record, non-gate stage
+    }))
+    ts = load(tmp_path, "alpha", 9)
+    assert ts.operator_request is None
+
+
+def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
+    """All four loop counters survive a raw JSON record that includes
+    operator_request plus non-zero counters (covers new-format load path)."""
+    (tmp_path / "task-alpha-10.json").write_text(json.dumps({
+        "issue": 10, "target": "alpha", "stage": "awaiting-spec-review",
+        "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
+        "updated_at": "2026-09-08T00:00:00+00:00",
+        "review_rounds": 1, "gate_rounds": 2, "e2e_rounds": 3, "ci_rounds": 4,
+        "operator_request": {"kind": "spec-approval"},   # explicit new-format
+    }))
+    got = load(tmp_path, "alpha", 10)
+    assert (got.review_rounds, got.gate_rounds,
+            got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
+    assert got.operator_request == {"kind": "spec-approval"}
