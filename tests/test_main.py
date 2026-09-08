@@ -3982,3 +3982,17 @@ def test_resume_woken_does_not_reset_counters(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == "" and sess.resumed
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 1, 2, 1)
+
+
+def test_telegram_reply_operator_wake_clears_all_four_counters(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55,
+              review_rounds=1, gate_rounds=2, e2e_rounds=1, ci_rounds=3)
+    make_task(c, issue=43)  # holds the only slot → 42 stays PARK_WAKE
+    patch_events(monkeypatch, [Reply(reply_to_msg_id=55, text="try again")])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_WAKE
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (0, 0, 0, 0)
