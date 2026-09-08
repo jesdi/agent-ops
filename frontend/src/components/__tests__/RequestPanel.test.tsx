@@ -1,8 +1,10 @@
 import { screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
 import { renderWithProviders } from '../../test/render'
+import { queryKeys } from '../../hooks/queryKeys'
 import { RequestPanel } from '../RequestPanel'
 
 function renderPanel() {
@@ -93,4 +95,57 @@ test('non-markdown non-html readable request renders a download link with a data
   expect(link).toHaveAttribute('download', 'data.txt')
   expect(link.getAttribute('href')).toContain('data:text/plain')
   expect(link.getAttribute('href')).toContain(encodeURIComponent(text))
+})
+
+// Cycle 21: same-path spec revision clears the armed approval confirmation
+test('spec-approval revision at same path clears armed state', async () => {
+  const user = userEvent.setup()
+  const initialText = '# Spec v1\nInitial content.'
+  const revisedText = '# Spec v2\nRevised content.'
+
+  server.use(
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json({
+        kind: 'spec-approval',
+        content: {
+          kind: 'readable',
+          media_type: 'text/markdown',
+          path: 'ops/42/spec.md',
+          text: initialText,
+        },
+      }),
+    ),
+  )
+
+  const { queryClient } = renderPanel()
+
+  // Arm the approve button
+  const approveBtn = await screen.findByRole('button', { name: /approve spec/i })
+  await user.click(approveBtn)
+  expect(screen.getByRole('button', { name: /tap again to approve/i })).toBeInTheDocument()
+
+  // Update handler: same path, different text (revision)
+  server.use(
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json({
+        kind: 'spec-approval',
+        content: {
+          kind: 'readable',
+          media_type: 'text/markdown',
+          path: 'ops/42/spec.md',
+          text: revisedText,
+        },
+      }),
+    ),
+  )
+
+  // Trigger refetch
+  await queryClient.invalidateQueries({ queryKey: queryKeys.request('widget', 42) })
+
+  // Armed must reset — button shows "approve spec" again
+  expect(await screen.findByRole('button', { name: /approve spec/i })).toBeInTheDocument()
+
+  // A second tap re-arms rather than approving
+  await user.click(screen.getByRole('button', { name: /approve spec/i }))
+  expect(screen.getByRole('button', { name: /tap again to approve/i })).toBeInTheDocument()
 })

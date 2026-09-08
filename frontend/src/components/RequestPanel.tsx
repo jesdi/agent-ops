@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { useTaskRequest } from '../hooks/useResources'
 
@@ -13,6 +13,10 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
 }) {
   const req = useTaskRequest(target, issue)
   const [armed, setArmed] = useState(false)
+
+  const contentText = req.data?.content.kind === 'readable' ? req.data.content.text : null
+  // Reset armed when the spec content changes so the operator must re-confirm the revised text.
+  useEffect(() => { setArmed(false) }, [contentText])
 
   if (req.isError) {
     return (
