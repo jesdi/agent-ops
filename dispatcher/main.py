@@ -24,7 +24,7 @@ from pathlib import Path
 from dispatcher.budget import UsageSnapshot, fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
-from dispatcher import (eventlog, failures, intents, messages, pr_poll,
+from dispatcher import (eventlog, failures, intents, loops, messages, pr_poll,
                         queue_ops, relogin, tmux_migration, triage)
 from dispatcher.github import GitHubClient
 
@@ -705,18 +705,13 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
         if not conclusion:
             continue
         if conclusion != "success":
-            # A red run is one round of the stage's fix loop: e2e for the
-            # implement/review stages, ci for a PR already open.
-            loop = "ci" if task.stage is Stage.ADDRESS_REVIEW else "e2e"
-            task, n, cap = _count_round(cfg, target, task, loop,
-                                        f"run {task.ci_run_id} {conclusion}")
-            if n > cap:
-                _park_exhausted(cfg, deps, target, task,
-                                f"{loop} loop exceeded its cap of {cap} rounds "
-                                f"(run {task.ci_run_id} {conclusion})")
+            dec = loops.evaluate(task, loops.FailedRun(f"run {task.ci_run_id} {conclusion}"),
+                                 cfg.loop_caps)
+            task, parked = _apply_loop_decision(
+                cfg, deps, target, task, dec,
+                park_exhausted=lambda t, note: _park_exhausted(cfg, deps, target, t, note))
+            if parked:
                 continue
-            if n == cap:
-                _notify(deps, target, task, "last_round", f"{loop} round {n}/{cap}")
         reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
                  f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
         _queue_message(cfg, task.issue, reply, "dispatcher")
