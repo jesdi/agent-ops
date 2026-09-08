@@ -104,3 +104,63 @@ def test_plan_done_denied_then_recovered_starts_ticket_one(tmp_path, monkeypatch
     started = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "ticket-started"]
     assert len(started) == 1
     assert started[0]["detail"] == "ticket 1/3"
+
+
+# ---------------------------------------------------------------------------
+# Slice 6: in-flight ticket pass is a no-op
+# ---------------------------------------------------------------------------
+
+def test_working_ticket_pass_is_a_noop(tmp_path, monkeypatch):
+    """Ticket 2 already in-flight (working signal); a pass must do nothing."""
+    config = cfg(tmp_path)
+    wt = make_task(config, stage=Stage.IMPLEMENT, ticket_cursor=2, ticket_count=2)
+    write_tickets(wt, 2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "implement", "status": "working",
+    }))
+    sessions = FakeSessions(alive={42})
+    dependencies = deps(sess=sessions)
+
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(config, dependencies)
+
+    assert sessions.spawned == []
+    assert sessions.ended == []
+    task = load(config.state_dir, "portfolio_eval", 42)
+    assert task.ticket_cursor == 2
+    started = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "ticket-started"]
+    assert started == []
+
+
+# ---------------------------------------------------------------------------
+# Slice 7: last ticket done → REVIEW (admitted) / deferred (denied)
+# ---------------------------------------------------------------------------
+
+def test_last_ticket_completion_launches_review_deferred_under_denial(tmp_path, monkeypatch):
+    """last ticket done: denied pass defers; admitted pass spawns review."""
+    config = cfg(tmp_path)
+    wt = make_task(config, stage=Stage.IMPLEMENT, ticket_cursor=2, ticket_count=2)
+    write_tickets(wt, 2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "implement", "status": "done", "note": "ticket 2 complete",
+    }))
+    sessions = FakeSessions(alive={42})
+    dependencies = deps(sess=sessions)
+
+    # Denied pass: no spawn, stage stays IMPLEMENT
+    patch_usage(monkeypatch, util=0.99)
+    main.run_pass(config, dependencies)
+    assert sessions.spawned == []
+    task = load(config.state_dir, "portfolio_eval", 42)
+    assert task.stage == Stage.IMPLEMENT
+
+    # Admitted pass: spawns review
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(config, dependencies)
+    assert len(sessions.spawned) == 1
+    issue, stage_name, _model, _prompt = sessions.spawned[0]
+    assert (issue, stage_name) == (42, "review")
+    task = load(config.state_dir, "portfolio_eval", 42)
+    assert task.stage == Stage.REVIEW
+    started = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "ticket-started"]
+    assert started == []
