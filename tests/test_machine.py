@@ -4,7 +4,9 @@ import pytest
 
 from dataclasses import replace
 
+from dispatcher.loops import Outcome
 from dispatcher.machine import (
+    ApplyDecision,
     HandleCrash,
     NoOp,
     Notify,
@@ -12,7 +14,6 @@ from dispatcher.machine import (
     ParkForInput,
     ParkForReview,
     PublishSpec,
-    RecordRound,
     RetryStage,
     SetTaskStage,
     SetTickets,
@@ -196,19 +197,24 @@ def loop_sig(loop, n, stage="implement"):
 
 def test_new_gate_round_is_recorded():
     acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True)
-    assert acts == [RecordRound("gate", 1)]
+    assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.WITHIN_LIMIT
+    assert acts[0].decision.round == 1
 
 
 def test_last_gate_round_records_and_pings():
     acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 2), True)
-    assert acts == [RecordRound("gate", 2), Notify("last_round", "gate round 2/2")]
+    assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.LAST_ROUND
+    assert acts[0].decision.round == 2
 
 
 def test_gate_round_past_the_cap_parks():
     t = replace(task(Stage.IMPLEMENT), gate_rounds=2)
     acts = next_actions(t, loop_sig("gate", 3), True)
-    assert acts == [RecordRound("gate", 3),
-                    ParkForInput("gate loop exceeded its cap of 2 rounds")]
+    assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.EXHAUSTED
+    assert acts[0].decision.round == 3
 
 
 def test_counters_survive_a_resume():
@@ -223,8 +229,9 @@ def test_review_loop_uses_its_own_cap():
     t = replace(task(Stage.REVIEW), review_rounds=1)
     acts = next_actions(t, loop_sig("review", 2, stage="review"), True,
                         caps=LoopCaps(review=1))
-    assert acts == [RecordRound("review", 2),
-                    ParkForInput("review loop exceeded its cap of 1 rounds")]
+    assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.EXHAUSTED
+    assert acts[0].decision.round == 2
 
 
 def test_unknown_loop_is_ignored():
@@ -233,8 +240,9 @@ def test_unknown_loop_is_ignored():
 
 def test_round_report_then_waiting_records_and_parks_for_input():
     acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True, waiting=True)
-    assert acts == [RecordRound("gate", 1),
-                    ParkForInput("(session stopped mid-stage waiting for input)")]
+    assert len(acts) == 2 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.WITHIN_LIMIT
+    assert acts[1] == ParkForInput("(session stopped mid-stage waiting for input)")
 
 
 def test_round_on_a_done_signal_is_not_a_round():

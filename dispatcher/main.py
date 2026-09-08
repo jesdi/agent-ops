@@ -31,10 +31,14 @@ from dispatcher.github import GitHubClient
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
-from dispatcher.machine import (HandleCrash, LOOP_FIELDS, NoOp, Notify, ParkForCI,
+from dispatcher.loops import Outcome
+from dispatcher.machine import (ApplyDecision, HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
-                                RecordRound, RetryStage, SetTaskStage, SetTickets,
+                                RetryStage, SetTaskStage, SetTickets,
                                 SpawnStage, next_actions)
+# Loop name → TaskState counter field (used by _count_round; Tasks 3-5 migrate this).
+LOOP_FIELDS = {"review": "review_rounds", "gate": "gate_rounds",
+               "e2e": "e2e_rounds", "ci": "ci_rounds"}
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
@@ -508,6 +512,29 @@ def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="loop exhausted: " + note)
+
+
+def _apply_loop_decision(cfg: Config, deps: Deps, target: Target,
+                         task: TaskState, decision) -> tuple[TaskState, bool]:
+    """Shared executor for a loop policy Decision (from machine.ApplyDecision).
+    Returns (updated_task, parked). Parked=True means the caller must return."""
+    if decision.outcome is Outcome.UNCHANGED:
+        return task, False
+    task = replace(decision.apply_to(task), updated_at=_now())
+    save(cfg.state_dir, task)
+    eventlog.append_event(cfg.state_dir, "round", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail=decision.description)
+    if decision.outcome is Outcome.EXHAUSTED:
+        loop, cap = decision.loop.value, decision.cap
+        note = f"{loop} loop exceeded its cap of {cap} rounds"
+        if decision.detail:
+            note += f" ({decision.detail})"
+        _park_exhausted(cfg, deps, target, task, note)
+        return task, True
+    if decision.outcome is Outcome.LAST_ROUND:
+        _notify(deps, target, task, "last_round", decision.description)
+    return task, False
 
 
 def _count_round(cfg: Config, target: Target, task: TaskState, loop: str,
@@ -1031,14 +1058,10 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                   issue=task.issue, stage=Stage.IMPLEMENT.value,
                                   detail=f"ticket {act.cursor}/{act.count}")
             continue
-        if isinstance(act, RecordRound):
-            field = LOOP_FIELDS[act.loop]
-            task = replace(task, **{field: act.round}, updated_at=_now())
-            save(cfg.state_dir, task)
-            eventlog.append_event(cfg.state_dir, "round", target=target.name,
-                                  issue=task.issue, stage=task.stage.value,
-                                  detail=f"{act.loop} round {act.round}/"
-                                         f"{getattr(cfg.loop_caps, act.loop)}")
+        if isinstance(act, ApplyDecision):
+            task, parked = _apply_loop_decision(cfg, deps, target, task, act.decision)
+            if parked:
+                return
             continue
         if isinstance(act, ParkForInput):
             _park_for_input(cfg, deps, target, task, act.note, artifact=act.artifact)
