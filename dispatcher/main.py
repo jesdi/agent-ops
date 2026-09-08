@@ -31,9 +31,10 @@ from dispatcher.github import GitHubClient
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
-from dispatcher.machine import (HandleCrash, LOOP_FIELDS, NoOp, Notify, ParkForCI,
+from dispatcher import loops
+from dispatcher.machine import (ApplyRound, HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
-                                RecordRound, RetryStage, SetTaskStage, SetTickets,
+                                RetryStage, SetTaskStage, SetTickets,
                                 SpawnStage, next_actions)
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
@@ -508,6 +509,37 @@ def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="loop exhausted: " + note)
+
+
+# Legacy loop→counter mapping for the CI/PR increment paths (_count_round),
+# which still carry the pre-policy model. Tasks 3/4 fold those paths into
+# loops.evaluate/_apply_round and delete this. The session path no longer uses
+# it — loops.py owns the (now private) mapping.
+LOOP_FIELDS = {"review": "review_rounds", "gate": "gate_rounds",
+               "e2e": "e2e_rounds", "ci": "ci_rounds"}
+
+
+def _apply_round(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                 decision: loops.Decision) -> tuple[TaskState, str]:
+    """The one place a loop decision takes effect: persist the counter, write
+    the `round` event, and ping the operator on the last round. Returns
+    (task, park_note); a non-empty note means the loop is EXHAUSTED and the
+    caller must park with it (its lifecycle-appropriate park) and stop. Both
+    the session path (ApplyRound) and — from Tasks 3/4 — the CI/PR paths call
+    this."""
+    task = replace(loops.apply(task, decision), updated_at=_now())
+    save(cfg.state_dir, task)
+    detail = (f"{decision.loop} round {decision.round}/{decision.cap}"
+              + (f": {decision.detail}" if decision.detail else ""))
+    eventlog.append_event(cfg.state_dir, "round", target=target.name,
+                          issue=task.issue, stage=task.stage.value, detail=detail)
+    if decision.outcome is loops.Outcome.LAST_ROUND:
+        _notify(deps, target, task, "last_round",
+                f"{decision.loop} round {decision.cap}/{decision.cap}")
+    if decision.outcome is loops.Outcome.EXHAUSTED:
+        return task, (f"{decision.loop} loop exceeded its cap of {decision.cap} rounds"
+                      + (f" ({decision.detail})" if decision.detail else ""))
+    return task, ""
 
 
 def _count_round(cfg: Config, target: Target, task: TaskState, loop: str,
@@ -1031,14 +1063,11 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                   issue=task.issue, stage=Stage.IMPLEMENT.value,
                                   detail=f"ticket {act.cursor}/{act.count}")
             continue
-        if isinstance(act, RecordRound):
-            field = LOOP_FIELDS[act.loop]
-            task = replace(task, **{field: act.round}, updated_at=_now())
-            save(cfg.state_dir, task)
-            eventlog.append_event(cfg.state_dir, "round", target=target.name,
-                                  issue=task.issue, stage=task.stage.value,
-                                  detail=f"{act.loop} round {act.round}/"
-                                         f"{getattr(cfg.loop_caps, act.loop)}")
+        if isinstance(act, ApplyRound):
+            task, park_note = _apply_round(cfg, deps, target, task, act.decision)
+            if park_note:
+                _park_for_input(cfg, deps, target, task, park_note)
+                return
             continue
         if isinstance(act, ParkForInput):
             _park_for_input(cfg, deps, target, task, act.note, artifact=act.artifact)
