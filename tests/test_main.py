@@ -4125,3 +4125,50 @@ def test_telegram_reply_operator_wake_clears_all_four_counters(tmp_path, monkeyp
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (0, 0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# Slice 10 lock-ins: admission-denied wake retains operator_request
+# ---------------------------------------------------------------------------
+
+def test_admission_budget_denied_retains_operator_request(tmp_path):
+    """Slice 10 regression lock: budget_ok=False leaves operator_request intact.
+
+    Passes by construction:
+    - _wake replaces only park/hold_for_attach/updated_at — operator_request untouched.
+    - _resume_woken returns immediately when budget_ok is False (main.py:875),
+      so no task state is modified at all.
+    """
+    c = cfg(tmp_path)
+    req = {"kind": "answers", "path": ".agent/questionnaire.md"}
+    make_task(c, issue=42, park=PARK_HUMAN, operator_request=req)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._wake(c, task, "please answer")
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=False)
+    saved = load(c.state_dir, "portfolio_eval", 42)
+    assert saved.operator_request == req   # untouched
+    assert saved.park == PARK_WAKE         # woken, not resumed
+    assert not d.sessions.resumed          # no resume executed
+
+
+def test_admission_capacity_full_retains_operator_request(tmp_path):
+    """Slice 10 regression lock: capacity-full _mark_wake_blocked leaves operator_request intact.
+
+    Passes by construction:
+    - _wake replaces only park/hold_for_attach/updated_at — operator_request untouched.
+    - _mark_wake_blocked (main.py:835) only writes a filesystem marker and logs;
+      it never calls save() or modifies any TaskState.
+    """
+    c = replace_capacity(cfg(tmp_path), 1)
+    req = {"kind": "answers", "path": ".agent/questionnaire.md"}
+    make_task(c, issue=42, park=PARK_HUMAN, operator_request=req)
+    make_task(c, issue=43, park="", stage=Stage.IMPLEMENT)  # active, fills capacity
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._wake(c, task, "please answer")
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    saved = load(c.state_dir, "portfolio_eval", 42)
+    assert saved.operator_request == req   # untouched
+    assert saved.park == PARK_WAKE         # still wake-queued, not resumed
+    assert not d.sessions.resumed          # no resume executed
