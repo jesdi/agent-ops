@@ -7,6 +7,7 @@ from dataclasses import replace
 from dispatcher.loops import Outcome
 from dispatcher.machine import (
     ApplyDecision,
+    ArmSpecApproval,
     HandleCrash,
     NoOp,
     Notify,
@@ -20,7 +21,7 @@ from dispatcher.machine import (
     SpawnStage,
     next_actions,
 )
-from dispatcher.state import LoopCaps, Stage, StageSignal, TaskState
+from dispatcher.state import LoopCaps, SpecApprovalRequest, Stage, StageSignal, TaskState
 
 GOOD_SPEC = "# t — design\n\n## Problem\n\n" + ("x " * 400) + "\n\n## Decisions\n\n" + ("y " * 400)
 GOOD_TICKET = ("# 01 — thing\n\n**What to build:** " + ("behaviour " * 30)
@@ -78,8 +79,9 @@ def test_awaiting_review_notifies_once():
     assert SetTaskStage(Stage.AWAITING_SPEC_REVIEW) in acts
     assert PublishSpec() in acts
     assert any(isinstance(a, Notify) and a.template == "awaiting_spec_review" for a in acts)
-    # second pass, stage already updated → no re-notify
-    again = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+    # second pass: stage updated + operator_request set (as the executor does) → no re-notify
+    again = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
+                                 operator_request=SpecApprovalRequest()),
                          sig("spec", "awaiting-review"), True)
     assert again == [NoOp()]
 
@@ -98,8 +100,9 @@ def test_spec_awaiting_review_publishes_between_stage_and_notify():
 
 
 def test_gate_and_non_spec_stages_do_not_publish():
-    # already at the gate: no re-publish on every pass
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+    # already at the gate with operator_request set: no re-publish, no re-arm
+    acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
+                                operator_request=SpecApprovalRequest()),
                         sig("spec", "awaiting-review"), session_alive=True)
     assert PublishSpec() not in acts and acts == [NoOp()]
     # misrouted awaiting-review from a non-SPEC stage: still ignored
@@ -188,7 +191,7 @@ def test_awaiting_answers_parks_with_the_artifact():
     acts = next_actions(task(Stage.SPEC),
                         StageSignal("spec", "awaiting-answers", note="7 questions",
                                     artifact=".agent/questionnaire.md"), True)
-    assert acts == [ParkForInput("7 questions", artifact=".agent/questionnaire.md")]
+    assert acts == [ParkForInput("7 questions", artifact=".agent/questionnaire.md", is_answers=True)]
 
 
 def loop_sig(loop, n, stage="implement"):
@@ -370,8 +373,9 @@ def test_stall_zero_threshold_disables():
 
 
 def test_stall_ignores_gated_statuses():
-    # idle-by-design states never stall-park
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+    # idle-by-design states never stall-park; operator_request set = normal gate state
+    acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
+                                operator_request=SpecApprovalRequest()),
                         sig("spec", "awaiting-review"), True, idle_seconds=1e9)
     assert acts == [NoOp()]
     acts = next_actions(task(Stage.IMPLEMENT),
@@ -404,7 +408,9 @@ def test_gate_parks_once_the_grace_period_elapses():
 
 
 def test_gate_waits_inside_the_grace_period():
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+    # With operator_request set: approval already present → NoOp (grace preserved)
+    acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
+                                operator_request=SpecApprovalRequest()),
                         sig("spec", "awaiting-review"), session_alive=True,
                         grace_elapsed=False)
     assert acts == [NoOp()]
@@ -465,3 +471,22 @@ def test_address_review_blocked_parks_for_input():
 def test_address_review_dead_session_is_crash():
     acts = next_actions(task(Stage.ADDRESS_REVIEW), None, False)
     assert acts == [HandleCrash()]
+
+
+# Slice 12 tests
+
+def test_gate_rearms_approval_when_operator_request_cleared():
+    """Slice 12: resumed task at gate with cleared operator_request → re-arm, not NoOp."""
+    t = task(Stage.AWAITING_SPEC_REVIEW)  # operator_request=None by default
+    acts = next_actions(t, sig("spec", "awaiting-review", artifact="docs/spec.md"),
+                        session_alive=True, grace_elapsed=False)
+    assert acts == [ArmSpecApproval(artifact="docs/spec.md")]
+
+
+def test_gate_does_not_rearm_when_operator_request_already_set():
+    """Slice 12: operator_request set → NoOp (slice 8 invariant preserved)."""
+    t = replace(task(Stage.AWAITING_SPEC_REVIEW),
+                operator_request=SpecApprovalRequest())
+    acts = next_actions(t, sig("spec", "awaiting-review", artifact="docs/spec.md"),
+                        session_alive=True, grace_elapsed=False)
+    assert acts == [NoOp()]

@@ -1,11 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router'
-import { ArtifactPanel } from '../components/ArtifactPanel'
 import { DescriptionPanel } from '../components/DescriptionPanel'
 import { MessageThread } from '../components/MessageThread'
 import { PendingBadge } from '../components/PendingBadge'
-import { SpecPanel } from '../components/SpecPanel'
+import { RequestPanel } from '../components/RequestPanel'
 import { TerminalHistory } from '../components/TerminalHistory'
 import { queryKeys } from '../hooks/queryKeys'
 import { useQueueActions } from '../hooks/useQueueActions'
@@ -62,9 +61,12 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
       // Only the reply action owns the textarea — park/kill/retry must not
       // wipe text the operator already typed.
       if (isReply) setReplyText('')
-      // Only refetch pending intents; task state changes when the
-      // dispatcher applies the intent — never optimistically.
+      // Refetch pending intents; task state changes when the dispatcher
+      // applies the intent — never optimistically.
       void queryClient.invalidateQueries({ queryKey: queryKeys.pendingIntents })
+      // A reply/resume can clear or replace the operator_request, so
+      // invalidate it so stale approval/answers content disappears.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.request(target, issue) })
     },
     onError: (err) =>
       setActionError(err instanceof ApiError ? err.detail : String(err)),
@@ -127,16 +129,14 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
 
       <DescriptionPanel target={target} issue={issue} />
 
-      {card.stage === 'awaiting-spec-review' && (
-        <SpecPanel
-          target={target}
-          issue={issue}
-          busy={busy}
-          onApprove={() =>
-            runIntent(() => api.reply(target, issue, 'Approved — proceed.'))
-          }
-        />
-      )}
+      <RequestPanel
+        target={target}
+        issue={issue}
+        busy={busy}
+        onApprove={() =>
+          runIntent(() => api.reply(target, issue, 'Approved — proceed.'))
+        }
+      />
 
       {/* On the load path the page owns the dead/parked state; the console
           below is read-only either way. */}
@@ -191,7 +191,6 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
         </p>
       )}
 
-      <ArtifactPanel target={target} issue={issue} enabled={card.park !== ''} />
       <MessageThread messages={messages} />
 
       <div className="flex flex-wrap items-end gap-2">

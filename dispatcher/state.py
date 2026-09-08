@@ -42,6 +42,24 @@ class LoopCaps:
     e2e: int = 3      # failed end-to-end runs (implement/review)
     ci: int = 3       # fixes on an open PR (red check, conflict, failed run)
 
+@dataclass(frozen=True)
+class SpecApprovalRequest:
+    kind: str = "spec-approval"
+
+
+@dataclass(frozen=True)
+class AnswersRequest:
+    path: str
+    kind: str = "answers"
+
+    def __post_init__(self):
+        if not self.path:
+            raise ValueError("answers request requires a non-empty path")
+
+
+OperatorRequest = SpecApprovalRequest | AnswersRequest  # type alias
+
+
 # A task that holds no E2E slot. Every session-ending park releases its slot
 # back to the pool; only PARK_LOGIN keeps a slot because it keeps a live
 # container and session running (the pane is where the operator types the
@@ -79,7 +97,6 @@ class TaskState:
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time
     plan_retries: int = 0                # in-session plan-format retries used
-    artifact: str = ""                   # spec path while at the review gate
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
     feedback_pending: bool = False       # feedback seen, address-review deferred
@@ -96,6 +113,11 @@ class TaskState:
     check_cursor: str = ""               # completedAt of the newest red check acted on
     conflict_cursor: str = ""            # head sha of the last conflict acted on
     attention: str = ""                  # why address-review is pending: feedback|check-failed|conflict|operator
+    # None=no request; SpecApprovalRequest while at gate; AnswersRequest written
+    # ONLY by _park_for_input in dispatcher/main.py, and only when a
+    # worktree-contained path resolves — so an answers request never exists
+    # without a valid path.
+    operator_request: "OperatorRequest | None" = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +158,26 @@ def _read(p: Path) -> TaskState | None:
     d["stage"] = Stage(d["stage"])
     d["labels"] = tuple(d.get("labels", ()))
     d.pop("pending_reply", None)   # retired field, see original comment
+    if "operator_request" not in d:
+        # Legacy record: derive from unambiguous gate evidence.
+        if d["stage"] is Stage.AWAITING_SPEC_REVIEW:
+            d["operator_request"] = SpecApprovalRequest()
+            # Backfill spec_path so the /request endpoint can resolve content
+            # without reading the overloaded artifact field (slice 14).
+            if not d.get("spec_path"):
+                d["spec_path"] = d.get("artifact", "")
+        else:
+            d["operator_request"] = None
+    elif d["operator_request"] is not None:
+        raw = d["operator_request"]
+        kind = raw.get("kind")
+        if kind == "spec-approval":
+            d["operator_request"] = SpecApprovalRequest()
+        elif kind == "answers":
+            d["operator_request"] = AnswersRequest(path=raw.get("path", ""))
+        else:
+            raise ValueError(f"unrecognized operator_request kind {kind!r}")
+    d.pop("artifact", None)        # retired field (slice 24); backfill above used it
     return TaskState(**d)
 
 

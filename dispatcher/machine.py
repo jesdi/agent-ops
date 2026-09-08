@@ -81,11 +81,21 @@ class NoOp:
 class ParkForInput:
     note: str = ""
     artifact: str = ""   # awaiting-answers: the file the operator must answer
+    is_answers: bool = False  # True only for awaiting-answers signals
 
 
 @dataclass(frozen=True)
 class ParkForCI:
     run_id: int
+
+
+@dataclass(frozen=True)
+class ArmSpecApproval:
+    """Re-establish the spec-approval operator_request on a resumed gate task
+    whose operator_request was cleared by the resume (slice 12). Does NOT
+    re-stamp updated_at (grace clock must not restart) and does NOT emit
+    SetTaskStage (no stage transition, no re-publish, no re-notify)."""
+    artifact: str = ""
 
 
 @dataclass(frozen=True)
@@ -175,7 +185,7 @@ def next_actions(
     if signal.status == "awaiting-answers":
         # Questionnaire, prototype or wizard: an input park that carries the
         # file the operator must look at. The console serves it.
-        return [ParkForInput(signal.note, artifact=signal.artifact)]
+        return [ParkForInput(signal.note, artifact=signal.artifact, is_answers=True)]
 
     if signal.status == "working":
         if waiting and session_alive:
@@ -186,6 +196,8 @@ def next_actions(
         if task.stage == Stage.AWAITING_SPEC_REVIEW:
             if grace_elapsed:
                 return [ParkForReview()]
+            if not task.operator_request:
+                return [ArmSpecApproval(artifact=signal.artifact)]
             return [NoOp()]  # already notified on a previous pass
         if task.stage != Stage.SPEC:
             return [NoOp()]  # only the SPEC stage emits awaiting-review

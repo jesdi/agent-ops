@@ -10,14 +10,15 @@ export type QuarantineEntry = components['schemas']['QuarantineEntry']
 export type FingerprintEntry = components['schemas']['FingerprintEntry']
 export type HistoryView = components['schemas']['HistoryView']
 export type EventEntry = components['schemas']['EventEntry']
-export type SpecView = components['schemas']['SpecView']
 export type PaneHistory = components['schemas']['PaneHistory']
 export type NextClaimView = components['schemas']['NextClaimView']
 export type GhostCard = components['schemas']['GhostCard']
 export type TimelineEntry = components['schemas']['TimelineEntry']
 export type IssueDescription = components['schemas']['IssueDescription']
 export type MessageView = components['schemas']['MessageView']
-export type ArtifactView = components['schemas']['ArtifactView']
+export type OperatorRequest = components['schemas']['OperatorRequest']
+export type ReadableContent = components['schemas']['ReadableContent']
+export type UnavailableContent = components['schemas']['UnavailableContent']
 
 export interface PendingIntent {
   action: string
@@ -86,8 +87,6 @@ export const api = {
   board: () => request<BoardView>('/board'),
   taskDetail: (target: string, issue: number) =>
     request<TaskDetail>(`/task/${target}/${issue}`),
-  taskSpec: (target: string, issue: number) =>
-    request<SpecView>(`/task/${target}/${issue}/spec`),
   taskHistory: (target: string, issue: number, lines = 2000) =>
     request<PaneHistory>(`/task/${target}/${issue}/history?lines=${lines}`),
   budget: () => request<BudgetView>('/budget'),
@@ -117,6 +116,6 @@ export const api = {
     post<IntentAccepted>(`/task/${target}/${issue}/resume`, text ? { text } : {}),
   taskDescription: (target: string, issue: number) =>
     request<IssueDescription>(`/task/${target}/${issue}/description`),
-  taskArtifact: (target: string, issue: number) =>
-    request<ArtifactView>(`/task/${target}/${issue}/artifact`),
+  taskRequest: (target: string, issue: number) =>
+    request<OperatorRequest | null>(`/task/${target}/${issue}/request`),
 }
