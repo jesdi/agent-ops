@@ -103,6 +103,37 @@ spend a fix round. A task parked after exhausting fix attempts is distinct from 
 execution resources. Deferred items: usage collectors, weekly scheduling, model suitability/fallback,
 runtime adapters, cross-runtime session continuation.
 
+## Operator-request ownership
+
+**Durable spec reference**: `TaskState.spec_path` — recorded when the task enters AWAITING-SPEC-REVIEW,
+retained across plan / implement / review / PR-OPEN / address-review. Worktree-relative path.
+
+**Operator request** = `TaskState.operator_request`: `None` (no request), `{"kind": "spec-approval"}`,
+or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns its lifecycle writes:
+
+- Establish on entering AWAITING-SPEC-REVIEW (spec-approval).
+- Set answers kind when a valid answers artifact is signalled.
+- Clear on: successful resume, stage transition, ordinary+exhaustion park, terminal stage, CI/login supersede.
+- Retain on admission denial (resources unavailable at wake time).
+- Re-arm on a resumed gate re-signal.
+
+The web layer READS `operator_request`; it never infers a request from park state.
+
+**Endpoint and UI**: one `/api/task/{target}/{issue}/request` → `OperatorRequest | null` with a
+discriminated `readable | unavailable` content union. One `RequestPanel` + media renderer in the
+frontend. Approval is only possible on a `readable` spec-approval request.
+
+**Legacy conversion**: localized in `state._read` (migrated from the old `artifact`/`spec_path`-inferred
+request). The external stage-signal artifact parser (`read_stage_signal`) is separate and retained.
+
+**Three distinct questions** — kept separate by design:
+
+1. *(Task state machine)* What work is next?
+2. *(Operator-request lifecycle)* Is there a pending operator action, and what content does it need?
+3. *(Loop policy)* Is another fix attempt allowed? — owned by `loops.py`.
+
+Request handling must remain independent of loop comparisons, reset logic, model IDs, and provider names.
+
 ## Flagged ambiguities
 
 - "Global skills" — ambiguous between the mac's `~/.claude` and the box's

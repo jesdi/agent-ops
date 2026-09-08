@@ -67,10 +67,10 @@ export function useIssueDescription(target: string, issue: number, enabled: bool
 
 /** The unified operator request (spec-approval or answers). retry:false —
  *  null = no request, not a transient failure. Participates in the same
- *  fallback polling as task-detail/artifact so an out-of-band clear is
- *  eventually reflected.
- *  // ponytail: fires unconditionally (no enabled guard); add `enabled` if
- *  //   request traffic matters (e.g. many concurrent task panes). */
+ *  fallback polling as task-detail so an out-of-band clear is eventually
+ *  reflected. */
+// ponytail: fires unconditionally (no enabled guard); add `enabled` if
+//   request traffic matters (e.g. many concurrent task panes).
 export function useTaskRequest(target: string, issue: number) {
   const refetchInterval = useFallbackInterval()
   return useQuery({

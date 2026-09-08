@@ -2393,7 +2393,7 @@ def test_grace_expiry_park_preserves_spec_approval_request(tmp_path, monkeypatch
     monkeypatch.setattr(main.spec_publish, "ensure_published",
                         lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
     c = cfg(tmp_path)
-    # Build the spec file before make_task so we can pass its absolute path as artifact.
+    # Build the spec file before make_task so we can pass its absolute path as spec_path.
     issue_wt = Path(c.targets[0].worktrees_path) / "task-42"
     spec = issue_wt / "docs" / "specs" / "x-design.md"
     spec.parent.mkdir(parents=True, exist_ok=True)
