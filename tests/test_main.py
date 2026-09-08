@@ -3834,6 +3834,9 @@ def test_failed_e2e_runs_count_and_park_past_the_cap(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     # Round 1 of 1: counted, last-round ping, woken AND resumed in the same pass.
     assert (t.park, t.e2e_rounds) == ("", 1) and "last_round" in d.notifier.sent
+    # Guard: last_round note must be suffix-free ("e2e round 1/1", not "e2e round 1/1: run 7 failure")
+    last_round_note = next(ctx["note"] for tmpl, ctx in d.notifier.calls if tmpl == "last_round")
+    assert last_round_note == "e2e round 1/1", f"last_round note regressed: {last_round_note!r}"
     assert d.sessions.resumed
     # Simulate the resumed session parking for CI again and failing again.
     save(c.state_dir, dc_replace(t, park=PARK_CI, ci_run_id=8))

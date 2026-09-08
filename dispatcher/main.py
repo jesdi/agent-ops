@@ -537,7 +537,8 @@ def _apply_loop_decision(cfg: Config, deps: Deps, target: Target,
         park_exhausted(task, note)
         return task, True
     if decision.outcome is Outcome.LAST_ROUND:
-        _notify(deps, target, task, "last_round", decision.description)
+        _notify(deps, target, task, "last_round",
+                f"{decision.loop.value} round {decision.round}/{decision.cap}")
     return task, False
 
 
