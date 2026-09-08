@@ -3,7 +3,7 @@ mocking, no inspecting the private field mapping — only the public interface
 (SessionRound / evaluate / apply / Decision / Outcome)."""
 from dataclasses import replace
 
-from dispatcher.loops import (Decision, FailedRun, Outcome, SessionRound, apply, evaluate)
+from dispatcher.loops import (Decision, FailedRun, Outcome, PRAttention, SessionRound, apply, evaluate)
 from dispatcher.state import LoopCaps, Stage, TaskState
 
 
@@ -140,3 +140,39 @@ def test_failed_run_zero_cap_exhausts_immediately_no_last_round():
     d = evaluate(task(e2e_rounds=0), fr("e2e"), LoopCaps(e2e=0))
     assert d.outcome is Outcome.EXHAUSTED
     assert d.outcome is not Outcome.LAST_ROUND
+
+
+# --- PRAttention: increment on "ci" loop ------------------------------------
+
+def pa(detail="check-failed on PR #42"):
+    return PRAttention(detail=detail)
+
+
+def test_pr_attention_increments_ci_counter():
+    d = evaluate(task(ci_rounds=0), pa(), LoopCaps(ci=3))
+    assert d == Decision("ci", Outcome.WITHIN_LIMIT, round=1, cap=3, detail="check-failed on PR #42")
+
+
+def test_pr_attention_last_round_at_cap():
+    d = evaluate(task(ci_rounds=1), pa(), LoopCaps(ci=2))
+    assert d == Decision("ci", Outcome.LAST_ROUND, round=2, cap=2, detail="check-failed on PR #42")
+
+
+def test_pr_attention_exhaustion_over_cap():
+    d = evaluate(task(ci_rounds=2), pa(), LoopCaps(ci=2))
+    assert d == Decision("ci", Outcome.EXHAUSTED, round=3, cap=2, detail="check-failed on PR #42")
+
+
+def test_pr_attention_zero_cap_exhausts_immediately():
+    d = evaluate(task(ci_rounds=0), pa(), LoopCaps(ci=0))
+    assert d.outcome is Outcome.EXHAUSTED
+    assert d.outcome is not Outcome.LAST_ROUND
+
+
+def test_pr_attention_only_touches_ci_counter():
+    # apply preserves all other counters (same guarantee as FailedRun)
+    t = task(ci_rounds=0, review_rounds=3, gate_rounds=1, check_cursor="ts1")
+    d = evaluate(t, pa(), LoopCaps(ci=5))
+    out = apply(t, d)
+    assert out.ci_rounds == 1
+    assert (out.review_rounds, out.gate_rounds, out.check_cursor) == (3, 1, "ts1")

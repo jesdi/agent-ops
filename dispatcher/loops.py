@@ -46,8 +46,15 @@ class FailedRun:
     detail: str  # e.g. "run 123 failure"
 
 
+@dataclass(frozen=True)
+class PRAttention:
+    """A red check or conflict on an open PR. INCREMENT on the "ci" loop.
+    detail is e.g. f"{res.kind} on PR #{pr}"."""
+    detail: str  # loop is always "ci"
+
+
 # The observation union `evaluate` accepts.
-Observation = SessionRound | FailedRun
+Observation = SessionRound | FailedRun | PRAttention
 
 
 class Outcome(Enum):
@@ -88,6 +95,9 @@ def evaluate(task: TaskState, obs: Observation, caps: LoopCaps) -> Decision:
     if isinstance(obs, FailedRun):
         n = getattr(task, _FIELDS[obs.loop]) + 1
         return _classify(obs.loop, n, getattr(caps, obs.loop), obs.detail)
+    if isinstance(obs, PRAttention):
+        n = getattr(task, _FIELDS["ci"]) + 1
+        return _classify("ci", n, getattr(caps, "ci"), obs.detail)
     raise TypeError(f"unsupported observation: {obs!r}")
 
 

@@ -511,13 +511,6 @@ def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
                           detail="loop exhausted: " + note)
 
 
-# Legacy loop→counter mapping for the CI/PR increment paths (_count_round),
-# which still carry the pre-policy model. Tasks 3/4 fold those paths into
-# loops.evaluate/_apply_round and delete this. The session path no longer uses
-# it — loops.py owns the (now private) mapping.
-LOOP_FIELDS = {"review": "review_rounds", "gate": "gate_rounds",
-               "e2e": "e2e_rounds", "ci": "ci_rounds"}
-
 
 def _apply_round(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  decision: loops.Decision) -> tuple[TaskState, str]:
@@ -541,17 +534,6 @@ def _apply_round(cfg: Config, deps: Deps, target: Target, task: TaskState,
                       + (f" ({decision.detail})" if decision.detail else ""))
     return task, ""
 
-
-def _count_round(cfg: Config, target: Target, task: TaskState, loop: str,
-                 detail: str) -> tuple[TaskState, int, int]:
-    """Bump one loop counter and write its event. Returns (task, n, cap)."""
-    field, cap = LOOP_FIELDS[loop], getattr(cfg.loop_caps, loop)
-    n = getattr(task, field) + 1
-    task = replace(task, **{field: n})
-    eventlog.append_event(cfg.state_dir, "round", target=target.name,
-                          issue=task.issue, stage=task.stage.value,
-                          detail=f"{loop} round {n}/{cap}" + (f": {detail}" if detail else ""))
-    return task, n, cap
 
 
 def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -792,22 +774,16 @@ def _pr_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
     address-review queued with the reason, cursor advanced so the same
     condition never re-triggers."""
     cursor = ({"check-failed": dict(check_cursor=res.latest_ts),
-               "conflict": dict(conflict_cursor=res.latest_ts)}[res.kind])
-    task = replace(task, **cursor)
-    task, n, cap = _count_round(cfg, target, task, "ci",
-                                f"{res.kind} on PR #{task.pr_number}")
-    if n > cap:
-        _park_exhausted(cfg, deps, target, task,
-                        f"ci loop exceeded its cap of {cap} rounds "
-                        f"({res.kind} on PR #{task.pr_number})")
+               "conflict":     dict(conflict_cursor=res.latest_ts)}[res.kind])
+    task = replace(task, **cursor)                       # advance cursor FIRST
+    obs = loops.PRAttention(f"{res.kind} on PR #{task.pr_number}")
+    task, park_note = _apply_round(cfg, deps, target, task, loops.evaluate(task, obs, cfg.loop_caps))
+    if park_note:
+        _park_exhausted(cfg, deps, target, task, park_note)   # task carries the advanced cursor
         return
-    save(cfg.state_dir, replace(task, feedback_pending=True, attention=res.kind,
-                                updated_at=_now()))
+    save(cfg.state_dir, replace(task, feedback_pending=True, attention=res.kind, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "pr-attention", target=target.name,
-                          issue=task.issue, stage=Stage.PR_OPEN.value,
-                          detail=res.kind)
-    if n == cap:
-        _notify(deps, target, task, "last_round", f"ci round {n}/{cap}")
+                          issue=task.issue, stage=Stage.PR_OPEN.value, detail=res.kind)
     _notify(deps, target, task, "pr_attention", f"{res.kind} on PR #{task.pr_number}")
 
 
