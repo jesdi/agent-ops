@@ -921,7 +921,8 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
         task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
         task = replace(task, park="", park_msg_id=0, park_note="",
                        hold_for_attach=False, feedback_pending=False,
-                       attention="operator", feedback_cursor=_cursor_now())
+                       attention="operator", feedback_cursor=_cursor_now(),
+                       operator_request=None)
         _clear_wake_blocked(cfg, task.issue)
         _spawn_stage(cfg, deps, target, task, Stage.ADDRESS_REVIEW)
         eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
@@ -946,6 +947,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     _clear_wake_blocked(cfg, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                 park_msg_id=0, park_note="",
+                                operator_request=None,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                           issue=task.issue, stage=task.stage.value,

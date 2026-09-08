@@ -4172,3 +4172,48 @@ def test_admission_capacity_full_retains_operator_request(tmp_path):
     assert saved.operator_request == req   # untouched
     assert saved.park == PARK_WAKE         # still wake-queued, not resumed
     assert not d.sessions.resumed          # no resume executed
+
+
+# Slice 11: successful resume clears operator_request, preserves spec_path
+# ---------------------------------------------------------------------------
+
+def test_successful_resume_clears_operator_request_preserves_spec_path(
+        tmp_path, monkeypatch):
+    """Slice 11: normal-path resume clears operator_request; spec_path unchanged; GET /request → null."""
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    req = {"kind": "answers", "path": ".agent/questionnaire.md"}
+    make_task(c, park=PARK_WAKE, operator_request=req, spec_path="docs/spec.md")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, f"expected cleared, got {t.operator_request}"
+    assert t.spec_path == "docs/spec.md", "spec_path must be preserved"
+    assert t.park == ""
+    # GET /request must return 200 null after the request is cleared
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request", headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_successful_pr_open_resume_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 11: pr-open path resume (_spawn_stage ADDRESS_REVIEW) also clears operator_request."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    req = {"kind": "spec-approval"}
+    make_task(c, stage=Stage.PR_OPEN, slot=NO_SLOT, park=PARK_WAKE,
+              operator_request=req, spec_path="docs/spec.md")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, f"expected cleared on pr-open resume, got {t.operator_request}"
+    assert t.spec_path == "docs/spec.md", "spec_path must be preserved"
+    assert t.park == ""
