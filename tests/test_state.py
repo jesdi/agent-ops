@@ -12,6 +12,8 @@ from dispatcher.state import (
     PARK_LOGIN,
     PARK_REVIEW,
     PARK_WAKE,
+    AnswersRequest,
+    SpecApprovalRequest,
     Stage,
     StageSignal,
     TaskState,
@@ -567,7 +569,7 @@ def test_legacy_record_at_gate_derives_spec_approval(tmp_path):
         # NO operator_request key — legacy record
     }))
     ts = load(tmp_path, "alpha", 8)
-    assert ts.operator_request == {"kind": "spec-approval"}
+    assert ts.operator_request == SpecApprovalRequest()
 
 
 def test_legacy_record_not_at_gate_derives_none(tmp_path):
@@ -596,7 +598,7 @@ def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
     got = load(tmp_path, "alpha", 10)
     assert (got.review_rounds, got.gate_rounds,
             got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
-    assert got.operator_request == {"kind": "spec-approval"}
+    assert got.operator_request == SpecApprovalRequest()
 
 
 def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):
@@ -606,11 +608,11 @@ def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):
         worktree=str(tmp_path), branch="b", title="t",
         updated_at="2026-09-08T00:00:00+00:00",
         review_rounds=1, gate_rounds=2, e2e_rounds=3, ci_rounds=4,
-        operator_request={"kind": "answers", "path": ".agent/questionnaire.md"},
+        operator_request=AnswersRequest(path=".agent/questionnaire.md"),
     )
     save(tmp_path, ts)
     got = load(tmp_path, "alpha", 20)
-    assert got.operator_request == {"kind": "answers", "path": ".agent/questionnaire.md"}
+    assert got.operator_request == AnswersRequest(path=".agent/questionnaire.md")
     assert (got.review_rounds, got.gate_rounds, got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
 
 
@@ -629,6 +631,6 @@ def test_legacy_gate_record_backfills_spec_path_from_artifact(tmp_path):
         # NO operator_request key, NO spec_path — legacy record
     }))
     ts = load(tmp_path, "alpha", 31)
-    assert ts.operator_request == {"kind": "spec-approval"}
+    assert ts.operator_request == SpecApprovalRequest()
     assert ts.spec_path == "/abs/path/to/spec.md", (
         f"spec_path must be backfilled from artifact in legacy records, got {ts.spec_path!r}")

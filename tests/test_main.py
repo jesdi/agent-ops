@@ -15,7 +15,8 @@ from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
-                               PARK_REVIEW, PARK_WAKE, LoopCaps, Stage,
+                               PARK_REVIEW, PARK_WAKE, AnswersRequest,
+                               LoopCaps, SpecApprovalRequest, Stage,
                                TaskState, clear_waiting, has_waiting, load,
                                load_all, mark_waiting, save)
 
@@ -426,7 +427,7 @@ def test_awaiting_review_sets_operator_request_and_spec_path(tmp_path, monkeypat
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_SPEC_REVIEW
-    assert t.operator_request == {"kind": "spec-approval"}
+    assert t.operator_request == SpecApprovalRequest()
     assert t.spec_path == spec_artifact
 
 
@@ -448,13 +449,13 @@ def test_repeated_awaiting_review_preserves_grace_and_request(tmp_path, monkeypa
     main.run_pass(c, deps(sess=sess))
     t1 = load(c.state_dir, "portfolio_eval", 42)
     assert t1.stage is Stage.AWAITING_SPEC_REVIEW
-    assert t1.operator_request == {"kind": "spec-approval"}
+    assert t1.operator_request == SpecApprovalRequest()
     assert t1.spec_path == spec_artifact
     # Second pass: same signal, grace not elapsed → NoOp; nothing should change.
     main.run_pass(c, deps(sess=sess))
     t2 = load(c.state_dir, "portfolio_eval", 42)
     assert t2.updated_at == t1.updated_at, "grace deadline must not be restarted"
-    assert t2.operator_request == {"kind": "spec-approval"}, "operator_request must not change"
+    assert t2.operator_request == SpecApprovalRequest(), "operator_request must not change"
     assert t2.spec_path == spec_artifact, "spec_path must not change"
 
 
@@ -2399,13 +2400,13 @@ def test_grace_expiry_park_preserves_spec_approval_request(tmp_path, monkeypatch
     spec.parent.mkdir(parents=True, exist_ok=True)
     spec.write_text("# X Design\n\nApprove me.")
     wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
-                   operator_request={"kind": "spec-approval"},
+                   operator_request=SpecApprovalRequest(),
                    spec_path="docs/specs/x-design.md")
     gate_signal(wt)  # status=awaiting-review, grace already elapsed → ParkForReview
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_REVIEW
-    assert t.operator_request == {"kind": "spec-approval"}, "operator_request must survive park"
+    assert t.operator_request == SpecApprovalRequest(), "operator_request must survive park"
     assert t.spec_path == "docs/specs/x-design.md", "spec_path must survive park"
     # GET /request must serve the spec-approval body (endpoint reads t.operator_request + t.spec_path)
     sources = Sources(c, sessions=None, github=None)
@@ -3863,7 +3864,7 @@ def test_awaiting_answers_parks_and_records_the_artifact(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess, notifier=notif))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN
-    assert t.operator_request == {"kind": "answers", "path": ".agent/questionnaire.md"}
+    assert t.operator_request == AnswersRequest(path=".agent/questionnaire.md")
     assert 42 in sess.ended and "parked_question" in notif.sent
 
 
@@ -3878,7 +3879,7 @@ def test_awaiting_answers_sets_answers_operator_request(tmp_path, monkeypatch):
          "artifact": ".agent/questionnaire.md"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42}), notifier=FakeNotifier()))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.operator_request == {"kind": "answers", "path": ".agent/questionnaire.md"}
+    assert t.operator_request == AnswersRequest(path=".agent/questionnaire.md")
     assert t.spec_path == "docs/specs/design.md", "spec_path must be unchanged"
     assert t.park == PARK_HUMAN
 
@@ -3894,7 +3895,7 @@ def test_malformed_awaiting_answers_parks_with_diagnostic_no_request(
     Escaping path must not crash (Minor A)."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    prior_request = {"kind": "answers", "path": ".agent/old-q.md"}
+    prior_request = AnswersRequest(path=".agent/old-q.md")
     wt = make_task(c, stage=Stage.SPEC, spec_path="docs/specs/design.md",
                    operator_request=prior_request)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
@@ -4137,7 +4138,7 @@ def test_admission_budget_denied_retains_operator_request(tmp_path):
       so no task state is modified at all.
     """
     c = cfg(tmp_path)
-    req = {"kind": "answers", "path": ".agent/questionnaire.md"}
+    req = AnswersRequest(path=".agent/questionnaire.md")
     make_task(c, issue=42, park=PARK_HUMAN, operator_request=req)
     task = load(c.state_dir, "portfolio_eval", 42)
     main._wake(c, task, "please answer")
@@ -4158,7 +4159,7 @@ def test_admission_capacity_full_retains_operator_request(tmp_path):
       it never calls save() or modifies any TaskState.
     """
     c = replace_capacity(cfg(tmp_path), 1)
-    req = {"kind": "answers", "path": ".agent/questionnaire.md"}
+    req = AnswersRequest(path=".agent/questionnaire.md")
     make_task(c, issue=42, park=PARK_HUMAN, operator_request=req)
     make_task(c, issue=43, park="", stage=Stage.IMPLEMENT)  # active, fills capacity
     task = load(c.state_dir, "portfolio_eval", 42)
@@ -4184,7 +4185,7 @@ def test_successful_resume_clears_operator_request_preserves_spec_path(
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    req = {"kind": "answers", "path": ".agent/questionnaire.md"}
+    req = AnswersRequest(path=".agent/questionnaire.md")
     make_task(c, park=PARK_WAKE, operator_request=req, spec_path="docs/spec.md")
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
@@ -4205,7 +4206,7 @@ def test_successful_pr_open_resume_clears_operator_request(tmp_path, monkeypatch
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    req = {"kind": "spec-approval"}
+    req = SpecApprovalRequest()
     make_task(c, stage=Stage.PR_OPEN, slot=NO_SLOT, park=PARK_WAKE,
               operator_request=req, spec_path="docs/spec.md")
     sess = FakeSessions()
@@ -4241,7 +4242,7 @@ def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_SPEC_REVIEW, "stage must stay unchanged"
-    assert t.operator_request == {"kind": "spec-approval"}, "must re-arm approval"
+    assert t.operator_request == SpecApprovalRequest(), "must re-arm approval"
     assert t.spec_path == spec_artifact, "spec_path must be refreshed from signal artifact"
     assert t.updated_at == fresh_ts, "updated_at must NOT be restarted (grace preserved)"
     # GET /request must return spec-approval once re-armed
@@ -4261,7 +4262,7 @@ def test_ordinary_blocked_park_clears_stale_operator_request(tmp_path):
     """Slice 13: _park_for_input(is_answers=False) clears a stale operator_request.
     spec_path and counters must be preserved."""
     c = cfg(tmp_path)
-    stale_req = {"kind": "spec-approval"}
+    stale_req = SpecApprovalRequest()
     wt = make_task(c, stage=Stage.IMPLEMENT,
                    operator_request=stale_req,
                    spec_path="docs/specs/design.md",
@@ -4282,7 +4283,7 @@ def test_loop_exhaustion_park_clears_stale_operator_request(tmp_path):
     """Slice 13: _park_exhausted clears a stale operator_request.
     spec_path and loop counters must be preserved."""
     c = cfg(tmp_path)
-    stale_req = {"kind": "answers", "path": ".agent/old-q.md"}
+    stale_req = AnswersRequest(path=".agent/old-q.md")
     make_task(c, stage=Stage.REVIEW, park=PARK_CI, slot=NO_SLOT,
               operator_request=stale_req,
               spec_path="docs/specs/design.md",
@@ -4308,7 +4309,7 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
     while preserving spec_path."""
     c = cfg(tmp_path)
     wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
-                   operator_request={"kind": "spec-approval"},
+                   operator_request=SpecApprovalRequest(),
                    spec_path="docs/specs/design.md")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
@@ -4326,7 +4327,7 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
 def test_failed_transition_clears_operator_request(tmp_path):
     """Slice 15a: kill intent → FAILED clears operator_request; spec_path preserved."""
     c = cfg(tmp_path)
-    make_task(c, issue=42, operator_request={"kind": "spec-approval"},
+    make_task(c, issue=42, operator_request=SpecApprovalRequest(),
               spec_path="docs/specs/design.md")
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
     main._apply_intents(c, deps(sess=FakeSessions(alive={42})))
@@ -4351,7 +4352,7 @@ def test_failed_transition_clears_operator_request(tmp_path):
 def test_canceled_transition_clears_operator_request(tmp_path):
     """Slice 15b: cancel intent → CANCELED clears operator_request; spec_path preserved."""
     c = cfg(tmp_path)
-    make_task(c, issue=42, operator_request={"kind": "answers", "path": ".agent/q.md"},
+    make_task(c, issue=42, operator_request=AnswersRequest(path=".agent/q.md"),
               spec_path="docs/specs/design.md")
     intents_mod.write_intent(c.state_dir, "cancel", "portfolio_eval", 42, {}, "op", 1)
     main._apply_intents(c, deps(sess=FakeSessions(alive={42})))
@@ -4379,7 +4380,7 @@ def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_teardown(monkeypatch)
     c = cfg(tmp_path)
-    pr_open_task(c, operator_request={"kind": "spec-approval"},
+    pr_open_task(c, operator_request=SpecApprovalRequest(),
                  spec_path="docs/specs/design.md")
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(state="MERGED",
@@ -4408,7 +4409,7 @@ def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
 def test_ci_park_clears_operator_request(tmp_path):
     """Slice 15d: _park_for_ci clears operator_request; spec_path + ci_run_id preserved."""
     c = cfg(tmp_path)
-    wt = make_task(c, issue=42, operator_request={"kind": "spec-approval"},
+    wt = make_task(c, issue=42, operator_request=SpecApprovalRequest(),
                    spec_path="docs/specs/design.md",
                    review_rounds=1, gate_rounds=0, e2e_rounds=0, ci_rounds=2)
     task = load(c.state_dir, "portfolio_eval", 42)
@@ -4439,7 +4440,7 @@ def test_login_park_clears_operator_request(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     make_task(c, stage=Stage.SPEC,
-              operator_request={"kind": "spec-approval"},
+              operator_request=SpecApprovalRequest(),
               spec_path="docs/specs/design.md")
     sess = FakeSessions(alive=[42], idle={42: 999999.0}, tail=LOGIN_TAIL)
     d = deps(sess=sess)
@@ -4470,7 +4471,7 @@ def test_pr_closed_failed_clears_operator_request(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_teardown(monkeypatch)
     c = cfg(tmp_path)
-    pr_open_task(c, operator_request={"kind": "spec-approval"},
+    pr_open_task(c, operator_request=SpecApprovalRequest(),
                  spec_path="docs/specs/design.md")
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(state="CLOSED")
@@ -4488,7 +4489,7 @@ def test_handle_crash_failed_clears_operator_request(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.IMPLEMENT,
-              operator_request={"kind": "answers", "path": ".agent/q.md"},
+              operator_request=AnswersRequest(path=".agent/q.md"),
               spec_path="docs/specs/design.md")
     main.run_pass(c, deps(FakeGitHub(), FakeSessions(alive=set())))
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -4506,7 +4507,7 @@ def test_fail_task_crash_clears_operator_request(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
-              operator_request={"kind": "spec-approval"},
+              operator_request=SpecApprovalRequest(),
               spec_path="docs/specs/design.md")
     main.run_pass(c, deps(FakeGitHub(), FakeSessions(spawn_raises=[42])))
     t = load(c.state_dir, "portfolio_eval", 42)

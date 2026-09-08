@@ -14,6 +14,7 @@ from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve
+from dispatcher.state import AnswersRequest, SpecApprovalRequest
 from web import read_model
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
                       current_operator)
@@ -217,15 +218,13 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         req = t.operator_request
         if req is None:
             return None
-        kind = req.get("kind")
         wt = Path(t.worktree).resolve()
-        if kind == "spec-approval":
+        if isinstance(req, SpecApprovalRequest):
             content = _resolve_content(t.spec_path or "", wt)
             return read_model.OperatorRequest(kind="spec-approval", content=content)
-        if kind == "answers":
-            content = _resolve_content(req.get("path", ""), wt)
+        elif isinstance(req, AnswersRequest):
+            content = _resolve_content(req.path, wt)
             return read_model.OperatorRequest(kind="answers", content=content)
-        raise HTTPException(500, f"unrecognized operator_request kind {kind!r}")
 
     HISTORY_MAX_LINES = 10000
 

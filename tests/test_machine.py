@@ -21,7 +21,7 @@ from dispatcher.machine import (
     SpawnStage,
     next_actions,
 )
-from dispatcher.state import LoopCaps, Stage, StageSignal, TaskState
+from dispatcher.state import LoopCaps, SpecApprovalRequest, Stage, StageSignal, TaskState
 
 GOOD_SPEC = "# t — design\n\n## Problem\n\n" + ("x " * 400) + "\n\n## Decisions\n\n" + ("y " * 400)
 GOOD_TICKET = ("# 01 — thing\n\n**What to build:** " + ("behaviour " * 30)
@@ -81,7 +81,7 @@ def test_awaiting_review_notifies_once():
     assert any(isinstance(a, Notify) and a.template == "awaiting_spec_review" for a in acts)
     # second pass: stage updated + operator_request set (as the executor does) → no re-notify
     again = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
-                                 operator_request={"kind": "spec-approval"}),
+                                 operator_request=SpecApprovalRequest()),
                          sig("spec", "awaiting-review"), True)
     assert again == [NoOp()]
 
@@ -102,7 +102,7 @@ def test_spec_awaiting_review_publishes_between_stage_and_notify():
 def test_gate_and_non_spec_stages_do_not_publish():
     # already at the gate with operator_request set: no re-publish, no re-arm
     acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
-                                operator_request={"kind": "spec-approval"}),
+                                operator_request=SpecApprovalRequest()),
                         sig("spec", "awaiting-review"), session_alive=True)
     assert PublishSpec() not in acts and acts == [NoOp()]
     # misrouted awaiting-review from a non-SPEC stage: still ignored
@@ -375,7 +375,7 @@ def test_stall_zero_threshold_disables():
 def test_stall_ignores_gated_statuses():
     # idle-by-design states never stall-park; operator_request set = normal gate state
     acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
-                                operator_request={"kind": "spec-approval"}),
+                                operator_request=SpecApprovalRequest()),
                         sig("spec", "awaiting-review"), True, idle_seconds=1e9)
     assert acts == [NoOp()]
     acts = next_actions(task(Stage.IMPLEMENT),
@@ -410,7 +410,7 @@ def test_gate_parks_once_the_grace_period_elapses():
 def test_gate_waits_inside_the_grace_period():
     # With operator_request set: approval already present → NoOp (grace preserved)
     acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
-                                operator_request={"kind": "spec-approval"}),
+                                operator_request=SpecApprovalRequest()),
                         sig("spec", "awaiting-review"), session_alive=True,
                         grace_elapsed=False)
     assert acts == [NoOp()]
@@ -486,7 +486,7 @@ def test_gate_rearms_approval_when_operator_request_cleared():
 def test_gate_does_not_rearm_when_operator_request_already_set():
     """Slice 12: operator_request set → NoOp (slice 8 invariant preserved)."""
     t = replace(task(Stage.AWAITING_SPEC_REVIEW),
-                operator_request={"kind": "spec-approval"})
+                operator_request=SpecApprovalRequest())
     acts = next_actions(t, sig("spec", "awaiting-review", artifact="docs/spec.md"),
                         session_alive=True, grace_elapsed=False)
     assert acts == [NoOp()]

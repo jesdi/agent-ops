@@ -8,6 +8,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from dispatcher.state import load
 from tests.webfakes import HEADERS, make_config
 from web.app import create_app
 from web.sources import Sources
@@ -81,8 +82,10 @@ def test_answers_request_serves_readable_content(tmp_path):
     }
 
 
-def test_unknown_operator_request_kind_returns_500(tmp_path):
-    """M2: an unrecognized kind in operator_request must be a server error, not silent 200 null."""
+def test_unknown_operator_request_kind_rejected_at_load(tmp_path):
+    """M2 (contract changed): a corrupt/unknown kind in operator_request is rejected at the
+    load seam — fail-safe at the boundary — not served as a 500 at request time.
+    load() raises ValueError; load_all() skips the file so the task is absent from Sources → 404."""
     cfg = make_config(tmp_path)
     wt = tmp_path / "worktree"
     wt.mkdir()
@@ -94,11 +97,14 @@ def test_unknown_operator_request_kind_returns_500(tmp_path):
         "park": "parked",
         "operator_request": {"kind": "totally-unknown"},
     }))
+    # Direct load raises at the seam
+    with pytest.raises(ValueError, match="unrecognized"):
+        load(tmp_path, "alpha", 12)
+    # Web layer: load_all skips the corrupt record → task is not visible → 404
     sources = Sources(cfg, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/12/request", headers=HEADERS)
-
-    assert response.status_code == 500
+    assert response.status_code == 404
 
 
 def test_spec_approval_missing_file_returns_200_unavailable(tmp_path):

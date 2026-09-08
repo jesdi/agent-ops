@@ -41,6 +41,7 @@ from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
+                              AnswersRequest, SpecApprovalRequest,
                               Stage, TaskState, active, allocate_slot,
                               clear_waiting, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
@@ -480,12 +481,12 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if artifact:
         p = Path(artifact)
         resolved = str(p if p.is_absolute() else Path(task.worktree) / p)
-    answers_request: dict | None = None  # cleared unless valid answers path is resolved below
+    answers_request: AnswersRequest | None = None  # cleared unless valid answers path is resolved below
     if resolved:
         wt_abs = Path(task.worktree).resolve()
         try:
             wt_rel = str(Path(resolved).resolve().relative_to(wt_abs))
-            answers_request = {"kind": "answers", "path": wt_rel}
+            answers_request = AnswersRequest(path=wt_rel)
         except ValueError:
             # Path escapes the worktree — treat as unusable reference.
             resolved = ""
@@ -1077,7 +1078,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             # Do NOT touch updated_at — the resume already stamped it; leaving it
             # preserves the grace deadline (slice 12). No stage transition.
             task = replace(task,
-                           operator_request={"kind": "spec-approval"},
+                           operator_request=SpecApprovalRequest(),
                            spec_path=act.artifact or task.spec_path)
             save(cfg.state_dir, task)
             continue
@@ -1100,7 +1101,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 if m:
                     extra["pr_number"] = int(m.group(1))
             if act.stage is Stage.AWAITING_SPEC_REVIEW:
-                extra["operator_request"] = {"kind": "spec-approval"}
+                extra["operator_request"] = SpecApprovalRequest()
                 if act.artifact:
                     extra["spec_path"] = act.artifact
             task = replace(task, stage=act.stage,
