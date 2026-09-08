@@ -469,28 +469,34 @@ def _auth_dark_edge(cfg: Config, deps: Deps, usage: UsageSnapshot) -> None:
 
 
 def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                    note: str, artifact: str = "") -> None:
+                    note: str, artifact: str = "",
+                    is_answers: bool = False) -> None:
     tail = deps.sessions.capture_tail(task.target, task.issue)
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, target, task, note,
                                              tail, login):
         return
+    resolved = ""
+    if artifact:
+        p = Path(artifact)
+        resolved = str(p if p.is_absolute() else Path(task.worktree) / p)
+    answers_request: dict | None = None
+    if resolved:
+        wt_abs = Path(task.worktree).resolve()
+        try:
+            wt_rel = str(Path(resolved).resolve().relative_to(wt_abs))
+            answers_request = {"kind": "answers", "path": wt_rel}
+        except ValueError:
+            # Path escapes the worktree — treat as unusable reference.
+            resolved = ""
+    if is_answers and answers_request is None:
+        note = (note + "\n\n[malformed awaiting-answers: no usable artifact path]").strip()
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
         url=_url(target, task.issue), target=target.name,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     deps.sessions.end(task.target, task.issue)
     clear_waiting(cfg.state_dir, task.target, task.issue)
-    resolved = ""
-    if artifact:
-        p = Path(artifact)
-        resolved = str(p if p.is_absolute() else Path(task.worktree) / p)
-    if resolved:
-        wt_abs = Path(task.worktree).resolve()
-        wt_rel = str(Path(resolved).resolve().relative_to(wt_abs))
-        answers_request: dict | None = {"kind": "answers", "path": wt_rel}
-    else:
-        answers_request = task.operator_request
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT,
                                 artifact=resolved or task.artifact,
@@ -1057,7 +1063,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 return
             continue
         if isinstance(act, ParkForInput):
-            _park_for_input(cfg, deps, target, task, act.note, artifact=act.artifact)
+            _park_for_input(cfg, deps, target, task, act.note, artifact=act.artifact,
+                            is_answers=act.is_answers)
             return
         if isinstance(act, ParkForReview):
             _park_for_review(cfg, deps, target, task, dry_run=dry_run)

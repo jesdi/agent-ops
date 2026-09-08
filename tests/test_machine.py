@@ -188,7 +188,7 @@ def test_awaiting_answers_parks_with_the_artifact():
     acts = next_actions(task(Stage.SPEC),
                         StageSignal("spec", "awaiting-answers", note="7 questions",
                                     artifact=".agent/questionnaire.md"), True)
-    assert acts == [ParkForInput("7 questions", artifact=".agent/questionnaire.md")]
+    assert acts == [ParkForInput("7 questions", artifact=".agent/questionnaire.md", is_answers=True)]
 
 
 def loop_sig(loop, n, stage="implement"):

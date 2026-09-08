@@ -81,6 +81,7 @@ class NoOp:
 class ParkForInput:
     note: str = ""
     artifact: str = ""   # awaiting-answers: the file the operator must answer
+    is_answers: bool = False  # True only for awaiting-answers signals
 
 
 @dataclass(frozen=True)
@@ -175,7 +176,7 @@ def next_actions(
     if signal.status == "awaiting-answers":
         # Questionnaire, prototype or wizard: an input park that carries the
         # file the operator must look at. The console serves it.
-        return [ParkForInput(signal.note, artifact=signal.artifact)]
+        return [ParkForInput(signal.note, artifact=signal.artifact, is_answers=True)]
 
     if signal.status == "working":
         if waiting and session_alive:

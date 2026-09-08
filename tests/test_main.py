@@ -3817,6 +3817,32 @@ def test_awaiting_answers_sets_answers_operator_request(tmp_path, monkeypatch):
     assert t.park == PARK_HUMAN
 
 
+@pytest.mark.parametrize("artifact_value,label", [
+    ("", "empty-artifact"),
+    ("../../etc/passwd", "escaping-path"),
+])
+def test_malformed_awaiting_answers_parks_with_diagnostic_no_request(
+        tmp_path, monkeypatch, artifact_value, label):
+    """Slice 6: awaiting-answers with unusable artifact → diagnostic park, operator_request=None.
+    Prior operator_request on task must NOT be resurrected (no fallback).
+    Escaping path must not crash (Minor A)."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    prior_request = {"kind": "answers", "path": ".agent/old-q.md"}
+    wt = make_task(c, stage=Stage.SPEC, spec_path="docs/specs/design.md",
+                   operator_request=prior_request)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-answers", "note": "please answer",
+         "artifact": artifact_value}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42}), notifier=FakeNotifier()))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN, "must be parked"
+    assert t.operator_request is None, (
+        f"malformed answers must set no request, not borrow prior {t.operator_request!r}")
+    assert "malformed" in (t.park_note or "").lower() or "unusable" in (t.park_note or "").lower(), (
+        f"park_note must convey the malformed-answers reason, got: {t.park_note!r}")
+
+
 def test_gate_round_is_counted_pinged_and_parked_past_the_cap(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
