@@ -74,10 +74,6 @@ class Decision:
     cap: int
     detail: str = ""
 
-    # Private snapshot of the counter field to apply.
-    _field: str = ""
-    _apply_value: int = 0
-
     @property
     def description(self) -> str:
         """Formatted text for round/last_round events: '{loop} round {n}/{cap}'
@@ -90,7 +86,7 @@ class Decision:
         UNCHANGED decisions return the task unchanged. The input task is not mutated."""
         if self.outcome == Outcome.UNCHANGED:
             return task
-        return replace(task, **{self._field: self._apply_value})
+        return replace(task, **{_LOOP_FIELD[self.loop]: self.round})
 
 
 class ResetCause(Enum):
@@ -138,8 +134,6 @@ def evaluate(task: TaskState, observation: object, caps: LoopCaps) -> Decision:
                 loop=loop,
                 round=stored,
                 cap=cap,
-                _field=field,
-                _apply_value=stored,
             )
         n = observation.round
         outcome = _threshold(n, cap)
@@ -148,13 +142,10 @@ def evaluate(task: TaskState, observation: object, caps: LoopCaps) -> Decision:
             loop=loop,
             round=n,
             cap=cap,
-            _field=field,
-            _apply_value=n,
         )
     if isinstance(observation, FailedRun):
         loop = Loop.CI if task.stage == Stage.ADDRESS_REVIEW else Loop.E2E
-        field = _LOOP_FIELD[loop]
-        stored = getattr(task, field)
+        stored = getattr(task, _LOOP_FIELD[loop])
         cap = getattr(caps, loop.value)
         n = stored + 1
         outcome = _threshold(n, cap)
@@ -164,13 +155,10 @@ def evaluate(task: TaskState, observation: object, caps: LoopCaps) -> Decision:
             round=n,
             cap=cap,
             detail=observation.detail,
-            _field=field,
-            _apply_value=n,
         )
     if isinstance(observation, PRAttention):
-        field = _LOOP_FIELD[Loop.CI]
-        stored = getattr(task, field)
-        cap = caps.ci
+        stored = getattr(task, _LOOP_FIELD[Loop.CI])
+        cap = getattr(caps, Loop.CI.value)
         n = stored + 1
         outcome = _threshold(n, cap)
         return Decision(
@@ -179,7 +167,5 @@ def evaluate(task: TaskState, observation: object, caps: LoopCaps) -> Decision:
             round=n,
             cap=cap,
             detail=observation.detail,
-            _field=field,
-            _apply_value=n,
         )
     raise TypeError(f"Unknown observation type: {type(observation)!r}")
