@@ -46,27 +46,6 @@ e2e fixes, CI fixes on an open PR) may run before the task parks for the
 operator. Parks, never fails.
 _Avoid_: retry limit (that is the plan-format retry)
 
-**Loop policy**:
-`dispatcher/loops.py` is the single owner of loop-round accounting, cap
-decisions, and resets. Observations (session round, failed CI run, PR
-attention) go in; typed decisions (unchanged / within-limit / last-round /
-exhausted) come out; one executor (`_apply_round` in the dispatcher) puts the
-effects on disk (persist counter, `round` event, `last_round` ping, exhaustion
-park). Callers never compare counts to caps or touch counter fields directly.
-
-Reset causes (named lifecycle events — logical work, not process creation):
-- `stage-started` — zeroes review/gate/e2e; retains ci
-- `operator-wake` — zeroes all four counters
-- `pr-cycle-started` — zeroes ci only
-
-Loop eligibility ≠ execution admission. A non-exhausted decision means the
-cap allows another attempt; it is NOT launch permission — budget/capacity/usage
-checks still decide when. Loop policy has no model IDs, provider names,
-credentials, or usage APIs. Waiting for admission does not spend a round; an
-already-observed failure stays counted while its retry waits.
-_Avoid_: checking round/cap fields outside loops.py, treating loop decisions
-as launch gates
-
 **Claude-home**:
 The box-side persistent Claude config directory (`~/agent-ops-state/claude-home`),
 mounted at `/root/.claude` inside every session. It is the box's "global"
