@@ -34,7 +34,7 @@ from dispatcher.artifacts import TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoOp, Notify,
                                 ParkForCI, ParkForInput, ParkForReview, PublishSpec,
-                                RetryStage, SetTaskStage, SetTickets,
+                                RetryStage, SetTaskStage, StartTicket,
                                 SpawnStage, next_actions)
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
@@ -1054,10 +1054,22 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             caps=cfg.loop_caps):
         if isinstance(act, NoOp):
             continue
-        if isinstance(act, SetTickets):
-            task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count,
-                           updated_at=_now())
-            save(cfg.state_dir, task)
+        if isinstance(act, StartTicket):
+            if not budget_ok:
+                return  # nothing mutated; the done-signal persists; retried next pass
+            # Validate the requested ticket exists before any destructive side
+            # effects (ending the previous session, advancing the cursor).
+            # Missing file → raise now so _run_pass routes to _fail_task_crash
+            # without having killed the old session or mutated state.
+            _files = ticket_files(Path(task.worktree) / TICKETS_DIR)
+            if act.cursor > len(_files):
+                raise RuntimeError(
+                    f"ticket {act.cursor} of {act.count} missing "
+                    f"under {task.worktree}/{TICKETS_DIR}")
+            clear_waiting(cfg.state_dir, task.target, task.issue)
+            deps.sessions.end(task.target, task.issue)
+            task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count)
+            task = _spawn_stage(cfg, deps, target, task, Stage.IMPLEMENT, ticket=act.cursor)
             eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
                                   issue=task.issue, stage=Stage.IMPLEMENT.value,
                                   detail=f"ticket {act.cursor}/{act.count}")
@@ -1138,8 +1150,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             # name would collide). End it first; no-op when already dead.
             deps.sessions.end(task.target, task.issue)
             spec_path = signal.artifact if act.stage is Stage.PLAN else ""
-            task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path,
-                                ticket=act.ticket)
+            task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path)
         elif isinstance(act, HandleCrash):
             _notify(deps, target, task, "session_crashed")
             deps.github.release(target, task.issue, "session crashed mid-stage")

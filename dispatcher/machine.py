@@ -19,13 +19,13 @@ from dispatcher.state import IN_FLIGHT_STAGES, LoopCaps, Stage, StageSignal, Tas
 @dataclass(frozen=True)
 class SpawnStage:
     stage: Stage
-    ticket: int = 0   # implement only: the 1-based ticket this session works
 
 
 @dataclass(frozen=True)
-class SetTickets:
-    """Move the ticket cursor: `cursor` is the ticket about to be implemented,
-    `count` the size of the set. Emitted before the SpawnStage it feeds."""
+class StartTicket:
+    """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
+    and session spawn happen together. The executor checks budget_ok first and
+    makes no state mutation when denied."""
     cursor: int
     count: int
 
@@ -209,8 +209,7 @@ def next_actions(
         if task.stage == Stage.IMPLEMENT:
             if task.ticket_cursor < task.ticket_count:
                 nxt = task.ticket_cursor + 1
-                return [SetTickets(nxt, task.ticket_count),
-                        SpawnStage(Stage.IMPLEMENT, ticket=nxt)]
+                return [StartTicket(nxt, task.ticket_count)]
             return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
         if task.stage == Stage.REVIEW:
             return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]
@@ -223,7 +222,7 @@ def next_actions(
                 if task.plan_retries < PLAN_RETRY_LIMIT:
                     return [RetryStage(Stage.PLAN, result.reason)]
                 return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-            return [SetTickets(1, result.count), SpawnStage(Stage.IMPLEMENT, ticket=1),
+            return [StartTicket(1, result.count),
                     Notify("implement_started", f"{result.count} ticket(s)")]
         if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
             result = check_spec(_artifact_path(task, signal))
