@@ -1,6 +1,6 @@
 """Exclusive lock shared between the dispatcher pass and update.sh.
 
-provision/update.sh flocks the same file (<state_dir>/convergence.lock)
+agent-ops-infra/provision/update.sh flocks the same file (<state_dir>/convergence.lock)
 before swapping code, so a pass never observes a half-updated checkout
 (ADR 0001 §3). Blocking acquire: updates take a few seconds at most."""
 from __future__ import annotations

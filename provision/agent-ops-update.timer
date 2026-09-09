@@ -1,9 +1,0 @@
-[Unit]
-Description=Converge agent-ops checkout with origin/main every minute
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
-
-[Install]
-WantedBy=timers.target

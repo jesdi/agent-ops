@@ -3,7 +3,7 @@ state_dir: /home/agent/agent-ops-state
 # pass_interval_minutes: 10   # must match OnUnitActiveSec in the systemd timer
 # Optional: repo where provisioning/pass-crash failure issues are filed.
 # Unset -> those failures degrade to a Telegram ping + stderr log only.
-infra_repo: jesdi/agent-ops
+infra_repo: example/agent-ops
 # Optional: web console base URL (https://<box>.<tailnet>.ts.net). When set,
 # the spec-review Telegram ping carries a "read & approve" deep link.
 # console_url: https://box.tailnet.ts.net
@@ -36,7 +36,7 @@ loop_caps:
   e2e: 3      # failed end-to-end runs
   ci: 3       # fixes on an open PR (red check, conflict, failed run)
 # Model for the daily triage sessions. Unset -> the models.default below.
-# triage_model: claude-opus-4-8
+# triage_model: claude-sonnet-4-6
 # Which model runs which stage. First matching rule wins; anything unmatched
 # gets `default`. An unset Effort on the board never matches an `effort:`
 # constraint (fail closed to `default`). A target may carry its own `models:`
@@ -45,20 +45,20 @@ loop_caps:
 # documentation/question; area: frontend/backend/infra/...), applied at
 # capture and confirmed at triage.
 models:
-  default: claude-opus-4-8
+  default: claude-sonnet-4-6
   rules:
     # Research / exploration: the work IS the judgment — Fable end to end.
     # Two rules because labels_include is AND, and repos differ on which
-    # label they carry (`research` on portfolio_eval, `question` from the
+    # label they carry (`research` on example-app, `question` from the
     # backlog taxonomy).
     - name: research
       when:
         labels_include: [research]
-      use: claude-fable-5
+      use: claude-sonnet-4-6
     - name: question
       when:
         labels_include: [question]
-      use: claude-fable-5
+      use: claude-sonnet-4-6
 
     # Mechanical chores at low effort: dependency bumps, doc edits, CI
     # plumbing — no Fable anywhere. Security-tagged work never takes a
@@ -68,19 +68,19 @@ models:
         effort: {max: 2}
         labels_include: [dependencies]
         labels_exclude: [security]
-      use: claude-opus-4-8
+      use: claude-sonnet-4-6
     - name: docs-chore
       when:
         effort: {max: 2}
         labels_include: [documentation]
         labels_exclude: [security]
-      use: claude-opus-4-8
+      use: claude-sonnet-4-6
     - name: ci-chore
       when:
         effort: {max: 2}
         labels_include: [ci]
         labels_exclude: [security]
-      use: claude-opus-4-8
+      use: claude-sonnet-4-6
 
     # Very low effort, backend-only change: Opus everywhere. Anything
     # touching frontend/infra, security, or needing a product decision
@@ -90,7 +90,7 @@ models:
         effort: {max: 1}
         labels_include: [backend]
         labels_exclude: [frontend, infra, security, product]
-      use: claude-opus-4-8
+      use: claude-sonnet-4-6
 
     # Everything else — including unscored tasks (unset Effort never
     # matches an effort: rule, so they fail closed to here): Fable writes
@@ -98,16 +98,16 @@ models:
     # implement stage always runs on Opus.
     - name: standard
       use:
-        spec:      claude-fable-5
-        plan:      claude-fable-5
-        review:    claude-fable-5
-        implement: claude-opus-4-8
+        spec:      claude-sonnet-4-6
+        plan:      claude-sonnet-4-6
+        review:    claude-sonnet-4-6
+        implement: claude-sonnet-4-6
 
 targets:
-  - name: portfolio_eval
-    repo: jesdi/portfolio_eval
-    clone_path: /home/agent/repos/portfolio_eval
-    worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+  - name: example-app
+    repo: example/example-app
+    clone_path: /home/agent/repos/example-app
+    worktrees_path: /home/agent/repos/example-app.worktrees
     rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
     # Runs INSIDE a one-shot session-image container (podman run --rm),
     # cwd = the freshly created worktree, before the first session spawns.
@@ -119,9 +119,9 @@ targets:
     # The repo decides what "green" means (tests, lint, the CRAP gate).
     gate_cmd: "make gate"
     project_number: 1
-    project_owner: jesdi
-    status_field_id: PVTSSF_xxx
+    project_owner: example
+    status_field_id: REPLACE_WITH_PROJECT_ID
     status_ready_option_id: abc123
     status_in_progress_option_id: def456
     status_done_option_id: ghi789   # single-select option id of the board's Done status
-    boost_field_id: PVTF_xxx
+    boost_field_id: REPLACE_WITH_PROJECT_ID

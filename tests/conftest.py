@@ -27,6 +27,7 @@ def _no_ambient_claude_token(monkeypatch):
     `op` binary mid-suite."""
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
+    monkeypatch.delenv("AGENT_OPS_COMMAND_WRAPPER", raising=False)
 
 
 @pytest.fixture(autouse=True)

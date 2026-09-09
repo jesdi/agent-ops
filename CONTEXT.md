@@ -54,7 +54,7 @@ _Avoid_: dotclaude, global config (ambiguous with the mac's)
 
 **Claude-home seed**:
 The versioned, declarative source of claude-home's config, authored in the
-agent-ops repo (`provision/claude-home/`) and converged onto the box by the
+private agent-ops-infra repo (`provision/claude-home/`) and converged onto the box by the
 updater. Credentials and transcripts are never part of the seed.
 _Avoid_: export, config copy (the seed is authored for the box, not exported
 from a workstation)
@@ -144,7 +144,7 @@ Request handling must remain independent of loop comparisons, reset logic, model
 
 — "The spec stage failed: it couldn't find the to-questionnaire skill."
 — "Then the claude-home seed is missing a process skill. Add it to
-  `provision/skills-pins.json`, run `make vendor-skills`, merge, and the updater converges the box; don't
+  `provision/skills-pins.json` in agent-ops-infra, run `make vendor-skills`, merge, and the updater converges the box; don't
   install anything on the box by hand."
 — "Should I also add it to portfolio_eval's `.my-skills.json`?"
 — "No — that's for repo skills. Process skills never ride target repos."

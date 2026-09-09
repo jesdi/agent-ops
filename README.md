@@ -41,8 +41,8 @@ agent-ops closes both gaps:
 ## How it works
 
 The guiding rule: **GitHub is the state store; the box is the compute.** There
-is no CI→VPS RPC. The box converges to `main` by pulling; merging (CI-gated)
-*is* the deploy.
+is no CI→VPS RPC. The deployment repository selects the application revision
+and configuration that the box pulls.
 
 ```mermaid
 flowchart LR
@@ -109,11 +109,9 @@ flowchart LR
   `claude --continue <message>` when the wake event fires (a reply from you or
   CI completion). Woken tasks jump to the head of the queue — a paused agent
   never blocks a slot, and your answer never waits in line.
-- **Pull-based convergence** — an `agent-ops-update.timer` on the box does
-  `git pull --ff-only` against `main` (~every minute), reinstalls the package
-  when deps change, syncs systemd units, restarts changed services, and
-  rebuilds the session image when the `Containerfile` changes. Operating the
-  box *is* merging PRs.
+- **Deployment separation** — application code lives here; the operator's
+  infrastructure repository owns systemd units, provisioning, session images,
+  credentials integration, and the selected application revision.
 
 ### Daily backlog triage
 
@@ -162,11 +160,8 @@ are never forceable).
 | `web/`          | FastAPI backend for the console (board, budget, terminal WS) |
 | `frontend/`     | React SPA — board, task pages, queue, failures, history      |
 | `telegram/`     | Outbound notifications/digests and inbound reply handling    |
-| `provision/`    | `bootstrap.sh`, systemd units, and the pull-based updater    |
 | `prompts/`      | Stage prompts (spec, plan, implement, review, address-review) and the triage prompt   |
-| `docs/adr/`     | Architecture decision records                                |
 | `tests/`        | pytest suite                                                 |
-| `Containerfile` | The per-session sandbox image                                |
 | `targets.example.yaml` | Template for the box-local `targets.yaml` (capacity, thresholds, model policy) |
 
 ## Development
@@ -180,13 +175,19 @@ pytest
 
 ## Deployment
 
-agent-ops runs on a dedicated Hetzner VPS (2 vCPU / 4 GB, Ubuntu 24.04) with
-Tailscale-only ingress (UFW deny-all on the public interface) — the console is
-reachable from your devices and nothing else. All runtime units are systemd
-**user** units under the `agent` user; convergence never runs as root.
-Provisioning and rollout are documented in
-[`provision/README.md`](provision/README.md), and the architecture decisions
-in [`docs/adr/`](docs/adr/).
+Use `targets.example.yaml` as a schema example for your own configuration.
+Run the dispatcher with `python -m dispatcher.main --config /path/to/targets.yaml`
+and the console with `python -m web --config /path/to/targets.yaml`.
+
+The maintained VPS deployment has moved to the private
+[`jesdi/agent-ops-infra`](https://github.com/jesdi/agent-ops-infra) repository.
+It owns the host configuration, bootstrap/updater, systemd units, session image,
+Claude-home seed, and operational runbooks. Access requires repository permission.
+
+Deployments may set `AGENT_OPS_COMMAND_WRAPPER` to an executable path that
+prepares credentials and then executes its arguments. Without it, sessions call
+Podman directly. Use `AGENT_OPS_SESSION_IMAGE` to select your session image.
+Never put credentials in a targets file; supply them through your secret manager.
 
 ## License
 

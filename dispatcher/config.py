@@ -56,7 +56,7 @@ class Config:
     done_retention_days: int = 7
     triage_model: str = ""  # "" = use models.default for triage sessions
     # Minutes between dispatcher passes. Paired with OnUnitActiveSec in
-    # provision/agent-ops-dispatcher.timer — change both together; the web
+    # agent-ops-infra/provision/agent-ops-dispatcher.timer — change both together; the web
     # console's next-pass countdown is computed from this value.
     pass_interval_minutes: int = 10
     loop_caps: LoopCaps = LoopCaps()
