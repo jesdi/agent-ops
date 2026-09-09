@@ -15,7 +15,8 @@ from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
-                               PARK_REVIEW, PARK_WAKE, LoopCaps, Stage,
+                               PARK_REVIEW, PARK_WAKE, AnswersRequest,
+                               LoopCaps, SpecApprovalRequest, Stage,
                                TaskState, clear_waiting, has_waiting, load,
                                load_all, mark_waiting, save)
 
@@ -338,7 +339,7 @@ def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_SPEC_REVIEW
-    assert t.artifact == spec_path
+    assert t.spec_path == spec_path
 
 
 SPEC_URL = ("https://github.com/jesdi/portfolio_eval/blob/agent/task-42/"
@@ -412,18 +413,61 @@ def test_comment_failure_is_best_effort(tmp_path, monkeypatch):
     assert f"spec: {SPEC_URL}" in ctx["note"]
 
 
+def test_awaiting_review_sets_operator_request_and_spec_path(tmp_path, monkeypatch):
+    """Slice 4: awaiting-review must set operator_request + spec_path on saved task."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    spec_artifact = "docs/superpowers/specs/x-design.md"
+    wt = make_task(c, stage=Stage.SPEC)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
+         "artifact": spec_artifact}))
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.AWAITING_SPEC_REVIEW
+    assert t.operator_request == SpecApprovalRequest()
+    assert t.spec_path == spec_artifact
+
+
+def test_repeated_awaiting_review_preserves_grace_and_request(tmp_path, monkeypatch):
+    """Slice 8: a second awaiting-review signal while already at the gate must
+    not restart the grace clock (updated_at unchanged) and must not overwrite
+    operator_request or spec_path.  Machine returns NoOp on repeat → no save."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    spec_artifact = "docs/superpowers/specs/x-design.md"
+    wt = make_task(c, stage=Stage.SPEC)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
+         "artifact": spec_artifact}))
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
+    sess = FakeSessions(alive={42})
+    # First pass: SPEC → AWAITING_SPEC_REVIEW, operator_request + spec_path set, updated_at stamped.
+    main.run_pass(c, deps(sess=sess))
+    t1 = load(c.state_dir, "portfolio_eval", 42)
+    assert t1.stage is Stage.AWAITING_SPEC_REVIEW
+    assert t1.operator_request == SpecApprovalRequest()
+    assert t1.spec_path == spec_artifact
+    # Second pass: same signal, grace not elapsed → NoOp; nothing should change.
+    main.run_pass(c, deps(sess=sess))
+    t2 = load(c.state_dir, "portfolio_eval", 42)
+    assert t2.updated_at == t1.updated_at, "grace deadline must not be restarted"
+    assert t2.operator_request == SpecApprovalRequest(), "operator_request must not change"
+    assert t2.spec_path == spec_artifact, "spec_path must not change"
+
+
 def test_gate_respawn_clears_stale_artifact(tmp_path, monkeypatch):
-    # Reboot recovery: gate-parked task with a dead session re-spawns SPEC;
-    # the stale artifact path must not survive into the fresh attempt.
+    # Reboot recovery: gate-parked task with a dead session re-spawns SPEC.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
-              artifact=str(tmp_path / "old-spec.md"))
+    make_task(c, stage=Stage.AWAITING_SPEC_REVIEW)
     sess = FakeSessions()  # session not alive
     main.run_pass(c, deps(sess=sess))
     assert [(s[0], s[1]) for s in sess.spawned] == [(42, "spec")]
-    assert load(c.state_dir, "portfolio_eval", 42).artifact == ""
 
 
 def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
@@ -2336,6 +2380,46 @@ def test_unparseable_timestamp_never_expires(tmp_path, monkeypatch):
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
+def test_grace_expiry_park_preserves_spec_approval_request(tmp_path, monkeypatch):
+    """Slice 9 lock-in: _park_for_review's plain replace() at main.py:684
+    does NOT touch operator_request or spec_path, so both survive the park.
+    GET /request returns the spec-approval body even when park==PARK_REVIEW,
+    proving request presence is independent of park==""."""
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
+    c = cfg(tmp_path)
+    # Build the spec file before make_task so we can pass its absolute path as spec_path.
+    issue_wt = Path(c.targets[0].worktrees_path) / "task-42"
+    spec = issue_wt / "docs" / "specs" / "x-design.md"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text("# X Design\n\nApprove me.")
+    wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+                   operator_request=SpecApprovalRequest(),
+                   spec_path="docs/specs/x-design.md")
+    gate_signal(wt)  # status=awaiting-review, grace already elapsed → ParkForReview
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_REVIEW
+    assert t.operator_request == SpecApprovalRequest(), "operator_request must survive park"
+    assert t.spec_path == "docs/specs/x-design.md", "spec_path must survive park"
+    # GET /request must serve the spec-approval body (endpoint reads t.operator_request + t.spec_path)
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request", headers=HEADERS)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["kind"] == "spec-approval"
+    assert body["content"]["kind"] == "readable"
+    assert body["content"]["path"] == "docs/specs/x-design.md"
+    assert body["content"]["text"] == "# X Design\n\nApprove me."
+
+
 def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -2393,7 +2477,7 @@ def test_spec_parked_ping_links_spec(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
     wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
-                   artifact="docs/superpowers/specs/x-design.md")
+                   spec_path="docs/superpowers/specs/x-design.md")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "ready",
          "artifact": "docs/superpowers/specs/x-design.md"}))
@@ -2413,7 +2497,7 @@ def test_spec_parked_note_says_local_only_when_publish_fails(
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
     wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
-                   artifact="docs/superpowers/specs/x-design.md")
+                   spec_path="docs/superpowers/specs/x-design.md")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "ready",
          "artifact": "docs/superpowers/specs/x-design.md"}))
@@ -3779,8 +3863,51 @@ def test_awaiting_answers_parks_and_records_the_artifact(tmp_path, monkeypatch):
     notif = FakeNotifier(); sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess, notifier=notif))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_HUMAN and t.artifact == str(wt / ".agent" / "questionnaire.md")
+    assert t.park == PARK_HUMAN
+    assert t.operator_request == AnswersRequest(path=".agent/questionnaire.md")
     assert 42 in sess.ended and "parked_question" in notif.sent
+
+
+def test_awaiting_answers_sets_answers_operator_request(tmp_path, monkeypatch):
+    """Slice 5: awaiting-answers with valid artifact → operator_request set, spec_path unchanged."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.SPEC, spec_path="docs/specs/design.md")
+    (wt / ".agent" / "questionnaire.md").write_text("# Q\n")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-answers", "note": "answer me",
+         "artifact": ".agent/questionnaire.md"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42}), notifier=FakeNotifier()))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request == AnswersRequest(path=".agent/questionnaire.md")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be unchanged"
+    assert t.park == PARK_HUMAN
+
+
+@pytest.mark.parametrize("artifact_value,label", [
+    ("", "empty-artifact"),
+    ("../../etc/passwd", "escaping-path"),
+])
+def test_malformed_awaiting_answers_parks_with_diagnostic_no_request(
+        tmp_path, monkeypatch, artifact_value, label):
+    """Slice 6: awaiting-answers with unusable artifact → diagnostic park, operator_request=None.
+    Prior operator_request on task must NOT be resurrected (no fallback).
+    Escaping path must not crash (Minor A)."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    prior_request = AnswersRequest(path=".agent/old-q.md")
+    wt = make_task(c, stage=Stage.SPEC, spec_path="docs/specs/design.md",
+                   operator_request=prior_request)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-answers", "note": "please answer",
+         "artifact": artifact_value}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42}), notifier=FakeNotifier()))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN, "must be parked"
+    assert t.operator_request is None, (
+        f"malformed answers must set no request, not borrow prior {t.operator_request!r}")
+    assert "malformed" in (t.park_note or "").lower() or "unusable" in (t.park_note or "").lower(), (
+        f"park_note must convey the malformed-answers reason, got: {t.park_note!r}")
 
 
 def test_gate_round_is_counted_pinged_and_parked_past_the_cap(tmp_path, monkeypatch):
@@ -3801,6 +3928,30 @@ def test_gate_round_is_counted_pinged_and_parked_past_the_cap(tmp_path, monkeypa
     assert t.park == PARK_HUMAN and t.gate_rounds == 3 and "parked_question" in d.notifier.sent
 
 
+def test_session_exhaustion_ends_session_and_clears_waiting(tmp_path, monkeypatch):
+    """Session path: exhausted cap must park via _park_for_input, not _park_exhausted.
+    That means: session.end() is called, waiting marker is cleared, parked event
+    detail is plain note (no 'loop exhausted: ' prefix)."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1, gate_rounds=2)
+    mark_waiting(c.state_dir, "portfolio_eval", 42)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "working", "loop": "gate", "round": 3}))
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN, "task must be parked"
+    assert 42 in sess.ended, "session container must be ended on exhaustion"
+    assert not has_waiting(c.state_dir, "portfolio_eval", 42), "waiting marker must be cleared"
+    parked_events = events(c, "parked")
+    assert parked_events, "parked event must be written"
+    detail = parked_events[-1]["detail"]
+    assert detail == "gate loop exceeded its cap of 2 rounds", (
+        f"parked detail must be plain note (no 'loop exhausted: ' prefix); got: {detail!r}")
+
+
 def test_failed_e2e_runs_count_and_park_past_the_cap(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(e2e=1))
@@ -3810,6 +3961,9 @@ def test_failed_e2e_runs_count_and_park_past_the_cap(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     # Round 1 of 1: counted, last-round ping, woken AND resumed in the same pass.
     assert (t.park, t.e2e_rounds) == ("", 1) and "last_round" in d.notifier.sent
+    # Guard: last_round note must be suffix-free ("e2e round 1/1", not "e2e round 1/1: run 7 failure")
+    last_round_note = next(ctx["note"] for tmpl, ctx in d.notifier.calls if tmpl == "last_round")
+    assert last_round_note == "e2e round 1/1", f"last_round note regressed: {last_round_note!r}"
     assert d.sessions.resumed
     # Simulate the resumed session parking for CI again and failing again.
     save(c.state_dir, dc_replace(t, park=PARK_CI, ci_run_id=8))
@@ -3875,6 +4029,7 @@ def test_ci_rounds_past_the_cap_park_the_pr_open_task(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess, notifier=notif))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.park, t.feedback_pending) == (Stage.PR_OPEN, PARK_HUMAN, False)
+    assert t.check_cursor == "2026-09-07T10:00:00Z"  # cursor persisted on exhaustion
     assert "parked_question" in notif.sent and not sess.spawned
     # Still polled for merge while parked.
     gh.pr_payloads[12] = payload(state="MERGED", merged_at="2026-09-07T12:00:00Z")
@@ -3904,3 +4059,459 @@ def test_human_feedback_resets_ci_rounds(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.attention, t.ci_rounds) == ("feedback", 0)
+
+
+def test_console_reply_operator_wake_clears_all_four_counters(tmp_path, monkeypatch):
+    from dispatcher import intents as intents_mod
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55,
+              review_rounds=1, gate_rounds=2, e2e_rounds=1, ci_rounds=3)
+    make_task(c, issue=43)  # holds the only slot → 42 stays at PARK_WAKE
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+                             {"text": "try again"}, "op", 1)
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_WAKE
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (0, 0, 0, 0)
+
+
+def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.QUEUED, review_rounds=1, gate_rounds=2,
+              e2e_rounds=1, ci_rounds=3)
+    d = deps()
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._spawn_stage(c, d, c.targets[0], task, Stage.SPEC)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
+    assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
+
+
+def test_successful_ci_wake_preserves_all_counters(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT, park=PARK_CI, ci_run_id=99,
+              review_rounds=1, gate_rounds=1, e2e_rounds=2, ci_rounds=1)
+    main._wake_ci(c, deps(gh=FakeGitHub(run_conclusion="success")), c.targets[0])
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_WAKE
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 1, 2, 1)
+
+
+def test_resume_woken_does_not_reset_counters(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT, park=PARK_WAKE,
+              review_rounds=1, gate_rounds=1, e2e_rounds=2, ci_rounds=1)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == "" and sess.resumed
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 1, 2, 1)
+
+
+def test_telegram_reply_operator_wake_clears_all_four_counters(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55,
+              review_rounds=1, gate_rounds=2, e2e_rounds=1, ci_rounds=3)
+    make_task(c, issue=43)  # holds the only slot → 42 stays PARK_WAKE
+    patch_events(monkeypatch, [Reply(reply_to_msg_id=55, text="try again")])
+    main.run_pass(c, deps(sess=FakeSessions(alive={43})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_WAKE
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (0, 0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# Slice 10 lock-ins: admission-denied wake retains operator_request
+# ---------------------------------------------------------------------------
+
+def test_admission_budget_denied_retains_operator_request(tmp_path):
+    """Slice 10 regression lock: budget_ok=False leaves operator_request intact.
+
+    Passes by construction:
+    - _wake replaces only park/hold_for_attach/updated_at — operator_request untouched.
+    - _resume_woken returns immediately when budget_ok is False (main.py:875),
+      so no task state is modified at all.
+    """
+    c = cfg(tmp_path)
+    req = AnswersRequest(path=".agent/questionnaire.md")
+    make_task(c, issue=42, park=PARK_HUMAN, operator_request=req)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._wake(c, task, "please answer")
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=False)
+    saved = load(c.state_dir, "portfolio_eval", 42)
+    assert saved.operator_request == req   # untouched
+    assert saved.park == PARK_WAKE         # woken, not resumed
+    assert not d.sessions.resumed          # no resume executed
+
+
+def test_admission_capacity_full_retains_operator_request(tmp_path):
+    """Slice 10 regression lock: capacity-full _mark_wake_blocked leaves operator_request intact.
+
+    Passes by construction:
+    - _wake replaces only park/hold_for_attach/updated_at — operator_request untouched.
+    - _mark_wake_blocked (main.py:835) only writes a filesystem marker and logs;
+      it never calls save() or modifies any TaskState.
+    """
+    c = replace_capacity(cfg(tmp_path), 1)
+    req = AnswersRequest(path=".agent/questionnaire.md")
+    make_task(c, issue=42, park=PARK_HUMAN, operator_request=req)
+    make_task(c, issue=43, park="", stage=Stage.IMPLEMENT)  # active, fills capacity
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._wake(c, task, "please answer")
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    saved = load(c.state_dir, "portfolio_eval", 42)
+    assert saved.operator_request == req   # untouched
+    assert saved.park == PARK_WAKE         # still wake-queued, not resumed
+    assert not d.sessions.resumed          # no resume executed
+
+
+# Slice 11: successful resume clears operator_request, preserves spec_path
+# ---------------------------------------------------------------------------
+
+def test_successful_resume_clears_operator_request_preserves_spec_path(
+        tmp_path, monkeypatch):
+    """Slice 11: normal-path resume clears operator_request; spec_path unchanged; GET /request → null."""
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    req = AnswersRequest(path=".agent/questionnaire.md")
+    make_task(c, park=PARK_WAKE, operator_request=req, spec_path="docs/spec.md")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, f"expected cleared, got {t.operator_request}"
+    assert t.spec_path == "docs/spec.md", "spec_path must be preserved"
+    assert t.park == ""
+    # GET /request must return 200 null after the request is cleared
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request", headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_successful_pr_open_resume_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 11: pr-open path resume (_spawn_stage ADDRESS_REVIEW) also clears operator_request."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    req = SpecApprovalRequest()
+    make_task(c, stage=Stage.PR_OPEN, slot=NO_SLOT, park=PARK_WAKE,
+              operator_request=req, spec_path="docs/spec.md")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, f"expected cleared on pr-open resume, got {t.operator_request}"
+    assert t.spec_path == "docs/spec.md", "spec_path must be preserved"
+    assert t.park == ""
+
+
+# Slice 12 tests
+
+def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
+    """Slice 12: task at gate with operator_request=None (cleared by resume) + fresh
+    updated_at; SPEC session re-signals awaiting-review → operator_request set, spec_path
+    refreshed, stage unchanged, updated_at NOT restarted. GET /request → spec-approval body."""
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    spec_artifact = "docs/superpowers/specs/x-design.md"
+    # Fresh updated_at so grace is NOT elapsed (15-minute window).
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+                   operator_request=None,
+                   spec_path="docs/old-spec.md",
+                   updated_at=fresh_ts)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "note": "",
+         "artifact": spec_artifact}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.AWAITING_SPEC_REVIEW, "stage must stay unchanged"
+    assert t.operator_request == SpecApprovalRequest(), "must re-arm approval"
+    assert t.spec_path == spec_artifact, "spec_path must be refreshed from signal artifact"
+    assert t.updated_at == fresh_ts, "updated_at must NOT be restarted (grace preserved)"
+    # GET /request must return spec-approval once re-armed
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request", headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["kind"] == "spec-approval"
+
+
+# ---------------------------------------------------------------------------
+# Slice 13: ordinary input park + loop-exhaustion park clear stale operator_request
+# ---------------------------------------------------------------------------
+
+def test_ordinary_blocked_park_clears_stale_operator_request(tmp_path):
+    """Slice 13: _park_for_input(is_answers=False) clears a stale operator_request.
+    spec_path and counters must be preserved."""
+    c = cfg(tmp_path)
+    stale_req = SpecApprovalRequest()
+    wt = make_task(c, stage=Stage.IMPLEMENT,
+                   operator_request=stale_req,
+                   spec_path="docs/specs/design.md",
+                   review_rounds=1, gate_rounds=2, e2e_rounds=0, ci_rounds=1)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._park_for_input(c, deps(notifier=FakeNotifier()), c.targets[0],
+                         task, "blocked by test", is_answers=False)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, (
+        f"ordinary park must clear stale request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert t.park == PARK_HUMAN
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 2, 0, 1), (
+        "loop counters must be unchanged")
+
+
+def test_loop_exhaustion_park_clears_stale_operator_request(tmp_path):
+    """Slice 13: _park_exhausted clears a stale operator_request.
+    spec_path and loop counters must be preserved."""
+    c = cfg(tmp_path)
+    stale_req = AnswersRequest(path=".agent/old-q.md")
+    make_task(c, stage=Stage.REVIEW, park=PARK_CI, slot=NO_SLOT,
+              operator_request=stale_req,
+              spec_path="docs/specs/design.md",
+              review_rounds=1, gate_rounds=0, e2e_rounds=2, ci_rounds=0)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._park_exhausted(c, deps(notifier=FakeNotifier()), c.targets[0],
+                         task, "e2e loop exceeded its cap of 2 rounds")
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, (
+        f"exhaustion park must clear stale request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert t.park == PARK_HUMAN
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 0, 2, 0), (
+        "loop counters must be unchanged by the clear")
+
+
+# ---------------------------------------------------------------------------
+# Slice 14: stage advance clears operator_request, preserves spec_path
+# ---------------------------------------------------------------------------
+
+def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
+    """Slice 14: advancing stage via _spawn_stage must clear operator_request
+    while preserving spec_path."""
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+                   operator_request=SpecApprovalRequest(),
+                   spec_path="docs/specs/design.md")
+    d = deps()
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._spawn_stage(c, d, c.targets[0], task, Stage.IMPLEMENT)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None, (
+        f"stage advance must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved on stage advance"
+
+
+# ---------------------------------------------------------------------------
+# Slice 15: terminal and superseding transitions clear operator_request
+# ---------------------------------------------------------------------------
+
+def test_failed_transition_clears_operator_request(tmp_path):
+    """Slice 15a: kill intent → FAILED clears operator_request; spec_path preserved."""
+    c = cfg(tmp_path)
+    make_task(c, issue=42, operator_request=SpecApprovalRequest(),
+              spec_path="docs/specs/design.md")
+    intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
+    main._apply_intents(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED, f"expected FAILED, got {t.stage}"
+    assert t.operator_request is None, (
+        f"FAILED must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_canceled_transition_clears_operator_request(tmp_path):
+    """Slice 15b: cancel intent → CANCELED clears operator_request; spec_path preserved."""
+    c = cfg(tmp_path)
+    make_task(c, issue=42, operator_request=AnswersRequest(path=".agent/q.md"),
+              spec_path="docs/specs/design.md")
+    intents_mod.write_intent(c.state_dir, "cancel", "portfolio_eval", 42, {}, "op", 1)
+    main._apply_intents(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.CANCELED, f"expected CANCELED, got {t.stage}"
+    assert t.operator_request is None, (
+        f"CANCELED must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert t.park == "" and t.slot == NO_SLOT
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15c: merged PR → DONE clears operator_request; spec_path + done_at preserved."""
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, operator_request=SpecApprovalRequest(),
+                 spec_path="docs/specs/design.md")
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED",
+                                 merged_at="2026-09-08T10:00:00Z")
+    main.run_pass(c, deps(gh))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.DONE, f"expected DONE, got {t.stage}"
+    assert t.operator_request is None, (
+        f"DONE must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert t.done_at, "done_at must be set"
+    assert t.park == ""
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_ci_park_clears_operator_request(tmp_path):
+    """Slice 15d: _park_for_ci clears operator_request; spec_path + ci_run_id preserved."""
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, operator_request=SpecApprovalRequest(),
+                   spec_path="docs/specs/design.md",
+                   review_rounds=1, gate_rounds=0, e2e_rounds=0, ci_rounds=2)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._park_for_ci(c, deps(sess=FakeSessions(alive={42})),
+                      c.targets[0], task, run_id=9999)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_CI and t.ci_run_id == 9999
+    assert t.operator_request is None, (
+        f"CI park must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 0, 0, 2), (
+        "loop counters must be unchanged")
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+
+def test_login_park_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15e: login stall → PARK_LOGIN clears operator_request; spec_path preserved."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC,
+              operator_request=SpecApprovalRequest(),
+              spec_path="docs/specs/design.md")
+    sess = FakeSessions(alive=[42], idle={42: 999999.0}, tail=LOGIN_TAIL)
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_LOGIN
+    assert t.operator_request is None, (
+        f"login park must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+    # GET /request → 200 null
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS as WEB_HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    sources = Sources(c, sessions=None, github=None)
+    with TestClient(create_app(c, sources)) as client:
+        response = client.get("/api/task/portfolio_eval/42/request",
+                              headers=WEB_HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json() is None
+
+# ---------------------------------------------------------------------------
+# Slice 15 fix: dedicated tests for the three other FAILED save sites
+# ---------------------------------------------------------------------------
+
+def test_pr_closed_failed_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15a-ii: PR closed unmerged (_poll_prs ~L762) clears operator_request."""
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, operator_request=SpecApprovalRequest(),
+                 spec_path="docs/specs/design.md")
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="CLOSED")
+    main.run_pass(c, deps(gh, FakeSessions(alive=(42,))))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED
+    assert t.operator_request is None, (
+        f"pr-closed FAILED must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+
+
+def test_handle_crash_failed_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15a-iii: HandleCrash (dead session, _drive_task ~L1147) clears operator_request."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT,
+              operator_request=AnswersRequest(path=".agent/q.md"),
+              spec_path="docs/specs/design.md")
+    main.run_pass(c, deps(FakeGitHub(), FakeSessions(alive=set())))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED
+    assert t.operator_request is None, (
+        f"HandleCrash FAILED must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+
+
+def test_fail_task_crash_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15a-iv: _fail_task_crash (_drive_task raises, ~L984) clears operator_request.
+    Triggered via spawn_raises: _spawn_stage propagates the exception out of _drive_task,
+    which run_pass catches and routes to _fail_task_crash."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+              operator_request=SpecApprovalRequest(),
+              spec_path="docs/specs/design.md")
+    main.run_pass(c, deps(FakeGitHub(), FakeSessions(spawn_raises=[42])))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED
+    assert t.operator_request is None, (
+        f"_fail_task_crash must clear operator_request, got {t.operator_request!r}")
+    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"

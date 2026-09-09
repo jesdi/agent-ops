@@ -12,29 +12,29 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dispatcher.artifacts import TICKETS_DIR, CheckResult, check_spec, check_tickets
+from dispatcher.loops import Decision, Loop, Outcome, ReportedRound, evaluate
 from dispatcher.state import IN_FLIGHT_STAGES, LoopCaps, Stage, StageSignal, TaskState
 
 
 @dataclass(frozen=True)
 class SpawnStage:
     stage: Stage
-    ticket: int = 0   # implement only: the 1-based ticket this session works
 
 
 @dataclass(frozen=True)
-class SetTickets:
-    """Move the ticket cursor: `cursor` is the ticket about to be implemented,
-    `count` the size of the set. Emitted before the SpawnStage it feeds."""
+class StartTicket:
+    """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
+    and session spawn happen together. The executor checks budget_ok first and
+    makes no state mutation when denied."""
     cursor: int
     count: int
 
 
 @dataclass(frozen=True)
-class RecordRound:
-    """A bounded loop reported a round the task has not counted yet; the
-    executor bumps the counter and writes the `round` event."""
-    loop: str
-    round: int
+class ApplyDecision:
+    """A loop policy decision that the executor must apply: save the counter,
+    emit the round event, and (for LAST_ROUND/EXHAUSTED) notify / park."""
+    decision: Decision
 
 
 @dataclass(frozen=True)
@@ -81,6 +81,7 @@ class NoOp:
 class ParkForInput:
     note: str = ""
     artifact: str = ""   # awaiting-answers: the file the operator must answer
+    is_answers: bool = False  # True only for awaiting-answers signals
 
 
 @dataclass(frozen=True)
@@ -89,15 +90,20 @@ class ParkForCI:
 
 
 @dataclass(frozen=True)
+class ArmSpecApproval:
+    """Re-establish the spec-approval operator_request on a resumed gate task
+    whose operator_request was cleared by the resume (slice 12). Does NOT
+    re-stamp updated_at (grace clock must not restart) and does NOT emit
+    SetTaskStage (no stage transition, no re-publish, no re-notify)."""
+    artifact: str = ""
+
+
+@dataclass(frozen=True)
 class ParkForReview:
     """Grace expired at the spec-review gate. Unlike every other park this
     one releases the E2E slot too, so the dispatcher can spend it on the next
     Ready task instead of holding it for a human who is asleep."""
 
-
-# Loop name in a session's signal → the TaskState counter that owns it.
-LOOP_FIELDS = {"review": "review_rounds", "gate": "gate_rounds",
-               "e2e": "e2e_rounds", "ci": "ci_rounds"}
 
 # A ticket set that fails the mechanical check is usually a numbering or
 # heading slip — resume the session with the reason this many times before
@@ -112,23 +118,19 @@ def _artifact_path(task: TaskState, signal: StageSignal) -> Path:
 
 def _loop_actions(task: TaskState, signal: StageSignal,
                   caps: LoopCaps) -> list[object]:
-    """Round bookkeeping for a `working` signal that names a loop. Only a
-    round ABOVE the task's counter counts: a resumed session re-reporting
-    an old round changes nothing, so the budget can never be reset from
-    inside a session."""
-    field = LOOP_FIELDS.get(signal.loop)
-    if field is None or signal.status != "working":
+    """Round bookkeeping for a `working` signal that names a loop. Routes
+    through the pure policy; only signals with a round above the stored
+    counter produce an action. UNCHANGED → empty list (no-op)."""
+    if signal.status != "working":
         return []
-    have = getattr(task, field)
-    cap = getattr(caps, signal.loop)
-    if signal.round <= have:
+    try:
+        loop = Loop(signal.loop)
+    except ValueError:
         return []
-    acts: list[object] = [RecordRound(signal.loop, signal.round)]
-    if signal.round > cap:
-        acts.append(ParkForInput(f"{signal.loop} loop exceeded its cap of {cap} rounds"))
-    elif signal.round == cap:
-        acts.append(Notify("last_round", f"{signal.loop} round {cap}/{cap}"))
-    return acts
+    decision = evaluate(task, ReportedRound(loop, signal.round), caps)
+    if decision.outcome is Outcome.UNCHANGED:
+        return []
+    return [ApplyDecision(decision)]
 
 
 def next_actions(
@@ -168,8 +170,6 @@ def next_actions(
         return [NoOp()]
 
     loop_acts = _loop_actions(task, signal, caps)
-    if loop_acts and isinstance(loop_acts[-1], ParkForInput):
-        return loop_acts
 
     if signal.status == "awaiting-ci":
         if signal.run_id <= 0:
@@ -185,7 +185,7 @@ def next_actions(
     if signal.status == "awaiting-answers":
         # Questionnaire, prototype or wizard: an input park that carries the
         # file the operator must look at. The console serves it.
-        return [ParkForInput(signal.note, artifact=signal.artifact)]
+        return [ParkForInput(signal.note, artifact=signal.artifact, is_answers=True)]
 
     if signal.status == "working":
         if waiting and session_alive:
@@ -196,6 +196,8 @@ def next_actions(
         if task.stage == Stage.AWAITING_SPEC_REVIEW:
             if grace_elapsed:
                 return [ParkForReview()]
+            if not task.operator_request:
+                return [ArmSpecApproval(artifact=signal.artifact)]
             return [NoOp()]  # already notified on a previous pass
         if task.stage != Stage.SPEC:
             return [NoOp()]  # only the SPEC stage emits awaiting-review
@@ -207,8 +209,7 @@ def next_actions(
         if task.stage == Stage.IMPLEMENT:
             if task.ticket_cursor < task.ticket_count:
                 nxt = task.ticket_cursor + 1
-                return [SetTickets(nxt, task.ticket_count),
-                        SpawnStage(Stage.IMPLEMENT, ticket=nxt)]
+                return [StartTicket(nxt, task.ticket_count)]
             return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
         if task.stage == Stage.REVIEW:
             return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]
@@ -221,7 +222,7 @@ def next_actions(
                 if task.plan_retries < PLAN_RETRY_LIMIT:
                     return [RetryStage(Stage.PLAN, result.reason)]
                 return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-            return [SetTickets(1, result.count), SpawnStage(Stage.IMPLEMENT, ticket=1),
+            return [StartTicket(1, result.count),
                     Notify("implement_started", f"{result.count} ticket(s)")]
         if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
             result = check_spec(_artifact_path(task, signal))

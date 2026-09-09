@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from pydantic import BaseModel
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field
 
 from dispatcher import messages as msgq
 from dispatcher.budget import UsageSnapshot, should_spawn
@@ -318,19 +320,6 @@ class IssueDescription(BaseModel):
     error: str  # "" = ok; non-empty = fetch failed and no cache existed
 
 
-class SpecView(BaseModel):
-    path: str      # worktree-relative
-    markdown: str
-
-
-class ArtifactView(BaseModel):
-    """The .agent file a parked session is waiting on: questionnaire,
-    prototype or generated wizard. The console picks the rendering by
-    media type; the dispatcher only records where the file lives."""
-    path: str        # worktree-relative
-    media_type: str  # text/markdown | text/html | application/octet-stream
-    text: str
-
 
 _MEDIA_TYPES = {".md": "text/markdown", ".markdown": "text/markdown",
                 ".html": "text/html", ".htm": "text/html"}
@@ -338,6 +327,25 @@ _MEDIA_TYPES = {".md": "text/markdown", ".markdown": "text/markdown",
 
 def media_type_for(path: str) -> str:
     return _MEDIA_TYPES.get(Path(path).suffix.lower(), "application/octet-stream")
+
+
+class ReadableContent(BaseModel):
+    kind: Literal["readable"] = "readable"
+    path: str        # worktree-relative
+    media_type: str
+    text: str
+
+
+class UnavailableContent(BaseModel):
+    """File exists as a request but cannot be read: missing, non-UTF-8, or containment violation."""
+    kind: Literal["unavailable"] = "unavailable"
+    path: str        # stored path (wt-relative or raw)
+    reason: str      # "file-missing" | "not-utf8" | "path-escapes-worktree"
+
+
+class OperatorRequest(BaseModel):
+    kind: Literal["spec-approval", "answers"]
+    content: Annotated[ReadableContent | UnavailableContent, Field(discriminator="kind")]
 
 
 class PaneHistory(BaseModel):

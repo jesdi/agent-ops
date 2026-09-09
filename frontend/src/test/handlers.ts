@@ -11,4 +11,7 @@ export const defaultHandlers = [
   http.get('/api/task/:target/:issue/artifact', () =>
     HttpResponse.json({ detail: 'no artifact recorded' }, { status: 404 }),
   ),
+  http.get('/api/task/:target/:issue/request', () =>
+    HttpResponse.json(null),
+  ),
 ]
