@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from dispatcher import eventlog, main
-from dispatcher.state import Stage, load, read_stage_signal
+from dispatcher import eventlog, main, messages
+from dispatcher.state import SpecApprovalRequest, Stage, load, read_stage_signal
 from tests.test_main import FakeSessions, cfg, deps, make_task, patch_usage, write_tickets
 
 
@@ -236,3 +236,100 @@ def test_launcher_raise_does_not_record_ticket_started(tmp_path, monkeypatch):
     assert task.stage == Stage.FAILED
     failed_events = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "failed"]
     assert len(failed_events) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Slice 10: loop counters retained on denial, stage-scoped reset on start
+# ---------------------------------------------------------------------------
+
+def test_counters_retained_on_denial_reset_on_start(tmp_path, monkeypatch):
+    """StartTicket: denied pass leaves all counters untouched;
+    admitted pass delegates to loops.reset(STAGE_STARTED) → zeroes
+    review/gate/e2e rounds and retains ci_rounds."""
+    config = cfg(tmp_path)
+    wt = make_task(config, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2,
+                   review_rounds=1, gate_rounds=1, e2e_rounds=1, ci_rounds=2)
+    write_tickets(wt, 2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "implement", "status": "done", "note": "ticket 1 complete",
+    }))
+    sessions = FakeSessions(alive={42})
+    dependencies = deps(sess=sessions)
+
+    # Denied pass: all counters must stay as set
+    patch_usage(monkeypatch, util=0.99)
+    main.run_pass(config, dependencies)
+    t = load(config.state_dir, "portfolio_eval", 42)
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 1, 1, 2)
+
+    # Admitted pass: stage-scoped counters reset via loops.reset(STAGE_STARTED); ci_rounds retained
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(config, dependencies)
+    t = load(config.state_dir, "portfolio_eval", 42)
+    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
+    assert t.ci_rounds == 2  # ci belongs to the PR, not the stage
+
+
+# ---------------------------------------------------------------------------
+# Slice 11: operator_request preserved on denial, cleared on start
+# ---------------------------------------------------------------------------
+
+def test_operator_request_preserved_on_denial_cleared_on_start(tmp_path, monkeypatch):
+    """StartTicket: denied pass keeps operator_request and spec_path intact;
+    admitted pass clears operator_request (via _spawn_stage) and retains spec_path."""
+    config = cfg(tmp_path)
+    wt = make_task(config, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2,
+                   operator_request=SpecApprovalRequest(),
+                   spec_path="docs/specs/x-design.md")
+    write_tickets(wt, 2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "implement", "status": "done", "note": "ticket 1 complete",
+    }))
+    sessions = FakeSessions(alive={42})
+    dependencies = deps(sess=sessions)
+
+    # Denied pass: operator_request and spec_path unchanged
+    patch_usage(monkeypatch, util=0.99)
+    main.run_pass(config, dependencies)
+    t = load(config.state_dir, "portfolio_eval", 42)
+    assert t.operator_request == SpecApprovalRequest()
+    assert t.spec_path == "docs/specs/x-design.md"
+
+    # Admitted pass: operator_request cleared; spec_path retained (spec_path or task.spec_path fallback)
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(config, dependencies)
+    t = load(config.state_dir, "portfolio_eval", 42)
+    assert t.operator_request is None
+    assert t.spec_path == "docs/specs/x-design.md"
+
+
+# ---------------------------------------------------------------------------
+# Slice 12: queued messages stay undelivered after denial, delivered once on start
+# ---------------------------------------------------------------------------
+
+def test_queued_messages_delivered_only_after_successful_start(tmp_path, monkeypatch):
+    """StartTicket: denied pass leaves queued messages undelivered;
+    admitted pass delivers them exactly once via _spawn_stage → messages.mark_delivered."""
+    config = cfg(tmp_path)
+    wt = make_task(config, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2)
+    write_tickets(wt, 2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "implement", "status": "done", "note": "ticket 1 complete",
+    }))
+    messages.append(config.state_dir, 42, "use the staging URL", "jesdi@github")
+    sessions = FakeSessions(alive={42})
+    dependencies = deps(sess=sessions)
+
+    # Denied pass: message still undelivered
+    patch_usage(monkeypatch, util=0.99)
+    main.run_pass(config, dependencies)
+    assert len(messages.undelivered(config.state_dir, 42)) == 1
+    assert messages.undelivered(config.state_dir, 42)[0].text == "use the staging URL"
+
+    # Admitted pass: message delivered exactly once
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(config, dependencies)
+    assert messages.undelivered(config.state_dir, 42) == []
+    all_msgs = messages.all_messages(config.state_dir, 42)
+    assert len(all_msgs) == 1
+    assert all_msgs[0].delivered_at != ""
