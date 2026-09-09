@@ -1150,8 +1150,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             # name would collide). End it first; no-op when already dead.
             deps.sessions.end(task.target, task.issue)
             spec_path = signal.artifact if act.stage is Stage.PLAN else ""
-            task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path,
-                                ticket=act.ticket)
+            task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path)
         elif isinstance(act, HandleCrash):
             _notify(deps, target, task, "session_crashed")
             deps.github.release(target, task.issue, "session crashed mid-stage")

@@ -19,7 +19,6 @@ from dispatcher.state import IN_FLIGHT_STAGES, LoopCaps, Stage, StageSignal, Tas
 @dataclass(frozen=True)
 class SpawnStage:
     stage: Stage
-    ticket: int = 0   # implement only: the 1-based ticket this session works
 
 
 @dataclass(frozen=True)
