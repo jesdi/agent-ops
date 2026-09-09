@@ -265,3 +265,12 @@ def test_parse_rejects_empty_use_map_value():
     with pytest.raises(ValueError, match="use"):
         parse_policy({"default": "d", "rules": [
             {"name": "r", "when": {}, "use": {"spec": ""}}]})
+
+
+def test_review_is_a_policy_stage():
+    from dispatcher.models import STAGES, parse_policy, resolve
+    assert "review" in STAGES
+    p = parse_policy({"default": "claude-opus-4-8", "rules": [
+        {"name": "std", "use": {"review": "claude-fable-5"}}]})
+    assert resolve(p, "review", None, []) == "claude-fable-5"
+    assert resolve(p, "implement", None, []) == "claude-opus-4-8"

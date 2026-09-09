@@ -16,9 +16,35 @@ one task. Sessions are disposable; state lives in artifacts and claude-home.
 _Avoid_: agent (that's the OS user), container (that's the isolation layer only)
 
 **Stage**:
-One step of a task's lifecycle (spec → plan → implement), each executed by a
-fresh session whose only input is the previous stage's committed artifact.
+One step of a task's lifecycle (spec → plan → implement, once per ticket →
+review → pr-open → address-review), each executed by a fresh session whose
+only input is the previous stage's artifact.
 _Avoid_: phase, step
+
+**Ticket**:
+One vertical slice of the implementation, produced by the plan stage as
+`.agent/tickets/NN-slug.md` and worked by exactly one implement session.
+Never committed; the numeric prefix is the execution order.
+_Avoid_: plan (the plan stage now produces tickets, not a plan file), task
+(that is the whole issue)
+
+**Review stage**:
+The session that reads only the issue, the spec, the tickets and the diff —
+never a summary — fixes what it finds, rebases onto main, runs the gates
+and end to end, and opens the PR.
+_Avoid_: PR stage, verify stage
+
+**Gate**:
+The target repository's own green check (`gate_cmd` in targets.yaml —
+tests, lint, CRAP), run by the session after every ticket and in review.
+End to end (`verify_cmd`) is separate and runs once, off-box.
+_Avoid_: verification ladder
+
+**Loop cap**:
+The configured number of rounds a bounded loop (review fixes, gate fixes,
+e2e fixes, CI fixes on an open PR) may run before the task parks for the
+operator. Parks, never fails.
+_Avoid_: retry limit (that is the plan-format retry)
 
 **Claude-home**:
 The box-side persistent Claude config directory (`~/agent-ops-state/claude-home`),
@@ -37,19 +63,76 @@ from a workstation)
 The design artifact produced by the spec stage. The only committed stage
 artifact — approved by a human, then committed to the task branch.
 
-**Plan**:
-The implementation artifact produced by the plan stage. Never committed: it
-lives in the worktree (`.agent/plan.md`) and is deleted by the dispatcher when
-the implement stage finishes.
-
 **Repo skills**:
 Skills scoped to a target repo, declared in that repo's `.my-skills.json` and
 synced by `@jesdi/skills-cli`. Distinct from process skills.
 
 **Process skills**:
-Repo-agnostic workflow skills (brainstorming, writing-plans, executing-plans,
-TDD…) that stage prompts rely on. Delivered box-side via the claude-home seed,
-not via target repos.
+Repo-agnostic workflow skills (to-spec, to-questionnaire, to-tickets,
+prototype, wizard, tdd, code-review, deep-quality-review…) that stage
+prompts invoke. Vendored as files into the claude-home seed from the skills
+repo (`make vendor-skills`); never a plugin, never carried by target repos.
+
+## Loop-policy ownership
+
+**Single owner**: `dispatcher/loops.py` owns all round accounting, cap arithmetic, and reset scopes.
+`dispatcher/state.py` remains the serialisation owner; loops depends on state, never the reverse.
+The dispatcher owns I/O and the one round-effect executor `_apply_loop_decision` (injected callable:
+`park_exhausted`). Nothing outside `loops.py` may mutate `*_rounds` fields at runtime; defaults and
+serialisation fields in `state.py` are exempt, as is read-only presentation of the counters.
+
+**Three distinct questions** — kept separate by design:
+
+1. *(Task state machine)* What work is next?
+2. *(Loop policy)* Is another fix attempt allowed? — owned by `loops.py`.
+3. *(Future: execution-admission policy)* Which suitable model/runtime has allowance, or should it
+   wait?
+
+A non-exhausted loop decision is eligibility to *retry*, not permission to launch. Existing
+budget/capacity checks still decide when launch happens.
+
+**Reset causes** describe logical work boundaries (new stage/ticket, operator intervention, new PR
+cycle). A replacement process, model switch, or subscription reset is **not** by itself a fresh
+fix-loop allowance.
+
+**Future (not implemented)**: subscription-aware model selection belongs near the existing usage-gate
+/ model-selection code, not inside loop accounting. Loop policy must remain independent of model IDs,
+runtime/provider names, credentials, subscription snapshots, and usage APIs. A global usage denial
+must not prevent considering another suitable runtime with allowance. Waiting for allowance does not
+spend a fix round. A task parked after exhausting fix attempts is distinct from work waiting for
+execution resources. Deferred items: usage collectors, weekly scheduling, model suitability/fallback,
+runtime adapters, cross-runtime session continuation.
+
+## Operator-request ownership
+
+**Durable spec reference**: `TaskState.spec_path` — recorded when the task enters AWAITING-SPEC-REVIEW,
+retained across plan / implement / review / PR-OPEN / address-review. Worktree-relative path.
+
+**Operator request** = `TaskState.operator_request`: `None` (no request), `{"kind": "spec-approval"}`,
+or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns its lifecycle writes:
+
+- Establish on entering AWAITING-SPEC-REVIEW (spec-approval).
+- Set answers kind when a valid answers artifact is signalled.
+- Clear on: successful resume, stage transition, ordinary+exhaustion park, terminal stage, CI/login supersede.
+- Retain on admission denial (resources unavailable at wake time).
+- Re-arm on a resumed gate re-signal.
+
+The web layer READS `operator_request`; it never infers a request from park state.
+
+**Endpoint and UI**: one `/api/task/{target}/{issue}/request` → `OperatorRequest | null` with a
+discriminated `readable | unavailable` content union. One `RequestPanel` + media renderer in the
+frontend. Approval is only possible on a `readable` spec-approval request.
+
+**Legacy conversion**: localized in `state._read` (migrated from the old `artifact`/`spec_path`-inferred
+request). The external stage-signal artifact parser (`read_stage_signal`) is separate and retained.
+
+**Three distinct questions** — kept separate by design:
+
+1. *(Task state machine)* What work is next?
+2. *(Operator-request lifecycle)* Is there a pending operator action, and what content does it need?
+3. *(Loop policy)* Is another fix attempt allowed? — owned by `loops.py`.
+
+Request handling must remain independent of loop comparisons, reset logic, model IDs, and provider names.
 
 ## Flagged ambiguities
 
@@ -59,9 +142,9 @@ not via target repos.
 
 ## Example dialogue
 
-— "The spec stage failed: it couldn't find the brainstorming skill."
+— "The spec stage failed: it couldn't find the to-questionnaire skill."
 — "Then the claude-home seed is missing a process skill. Add it to
-  `provision/claude-home/`, merge, and the updater converges the box; don't
+  `provision/skills-pins.json`, run `make vendor-skills`, merge, and the updater converges the box; don't
   install anything on the box by hand."
 — "Should I also add it to portfolio_eval's `.my-skills.json`?"
 — "No — that's for repo skills. Process skills never ride target repos."

@@ -183,3 +183,21 @@ def test_triage_cmd_resolves_claude_token_at_spawn_via_wrapper(
     assert cmd[1:4] == ["podman", "run", "--rm"]
     i = cmd.index("-e", cmd.index("CLAUDE_CONFIG_DIR=/root/.claude"))
     assert cmd[i + 1] == "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def test_session_cmd_injects_the_task_branch_from_task_json(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    wt, _ = make_worktree(tmp_path)
+    agent = Path(wt) / ".agent"; agent.mkdir()
+    (agent / "task.json").write_text('{"issue": 42, "target": "pe", "branch": "agent/task-42"}')
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    assert "-e AGENT_OPS_TASK_BRANCH=agent/task-42 " in cmd
+
+
+def test_session_cmd_omits_the_branch_for_pre_field_worktrees(tmp_path: Path, monkeypatch):
+    # Old task.json without `branch`: the guardrail then fails closed on
+    # lease pushes, which is the safe side.
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    wt, _ = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    assert "AGENT_OPS_TASK_BRANCH" not in cmd

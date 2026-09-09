@@ -1,37 +1,67 @@
 import pytest
 
-from dispatcher.prompts import render_stage_prompt
+from dispatcher.prompts import render_stage_prompt, render_triage_prompt
 from dispatcher.state import Stage
 
 CTX = dict(
     issue_number=42, issue_title="Add widget", issue_url="https://github.com/x/y/issues/42",
     repo="jesdi/portfolio_eval", branch="agent/task-42", slot=1,
     backend_port=8101, frontend_port=5201,
-    verify_cmd="make e2e-slot SLOT=1",
+    verify_cmd="make e2e-slot SLOT=1", gate_cmd="make gate SLOT=1",
     spec_path="docs/specs/2026-07-14-widget-design.md",
+    tickets_dir=".agent/tickets", ticket_number=2, ticket_count=5,
+    ticket_path=".agent/tickets/02-widget-api.md", pr_number=12,
+    reason="check-failed", labels="auto, frontend",
 )
 
+STAGES = [Stage.SPEC, Stage.PLAN, Stage.IMPLEMENT, Stage.REVIEW, Stage.ADDRESS_REVIEW]
 
-@pytest.mark.parametrize("stage", [Stage.SPEC, Stage.PLAN, Stage.IMPLEMENT])
+
+@pytest.mark.parametrize("stage", STAGES)
 def test_renders_without_leftover_placeholders(stage):
     out = render_stage_prompt(stage, CTX)
-    assert "$issue_number" not in out and "${" not in out
-    assert "#42" in out or "42" in out
+    assert "$" not in out.replace("$(", "")   # only shell substitutions may keep a $
+    assert "#42" in out
     assert ".agent/stage.json" in out  # every stage knows the signal protocol
+    assert f'"stage": "{stage.value}"' in out
 
 
-def test_plan_prompt_references_spec_and_self_review():
+def test_spec_prompt_speaks_answers_and_review_signals():
+    out = render_stage_prompt(Stage.SPEC, CTX)
+    for token in ("awaiting-answers", ".agent/questionnaire.md", ".agent/prototype.html",
+                  "awaiting-review", "docs: draft spec for #42",
+                  "docs: spec for #42 (agent-ops)", "auto, frontend"):
+        assert token in out
+
+
+def test_plan_prompt_names_the_tickets_dir_and_spec():
     out = render_stage_prompt(Stage.PLAN, CTX)
-    assert CTX["spec_path"] in out
-    assert "self-review" in out.lower()
-    assert ".agent/plan.md" in out
+    assert CTX["spec_path"] in out and '"artifact": ".agent/tickets"' in out
+    assert ".agent/questions.md" in out and "awaiting-answers" in out
 
 
-def test_implement_prompt_has_verify_and_pr():
+def test_implement_prompt_carries_ticket_gate_and_round_protocol():
     out = render_stage_prompt(Stage.IMPLEMENT, CTX)
-    assert "make e2e-slot SLOT=1" in out
-    assert "Closes #42" in out
-    assert ".agent/plan.md" in out
+    for token in (CTX["ticket_path"], CTX["spec_path"], "make gate SLOT=1",
+                  '"loop": "gate"', "2 of 5"):
+        assert token in out
+    assert "pytest" not in out and "vitest" not in out
+
+
+def test_review_prompt_carries_gates_lease_push_and_pr():
+    out = render_stage_prompt(Stage.REVIEW, CTX)
+    for token in ("make gate SLOT=1", "make e2e-slot SLOT=1",
+                  "--force-with-lease origin agent/task-42",
+                  '"loop": "review"', "awaiting-ci", "Closes #42",
+                  ".agent/tickets", CTX["spec_path"]):
+        assert token in out
+
+
+def test_address_review_prompt_carries_reason_pr_and_gate():
+    out = render_stage_prompt(Stage.ADDRESS_REVIEW, CTX)
+    assert "#12" in out and "check-failed" in out and "make gate SLOT=1" in out
+    assert "--force-with-lease origin agent/task-42" in out
+    assert "awaiting-ci" in out and '"status": "done"' in out
 
 
 def test_missing_key_raises():
@@ -39,57 +69,16 @@ def test_missing_key_raises():
         render_stage_prompt(Stage.SPEC, {"issue_number": 1})
 
 
-def test_implement_prompt_uses_ci_protocol():
-    ctx = dict(issue_number=1, issue_title="t", issue_url="u", repo="o/r",
-               branch="agent/task-1", slot=0, backend_port=8100,
-               frontend_port=5200, verify_cmd="make e2e-remote", spec_path="")
-    text = render_stage_prompt(Stage.IMPLEMENT, ctx)
-    assert "awaiting-ci" in text and "run_id" in text
-    assert "gh workflow run" in text
-    assert "e2e-slot" not in text
-
-
-def test_address_review_prompt_renders():
-    text = render_stage_prompt(Stage.ADDRESS_REVIEW, dict(
-        issue_number=7, issue_title="Add widget", issue_url="u",
-        repo="o/r", branch="agent/task-7", slot=0, backend_port=8100,
-        frontend_port=5200, verify_cmd="make e2e", spec_path="",
-        pr_number=12))
-    assert "PR #12" in text or "pull request #12" in text
-    assert '"stage": "address-review"' in text
-    assert "awaiting-ci" in text and '"status": "done"' in text
-
-
-def test_spec_prompt_commits_and_pushes_draft_before_review():
-    out = render_stage_prompt(Stage.SPEC, CTX)
-    assert "docs: draft spec for #42" in out          # draft commit message
-    assert "push" in out and "origin" in out          # pushed before the gate
-    assert "do NOT commit" not in out                 # old instruction gone
-    # push/commit ordered BEFORE the awaiting-review signal
-    assert out.index("draft spec for #42") < out.index("awaiting-review")
-
-
-def test_spec_prompt_keeps_approval_commit_and_signal_protocol():
-    out = render_stage_prompt(Stage.SPEC, CTX)
-    assert "docs: spec for #42 (agent-ops)" in out
-    assert ".agent/stage.json" in out
-
-
 def test_render_triage_prompt():
-    from dispatcher.prompts import render_triage_prompt
     text = render_triage_prompt({
         "repo": "o/r",
         "decisions_path": "/triage/o-r-2026-07-30.json",
         "context_json": '{"issues": []}',
     })
-    assert "o/r" in text
-    assert "/triage/o-r-2026-07-30.json" in text
-    assert '{"issues": []}' in text
-    assert "auto" in text and "human-required" in text
+    assert "o/r" in text and "/triage/o-r-2026-07-30.json" in text
+    assert '{"issues": []}' in text and "auto" in text and "human-required" in text
 
 
 def test_render_triage_prompt_missing_var_raises():
-    from dispatcher.prompts import render_triage_prompt
-    import pytest
     with pytest.raises(KeyError):
         render_triage_prompt({"repo": "o/r"})

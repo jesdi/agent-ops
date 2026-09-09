@@ -1,22 +1,40 @@
 """Pure per-task state machine: (state, stage signal, session liveness) → actions.
 
-queued → spec → awaiting-spec-review → plan → implement → pr-open
-                                    ↘ blocked (any stage) ↗    ⇅
+queued → spec → awaiting-spec-review → plan → implement ×tickets → review → pr-open
+                                    ↘ blocked/awaiting-answers (any stage) ↗   ⇅
                                     ↘ failed / stalled-on-budget
                        pr-open ⇄ address-review, pr-open → done|failed
+Every bounded loop (review fixes, gate fixes, e2e, ci) parks past its cap.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from dispatcher.artifacts import CheckResult, check_plan, check_spec
-from dispatcher.state import IN_FLIGHT_STAGES, Stage, StageSignal, TaskState
+from dispatcher.artifacts import TICKETS_DIR, CheckResult, check_spec, check_tickets
+from dispatcher.loops import Decision, Loop, Outcome, ReportedRound, evaluate
+from dispatcher.state import IN_FLIGHT_STAGES, LoopCaps, Stage, StageSignal, TaskState
 
 
 @dataclass(frozen=True)
 class SpawnStage:
     stage: Stage
+
+
+@dataclass(frozen=True)
+class StartTicket:
+    """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
+    and session spawn happen together. The executor checks budget_ok first and
+    makes no state mutation when denied."""
+    cursor: int
+    count: int
+
+
+@dataclass(frozen=True)
+class ApplyDecision:
+    """A loop policy decision that the executor must apply: save the counter,
+    emit the round event, and (for LAST_ROUND/EXHAUSTED) notify / park."""
+    decision: Decision
 
 
 @dataclass(frozen=True)
@@ -62,11 +80,22 @@ class NoOp:
 @dataclass(frozen=True)
 class ParkForInput:
     note: str = ""
+    artifact: str = ""   # awaiting-answers: the file the operator must answer
+    is_answers: bool = False  # True only for awaiting-answers signals
 
 
 @dataclass(frozen=True)
 class ParkForCI:
     run_id: int
+
+
+@dataclass(frozen=True)
+class ArmSpecApproval:
+    """Re-establish the spec-approval operator_request on a resumed gate task
+    whose operator_request was cleared by the resume (slice 12). Does NOT
+    re-stamp updated_at (grace clock must not restart) and does NOT emit
+    SetTaskStage (no stage transition, no re-publish, no re-notify)."""
+    artifact: str = ""
 
 
 @dataclass(frozen=True)
@@ -76,28 +105,32 @@ class ParkForReview:
     Ready task instead of holding it for a human who is asleep."""
 
 
-NEXT_STAGE = {
-    Stage.SPEC: Stage.PLAN,
-    Stage.AWAITING_SPEC_REVIEW: Stage.PLAN,
-    Stage.PLAN: Stage.IMPLEMENT,
-    Stage.IMPLEMENT: Stage.PR_OPEN,
-}
-
-_CHECKERS = {
-    Stage.SPEC: check_spec,
-    Stage.AWAITING_SPEC_REVIEW: check_spec,
-    Stage.PLAN: check_plan,
-}
-
-# A plan that fails the mechanical format check is usually a heading-level
-# slip, not a bad plan — resume the session with the reason this many times
-# before giving up and failing the task.
+# A ticket set that fails the mechanical check is usually a numbering or
+# heading slip — resume the session with the reason this many times before
+# giving up and failing the task.
 PLAN_RETRY_LIMIT = 1
 
 
 def _artifact_path(task: TaskState, signal: StageSignal) -> Path:
     p = Path(signal.artifact)
     return p if p.is_absolute() else Path(task.worktree) / p
+
+
+def _loop_actions(task: TaskState, signal: StageSignal,
+                  caps: LoopCaps) -> list[object]:
+    """Round bookkeeping for a `working` signal that names a loop. Routes
+    through the pure policy; only signals with a round above the stored
+    counter produce an action. UNCHANGED → empty list (no-op)."""
+    if signal.status != "working":
+        return []
+    try:
+        loop = Loop(signal.loop)
+    except ValueError:
+        return []
+    decision = evaluate(task, ReportedRound(loop, signal.round), caps)
+    if decision.outcome is Outcome.UNCHANGED:
+        return []
+    return [ApplyDecision(decision)]
 
 
 def next_actions(
@@ -108,6 +141,7 @@ def next_actions(
     idle_seconds: float | None = None,
     stall_after: float = 600.0,
     grace_elapsed: bool = False,
+    caps: LoopCaps = LoopCaps(),
 ) -> list[object]:
     if task.park:
         return [NoOp()]  # wake/resume is dispatcher-side; never re-park
@@ -122,14 +156,8 @@ def next_actions(
         if task.stage in IN_FLIGHT_STAGES:
             return [HandleCrash()]
 
-    # Time-based liveness: a live claude redraws its status line every
-    # second, so real work never accumulates idle time. A static screen
-    # with no signal (login/trust prompt at startup) or a "working" signal
-    # that never ends its turn (mid-session /login, hang) is a stall.
-    # Gated statuses (awaiting-review/-ci, blocked) are idle by design: they
-    # reach this rule and never satisfy it, falling through to their own
-    # rules below. None idle (query failure) is unknown, not stalled, and
-    # the threshold is strict — idle_seconds == stall_after does not park.
+    # Time-based liveness (unchanged): gated statuses are idle by design and
+    # fall through to their own rules below.
     stalled = (session_alive and stall_after > 0
                and idle_seconds is not None and idle_seconds > stall_after)
     if stalled and (signal is None
@@ -140,6 +168,8 @@ def next_actions(
 
     if signal is None:
         return [NoOp()]
+
+    loop_acts = _loop_actions(task, signal, caps)
 
     if signal.status == "awaiting-ci":
         if signal.run_id <= 0:
@@ -152,49 +182,53 @@ def next_actions(
             return [NoOp()]  # legacy escalate-in-place state
         return [ParkForInput(signal.note)]
 
+    if signal.status == "awaiting-answers":
+        # Questionnaire, prototype or wizard: an input park that carries the
+        # file the operator must look at. The console serves it.
+        return [ParkForInput(signal.note, artifact=signal.artifact, is_answers=True)]
+
     if signal.status == "working":
         if waiting and session_alive:
-            return [ParkForInput("(session stopped mid-stage waiting for input)")]
-        return [NoOp()]
+            return loop_acts + [ParkForInput("(session stopped mid-stage waiting for input)")]
+        return loop_acts or [NoOp()]
 
     if signal.status == "awaiting-review":
         if task.stage == Stage.AWAITING_SPEC_REVIEW:
-            # session_alive is guaranteed here: a dead session at the gate
-            # returned SpawnStage(SPEC) above (reboot recovery).
             if grace_elapsed:
                 return [ParkForReview()]
+            if not task.operator_request:
+                return [ArmSpecApproval(artifact=signal.artifact)]
             return [NoOp()]  # already notified on a previous pass
         if task.stage != Stage.SPEC:
-            return [NoOp()]  # only the SPEC stage emits awaiting-review; ignore stale/misrouted
-        return [SetTaskStage(Stage.AWAITING_SPEC_REVIEW,
-                             artifact=signal.artifact),
+            return [NoOp()]  # only the SPEC stage emits awaiting-review
+        return [SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact=signal.artifact),
                 PublishSpec(artifact=signal.artifact),
                 Notify("awaiting_spec_review", signal.note)]
 
     if done:
         if task.stage == Stage.IMPLEMENT:
+            if task.ticket_cursor < task.ticket_count:
+                nxt = task.ticket_cursor + 1
+                return [StartTicket(nxt, task.ticket_count)]
+            return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
+        if task.stage == Stage.REVIEW:
             return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]
         if task.stage == Stage.ADDRESS_REVIEW:
-            # The PR is the artifact — nothing to format-check. Back to
-            # watching; the next poll decides whether the reviewer is happy.
+            # The PR is the artifact — nothing to format-check.
             return [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", signal.note)]
-        checker = _CHECKERS.get(task.stage)
-        if checker is not None:
-            result: CheckResult = checker(_artifact_path(task, signal))
+        if task.stage == Stage.PLAN:
+            result: CheckResult = check_tickets(Path(task.worktree) / TICKETS_DIR)
             if not result.ok:
-                if (task.stage == Stage.PLAN
-                        and task.plan_retries < PLAN_RETRY_LIMIT):
+                if task.plan_retries < PLAN_RETRY_LIMIT:
                     return [RetryStage(Stage.PLAN, result.reason)]
-                return [SetTaskStage(Stage.FAILED),
-                        Notify("artifact_failed", result.reason)]
-        nxt = NEXT_STAGE.get(task.stage)
-        if nxt is None:
-            return [NoOp()]   # done signal for a terminal/unknown stage — ignore
-        acts: list[object] = [SpawnStage(nxt)]
-        if nxt == Stage.IMPLEMENT:
-            # No plan gate — the ping links the plan so a human can kill
-            # a bad run early from the phone.
-            acts.append(Notify("implement_started", signal.artifact))
-        return acts
+                return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
+            return [StartTicket(1, result.count),
+                    Notify("implement_started", f"{result.count} ticket(s)")]
+        if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
+            result = check_spec(_artifact_path(task, signal))
+            if not result.ok:
+                return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
+            return [SpawnStage(Stage.PLAN)]
+        return [NoOp()]   # done signal for a terminal/unknown stage — ignore
 
     return [NoOp()]

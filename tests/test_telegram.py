@@ -245,3 +245,17 @@ def test_alert_main_without_args_still_sends(monkeypatch):
     monkeypatch.setattr(alert, "Notifier", FakeNotifier)
     assert alert.main([]) == 0
     assert sent == ["unit_failed"]
+
+
+def test_loop_and_review_templates_render():
+    for template, frag in (("review_started", "review started"),
+                           ("last_round", "last round"),
+                           ("pr_attention", "needs attention")):
+        text = render(template, issue=3, title="T", url="u", note="n", target="alpha")
+        assert frag in text and "#3" in text
+
+
+def test_parked_question_carries_the_console_deep_link_when_configured():
+    text = render("parked_question", issue=12, title="T", url="u", note="q",
+                  target="alpha", console="https://box")
+    assert "https://box/task/alpha/12" in text

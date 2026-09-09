@@ -33,7 +33,9 @@ export function formatUtilization(fraction: number): string {
 const STAGE_LABELS: Record<string, string> = {
   spec: 'Writing spec',
   'awaiting-spec-review': 'Spec review',
+  plan: 'Writing tickets',
   implement: 'Implementing',
+  review: 'Reviewing',
   'pr-open': 'PR open',
   'address-review': 'Addressing review',
   done: 'Done',

@@ -65,7 +65,10 @@ the dispatcher stops the container, frees the slot, and resumes via
 `claude --continue <message>` when the wake event fires (Telegram reply or
 CI completion). No session ID is recorded; `--continue` reuses the most
 recent transcript keyed by the worktree cwd, which is mounted at the same
-path inside the fresh container. Woken tasks are always head-of-queue.
+path inside the fresh container. Woken tasks are always head-of-queue. A
+session that needs answers writes a file under `.agent/` and signals
+`awaiting-answers`; the console serves that file above the reply box so it
+can be answered from a phone.
 
 ## herdr: the session layer
 

@@ -4,7 +4,10 @@ import pytest
 
 from dataclasses import replace
 
+from dispatcher.loops import Outcome
 from dispatcher.machine import (
+    ApplyDecision,
+    ArmSpecApproval,
     HandleCrash,
     NoOp,
     Notify,
@@ -14,13 +17,22 @@ from dispatcher.machine import (
     PublishSpec,
     RetryStage,
     SetTaskStage,
+    StartTicket,
     SpawnStage,
     next_actions,
 )
-from dispatcher.state import Stage, StageSignal, TaskState
+from dispatcher.state import LoopCaps, SpecApprovalRequest, Stage, StageSignal, TaskState
 
 GOOD_SPEC = "# t — design\n\n## Problem\n\n" + ("x " * 400) + "\n\n## Decisions\n\n" + ("y " * 400)
-GOOD_PLAN = "# t Plan\n\n**Goal:** g\n\n### Task 1: a\n\n" + ("z " * 900)
+GOOD_TICKET = ("# 01 — thing\n\n**What to build:** " + ("behaviour " * 30)
+               + "\n\n**Blocked by:** None\n\n- [ ] It works end to end\n")
+
+
+def tickets(tmp_path, n=2, bad=False):
+    d = tmp_path / ".agent" / "tickets"; d.mkdir(parents=True, exist_ok=True)
+    for i in range(1, n + 1):
+        (d / f"{i:02d}-t{i}.md").write_text("# tiny\n" if bad else GOOD_TICKET)
+    return d
 
 
 def task(stage, worktree="/tmp/wt", issue=101, park=""):
@@ -67,8 +79,9 @@ def test_awaiting_review_notifies_once():
     assert SetTaskStage(Stage.AWAITING_SPEC_REVIEW) in acts
     assert PublishSpec() in acts
     assert any(isinstance(a, Notify) and a.template == "awaiting_spec_review" for a in acts)
-    # second pass, stage already updated → no re-notify
-    again = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+    # second pass: stage updated + operator_request set (as the executor does) → no re-notify
+    again = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
+                                 operator_request=SpecApprovalRequest()),
                          sig("spec", "awaiting-review"), True)
     assert again == [NoOp()]
 
@@ -87,8 +100,9 @@ def test_spec_awaiting_review_publishes_between_stage_and_notify():
 
 
 def test_gate_and_non_spec_stages_do_not_publish():
-    # already at the gate: no re-publish on every pass
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+    # already at the gate with operator_request set: no re-publish, no re-arm
+    acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
+                                operator_request=SpecApprovalRequest()),
                         sig("spec", "awaiting-review"), session_alive=True)
     assert PublishSpec() not in acts and acts == [NoOp()]
     # misrouted awaiting-review from a non-SPEC stage: still ignored
@@ -112,40 +126,131 @@ def test_spec_done_invalid_fails(tmp_path):
     assert any(isinstance(a, Notify) and a.template == "artifact_failed" for a in acts)
 
 
-def test_plan_done_valid_spawns_implement_and_notifies(tmp_path):
-    plan = tmp_path / ".agent"; plan.mkdir()
-    p = plan / "plan.md"; p.write_text(GOOD_PLAN)
+def test_plan_done_valid_tickets_starts_ticket_one(tmp_path):
+    tickets(tmp_path, n=3)
     acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)),
-                        sig("plan", "done", str(p)), True)
-    assert SpawnStage(Stage.IMPLEMENT) in acts
-    assert any(isinstance(a, Notify) and a.template == "implement_started" for a in acts)
+                        sig("plan", "done", ".agent/tickets"), True)
+    assert acts == [StartTicket(1, 3), Notify("implement_started", "3 ticket(s)")]
 
 
-def test_plan_done_bad_format_retries_in_session_first(tmp_path):
-    # Well-sized plan but H2 task headings / no Goal → format check fails.
-    # First failure resumes the session rather than failing the task.
-    plan = tmp_path / ".agent"; plan.mkdir()
-    p = plan / "plan.md"; p.write_text("# t\n\n## Task 1: a\n\n" + ("z " * 900))
+def test_plan_done_malformed_tickets_retries_then_fails(tmp_path):
+    tickets(tmp_path, n=2, bad=True)
     acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)),
-                        sig("plan", "done", str(p)), True)
-    assert len(acts) == 1 and isinstance(acts[0], RetryStage)
-    assert acts[0].stage is Stage.PLAN and acts[0].reason
-
-
-def test_plan_done_bad_format_fails_after_retry_exhausted(tmp_path):
-    plan = tmp_path / ".agent"; plan.mkdir()
-    p = plan / "plan.md"; p.write_text("# t\n\n## Task 1: a\n\n" + ("z " * 900))
+                        sig("plan", "done", ".agent/tickets"), True)
+    assert len(acts) == 1 and isinstance(acts[0], RetryStage) and acts[0].reason
     t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_retries=1)
-    acts = next_actions(t, sig("plan", "done", str(p)), True)
+    acts = next_actions(t, sig("plan", "done", ".agent/tickets"), True)
     assert SetTaskStage(Stage.FAILED) in acts
-    assert any(isinstance(a, Notify) and a.template == "artifact_failed"
-               for a in acts)
+    assert any(isinstance(a, Notify) and a.template == "artifact_failed" for a in acts)
 
 
-def test_implement_done_is_pr_open():
-    acts = next_actions(task(Stage.IMPLEMENT), sig("implement", "done"), True)
-    assert SetTaskStage(Stage.PR_OPEN) in acts
-    assert Notify("pr_opened") in acts
+def test_plan_done_with_a_numbering_gap_is_malformed(tmp_path):
+    d = tickets(tmp_path, n=1)
+    (d / "03-late.md").write_text(GOOD_TICKET)
+    acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)),
+                        sig("plan", "done", ".agent/tickets"), True)
+    assert isinstance(acts[0], RetryStage) and "contiguous" in acts[0].reason
+
+
+def test_implement_done_advances_the_ticket_cursor():
+    t = replace(task(Stage.IMPLEMENT), ticket_cursor=1, ticket_count=3)
+    acts = next_actions(t, sig("implement", "done"), True)
+    assert acts == [StartTicket(2, 3)]
+
+
+def test_last_ticket_done_spawns_review():
+    t = replace(task(Stage.IMPLEMENT), ticket_cursor=3, ticket_count=3)
+    acts = next_actions(t, StageSignal("implement", "done", note="all green"), True)
+    assert acts == [SpawnStage(Stage.REVIEW), Notify("review_started", "all green")]
+
+
+def test_blocked_ticket_parks_without_touching_the_cursor():
+    t = replace(task(Stage.IMPLEMENT), ticket_cursor=2, ticket_count=5)
+    acts = next_actions(t, StageSignal("implement", "blocked", note="secret missing"), True)
+    assert acts == [ParkForInput("secret missing")]
+    assert not any(isinstance(a, (StartTicket, SetTaskStage)) for a in acts)
+
+
+def test_review_done_is_pr_open():
+    acts = next_actions(task(Stage.REVIEW),
+                        StageSignal("review", "done", note="https://github.com/o/r/pull/9",
+                                    artifact="https://github.com/o/r/pull/9"), True)
+    assert acts == [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", "https://github.com/o/r/pull/9")]
+
+
+def test_review_dead_session_is_crash():
+    assert next_actions(task(Stage.REVIEW), None, False) == [HandleCrash()]
+
+
+def test_review_awaiting_ci_parks():
+    assert next_actions(task(Stage.REVIEW), sig("review", "awaiting-ci", run_id=5), True) == [ParkForCI(5)]
+
+
+def test_awaiting_answers_parks_with_the_artifact():
+    acts = next_actions(task(Stage.SPEC),
+                        StageSignal("spec", "awaiting-answers", note="7 questions",
+                                    artifact=".agent/questionnaire.md"), True)
+    assert acts == [ParkForInput("7 questions", artifact=".agent/questionnaire.md", is_answers=True)]
+
+
+def loop_sig(loop, n, stage="implement"):
+    return StageSignal(stage, "working", loop=loop, round=n)
+
+
+def test_new_gate_round_is_recorded():
+    acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True)
+    assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.WITHIN_LIMIT
+    assert acts[0].decision.round == 1
+
+
+def test_last_gate_round_records_and_pings():
+    acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 2), True)
+    assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.LAST_ROUND
+    assert acts[0].decision.round == 2
+
+
+def test_gate_round_past_the_cap_parks():
+    t = replace(task(Stage.IMPLEMENT), gate_rounds=2)
+    acts = next_actions(t, loop_sig("gate", 3), True)
+    assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.EXHAUSTED
+    assert acts[0].decision.round == 3
+
+
+def test_counters_survive_a_resume():
+    # The session re-reports a round the dispatcher already counted: nothing
+    # is re-recorded and nothing resets — the budget is the task state's.
+    t = replace(task(Stage.IMPLEMENT), gate_rounds=2)
+    assert next_actions(t, loop_sig("gate", 2), True) == [NoOp()]
+    assert next_actions(t, loop_sig("gate", 1), True) == [NoOp()]
+
+
+def test_review_loop_uses_its_own_cap():
+    t = replace(task(Stage.REVIEW), review_rounds=1)
+    acts = next_actions(t, loop_sig("review", 2, stage="review"), True,
+                        caps=LoopCaps(review=1))
+    assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.EXHAUSTED
+    assert acts[0].decision.round == 2
+
+
+def test_unknown_loop_is_ignored():
+    assert next_actions(task(Stage.IMPLEMENT), loop_sig("dance", 9), True) == [NoOp()]
+
+
+def test_round_report_then_waiting_records_and_parks_for_input():
+    acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True, waiting=True)
+    assert len(acts) == 2 and isinstance(acts[0], ApplyDecision)
+    assert acts[0].decision.outcome is Outcome.WITHIN_LIMIT
+    assert acts[1] == ParkForInput("(session stopped mid-stage waiting for input)")
+
+
+def test_round_on_a_done_signal_is_not_a_round():
+    t = replace(task(Stage.IMPLEMENT), ticket_cursor=1, ticket_count=1)
+    acts = next_actions(t, StageSignal("implement", "done", loop="gate", round=9), True)
+    assert acts == [SpawnStage(Stage.REVIEW), Notify("review_started", "")]
 
 
 def test_blocked_parks_and_legacy_stage_is_noop():
@@ -267,8 +372,9 @@ def test_stall_zero_threshold_disables():
 
 
 def test_stall_ignores_gated_statuses():
-    # idle-by-design states never stall-park
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+    # idle-by-design states never stall-park; operator_request set = normal gate state
+    acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
+                                operator_request=SpecApprovalRequest()),
                         sig("spec", "awaiting-review"), True, idle_seconds=1e9)
     assert acts == [NoOp()]
     acts = next_actions(task(Stage.IMPLEMENT),
@@ -301,7 +407,9 @@ def test_gate_parks_once_the_grace_period_elapses():
 
 
 def test_gate_waits_inside_the_grace_period():
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
+    # With operator_request set: approval already present → NoOp (grace preserved)
+    acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
+                                operator_request=SpecApprovalRequest()),
                         sig("spec", "awaiting-review"), session_alive=True,
                         grace_elapsed=False)
     assert acts == [NoOp()]
@@ -362,3 +470,22 @@ def test_address_review_blocked_parks_for_input():
 def test_address_review_dead_session_is_crash():
     acts = next_actions(task(Stage.ADDRESS_REVIEW), None, False)
     assert acts == [HandleCrash()]
+
+
+# Slice 12 tests
+
+def test_gate_rearms_approval_when_operator_request_cleared():
+    """Slice 12: resumed task at gate with cleared operator_request → re-arm, not NoOp."""
+    t = task(Stage.AWAITING_SPEC_REVIEW)  # operator_request=None by default
+    acts = next_actions(t, sig("spec", "awaiting-review", artifact="docs/spec.md"),
+                        session_alive=True, grace_elapsed=False)
+    assert acts == [ArmSpecApproval(artifact="docs/spec.md")]
+
+
+def test_gate_does_not_rearm_when_operator_request_already_set():
+    """Slice 12: operator_request set → NoOp (slice 8 invariant preserved)."""
+    t = replace(task(Stage.AWAITING_SPEC_REVIEW),
+                operator_request=SpecApprovalRequest())
+    acts = next_actions(t, sig("spec", "awaiting-review", artifact="docs/spec.md"),
+                        session_alive=True, grace_elapsed=False)
+    assert acts == [NoOp()]

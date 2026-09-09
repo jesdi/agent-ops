@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 DEFAULT_MODEL = "claude-opus-4-8"
-STAGES = ("spec", "plan", "implement")
+STAGES = ("spec", "plan", "implement", "review")
 
 _WHEN_KEYS = frozenset({"effort", "labels_include", "labels_exclude"})
 _EFFORT_KEYS = frozenset({"min", "max"})

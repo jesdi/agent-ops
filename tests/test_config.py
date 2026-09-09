@@ -19,6 +19,7 @@ targets:
     rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
     setup_cmd: "scripts/setup-worktree.sh"
     verify_cmd: "make e2e-slot SLOT={slot}"
+    gate_cmd: "make gate"
     project_number: 1
     project_owner: jesdi
     status_field_id: PVTSSF_xxx
@@ -126,6 +127,7 @@ targets:
     rank_cmd: rank
     setup_cmd: setup
     verify_cmd: verify
+    gate_cmd: "make gate"
     project_number: 1
     project_owner: o
     status_field_id: F
@@ -166,6 +168,7 @@ targets:
     rank_cmd: "rank"
     setup_cmd: "setup"
     verify_cmd: "make e2e-slot SLOT={slot}"
+    gate_cmd: "make gate"
     project_number: 1
     project_owner: jesdi
     status_field_id: F
@@ -229,6 +232,7 @@ targets:
     rank_cmd: "rank"
     setup_cmd: "setup"
     verify_cmd: "make e2e-slot SLOT={slot}"
+    gate_cmd: "make gate"
     project_number: 1
     project_owner: jesdi
     status_field_id: F
@@ -310,6 +314,7 @@ def write_yaml(tmp_path: Path, target_extra: dict | None = None, top_extra: dict
         "rank_cmd": "rank",
         "setup_cmd": "setup",
         "verify_cmd": "verify",
+        "gate_cmd": "make gate",
         "project_number": 1,
         "project_owner": "o",
         "status_field_id": "F",
@@ -373,3 +378,52 @@ def test_pass_interval_minutes_default_and_override(tmp_path):
     assert load_config(p).pass_interval_minutes == 10
     p.write_text("state_dir: /tmp/s\npass_interval_minutes: 5\ntargets: []\n")
     assert load_config(p).pass_interval_minutes == 5
+
+
+GATED_YAML = """
+state_dir: /tmp/s
+targets:
+  - name: alpha
+    repo: jesdi/alpha
+    clone_path: /tmp/c
+    worktrees_path: /tmp/w
+    rank_cmd: rank
+    setup_cmd: setup
+    verify_cmd: "make e2e-slot SLOT={slot}"
+    gate_cmd: "make gate SLOT={slot}"
+    project_number: 1
+    project_owner: jesdi
+    status_field_id: F
+    status_ready_option_id: R
+    status_in_progress_option_id: P
+"""
+
+
+def test_gate_cmd_is_loaded(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    p = tmp_path / "t.yaml"; p.write_text(GATED_YAML)
+    assert load_config(p).targets[0].gate_cmd == "make gate SLOT={slot}"
+
+
+def test_missing_gate_cmd_fails_at_load(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    p = tmp_path / "t.yaml"
+    p.write_text(GATED_YAML.replace('    gate_cmd: "make gate SLOT={slot}"\n', ""))
+    with pytest.raises(ValueError, match="gate_cmd"):
+        load_config(p)
+
+
+def test_loop_caps_default_and_override(tmp_path, monkeypatch):
+    from dispatcher.state import LoopCaps
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    p = tmp_path / "t.yaml"; p.write_text(GATED_YAML)
+    assert load_config(p).loop_caps == LoopCaps()
+    p.write_text(GATED_YAML + "loop_caps:\n  gate: 1\n  ci: 5\n")
+    assert load_config(p).loop_caps == LoopCaps(review=2, gate=1, e2e=3, ci=5)
+
+
+def test_unknown_loop_cap_fails_at_load(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    p = tmp_path / "t.yaml"; p.write_text(GATED_YAML + "loop_caps:\n  plan: 1\n")
+    with pytest.raises(ValueError, match="loop_caps"):
+        load_config(p)

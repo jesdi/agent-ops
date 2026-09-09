@@ -64,7 +64,7 @@ class GitHubClient:
     def pr_view(self, target: Target, pr_number: int) -> dict:
         out = _run(["gh", "pr", "view", str(pr_number), "--repo", target.repo,
                     "--json",
-                    "state,mergedAt,reviewDecision,reviews,comments"])
+                    "state,mergedAt,reviewDecision,reviews,comments,statusCheckRollup,mergeable,headRefOid"])
         return json.loads(out)
 
     def pr_number_for_branch(self, target: Target, branch: str) -> int:

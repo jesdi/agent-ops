@@ -1,0 +1,15 @@
+{
+  "skills": {
+    "to-spec": "@jesdi/skills@0.0.14",
+    "to-tickets": "@jesdi/skills@0.0.14",
+    "prototype": "@jesdi/skills@0.0.14",
+    "wizard": "@jesdi/skills@0.0.14",
+    "deep-quality-review": "@jesdi/skills@0.0.14",
+    "to-questionnaire": "mattpocock/skills@9603c1cc8118d08bc1b3bf34cf714f62178dea3b",
+    "tdd": "mattpocock/skills@9603c1cc8118d08bc1b3bf34cf714f62178dea3b",
+    "code-review": "mattpocock/skills@9603c1cc8118d08bc1b3bf34cf714f62178dea3b",
+    "codebase-design": "mattpocock/skills@9603c1cc8118d08bc1b3bf34cf714f62178dea3b",
+    "diagnosing-bugs": "mattpocock/skills@9603c1cc8118d08bc1b3bf34cf714f62178dea3b",
+    "resolving-merge-conflicts": "mattpocock/skills@9603c1cc8118d08bc1b3bf34cf714f62178dea3b"
+  }
+}

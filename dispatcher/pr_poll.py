@@ -1,6 +1,6 @@
 """Pure classification of a `gh pr view` payload against a task's feedback
 cursor. No I/O — the dispatcher pass fetches, this module only decides:
-merged | closed | feedback | quiet.
+merged | closed | feedback | check-failed | conflict | quiet.
 
 `reviewDecision` is deliberately ignored as a trigger: CHANGES_REQUESTED
 latches until re-review, so acting on it would re-open an already-addressed
@@ -14,8 +14,21 @@ from datetime import datetime, timezone
 
 @dataclass(frozen=True)
 class PollResult:
-    kind: str            # "merged" | "closed" | "feedback" | "quiet"
-    latest_ts: str = ""  # newest human feedback timestamp (kind=="feedback")
+    kind: str            # merged | closed | feedback | check-failed | conflict | quiet
+    latest_ts: str = ""  # feedback: newest human ts; check-failed: newest red completion; conflict: head sha
+
+
+_RED = {"FAILURE", "ERROR", "TIMED_OUT"}
+
+
+def _red_at(check: dict) -> str:
+    """Completion timestamp of a failed check (CheckRun or StatusContext),
+    "" when it is not red or carries no timestamp — a red check with no
+    time cannot be cursored, so it never triggers."""
+    verdict = (check.get("conclusion") or check.get("state") or "").upper()
+    if verdict not in _RED:
+        return ""
+    return check.get("completedAt") or check.get("startedAt") or check.get("createdAt") or ""
 
 
 def _ts(raw: str) -> datetime | None:
@@ -37,7 +50,8 @@ def _is_human(author: dict | None, self_login: str) -> bool:
         and not login.endswith("[bot]") and not a.get("is_bot", False)
 
 
-def classify(payload: dict, cursor: str, self_login: str) -> PollResult:
+def classify(payload: dict, cursor: str, self_login: str,
+             check_cursor: str = "", conflict_cursor: str = "") -> PollResult:
     if payload.get("mergedAt"):
         return PollResult("merged")
     if payload.get("state") == "CLOSED":
@@ -56,4 +70,16 @@ def classify(payload: dict, cursor: str, self_login: str) -> PollResult:
             fresh.append((dt, raw))
     if fresh:
         return PollResult("feedback", latest_ts=max(fresh)[1])
+    red: list[tuple[datetime, str]] = []
+    seen = _ts(check_cursor)
+    for check in payload.get("statusCheckRollup") or []:
+        raw = _red_at(check if isinstance(check, dict) else {})
+        dt = _ts(raw)
+        if dt is not None and (seen is None or dt > seen):
+            red.append((dt, raw))
+    if red:
+        return PollResult("check-failed", latest_ts=max(red)[1])
+    head = str(payload.get("headRefOid") or "")
+    if payload.get("mergeable") == "CONFLICTING" and head and head != conflict_cursor:
+        return PollResult("conflict", latest_ts=head)
     return PollResult("quiet")

@@ -4,6 +4,7 @@ The hook is a Claude Code PreToolUse hook: JSON on stdin, exit 0 allows,
 exit 2 blocks. Box sessions must push task branches (allowed) but never
 force-push or touch main (blocked)."""
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -13,10 +14,12 @@ HOOK = (Path(__file__).resolve().parent.parent
         / "provision" / "claude-home" / "hooks" / "block-dangerous-git.sh")
 
 
-def run_hook(command):
+def run_hook(command, env=None):
     payload = json.dumps({"tool_input": {"command": command}})
+    base = {k: v for k, v in os.environ.items() if k != "AGENT_OPS_TASK_BRANCH"}
     return subprocess.run(["bash", str(HOOK)], input=payload,
-                          capture_output=True, text=True, timeout=10)
+                          capture_output=True, text=True, timeout=10,
+                          env={**base, **(env or {})})
 
 
 @pytest.mark.parametrize("cmd", [
@@ -87,3 +90,39 @@ def test_blocks_without_jq(tmp_path):
     )
     assert r.returncode == 2, f"expected block without jq, got {r.returncode}"
     assert "BLOCKED" in r.stderr
+
+
+BRANCH = {"AGENT_OPS_TASK_BRANCH": "agent/task-42"}
+LEASE = "git push --force-with-lease origin "
+
+
+def test_lease_push_to_the_task_branch_is_allowed():
+    r = run_hook(LEASE + "agent/task-42", env=BRANCH)
+    assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize("cmd", [
+    LEASE + "agent/task-43",                                    # another branch
+    LEASE.rstrip("origin "),                                    # bare, no refspec
+    LEASE.rstrip(),                                             # no branch
+    "git push --force-with-lease=agent/task-42 origin agent/task-42",
+    "git push --force origin agent/task-42",                    # plain force
+    "git push -f origin agent/task-42",
+    LEASE + "agent/task-42 && echo ok",
+    "cd /x && " + LEASE + "agent/task-42",
+    LEASE + "agent/task-42\nrm -rf /",
+    "git push --force-with-lease upstream agent/task-42",       # not origin
+])
+def test_other_force_shapes_stay_blocked(cmd):
+    r = run_hook(cmd, env=BRANCH)
+    assert r.returncode == 2 and "BLOCKED" in r.stderr, cmd
+
+
+def test_lease_push_fails_closed_without_the_branch_variable():
+    r = run_hook(LEASE + "agent/task-42")
+    assert r.returncode == 2 and "AGENT_OPS_TASK_BRANCH" in r.stderr
+
+
+def test_lease_push_to_main_is_blocked_even_when_main_is_the_variable():
+    r = run_hook(LEASE + "main", env={"AGENT_OPS_TASK_BRANCH": "main"})
+    assert r.returncode == 2

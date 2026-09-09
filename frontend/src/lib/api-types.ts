@@ -310,6 +310,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{target}/{issue}/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Task Request */
+        get: operations["task_request_api_task__target___issue__request_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{target}/{issue}/resume": {
         parameters: {
             query?: never;
@@ -338,23 +355,6 @@ export interface paths {
         put?: never;
         /** Intent Retry */
         post: operations["intent_retry_api_task__target___issue__retry_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/task/{target}/{issue}/spec": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Task Spec */
-        get: operations["task_spec_api_task__target___issue__spec_get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -549,6 +549,16 @@ export interface components {
             /** Issue */
             issue: number;
         };
+        /** OperatorRequest */
+        OperatorRequest: {
+            /** Content */
+            content: components["schemas"]["ReadableContent"] | components["schemas"]["UnavailableContent"];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "spec-approval" | "answers";
+        };
         /** PaneHistory */
         PaneHistory: {
             /** Text */
@@ -597,6 +607,20 @@ export interface components {
             /** Targets */
             targets: components["schemas"]["TargetQueue"][];
         };
+        /** ReadableContent */
+        ReadableContent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "readable";
+            /** Media Type */
+            media_type: string;
+            /** Path */
+            path: string;
+            /** Text */
+            text: string;
+        };
         /** ReadyReq */
         ReadyReq: {
             /** Issue */
@@ -614,13 +638,6 @@ export interface components {
              * @default
              */
             text: string;
-        };
-        /** SpecView */
-        SpecView: {
-            /** Markdown */
-            markdown: string;
-            /** Path */
-            path: string;
         };
         /** TargetQueue */
         TargetQueue: {
@@ -715,6 +732,21 @@ export interface components {
             ongoing: boolean;
             /** Seconds */
             seconds: number;
+        };
+        /**
+         * UnavailableContent
+         * @description File exists as a request but cannot be read: missing, non-UTF-8, or containment violation.
+         */
+        UnavailableContent: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "unavailable";
+            /** Path */
+            path: string;
+            /** Reason */
+            reason: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -1238,6 +1270,38 @@ export interface operations {
             };
         };
     };
+    task_request_api_task__target___issue__request_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+                issue: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperatorRequest"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     intent_resume_api_task__target___issue__resume_post: {
         parameters: {
             query?: never;
@@ -1293,38 +1357,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    task_spec_api_task__target___issue__spec_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                target: string;
-                issue: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SpecView"];
                 };
             };
             /** @description Validation Error */

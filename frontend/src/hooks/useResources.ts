@@ -40,15 +40,6 @@ export function useTaskDetail(target: string, issue: number) {
   })
 }
 
-/** retry:false — a 404 means "no spec recorded", not a transient failure. */
-export function useTaskSpec(target: string, issue: number) {
-  return useQuery({
-    queryKey: queryKeys.spec(target, issue),
-    queryFn: () => api.taskSpec(target, issue),
-    retry: false,
-  })
-}
-
 /**
  * On-demand pane history. `enabled` gates the fetch so it never fires on the
  * polled task-detail path — a 2000-line tail is ~150KB. staleTime:0 because
@@ -71,6 +62,22 @@ export function useIssueDescription(target: string, issue: number, enabled: bool
     queryFn: () => api.taskDescription(target, issue),
     enabled,
     retry: false,
+  })
+}
+
+/** The unified operator request (spec-approval or answers). retry:false —
+ *  null = no request, not a transient failure. Participates in the same
+ *  fallback polling as task-detail so an out-of-band clear is eventually
+ *  reflected. */
+// ponytail: fires unconditionally (no enabled guard); add `enabled` if
+//   request traffic matters (e.g. many concurrent task panes).
+export function useTaskRequest(target: string, issue: number) {
+  const refetchInterval = useFallbackInterval()
+  return useQuery({
+    queryKey: queryKeys.request(target, issue),
+    queryFn: () => api.taskRequest(target, issue),
+    retry: false,
+    refetchInterval,
   })
 }
 
