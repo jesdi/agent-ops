@@ -8,7 +8,7 @@ gate-parked task with an anomalous live session) is ended and left ended:
 `_resume_woken` has no stage filter, so waking those would run
 `claude --continue` in a transcript nothing is waiting on — pushing to a
 PR under review, or standing a container up outside capacity accounting.
-Invoked by provision/update.sh via `dispatcher.main --migrate-tmux` only
+Invoked by agent-ops-infra/provision/update.sh via `dispatcher.main --migrate-tmux` only
 while a `task-*`/`triage` tmux session exists, so it is a no-op — and
 this module a pure deletion — once tmux is gone from the box. Delete
 together with the tmux `apt` line in bootstrap.sh."""

@@ -8,7 +8,7 @@ fetches its input and applies its output.
 
 ## Trigger
 
-New systemd pair in `provision/`: `agent-ops-triage.timer` /
+New systemd pair in `agent-ops-infra/provision/`: `agent-ops-triage.timer` /
 `agent-ops-triage.service`, cloned from the digest pattern.
 
 - `OnCalendar=*-*-* 07:30:00 Europe/Madrid` (systemd calendar timezones

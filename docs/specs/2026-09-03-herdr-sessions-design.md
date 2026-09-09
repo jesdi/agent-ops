@@ -206,9 +206,9 @@ it as a plain pane (no `HERDR_AGENT`), which is accurate.
 
 ## 6. Provisioning and units
 
-- **Binary.** `provision/bootstrap.sh` installs herdr for `agent` via the
+- **Binary.** `agent-ops-infra/provision/bootstrap.sh` installs herdr for `agent` via the
   official installer into `~/.local/bin` (already on `.profile`'s PATH)
-  and asserts `herdr --version`. `provision/update.sh` gains an "ensure
+  and asserts `herdr --version`. `agent-ops-infra/provision/update.sh` gains an "ensure
   herdr" step that runs the same installer when the binary is missing —
   the pass has already pulled code that needs it, so unlike the pnpm
   check (warn and skip) the converging move is to install; the installer
@@ -217,8 +217,8 @@ it as a plain pane (no `HERDR_AGENT`), which is accurate.
   does today. No version pin beyond "whatever the installer resolves at
   install time"; the box updates herdr only when an operator runs
   `herdr update` (background `version_check` only notifies).
-- **Server unit.** New `provision/agent-ops-herdr.service` (user unit,
-  synced by `update.sh` like every other `provision/*.service`):
+- **Server unit.** New `agent-ops-infra/provision/agent-ops-herdr.service` (user unit,
+  synced by `update.sh` like every other `agent-ops-infra/provision/*.service`):
   `ExecStart=%h/.local/bin/herdr server`, `Restart=always`,
   `WantedBy=default.target`. Every session pane, its shell and its podman
   process are children of this server, so they live in this unit's
@@ -228,7 +228,7 @@ it as a plain pane (no `HERDR_AGENT`), which is accurate.
   the crash path reports each task and moves it to FAILED; recovery is
   the operator's (cancel the card, reopen the issue into Ready, and the
   dispatcher claims it fresh against the preserved worktree). Document
-  that cost in the unit and in `provision/README.md`, with `herdr update`
+  that cost in the unit and in `agent-ops-infra/provision/README.md`, with `herdr update`
   as the upgrade path instead of a unit restart.
 - **Dependent units.** `agent-ops-dispatcher.service`,
   `agent-ops-web.service`, `agent-ops-waitd.service`,
@@ -244,7 +244,7 @@ it as a plain pane (no `HERDR_AGENT`), which is accurate.
   guarded hunk in `update.sh`. The "run bootstrap inside tmux or mosh"
   advice is about bootstrapping the box, not about runtime sessions, and
   stays.
-- **Docs.** `README.md` / `provision/README.md` / `CONTEXT.md` replace
+- **Docs.** `README.md` / `agent-ops-infra/provision/README.md` / `CONTEXT.md` replace
   "tmux session wraps each container" with the herdr wording and add
   the operator attach recipe (`herdr --remote box`; Moshi).
 
@@ -339,7 +339,7 @@ day).
 ## Out of scope / follow-ups
 
 - Moshi setup on the phone and `moshi-hook` on the box (notifications):
-  operator-side; a `provision/README.md` recipe at most.
+  operator-side; a `agent-ops-infra/provision/README.md` recipe at most.
 - Using `blocked` semantically (park immediately with the dialog text;
   answer trust/login prompts) — replaces `relogin.py`'s screen
   classifier; separate spec.

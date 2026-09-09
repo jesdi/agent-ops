@@ -125,8 +125,7 @@ def test_triage_cmd_read_only_clone_and_report_mount(monkeypatch, tmp_path):
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
         "claude-opus-4-8", "/triage/o-r-2026-07-30-prompt.md")
-    assert cmd[0].endswith("provision/with-claude-token.sh")
-    assert cmd[1:4] == ["podman", "run", "--rm"]
+    assert cmd[:3] == ["podman", "run", "--rm"]
     assert "-it" not in cmd
     assert "/repos/r:/repos/r:ro" in cmd
     assert "/state/triage:/triage" in cmd
@@ -162,10 +161,10 @@ def test_session_cmd_resolves_claude_token_at_spawn_via_wrapper(
     # degrades to the shared claude-home store).
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
+    monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/opt/infra/token-wrapper")
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
                                  "P")
-    wrapper = str(Path(containers.__file__).resolve().parents[1]
-                  / "provision" / "with-claude-token.sh")
+    wrapper = "/opt/infra/token-wrapper"
     assert cmd.startswith(f"{wrapper} podman run --rm -it --name task-42 ")
     assert "-e CLAUDE_CODE_OAUTH_TOKEN " in cmd
     assert "claude-token.env" not in cmd
@@ -174,11 +173,11 @@ def test_session_cmd_resolves_claude_token_at_spawn_via_wrapper(
 def test_triage_cmd_resolves_claude_token_at_spawn_via_wrapper(
         monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/opt/infra/token-wrapper")
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
         "claude-opus-4-8", "/triage/p.md")
-    wrapper = str(Path(containers.__file__).resolve().parents[1]
-                  / "provision" / "with-claude-token.sh")
+    wrapper = "/opt/infra/token-wrapper"
     assert cmd[0] == wrapper
     assert cmd[1:4] == ["podman", "run", "--rm"]
     i = cmd.index("-e", cmd.index("CLAUDE_CONFIG_DIR=/root/.claude"))
@@ -201,3 +200,13 @@ def test_session_cmd_omits_the_branch_for_pre_field_worktrees(tmp_path: Path, mo
     wt, _ = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
     assert "AGENT_OPS_TASK_BRANCH" not in cmd
+
+
+def test_wrapper_path_is_one_executable_even_with_spaces(monkeypatch, tmp_path):
+    import shlex
+    monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/opt/my infra/token-wrapper")
+    wt, _ = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "model", "P")
+    assert shlex.split(cmd)[:2] == ["/opt/my infra/token-wrapper", "podman"]
+    argv = containers.triage_cmd("triage", "/repo", "/triage", "2g", "2", "model", "/p")
+    assert argv[:2] == ["/opt/my infra/token-wrapper", "podman"]

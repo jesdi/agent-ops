@@ -1689,7 +1689,7 @@ def main() -> None:
     elif args.triage_run:
         triage.guarded_sweep(cfg, deps)
     elif args.migrate_tmux:
-        # Called by provision/update.sh, which already holds convergence.lock
+        # Called by agent-ops-infra/provision/update.sh, which already holds convergence.lock
         # (the same file pass_lock flocks — taking it here again would block
         # forever, flock being per open-file-description). Never run by hand
         # while the dispatcher timer is live.

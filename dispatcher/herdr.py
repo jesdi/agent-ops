@@ -26,7 +26,7 @@ SYSTEM_WORKSPACE = "agent-ops"
 # — where the official installer puts herdr. A bare `herdr` there raised
 # FileNotFoundError, which the degrade contract read as "server down": no
 # session launched for a day and nothing said why. Same rule as
-# provision/sweep-worktrees.sh: AGENT_OPS_HERDR, else ~/.local/bin/herdr,
+# agent-ops-infra/provision/sweep-worktrees.sh: AGENT_OPS_HERDR, else ~/.local/bin/herdr,
 # else the PATH lookup (a dev box with herdr installed elsewhere).
 _missing_warned = False
 
