@@ -23,19 +23,31 @@ DEFAULT_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
 class SPAStaticFiles(StaticFiles):
-    """404s on non-file paths fall back to index.html (client routing)."""
+    """404s on non-file paths fall back to index.html (client routing).
+
+    The shell is served no-cache: StaticFiles sets only ETag/Last-Modified,
+    and browsers (phones especially) then cache index.html heuristically for
+    weeks, pinning a bundle whose API paths the backend no longer has.
+    Vite's /assets/* are content-hashed, so those cache forever."""
 
     async def get_response(self, path, scope):
         try:
-            return await super().get_response(path, scope)
+            resp = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404 and not path.lstrip("/").startswith(
                     "api/"):
-                return await super().get_response("index.html", scope)
-            # An unmatched /api/* path is a missing route, not a client-side
-            # one: answering it with the SPA shell surfaces in the frontend
-            # as a JSON parse error instead of a 404.
-            raise
+                resp = await super().get_response("index.html", scope)
+                path = "index.html"
+            else:
+                # An unmatched /api/* path is a missing route, not a
+                # client-side one: answering it with the SPA shell surfaces
+                # in the frontend as a JSON parse error instead of a 404.
+                raise
+        if path.lstrip("/").startswith("assets/"):
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
 SSE_KEYS = ("board", "queue", "budget", "failures", "history")
 HEARTBEAT_SECONDS = 15.0

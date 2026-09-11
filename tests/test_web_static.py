@@ -43,3 +43,22 @@ def test_unknown_api_path_is_404_not_the_spa_shell(tmp_path):
     # real API routes and client-side routes are unaffected
     assert client.get("/api/health", headers=HEADERS).status_code == 200
     assert "console" in client.get("/task/7", headers=HEADERS).text
+
+
+def test_spa_shell_is_never_cached(tmp_path):
+    """index.html carries no Cache-Control, so a phone browser heuristically
+    kept a pre-target-route shell for weeks: its stale bundle called
+    /api/task/<issue>/description, which the current backend parsed as
+    (target=<issue>, issue="description") and 422'd. The shell must revalidate
+    on every load; hashed assets under /assets/ may cache forever."""
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>console</html>")
+    (dist / "assets" / "index-abc123.js").write_text("// js")
+    client = TestClient(create_app(make_config(tmp_path), FakeSources(),
+                                   frontend_dist=dist))
+    for path in ("/", "/index.html", "/task/x/7"):
+        assert client.get(path, headers=HEADERS).headers[
+            "cache-control"] == "no-cache", path
+    assert client.get("/assets/index-abc123.js", headers=HEADERS).headers[
+        "cache-control"] == "public, max-age=31536000, immutable"
