@@ -13,10 +13,21 @@ nobody is watching this chat.
 - `{"stage": "address-review", "status": "blocked", "note": "<specific>"}` then stop.
 
 ## 1. Find out what needs doing
-- feedback: `gh pr view $pr_number --repo $repo --comments` and
+- feedback: `gh pr view $pr_number --repo $repo --json reviews,comments` and
   `gh api repos/$repo/pulls/$pr_number/comments` (inline comments).
-- check-failed: `gh pr checks $pr_number --repo $repo`, then
-  `gh run view <run id> --log-failed` for each red run.
+- check-failed: get the current head with
+  `gh pr view $pr_number --repo $repo --json headRefOid,headRefName`.
+  Read workflows with `gh api --method GET --paginate repos/$repo/actions/runs -f head_sha=<head SHA> -f branch=$branch -f per_page=100`.
+  For each workflow/event, use its newest run (including a queued or running
+  rerun); ignore older failures superseded by that run. Fetch failed logs with
+  `gh run view <run id> --repo $repo --log-failed`.
+  Also read legacy CI statuses with
+  `gh api --paginate repos/$repo/commits/<head SHA>/statuses?per_page=100`
+  (quote the endpoint); use only the newest status per context.
+  The box uses a fine-grained PAT: use explicit `gh pr view --json` fields
+  and the Actions API. `gh pr checks` and `statusCheckRollup` require the
+  unsupported Checks API. A permission error is not evidence of passing CI;
+  if the failing CI cannot be inspected, signal blocked with the error.
 - conflict: `git fetch origin && git rebase origin/main`, resolving with the
   `resolving-merge-conflicts` skill — trace both sides' intent first.
 - operator: read the operator message appended below and do what it asks.

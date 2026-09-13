@@ -1,19 +1,18 @@
-from dispatcher.pr_poll import PollResult, classify
+from dispatcher.pr_poll import CIStatus, PollResult, classify
 
 SELF = "agent-bot"
 
 
 def payload(state="OPEN", merged_at=None, reviews=(), comments=(),
-            checks=(), mergeable="MERGEABLE", head="deadbeef"):
+            mergeable="MERGEABLE", head="deadbeef"):
     return {"state": state, "mergedAt": merged_at, "reviewDecision": "",
             "reviews": list(reviews), "comments": list(comments),
-            "statusCheckRollup": list(checks), "mergeable": mergeable,
+            "mergeable": mergeable,
             "headRefOid": head}
 
 
 def check(conclusion, completed="2026-09-07T10:00:00Z", name="ci"):
-    return {"__typename": "CheckRun", "name": name, "status": "COMPLETED",
-            "conclusion": conclusion, "completedAt": completed}
+    return CIStatus(conclusion, completed)
 
 
 def review(ts, login, state="COMMENTED"):
@@ -77,27 +76,23 @@ def test_malformed_entries_ignored():
 
 
 def test_red_check_is_check_failed_with_its_completion_time():
-    p = payload(checks=[check("SUCCESS", "2026-09-07T09:00:00Z", "lint"),
-                        check("FAILURE", "2026-09-07T10:00:00Z")])
-    assert classify(p, "", SELF) == PollResult("check-failed", "2026-09-07T10:00:00Z")
+    checks = [check("success", "2026-09-07T09:00:00Z", "lint"),
+              check("failure", "2026-09-07T10:00:00Z")]
+    assert classify(payload(), "", SELF, ci_statuses=checks) == PollResult(
+        "check-failed", "2026-09-07T10:00:00Z")
 
 
 def test_red_check_does_not_retrigger_behind_the_check_cursor():
-    p = payload(checks=[check("FAILURE", "2026-09-07T10:00:00Z")])
-    assert classify(p, "", SELF, check_cursor="2026-09-07T10:00:00Z") == PollResult("quiet")
-    assert classify(p, "", SELF, check_cursor="2026-09-07T09:59:00+00:00").kind == "check-failed"
+    checks = [check("failure")]
+    assert classify(payload(), "", SELF, ci_statuses=checks,
+                    check_cursor="2026-09-07T10:00:00Z") == PollResult("quiet")
+    assert classify(payload(), "", SELF, ci_statuses=checks,
+                    check_cursor="2026-09-07T09:59:00+00:00").kind == "check-failed"
 
 
-def test_status_context_failure_counts_with_created_at():
-    ctx = {"__typename": "StatusContext", "context": "e2e", "state": "FAILURE",
-           "createdAt": "2026-09-07T11:00:00Z"}
-    assert classify(payload(checks=[ctx]), "", SELF).latest_ts == "2026-09-07T11:00:00Z"
-
-
-def test_in_progress_and_timestampless_checks_are_quiet():
-    p = payload(checks=[{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None},
-                        {"__typename": "CheckRun", "conclusion": "FAILURE"}])
-    assert classify(p, "", SELF) == PollResult("quiet")
+def test_pending_and_timestampless_results_are_quiet():
+    checks = [CIStatus("pending", "2026-09-07T10:00:00Z"), CIStatus("failure", "")]
+    assert classify(payload(), "", SELF, ci_statuses=checks) == PollResult("quiet")
 
 
 def test_conflict_is_reported_once_per_head():
@@ -109,11 +104,12 @@ def test_conflict_is_reported_once_per_head():
 
 def test_feedback_outranks_red_check_and_conflict():
     p = payload(comments=[comment("2026-09-07T09:00:00Z", "alice")],
-                checks=[check("FAILURE")], mergeable="CONFLICTING")
-    assert classify(p, "", SELF).kind == "feedback"
-    assert classify(p, "2026-09-07T09:30:00Z", SELF).kind == "check-failed"
+                mergeable="CONFLICTING")
+    assert classify(p, "", SELF, ci_statuses=[check("failure")]).kind == "feedback"
+    assert classify(p, "2026-09-07T09:30:00Z", SELF,
+                    ci_statuses=[check("failure")]).kind == "check-failed"
 
 
 def test_merged_outranks_red_check():
-    p = payload(state="MERGED", merged_at="2026-09-07T12:00:00Z", checks=[check("FAILURE")])
-    assert classify(p, "", SELF) == PollResult("merged")
+    p = payload(state="MERGED", merged_at="2026-09-07T12:00:00Z")
+    assert classify(p, "", SELF, ci_statuses=[check("failure")]) == PollResult("merged")

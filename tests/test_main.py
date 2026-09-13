@@ -13,6 +13,7 @@ from dispatcher import failures, spec_publish
 from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
+from dispatcher.pr_poll import CIStatus
 from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                PARK_REVIEW, PARK_WAKE, AnswersRequest,
@@ -52,6 +53,8 @@ class FakeGitHub:
         self.lookup_raises = False
         self.pr_payloads = {}        # pr_number -> gh pr view payload
         self.pr_view_raises = False
+        self.ci = []
+        self.ci_calls = []
         self.branch_prs = {}         # branch -> pr number
         self.deleted_branches = []   # (repo, branch)
         self.login = "agent-bot"
@@ -120,6 +123,10 @@ class FakeGitHub:
         return self.pr_payloads.get(pr_number, {
             "state": "OPEN", "mergedAt": None, "reviewDecision": "",
             "reviews": [], "comments": []})
+
+    def ci_statuses(self, target, head, branch):
+        self.ci_calls.append((head, branch))
+        return self.ci
 
     def pr_number_for_branch(self, target, branch):
         return self.branch_prs.get(branch, 0)
@@ -2766,11 +2773,11 @@ def test_prune_snapshots_corrupt_state_file_does_not_abort_sweep(tmp_path, monke
 # ---------------------------------------------------------------------------
 
 def payload(state="OPEN", merged_at=None, reviews=(), comments=(),
-            checks=(), mergeable="MERGEABLE", head="deadbeef"):
+            mergeable="MERGEABLE", head="deadbeef"):
     return {"state": state, "mergedAt": merged_at, "reviewDecision": "",
             "reviews": list(reviews), "comments": list(comments),
-            "statusCheckRollup": list(checks), "mergeable": mergeable,
-            "headRefOid": head}
+            "mergeable": mergeable,
+            "headRefOid": head, "headRefName": "agent/task-42"}
 
 
 def patch_teardown(monkeypatch):
@@ -3993,8 +4000,8 @@ def test_red_check_queues_address_review_with_its_reason(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     pr_open_task(c)
     gh = FakeGitHub()
-    gh.pr_payloads[12] = payload(checks=[{"__typename": "CheckRun", "conclusion": "FAILURE",
-                                         "completedAt": "2026-09-07T10:00:00Z"}])
+    gh.pr_payloads[12] = payload()
+    gh.ci = [CIStatus("failure", "2026-09-07T10:00:00Z")]
     notif = FakeNotifier(); sess = FakeSessions()
     main.run_pass(c, deps(gh, sess, notifier=notif))
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -4023,8 +4030,8 @@ def test_ci_rounds_past_the_cap_park_the_pr_open_task(tmp_path, monkeypatch):
     c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(ci=1))
     pr_open_task(c, ci_rounds=1)
     gh = FakeGitHub()
-    gh.pr_payloads[12] = payload(checks=[{"__typename": "CheckRun", "conclusion": "FAILURE",
-                                         "completedAt": "2026-09-07T10:00:00Z"}])
+    gh.pr_payloads[12] = payload()
+    gh.ci = [CIStatus("failure", "2026-09-07T10:00:00Z")]
     notif = FakeNotifier(); sess = FakeSessions()
     main.run_pass(c, deps(gh, sess, notifier=notif))
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -4515,3 +4522,64 @@ def test_fail_task_crash_clears_operator_request(tmp_path, monkeypatch):
     assert t.operator_request is None, (
         f"_fail_task_crash must clear operator_request, got {t.operator_request!r}")
     assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
+
+
+@pytest.mark.parametrize("state,expected", [("MERGED", Stage.DONE), ("CLOSED", Stage.FAILED)])
+def test_terminal_pr_does_not_require_ci_access(tmp_path, monkeypatch, state, expected):
+    import dispatcher.github as github
+    patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c)
+    gh = FakeGitHub()
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args[:3] != ["gh", "pr", "view"] or "statusCheckRollup" in args[-1]:
+            raise subprocess.CalledProcessError(1, args, stderr="HTTP 403: CI denied")
+        return json.dumps(payload(state=state, merged_at=(
+            "2026-09-12T10:00:00Z" if state == "MERGED" else None)))
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    client = github.GitHubClient()
+    gh.pr_view = client.pr_view
+    gh.ci_statuses = client.ci_statuses
+    main._poll_prs(c, deps(gh), c.targets[0])
+    assert load(c.state_dir, "portfolio_eval", 42).stage is expected
+    assert len(calls) == 1  # terminal lifecycle never calls either CI endpoint
+
+
+@pytest.mark.parametrize("feedback", [True, False])
+def test_ci_denial_does_not_block_feedback_or_conflicts(tmp_path, monkeypatch, caplog, feedback):
+    import dispatcher.github as github
+    c = cfg(tmp_path)
+    pr_open_task(c)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(
+        mergeable="CONFLICTING",
+        comments=[{"createdAt": "2026-09-12T11:00:00Z",
+                   "author": {"login": "reviewer"}}] if feedback else [])
+
+    def denied(args, **kwargs):
+        raise subprocess.CalledProcessError(1, args, stderr="HTTP 403: CI denied")
+
+    monkeypatch.setattr(github, "_run", denied)
+    gh.ci_statuses = github.GitHubClient().ci_statuses
+    main._poll_prs(c, deps(gh), c.targets[0])
+    task = load(c.state_dir, "portfolio_eval", 42)
+    assert task.feedback_pending
+    assert task.attention == ("feedback" if feedback else "conflict")
+    if not feedback:
+        assert "CI denied" in caplog.text
+        assert task.check_cursor == ""
+
+
+def test_parked_pr_does_not_poll_or_spend_ci_rounds(tmp_path):
+    c = cfg(tmp_path)
+    pr_open_task(c, park=PARK_HUMAN, ci_rounds=2)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload()
+    gh.ci = [CIStatus("failure", "2026-09-12T10:00:00Z")]
+    main._poll_prs(c, deps(gh), c.targets[0])
+    assert gh.ci_calls == []
+    assert load(c.state_dir, "portfolio_eval", 42).ci_rounds == 2

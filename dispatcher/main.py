@@ -721,8 +721,8 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
 
 def _poll_prs(cfg: Config, deps: Deps, target: Target,
               dry_run: bool = False) -> None:
-    """Watch every pr-open task's PR — unconditionally: one gh read per
-    task, no capacity involved. Reaction (address-review spawn) is gated
+    """Watch every pr-open task's PR independently of CI access and capacity.
+    Reaction (address-review spawn) is gated
     separately in _spawn_feedback."""
     for task in load_all(cfg.state_dir):
         if task.target != target.name or task.stage is not Stage.PR_OPEN:
@@ -736,11 +736,19 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
                     continue
                 task = replace(task, pr_number=n, updated_at=_now())
                 save(cfg.state_dir, task)
-            res = pr_poll.classify(deps.github.pr_view(target, task.pr_number),
-                                   task.feedback_cursor,
-                                   deps.github.viewer_login(),
+            payload = deps.github.pr_view(target, task.pr_number)
+            login = deps.github.viewer_login()
+            res = pr_poll.classify(payload, task.feedback_cursor, login,
                                    check_cursor=task.check_cursor,
                                    conflict_cursor=task.conflict_cursor)
+            if res.kind in ("quiet", "conflict") and not task.park and not task.feedback_pending:
+                statuses = deps.github.ci_statuses(
+                    target, payload.get("headRefOid") or "",
+                    payload.get("headRefName") or "")
+                res = pr_poll.classify(payload, task.feedback_cursor, login,
+                                       check_cursor=task.check_cursor,
+                                       conflict_cursor=task.conflict_cursor,
+                                       ci_statuses=statuses)
         except (subprocess.CalledProcessError, OSError) as exc:
             print(f"[warn] PR poll failed for #{task.issue}: {exc}",
                   file=sys.stderr)
