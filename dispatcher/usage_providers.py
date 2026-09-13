@@ -4,6 +4,7 @@ adapter: portfolio_eval#155; payload verified 2026-09-13 (tests/fixtures)."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import time
@@ -14,8 +15,10 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from dispatcher.config import Config, referenced_providers
-from dispatcher.usage import (SESSION, ProviderUsage, Window, parse_anthropic,
+from dispatcher.usage import (SESSION, ProviderUsage, Window, _used, parse_anthropic,
                               unavailable, usage_from_json, usage_to_json)
+
+log = logging.getLogger(__name__)
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 # Mandatory per community findings: requests without this UA get 429'd.
@@ -54,7 +57,7 @@ def _ccusage_json() -> dict | None:
         return None
 
 
-def _parse_ccusage(data: dict) -> tuple[Window, ...]:
+def _parse_ccusage(data: dict, now: float) -> tuple[Window, ...]:
     """ccusage knows the session window only; the weekly windows are absent,
     which the gate treats as passing and the console labels unknown."""
     active = [b for b in data.get("blocks", []) if b.get("isActive")]
@@ -62,8 +65,8 @@ def _parse_ccusage(data: dict) -> tuple[Window, ...]:
         return ()
     b = active[0]
     remaining = float((b.get("projection") or {}).get("remainingMinutes", 0))
-    resets = datetime.now(timezone.utc) + timedelta(minutes=remaining)
-    return (Window("session", None, float(b.get("percentUsed", 0.0)) / 100.0, resets, SESSION),)
+    resets = datetime.fromtimestamp(now, timezone.utc) + timedelta(minutes=remaining)
+    return (Window("session", None, _used(b.get("percentUsed") or 0.0, None), resets, SESSION),)
 
 
 def _read_token(credentials_path: str | Path) -> str | None:
@@ -125,19 +128,22 @@ class AnthropicUsage:
             _token_from_op(),
             _read_token(_resolve_credentials(state_dir, self._credentials_path)),
         ) if t]
+        at = now()
         for token in candidates:
             try:
-                data = _http_get_json(USAGE_URL, {"Authorization": f"Bearer {token}",
-                                                  "User-Agent": USER_AGENT})
-                return ProviderUsage(self.name, "oauth", now(), parse_anthropic(data))
+                windows = parse_anthropic(_http_get_json(
+                    USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}))
             except (UsageFetchError, KeyError, ValueError, TypeError):
                 continue  # next token, then ccusage; the cache spaces passes ≥180s apart
-        cc = _ccusage_json()
-        if cc is not None:
-            windows = _parse_ccusage(cc)
+            # A reading with no windows would admit every model: fail closed
+            # exactly like a rejected token.
             if windows:
-                return ProviderUsage(self.name, "ccusage", now(), windows)
-        return unavailable(self.name, now())
+                return ProviderUsage(self.name, "oauth", at, windows)
+        cc = _ccusage_json()
+        windows = _parse_ccusage(cc, at) if cc is not None else ()
+        if windows:
+            return ProviderUsage(self.name, "ccusage", at, windows)
+        return unavailable(self.name, at)
 
 
 ADAPTERS: dict[str, UsageAdapter] = {"anthropic": AnthropicUsage()}
@@ -166,7 +172,13 @@ def fetch_provider(name: str, state_dir: str | Path, *,
     adapter = adapters.get(name)
     if adapter is None:
         return unavailable(name, now())
-    u = adapter.fetch(Path(state_dir), now=now)
+    try:
+        u = adapter.fetch(Path(state_dir), now=now)
+    except Exception:
+        # One broken adapter (a payload shape nobody anticipated) must fail
+        # its own provider closed, never crash the pass or /api/board.
+        log.exception("usage adapter %r failed", name)
+        return unavailable(name, now())
     if u.source != "unavailable":
         cp.parent.mkdir(parents=True, exist_ok=True)
         cp.write_text(json.dumps({"fetched_at": now(), "usage": usage_to_json(u)}))

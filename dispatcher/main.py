@@ -417,9 +417,16 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     return task
 
 
-def _budget_edge(cfg: Config, deps: Deps, verdict: Verdict, note: str) -> None:
+# The weekly allowance grows continuously, so a box running at pace crosses
+# zero headroom back and forth; the resume ping waits for this much to return.
+RESUME_HEADROOM = 0.02
+
+
+def _budget_edge(cfg: Config, deps: Deps, verdict: Verdict, now: datetime) -> None:
     """Edge-triggered stall/resume pings via a marker file, keyed on the
     verdict for the global policy default — what an idle box spawns next.
+    Stall on the first denied pass; resume only once the default is admitted
+    with at least RESUME_HEADROOM, or every zero crossing pings a pair.
 
     An unavailable provider also denies, but it is not a budget stall: there
     is no window and nothing will reset, so the "resumes when headroom
@@ -430,10 +437,12 @@ def _budget_edge(cfg: Config, deps: Deps, verdict: Verdict, note: str) -> None:
         return
     marker = Path(cfg.state_dir) / "budget-stalled"
     marker.parent.mkdir(parents=True, exist_ok=True)
+    note = verdict_note(verdict, now)
     if not verdict.admitted and not marker.exists():
         marker.write_text(_now())
         deps.notifier.send("budget_stall", issue=0, title="(all tasks)", url="", note=note)
-    elif verdict.admitted and marker.exists():
+    elif (verdict.admitted and verdict.headroom >= RESUME_HEADROOM
+          and marker.exists()):
         marker.unlink()
         deps.notifier.send("budget_resume", issue=0, title="(all tasks)", url="", note=note)
 
@@ -444,7 +453,12 @@ AUTH_DARK_GRACE_MINUTES = 30
 def _auth_dark_edge(cfg: Config, deps: Deps, usages: dict[str, ProviderUsage]) -> None:
     """One alert per unknowable-usage incident (auth likely dead). Dark means
     EVERY fetched provider is unavailable; a single dark provider only fails
-    its own models closed and stays visible on the console."""
+    its own models closed and stays visible on the console.
+
+    Companion to _budget_edge: budget_stall covers "gate closed, headroom
+    returns on its own"; this covers "we cannot even tell", which fail-safes
+    every spawn indefinitely and therefore needs a human. The 30-minute grace
+    absorbs transient API blips."""
     marker = Path(cfg.state_dir) / "auth-dark"
     dark = not usages or all(u.source == "unavailable" for u in usages.values())
     if not dark:
@@ -893,7 +907,9 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         key=lambda t: t.updated_at,
     )
     for task in woken:
-        if not admit(_model_for(cfg, target, task, task.stage)).admitted:
+        # A parked pr-open task resumes as a fresh address-review round.
+        stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
+        if not admit(_model_for(cfg, target, task, stage)).admitted:
             continue  # this model's provider has no headroom; others may
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
@@ -1651,7 +1667,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     pace = pace_config(cfg)
     admit: Admit = lambda model: admits(usages, model, now, pace)
     default_verdict = admit(cfg.models.default)
-    _budget_edge(cfg, deps, default_verdict, note=verdict_note(default_verdict, now))
+    _budget_edge(cfg, deps, default_verdict, now)
     _auth_dark_edge(cfg, deps, usages)
     for target in eff.targets:
         for task in [t for t in load_all(cfg.state_dir)

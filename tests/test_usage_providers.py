@@ -1,6 +1,9 @@
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from dispatcher import usage_providers as up
 from dispatcher.config import Config, Target
@@ -266,3 +269,67 @@ def test_op_empty_or_failing_read_is_ignored(tmp_path, monkeypatch):
     monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "svc-tok")
     u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
     assert seen["headers"]["Authorization"] == "Bearer tok-123"
+
+
+# ---- fail closed on unreadable readings ------------------------------------
+
+@pytest.mark.parametrize("payload", [{"limits": []}, {}])
+def test_an_empty_oauth_reading_is_not_oauth(tmp_path, monkeypatch, payload):
+    """A 200 with zero windows would admit every model; it fails closed like
+    a rejected token: next token, then ccusage, then unavailable."""
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: payload)
+    monkeypatch.setattr(up, "_ccusage_json", lambda: None)
+    u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
+    assert u.source == "unavailable" and u.windows == ()
+
+
+def test_an_empty_oauth_reading_tries_the_next_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: (
+        {"limits": []} if headers["Authorization"] == "Bearer env-tok" else FIXTURE))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "env-tok")
+    u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
+    assert u.source == "oauth" and len(u.windows) == 3
+
+
+def test_an_empty_oauth_reading_falls_back_to_ccusage(tmp_path, monkeypatch):
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: {})
+    monkeypatch.setattr(up, "_ccusage_json", lambda: {"blocks": [
+        {"isActive": True, "projection": {"remainingMinutes": 45}, "percentUsed": 62.0}]})
+    assert up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path).source == "ccusage"
+
+
+class RaisingAdapter:
+    name = "boom"
+
+    def fetch(self, state_dir, *, now=time.time):
+        raise RuntimeError("adapter bug")
+
+
+def test_a_raising_adapter_reports_unavailable_and_caches_nothing(tmp_path):
+    u = up.fetch_provider("boom", tmp_path, now=lambda: 42.0,
+                          adapters={"boom": RaisingAdapter()})
+    assert (u.provider, u.source, u.fetched_at) == ("boom", "unavailable", 42.0)
+    assert not up.cache_path(tmp_path, "boom").exists()
+
+
+@pytest.mark.parametrize("payload", [
+    {"limits": {"kind": "session"}},
+    {"limits": ["session"]},
+    {"limits": [dict(FIXTURE["limits"][2], scope="Fable")]},
+    ["not", "an", "object"],
+])
+def test_a_malformed_anthropic_payload_is_unavailable_not_a_raise(tmp_path, monkeypatch, payload):
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: payload)
+    monkeypatch.setattr(up, "_ccusage_json", lambda: None)
+    adapters = {"anthropic": up.AnthropicUsage(credentials_path=creds(tmp_path))}
+    assert up.fetch_provider("anthropic", tmp_path, adapters=adapters).source == "unavailable"
+
+
+def test_ccusage_used_is_clamped_and_resets_follow_the_injected_clock(tmp_path, monkeypatch):
+    monkeypatch.setattr(up, "_http_get_json", boom)
+    monkeypatch.setattr(up, "_ccusage_json", lambda: {"blocks": [
+        {"isActive": True, "projection": {"remainingMinutes": 45}, "percentUsed": 130}]})
+    u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path, now=lambda: 1_000_000.0)
+    (w,) = u.windows
+    assert w.used == 1.0
+    assert w.resets_at == datetime.fromtimestamp(1_000_000.0, timezone.utc) + timedelta(minutes=45)

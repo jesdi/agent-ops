@@ -405,6 +405,44 @@ def test_budget_stall_note_names_the_binding_window(tmp_path, monkeypatch):
     assert note.startswith("anthropic session: 95% used, allowance 80%, headroom -15 pts")
 
 
+def test_resume_ping_waits_for_resume_headroom(tmp_path, monkeypatch):
+    """The weekly allowance grows continuously, so a box running at pace
+    crosses zero headroom back and forth; the resume ping (and the marker
+    removal) waits for RESUME_HEADROOM or every crossing pings a pair."""
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    marker = Path(c.state_dir) / "budget-stalled"
+    patch_usage(monkeypatch, util=0.95)
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_stall") == 1 and marker.exists()
+    patch_usage(monkeypatch, util=0.79)      # admitted, session headroom 0.01
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_resume") == 0 and marker.exists()
+    patch_usage(monkeypatch, util=0.77)      # admitted, session headroom 0.03
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_resume") == 1 and not marker.exists()
+    assert d.notifier.sent.count("budget_stall") == 1
+
+
+def test_woken_pr_open_task_is_gated_on_the_model_it_spawns(tmp_path):
+    """A parked pr-open task resumes as a fresh address-review round, which
+    runs on the implement model — that is the model the gate must ask, not
+    the one the pr-open stage itself would resolve to."""
+    c = dc_replace(cfg(tmp_path), models=parse_policy({
+        "default": "claude-sonnet-4-6",
+        "rules": [{"name": "fable-implement",
+                   "use": {"implement": "claude-fable-5-1"}}]}))
+    make_task(c, issue=42, stage=Stage.PR_OPEN, park=PARK_WAKE, pr_number=7)
+    fable_over_pace = lambda m: DENY_ALL(m) if "fable" in m else ADMIT_ALL(m)  # noqa: E731
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], admit=fable_over_pace)
+    assert d.sessions.spawned == [] and d.sessions.resumed == []
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
+    assert [s[:3] for s in d.sessions.spawned] == [
+        (42, Stage.ADDRESS_REVIEW.value, "claude-fable-5-1")]
+
+
 def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
