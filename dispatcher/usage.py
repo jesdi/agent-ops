@@ -45,10 +45,10 @@ def _aware(iso: str) -> datetime:
 
 
 def _used(percent: object, locked_reason: object) -> float | None:
-    if percent is None:
-        return None
     if locked_reason:
         return 1.0
+    if percent is None:
+        return None
     return min(1.0, max(0.0, float(percent) / 100.0))
 
 

@@ -52,3 +52,24 @@ def test_json_round_trip():
 def test_unavailable_has_no_windows():
     u = usage.unavailable("anthropic", 5.0)
     assert (u.source, u.windows, u.fetched_at) == ("unavailable", (), 5.0)
+
+
+def test_parse_locked_without_percent_via_limits():
+    # null percent + locked_reason in limits[] must return 1.0, not skip
+    limits = [dict(FIXTURE["limits"][0], percent=None, locked_reason="limit_reached")]
+    ws = parse_anthropic({"limits": limits})
+    assert len(ws) == 1
+    assert ws[0].used == 1.0
+
+
+def test_parse_locked_without_percent_via_fallback():
+    # null utilization + locked_reason in five_hour fallback must return 1.0, not skip
+    payload = {
+        "five_hour": {"utilization": None, "locked_reason": "limit_reached",
+                      "resets_at": "2026-09-13T11:59:59.776452Z"},
+        "seven_day": {"utilization": 10.0, "resets_at": "2026-09-20T00:00:00Z"}
+    }
+    ws = parse_anthropic(payload)
+    assert len(ws) == 2
+    assert ws[0].used == 1.0
+    assert ws[1].used == 0.1
