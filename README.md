@@ -24,19 +24,22 @@ agent-ops closes both gaps:
   the box specs, plans, and implements them through the night, each stage in a
   fresh sandboxed session, ending in a CI-gated PR waiting for your morning
   review.
-- **Budget-aware spawning.** Before every session spawn, the dispatcher checks
-  live usage of the 5-hour window and holds back above a configurable ceiling —
-  but when the window is about to reset, it *relaxes* the ceiling
-  (reset-racing) so the remaining capacity gets used instead of expiring. If
-  usage can't be determined, it fails safe and doesn't spawn.
+- **Pace-aware spawning.** Before every spawn the dispatcher reads each
+  provider's usage windows — the 5-hour session, the week, and any
+  per-model week such as Fable's — and admits a model only while every
+  window it draws on has headroom. The session window keeps its ceiling
+  (relaxed when the reset is close). The weekly windows follow a spending
+  schedule that counts weekend hours at half weight, so the box holds back
+  on Saturday and Sunday and spends the saved share Monday to Friday. A
+  provider whose usage can't be read fails safe and spawns nothing.
 - **24-hour access from your phone, PC off.** The box is reachable over
   Tailscale only. The web console and Telegram bot are always on — you can
   check progress, answer an agent's question, or approve a spec from anywhere.
 - **A board that answers "what needs me?" at a glance.** Tasks flow across
   columns — Queued, In progress, **Needs review**, PR open, **Parked**,
   Awaiting CI, Resuming, Stalled on budget, Failed. The two bold ones are
-  yours: everything else is the box's problem. Capacity and a live budget
-  gauge sit above the board so you always know how hard the box is working.
+  yours: everything else is the box's problem. Capacity and a usage panel
+  sit above the board so you always know how hard the box is working.
 
 ## How it works
 
@@ -74,7 +77,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    queued["Queued"] --> gate{"Budget &<br/>capacity gate"}
+    queued["Queued"] --> gate{"Usage (pace) &<br/>capacity gate"}
     gate --> spec["Spec stage"]
     spec --> review{"Human review<br/>(from your phone)"}
     review -- approved --> plan["Plan stage<br/>(tickets)"]
@@ -91,7 +94,7 @@ flowchart LR
 ```
 
 - **Dispatcher** (`dispatcher/`) — polls the backlog, ranks it, selects the
-  next task within budget and capacity limits, provisions a git worktree, and
+  next task within usage headroom and capacity limits, provisions a git worktree, and
   launches a Claude Code session for it.
 - **Staged pipeline** — each task moves through **spec → plan → implement (one fresh session per ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
@@ -162,8 +165,8 @@ are never forceable).
 
 | Path            | What lives there                                              |
 | --------------- | ------------------------------------------------------------ |
-| `dispatcher/`   | Backlog polling, task selection, budget, sessions, state     |
-| `web/`          | FastAPI backend for the console (board, budget, terminal WS) |
+| `dispatcher/`   | Backlog polling, task selection, usage gate, sessions, state |
+| `web/`          | FastAPI backend for the console (board, usage, terminal WS)  |
 | `frontend/`     | React SPA — board, task pages, queue, failures, history      |
 | `telegram/`     | Outbound notifications/digests and inbound reply handling    |
 | `prompts/`      | Stage prompts (spec, plan, implement, review, address-review) and the triage prompt   |
