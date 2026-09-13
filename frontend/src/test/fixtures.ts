@@ -1,6 +1,6 @@
 import type {
-  BoardView, ProviderUsageView, FailuresView, HistoryView, PendingIntentsView,
-  TaskCard, TaskDetail,
+  BoardView, FailuresView, HistoryView, PendingIntentsView,
+  TaskCard, TaskDetail, UsageView, WindowView,
 } from '../lib/api'
 
 export const parkedCard: TaskCard = {
@@ -74,28 +74,43 @@ export const board: BoardView = {
   next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0, blocked_by: '' },
 }
 
-export const usage: ProviderUsageView[] = [{
-  provider: 'anthropic', source: 'oauth', would_spawn: true,
-  windows: [
-    { kind: 'session', scope: null, used: 0.05, allowance: 0.8, headroom: 0.75, minutes_to_reset: 89, severity: 'ok' },
-    { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' },
-    { kind: 'weekly', scope: 'Fable', used: 0.23, allowance: 0.289, headroom: 0.059, minutes_to_reset: 7320, severity: 'close' },
-  ],
-  binding: { kind: 'weekly', scope: 'Fable', used: 0.23, allowance: 0.289, headroom: 0.059, minutes_to_reset: 7320, severity: 'close' },
-  note: 'anthropic weekly·Fable: 23% used, allowance 29%, headroom 6 pts, resets in 5d 2h',
-}]
+const weekAll: WindowView = { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' }
+const ccusageSession: WindowView = { kind: 'session', scope: null, used: 0.62, allowance: 0.8, headroom: 0.18, minutes_to_reset: 45, severity: 'ok' }
 
-export const usageUnavailable: ProviderUsageView[] = [{
-  provider: 'anthropic', source: 'unavailable', would_spawn: false, windows: [], binding: null,
-  note: 'anthropic: usage unavailable',
-}]
+// The default model (Opus) draws on the unscoped windows only, so the weekly
+// window binds its gate, not Fable's.
+export const usage: UsageView = {
+  providers: [{
+    provider: 'anthropic', source: 'oauth',
+    windows: [
+      { kind: 'session', scope: null, used: 0.05, allowance: 0.8, headroom: 0.75, minutes_to_reset: 89, severity: 'ok' },
+      weekAll,
+      { kind: 'weekly', scope: 'Fable', used: 0.23, allowance: 0.289, headroom: 0.059, minutes_to_reset: 7320, severity: 'close' },
+    ],
+  }],
+  gate: {
+    model: 'claude-opus-4-8', provider: 'anthropic', admitted: true,
+    note: 'anthropic weekly: 13% used, allowance 29%, headroom 16 pts, resets in 5d 2h',
+    minutes_to_reset: 7320, binding: weekAll,
+  },
+}
 
-export const usageCcusage: ProviderUsageView[] = [{
-  provider: 'anthropic', source: 'ccusage', would_spawn: true,
-  windows: [{ kind: 'session', scope: null, used: 0.62, allowance: 0.8, headroom: 0.18, minutes_to_reset: 45, severity: 'ok' }],
-  binding: { kind: 'session', scope: null, used: 0.62, allowance: 0.8, headroom: 0.18, minutes_to_reset: 45, severity: 'ok' },
-  note: 'anthropic session: 62% used, allowance 80%, headroom 18 pts, resets in 45m',
-}]
+export const usageUnavailable: UsageView = {
+  providers: [{ provider: 'anthropic', source: 'unavailable', windows: [] }],
+  gate: {
+    model: 'claude-opus-4-8', provider: 'anthropic', admitted: false,
+    note: 'anthropic: usage unavailable', minutes_to_reset: 0, binding: null,
+  },
+}
+
+export const usageCcusage: UsageView = {
+  providers: [{ provider: 'anthropic', source: 'ccusage', windows: [ccusageSession] }],
+  gate: {
+    model: 'claude-opus-4-8', provider: 'anthropic', admitted: true,
+    note: 'anthropic session: 62% used, allowance 80%, headroom 18 pts, resets in 45m',
+    minutes_to_reset: 45, binding: ccusageSession,
+  },
+}
 
 export const taskDetail: TaskDetail = {
   card: parkedCard,

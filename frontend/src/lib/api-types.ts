@@ -540,6 +540,24 @@ export interface components {
             when: string;
         };
         /**
+         * GateView
+         * @description The usage verdict for the policy default model: what an idle box would
+         *     spawn next, and the verdict the dispatcher's stall/resume pings key on.
+         */
+        GateView: {
+            /** Admitted */
+            admitted: boolean;
+            binding: components["schemas"]["WindowView"] | null;
+            /** Minutes To Reset */
+            minutes_to_reset: number;
+            /** Model */
+            model: string;
+            /** Note */
+            note: string;
+            /** Provider */
+            provider: string;
+        };
+        /**
          * GhostCard
          * @description A ranked, not-yet-claimed candidate: exactly what _claim_new would
          *     consume next, rendered in the Queued column ahead of being claimed.
@@ -650,17 +668,15 @@ export interface components {
         };
         /** ProviderUsageView */
         ProviderUsageView: {
-            binding: components["schemas"]["WindowView"] | null;
-            /** Note */
-            note: string;
             /** Provider */
             provider: string;
-            /** Source */
-            source: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "oauth" | "ccusage" | "unavailable";
             /** Windows */
             windows: components["schemas"]["WindowView"][];
-            /** Would Spawn */
-            would_spawn: boolean;
         };
         /** QuarantineEntry */
         QuarantineEntry: {
@@ -846,6 +862,12 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** UsageView */
+        UsageView: {
+            gate: components["schemas"]["GateView"];
+            /** Providers */
+            providers: components["schemas"]["ProviderUsageView"][];
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -859,20 +881,27 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * WindowKind
+         * @enum {string}
+         */
+        WindowKind: "session" | "weekly";
         /** WindowView */
         WindowView: {
             /** Allowance */
             allowance: number;
             /** Headroom */
             headroom: number;
-            /** Kind */
-            kind: string;
+            kind: components["schemas"]["WindowKind"];
             /** Minutes To Reset */
             minutes_to_reset: number;
             /** Scope */
             scope: string | null;
-            /** Severity */
-            severity: string;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "ok" | "close" | "blocked";
             /** Used */
             used: number;
         };
@@ -1565,7 +1594,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProviderUsageView"][];
+                    "application/json": components["schemas"]["UsageView"];
                 };
             };
         };

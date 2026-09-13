@@ -7,6 +7,7 @@ import {
   board as fx_board, usageUnavailable, inProgressCard, pendingReplyIntent,
 } from '../../test/fixtures'
 import { renderWithProviders } from '../../test/render'
+import type { UsageView } from '../../lib/api'
 import { BoardPage } from '../BoardPage'
 
 beforeEach(() => server.use(...defaultHandlers))
@@ -162,42 +163,38 @@ it('a failing /api/usage states the gap instead of silently dropping the gauge',
   expect(screen.queryByRole('progressbar', { name: /used$/ })).not.toBeInTheDocument()
 })
 
-it('two provider groups render side by side; would_spawn is independent of window severity', async () => {
-  const twoProviders = [
-    {
-      provider: 'anthropic', source: 'oauth' as const, would_spawn: true,
-      windows: [
-        { kind: 'weekly' as const, scope: 'Fable', used: 0.35, allowance: 0.289,
-          headroom: -0.061, minutes_to_reset: 7320, severity: 'blocked' as const },
-      ],
-      binding: { kind: 'weekly' as const, scope: 'Fable', used: 0.35, allowance: 0.289,
-        headroom: -0.061, minutes_to_reset: 7320, severity: 'blocked' as const },
-      note: 'anthropic weekly·Fable: blocked',
-    },
-    {
-      provider: 'nvidia', source: 'ccusage' as const, would_spawn: true,
-      windows: [{ kind: 'session' as const, scope: null, used: 0.4, allowance: 0.8,
-        headroom: 0.4, minutes_to_reset: 45, severity: 'ok' as const }],
-      binding: { kind: 'session' as const, scope: null, used: 0.4, allowance: 0.8,
-        headroom: 0.4, minutes_to_reset: 45, severity: 'ok' as const },
-      note: 'nvidia session: ok',
-    },
-  ]
+it('two provider groups render side by side; the spawn chip shows once, on the gate provider', async () => {
+  const twoProviders: UsageView = {
+    providers: [
+      {
+        provider: 'anthropic', source: 'oauth',
+        windows: [
+          { kind: 'weekly', scope: 'Fable', used: 0.35, allowance: 0.289,
+            headroom: -0.061, minutes_to_reset: 7320, severity: 'blocked' },
+        ],
+      },
+      {
+        provider: 'nvidia', source: 'ccusage',
+        windows: [{ kind: 'session', scope: null, used: 0.4, allowance: 0.8,
+          headroom: 0.4, minutes_to_reset: 45, severity: 'ok' }],
+      },
+    ],
+    // Sonnet draws on no Fable window, so the gate is open despite it
+    gate: { model: 'claude-sonnet-4-6', provider: 'anthropic', admitted: true,
+      note: 'anthropic: no usage windows reported', minutes_to_reset: 0, binding: null },
+  }
   server.use(http.get('/api/usage', () => HttpResponse.json(twoProviders)))
   renderWithProviders(<BoardPage />)
   // Both groups must render
   const anthropicGroup = await screen.findByText('anthropic')
   const nvidiaGroup = await screen.findByText('nvidia')
-  expect(anthropicGroup).toBeInTheDocument()
-  expect(nvidiaGroup).toBeInTheDocument()
-  // Each chip belongs to its own group (within scoping).
   // findByText returns the heading <span> whose direct text is the provider name;
   // .closest('div') reaches the per-provider group div that wraps it.
   const anthropicContainer = anthropicGroup.closest('div')!
   const nvidiaContainer = nvidiaGroup.closest('div')!
-  expect(within(anthropicContainer).getByText('will spawn')).toBeInTheDocument()
-  expect(within(nvidiaContainer).getByText('will spawn')).toBeInTheDocument()
-  // anthropic shows will spawn despite its one window being blocked (R14: would_spawn is the verdict)
+  expect(within(anthropicContainer).getByText('will spawn claude-sonnet-4-6')).toBeInTheDocument()
+  expect(within(nvidiaContainer).queryByText(/^will (not )?spawn/)).not.toBeInTheDocument()
+  // the chip is the default model's verdict, independent of any one window's severity
   expect(within(anthropicContainer).getByRole('progressbar')).toHaveAttribute(
     'aria-valuetext', expect.stringContaining('over the limit'),
   )

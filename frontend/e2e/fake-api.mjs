@@ -55,15 +55,21 @@ const state = {
     },
   },
   queue: { targets: [] },
-  usage: [{
-    provider: 'anthropic', source: 'oauth', would_spawn: true,
-    windows: [
-      { kind: 'session', scope: null, used: 0.4, allowance: 0.8, headroom: 0.4, minutes_to_reset: 120, severity: 'ok' },
-      { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' },
-    ],
-    binding: { kind: 'session', scope: null, used: 0.4, allowance: 0.8, headroom: 0.4, minutes_to_reset: 120, severity: 'ok' },
-    note: 'anthropic session: 40% used, allowance 80%, headroom 40 pts, resets in 2h',
-  }],
+  usage: {
+    providers: [{
+      provider: 'anthropic', source: 'oauth',
+      windows: [
+        { kind: 'session', scope: null, used: 0.4, allowance: 0.8, headroom: 0.4, minutes_to_reset: 120, severity: 'ok' },
+        { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' },
+      ],
+    }],
+    gate: {
+      model: 'claude-opus-4-8', provider: 'anthropic', admitted: true,
+      note: 'anthropic weekly: 13% used, allowance 29%, headroom 16 pts, resets in 5d 2h',
+      minutes_to_reset: 7320,
+      binding: { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' },
+    },
+  },
   failures: { quarantined: [], fingerprints: [] },
   history: { events: [] },
   intents: [],

@@ -139,10 +139,15 @@ def test_usage_base_allowance(tmp_path):
     fake, client = rig(tmp_path)
     fake.usages = {"anthropic": session_usage(0.5)}
     body = client.get("/api/usage", headers=HEADERS).json()
-    assert body[0]["provider"] == "anthropic"
-    assert body[0]["would_spawn"] is True
-    assert body[0]["source"] == "oauth"
-    assert body[0]["windows"][0]["allowance"] == pytest.approx(0.8, abs=1e-3)
+    (provider,) = body["providers"]
+    assert provider["provider"] == "anthropic"
+    assert provider["source"] == "oauth"
+    assert provider["windows"][0]["allowance"] == pytest.approx(0.8, abs=1e-3)
+    assert set(provider) == {"provider", "source", "windows"}
+    gate = body["gate"]
+    assert (gate["model"], gate["provider"], gate["admitted"]) == (
+        "claude-opus-4-8", "anthropic", True)
+    assert gate["binding"]["kind"] == "session"
 
 
 def test_usage_reset_racing(tmp_path):
@@ -151,8 +156,8 @@ def test_usage_reset_racing(tmp_path):
     # session window resets in 10 min (≤ racing_minutes=30) → racing threshold 0.95
     fake.usages = {"anthropic": session_usage(0.9, mins=10.0)}
     body = client.get("/api/usage", headers=HEADERS).json()
-    assert body[0]["would_spawn"] is True   # 0.9 < racing_threshold 0.95
-    assert body[0]["windows"][0]["allowance"] == pytest.approx(0.95, abs=1e-3)
+    assert body["gate"]["admitted"] is True   # 0.9 < racing_threshold 0.95
+    assert body["providers"][0]["windows"][0]["allowance"] == pytest.approx(0.95, abs=1e-3)
 
 
 def test_usage_unavailable(tmp_path):
@@ -160,10 +165,13 @@ def test_usage_unavailable(tmp_path):
     fake, client = rig(tmp_path)
     fake.usages = {"anthropic": session_usage(source="unavailable")}
     body = client.get("/api/usage", headers=HEADERS).json()
-    assert body[0]["provider"] == "anthropic"
-    assert body[0]["would_spawn"] is False
-    assert body[0]["source"] == "unavailable"
-    assert body[0]["windows"] == []
+    (provider,) = body["providers"]
+    assert provider["provider"] == "anthropic"
+    assert provider["source"] == "unavailable"
+    assert provider["windows"] == []
+    assert body["gate"]["admitted"] is False
+    assert body["gate"]["note"] == "anthropic: usage unavailable"
+    assert (body["gate"]["binding"], body["gate"]["minutes_to_reset"]) == (None, 0)
 
 
 def test_failures_joins_blocker_state(tmp_path):

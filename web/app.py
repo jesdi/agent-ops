@@ -126,8 +126,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             wake_blocked=sources.wake_blocked_issues())
     app.include_router(artifacts_router(sources, _find_task))
 
-    def _usage_views():
-        return read_model.usage_views(
+    def _usage_view() -> read_model.UsageView:
+        return read_model.usage_view(
             sources.usage(), now=datetime.now(timezone.utc),
             pace=cfg.pace, default_model=cfg.models.default)
 
@@ -153,8 +153,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=sources.pass_heartbeat(),
             now=datetime.now(timezone.utc),
-            usage=_usage_views(),
-            default_model=cfg.models.default,
+            gate=_usage_view().gate,
             queues=queues, queue_stale=stale_any,
             # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,
@@ -268,9 +267,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.PaneHistory(
             text=sources.pane_history(target, issue, clamped))
 
-    @app.get("/api/usage", response_model=list[read_model.ProviderUsageView])
+    @app.get("/api/usage", response_model=read_model.UsageView)
     def usage_route(op: Operator = Depends(current_operator)):
-        return _usage_views()
+        return _usage_view()
 
     @app.get("/api/failures", response_model=read_model.FailuresView)
     def failures(op: Operator = Depends(current_operator)):
