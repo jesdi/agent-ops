@@ -8,8 +8,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from starlette.responses import RedirectResponse, Response
 
-from dispatcher import task_artifacts
+from dispatcher.task_artifacts import StoredArtifact
 from web.auth import Operator, current_operator
+from web.sources import ArtifactResource
+
+HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+           "Referrer-Policy": "no-referrer"}
+PREVIEW_TYPES = {"text/html", "text/plain", "image/svg+xml", "image/png",
+                 "image/jpeg", "image/webp", "image/gif", "application/pdf"}
+SANDBOX = (
+    "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
+    "style-src 'unsafe-inline'; img-src data:; font-src data:; "
+    "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
 
 
 class ArtifactView(BaseModel):
@@ -30,54 +40,58 @@ class ArtifactsView(BaseModel):
     expired: bool
 
 
-def router(state_dir, find_task) -> APIRouter:
+def _view(resource: ArtifactResource, target: str, issue: int) -> ArtifactView:
+    item = resource.item
+    url = f"/api/task/{quote(target, safe='')}/{issue}/artifacts/{item.id}"
+    return ArtifactView(
+        id=item.id, name=item.name, path=item.path, media_type=item.media_type,
+        updated_at=item.updated_at, stage=item.stage, status=resource.status,
+        url=url if resource.status in {"published", "local"} else "",
+        github_url=item.publication.url if item.publication else "")
+
+
+def _preview(item: StoredArtifact, content: bytes) -> Response:
+    # Opaque origin permits inline interactions without console credentials.
+    headers = {**HEADERS, "Content-Security-Policy": SANDBOX}
+    media = "text/plain" if item.media_type == "text/markdown" else item.media_type
+    if media not in PREVIEW_TYPES:
+        headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(item.path.split('/')[-1], safe='')
+    return Response(content, media_type=media, headers=headers)
+
+
+def router(sources, find_task) -> APIRouter:
     routes = APIRouter()
 
     @routes.get("/api/task/{target}/{issue}/artifacts", response_model=ArtifactsView)
     def artifacts(target: str, issue: int, op: Operator = Depends(current_operator)):
         find_task(target, issue)
-        index = task_artifacts.read(state_dir, target, issue)
-        items = []
-        for item in index["items"]:
-            github = item.get("github_url", "")
-            available = task_artifacts.content_path(state_dir, target, issue, item["id"])
-            status = "published" if github else "expired" if index["expired"] else "local" if available else "unavailable"
-            url = f"/api/task/{quote(target, safe='')}/{issue}/artifacts/{item['id']}"
-            items.append(ArtifactView(**{k: item[k] for k in
-                ("id", "name", "path", "media_type", "updated_at", "stage")},
-                status=status, url=url if github or available else "", github_url=github))
-        return ArtifactsView(items=items, expires_at=index["expires_at"], expired=index["expired"])
+        index = sources.artifacts(target, issue)
+        items = [_view(resource, target, issue) for resource in index.items]
+        return ArtifactsView(items=items, expires_at=index.expires_at, expired=index.expired)
 
     @routes.get("/api/task/{target}/{issue}/artifacts/{artifact_id}")
     def open_artifact(target: str, issue: int, artifact_id: str,
                       op: Operator = Depends(current_operator)):
         find_task(target, issue)
-        index = task_artifacts.read(state_dir, target, issue)
-        item = next((i for i in index["items"] if i["id"] == artifact_id), None)
-        if item is None:
+        index = sources.artifacts(target, issue)
+        resource = next((r for r in index.items if r.item.id == artifact_id), None)
+        if resource is None:
             raise HTTPException(404, "artifact not found")
-        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
-                   "Referrer-Policy": "no-referrer"}
-        if item.get("github_url"):
-            return RedirectResponse(item["github_url"], status_code=302, headers=headers)
-        path = task_artifacts.content_path(state_dir, target, issue, artifact_id)
-        if path is None:
-            raise HTTPException(410 if index["expired"] else 404,
-                                "artifact expired" if index["expired"] else "artifact content unavailable")
-        # Opaque origin: generated HTML/SVG can run inline interactions but
-        # cannot access the console, its credentials, APIs, or external assets.
-        headers["Content-Security-Policy"] = (
-            "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
-            "style-src 'unsafe-inline'; img-src data:; font-src data:; "
-            "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
-        media = item["media_type"]
-        if media == "text/markdown":
-            media = "text/plain"  # readable local fallback when GitHub publication failed
-        if media not in {"text/html", "text/plain", "image/svg+xml", "image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"}:
-            headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(item["path"].split('/')[-1], safe='')
-        try:
-            return Response(path.read_bytes(), media_type=media, headers=headers)
-        except FileNotFoundError:
-            raise HTTPException(410, "artifact content no longer available")
+        return _open_resource(sources, target, issue, resource)
+
 
     return routes
+
+
+def _open_resource(sources, target: str, issue: int, resource: ArtifactResource) -> Response:
+    item = resource.item
+    if resource.status == "published":
+        return RedirectResponse(item.publication.url, status_code=302, headers=HEADERS)
+    if resource.status == "expired":
+        raise HTTPException(410, "artifact expired")
+    if resource.status == "unavailable":
+        raise HTTPException(404, "artifact content unavailable")
+    content = sources.artifact_content(target, issue, item.id)
+    if content is None:
+        raise HTTPException(410, "artifact content no longer available")
+    return _preview(item, content)

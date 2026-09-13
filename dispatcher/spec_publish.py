@@ -96,28 +96,42 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
     return PublishResult(url=spec_url(repo, branch, rel))
 
 
-def published_reference(*, worktree: str, branch: str, repo: str,
-                        artifact: str, content: bytes) -> tuple[str, str]:
-    """Verify the collected bytes exist on the remote branch, without writes.
+@dataclass(frozen=True)
+class PublishedReference:
+    url: str
+    commit: str
 
-    Sessions own committing review Markdown. Unlike the spec gate's backstop,
-    collection can run while a session is active and must not touch its index.
-    """
-    rel = relative_artifact(worktree, artifact)
-    if not rel:
-        return "", ""
-    try:
-        remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}")
-        fields = remote.stdout.split() if remote.returncode == 0 else []
-        if not fields:
-            return "", ""
-        commit = fields[0]
-        blob = _git(worktree, "rev-parse", f"{commit}:{rel}")
-        hashed = subprocess.run(["git", "-C", worktree, "hash-object", "--stdin"],
-                                input=content, capture_output=True, timeout=_TIMEOUT)
-        if (blob.returncode != 0 or hashed.returncode != 0
-                or blob.stdout.strip().encode() != hashed.stdout.strip()):
-            return "", ""
-        return spec_url(repo, branch, rel), commit
-    except (OSError, subprocess.SubprocessError):
-        return "", ""
+
+class ArtifactPublisher:
+    """Verify artifacts against one remote branch snapshot per collection."""
+
+    def __init__(self, worktree: str, branch: str, repo: str):
+        self.worktree, self.branch, self.repo = worktree, branch, repo
+        self._resolved = False
+        self._commit = ""
+
+    def _remote_commit(self) -> str:
+        if not self._resolved:
+            self._resolved = True
+            remote = _git(self.worktree, "ls-remote", "origin", f"refs/heads/{self.branch}")
+            fields = remote.stdout.split() if remote.returncode == 0 else []
+            self._commit = fields[0] if fields else ""
+        return self._commit
+
+    def reference(self, artifact: str, content: bytes) -> PublishedReference | None:
+        rel = relative_artifact(self.worktree, artifact)
+        if not rel:
+            return None
+        try:
+            commit = self._remote_commit()
+            if not commit:
+                return None
+            blob = _git(self.worktree, "rev-parse", f"{commit}:{rel}")
+            hashed = subprocess.run(["git", "-C", self.worktree, "hash-object", "--stdin"],
+                                    input=content, capture_output=True, timeout=_TIMEOUT)
+            if (blob.returncode != 0 or hashed.returncode != 0
+                    or blob.stdout.strip().encode() != hashed.stdout.strip()):
+                return None
+            return PublishedReference(spec_url(self.repo, self.branch, rel), commit)
+        except (OSError, subprocess.SubprocessError):
+            return None

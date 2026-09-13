@@ -10,23 +10,105 @@ import json
 import logging
 import mimetypes
 import re
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher import spec_publish
-from dispatcher.state import TERMINAL_STAGES, TaskState, _read
+from dispatcher import spec_publish, state
+from dispatcher.state import TaskState
 
 log = logging.getLogger(__name__)
-TERMINAL = TERMINAL_STAGES
 RETENTION_DAYS = 30
 MAX_BYTES = 20 * 1024 * 1024
 ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}\Z")
 
 
-def task_root(state_dir, target: str, issue: int) -> Path:
-    key = hashlib.sha256(f"{target}\0{issue}".encode()).hexdigest()
-    return Path(state_dir) / "artifacts" / key
+@dataclass(frozen=True)
+class Registration:
+    id: str
+    name: str
+    path: str
+
+    @classmethod
+    def parse(cls, raw: dict) -> Registration:
+        entry = cls(**{key: raw[key] for key in ("id", "name", "path")})
+        if not all(isinstance(value, str) for value in asdict(entry).values()):
+            raise ValueError("artifact fields must be strings")
+        if not ID.fullmatch(entry.id):
+            raise ValueError("invalid artifact ID")
+        if not entry.name.strip() or len(entry.name) > 200:
+            raise ValueError("invalid artifact name")
+        return entry
+
+
+@dataclass
+class StoredArtifact:
+    id: str
+    name: str
+    path: str
+    media_type: str
+    digest: str
+    stage: str
+    updated_at: str
+    publication: spec_publish.PublishedReference | None = None
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> StoredArtifact:
+        values = dict(raw)
+        url = values.pop("github_url", "")
+        commit = values.pop("published_commit", "")
+        publication = spec_publish.PublishedReference(url, commit) if url else None
+        return cls(**values, publication=publication)
+
+    def to_dict(self) -> dict:
+        values = asdict(self)
+        values.pop("publication")
+        values["github_url"] = self.publication.url if self.publication else ""
+        values["published_commit"] = self.publication.commit if self.publication else ""
+        return values
+
+
+@dataclass
+class ArtifactIndex:
+    items: list[StoredArtifact] = field(default_factory=list)
+    expires_at: str = ""
+    expired: bool = False
+    target: str = ""
+    issue: int = 0
+
+    @classmethod
+    def load(cls, path: Path) -> ArtifactIndex:
+        if not path.exists():
+            return cls()
+        raw = json.loads(path.read_text())
+        raw["items"] = [StoredArtifact.from_dict(item) for item in raw["items"]]
+        return cls(**raw)
+
+    def save(self, path: Path) -> None:
+        value = asdict(self)
+        value["items"] = [item.to_dict() for item in self.items]
+        _write(path, value)
+
+    def retain_for(self, task: TaskState) -> None:
+        self.target, self.issue = task.target, task.issue
+        self.expires_at = ""
+        if task.terminal_at:
+            since = datetime.fromisoformat(task.terminal_at)
+            since = since.replace(tzinfo=since.tzinfo or timezone.utc)
+            self.expires_at = (since + timedelta(days=RETENTION_DAYS)).isoformat()
+        else:
+            self.expired = False
+
+    def expire(self, path: Path, now: datetime) -> None:
+        if self.expired or not self.expires_at:
+            return
+        if now < datetime.fromisoformat(self.expires_at):
+            return
+        for content in (path.parent / "content").glob("*"):
+            if content.is_file() or content.is_symlink():
+                content.unlink()
+        self.expired = True
+        self.save(path)
 
 
 def _write(path: Path, value: dict) -> None:
@@ -39,16 +121,8 @@ def _write(path: Path, value: dict) -> None:
     tmp.replace(path)
 
 
-def read(state_dir, target: str, issue: int) -> dict:
-    path = task_root(state_dir, target, issue) / "index.json"
-    if not path.exists():
-        return {"items": [], "expires_at": "", "expired": False}
-    return json.loads(path.read_text())
-
-
-def archived_task(state_dir, target: str, issue: int) -> TaskState | None:
-    task = _read(task_root(state_dir, target, issue) / "task.json")
-    return task if task and task.stage in TERMINAL else None
+def read(state_dir, target: str, issue: int) -> ArtifactIndex:
+    return ArtifactIndex.load(state.archive_root(state_dir, target, issue) / "index.json")
 
 
 def _source(worktree: str, raw: str) -> Path:
@@ -61,142 +135,147 @@ def _source(worktree: str, raw: str) -> Path:
     return path
 
 
-def _registrations(task: TaskState) -> list[dict]:
+def _manifest(task: TaskState) -> list[Registration]:
     manifest = Path(task.worktree) / ".agent/artifacts.json"
+    if not manifest.exists():
+        return []
+    try:
+        raw = json.loads(_source(task.worktree, str(manifest)).read_text())
+        if not isinstance(raw, list) or len(raw) > 100:
+            raise ValueError("expected an array of at most 100 artifacts")
+        entries = [Registration.parse(entry) for entry in raw]
+        if len({entry.id for entry in entries}) != len(entries):
+            raise ValueError("duplicate artifact IDs")
+        return entries
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.warning("Invalid artifact manifest for %s/%s: %s", task.target, task.issue, exc)
+        return []
+
+
+def _automatic_registrations(task: TaskState) -> list[Registration]:
     entries = []
-    if manifest.exists():
-        try:
-            raw = json.loads(_source(task.worktree, str(manifest)).read_text())
-            if not isinstance(raw, list) or len(raw) > 100:
-                raise ValueError("expected an array of at most 100 artifacts")
-            for entry in raw:
-                if (not isinstance(entry, dict)
-                        or not isinstance(entry.get("id"), str)
-                        or not ID.fullmatch(entry["id"])
-                        or not isinstance(entry.get("name"), str)
-                        or not entry["name"].strip()
-                        or len(entry["name"]) > 200
-                        or not isinstance(entry.get("path"), str)):
-                    raise ValueError("invalid artifact registration")
-            if len({e["id"] for e in raw}) != len(raw):
-                raise ValueError("duplicate artifact IDs")
-            entries = raw
-        except (OSError, ValueError) as exc:
-            log.warning("Invalid artifact manifest for %s/%s: %s", task.target, task.issue, exc)
-    # Existing sessions do not yet know the manifest protocol. Preserve the
-    # durable spec and current question artifact automatically.
-    if task.spec_path:
-        entries = [e for e in entries if e["id"] != "spec" and e["path"] != task.spec_path]
-        entries.insert(0, {"id": "spec", "name": "Specification", "path": task.spec_path})
-    # Backfill known review outputs from sessions started before registration
-    # was introduced; do not sweep arbitrary worktree files.
     for artifact_id, name, path in (
         ("prototype", "Prototype", ".agent/prototype.html"),
         ("questionnaire", "Questionnaire", ".agent/questionnaire.md"),
     ):
-        if ((Path(task.worktree) / path).is_file()
-                and not any(e["id"] == artifact_id or e["path"] == path for e in entries)):
-            entries.append({"id": artifact_id, "name": name, "path": path})
+        if (Path(task.worktree) / path).is_file():
+            entries.append(Registration(artifact_id, name, path))
     request_path = getattr(task.operator_request, "path", "")
-    if request_path and not any(e["path"] == request_path for e in entries):
+    if request_path:
         key = hashlib.sha256(request_path.encode()).hexdigest()[:12]
-        entries.append({"id": f"answers-{key}", "name": "Questions and answers", "path": request_path})
+        entries.append(Registration(f"answers-{key}", "Questions and answers", request_path))
     return entries
+
+
+def _spec_registrations(task: TaskState) -> list[Registration]:
+    entries = _manifest(task)
+    if task.spec_path:
+        entries = [entry for entry in entries if entry.id != "spec" and entry.path != task.spec_path]
+        entries.insert(0, Registration("spec", "Specification", task.spec_path))
+    return entries
+
+
+def _registrations(task: TaskState) -> list[Registration]:
+    entries = _spec_registrations(task)
+    ids = {entry.id for entry in entries}
+    paths = {entry.path for entry in entries}
+    for entry in _automatic_registrations(task):
+        if entry.id not in ids and entry.path not in paths:
+            entries.append(entry)
+            ids.add(entry.id)
+            paths.add(entry.path)
+    return entries
+
+
+class Collector:
+    """One collection pass owns content snapshots and a single remote lookup."""
+
+    def __init__(self, root: Path, task: TaskState, repo: str, publish: bool, now: datetime):
+        self.root, self.task, self.now = root, task, now
+        self.publisher = spec_publish.ArtifactPublisher(task.worktree, task.branch, repo) if publish and repo else None
+
+    def store(self, entry: Registration, old: StoredArtifact | None) -> StoredArtifact:
+        path = _source(self.task.worktree, entry.path)
+        rel = path.relative_to(Path(self.task.worktree).resolve()).as_posix()
+        content = path.read_bytes()
+        if len(content) > MAX_BYTES:
+            raise ValueError("artifact exceeds 20 MiB")
+        digest = hashlib.sha256(content).hexdigest()
+        changed = old is None or (old.digest, old.path) != (digest, rel)
+        if changed:
+            item = StoredArtifact(entry.id, entry.name, rel, _media_type(path), digest,
+                                  old.stage if old else self.task.stage.value, self.now.isoformat())
+        else:
+            item = replace(old, name=entry.name)
+        dest = self.root / "content" / entry.id
+        if changed or not dest.exists():
+            _copy_content(dest, content)
+        self.publish(item, content)
+        return item
+
+    def publish(self, item: StoredArtifact, content: bytes) -> None:
+        if self.publisher and item.media_type == "text/markdown" and not item.publication:
+            item.publication = self.publisher.reference(item.path, content)
+
+    def collect(self, index: ArtifactIndex) -> None:
+        items = {item.id: item for item in index.items}
+        for entry in _registrations(self.task):
+            try:
+                items[entry.id] = self.store(entry, items.get(entry.id))
+            except (OSError, ValueError) as exc:
+                log.warning("Cannot collect artifact %s/%s/%s: %s", self.task.target, self.task.issue, entry.id, exc)
+        index.items = list(items.values())
+
+
+def _copy_content(dest: Path, content: bytes) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".tmp")
+    tmp.write_bytes(content)
+    tmp.replace(dest)
+
+
+def _media_type(path: Path) -> str:
+    if path.suffix.lower() in {".md", ".markdown"}:
+        return "text/markdown"
+    return mimetypes.guess_type(path)[0] or "application/octet-stream"
 
 
 def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
             now: datetime | None = None) -> None:
     now = now or datetime.now(timezone.utc)
-    root = task_root(state_dir, task.target, task.issue)
+    root = state.archive_root(state_dir, task.target, task.issue)
     index = read(state_dir, task.target, task.issue)
-    terminal_at = task.terminal_at or (task.done_at or task.updated_at if task.stage in TERMINAL else "")
-    expires = ""
-    if task.stage in TERMINAL and terminal_at:
-        since = datetime.fromisoformat(terminal_at)
-        if since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
-        expires = (since + timedelta(days=RETENTION_DAYS)).isoformat()
-    # Reopening cancels the countdown and permits content collection again.
-    if not expires:
-        index["expired"] = False
-    index.update(target=task.target, issue=task.issue, expires_at=expires)
-    items = {e["id"]: e for e in index["items"]}
-    if not index["expired"] and Path(task.worktree).is_dir():
-        for entry in _registrations(task):
-            try:
-                path = _source(task.worktree, entry["path"])
-                rel = path.relative_to(Path(task.worktree).resolve()).as_posix()
-                content = path.read_bytes()
-                if len(content) > MAX_BYTES:
-                    raise ValueError("artifact exceeds 20 MiB")
-            except (OSError, ValueError) as exc:
-                log.warning("Cannot collect artifact %s/%s/%s: %s", task.target, task.issue, entry["id"], exc)
-                continue
-            digest = hashlib.sha256(content).hexdigest()
-            old = items.get(entry["id"], {})
-            changed = old.get("digest") != digest or old.get("path") != rel
-            markdown = path.suffix.lower() in {".md", ".markdown"}
-            item = dict(old, id=entry["id"], name=entry["name"], path=rel,
-                        media_type="text/markdown" if markdown else (mimetypes.guess_type(rel)[0] or "application/octet-stream"),
-                        digest=digest, stage=old.get("stage", task.stage.value),
-                        updated_at=now.isoformat() if changed else old["updated_at"])
-            if changed:
-                item.update(github_url="", published_commit="")
-            dest = root / "content" / entry["id"]
-            if changed or not dest.exists():
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                tmp = dest.with_suffix(".tmp")
-                tmp.write_bytes(content)
-                tmp.replace(dest)
-            # Retry unpublished Markdown each pass; never expose a guessed link.
-            if markdown and publish and repo and not item.get("github_url"):
-                url, commit = spec_publish.published_reference(
-                    worktree=task.worktree, branch=task.branch, repo=repo,
-                    artifact=rel, content=content)
-                item.update(github_url=url, published_commit=commit)
-            items[item["id"]] = item
-    index["items"] = list(items.values())
-    _write(root / "index.json", index)
-    if task.stage in TERMINAL:
-        snapshot = asdict(task)
-        snapshot["stage"] = task.stage.value
-        _write(root / "task.json", snapshot)
+    index.retain_for(task)
+    if not index.expired and Path(task.worktree).is_dir():
+        Collector(root, task, repo, publish, now).collect(index)
+    index.save(root / "index.json")
+    state.archive(state_dir, task)
 
 
 def pin_published(state_dir, task: TaskState, repo: str) -> None:
     """Before deleting a merged task branch, keep GitHub destinations alive."""
     index = read(state_dir, task.target, task.issue)
-    for item in index["items"]:
-        if item.get("github_url") and item.get("published_commit"):
-            item["github_url"] = spec_publish.spec_url(repo, item["published_commit"], item["path"])
-    _write(task_root(state_dir, task.target, task.issue) / "index.json", index)
+    for item in index.items:
+        if item.publication and item.publication.commit:
+            item.publication = spec_publish.PublishedReference(
+                spec_publish.spec_url(repo, item.publication.commit, item.path), item.publication.commit)
+    index.save(state.archive_root(state_dir, task.target, task.issue) / "index.json")
 
 
 def cleanup(state_dir, *, now: datetime | None = None) -> None:
-    """Delete only stored content; retain metadata, GitHub URLs and task context."""
+    """Delete stored content; retain metadata, GitHub URLs and task context."""
     now = now or datetime.now(timezone.utc)
-    for index_path in (Path(state_dir) / "artifacts").glob("*/index.json"):
+    for path in (Path(state_dir) / "artifacts").glob("*/index.json"):
         try:
-            index = json.loads(index_path.read_text())
-            if not index.get("expires_at") or index.get("expired"):
-                continue
-            if now < datetime.fromisoformat(index["expires_at"]):
-                continue
-            content = index_path.parent / "content"
-            if content.exists():
-                for path in content.iterdir():
-                    if path.is_file() or path.is_symlink():
-                        path.unlink()
-            index["expired"] = True
-            _write(index_path, index)
+            ArtifactIndex.load(path).expire(path, now)
         except (OSError, ValueError):
-            log.exception("Artifact cleanup failed for %s", index_path)
+            log.exception("Artifact cleanup failed for %s", path)
 
 
 def content_path(state_dir, target: str, issue: int, artifact_id: str) -> Path | None:
     if not ID.fullmatch(artifact_id):
         return None
-    root = task_root(state_dir, target, issue)
+    root = state.archive_root(state_dir, target, issue)
     path = root / "content" / artifact_id
     if not path.resolve().is_relative_to(root.resolve()) or not path.is_file():
         return None

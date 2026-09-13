@@ -39,7 +39,7 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoO
 from dispatcher.models import resolve
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
-from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
+from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               AnswersRequest, SpecApprovalRequest,
                               Stage, TaskState, active, allocate_slot,
@@ -1620,7 +1620,7 @@ def _sync_artifacts(cfg: Config, *, dry_run: bool = False) -> None:
     for task in load_all(cfg.state_dir):
         try:
             task_artifacts.collect(cfg.state_dir, task, repos.get(task.target, ""),
-                                   publish=not dry_run and task.stage not in task_artifacts.TERMINAL)
+                                   publish=not dry_run and task.stage not in TERMINAL_STAGES)
         except (OSError, ValueError):
             log.exception("Artifact collection failed for %s/%s", task.target, task.issue)
     task_artifacts.cleanup(cfg.state_dir)

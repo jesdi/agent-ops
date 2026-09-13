@@ -53,3 +53,45 @@ test('publication failure preserves local review and approval', async () => {
   expect(screen.getByRole('button', { name: 'approve spec' })).toBeEnabled()
   expect(screen.queryByRole('link', { name: 'View spec on GitHub ↗' })).not.toBeInTheDocument()
 })
+
+test.each([
+  ['local', '', 'text/markdown', 'Not published · local copy'],
+  ['local', '', 'text/html', 'Web preview'],
+  ['unavailable', '', 'text/plain', 'Content unavailable'],
+])('describes %s %s %s artifact availability', async (status, github_url, media_type, label) => {
+  seed([{ ...spec, status, github_url, media_type, url: status === 'unavailable' ? '' : spec.url }])
+  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  expect(await screen.findByText(`${label} · spec`)).toBeInTheDocument()
+  if (status === 'unavailable') expect(screen.getByText('Unavailable')).toBeInTheDocument()
+})
+
+test('empty registry explains where review material will appear', async () => {
+  seed([])
+  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  expect(await screen.findByText(/No artifacts yet/)).toBeInTheDocument()
+})
+
+test('failed artifact query shows an error', async () => {
+  server.use(http.get('/api/task/widget/42/artifacts', () => HttpResponse.json({ detail: 'registry offline' }, { status: 500 })))
+  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  expect(await screen.findByRole('alert')).toHaveTextContent('registry offline')
+})
+
+test('active task has latest-version guidance without cleanup date', async () => {
+  server.use(http.get('/api/task/widget/42/artifacts', () => HttpResponse.json({ items: [spec], expired: false, expires_at: '' })))
+  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  expect(await screen.findByText('Links open the latest version in a new tab.')).toBeInTheDocument()
+})
+
+test('failed artifact query preserves approval and local request content', async () => {
+  server.use(
+    http.get('/api/task/widget/42/artifacts', () => HttpResponse.json({ detail: 'registry offline' }, { status: 500 })),
+    http.get('/api/task/widget/42/request', () => HttpResponse.json({
+      kind: 'spec-approval', content: { kind: 'readable', path: 'docs/spec.md', media_type: 'text/markdown', text: '# Local design' },
+    })),
+  )
+  renderWithProviders(<RequestPanel target="widget" issue={42} busy={false} onApprove={() => {}} />)
+  expect(await screen.findByText(/Could not load the GitHub spec link/)).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: 'Local design' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'approve spec' })).toBeEnabled()
+})

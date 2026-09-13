@@ -163,16 +163,33 @@ def test_gitignored_artifact_returns_error_not_success(wt, origin):
 
 
 def test_published_reference_checks_remote_bytes_without_committing(wt):
-    from dispatcher.spec_publish import published_reference
+    from dispatcher.spec_publish import ArtifactPublisher
     path = wt / SPEC_REL
     path.write_text('# published\n')
     _publish(wt)
-    url, commit = published_reference(worktree=str(wt), branch=BRANCH,
-                                     repo=REPO, artifact=SPEC_REL, content=path.read_bytes())
+    publisher = ArtifactPublisher(str(wt), BRANCH, REPO)
+    reference = publisher.reference(SPEC_REL, path.read_bytes())
+    url, commit = reference.url, reference.commit
     assert url == spec_url(REPO, BRANCH, SPEC_REL)
     assert commit == _git(wt, 'rev-parse', 'HEAD')
     path.write_text('# unpublished revision\n')
-    assert published_reference(worktree=str(wt), branch=BRANCH, repo=REPO,
-                               artifact=SPEC_REL, content=path.read_bytes()) == ('', '')
+    assert publisher.reference(SPEC_REL, path.read_bytes()) is None
     assert _git(wt, 'rev-parse', 'HEAD') == commit
     assert _git(wt, 'status', '--porcelain', '--', SPEC_REL)
+
+
+def test_artifact_publication_reuses_remote_snapshot(wt, monkeypatch):
+    from dispatcher import spec_publish
+    path = wt / SPEC_REL
+    path.write_text('# Published\n')
+    _publish(wt)
+    calls = []
+    git = spec_publish._git
+    def record(worktree, *args):
+        calls.append(args)
+        return git(worktree, *args)
+    monkeypatch.setattr(spec_publish, '_git', record)
+    publisher = spec_publish.ArtifactPublisher(str(wt), BRANCH, REPO)
+    assert publisher.reference(SPEC_REL, path.read_bytes()) is not None
+    assert publisher.reference(SPEC_REL, b'unpublished') is None
+    assert sum(args[0] == 'ls-remote' for args in calls) == 1

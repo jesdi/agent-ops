@@ -2,6 +2,7 @@
 stage.json signal sessions write into their worktree."""
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
@@ -146,20 +147,23 @@ def _legacy_path(state_dir: str | Path, issue: int) -> Path:
 def save(state_dir: str | Path, ts: TaskState) -> None:
     previous = load(state_dir, ts.target, ts.issue)
     if ts.stage in TERMINAL_STAGES:
-        stamp = (previous.terminal_at or previous.done_at or previous.updated_at
+        stamp = (previous.terminal_at
                  if previous and previous.stage in TERMINAL_STAGES else ts.updated_at)
         ts = replace(ts, terminal_at=stamp)
     else:
         ts = replace(ts, terminal_at="")
+    _write_task(_path(state_dir, ts.target, ts.issue), ts)
+    # Lazy migration: the first save under the new key retires the legacy twin.
+    _legacy_path(state_dir, ts.issue).unlink(missing_ok=True)
+
+
+def _write_task(p: Path, ts: TaskState) -> None:
     d = asdict(ts)
     d["stage"] = ts.stage.value
-    p = _path(state_dir, ts.target, ts.issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, indent=2))
     tmp.replace(p)
-    # Lazy migration: the first save under the new key retires the legacy twin.
-    _legacy_path(state_dir, ts.issue).unlink(missing_ok=True)
 
 
 def _read(p: Path) -> TaskState | None:
@@ -167,6 +171,10 @@ def _read(p: Path) -> TaskState | None:
         return None
     d = json.loads(p.read_text())
     d["stage"] = Stage(d["stage"])
+    if d["stage"] in TERMINAL_STAGES:
+        d["terminal_at"] = d.get("terminal_at") or d.get("done_at") or d["updated_at"]
+    else:
+        d["terminal_at"] = ""
     d["labels"] = tuple(d.get("labels", ()))
     d.pop("pending_reply", None)   # retired field, see original comment
     if "operator_request" not in d:
@@ -319,3 +327,19 @@ def clear_waiting(state_dir: str | Path, target: str, issue: int) -> None:
     _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
 
 
+
+
+def archive_root(state_dir: str | Path, target: str, issue: int) -> Path:
+    """Task archive namespace, shared by its snapshot and retained artifacts."""
+    key = hashlib.sha256(f"{target}\0{issue}".encode()).hexdigest()
+    return Path(state_dir) / "artifacts" / key
+
+
+def archive(state_dir: str | Path, task: TaskState) -> None:
+    if task.stage in TERMINAL_STAGES:
+        _write_task(archive_root(state_dir, task.target, task.issue) / "task.json", task)
+
+
+def load_archived(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
+    task = _read(archive_root(state_dir, target, issue) / "task.json")
+    return task if task and task.stage in TERMINAL_STAGES else None

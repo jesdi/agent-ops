@@ -177,5 +177,7 @@ canceled. State serialization preserves that timestamp across unrelated
 terminal writes and clears it on reopening. Collection cancels expiry for
 active or parked tasks. Each dispatcher pass removes stored content 30 days
 after the terminal transition; metadata, GitHub links and archived task context
-remain. Failed-task worktrees remain available for autopsy under the existing
+remain. Task state owns archive serialization and normalizes legacy terminal
+timestamps on read. `Sources` owns active-or-archived lookup and artifact
+delivery resolution; web routes do not read the artifact filesystem directly. Failed-task worktrees remain available for autopsy under the existing
 workspace policy; artifact cleanup only owns its stored copies.
