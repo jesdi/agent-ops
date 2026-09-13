@@ -168,8 +168,9 @@ def judge(provider: str, usage: ProviderUsage | None, windows: Iterable[Window],
     of a provider's windows to name the binding window regardless of model scope."""
     if usage is None or usage.source == "unavailable":
         return Verdict(False, provider, None, 0.0, 0.0, "unavailable")
-    scored = [(allowance(w, now, cfg) - w.used, allowance(w, now, cfg), w)
-              for w in windows]
+    scored = [(a - w.used, a, w)
+              for w in windows
+              for a in (allowance(w, now, cfg),)]
     if not scored:
         return Verdict(True, provider, None, 1.0, 1.0, "ok")
     headroom, allowed, binding = min(scored, key=lambda s: s[0])

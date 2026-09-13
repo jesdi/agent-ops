@@ -7,7 +7,8 @@ import pytest
 from dispatcher import usage
 from dispatcher.usage import (SESSION, WEEK, ProviderUsage, Window,
                               parse_anthropic, usage_from_json, usage_to_json,
-                              PaceConfig, allowance, minutes_to_reset, weighted_hours)
+                              PaceConfig, allowance, minutes_to_reset, weighted_hours,
+                              Verdict, admits, considered, verdict_note, window_label, judge)
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "anthropic-usage.json").read_text())
 
@@ -132,8 +133,6 @@ def test_minutes_to_reset_floors_at_zero():
     assert minutes_to_reset(w, utc(2026, 9, 13, 10, 30)) == 30
     assert minutes_to_reset(w, utc(2026, 9, 13, 12, 0)) == 0
 
-
-from dispatcher.usage import Verdict, admits, considered, verdict_note, window_label, judge
 
 NOW = utc(2026, 9, 13, 10, 30)          # Sun 12:30 CEST -> weekly allowance 0.289
 
