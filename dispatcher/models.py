@@ -11,6 +11,24 @@ from typing import Sequence
 
 DEFAULT_MODEL = "claude-opus-4-8"
 STAGES = ("spec", "plan", "implement", "review")
+DEFAULT_PROVIDER = "anthropic"
+
+
+def split_model_id(model_id: str) -> tuple[str, str]:
+    """`provider/model` -> (provider, model); a bare id is anthropic's. The
+    same bare model under two providers spends two different usage windows,
+    so the provider is part of the id, never inferred from the model name."""
+    if "/" not in model_id:
+        return DEFAULT_PROVIDER, model_id
+    provider, _, bare = model_id.partition("/")
+    if not provider or not bare or "/" in bare:
+        raise ValueError(f"model id must be 'provider/model' or bare, got {model_id!r}")
+    return provider, bare
+
+
+def bare_model_id(model_id: str) -> str:
+    return split_model_id(model_id)[1]
+
 
 _WHEN_KEYS = frozenset({"effort", "labels_include", "labels_exclude"})
 _EFFORT_KEYS = frozenset({"min", "max"})
@@ -68,6 +86,10 @@ def _check_model_id(value: object, context: str) -> str:
         raise ValueError(
             f"models: {context} must be a non-empty model id with no "
             f"whitespace, got {value!r}")
+    try:
+        split_model_id(value)
+    except ValueError as e:
+        raise ValueError(f"models: {context} {e}") from e
     return value
 
 

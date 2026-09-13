@@ -274,3 +274,29 @@ def test_review_is_a_policy_stage():
         {"name": "std", "use": {"review": "claude-fable-5"}}]})
     assert resolve(p, "review", None, []) == "claude-fable-5"
     assert resolve(p, "implement", None, []) == "claude-opus-4-8"
+
+
+# -- provider/model split ---------------------------------------------------
+
+def test_bare_id_is_anthropic():
+    from dispatcher.models import split_model_id
+    assert split_model_id("claude-sonnet-4-6") == ("anthropic", "claude-sonnet-4-6")
+
+
+def test_prefixed_id_names_its_provider():
+    from dispatcher.models import split_model_id, bare_model_id
+    assert split_model_id("openai/gpt-5.4-codex") == ("openai", "gpt-5.4-codex")
+    assert split_model_id("nvidia/claude-sonnet-4-6") == ("nvidia", "claude-sonnet-4-6")
+    assert bare_model_id("nvidia/claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+
+@pytest.mark.parametrize("bad", ["openai/", "/gpt", "a/b/c"])
+def test_malformed_prefix_is_rejected_at_config_load(bad):
+    with pytest.raises(ValueError, match="model id"):
+        parse_policy({"default": bad})
+
+
+def test_policy_accepts_prefixed_ids():
+    p = parse_policy({"default": "anthropic/claude-sonnet-4-6",
+                      "rules": [{"name": "r", "use": {"spec": "openai/gpt-5.4-codex"}}]})
+    assert p.default == "anthropic/claude-sonnet-4-6"
