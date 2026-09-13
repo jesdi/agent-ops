@@ -1,21 +1,21 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { BoardColumn, type DraggedCard } from '../components/BoardColumn'
-import { BudgetBar } from '../components/BudgetBar'
 import { CapacityMeter } from '../components/CapacityMeter'
+import { UsagePanel } from '../components/UsagePanel'
 import { GhostCardView } from '../components/GhostCard'
 import { NextClaimLine } from '../components/NextClaimLine'
 import { formatDuration } from '../lib/format'
 import { api, ApiError } from '../lib/api'
 import { queryKeys } from '../hooks/queryKeys'
-import { useBoardSnapshot, useBudget, usePendingIntents, useTasks } from '../hooks/useResources'
+import { useBoardSnapshot, useUsage, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useUiStore } from '../store/ui'
 
 export function BoardPage() {
   const boardQuery = useTasks()
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
-  const budgetQuery = useBudget()
+  const usageQuery = useUsage()
   const intentsQuery = usePendingIntents()
   const collapsedColumns = useUiStore((s) => s.collapsedColumns)
   const toggleColumn = useUiStore((s) => s.toggleColumn)
@@ -108,17 +108,15 @@ export function BoardPage() {
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <CapacityMeter capacity={capacity} />
-        {/* A failed /api/budget must not silently vanish the gauge — the
+        {/* A failed /api/usage must not silently vanish the gauge — the
             operator would read "no gauge" as "nothing to worry about". */}
-        {budgetQuery.isError ? (
-          <span
-            data-testid="budget-error"
-            className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-800"
-          >
-            usage unknown — budget unavailable: {budgetQuery.error.message}
+        {usageQuery.isError ? (
+          <span data-testid="usage-error"
+            className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            usage unknown — usage unavailable: {usageQuery.error.message}
           </span>
         ) : (
-          budgetQuery.data && <BudgetBar budget={budgetQuery.data} />
+          usageQuery.data && <UsagePanel providers={usageQuery.data} />
         )}
         {next_claim ? <NextClaimLine nextClaim={next_claim} /> : (
           <span role="status" className="text-sm text-gray-500">

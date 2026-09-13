@@ -1,7 +1,7 @@
 export const queryKeys = {
   board: ['board'] as const,
   boardSnapshot: ['board', 'snapshot'] as const,
-  budget: ['budget'] as const,
+  usage: ['usage'] as const,
   failures: ['failures'] as const,
   history: ['history'] as const,
   // Issue numbers are per-target: alpha#73 and beta#73 must not share a

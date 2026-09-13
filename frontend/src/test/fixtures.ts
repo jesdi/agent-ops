@@ -1,5 +1,5 @@
 import type {
-  BoardView, BudgetView, FailuresView, HistoryView, PendingIntentsView,
+  BoardView, ProviderUsageView, FailuresView, HistoryView, PendingIntentsView,
   TaskCard, TaskDetail,
 } from '../lib/api'
 
@@ -71,18 +71,31 @@ export const board: BoardView = {
   ],
   capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3, slots_held: [1, 2] },
   upcoming: [], upcoming_stale: false, median_cycle_seconds: null,
-  next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0 },
+  next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0, blocked_by: '' },
 }
 
-export const budget: BudgetView = {
-  utilization: 0.62, minutes_to_reset: 95, source: 'oauth',
-  would_spawn: true, threshold_applied: 'base',
-}
+export const usage: ProviderUsageView[] = [{
+  provider: 'anthropic', source: 'oauth', would_spawn: true,
+  windows: [
+    { kind: 'session', scope: null, used: 0.05, allowance: 0.8, headroom: 0.75, minutes_to_reset: 89, severity: 'ok' },
+    { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' },
+    { kind: 'weekly', scope: 'Fable', used: 0.23, allowance: 0.289, headroom: 0.059, minutes_to_reset: 7320, severity: 'close' },
+  ],
+  binding: { kind: 'weekly', scope: 'Fable', used: 0.23, allowance: 0.289, headroom: 0.059, minutes_to_reset: 7320, severity: 'close' },
+  note: 'anthropic weekly·Fable: 23% used, allowance 29%, headroom 6 pts, resets in 5d 2h',
+}]
 
-export const budgetUnavailable: BudgetView = {
-  utilization: 0, minutes_to_reset: 0, source: 'unavailable',
-  would_spawn: false, threshold_applied: 'n/a',
-}
+export const usageUnavailable: ProviderUsageView[] = [{
+  provider: 'anthropic', source: 'unavailable', would_spawn: false, windows: [], binding: null,
+  note: 'anthropic: usage unavailable',
+}]
+
+export const usageCcusage: ProviderUsageView[] = [{
+  provider: 'anthropic', source: 'ccusage', would_spawn: true,
+  windows: [{ kind: 'session', scope: null, used: 0.62, allowance: 0.8, headroom: 0.18, minutes_to_reset: 45, severity: 'ok' }],
+  binding: { kind: 'session', scope: null, used: 0.62, allowance: 0.8, headroom: 0.18, minutes_to_reset: 45, severity: 'ok' },
+  note: 'anthropic session: 62% used, allowance 80%, headroom 18 pts, resets in 45m',
+}]
 
 export const taskDetail: TaskDetail = {
   card: parkedCard,

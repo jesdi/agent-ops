@@ -38,23 +38,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/budget": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Budget Route */
-        get: operations["budget_route_api_budget_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/events": {
         parameters: {
             query?: never;
@@ -412,6 +395,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Usage Route */
+        get: operations["usage_route_api_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -476,19 +476,6 @@ export interface components {
             amount: number;
             /** Issue */
             issue: number;
-        };
-        /** BudgetView */
-        BudgetView: {
-            /** Minutes To Reset */
-            minutes_to_reset: number;
-            /** Source */
-            source: string;
-            /** Threshold Applied */
-            threshold_applied: string;
-            /** Utilization */
-            utilization: number;
-            /** Would Spawn */
-            would_spawn: boolean;
         };
         /** CapacityView */
         CapacityView: {
@@ -612,6 +599,11 @@ export interface components {
         /** NextClaimView */
         NextClaimView: {
             /**
+             * Blocked By
+             * @default
+             */
+            blocked_by: string;
+            /**
              * Minutes To Reset
              * @default 0
              */
@@ -655,6 +647,20 @@ export interface components {
         PaneHistory: {
             /** Text */
             text: string;
+        };
+        /** ProviderUsageView */
+        ProviderUsageView: {
+            binding: components["schemas"]["WindowView"] | null;
+            /** Note */
+            note: string;
+            /** Provider */
+            provider: string;
+            /** Source */
+            source: string;
+            /** Windows */
+            windows: components["schemas"]["WindowView"][];
+            /** Would Spawn */
+            would_spawn: boolean;
         };
         /** QuarantineEntry */
         QuarantineEntry: {
@@ -853,6 +859,23 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** WindowView */
+        WindowView: {
+            /** Allowance */
+            allowance: number;
+            /** Headroom */
+            headroom: number;
+            /** Kind */
+            kind: string;
+            /** Minutes To Reset */
+            minutes_to_reset: number;
+            /** Scope */
+            scope: string | null;
+            /** Severity */
+            severity: string;
+            /** Used */
+            used: number;
+        };
     };
     responses: never;
     parameters: never;
@@ -898,26 +921,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BoardSnapshot"];
-                };
-            };
-        };
-    };
-    budget_route_api_budget_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BudgetView"];
                 };
             };
         };
@@ -1543,6 +1546,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    usage_route_api_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderUsageView"][];
                 };
             };
         };

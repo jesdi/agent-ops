@@ -1,4 +1,4 @@
-import { formatUtilization, relativeTime, stageLabel } from '../format'
+import { relativeTime, stageLabel } from '../format'
 
 describe('relativeTime', () => {
   const now = new Date('2026-07-25T12:00:00Z')
@@ -10,14 +10,6 @@ describe('relativeTime', () => {
   })
   it('clamps future timestamps to "just now"', () => {
     expect(relativeTime('2026-07-25T12:00:05Z', now)).toBe('just now')
-  })
-})
-
-describe('formatUtilization', () => {
-  it('renders a 0..1 fraction as a percent', () => {
-    expect(formatUtilization(0.625)).toBe('63%')
-    expect(formatUtilization(0)).toBe('0%')
-    expect(formatUtilization(1)).toBe('100%')
   })
 })
 

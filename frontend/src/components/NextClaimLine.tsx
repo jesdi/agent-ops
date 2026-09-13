@@ -7,7 +7,7 @@ import { formatDuration } from '../lib/format'
  *  fall through to wrong copy — unknown keys hit the explicit fallback branch. */
 const VERDICT_DETAIL: Partial<Record<string, (nc: NextClaimView) => string>> = {
   'will-claim':    (nc) => `will claim #${nc.next_issue}`,
-  'budget-blocked':(nc) => `budget resets in ${formatDuration(nc.minutes_to_reset * 60)}`,
+  'budget-blocked':(nc) => nc.blocked_by || `budget resets in ${formatDuration(nc.minutes_to_reset * 60)}`,
   'capacity-full': ()   => 'capacity full — waits for a free slot',
   'no-candidates': ()   => 'queue empty — nothing to claim',
   // claims-paused: the dispatcher pass will still run; only claiming is skipped

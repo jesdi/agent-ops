@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
 import {
-  board as fx_board, budgetUnavailable, inProgressCard, pendingReplyIntent,
+  board as fx_board, usageUnavailable, inProgressCard, pendingReplyIntent,
 } from '../../test/fixtures'
 import { renderWithProviders } from '../../test/render'
 import { BoardPage } from '../BoardPage'
@@ -102,17 +102,15 @@ it('backing out of the drop confirmation fires nothing', async () => {
   expect(screen.queryByTestId('wont-do-confirm')).not.toBeInTheDocument()
 })
 
-it('AWKWARD: budget source unavailable shows the consequence, not a gauge', async () => {
-  server.use(http.get('/api/budget', () => HttpResponse.json(budgetUnavailable)))
+it('AWKWARD: usage source unavailable shows the consequence, not a gauge', async () => {
+  server.use(http.get('/api/usage', () => HttpResponse.json(usageUnavailable)))
   renderWithProviders(<BoardPage />)
   await waitFor(() =>
     expect(
-      screen.getByText('usage unknown — dispatcher will not spawn'),
+      screen.getByText('usage unknown — dispatcher will not spawn on anthropic'),
     ).toBeInTheDocument(),
   )
-  expect(
-    screen.queryByRole('progressbar', { name: 'usage budget utilization' }),
-  ).not.toBeInTheDocument()
+  expect(screen.queryByRole('progressbar', { name: /used$/ })).not.toBeInTheDocument()
 })
 
 it('AWKWARD: a pending intent renders a badge on the affected card', async () => {
@@ -150,20 +148,18 @@ it('several pending intents on one issue all render — none silently dropped', 
   expect(screen.getByText('pending: kill')).toBeInTheDocument()
 })
 
-it('a failing /api/budget states the gap instead of silently dropping the gauge', async () => {
+it('a failing /api/usage states the gap instead of silently dropping the gauge', async () => {
   server.use(
-    http.get('/api/budget', () =>
-      HttpResponse.json({ detail: 'budget source exploded' }, { status: 500 }),
+    http.get('/api/usage', () =>
+      HttpResponse.json({ detail: 'usage source exploded' }, { status: 500 }),
     ),
   )
   renderWithProviders(<BoardPage />)
   await waitFor(() =>
-    expect(screen.getByTestId('budget-error')).toBeInTheDocument(),
+    expect(screen.getByTestId('usage-error')).toBeInTheDocument(),
   )
-  expect(screen.getByTestId('budget-error')).toHaveTextContent('usage unknown')
-  expect(
-    screen.queryByRole('progressbar', { name: 'usage budget utilization' }),
-  ).not.toBeInTheDocument()
+  expect(screen.getByTestId('usage-error')).toHaveTextContent('usage unknown — usage unavailable: usage source exploded')
+  expect(screen.queryByRole('progressbar', { name: /used$/ })).not.toBeInTheDocument()
 })
 
 it('AWKWARD: two parked cards, only the login-parked one holds a unit', async () => {

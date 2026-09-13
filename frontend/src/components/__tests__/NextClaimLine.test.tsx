@@ -6,7 +6,7 @@ import type { NextClaimView } from '../../lib/api'
 
 const base: NextClaimView = {
   verdict: 'will-claim', next_pass_eta: '', next_issue: 73,
-  next_target: 'alpha', minutes_to_reset: 0,
+  next_target: 'alpha', minutes_to_reset: 0, blocked_by: '',
 }
 
 function withEta(secondsFromNow: number): NextClaimView {
@@ -58,8 +58,14 @@ test('unhandled verdict renders honest fallback instead of wrong copy', () => {
   expect(screen.getByTestId('next-claim').textContent).toMatch(/unknown verdict: future-verdict-x/)
 })
 
+test('budget-blocked shows what blocked it', () => {
+  render(<NextClaimLine nextClaim={{ ...base, verdict: 'budget-blocked', next_pass_eta: '',
+    blocked_by: 'anthropic weekly·Fable: 35% used, allowance 29%, headroom -6 pts, resets in 5d 2h' }} />)
+  expect(screen.getByTestId('next-claim').textContent).toMatch(/anthropic weekly·Fable: 35% used/)
+})
+
 test.each([
-  [{ ...withEta(300), verdict: 'budget-blocked', minutes_to_reset: 130 }, /budget resets in 2h 10m/i],
+  [{ ...withEta(300), verdict: 'budget-blocked', minutes_to_reset: 130, blocked_by: '' }, /budget resets in 2h 10m/i],
   [{ ...withEta(300), verdict: 'capacity-full' }, /capacity full/i],
   [{ ...withEta(300), verdict: 'no-candidates' }, /queue empty/i],
   [{ ...base, verdict: 'unknown' }, /dispatcher not running\?/i],

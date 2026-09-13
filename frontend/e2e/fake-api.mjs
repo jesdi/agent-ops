@@ -51,14 +51,19 @@ const state = {
     next_claim: {
       verdict: 'will-claim',
       next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
-      next_issue: 73, next_target: 'widget', minutes_to_reset: 0,
+      next_issue: 73, next_target: 'widget', minutes_to_reset: 0, blocked_by: '',
     },
   },
   queue: { targets: [] },
-  budget: {
-    utilization: 0.4, minutes_to_reset: 120, source: 'oauth',
-    would_spawn: true, threshold_applied: 'base',
-  },
+  usage: [{
+    provider: 'anthropic', source: 'oauth', would_spawn: true,
+    windows: [
+      { kind: 'session', scope: null, used: 0.4, allowance: 0.8, headroom: 0.4, minutes_to_reset: 120, severity: 'ok' },
+      { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' },
+    ],
+    binding: { kind: 'session', scope: null, used: 0.4, allowance: 0.8, headroom: 0.4, minutes_to_reset: 120, severity: 'ok' },
+    note: 'anthropic session: 40% used, allowance 80%, headroom 40 pts, resets in 2h',
+  }],
   failures: { quarantined: [], fingerprints: [] },
   history: { events: [] },
   intents: [],
@@ -148,7 +153,7 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname === '/api/board') return json(200, state.board)
   if (url.pathname === '/api/queue') return json(200, state.queue)
-  if (url.pathname === '/api/budget') return json(200, state.budget)
+  if (url.pathname === '/api/usage') return json(200, state.usage)
   if (url.pathname === '/api/failures') return json(200, state.failures)
   if (url.pathname === '/api/history') return json(200, state.history)
   if (url.pathname === '/api/pending-intents') {
@@ -254,7 +259,7 @@ const server = createServer(async (req, res) => {
     state.board.next_claim = {
       verdict: 'will-claim',
       next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
-      next_issue: 73, next_target: 'widget', minutes_to_reset: 0,
+      next_issue: 73, next_target: 'widget', minutes_to_reset: 0, blocked_by: '',
     }
     return json(200, { ok: true })
   }

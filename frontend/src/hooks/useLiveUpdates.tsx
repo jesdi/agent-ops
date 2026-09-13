@@ -14,7 +14,7 @@ const CHANGED_TO_KEYS: Record<string, readonly (readonly string[])[]> = {
   board: [queryKeys.board, queryKeys.allTasks, queryKeys.pendingIntents],
   // rank data now renders on the board; the server still emits 'queue'
   queue: [queryKeys.board],
-  budget: [queryKeys.budget],
+  usage: [queryKeys.usage],
   failures: [queryKeys.failures],
   history: [queryKeys.history],
 }

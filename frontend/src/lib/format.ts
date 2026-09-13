@@ -22,10 +22,6 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   return `${Math.floor(secs / 86400)}d ago`
 }
 
-export function formatUtilization(fraction: number): string {
-  return `${Math.round(fraction * 100)}%`
-}
-
 // Keys MUST be real `Stage` values from dispatcher/state.py — stageLabel is
 // called with card.stage, so a key matching no stage renders the raw slug.
 // Stages deliberately absent (queued, plan, blocked, failed,
