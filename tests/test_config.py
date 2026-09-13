@@ -481,3 +481,11 @@ def test_referenced_providers_includes_target_policies(tmp_path):
                                 "    status_in_progress_option_id: def456\n"
                                 "    models: {default: fake/m}\n"))
     assert referenced_providers(load_config(p)) == frozenset({"anthropic", "fake"})
+
+
+def test_invalid_triage_model_raises_at_load(tmp_path):
+    """A malformed triage_model must fail load_config, not a later pass."""
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE + "triage_model: anthropic/\n")
+    with pytest.raises(ValueError, match="triage_model"):
+        load_config(p)

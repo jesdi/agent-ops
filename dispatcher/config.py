@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy, split_model_id
+from dispatcher.models import DEFAULT_POLICY, ModelPolicy, _check_model_id, parse_policy, split_model_id
 from dispatcher.state import LoopCaps
 from dispatcher.usage import PaceConfig
 
@@ -118,7 +118,8 @@ def load_config(path: str | Path) -> Config:
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
         spec_review_grace_minutes=int(raw.get("spec_review_grace_minutes", 15)),
         done_retention_days=int(raw.get("done_retention_days", 7)),
-        triage_model=str(raw.get("triage_model", "")),
+        triage_model=(_check_model_id(str(raw["triage_model"]), "triage_model")
+                      if raw.get("triage_model") else ""),
         pass_interval_minutes=int(raw.get("pass_interval_minutes", 10)),
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace_margin=float(raw.get("pace_margin", 0.10)),
