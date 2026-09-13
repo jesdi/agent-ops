@@ -12,6 +12,17 @@ export function useTasks() {
   return useQuery({ queryKey: queryKeys.board, queryFn: api.board, refetchInterval })
 }
 
+/** Fast first paint; full board data takes over once live checks finish. */
+export function useBoardSnapshot(enabled: boolean) {
+  const refetchInterval = useFallbackInterval()
+  return useQuery({
+    queryKey: queryKeys.boardSnapshot,
+    queryFn: api.boardSnapshot,
+    enabled,
+    refetchInterval,
+  })
+}
+
 export function useBudget() {
   const refetchInterval = useFallbackInterval()
   return useQuery({ queryKey: queryKeys.budget, queryFn: api.budget, refetchInterval })

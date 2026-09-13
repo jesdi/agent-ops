@@ -171,13 +171,16 @@ class CapacityView(BaseModel):
     slots_held: list[int] = []
 
 
-class BoardView(BaseModel):
+class BoardSnapshot(BaseModel):
     columns: list[Column]
     capacity: CapacityView
+    median_cycle_seconds: float | None
+
+
+class BoardView(BoardSnapshot):
     upcoming: list[GhostCard]
     upcoming_stale: bool
     next_claim: NextClaimView
-    median_cycle_seconds: float | None
 
 
 def task_card(t: TaskState, *, model: str,
@@ -205,15 +208,13 @@ def task_card(t: TaskState, *, model: str,
         wake_blocked=wake_blocked)
 
 
-def build_board(tasks: list[TaskState], *, capacity: int,
-                models: dict[tuple[str, int], str],
-                events: list[dict], heartbeat: dict | None, now: datetime,
-                budget: BudgetView, queues: list[tuple[str, list[dict]]],
-                queue_stale: bool, claims_paused: bool,
-                triage_running: bool,
-                undelivered: dict[tuple[str, int], int] | None = None,
-                wake_blocked: set[tuple[str, int]] | None = None
-                ) -> BoardView:
+def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
+                         models: dict[tuple[str, int], str], events: list[dict],
+                         queues: list[tuple[str, list[dict]]],
+                         undelivered: dict[tuple[str, int], int] | None = None,
+                         wake_blocked: set[tuple[str, int]] | None = None
+                         ) -> BoardSnapshot:
+    """Cards and capacity without any live-service dependencies."""
     mail = undelivered or {}
     blocked = wake_blocked or set()
     claimed = claimed_at_index(events)
@@ -247,16 +248,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     # read "1/4" with zero segments lit.
     slots_held = sorted({t.slot for t in in_flight
                          if holds_slot(t) and t.slot != NO_SLOT})
-    # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
-    # are per-repo; bare numbers would wrongly suppress cross-target candidates
-    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
-    known = {(t.target, t.issue) for t in tasks}
-    upcoming = [GhostCard(number=r["number"], target=name,
-                          title=r.get("title", ""), url=r.get("url", ""),
-                          score=r.get("score"), boost=int(r.get("boost") or 0))
-                for name, rows in queues for r in rows
-                if _is_candidate(r) and (name, r["number"]) not in known]
-    return BoardView(
+    return BoardSnapshot(
         columns=[Column(key=key, title=title, cards=by_column[key])
                  for key, title in COLUMNS],
         capacity=CapacityView(
@@ -267,13 +259,39 @@ def build_board(tasks: list[TaskState], *, capacity: int,
             slots_used=len(slots_held),
             max_slots=max_slots(capacity),
             slots_held=slots_held),
+        median_cycle_seconds=median_cycle_seconds(events))
+
+
+def build_board(tasks: list[TaskState], *, capacity: int,
+                models: dict[tuple[str, int], str],
+                events: list[dict], heartbeat: dict | None, now: datetime,
+                budget: BudgetView, queues: list[tuple[str, list[dict]]],
+                queue_stale: bool, claims_paused: bool,
+                triage_running: bool,
+                undelivered: dict[tuple[str, int], int] | None = None,
+                wake_blocked: set[tuple[str, int]] | None = None
+                ) -> BoardView:
+    snapshot = build_board_snapshot(
+        tasks, capacity=capacity, models=models, events=events, queues=queues,
+        undelivered=undelivered, wake_blocked=wake_blocked)
+    # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
+    # are per-repo; bare numbers would wrongly suppress cross-target candidates
+    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
+    known = {(t.target, t.issue) for t in tasks}
+    upcoming = [GhostCard(number=r["number"], target=name,
+                          title=r.get("title", ""), url=r.get("url", ""),
+                          score=r.get("score"), boost=int(r.get("boost") or 0))
+                for name, rows in queues for r in rows
+                if _is_candidate(r) and (name, r["number"]) not in known]
+    return BoardView(
+        columns=snapshot.columns, capacity=snapshot.capacity,
+        median_cycle_seconds=snapshot.median_cycle_seconds,
         upcoming=upcoming, upcoming_stale=queue_stale,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
                               capacity=capacity, budget=budget,
                               queues=queues,
                               claims_paused=claims_paused,
-                              triage_running=triage_running),
-        median_cycle_seconds=median_cycle_seconds(events))
+                              triage_running=triage_running))
 
 
 class TaskDetail(BaseModel):

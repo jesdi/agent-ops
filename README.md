@@ -145,6 +145,12 @@ a parked agent, park, kill, retry, or resume a task, and manage the queue —
 all from the same UI. Failures and history get their own pages, so nothing
 silently disappears.
 
+The board renders saved task cards and capacity from `/api/board/snapshot`
+while `/api/board` fetches live queue rankings and the claim forecast. Cards
+may reorder when scores arrive; a loading or unavailable message stays visible
+until live details are available. Secondary pages load when opened to keep the
+initial board download small.
+
 **Telegram** (`telegram/`) — outbound notifications and digests, plus inbound
 replies that feed straight back into parked sessions. Queue control from the
 same chat: `/queue` shows the ranked backlog; `/boost N [k]` / `/demote N [k]`

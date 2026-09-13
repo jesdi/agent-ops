@@ -307,3 +307,40 @@ test('header shows next-claim line and median cycle', async () => {
   expect(await screen.findByTestId('next-claim')).toHaveTextContent(/capacity full/i)
   expect(screen.getByText(/≈2h per task/)).toBeInTheDocument()
 })
+
+
+it('renders saved cards while live checks wait, then adds the ranked queue', async () => {
+  let finish!: () => void
+  const pending = new Promise<void>((resolve) => { finish = resolve })
+  server.use(http.get('/api/board', async () => {
+    await pending
+    return HttpResponse.json(fx_board)
+  }))
+  renderWithProviders(<BoardPage />)
+  try {
+    expect(await screen.findByText('Fix login redirect')).toBeInTheDocument()
+    expect(screen.getByText('loading queue and forecast…')).toBeInTheDocument()
+    expect(screen.getAllByTestId(/^column-/)).toHaveLength(11)
+  } finally {
+    finish()
+  }
+  await waitFor(() => expect(screen.queryByText('loading queue and forecast…')).not.toBeInTheDocument())
+  expect(screen.getByText('Fix login redirect')).toBeInTheDocument()
+})
+
+it('keeps saved cards visible when live checks fail', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json(
+    { detail: 'live checks failed' }, { status: 503 },
+  )))
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByText('Fix login redirect')).toBeInTheDocument()
+  expect(await screen.findByText('queue and forecast unavailable')).toBeInTheDocument()
+})
+
+it('falls back to the full board if the snapshot fails', async () => {
+  server.use(http.get('/api/board/snapshot', () => HttpResponse.json(
+    { detail: 'snapshot unavailable' }, { status: 503 },
+  )))
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByText('Fix login redirect')).toBeInTheDocument()
+})

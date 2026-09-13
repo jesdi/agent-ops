@@ -84,6 +84,7 @@ const post = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
 export const api = {
+  boardSnapshot: () => request<components['schemas']['BoardSnapshot']>('/board/snapshot'),
   board: () => request<BoardView>('/board'),
   taskDetail: (target: string, issue: number) =>
     request<TaskDetail>(`/task/${target}/${issue}`),

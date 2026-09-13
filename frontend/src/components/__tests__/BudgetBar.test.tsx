@@ -25,3 +25,16 @@ it('unavailable source states the consequence, not an empty gauge', () => {
   ).toBeInTheDocument()
   expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
 })
+
+
+it.each([
+  [235.987654321, '3h 55m'],
+  [55.987654321, '55m'],
+  [59.999999, '59m'],
+  [60, '1h 0m'],
+  [0.75, '0m'],
+  [-0.75, '0m'],
+])('shows whole minutes for a %s minute countdown', (minutes, expected) => {
+  render(<BudgetBar budget={{ ...budget, minutes_to_reset: minutes }} />)
+  expect(screen.getByText(`resets in ${expected}`, { exact: true })).toBeInTheDocument()
+})
