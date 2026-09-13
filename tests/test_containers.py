@@ -146,10 +146,10 @@ def test_triage_cmd_quotes_prompt_path_and_model(monkeypatch, tmp_path):
     from dispatcher import containers
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-        "openai/gpt-5", "/triage/a b; rm -rf /.md")
+        "m;rm$(id)", "/triage/a b; rm -rf /.md")
     shell_line = cmd[-1]
     assert "'/triage/a b; rm -rf /.md'" in shell_line
-    assert "--model gpt-5" in shell_line
+    assert "'m;rm$(id)'" in shell_line
 
 
 def test_session_cmd_resolves_claude_token_at_spawn_via_wrapper(
@@ -219,3 +219,13 @@ def test_model_prefix_never_reaches_the_cli(tmp_path: Path, monkeypatch):
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-5.4-codex", "P")
     assert "--model gpt-5.4-codex" in cmd
     assert "openai/" not in cmd
+
+
+def test_triage_cmd_model_prefix_never_reaches_the_cli(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    cmd = containers.triage_cmd(
+        "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+        "openai/gpt-5", "/triage/p.md")
+    shell_line = cmd[-1]
+    assert "--model gpt-5" in shell_line
+    assert "openai/" not in shell_line
