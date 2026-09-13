@@ -443,6 +443,17 @@ def test_woken_pr_open_task_is_gated_on_the_model_it_spawns(tmp_path):
         (42, Stage.ADDRESS_REVIEW.value, "claude-fable-5-1")]
 
 
+def test_every_machine_action_has_a_drive_handler():
+    """_drive_task dispatches on the action type; an action machine.py can
+    emit without a handler would crash the task instead of driving it."""
+    import dataclasses
+    import inspect
+    from dispatcher import machine
+    actions = {cls for _, cls in inspect.getmembers(machine, inspect.isclass)
+               if cls.__module__ == machine.__name__ and dataclasses.is_dataclass(cls)}
+    assert actions and actions == set(main._DRIVE)
+
+
 def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -1488,7 +1499,8 @@ def test_frontend_task_spawns_plan_on_fable_and_implement_on_opus(
 
     # …and the implement stage of the same task drops to opus
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert main._model_for(c, c.targets[0], t, Stage.IMPLEMENT) == "claude-opus-4-8"
+    assert main._model_for(c, c.targets[0], t.effort, t.labels,
+                           Stage.IMPLEMENT) == "claude-opus-4-8"
 
 
 def test_resume_uses_the_model_for_the_parked_stage(tmp_path, monkeypatch):
@@ -3567,7 +3579,8 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     messages.append(c.state_dir, 42, "pre-brief: use the v2 API", "jesdi@github")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task, Stage.SPEC)
+    main._spawn_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC))
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
@@ -3579,7 +3592,9 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.QUEUED)
     d = deps()
-    main._spawn_stage(c, d, c.targets[0], load(c.state_dir, "portfolio_eval", 42), Stage.SPEC)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._spawn_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC))
     assert "## Operator messages" not in d.sessions.spawned[-1][3]
 
 
@@ -3610,7 +3625,9 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
     from dispatcher import messages
     messages.append(c.state_dir, 42, "keep the scope small", "jesdi@github")
     d = deps()
-    main._retry_plan(c, d, c.targets[0], load(c.state_dir, "portfolio_eval", 42),
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._retry_plan(c, d, c.targets[0], task,
+                     main._launch_for(c, c.targets[0], task, Stage.PLAN),
                      "missing Goal line")
     assert "keep the scope small" in d.sessions.resumed[-1][1]
     assert messages.undelivered(c.state_dir, 42) == []
@@ -4197,7 +4214,8 @@ def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
               e2e_rounds=1, ci_rounds=3)
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task, Stage.SPEC)
+    main._spawn_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
     assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
@@ -4427,7 +4445,8 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
                    spec_path="docs/specs/design.md")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task, Stage.IMPLEMENT)
+    main._spawn_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.IMPLEMENT))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
         f"stage advance must clear operator_request, got {t.operator_request!r}")
