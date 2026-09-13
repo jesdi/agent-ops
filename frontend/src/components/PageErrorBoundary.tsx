@@ -1,8 +1,9 @@
 import { Component, type ReactNode } from 'react'
+import { useLocation } from 'react-router'
 
 type State = { failed: boolean }
 
-export class PageErrorBoundary extends Component<{ children: ReactNode }, State> {
+class Boundary extends Component<{ children: ReactNode }, State> {
   state: State = { failed: false }
 
   static getDerivedStateFromError(): State {
@@ -24,4 +25,8 @@ export class PageErrorBoundary extends Component<{ children: ReactNode }, State>
       </div>
     )
   }
+}
+
+export function PageErrorBoundary({ children }: { children: ReactNode }) {
+  return <Boundary key={useLocation().pathname}>{children}</Boundary>
 }
