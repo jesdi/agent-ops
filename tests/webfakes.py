@@ -1,7 +1,7 @@
 """Hand-written fakes and builders shared by the web/ test suite."""
-from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher import state
+from tests.usagefakes import session_usage
 from dispatcher.state import Stage, TaskState
 from web.sources import Sources, ArtifactListing
 
@@ -41,7 +41,7 @@ class FakeSources:
         self.tasks_list = []
         self.rank = {}            # target name -> (rows, as_of, stale)
         self.descriptions = {}    # (repo, number) -> dict
-        self.snapshot = UsageSnapshot(0.5, 120.0, "oauth")
+        self.usages = {"anthropic": session_usage(0.5)}
         self.quarantine = []
         self.fingerprints = []
         self.open_issues = {}     # (repo, number) -> bool | None
@@ -54,8 +54,8 @@ class FakeSources:
         self.pending = []
         self.applied_plans = []   # (target_name, issue, plan)
         self.appended = []        # (event, target, issue, actor, detail)
-        self.fingerprint = ('{"board": "a", "budget": "a", "failures": "a",'
-                            ' "history": "0", "queue": "a"}')
+        self.fingerprint = ('{"board": "a", "failures": "a",'
+                            ' "history": "0", "queue": "a", "usage": "a"}')
         self.heartbeat = None     # dict | None returned by pass_heartbeat()
         self._claims_paused = False
         self._triage_running = False
@@ -88,7 +88,7 @@ class FakeSources:
                              ([], "2026-07-25T00:00:00+00:00", False))
 
     def usage(self):
-        return self.snapshot
+        return self.usages
 
     def quarantine_entries(self):
         return list(self.quarantine)

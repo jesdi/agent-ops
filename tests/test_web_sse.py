@@ -17,9 +17,9 @@ from tests.webfakes import FakeSources, make_config
 from web.app import create_app
 
 
-FP1 = json.dumps({"board": "a", "queue": "a", "budget": "a",
+FP1 = json.dumps({"board": "a", "queue": "a", "usage": "a",
                   "failures": "a", "history": "0"})
-FP2 = json.dumps({"board": "B", "queue": "a", "budget": "a",
+FP2 = json.dumps({"board": "B", "queue": "a", "usage": "a",
                   "failures": "a", "history": "9"})
 
 

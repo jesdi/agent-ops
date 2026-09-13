@@ -1,5 +1,6 @@
 """Sources against tmp_path state dirs and hand-written github/session fakes."""
 import json
+import pytest
 import subprocess
 
 from dispatcher import eventlog, state
@@ -119,14 +120,16 @@ def test_rank_failure_without_cache_is_empty_stale(tmp_path):
 
 
 def test_usage_reads_fresh_cache_only(tmp_path):
+    from dispatcher.usage import usage_to_json
+    from tests.usagefakes import session_usage
     clock = FakeClock()
-    (tmp_path / "usage-cache.json").write_text(json.dumps({
+    (tmp_path / "usage").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "usage" / "anthropic.json").write_text(json.dumps({
         "fetched_at": clock.t,
-        "snapshot": {"utilization": 0.42, "minutes_to_reset": 90.0,
-                     "source": "oauth"}}))
+        "usage": usage_to_json(session_usage(0.42))}))
     _, src = make_sources(tmp_path, clock=clock)
-    snap = src.usage()
-    assert snap.utilization == 0.42 and snap.source == "oauth"
+    usages = src.usage()
+    assert usages["anthropic"].windows[0].used == pytest.approx(0.42, abs=1e-3)
 
 
 def test_failure_and_quarantine_entries(tmp_path):
@@ -208,7 +211,7 @@ def test_state_fingerprint_tracks_categories(tmp_path):
     state.save(tmp_path, make_task(issue=5))
     f2 = json.loads(src.state_fingerprint())
     assert f2["board"] != f1["board"]
-    assert f2["budget"] == f1["budget"]
+    assert f2["usage"] == f1["usage"]
     eventlog.append_event(tmp_path, "claimed", issue=5)
     f3 = json.loads(src.state_fingerprint())
     assert f3["history"] != f2["history"]

@@ -13,14 +13,14 @@ def test_openapi_export_prints_schema_with_contract_paths():
     ).stdout
     schema = json.loads(out)
     paths = schema["paths"]
-    for p in ("/api/board", "/api/queue", "/api/budget", "/api/failures",
+    for p in ("/api/board", "/api/queue", "/api/usage", "/api/failures",
               "/api/history", "/api/pending-intents",
               "/api/task/{target}/{issue}",
               "/api/task/{target}/{issue}/request"):
         assert p in paths, f"missing {p}"
     names = schema["components"]["schemas"]
-    for n in ("BoardView", "QueueView", "TaskDetail", "BudgetView",
-              "FailuresView", "HistoryView",
+    for n in ("BoardView", "QueueView", "TaskDetail", "ProviderUsageView",
+              "WindowView", "FailuresView", "HistoryView",
               "OperatorRequest", "ReadableContent", "UnavailableContent"):
         assert n in names, f"missing schema {n}"
 

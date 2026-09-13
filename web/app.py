@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
-from dispatcher.config import Config, policy_for
+from dispatcher.config import Config, pace_config, policy_for
 from dispatcher.models import resolve
 from dispatcher.state import AnswersRequest, SpecApprovalRequest
 from web import read_model
@@ -50,7 +50,7 @@ class SPAStaticFiles(StaticFiles):
             resp.headers["Cache-Control"] = "no-cache"
         return resp
 
-SSE_KEYS = ("board", "queue", "budget", "failures", "history")
+SSE_KEYS = ("board", "queue", "usage", "failures", "history")
 HEARTBEAT_SECONDS = 15.0
 EVENTS_SCAN_LIMIT = 5000
 
@@ -126,6 +126,11 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             wake_blocked=sources.wake_blocked_issues())
     app.include_router(artifacts_router(sources, _find_task))
 
+    def _usage_views():
+        return read_model.usage_views(
+            sources.usage(), now=datetime.now(timezone.utc),
+            pace=pace_config(cfg), default_model=cfg.models.default)
+
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         tasks = sources.tasks()
@@ -148,9 +153,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=sources.pass_heartbeat(),
             now=datetime.now(timezone.utc),
-            budget=read_model.budget_view(
-                sources.usage(), cfg.budget_threshold, cfg.racing_minutes,
-                cfg.racing_threshold),
+            usage=_usage_views(),
+            default_model=cfg.models.default,
             queues=queues, queue_stale=stale_any,
             # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,
@@ -264,11 +268,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.PaneHistory(
             text=sources.pane_history(target, issue, clamped))
 
-    @app.get("/api/budget", response_model=read_model.BudgetView)
-    def budget_route(op: Operator = Depends(current_operator)):
-        return read_model.budget_view(
-            sources.usage(), cfg.budget_threshold, cfg.racing_minutes,
-            cfg.racing_threshold)
+    @app.get("/api/usage", response_model=list[read_model.ProviderUsageView])
+    def usage_route(op: Operator = Depends(current_operator)):
+        return _usage_views()
 
     @app.get("/api/failures", response_model=read_model.FailuresView)
     def failures(op: Operator = Depends(current_operator)):

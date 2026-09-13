@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
-from dispatcher import budget, eventlog, messages as msgq, queue_ops, state, task_artifacts, triage
-from dispatcher.budget import UsageSnapshot
+from dispatcher import eventlog, messages as msgq, queue_ops, state, task_artifacts, triage
+from dispatcher.usage import ProviderUsage
+from dispatcher.usage_providers import fetch_all
 from dispatcher.config import Config, Target
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
@@ -135,8 +136,8 @@ class Sources:
         self._desc_cache[key] = {"data": data, "at": now}
         return data
 
-    def usage(self) -> UsageSnapshot:
-        return budget.fetch_usage(self._cfg.state_dir, now=self._clock)
+    def usage(self) -> dict[str, ProviderUsage]:
+        return fetch_all(self._cfg, now=self._clock)
 
     def quarantine_entries(self) -> list[dict]:
         """Every readable quarantine record, for /api/failures and the retry
@@ -328,8 +329,8 @@ class Sources:
             + list((root / "messages").glob("*.jsonl"))
             + list((root / "artifacts").glob("*/index.json"))
             + [root / "pass.json"])
-        budget_d = digest([root / "usage-cache.json",
-                           root / "budget-stalled"])
+        budget_d = digest(sorted((root / "usage").glob("*.json"))
+                          + [root / "budget-stalled"])
         failures = digest(
             (list((root / "failures").iterdir())
              if (root / "failures").exists() else [])
@@ -343,7 +344,7 @@ class Sources:
         # This is harmless — the 15 s rank_rows TTL absorbs the extra ping —
         # but it was not deliberate coupling; recorded here for future readers.
         return json.dumps({"board": board, "queue": board,
-                           "budget": budget_d, "failures": failures,
+                           "usage": budget_d, "failures": failures,
                            "history": history}, sort_keys=True)
 
     def messages(self, issue: int) -> list:
