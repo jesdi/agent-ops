@@ -449,3 +449,21 @@ def test_terminal_websocket_route_is_gone(tmp_path):
     assert r.status_code == 404
 
 
+
+
+def test_board_snapshot_never_waits_for_live_sources(tmp_path, monkeypatch):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT),
+                       make_task(issue=8, stage=Stage.SPEC, park=PARK_HUMAN)]
+    full = client.get("/api/board", headers=HEADERS).json()
+
+    def unavailable(*args, **kwargs):
+        raise AssertionError("snapshot must not call live sources")
+
+    for name in ("rank_rows", "triage_state", "usage"):
+        monkeypatch.setattr(fake, name, unavailable)
+    response = client.get("/api/board/snapshot", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json() == {key: full[key] for key in (
+        "columns", "capacity", "median_cycle_seconds")}
+    assert client.get("/api/board/snapshot").status_code == 401

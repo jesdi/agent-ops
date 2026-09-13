@@ -1,5 +1,6 @@
 export const queryKeys = {
   board: ['board'] as const,
+  boardSnapshot: ['board', 'snapshot'] as const,
   budget: ['budget'] as const,
   failures: ['failures'] as const,
   history: ['history'] as const,

@@ -10,8 +10,9 @@ export function BudgetBar({ budget }: { budget: BudgetView }) {
     )
   }
   const pct = formatUtilization(budget.utilization)
-  const hours = Math.floor(budget.minutes_to_reset / 60)
-  const mins = budget.minutes_to_reset % 60
+  const totalMinutes = Math.max(0, Math.floor(budget.minutes_to_reset))
+  const hours = Math.floor(totalMinutes / 60)
+  const mins = totalMinutes % 60
   return (
     <div className="flex items-center gap-3 text-sm">
       <div

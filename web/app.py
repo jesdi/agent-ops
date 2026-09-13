@@ -112,6 +112,19 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             raise HTTPException(404, f"unknown target {target!r}")
         raise HTTPException(404, f"no task {target}/{issue}")
 
+    @app.get("/api/board/snapshot", response_model=read_model.BoardSnapshot)
+    def board_snapshot(op: Operator = Depends(current_operator)):
+        # Local state only: cards must not wait for GitHub, usage or sessions.
+        tasks = sources.tasks()
+        mail = sources.undelivered_counts()
+        return read_model.build_board_snapshot(
+            tasks, capacity=cfg.capacity,
+            models={(t.target, t.issue): _model_for(t) for t in tasks},
+            events=sources.events_tail(EVENTS_SCAN_LIMIT), queues=[],
+            undelivered={(t.target, t.issue): mail.get(t.issue, 0)
+                         for t in tasks},
+            wake_blocked=sources.wake_blocked_issues())
+
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         tasks = sources.tasks()

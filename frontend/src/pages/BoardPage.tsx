@@ -8,12 +8,13 @@ import { NextClaimLine } from '../components/NextClaimLine'
 import { formatDuration } from '../lib/format'
 import { api, ApiError } from '../lib/api'
 import { queryKeys } from '../hooks/queryKeys'
-import { useBudget, usePendingIntents, useTasks } from '../hooks/useResources'
+import { useBoardSnapshot, useBudget, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useUiStore } from '../store/ui'
 
 export function BoardPage() {
   const boardQuery = useTasks()
+  const snapshotQuery = useBoardSnapshot(!boardQuery.data)
   const budgetQuery = useBudget()
   const intentsQuery = usePendingIntents()
   const collapsedColumns = useUiStore((s) => s.collapsedColumns)
@@ -36,12 +37,16 @@ export function BoardPage() {
       setWontDoError(err instanceof ApiError ? err.detail : String(err)),
   })
 
-  if (boardQuery.isPending) return <p className="p-4 text-gray-500">loading board…</p>
-  if (boardQuery.isError) {
-    return <p className="p-4 text-red-600">board unavailable: {boardQuery.error.message}</p>
+  const board = boardQuery.data ?? snapshotQuery.data
+  if (!board && (boardQuery.isPending || snapshotQuery.isPending)) return <p className="p-4 text-gray-500">loading board…</p>
+  if (!board) {
+    return <p className="p-4 text-red-600">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
   }
 
-  const { columns, capacity, upcoming, upcoming_stale, next_claim } = boardQuery.data
+  const { columns, capacity } = board
+  const upcoming = boardQuery.data?.upcoming ?? []
+  const upcoming_stale = boardQuery.data?.upcoming_stale
+  const next_claim = boardQuery.data?.next_claim
   // An issue can carry several pending intents at once (park then kill).
   // Collapsing to one would silently drop the rest — and TaskPage renders
   // all of them, so the board must too. Keyed `${target}#${issue}` — issue
@@ -90,7 +95,7 @@ export function BoardPage() {
           key={`${g.target}#${g.number}`}
           ghost={g}
           busy={busy}
-          isNext={next_claim.verdict === 'will-claim' && next_claim.next_issue === g.number && next_claim.next_target === g.target}
+          isNext={next_claim?.verdict === 'will-claim' && next_claim.next_issue === g.number && next_claim.next_target === g.target}
           onBoost={(n, amount) => boost(n, amount)}
           onNext={(n) => next(n)}
           onReady={(n) => ready(n)}
@@ -115,10 +120,14 @@ export function BoardPage() {
         ) : (
           budgetQuery.data && <BudgetBar budget={budgetQuery.data} />
         )}
-        <NextClaimLine nextClaim={boardQuery.data.next_claim} />
-        {boardQuery.data.median_cycle_seconds != null && (
+        {next_claim ? <NextClaimLine nextClaim={next_claim} /> : (
+          <span role="status" className="text-sm text-gray-500">
+            {boardQuery.isError ? 'queue and forecast unavailable' : 'loading queue and forecast…'}
+          </span>
+        )}
+        {board.median_cycle_seconds != null && (
           <span className="text-sm text-gray-500">
-            ≈{formatDuration(boardQuery.data.median_cycle_seconds)} per task
+            ≈{formatDuration(board.median_cycle_seconds)} per task
           </span>
         )}
       </div>

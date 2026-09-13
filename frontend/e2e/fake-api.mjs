@@ -142,6 +142,10 @@ const server = createServer(async (req, res) => {
     req.on('close', () => sseClients.delete(res))
     return
   }
+  if (url.pathname === '/api/board/snapshot') {
+    const { columns, capacity, median_cycle_seconds } = state.board
+    return json(200, { columns, capacity, median_cycle_seconds })
+  }
   if (url.pathname === '/api/board') return json(200, state.board)
   if (url.pathname === '/api/queue') return json(200, state.queue)
   if (url.pathname === '/api/budget') return json(200, state.budget)
