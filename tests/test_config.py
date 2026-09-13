@@ -427,3 +427,57 @@ def test_unknown_loop_cap_fails_at_load(tmp_path, monkeypatch):
     p = tmp_path / "t.yaml"; p.write_text(GATED_YAML + "loop_caps:\n  plan: 1\n")
     with pytest.raises(ValueError, match="loop_caps"):
         load_config(p)
+
+
+from dispatcher.config import pace_config, referenced_providers
+
+
+def test_pace_knobs_default(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE)
+    cfg = load_config(p)
+    assert (cfg.pace_margin, cfg.weekend_weight, cfg.timezone) == (0.10, 0.5, "UTC")
+    pc = pace_config(cfg)
+    assert (pc.budget_threshold, pc.racing_minutes, pc.racing_threshold) == (0.8, 30, 0.95)
+    assert (pc.pace_margin, pc.weekend_weight, pc.timezone) == (0.10, 0.5, "UTC")
+
+
+def test_pace_knobs_parse(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE + "pace_margin: 0.05\nweekend_weight: 0.25\ntimezone: Europe/Madrid\n")
+    cfg = load_config(p)
+    assert (cfg.pace_margin, cfg.weekend_weight, cfg.timezone) == (0.05, 0.25, "Europe/Madrid")
+
+
+@pytest.mark.parametrize("extra, msg", [
+    ("timezone: Mars/Olympus\n", "timezone"),
+    ("weekend_weight: 1.5\n", "weekend_weight"),
+    ("weekend_weight: -0.1\n", "weekend_weight"),
+])
+def test_bad_pace_knobs_fail_config_load(tmp_path, extra, msg):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE + extra)
+    with pytest.raises(ValueError, match=msg):
+        load_config(p)
+
+
+def test_referenced_providers_walks_every_policy_and_triage_model(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE + """\
+triage_model: openai/gpt-5.4-codex
+models:
+  default: claude-sonnet-4-6
+  rules:
+    - name: r
+      use: {spec: nvidia/claude-sonnet-4-6}
+""")
+    cfg = load_config(p)
+    assert referenced_providers(cfg) == frozenset({"anthropic", "openai", "nvidia"})
+
+
+def test_referenced_providers_includes_target_policies(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE.replace("    status_in_progress_option_id: def456\n",
+                                "    status_in_progress_option_id: def456\n"
+                                "    models: {default: fake/m}\n"))
+    assert referenced_providers(load_config(p)) == frozenset({"anthropic", "fake"})

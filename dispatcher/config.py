@@ -4,11 +4,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy
+from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy, split_model_id
 from dispatcher.state import LoopCaps
+from dispatcher.usage import PaceConfig
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,10 @@ class Config:
     # console's next-pass countdown is computed from this value.
     pass_interval_minutes: int = 10
     loop_caps: LoopCaps = LoopCaps()
+    # Weekly pace gate (see docs/specs/2026-09-13-usage-pace-gate-design.md).
+    pace_margin: float = 0.10      # how far ahead of the weighted schedule the box may run
+    weekend_weight: float = 0.5    # a weekend hour counts this much of a weekday hour
+    timezone: str = "UTC"          # IANA zone defining Saturday 00:00 – Monday 00:00
 
 
 def _loop_caps(raw: object) -> LoopCaps:
@@ -89,6 +95,14 @@ def _target(raw: dict) -> Target:
 
 def load_config(path: str | Path) -> Config:
     raw = yaml.safe_load(Path(path).read_text())
+    tz = str(raw.get("timezone", "UTC"))
+    try:
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        raise ValueError(f"timezone: unknown IANA zone {tz!r}") from e
+    weekend_weight = float(raw.get("weekend_weight", 0.5))
+    if not 0.0 <= weekend_weight <= 1.0:
+        raise ValueError(f"weekend_weight: must be within 0..1, got {weekend_weight}")
     return Config(
         state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
         capacity=raw.get("capacity", 3),
@@ -107,6 +121,9 @@ def load_config(path: str | Path) -> Config:
         triage_model=str(raw.get("triage_model", "")),
         pass_interval_minutes=int(raw.get("pass_interval_minutes", 10)),
         loop_caps=_loop_caps(raw.get("loop_caps")),
+        pace_margin=float(raw.get("pace_margin", 0.10)),
+        weekend_weight=weekend_weight,
+        timezone=tz,
     )
 
 
@@ -114,3 +131,32 @@ def policy_for(cfg: Config, target: Target) -> ModelPolicy:
     """A target's own policy replaces the global one wholesale — rule lists are
     never merged, because merge order would make first-match-wins ambiguous."""
     return target.models or cfg.models
+
+
+def pace_config(cfg: Config) -> PaceConfig:
+    return PaceConfig(budget_threshold=cfg.budget_threshold,
+                      racing_minutes=cfg.racing_minutes,
+                      racing_threshold=cfg.racing_threshold,
+                      pace_margin=cfg.pace_margin,
+                      weekend_weight=cfg.weekend_weight,
+                      timezone=cfg.timezone)
+
+
+def _policy_model_ids(policy: ModelPolicy) -> list[str]:
+    ids = [policy.default]
+    for rule in policy.rules:
+        ids.extend([rule.use] if isinstance(rule.use, str) else rule.use.values())
+    return ids
+
+
+def referenced_providers(cfg: Config) -> frozenset[str]:
+    """Every provider some configured model id names — the set the usage
+    fetch covers. A provider you hold credentials for but never route to is
+    not polled; one you route to without an adapter shows as unavailable."""
+    ids = _policy_model_ids(cfg.models)
+    for t in cfg.targets:
+        if t.models is not None:
+            ids.extend(_policy_model_ids(t.models))
+    if cfg.triage_model:
+        ids.append(cfg.triage_model)
+    return frozenset(split_model_id(m)[0] for m in ids)
