@@ -33,7 +33,7 @@ def test_load_config(tmp_path: Path):
     p.write_text(SAMPLE)
     cfg = load_config(p)
     assert cfg.capacity == 3
-    assert cfg.budget_threshold == 0.8
+    assert cfg.pace.budget_threshold == 0.8
     t = cfg.targets[0]
     assert t.repo == "jesdi/portfolio_eval"
     assert t.verify_cmd == "make e2e-slot SLOT={slot}"
@@ -47,9 +47,9 @@ def test_defaults(tmp_path: Path):
     )
     cfg = load_config(p)
     assert cfg.capacity == 3
-    assert cfg.budget_threshold == 0.8
-    assert cfg.racing_minutes == 30
-    assert cfg.racing_threshold == 0.95
+    assert cfg.pace.budget_threshold == 0.8
+    assert cfg.pace.racing_minutes == 30
+    assert cfg.pace.racing_threshold == 0.95
     assert cfg.targets == []
 
 
@@ -426,4 +426,70 @@ def test_unknown_loop_cap_fails_at_load(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"; p.write_text(GATED_YAML + "loop_caps:\n  plan: 1\n")
     with pytest.raises(ValueError, match="loop_caps"):
+        load_config(p)
+
+
+from dispatcher.config import referenced_providers
+from dispatcher.usage import PaceConfig
+
+
+def test_pace_knobs_default(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE)
+    pc = load_config(p).pace
+    assert (pc.budget_threshold, pc.racing_minutes, pc.racing_threshold) == (0.8, 30, 0.95)
+    assert (pc.pace_margin, pc.weekend_weight, pc.timezone) == (0.10, 0.5, "UTC")
+    assert pc == PaceConfig()
+
+
+def test_pace_knobs_parse(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE.replace("budget_threshold: 0.8", "budget_threshold: 0.7")
+                 + "pace_margin: 0.05\nweekend_weight: 0.25\ntimezone: Europe/Madrid\n")
+    pc = load_config(p).pace
+    assert (pc.pace_margin, pc.weekend_weight, pc.timezone) == (0.05, 0.25, "Europe/Madrid")
+    assert pc.budget_threshold == 0.7
+
+
+@pytest.mark.parametrize("extra, msg", [
+    ("timezone: Mars/Olympus\n", "timezone"),
+    ("weekend_weight: 1.5\n", "weekend_weight"),
+    ("weekend_weight: -0.1\n", "weekend_weight"),
+    ("pace_margin: -0.05\n", "pace_margin"),
+    ("pace_margin: 1.0\n", "pace_margin"),
+])
+def test_bad_pace_knobs_fail_config_load(tmp_path, extra, msg):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE + extra)
+    with pytest.raises(ValueError, match=msg):
+        load_config(p)
+
+
+def test_referenced_providers_walks_every_policy_and_triage_model(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE + """\
+triage_model: openai/gpt-5.4-codex
+models:
+  default: claude-sonnet-4-6
+  rules:
+    - name: r
+      use: {spec: nvidia/claude-sonnet-4-6}
+""")
+    cfg = load_config(p)
+    assert referenced_providers(cfg) == frozenset({"anthropic", "openai", "nvidia"})
+
+
+def test_referenced_providers_includes_target_policies(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE.replace("    status_in_progress_option_id: def456\n",
+                                "    status_in_progress_option_id: def456\n"
+                                "    models: {default: fake/m}\n"))
+    assert referenced_providers(load_config(p)) == frozenset({"anthropic", "fake"})
+
+
+def test_invalid_triage_model_raises_at_load(tmp_path):
+    """A malformed triage_model must fail load_config, not a later pass."""
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE + "triage_model: anthropic/\n")
+    with pytest.raises(ValueError, match="triage_model"):
         load_config(p)

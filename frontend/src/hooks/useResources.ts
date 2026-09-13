@@ -23,9 +23,9 @@ export function useBoardSnapshot(enabled: boolean) {
   })
 }
 
-export function useBudget() {
+export function useUsage() {
   const refetchInterval = useFallbackInterval()
-  return useQuery({ queryKey: queryKeys.budget, queryFn: api.budget, refetchInterval })
+  return useQuery({ queryKey: queryKeys.usage, queryFn: api.usage, refetchInterval })
 }
 
 export function useFailures() {

@@ -7,7 +7,7 @@ export const defaultHandlers = [
     median_cycle_seconds: fx.board.median_cycle_seconds,
   })),
   http.get('/api/board', () => HttpResponse.json(fx.board)),
-  http.get('/api/budget', () => HttpResponse.json(fx.budget)),
+  http.get('/api/usage', () => HttpResponse.json(fx.usage)),
   http.get('/api/failures', () => HttpResponse.json(fx.failures)),
   http.get('/api/history', () => HttpResponse.json(fx.history)),
   http.get('/api/pending-intents', () => HttpResponse.json(fx.noPendingIntents)),

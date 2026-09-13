@@ -11,6 +11,24 @@ from typing import Sequence
 
 DEFAULT_MODEL = "claude-opus-4-8"
 STAGES = ("spec", "plan", "implement", "review")
+DEFAULT_PROVIDER = "anthropic"
+
+
+def split_model_id(model_id: str) -> tuple[str, str]:
+    """`provider/model` -> (provider, model); a bare id is anthropic's. The
+    same bare model under two providers spends two different usage windows,
+    so the provider is part of the id, never inferred from the model name."""
+    if "/" not in model_id:
+        return DEFAULT_PROVIDER, model_id
+    provider, _, bare = model_id.partition("/")
+    if not provider or not bare or "/" in bare:
+        raise ValueError(f"model id must be 'provider/model' or bare, got {model_id!r}")
+    return provider, bare
+
+
+def bare_model_id(model_id: str) -> str:
+    return split_model_id(model_id)[1]
+
 
 _WHEN_KEYS = frozenset({"effort", "labels_include", "labels_exclude"})
 _EFFORT_KEYS = frozenset({"min", "max"})
@@ -30,6 +48,14 @@ class ModelRule:
 class ModelPolicy:
     default: str
     rules: tuple[ModelRule, ...]
+
+    def model_ids(self) -> list[str]:
+        """Every model id this policy can resolve to: the default plus each
+        rule's use, whether one model or a stage map."""
+        ids = [self.default]
+        for rule in self.rules:
+            ids.extend([rule.use] if isinstance(rule.use, str) else rule.use.values())
+        return ids
 
 
 DEFAULT_POLICY = ModelPolicy(default=DEFAULT_MODEL, rules=())
@@ -58,7 +84,7 @@ def _effort_bounds(when: dict) -> tuple[int | None, int | None]:
     return raw.get("min"), raw.get("max")
 
 
-def _check_model_id(value: object, context: str) -> str:
+def check_model_id(value: object, context: str) -> str:
     """A model id must be a non-empty string with no whitespace: no allowlist
     of known ids (deliberately out of scope), but an unusable value (empty,
     a dict coerced via str(), or something with embedded whitespace that
@@ -68,6 +94,10 @@ def _check_model_id(value: object, context: str) -> str:
         raise ValueError(
             f"models: {context} must be a non-empty model id with no "
             f"whitespace, got {value!r}")
+    try:
+        split_model_id(value)
+    except ValueError as e:
+        raise ValueError(f"models: {context} {e}") from e
     return value
 
 
@@ -76,7 +106,7 @@ def _use(rule: dict, name: str) -> str | dict[str, str]:
         raise ValueError(f"models: rule {name!r} has no use:")
     raw = rule["use"]
     if isinstance(raw, str):
-        return _check_model_id(raw, f"rule {name!r} use:")
+        return check_model_id(raw, f"rule {name!r} use:")
     if not isinstance(raw, dict):
         raise ValueError(f"models: rule {name!r} use: must be a model or a stage map")
     unknown = set(raw) - set(STAGES)
@@ -84,7 +114,7 @@ def _use(rule: dict, name: str) -> str | dict[str, str]:
         raise ValueError(
             f"models: rule {name!r} use: has unknown stage(s) {sorted(unknown)}; "
             f"expected any of {list(STAGES)}")
-    return {k: _check_model_id(v, f"rule {name!r} use.{k}:") for k, v in raw.items()}
+    return {k: check_model_id(v, f"rule {name!r} use.{k}:") for k, v in raw.items()}
 
 
 def _rule(raw: dict, index: int) -> ModelRule:
@@ -117,7 +147,7 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
         return DEFAULT_POLICY
     if not isinstance(raw, dict):
         raise ValueError(f"models: must be a mapping, got {raw!r}")
-    default = _check_model_id(raw.get("default", DEFAULT_MODEL), "default")
+    default = check_model_id(raw.get("default", DEFAULT_MODEL), "default")
     rules = raw.get("rules", [])
     if not isinstance(rules, list):
         raise ValueError(f"models: rules must be a list, got {rules!r}")

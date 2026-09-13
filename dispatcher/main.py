@@ -20,10 +20,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable, Sequence
 
-from dispatcher.budget import UsageSnapshot, fetch_usage, should_spawn
 from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
+from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
+from dispatcher.usage_providers import fetch_all
 from dispatcher import (eventlog, failures, intents, loops, messages, pr_poll,
                         queue_ops, relogin, tmux_migration, triage)
 from dispatcher.github import GitHubClient
@@ -50,6 +52,8 @@ from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
+
+Admit = Callable[[str], Verdict]
 
 
 @dataclass
@@ -93,15 +97,28 @@ _POLICY_STAGE = {Stage.QUEUED: "spec", Stage.AWAITING_SPEC_REVIEW: "spec",
                  Stage.ADDRESS_REVIEW: "implement"}
 
 
-def _model_for(cfg: Config, target: Target | None, task: TaskState,
-               stage: Stage) -> str:
+def _model_for(cfg: Config, target: Target | None, effort: int | None,
+               labels: Sequence[str], stage: Stage) -> str:
     """target is None for a task whose target has left the config — it still
     resolves, against the global policy, since there is no per-target one to
-    look up. Every model resolution goes through here, so the stage mapping
-    above is applied exactly once."""
+    look up. Every model resolution — tasks and unclaimed candidates alike —
+    goes through here, so the stage mapping above is applied exactly once."""
     policy = policy_for(cfg, target) if target else cfg.models
-    return resolve(policy, _POLICY_STAGE.get(stage, stage.value),
-                   task.effort, task.labels)
+    return resolve(policy, _POLICY_STAGE.get(stage, stage.value), effort, labels)
+
+
+@dataclass(frozen=True)
+class Launch:
+    """The stage a spawn site is about to start and the model it runs on,
+    resolved once: the usage gate asks about exactly the model the spawner
+    then launches."""
+    stage: Stage
+    model: str
+
+
+def _launch_for(cfg: Config, target: Target | None, task: TaskState,
+            stage: Stage) -> Launch:
+    return Launch(stage, _model_for(cfg, target, task.effort, task.labels, stage))
 
 
 def _log_model(worktree: str, stage: Stage, model: str) -> None:
@@ -192,7 +209,8 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     signal = read_stage_signal(task.worktree)
     if signal is not None and signal.status != "working":
         by_name = {t.name: t for t in cfg.targets}
-        model = _model_for(cfg, by_name.get(task.target), task, task.stage)
+        model = _model_for(cfg, by_name.get(task.target), task.effort,
+                           task.labels, task.stage)
         agent_dir = Path(task.worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / "stage.json").write_text(json.dumps(
@@ -209,7 +227,7 @@ def _status_lines(cfg: Config) -> list[str]:
     tasks = [t for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
     lines = []
     for t in tasks:
-        model = _model_for(cfg, by_name.get(t.target), t, t.stage)
+        model = _model_for(cfg, by_name.get(t.target), t.effort, t.labels, t.stage)
         slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
         lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
                      + (f" [{t.park}]" if t.park else "") + f" {slot}")
@@ -365,7 +383,8 @@ def _notify(deps: Deps, target: Target, task: TaskState, template: str,
 
 
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                 stage: Stage, spec_path: str = "", ticket: int = 0) -> TaskState:
+                 launch: Launch, spec_path: str = "", ticket: int = 0) -> TaskState:
+    stage, model = launch.stage, launch.model
     ticket_path = ""
     if ticket:
         files = ticket_files(Path(task.worktree) / TICKETS_DIR)
@@ -391,7 +410,6 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     block, drained = _drain(cfg, task.issue)
     if block:
         prompt = f"{prompt}\n\n{block}\n"
-    model = _model_for(cfg, target, task, stage)
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "stage.json").write_text(json.dumps(
@@ -412,42 +430,51 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     return task
 
 
-def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str,
-                 usage: UsageSnapshot) -> None:
-    """Edge-triggered stall/resume pings via a marker file.
+# The weekly allowance grows continuously, so a box running at pace crosses
+# zero headroom back and forth; the resume ping waits for this much to return.
+RESUME_HEADROOM = 0.02
 
-    Unknowable usage also fail-safes to `budget_ok=False`, but it is not a
-    budget stall: there is no window and nothing will reset, so the
-    "stalled until reset" ping would send an operator off to wait out an
-    outage that only a re-login ends — 30 minutes before the accurate
-    auth_dark alert. _auth_dark_edge owns that case; stay silent for it and
-    leave every readable-usage case exactly as it was."""
-    if usage.source == "unavailable":
+
+def _budget_edge(cfg: Config, deps: Deps, verdict: Verdict, now: datetime) -> None:
+    """Edge-triggered stall/resume pings via a marker file, keyed on the
+    verdict for the global policy default — what an idle box spawns next.
+    Stall on the first denied pass; resume only once the default is admitted
+    with at least RESUME_HEADROOM, or every zero crossing pings a pair.
+
+    An unavailable provider also denies, but it is not a budget stall: there
+    is no window and nothing will reset, so the "resumes when headroom
+    returns" ping would send an operator off to wait out an outage that only
+    a re-login ends — 30 minutes before the accurate auth_dark alert.
+    _auth_dark_edge owns that case; stay silent for it."""
+    if verdict.reason == "unavailable":
         return
     marker = Path(cfg.state_dir) / "budget-stalled"
     marker.parent.mkdir(parents=True, exist_ok=True)
-    if not budget_ok and not marker.exists():
+    note = verdict_note(verdict, now)
+    if not verdict.admitted and not marker.exists():
         marker.write_text(_now())
-        deps.notifier.send("budget_stall", issue=0, title="(all tasks)",
-                           url="", note=note)
-    elif budget_ok and marker.exists():
+        deps.notifier.send("budget_stall", issue=0, title="(all tasks)", url="", note=note)
+    elif (verdict.admitted and marker.exists()
+          and (verdict.binding is None or verdict.binding.headroom >= RESUME_HEADROOM)):
         marker.unlink()
-        deps.notifier.send("budget_resume", issue=0, title="(all tasks)",
-                           url="", note=note)
+        deps.notifier.send("budget_resume", issue=0, title="(all tasks)", url="", note=note)
 
 
 AUTH_DARK_GRACE_MINUTES = 30
 
 
-def _auth_dark_edge(cfg: Config, deps: Deps, usage: UsageSnapshot) -> None:
-    """One alert per unknowable-usage incident (auth likely dead).
+def _auth_dark_edge(cfg: Config, deps: Deps, usages: dict[str, ProviderUsage]) -> None:
+    """One alert per unknowable-usage incident (auth likely dead). Dark means
+    EVERY fetched provider is unavailable; a single dark provider only fails
+    its own models closed and stays visible on the console.
 
-    Companion to _budget_edge: budget_stall covers "window full, will
-    reset on its own"; this covers "we cannot even tell", which
-    fail-safes every spawn indefinitely and therefore needs a human.
-    30-minute grace absorbs transient API blips."""
+    Companion to _budget_edge: budget_stall covers "gate closed, headroom
+    returns on its own"; this covers "we cannot even tell", which fail-safes
+    every spawn indefinitely and therefore needs a human. The 30-minute grace
+    absorbs transient API blips."""
     marker = Path(cfg.state_dir) / "auth-dark"
-    if usage.source != "unavailable":
+    dark = not usages or all(u.source == "unavailable" for u in usages.values())
+    if not dark:
         marker.unlink(missing_ok=True)
         return
     if not marker.exists():
@@ -585,13 +612,13 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 
 def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                reason: str) -> None:
+                launch: Launch, reason: str) -> None:
     """Resume the plan session with the format-check failure, in place, rather
     than failing the task. --continue reads the transcript from claude-home, so
     context survives ending the (zombie) session first — which we must do, or
     _launch would type `claude --continue` INTO the stopped claude's input box
     (same failure mode as spawning over a live session)."""
-    model = _model_for(cfg, target, task, Stage.PLAN)
+    model = launch.model
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     # Rewrite the signal to working BEFORE resuming, or the next pass re-reads
@@ -886,15 +913,16 @@ def _flush_done(cfg: Config) -> None:
 
 
 def _resume_woken(cfg: Config, deps: Deps, target: Target,
-                  budget_ok: bool, dry_run: bool = False) -> None:
-    if not budget_ok:
-        return
+                  admit: Admit, dry_run: bool = False) -> None:
     woken = sorted(
         [t for t in load_all(cfg.state_dir)
          if t.target == target.name and t.park == PARK_WAKE],
         key=lambda t: t.updated_at,
     )
     for task in woken:
+        launch = _resume_launch(cfg, target, task)
+        if not admit(launch.model).admitted:
+            continue  # this model's provider has no headroom; others may
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             _mark_wake_blocked(cfg, target, task, "capacity full")
@@ -910,14 +938,21 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
                 continue  # stays parked, retried next pass
             task = replace(task, slot=slot)
         try:
-            _resume_one(cfg, deps, target, task)
+            _resume_one(cfg, deps, target, task, launch)
         except Exception:
             _fail_task_crash(cfg, deps, target, task, dry_run)
 
 
+def _resume_launch(cfg: Config, target: Target, task: TaskState) -> Launch:
+    """A parked pr-open task has no session to continue: it resumes as a
+    fresh address-review round, on that stage's model."""
+    stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
+    return _launch_for(cfg, target, task, stage)
+
+
 def _resume_one(cfg: Config, deps: Deps, target: Target,
-                task: TaskState) -> None:
-    model = _model_for(cfg, target, task, task.stage)
+                task: TaskState, launch: Launch) -> None:
+    model = launch.model
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     # Rewrite stage.json BEFORE resuming, or the next pass re-reads
@@ -939,7 +974,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                        attention="operator", feedback_cursor=_cursor_now(),
                        operator_request=None)
         _clear_wake_blocked(cfg, task.issue)
-        _spawn_stage(cfg, deps, target, task, Stage.ADDRESS_REVIEW)
+        _spawn_stage(cfg, deps, target, task, launch)
         eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
                               model=model)
@@ -1011,18 +1046,19 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
 
 
 def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
-                    budget_ok: bool) -> None:
+                    admit: Admit) -> None:
     """Spawn address-review for tasks whose PR got feedback — same gates
-    as claiming new work (capacity, budget, slot); a denied spawn just
+    as claiming new work (capacity, usage, slot); a denied spawn just
     stays pr-open+pending and retries next pass, badge showing."""
-    if not budget_ok:
-        return
     pending = sorted(
         [t for t in load_all(cfg.state_dir)
          if t.target == target.name and t.stage is Stage.PR_OPEN
          and t.feedback_pending],
         key=lambda t: t.updated_at)
     for task in pending:
+        launch = _launch_for(cfg, target, task, Stage.ADDRESS_REVIEW)
+        if not admit(launch.model).admitted:
+            continue
         tasks = [t for t in load_all(cfg.state_dir)
                  if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
@@ -1045,11 +1081,202 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
         # transition never ends it). End first so _launch doesn't type
         # the podman command into the live claude's input box.
         deps.sessions.end(task.target, task.issue)
-        _spawn_stage(cfg, deps, target, task, Stage.ADDRESS_REVIEW)
+        _spawn_stage(cfg, deps, target, task, launch)
+
+
+@dataclass
+class _Turn:
+    """One task's drive turn: what every action handler reads, plus the
+    spec-publish line a later Notify in the same turn appends."""
+    cfg: Config
+    deps: Deps
+    target: Target
+    signal: object          # the stage signal read at the start of the turn
+    dry_run: bool
+    spec_line: str = ""
+
+
+def _action_stage(act: object) -> Stage | None:
+    """The stage an action launches a session for; None when it launches none."""
+    if isinstance(act, StartTicket):
+        return Stage.IMPLEMENT
+    if isinstance(act, RetryStage):
+        return Stage.PLAN  # _retry_plan resumes the plan session in place
+    return act.stage if isinstance(act, SpawnStage) else None
+
+
+# Handlers return the task to keep driving, or None to end the task's turn.
+
+def _on_noop(turn: _Turn, task: TaskState, act: NoOp,
+             launch: Launch | None) -> TaskState:
+    return task
+
+
+def _on_start_ticket(turn: _Turn, task: TaskState, act: StartTicket,
+                     launch: Launch) -> TaskState:
+    cfg, deps, target = turn.cfg, turn.deps, turn.target
+    # Validate the requested ticket exists before any destructive side
+    # effects (ending the previous session, advancing the cursor).
+    # Missing file → raise now so _run_pass routes to _fail_task_crash
+    # without having killed the old session or mutated state.
+    if act.cursor > len(ticket_files(Path(task.worktree) / TICKETS_DIR)):
+        raise RuntimeError(
+            f"ticket {act.cursor} of {act.count} missing "
+            f"under {task.worktree}/{TICKETS_DIR}")
+    clear_waiting(cfg.state_dir, task.target, task.issue)
+    deps.sessions.end(task.target, task.issue)
+    task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count)
+    task = _spawn_stage(cfg, deps, target, task, launch, ticket=act.cursor)
+    eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
+                          issue=task.issue, stage=Stage.IMPLEMENT.value,
+                          detail=f"ticket {act.cursor}/{act.count}")
+    return task
+
+
+def _on_apply_decision(turn: _Turn, task: TaskState, act: ApplyDecision,
+                       launch: Launch | None) -> TaskState | None:
+    cfg, deps, target = turn.cfg, turn.deps, turn.target
+    task, parked = _apply_loop_decision(
+        cfg, deps, target, task, act.decision,
+        park_exhausted=lambda t, note: _park_for_input(cfg, deps, target, t, note))
+    return None if parked else task
+
+
+def _on_park_for_input(turn: _Turn, task: TaskState, act: ParkForInput,
+                       launch: Launch | None) -> None:
+    _park_for_input(turn.cfg, turn.deps, turn.target, task, act.note,
+                    artifact=act.artifact, is_answers=act.is_answers)
+
+
+def _on_arm_spec_approval(turn: _Turn, task: TaskState, act: ArmSpecApproval,
+                          launch: Launch | None) -> TaskState:
+    # Re-establish spec-approval request cleared by a prior resume.
+    # Do NOT touch updated_at — the resume already stamped it; leaving it
+    # preserves the grace deadline. No stage transition.
+    task = replace(task, operator_request=SpecApprovalRequest(),
+                   spec_path=act.artifact or task.spec_path)
+    save(turn.cfg.state_dir, task)
+    return task
+
+
+def _on_park_for_review(turn: _Turn, task: TaskState, act: ParkForReview,
+                        launch: Launch | None) -> None:
+    _park_for_review(turn.cfg, turn.deps, turn.target, task, dry_run=turn.dry_run)
+
+
+def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
+                    launch: Launch | None) -> None:
+    _park_for_ci(turn.cfg, turn.deps, turn.target, task, act.run_id)
+
+
+def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
+                    launch: Launch) -> None:
+    _retry_plan(turn.cfg, turn.deps, turn.target, task, launch, act.reason)
+
+
+def _stage_extra(act: SetTaskStage, signal) -> dict:
+    """The fields a stage transition sets besides the stage itself: the PR
+    number a pr-open signal links, or the spec-approval request (and spec
+    path) a finished spec arms."""
+    if act.stage is Stage.AWAITING_SPEC_REVIEW:
+        extra: dict = {"operator_request": SpecApprovalRequest()}
+        if act.artifact:
+            extra["spec_path"] = act.artifact
+        return extra
+    if act.stage is not Stage.PR_OPEN or signal is None:
+        return {}
+    m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
+    return {"pr_number": int(m.group(1))} if m else {}
+
+
+def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
+                       launch: Launch | None) -> TaskState:
+    cfg = turn.cfg
+    clear_waiting(cfg.state_dir, task.target, task.issue)
+    task = replace(task, stage=act.stage, updated_at=_now(),
+                   **_stage_extra(act, turn.signal))
+    save(cfg.state_dir, task)
+    if act.stage is Stage.PR_OPEN:
+        eventlog.append_event(cfg.state_dir, "pr-opened",
+                              target=turn.target.name, issue=task.issue,
+                              stage=act.stage.value)
+    return task
+
+
+def _on_publish_spec(turn: _Turn, task: TaskState, act: PublishSpec,
+                     launch: Launch | None) -> TaskState:
+    pub = spec_publish.ensure_published(
+        worktree=task.worktree, branch=task.branch,
+        repo=turn.target.repo, issue=task.issue,
+        artifact=act.artifact, dry_run=turn.dry_run)
+    turn.spec_line = _spec_note(pub)
+    if not pub.error:
+        try:
+            turn.deps.github.comment(
+                turn.target, task.issue, f"📝 Spec ready for review: {pub.url}")
+        except Exception as exc:
+            print(f"[warn] spec link comment failed for "
+                  f"#{task.issue}: {exc}", file=sys.stderr)
+    return task
+
+
+def _on_notify(turn: _Turn, task: TaskState, act: Notify,
+               launch: Launch | None) -> TaskState:
+    note = act.note + (f"\n{turn.spec_line}" if turn.spec_line else "")
+    _notify(turn.deps, turn.target, task, act.template, note)
+    return task
+
+
+def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
+                    launch: Launch) -> TaskState:
+    clear_waiting(turn.cfg.state_dir, task.target, task.issue)
+    # The previous stage's claude is usually still alive here — an
+    # interactive session cannot exit itself. _launch would type
+    # the next stage's podman command INTO it (and the container
+    # name would collide). End it first; no-op when already dead.
+    turn.deps.sessions.end(task.target, task.issue)
+    spec_path = turn.signal.artifact if act.stage is Stage.PLAN else ""
+    return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
+
+
+def _on_handle_crash(turn: _Turn, task: TaskState, act: HandleCrash,
+                     launch: Launch | None) -> TaskState:
+    cfg, deps, target = turn.cfg, turn.deps, turn.target
+    _notify(deps, target, task, "session_crashed")
+    deps.github.release(target, task.issue, "session crashed mid-stage")
+    save(cfg.state_dir, replace(task, stage=Stage.FAILED,
+                                operator_request=None, updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "failed", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail="session crashed mid-stage")
+    _report_session_crash(cfg, deps, target, task, turn.dry_run)
+    # End last: _report_session_crash reads the pane first. end()
+    # snapshots the crash output for the console and closes the
+    # dead tab — the one session-ending transition that otherwise
+    # left both behind.
+    deps.sessions.end(task.target, task.issue)
+    return task
+
+
+_DRIVE: dict[type, Callable[..., TaskState | None]] = {
+    NoOp: _on_noop,
+    StartTicket: _on_start_ticket,
+    ApplyDecision: _on_apply_decision,
+    ParkForInput: _on_park_for_input,
+    ArmSpecApproval: _on_arm_spec_approval,
+    ParkForReview: _on_park_for_review,
+    ParkForCI: _on_park_for_ci,
+    RetryStage: _on_retry_stage,
+    SetTaskStage: _on_set_task_stage,
+    PublishSpec: _on_publish_spec,
+    Notify: _on_notify,
+    SpawnStage: _on_spawn_stage,
+    HandleCrash: _on_handle_crash,
+}
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                budget_ok: bool, dry_run: bool = False) -> None:
+                admit: Admit, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
@@ -1057,126 +1284,19 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # session alive (the crash path owns dead sessions).
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and cfg.stall_after_seconds > 0 else None)
-    spec_line = ""
+    turn = _Turn(cfg, deps, target, signal, dry_run)
     for act in next_actions(task, signal, alive, waiting=waiting,
                             idle_seconds=idle,
                             stall_after=cfg.stall_after_seconds,
                             grace_elapsed=_grace_elapsed(cfg, task),
                             caps=cfg.loop_caps):
-        if isinstance(act, NoOp):
-            continue
-        if isinstance(act, StartTicket):
-            if not budget_ok:
-                return  # nothing mutated; the done-signal persists; retried next pass
-            # Validate the requested ticket exists before any destructive side
-            # effects (ending the previous session, advancing the cursor).
-            # Missing file → raise now so _run_pass routes to _fail_task_crash
-            # without having killed the old session or mutated state.
-            _files = ticket_files(Path(task.worktree) / TICKETS_DIR)
-            if act.cursor > len(_files):
-                raise RuntimeError(
-                    f"ticket {act.cursor} of {act.count} missing "
-                    f"under {task.worktree}/{TICKETS_DIR}")
-            clear_waiting(cfg.state_dir, task.target, task.issue)
-            deps.sessions.end(task.target, task.issue)
-            task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count)
-            task = _spawn_stage(cfg, deps, target, task, Stage.IMPLEMENT, ticket=act.cursor)
-            eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
-                                  issue=task.issue, stage=Stage.IMPLEMENT.value,
-                                  detail=f"ticket {act.cursor}/{act.count}")
-            continue
-        if isinstance(act, ApplyDecision):
-            task, parked = _apply_loop_decision(
-                cfg, deps, target, task, act.decision,
-                park_exhausted=lambda t, note: _park_for_input(cfg, deps, target, t, note))
-            if parked:
-                return
-            continue
-        if isinstance(act, ParkForInput):
-            _park_for_input(cfg, deps, target, task, act.note, artifact=act.artifact,
-                            is_answers=act.is_answers)
+        stage = _action_stage(act)
+        launch = _launch_for(cfg, target, task, stage) if stage else None
+        if launch is not None and not admit(launch.model).admitted:
+            return  # nothing mutated; the signal persists; retried once headroom returns
+        task = _DRIVE[type(act)](turn, task, act, launch)
+        if task is None:
             return
-        if isinstance(act, ArmSpecApproval):
-            # Re-establish spec-approval request cleared by a prior resume.
-            # Do NOT touch updated_at — the resume already stamped it; leaving it
-            # preserves the grace deadline (slice 12). No stage transition.
-            task = replace(task,
-                           operator_request=SpecApprovalRequest(),
-                           spec_path=act.artifact or task.spec_path)
-            save(cfg.state_dir, task)
-            continue
-        if isinstance(act, ParkForReview):
-            _park_for_review(cfg, deps, target, task, dry_run=dry_run)
-            return
-        if isinstance(act, ParkForCI):
-            _park_for_ci(cfg, deps, target, task, act.run_id)
-            return
-        if isinstance(act, RetryStage):
-            if not budget_ok:
-                return  # signal persists; retried next pass once budget clears
-            _retry_plan(cfg, deps, target, task, act.reason)
-            return
-        if isinstance(act, SetTaskStage):
-            clear_waiting(cfg.state_dir, task.target, task.issue)
-            extra: dict = {}
-            if act.stage is Stage.PR_OPEN and signal is not None:
-                m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
-                if m:
-                    extra["pr_number"] = int(m.group(1))
-            if act.stage is Stage.AWAITING_SPEC_REVIEW:
-                extra["operator_request"] = SpecApprovalRequest()
-                if act.artifact:
-                    extra["spec_path"] = act.artifact
-            task = replace(task, stage=act.stage,
-                           updated_at=_now(), **extra)
-            save(cfg.state_dir, task)
-            if act.stage is Stage.PR_OPEN:
-                eventlog.append_event(cfg.state_dir, "pr-opened",
-                                      target=target.name, issue=task.issue,
-                                      stage=act.stage.value)
-        elif isinstance(act, PublishSpec):
-            pub = spec_publish.ensure_published(
-                worktree=task.worktree, branch=task.branch,
-                repo=target.repo, issue=task.issue,
-                artifact=act.artifact, dry_run=dry_run)
-            spec_line = _spec_note(pub)
-            if not pub.error:
-                try:
-                    deps.github.comment(
-                        target, task.issue,
-                        f"📝 Spec ready for review: {pub.url}")
-                except Exception as exc:
-                    print(f"[warn] spec link comment failed for "
-                          f"#{task.issue}: {exc}", file=sys.stderr)
-        elif isinstance(act, Notify):
-            note = act.note + (f"\n{spec_line}" if spec_line else "")
-            _notify(deps, target, task, act.template, note)
-        elif isinstance(act, SpawnStage):
-            if not budget_ok:
-                return  # signal persists; retried next pass
-            clear_waiting(cfg.state_dir, task.target, task.issue)
-            # The previous stage's claude is usually still alive here — an
-            # interactive session cannot exit itself. _launch would type
-            # the next stage's podman command INTO it (and the container
-            # name would collide). End it first; no-op when already dead.
-            deps.sessions.end(task.target, task.issue)
-            spec_path = signal.artifact if act.stage is Stage.PLAN else ""
-            task = _spawn_stage(cfg, deps, target, task, act.stage, spec_path)
-        elif isinstance(act, HandleCrash):
-            _notify(deps, target, task, "session_crashed")
-            deps.github.release(target, task.issue, "session crashed mid-stage")
-            save(cfg.state_dir, replace(task, stage=Stage.FAILED,
-                                        operator_request=None,
-                                        updated_at=_now()))
-            eventlog.append_event(cfg.state_dir, "failed", target=target.name,
-                                  issue=task.issue, stage=task.stage.value,
-                                  detail="session crashed mid-stage")
-            _report_session_crash(cfg, deps, target, task, dry_run)
-            # End last: _report_session_crash reads the pane first. end()
-            # snapshots the crash output for the console and closes the
-            # dead tab — the one session-ending transition that otherwise
-            # left both behind.
-            deps.sessions.end(task.target, task.issue)
 
 
 def _report_session_crash(cfg: Config, deps: Deps, target: Target,
@@ -1220,30 +1340,30 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
                                   fp=failures.fingerprint(rep))
 
 
-def _claim_new(cfg: Config, deps: Deps, target: Target,
-               dry_run: bool, pass_started: str = "") -> None:
-    tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
-    free = cfg.capacity - len(active(tasks))
-    if free <= 0:
-        return
-    known = {t.issue for t in tasks}
+def _reopened(stale: TaskState, pass_started: str) -> bool:
+    """Reopened won't-do: rank drops CLOSED issues, so a candidate row for a
+    canceled task proves the operator reopened the issue and moved the card
+    back to Ready; its tombstone is swept for a fresh claim. The pass_started
+    guard keeps a tombstone written by THIS pass's cancel intent (its board
+    write lagging or failed) from resurrecting the task it just retired."""
+    return (stale.stage is Stage.CANCELED
+            and not (pass_started and stale.updated_at >= pass_started))
+
+
+def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
+               admit: Admit, pass_started: str):
+    """Ranked candidates this pass may claim, each with the spec launch it
+    would start. Skips issues that already have a task, quarantined issues,
+    and candidates whose spec model has no headroom — a denied candidate
+    leaves the next one eligible, since its model may differ."""
     by_issue = {t.issue: t for t in tasks}
     for cand in deps.github.candidates(target):
-        if free <= 0:
-            break
-        if cand.number in known:
-            stale = by_issue.get(cand.number)
-            if (stale is None or stale.stage is not Stage.CANCELED
-                    or (pass_started and stale.updated_at >= pass_started)):
+        stale = by_issue.get(cand.number)
+        if stale is not None:
+            if not _reopened(stale, pass_started):
                 continue
-            # Reopened won't-do: rank drops CLOSED issues, so this candidate
-            # row proves the operator reopened the issue and moved the card
-            # back to Ready. Sweep the tombstone and fall through to a fresh
-            # claim. The pass_started guard keeps a tombstone written by THIS
-            # pass's cancel intent (its board write lagging or failed) from
-            # resurrecting the task it just retired.
             delete(cfg.state_dir, target.name, cand.number)
-            known.discard(cand.number)
+            del by_issue[cand.number]
             eventlog.append_event(cfg.state_dir, "reopened",
                                   target=target.name, issue=cand.number,
                                   detail="canceled task ranked again — "
@@ -1251,6 +1371,19 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
                                      cand.number):
             continue
+        launch = Launch(Stage.SPEC, _model_for(cfg, target, cand.effort,
+                                               cand.labels, Stage.SPEC))
+        if admit(launch.model).admitted:
+            yield cand, launch
+
+
+def _claim_new(cfg: Config, deps: Deps, target: Target,
+               admit: Admit, dry_run: bool, pass_started: str = "") -> None:
+    tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
+    free = cfg.capacity - len(active(tasks))
+    if free <= 0:
+        return
+    for cand, launch in _claimable(cfg, deps, target, tasks, admit, pass_started):
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
             break
@@ -1279,11 +1412,13 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
                               issue=cand.number, stage=Stage.QUEUED.value)
         try:
             deps.github.claim(target, cand)  # irreversible board mutation — last
-            _spawn_stage(cfg, deps, target, task, Stage.SPEC)
+            _spawn_stage(cfg, deps, target, task, launch)
         except Exception:
             deps.github.release(target, cand.number, "claim/spawn failed after provisioning")
             raise
         free -= 1
+        if free <= 0:
+            break  # before the generator vets (and sweeps for) a candidate it cannot claim
 
 
 def _task_for_intent(cfg: Config, intent: intents.Intent) -> TaskState | None:
@@ -1537,7 +1672,7 @@ def _sandboxed_state(cfg: Config):
     --dry-run stubs every I/O *dependency* (GitHubClient, Sessions, Notifier,
     remove_workspace), but the pass also writes locally — state files, the
     event log, waiting markers, failure reports, the intent queue,
-    the usage cache — and those writes were unguarded, so a dry run advanced
+    the per-provider usage cache — and those writes were unguarded, so a dry run advanced
     tasks to terminal stages and wrote history for real. Guarding each call
     site is what already rotted: `dry_run` is threaded by hand into some
     functions and was never added to _flush_done or _resume_woken.
@@ -1643,28 +1778,26 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     eff = replace(cfg, capacity=max(0, cfg.capacity - 1)) if sweep_running else cfg
     claims_paused = triage.pending(cfg.state_dir)
     _handle_telegram(cfg, deps, dry_run)
-    usage = fetch_usage(cfg.state_dir)
-    budget_ok = should_spawn(usage, cfg.budget_threshold,
-                             cfg.racing_minutes, cfg.racing_threshold)
-    _budget_edge(cfg, deps, budget_ok,
-                 note=f"{usage.source}: {usage.utilization:.0%}, "
-                      f"reset in {usage.minutes_to_reset:.0f}m",
-                 usage=usage)
-    _auth_dark_edge(cfg, deps, usage)
+    usages = fetch_all(cfg)
+    now = datetime.now(timezone.utc)
+    admit: Admit = lambda model: admits(usages, model, now, cfg.pace)
+    default_verdict = admit(cfg.models.default)
+    _budget_edge(cfg, deps, default_verdict, now)
+    _auth_dark_edge(cfg, deps, usages)
     for target in eff.targets:
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
             try:
-                _drive_task(eff, deps, target, task, budget_ok, dry_run)
+                _drive_task(eff, deps, target, task, admit, dry_run)
             except Exception:
                 _fail_task_crash(eff, deps, target, task, dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
-        _resume_woken(eff, deps, target, budget_ok, dry_run)
-        _spawn_feedback(eff, deps, target, budget_ok)
-        if budget_ok and not claims_paused:
-            _claim_new(eff, deps, target, dry_run, pass_started)
+        _resume_woken(eff, deps, target, admit, dry_run)
+        _spawn_feedback(eff, deps, target, admit)
+        if not claims_paused:
+            _claim_new(eff, deps, target, admit, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
     _flush_done(cfg)
     _write_heartbeat(cfg, pass_started)

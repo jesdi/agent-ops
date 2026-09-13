@@ -9,9 +9,10 @@ from unittest.mock import patch
 import pytest
 
 from dispatcher import herdr, triage
-from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
+from dispatcher.models import parse_policy
 from dispatcher.triage_apply import ApplyResult
+from tests.usagefakes import session_usage
 
 H_NO_TABS = '{"id":"i","result":{"tabs":[],"type":"tab_list"}}'
 H_TRIAGE_TAB = ('{"id":"i","result":{"tabs":[{"label":"triage","tab_id":"w9:t2",'
@@ -101,8 +102,7 @@ def _herdr_fake_creating(monkeypatch, calls, workspace=None, pane_run_ok=True):
 
 def _cfg(tmp_path, targets=(), infra=""):
     return Config(
-        state_dir=str(tmp_path), capacity=2, budget_threshold=0.8,
-        racing_minutes=30, racing_threshold=0.95, session_memory="1500m",
+        state_dir=str(tmp_path), capacity=2, session_memory="1500m",
         session_cpus="2", targets=list(targets), infra_repo=infra)
 
 
@@ -233,8 +233,8 @@ class FakeDeps:
 
 
 OLD = "2026-07-29T00:00:00Z"
-OK_USAGE = UsageSnapshot(utilization=0.1, minutes_to_reset=100, source="oauth")
-HOT_USAGE = UsageSnapshot(utilization=0.9, minutes_to_reset=100, source="oauth")
+OK_USAGE = {"anthropic": session_usage(0.1)}
+HOT_USAGE = {"anthropic": session_usage(0.9)}
 BLOB = {"repo": "o/a", "cursor": "c", "issues": [{"number": 1}],
         "labels": [{"name": "bug", "description": ""}],
         "issue_types": [], "open_issues": []}
@@ -251,7 +251,7 @@ def test_sweep_happy_path_advances_cursor_and_reports(tmp_path):
     deps = FakeDeps()
     triage.save_cursors(tmp_path, {"o/a": OLD})
     (tmp_path / triage.REQUEST_FILE).write_text('{"requested_at": "x"}')
-    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
          patch.object(triage, "_run_session", return_value={"issues": []}), \
          patch.object(triage.triage_apply, "apply", return_value=RESULT):
@@ -267,7 +267,7 @@ def test_sweep_happy_path_advances_cursor_and_reports(tmp_path):
 def test_sweep_seeds_cursor_first_sight_no_session(tmp_path):
     cfg = _sweep_cfg(tmp_path)
     deps = FakeDeps()
-    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage, "_run_session") as session:
         triage.run_sweep(cfg, deps)
     session.assert_not_called()
@@ -279,7 +279,7 @@ def test_sweep_empty_window_advances_cursor_no_session(tmp_path):
     deps = FakeDeps()
     triage.save_cursors(tmp_path, {"o/a": OLD})
     empty = dict(BLOB, issues=[])
-    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", return_value=empty), \
          patch.object(triage, "_run_session") as session:
         triage.run_sweep(cfg, deps)
@@ -297,7 +297,7 @@ def test_sweep_failure_isolated_cursor_untouched(tmp_path):
             raise triage.triage_prefetch.PrefetchError("boom")
         return dict(BLOB, repo="o/b")
 
-    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", side_effect=prefetch), \
          patch.object(triage, "_run_session", return_value={"issues": []}), \
          patch.object(triage.triage_apply, "apply", return_value=RESULT):
@@ -312,12 +312,37 @@ def test_sweep_budget_gate_skips_everything(tmp_path):
     cfg = _sweep_cfg(tmp_path)
     deps = FakeDeps()
     triage.save_cursors(tmp_path, {"o/a": OLD})
-    with patch.object(triage, "fetch_usage", return_value=HOT_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=HOT_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch") as prefetch:
         triage.run_sweep(cfg, deps)
     prefetch.assert_not_called()
     assert triage.load_cursors(tmp_path)["o/a"] == OLD
-    assert "budget" in "\n".join(deps.notifier.sent[0][1]["lines"])
+    assert "usage gate" in "\n".join(deps.notifier.sent[0][1]["lines"])
+
+
+FABLE_HOT = {"anthropic": session_usage(0.1, fable=0.9)}
+
+
+@pytest.mark.parametrize("triage_model, default, runs", [
+    ("claude-sonnet-4-6", "claude-fable-5-1", True),
+    ("claude-fable-5-1", "claude-sonnet-4-6", False),
+])
+def test_sweep_gate_asks_triage_model_not_the_default(tmp_path, triage_model,
+                                                      default, runs):
+    """The sweep spawns triage_model, so a Fable-over-pace week must not
+    skip a Sonnet sweep just because the policy default is Fable."""
+    cfg = replace(_sweep_cfg(tmp_path), triage_model=triage_model,
+                  models=parse_policy({"default": default}))
+    deps = FakeDeps()
+    triage.save_cursors(tmp_path, {"o/a": OLD})
+    with patch.object(triage, "fetch_all", return_value=FABLE_HOT), \
+         patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB) as prefetch, \
+         patch.object(triage, "_run_session", return_value={"issues": []}), \
+         patch.object(triage.triage_apply, "apply", return_value=RESULT):
+        triage.run_sweep(cfg, deps)
+    assert prefetch.called is runs
+    skipped = "usage gate" in "\n".join(deps.notifier.sent[0][1]["lines"])
+    assert skipped is not runs
 
 
 def test_sweep_holds_cursor_when_every_write_failed(tmp_path):
@@ -331,7 +356,7 @@ def test_sweep_holds_cursor_when_every_write_failed(tmp_path):
         labeled=0, comments=0, closes=(),
         rejected=("#1: gh issue edit failed: HTTP 401",),
         write_failures=("#1: gh issue edit failed: HTTP 401",))
-    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
          patch.object(triage, "_run_session", return_value={"issues": []}), \
          patch.object(triage.triage_apply, "apply", return_value=failed):
@@ -349,7 +374,7 @@ def test_sweep_advances_cursor_when_some_writes_landed(tmp_path):
         labeled=1, comments=0, closes=(),
         rejected=("#2: gh issue edit failed: HTTP 500",),
         write_failures=("#2: gh issue edit failed: HTTP 500",))
-    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
          patch.object(triage, "_run_session", return_value={"issues": []}), \
          patch.object(triage.triage_apply, "apply", return_value=partial):
@@ -365,7 +390,7 @@ def test_sweep_advances_cursor_when_rejections_are_only_validation(tmp_path):
     triage.save_cursors(tmp_path, {"o/a": OLD})
     invalid = ApplyResult(labeled=0, comments=0, closes=(),
                           rejected=("#1: unknown label(s) ['zzz']",))
-    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
          patch.object(triage, "_run_session", return_value={"issues": []}), \
          patch.object(triage.triage_apply, "apply", return_value=invalid):
@@ -383,7 +408,7 @@ def test_sweep_reports_an_unfittable_context_and_holds_the_cursor(tmp_path):
     triage.save_cursors(tmp_path, {"o/a": OLD})
     boom = triage.triage_prefetch.ContextTooLargeError(
         "triage context is 200000 bytes with everything shed")
-    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
          patch.object(triage, "_run_session", side_effect=boom):
         triage.run_sweep(cfg, deps)
@@ -398,7 +423,7 @@ def test_sweep_rejected_decisions_reported(tmp_path):
     triage.save_cursors(tmp_path, {"o/a": OLD})
     rej = ApplyResult(labeled=0, comments=0, closes=(),
                       rejected=("#1: unknown label(s) ['zzz']",))
-    with patch.object(triage, "fetch_usage", return_value=OK_USAGE), \
+    with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
          patch.object(triage, "_run_session", return_value={"issues": []}), \
          patch.object(triage.triage_apply, "apply", return_value=rej):
@@ -744,7 +769,7 @@ def test_pass_skips_claims_and_reduces_capacity_while_triage(tmp_path,
     deps = FakeDeps()
     monkeypatch.setattr(triage, "running", lambda: True)
     monkeypatch.setattr(triage, "tick", lambda *a, **k: None)
-    monkeypatch.setattr(dmain, "fetch_usage", lambda *a, **k: OK_USAGE)
+    monkeypatch.setattr(dmain, "fetch_all", lambda *a, **k: OK_USAGE)
     for fn in ("_handle_telegram", "_budget_edge", "_wake_ci", "_poll_prs",
                "_spawn_feedback", "_flush_done",
                "_prune_snapshots", "_apply_intents"):

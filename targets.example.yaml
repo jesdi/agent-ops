@@ -10,6 +10,13 @@ infra_repo: example/agent-ops
 budget_threshold: 0.8
 racing_minutes: 30
 racing_threshold: 0.95
+# Weekly pace gate. The box may only spawn while the week's usage is at or
+# under a schedule that counts weekend hours at weekend_weight (you are not
+# around to answer sessions on weekends, so the saved share flows to
+# Monday–Friday), plus pace_margin. Timezone is an IANA name.
+pace_margin: 0.10
+weekend_weight: 0.5
+timezone: Europe/Madrid
 # Sized for capacity 2 on the 4 GB box: 2 active sessions x 1500m + ~1 GB
 # system baseline fits 3.8 GB RAM with the zram cushion absorbing spikes.
 # A session that overruns the cap OOMs inside its own container only.
@@ -54,7 +61,7 @@ models:
     - name: research
       when:
         labels_include: [research]
-      use: claude-sonnet-4-6
+      use: anthropic/claude-sonnet-4-6  # provider-prefixed id; bare "claude-sonnet-4-6" is equivalent
     - name: question
       when:
         labels_include: [question]

@@ -38,23 +38,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/budget": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Budget Route */
-        get: operations["budget_route_api_budget_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/events": {
         parameters: {
             query?: never;
@@ -412,6 +395,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Usage Route */
+        get: operations["usage_route_api_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -477,19 +477,6 @@ export interface components {
             /** Issue */
             issue: number;
         };
-        /** BudgetView */
-        BudgetView: {
-            /** Minutes To Reset */
-            minutes_to_reset: number;
-            /** Source */
-            source: string;
-            /** Threshold Applied */
-            threshold_applied: string;
-            /** Utilization */
-            utilization: number;
-            /** Would Spawn */
-            would_spawn: boolean;
-        };
         /** CapacityView */
         CapacityView: {
             /** Active */
@@ -553,6 +540,24 @@ export interface components {
             when: string;
         };
         /**
+         * GateView
+         * @description The usage verdict for the policy default model: what an idle box would
+         *     spawn next, and the verdict the dispatcher's stall/resume pings key on.
+         */
+        GateView: {
+            /** Admitted */
+            admitted: boolean;
+            binding: components["schemas"]["WindowView"] | null;
+            /** Minutes To Reset */
+            minutes_to_reset: number;
+            /** Model */
+            model: string;
+            /** Note */
+            note: string;
+            /** Provider */
+            provider: string;
+        };
+        /**
          * GhostCard
          * @description A ranked, not-yet-claimed candidate: exactly what _claim_new would
          *     consume next, rendered in the Queued column ahead of being claimed.
@@ -612,6 +617,11 @@ export interface components {
         /** NextClaimView */
         NextClaimView: {
             /**
+             * Blocked By
+             * @default
+             */
+            blocked_by: string;
+            /**
              * Minutes To Reset
              * @default 0
              */
@@ -655,6 +665,18 @@ export interface components {
         PaneHistory: {
             /** Text */
             text: string;
+        };
+        /** ProviderUsageView */
+        ProviderUsageView: {
+            /** Provider */
+            provider: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "oauth" | "ccusage" | "unavailable";
+            /** Windows */
+            windows: components["schemas"]["WindowView"][];
         };
         /** QuarantineEntry */
         QuarantineEntry: {
@@ -840,6 +862,12 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** UsageView */
+        UsageView: {
+            gate: components["schemas"]["GateView"];
+            /** Providers */
+            providers: components["schemas"]["ProviderUsageView"][];
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -852,6 +880,30 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * WindowKind
+         * @enum {string}
+         */
+        WindowKind: "session" | "weekly";
+        /** WindowView */
+        WindowView: {
+            /** Allowance */
+            allowance: number;
+            /** Headroom */
+            headroom: number;
+            kind: components["schemas"]["WindowKind"];
+            /** Minutes To Reset */
+            minutes_to_reset: number;
+            /** Scope */
+            scope: string | null;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            severity: "ok" | "close" | "blocked";
+            /** Used */
+            used: number;
         };
     };
     responses: never;
@@ -898,26 +950,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BoardSnapshot"];
-                };
-            };
-        };
-    };
-    budget_route_api_budget_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BudgetView"];
                 };
             };
         };
@@ -1543,6 +1575,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    usage_route_api_usage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageView"];
                 };
             };
         };

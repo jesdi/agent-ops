@@ -1,16 +1,18 @@
-"""Pure view models: TaskState + rank rows + budget + failures + events ->
+"""Pure view models: TaskState + rank rows + usage + failures + events ->
 Pydantic responses. NO I/O in this module — construction only."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Mapping
 
 from pydantic import BaseModel, Field
 
 from dispatcher import messages as msgq
-from dispatcher.budget import UsageSnapshot, should_spawn
+from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
+                              WindowKind, admits, minutes_to_reset, readings,
+                              verdict_note)
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, consumes_capacity,
@@ -265,7 +267,8 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
 def build_board(tasks: list[TaskState], *, capacity: int,
                 models: dict[tuple[str, int], str],
                 events: list[dict], heartbeat: dict | None, now: datetime,
-                budget: BudgetView, queues: list[tuple[str, list[dict]]],
+                gate: GateView,
+                queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
                 triage_running: bool,
                 undelivered: dict[tuple[str, int], int] | None = None,
@@ -288,7 +291,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
         median_cycle_seconds=snapshot.median_cycle_seconds,
         upcoming=upcoming, upcoming_stale=queue_stale,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
-                              capacity=capacity, budget=budget,
+                              capacity=capacity, gate=gate,
                               queues=queues,
                               claims_paused=claims_paused,
                               triage_running=triage_running))
@@ -370,28 +373,71 @@ class PaneHistory(BaseModel):
     text: str
 
 
-class BudgetView(BaseModel):
-    utilization: float
+Severity = Literal["ok", "close", "blocked"]
+
+
+class WindowView(BaseModel):
+    kind: WindowKind
+    scope: str | None
+    used: float
+    allowance: float
+    headroom: float
     minutes_to_reset: float
-    source: str
-    would_spawn: bool
-    threshold_applied: str
+    severity: Severity     # "close" once headroom <= CLOSE_HEADROOM
 
 
-def budget_view(u: UsageSnapshot, threshold: float, racing_minutes: int,
-                racing_threshold: float) -> BudgetView:
-    if u.source == "unavailable":
-        applied = "n/a"
-    elif u.minutes_to_reset <= racing_minutes:
-        applied = "reset-racing"
-    else:
-        applied = "base"
-    return BudgetView(
-        utilization=u.utilization, minutes_to_reset=u.minutes_to_reset,
-        source=u.source,
-        would_spawn=should_spawn(u, threshold, racing_minutes,
-                                 racing_threshold),
-        threshold_applied=applied)
+class ProviderUsageView(BaseModel):
+    provider: str
+    source: Source
+    windows: list[WindowView]
+
+
+class GateView(BaseModel):
+    """The usage verdict for the policy default model: what an idle box would
+    spawn next, and the verdict the dispatcher's stall/resume pings key on."""
+    model: str
+    provider: str
+    admitted: bool
+    note: str                  # verdict_note: the binding window and its numbers
+    minutes_to_reset: float    # of the binding window; 0 when there is none
+    binding: WindowView | None
+
+
+class UsageView(BaseModel):
+    providers: list[ProviderUsageView]
+    gate: GateView
+
+
+CLOSE_HEADROOM = 0.08
+
+
+def _severity(headroom: float) -> Severity:
+    return "blocked" if headroom <= 0 else "close" if headroom <= CLOSE_HEADROOM else "ok"
+
+
+def _window_view(r: Reading, now: datetime) -> WindowView:
+    return WindowView(kind=r.window.kind, scope=r.window.scope,
+                      used=r.window.used, allowance=r.allowance,
+                      headroom=r.headroom,
+                      minutes_to_reset=minutes_to_reset(r.window, now),
+                      severity=_severity(r.headroom))
+
+
+def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
+               pace: PaceConfig, default_model: str) -> UsageView:
+    """Every provider's windows, sorted by provider name, and one gate: the
+    verdict for the policy default model."""
+    verdict = admits(usages, default_model, now, pace)
+    binding = _window_view(verdict.binding, now) if verdict.binding else None
+    return UsageView(
+        providers=[ProviderUsageView(
+            provider=name, source=usages[name].source,
+            windows=[_window_view(r, now) for r in readings(usages[name], now, pace)])
+            for name in sorted(usages)],
+        gate=GateView(model=default_model, provider=verdict.provider,
+                      admitted=verdict.admitted, note=verdict_note(verdict, now),
+                      minutes_to_reset=binding.minutes_to_reset if binding else 0.0,
+                      binding=binding))
 
 
 class QuarantineEntry(BaseModel):
@@ -543,6 +589,7 @@ class NextClaimView(BaseModel):
     next_issue: int = 0
     next_target: str = ""
     minutes_to_reset: float = 0
+    blocked_by: str = ""
 
 
 def _is_candidate(r: dict) -> bool:
@@ -551,15 +598,38 @@ def _is_candidate(r: dict) -> bool:
             and "auto" in (r.get("labels") or []))
 
 
+def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
+    """When the next dispatcher pass is due (ISO), or None when that is
+    unknowable: no heartbeat, a malformed one, or one older than two
+    intervals — the dispatcher may not be running."""
+    hb = heartbeat or {}
+    finished = _parse_ts(hb.get("finished_at", ""))
+    try:
+        interval = int(hb.get("interval_minutes") or 0)
+        # A naive finished_at against an aware now raises TypeError: the zone
+        # is unknown, so staleness cannot be judged either.
+        fresh = (finished is not None and interval > 0
+                 and (now - finished).total_seconds() <= 2 * interval * 60)
+    except (ValueError, TypeError):
+        return None
+    return (finished + timedelta(minutes=interval)).isoformat() if fresh else None
+
+
 def next_claim(heartbeat: dict | None, *, now: datetime,
-               tasks: list[TaskState], capacity: int, budget: BudgetView,
+               tasks: list[TaskState], capacity: int,
+               gate: GateView,
                queues: list[tuple[str, list[dict]]],
                claims_paused: bool = False,
                triage_running: bool = False) -> NextClaimView:
     """A forecast of what _claim_new consumes next, from data already on the
     board request. It is a PARTIAL mirror, deliberately: the gates it models
-    are the ones readable from local state (heartbeat, budget, capacity, the
+    are the ones readable from local state (heartbeat, usage, capacity, the
     triage pause, the cached rank rows).
+
+    The usage gate here is the policy default model's verdict, while the
+    dispatcher gates each candidate on its own spec model: a candidate a rule
+    routes to another model can be claimed while this says budget-blocked,
+    or denied while this says will-claim.
 
     Gates it does NOT model, so `will-claim` can still be wrong:
       * failures.check_quarantine — a quarantined candidate is forecast as
@@ -571,32 +641,18 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
       * queue movement since the rank rows were cached (rank_rows has a TTL,
         so the dispatcher's own pass may see a different head).
     """
-    hb = heartbeat or {}
-    finished = _parse_ts(hb.get("finished_at", ""))
-    try:
-        interval = int(hb.get("interval_minutes") or 0)
-    except (ValueError, TypeError):
+    eta = _pass_eta(heartbeat, now)
+    if eta is None:
         return NextClaimView(verdict="unknown", next_pass_eta="")
-    if finished is None or interval <= 0:
-        return NextClaimView(verdict="unknown", next_pass_eta="")
-    try:
-        stale = (now - finished).total_seconds() > 2 * interval * 60
-    except TypeError:
-        # Mixed-awareness comparison (one naive, one aware): zone is unknown,
-        # so we cannot determine staleness — treat as unknown.
-        return NextClaimView(verdict="unknown", next_pass_eta="")
-    if stale:
-        return NextClaimView(verdict="unknown", next_pass_eta="")
-    eta = (finished + timedelta(minutes=interval)).isoformat()
-    # Mirror dispatcher line 1156: `if budget_ok and not claims_paused: _claim_new(...)`.
     # claims_paused wins over budget-blocked: when both are true claims are still
     # skipped, and the triage pause is the more actionable signal for the operator.
     if claims_paused:
         return NextClaimView(verdict="claims-paused", next_pass_eta=eta)
-    if not budget.would_spawn:
+    if not gate.admitted:
         return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
-                             minutes_to_reset=budget.minutes_to_reset)
-    # Mirror dispatcher line 1136: capacity is reduced by 1 when triage is running,
+                             minutes_to_reset=gate.minutes_to_reset,
+                             blocked_by=gate.note)
+    # Mirror the dispatcher pass: capacity is reduced by 1 while triage runs,
     # floored at 0 so a capacity=1 system does not claim during a triage sweep.
     eff_capacity = max(0, capacity - 1) if triage_running else capacity
     # Key on (target, issue) — same rationale as build_board: issue numbers

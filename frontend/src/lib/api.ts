@@ -2,10 +2,16 @@ import type { components } from './api-types'
 
 export type ArtifactsView = components['schemas']['ArtifactsView']
 export type BoardView = components['schemas']['BoardView']
+export type BoardSnapshot = components['schemas']['BoardSnapshot']
 export type TaskCard = components['schemas']['TaskCard']
 export type CapacityView = components['schemas']['CapacityView']
 export type TaskDetail = components['schemas']['TaskDetail']
-export type BudgetView = components['schemas']['BudgetView']
+export type UsageView = components['schemas']['UsageView']
+export type GateView = components['schemas']['GateView']
+export type ProviderUsageView = components['schemas']['ProviderUsageView']
+export type WindowView = components['schemas']['WindowView']
+export type Severity = WindowView['severity']
+export type WindowKind = WindowView['kind']
 export type FailuresView = components['schemas']['FailuresView']
 export type QuarantineEntry = components['schemas']['QuarantineEntry']
 export type FingerprintEntry = components['schemas']['FingerprintEntry']
@@ -91,7 +97,7 @@ export const api = {
     request<TaskDetail>(`/task/${target}/${issue}`),
   taskHistory: (target: string, issue: number, lines = 2000) =>
     request<PaneHistory>(`/task/${target}/${issue}/history?lines=${lines}`),
-  budget: () => request<BudgetView>('/budget'),
+  usage: () => request<UsageView>('/usage'),
   failures: () => request<FailuresView>('/failures'),
   history: (limit = 200) => request<HistoryView>(`/history?limit=${limit}`),
   pendingIntents: () => request<PendingIntentsView>('/pending-intents'),

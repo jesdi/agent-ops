@@ -20,11 +20,12 @@ if root not in sys.path:
 @pytest.fixture(autouse=True)
 def _no_ambient_claude_token(monkeypatch):
     """Session containers carry CLAUDE_CODE_OAUTH_TOKEN (podman --env-file),
-    and budget.fetch_usage prefers it over any credentials_path fixture — an
-    ambient token would flip every Authorization assertion in the suite.
-    Tests exercising the env path set it explicitly. OP_SERVICE_ACCOUNT_TOKEN
-    likewise: with it present, budget.fetch_usage would shell out to the real
-    `op` binary mid-suite."""
+    and usage_providers.AnthropicUsage.fetch prefers it over any
+    credentials_path fixture — an ambient token would flip every Authorization
+    assertion in the suite. Tests exercising the env path set it explicitly.
+    OP_SERVICE_ACCOUNT_TOKEN likewise: with it present,
+    usage_providers.AnthropicUsage.fetch would shell out to the real `op`
+    binary mid-suite."""
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
     monkeypatch.delenv("AGENT_OPS_COMMAND_WRAPPER", raising=False)

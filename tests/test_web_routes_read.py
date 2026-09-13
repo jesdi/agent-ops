@@ -1,11 +1,11 @@
 """GET routes wired against FakeSources."""
 import json
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
 from dispatcher import messages as msgq
-from dispatcher.budget import UsageSnapshot
 from dispatcher.state import PARK_HUMAN, Stage
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_task)
 from web.app import create_app
@@ -134,29 +134,44 @@ def test_task_detail_reports_a_starved_wake(tmp_path):
         "will deliver when the session resumes — waiting for a free slot")
 
 
-def test_budget_base_threshold(tmp_path):
+def test_usage_base_allowance(tmp_path):
+    from tests.usagefakes import session_usage
     fake, client = rig(tmp_path)
-    fake.snapshot = UsageSnapshot(0.5, 120.0, "oauth")
-    body = client.get("/api/budget", headers=HEADERS).json()
-    assert body == {"utilization": 0.5, "minutes_to_reset": 120.0,
-                    "source": "oauth", "would_spawn": True,
-                    "threshold_applied": "base"}
+    fake.usages = {"anthropic": session_usage(0.5)}
+    body = client.get("/api/usage", headers=HEADERS).json()
+    (provider,) = body["providers"]
+    assert provider["provider"] == "anthropic"
+    assert provider["source"] == "oauth"
+    assert provider["windows"][0]["allowance"] == pytest.approx(0.8, abs=1e-3)
+    assert set(provider) == {"provider", "source", "windows"}
+    gate = body["gate"]
+    assert (gate["model"], gate["provider"], gate["admitted"]) == (
+        "claude-opus-4-8", "anthropic", True)
+    assert gate["binding"]["kind"] == "session"
 
 
-def test_budget_reset_racing(tmp_path):
+def test_usage_reset_racing(tmp_path):
+    from tests.usagefakes import session_usage
     fake, client = rig(tmp_path)
-    fake.snapshot = UsageSnapshot(0.9, 10.0, "ccusage")
-    body = client.get("/api/budget", headers=HEADERS).json()
-    assert body["threshold_applied"] == "reset-racing"
-    assert body["would_spawn"] is True  # 0.9 < racing_threshold 0.95
+    # session window resets in 10 min (≤ racing_minutes=30) → racing threshold 0.95
+    fake.usages = {"anthropic": session_usage(0.9, mins=10.0)}
+    body = client.get("/api/usage", headers=HEADERS).json()
+    assert body["gate"]["admitted"] is True   # 0.9 < racing_threshold 0.95
+    assert body["providers"][0]["windows"][0]["allowance"] == pytest.approx(0.95, abs=1e-3)
 
 
-def test_budget_unavailable(tmp_path):
+def test_usage_unavailable(tmp_path):
+    from tests.usagefakes import session_usage
     fake, client = rig(tmp_path)
-    fake.snapshot = UsageSnapshot(1.0, 0.0, "unavailable")
-    body = client.get("/api/budget", headers=HEADERS).json()
-    assert body["would_spawn"] is False
-    assert body["threshold_applied"] == "n/a"
+    fake.usages = {"anthropic": session_usage(source="unavailable")}
+    body = client.get("/api/usage", headers=HEADERS).json()
+    (provider,) = body["providers"]
+    assert provider["provider"] == "anthropic"
+    assert provider["source"] == "unavailable"
+    assert provider["windows"] == []
+    assert body["gate"]["admitted"] is False
+    assert body["gate"]["note"] == "anthropic: usage unavailable"
+    assert (body["gate"]["binding"], body["gate"]["minutes_to_reset"]) == (None, 0)
 
 
 def test_failures_joins_blocker_state(tmp_path):

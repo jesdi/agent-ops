@@ -44,10 +44,10 @@ it('invalidates exactly the changed query keys on message', () => {
   setup()
   const es = FakeEventSource.instances[0]!
   act(() => { es.onopen?.() })
-  act(() => { es.onmessage?.({ data: '{"changed": ["board", "budget"]}' }) })
+  act(() => { es.onmessage?.({ data: '{"changed": ["board", "usage"]}' }) })
   const keys = spy.mock.calls.map((c) => JSON.stringify(c[0]?.queryKey))
   expect(keys).toContain(JSON.stringify(['board']))
-  expect(keys).toContain(JSON.stringify(['budget']))
+  expect(keys).toContain(JSON.stringify(['usage']))
   expect(keys).toContain(JSON.stringify(['task']))          // board change touches task detail
   expect(keys).toContain(JSON.stringify(['pending-intents'])) // board confirms intents
   expect(keys).not.toContain(JSON.stringify(['queue']))

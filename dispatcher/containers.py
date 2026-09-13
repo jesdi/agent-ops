@@ -9,6 +9,8 @@ import os
 import shlex
 from pathlib import Path
 
+from dispatcher.models import bare_model_id
+
 
 def clone_root(worktree: str) -> str:
     gitdir = (Path(worktree) / ".git").read_text().split("gitdir:", 1)[1].strip()
@@ -91,7 +93,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         # store provides. It is a session-config flag, orthogonal to
         # --continue on the resume path.
         f"{image()} claude --remote-control {name} "
-        f"--permission-mode auto --model {model} {claude_args}"
+        f"--permission-mode auto --model {bare_model_id(model)} {claude_args}"
     )
 
 
@@ -117,7 +119,7 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     composed; the podman argv stays a list so its shape stays assertable."""
     home = str(Path.home())
     claude = (f"claude -p \"$(cat {shlex.quote(prompt_path)})\" "
-              f"--permission-mode auto --model {shlex.quote(model)}")
+              f"--permission-mode auto --model {shlex.quote(bare_model_id(model))}")
     return [
         *_wrapper(),
         "podman", "run", "--rm", "--name", name,

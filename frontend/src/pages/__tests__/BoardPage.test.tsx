@@ -4,9 +4,10 @@ import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
 import {
-  board as fx_board, budgetUnavailable, inProgressCard, pendingReplyIntent,
+  board as fx_board, usageUnavailable, inProgressCard, pendingReplyIntent,
 } from '../../test/fixtures'
 import { renderWithProviders } from '../../test/render'
+import type { UsageView } from '../../lib/api'
 import { BoardPage } from '../BoardPage'
 
 beforeEach(() => server.use(...defaultHandlers))
@@ -102,17 +103,15 @@ it('backing out of the drop confirmation fires nothing', async () => {
   expect(screen.queryByTestId('wont-do-confirm')).not.toBeInTheDocument()
 })
 
-it('AWKWARD: budget source unavailable shows the consequence, not a gauge', async () => {
-  server.use(http.get('/api/budget', () => HttpResponse.json(budgetUnavailable)))
+it('AWKWARD: usage source unavailable shows the consequence, not a gauge', async () => {
+  server.use(http.get('/api/usage', () => HttpResponse.json(usageUnavailable)))
   renderWithProviders(<BoardPage />)
   await waitFor(() =>
     expect(
-      screen.getByText('usage unknown — dispatcher will not spawn'),
+      screen.getByText('usage unknown — dispatcher will not spawn on anthropic'),
     ).toBeInTheDocument(),
   )
-  expect(
-    screen.queryByRole('progressbar', { name: 'usage budget utilization' }),
-  ).not.toBeInTheDocument()
+  expect(screen.queryByRole('progressbar', { name: /used$/ })).not.toBeInTheDocument()
 })
 
 it('AWKWARD: a pending intent renders a badge on the affected card', async () => {
@@ -150,20 +149,55 @@ it('several pending intents on one issue all render — none silently dropped', 
   expect(screen.getByText('pending: kill')).toBeInTheDocument()
 })
 
-it('a failing /api/budget states the gap instead of silently dropping the gauge', async () => {
+it('a failing /api/usage states the gap instead of silently dropping the gauge', async () => {
   server.use(
-    http.get('/api/budget', () =>
-      HttpResponse.json({ detail: 'budget source exploded' }, { status: 500 }),
+    http.get('/api/usage', () =>
+      HttpResponse.json({ detail: 'usage source exploded' }, { status: 500 }),
     ),
   )
   renderWithProviders(<BoardPage />)
   await waitFor(() =>
-    expect(screen.getByTestId('budget-error')).toBeInTheDocument(),
+    expect(screen.getByTestId('usage-error')).toBeInTheDocument(),
   )
-  expect(screen.getByTestId('budget-error')).toHaveTextContent('usage unknown')
-  expect(
-    screen.queryByRole('progressbar', { name: 'usage budget utilization' }),
-  ).not.toBeInTheDocument()
+  expect(screen.getByTestId('usage-error')).toHaveTextContent(/^usage unknown — usage source exploded$/)
+  expect(screen.queryByRole('progressbar', { name: /used$/ })).not.toBeInTheDocument()
+})
+
+it('two provider groups render side by side; the spawn chip shows once, on the gate provider', async () => {
+  const twoProviders: UsageView = {
+    providers: [
+      {
+        provider: 'anthropic', source: 'oauth',
+        windows: [
+          { kind: 'weekly', scope: 'Fable', used: 0.35, allowance: 0.289,
+            headroom: -0.061, minutes_to_reset: 7320, severity: 'blocked' },
+        ],
+      },
+      {
+        provider: 'nvidia', source: 'ccusage',
+        windows: [{ kind: 'session', scope: null, used: 0.4, allowance: 0.8,
+          headroom: 0.4, minutes_to_reset: 45, severity: 'ok' }],
+      },
+    ],
+    // Sonnet draws on no Fable window, so the gate is open despite it
+    gate: { model: 'claude-sonnet-4-6', provider: 'anthropic', admitted: true,
+      note: 'anthropic: no usage windows reported', minutes_to_reset: 0, binding: null },
+  }
+  server.use(http.get('/api/usage', () => HttpResponse.json(twoProviders)))
+  renderWithProviders(<BoardPage />)
+  // Both groups must render
+  const anthropicGroup = await screen.findByText('anthropic')
+  const nvidiaGroup = await screen.findByText('nvidia')
+  // findByText returns the heading <span> whose direct text is the provider name;
+  // .closest('div') reaches the per-provider group div that wraps it.
+  const anthropicContainer = anthropicGroup.closest('div')!
+  const nvidiaContainer = nvidiaGroup.closest('div')!
+  expect(within(anthropicContainer).getByText('will spawn claude-sonnet-4-6')).toBeInTheDocument()
+  expect(within(nvidiaContainer).queryByText(/^will (not )?spawn/)).not.toBeInTheDocument()
+  // the chip is the default model's verdict, independent of any one window's severity
+  expect(within(anthropicContainer).getByRole('progressbar')).toHaveAttribute(
+    'aria-valuetext', expect.stringContaining('over the limit'),
+  )
 })
 
 it('AWKWARD: two parked cards, only the login-parked one holds a unit', async () => {

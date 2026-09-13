@@ -10,7 +10,6 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import failures, spec_publish
-from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
 from dispatcher.pr_poll import CIStatus
@@ -20,6 +19,7 @@ from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                LoopCaps, SpecApprovalRequest, Stage,
                                TaskState, clear_waiting, has_waiting, load,
                                load_all, mark_waiting, save)
+from tests.usagefakes import session_usage
 
 POLICY = parse_policy({
     "default": "claude-opus-4-8",
@@ -33,6 +33,9 @@ POLICY = parse_policy({
                  "implement": "claude-opus-4-8"}},
     ],
 })
+
+ADMIT_ALL = lambda m: main.Verdict(admitted=True, provider="anthropic", binding=None, reason="ok")  # noqa: E731
+DENY_ALL = lambda m: main.Verdict(admitted=False, provider="anthropic", binding=None, reason="over-pace")  # noqa: E731
 
 
 class FakeGitHub:
@@ -205,7 +208,6 @@ class FakeNotifier:
 def cfg(tmp_path: Path) -> Config:
     return Config(
         state_dir=str(tmp_path / "state"), capacity=3,
-        budget_threshold=0.8, racing_minutes=30, racing_threshold=0.95,
         session_memory="2g", session_cpus="2",
         targets=[Target(
             name="portfolio_eval", repo="jesdi/portfolio_eval",
@@ -222,10 +224,9 @@ def cfg(tmp_path: Path) -> Config:
     )
 
 
-def patch_usage(monkeypatch, util=0.2):
-    monkeypatch.setattr(
-        main, "fetch_usage",
-        lambda state_dir: UsageSnapshot(util, 120.0, "oauth"))
+def patch_usage(monkeypatch, util=0.2, **kw):
+    monkeypatch.setattr(main, "fetch_all",
+                        lambda cfg, **k: {"anthropic": session_usage(util, **kw)})
 
 
 def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
@@ -333,6 +334,123 @@ def test_budget_resume_pings_once(tmp_path, monkeypatch):
     main.run_pass(c, d)
     main.run_pass(c, d)
     assert d.notifier.sent.count("budget_resume") == 1
+
+
+def test_fable_over_pace_blocks_only_fable_spawns(tmp_path, monkeypatch):
+    # weekly allowance in session_usage is ~0.6 (half elapsed + margin); 0.9 used on Fable is over pace
+    patch_usage(monkeypatch, util=0.2, fable=0.9)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = dc_replace(c, models=parse_policy({
+        "default": "claude-sonnet-4-6",
+        "rules": [{"name": "big", "when": {"labels_include": ["big"]}, "use": "claude-fable-5-1"}]}))
+    gh = FakeGitHub([Candidate(1, "A", "u", labels=["auto", "big"]),
+                     Candidate(2, "B", "u", labels=["auto"])])
+    d = deps(gh, FakeSessions())
+    main.run_pass(c, d)
+    assert [n for n in gh.claimed] == [2]
+    assert d.notifier.sent.count("budget_stall") == 0   # the default model is admitted
+
+
+def test_drive_task_admits_per_spawned_stage_model(tmp_path, monkeypatch):
+    """Stage model routing in _drive_task: SpawnStage uses the target stage's
+    model, not a single global flag. Fable over pace blocks the Fable-routed
+    spawn while the Sonnet-routed spawn in the same pass proceeds."""
+    patch_usage(monkeypatch, util=0.2, fable=0.9)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    # plan → Fable (over pace); every other stage → Sonnet (admitted)
+    c = dc_replace(c, models=parse_policy({
+        "default": "claude-sonnet-4-6",
+        "rules": [{"name": "fable-plan",
+                   "use": {"plan": "claude-fable-5-1"}}]}))
+    # Task A: AWAITING_SPEC_REVIEW + done signal → SpawnStage(PLAN) → Fable → denied
+    wt_a = Path(c.targets[0].worktrees_path) / "task-1"
+    (wt_a / ".agent").mkdir(parents=True)
+    spec = wt_a / "spec.md"
+    spec.write_text("# t — design\n\n## Problem\n\n" + "x " * 400
+                    + "\n\n## Decisions\n\n" + "y " * 400)
+    (wt_a / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+    save(c.state_dir, TaskState(issue=1, target="portfolio_eval",
+                                stage=Stage.AWAITING_SPEC_REVIEW, slot=0,
+                                worktree=str(wt_a), branch="agent/task-1",
+                                title="A", updated_at="2026-07-14T00:00:00+00:00"))
+    # Task B: IMPLEMENT last-ticket done → SpawnStage(REVIEW) → Sonnet → admitted
+    wt_b = Path(c.targets[0].worktrees_path) / "task-2"
+    (wt_b / ".agent").mkdir(parents=True)
+    (wt_b / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "done", "note": ""}))
+    save(c.state_dir, TaskState(issue=2, target="portfolio_eval",
+                                stage=Stage.IMPLEMENT, slot=1,
+                                ticket_cursor=1, ticket_count=1,
+                                worktree=str(wt_b), branch="agent/task-2",
+                                title="B", updated_at="2026-07-14T00:00:00+00:00"))
+    sess = FakeSessions(alive={1, 2})
+    main.run_pass(c, deps(sess=sess))
+    spawned_issues = [s[0] for s in sess.spawned]
+    assert 1 not in spawned_issues, "Fable-routed PLAN spawn must be blocked by pace"
+    assert 2 in spawned_issues, "Sonnet-routed REVIEW spawn must proceed"
+    assert load(c.state_dir, "portfolio_eval", 1).stage is Stage.AWAITING_SPEC_REVIEW
+    assert load(c.state_dir, "portfolio_eval", 2).stage is Stage.REVIEW
+
+
+def test_budget_stall_note_names_the_binding_window(tmp_path, monkeypatch):
+    patch_usage(monkeypatch, util=0.95)
+    patch_workspace(monkeypatch, tmp_path)
+    d = deps()
+    main.run_pass(cfg(tmp_path), d)
+    (note,) = [k["note"] for t, k in d.notifier.calls if t == "budget_stall"]
+    assert note.startswith("anthropic session: 95% used, allowance 80%, headroom −15 pts")
+
+
+def test_resume_ping_waits_for_resume_headroom(tmp_path, monkeypatch):
+    """The weekly allowance grows continuously, so a box running at pace
+    crosses zero headroom back and forth; the resume ping (and the marker
+    removal) waits for RESUME_HEADROOM or every crossing pings a pair."""
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    marker = Path(c.state_dir) / "budget-stalled"
+    patch_usage(monkeypatch, util=0.95)
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_stall") == 1 and marker.exists()
+    patch_usage(monkeypatch, util=0.79)      # admitted, session headroom 0.01
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_resume") == 0 and marker.exists()
+    patch_usage(monkeypatch, util=0.77)      # admitted, session headroom 0.03
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("budget_resume") == 1 and not marker.exists()
+    assert d.notifier.sent.count("budget_stall") == 1
+
+
+def test_woken_pr_open_task_is_gated_on_the_model_it_spawns(tmp_path):
+    """A parked pr-open task resumes as a fresh address-review round, which
+    runs on the implement model — that is the model the gate must ask, not
+    the one the pr-open stage itself would resolve to."""
+    c = dc_replace(cfg(tmp_path), models=parse_policy({
+        "default": "claude-sonnet-4-6",
+        "rules": [{"name": "fable-implement",
+                   "use": {"implement": "claude-fable-5-1"}}]}))
+    make_task(c, issue=42, stage=Stage.PR_OPEN, park=PARK_WAKE, pr_number=7)
+    fable_over_pace = lambda m: DENY_ALL(m) if "fable" in m else ADMIT_ALL(m)  # noqa: E731
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], admit=fable_over_pace)
+    assert d.sessions.spawned == [] and d.sessions.resumed == []
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
+    assert [s[:3] for s in d.sessions.spawned] == [
+        (42, Stage.ADDRESS_REVIEW.value, "claude-fable-5-1")]
+
+
+def test_every_machine_action_has_a_drive_handler():
+    """_drive_task dispatches on the action type; an action machine.py can
+    emit without a handler would crash the task instead of driving it."""
+    import dataclasses
+    import inspect
+    from dispatcher import machine
+    actions = {cls for _, cls in inspect.getmembers(machine, inspect.isclass)
+               if cls.__module__ == machine.__name__ and dataclasses.is_dataclass(cls)}
+    assert actions and actions == set(main._DRIVE)
 
 
 def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
@@ -1380,7 +1498,8 @@ def test_frontend_task_spawns_plan_on_fable_and_implement_on_opus(
 
     # …and the implement stage of the same task drops to opus
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert main._model_for(c, c.targets[0], t, Stage.IMPLEMENT) == "claude-opus-4-8"
+    assert main._model_for(c, c.targets[0], t.effort, t.labels,
+                           Stage.IMPLEMENT) == "claude-opus-4-8"
 
 
 def test_resume_uses_the_model_for_the_parked_stage(tmp_path, monkeypatch):
@@ -3233,9 +3352,8 @@ def test_dry_run_leaves_the_real_state_dir_alone_entirely(
 # ---------------------------------------------------------------------------
 
 def patch_usage_dark(monkeypatch):
-    monkeypatch.setattr(
-        main, "fetch_usage",
-        lambda state_dir: UsageSnapshot(0.0, 0.0, "unavailable"))
+    monkeypatch.setattr(main, "fetch_all",
+                        lambda cfg, **k: {"anthropic": session_usage(0.0, 0.0, source="unavailable")})
 
 
 def dark_marker(c):
@@ -3460,7 +3578,8 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     messages.append(c.state_dir, 42, "pre-brief: use the v2 API", "jesdi@github")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task, Stage.SPEC)
+    main._spawn_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC))
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
@@ -3472,7 +3591,9 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.QUEUED)
     d = deps()
-    main._spawn_stage(c, d, c.targets[0], load(c.state_dir, "portfolio_eval", 42), Stage.SPEC)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._spawn_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC))
     assert "## Operator messages" not in d.sessions.spawned[-1][3]
 
 
@@ -3483,7 +3604,7 @@ def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
     messages.append(c.state_dir, 42, "first", "jesdi@github")
     messages.append(c.state_dir, 42, "second", "jesdi@github")
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     text = d.sessions.resumed[-1][1]
     assert text.index("first") < text.index("second")
     assert messages.undelivered(c.state_dir, 42) == []
@@ -3493,7 +3614,7 @@ def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     assert d.sessions.resumed[-1][1] == "Continue."
 
 
@@ -3503,7 +3624,9 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
     from dispatcher import messages
     messages.append(c.state_dir, 42, "keep the scope small", "jesdi@github")
     d = deps()
-    main._retry_plan(c, d, c.targets[0], load(c.state_dir, "portfolio_eval", 42),
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._retry_plan(c, d, c.targets[0], task,
+                     main._launch_for(c, c.targets[0], task, Stage.PLAN),
                      "missing Goal line")
     assert "keep the scope small" in d.sessions.resumed[-1][1]
     assert messages.undelivered(c.state_dir, 42) == []
@@ -3516,7 +3639,7 @@ def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
     from dispatcher import messages
     messages.append(c.state_dir, 42, "delivered now", "jesdi@github")
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     messages.append(c.state_dir, 42, "arrived later", "jesdi@github")
     assert [m.text for m in messages.undelivered(c.state_dir, 42)] == [
         "arrived later"]
@@ -3579,7 +3702,7 @@ def test_two_human_parks_no_longer_deadlock_a_resume(tmp_path):
     make_task(c, issue=198, slot=NO_SLOT, park=PARK_WAKE)
     main._reconcile_slots(c)
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     t = load(c.state_dir, "portfolio_eval", 198)
     assert t.park == "" and t.slot != NO_SLOT
 
@@ -3589,8 +3712,8 @@ def test_blocked_wake_emits_one_event_not_one_per_pass(tmp_path):
     make_task(c, issue=41, slot=0, park="")          # holds the only capacity
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert len(blocked) == 1
@@ -3606,7 +3729,7 @@ def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
-    main._resume_woken(c, deps(), c.targets[0], budget_ok=True)
+    main._resume_woken(c, deps(), c.targets[0], admit=ADMIT_ALL)
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["detail"] for e in blocked] == ["no free slot"]
@@ -3617,10 +3740,10 @@ def test_marker_clears_once_the_wake_succeeds(tmp_path):
     make_task(c, issue=41, slot=0, park="")
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     assert main._wake_blocked_path(c, 42).exists()
     main.delete(c.state_dir, "portfolio_eval", 41)                     # capacity frees up
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     assert not main._wake_blocked_path(c, 42).exists()
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
@@ -3630,7 +3753,7 @@ def test_blocked_feedback_spawn_is_reported_too(tmp_path):
     make_task(c, issue=41, slot=0, park="")
     make_task(c, issue=42, slot=NO_SLOT, stage=Stage.PR_OPEN,
               feedback_pending=True)
-    main._spawn_feedback(c, deps(), c.targets[0], budget_ok=True)
+    main._spawn_feedback(c, deps(), c.targets[0], admit=ADMIT_ALL)
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["issue"] for e in blocked] == [42]
@@ -3649,7 +3772,7 @@ def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
     make_task(c, issue=41, slot=0, park="")      # holds the only capacity unit
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps(sess=FakeSessions(alive={41}))
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     assert main._wake_blocked_path(c, 42).exists()
 
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
@@ -4090,7 +4213,8 @@ def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
               e2e_rounds=1, ci_rounds=3)
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task, Stage.SPEC)
+    main._spawn_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
     assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
@@ -4137,11 +4261,11 @@ def test_telegram_reply_operator_wake_clears_all_four_counters(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 
 def test_admission_budget_denied_retains_operator_request(tmp_path):
-    """Slice 10 regression lock: budget_ok=False leaves operator_request intact.
+    """Slice 10 regression lock: DENY_ALL leaves operator_request intact.
 
     Passes by construction:
     - _wake replaces only park/hold_for_attach/updated_at — operator_request untouched.
-    - _resume_woken returns immediately when budget_ok is False (main.py:875),
+    - _resume_woken skips every task when admit returns denied,
       so no task state is modified at all.
     """
     c = cfg(tmp_path)
@@ -4150,7 +4274,7 @@ def test_admission_budget_denied_retains_operator_request(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._wake(c, task, "please answer")
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=False)
+    main._resume_woken(c, d, c.targets[0], admit=DENY_ALL)
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.operator_request == req   # untouched
     assert saved.park == PARK_WAKE         # woken, not resumed
@@ -4172,7 +4296,7 @@ def test_admission_capacity_full_retains_operator_request(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._wake(c, task, "please answer")
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.operator_request == req   # untouched
     assert saved.park == PARK_WAKE         # still wake-queued, not resumed
@@ -4320,7 +4444,8 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
                    spec_path="docs/specs/design.md")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task, Stage.IMPLEMENT)
+    main._spawn_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.IMPLEMENT))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
         f"stage advance must clear operator_request, got {t.operator_request!r}")

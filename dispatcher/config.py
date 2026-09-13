@@ -4,11 +4,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy
+from dispatcher.models import (DEFAULT_POLICY, ModelPolicy, check_model_id,
+                               parse_policy, split_model_id)
 from dispatcher.state import LoopCaps
+from dispatcher.usage import PaceConfig
 
 
 @dataclass(frozen=True)
@@ -36,9 +39,6 @@ class Target:
 class Config:
     state_dir: str
     capacity: int
-    budget_threshold: float
-    racing_minutes: int
-    racing_threshold: float
     session_memory: str
     session_cpus: str
     targets: list[Target]
@@ -60,6 +60,9 @@ class Config:
     # console's next-pass countdown is computed from this value.
     pass_interval_minutes: int = 10
     loop_caps: LoopCaps = LoopCaps()
+    # The usage gate: session threshold and weekly pace
+    # (see docs/specs/2026-09-13-usage-pace-gate-design.md).
+    pace: PaceConfig = PaceConfig()
 
 
 def _loop_caps(raw: object) -> LoopCaps:
@@ -77,6 +80,27 @@ def _loop_caps(raw: object) -> LoopCaps:
     return LoopCaps(**raw)
 
 
+def _pace(raw: dict) -> PaceConfig:
+    """The usage-gate knobs, read from their top-level targets.yaml keys."""
+    d = PaceConfig()
+    pace = PaceConfig(
+        budget_threshold=raw.get("budget_threshold", d.budget_threshold),
+        racing_minutes=raw.get("racing_minutes", d.racing_minutes),
+        racing_threshold=raw.get("racing_threshold", d.racing_threshold),
+        pace_margin=float(raw.get("pace_margin", d.pace_margin)),
+        weekend_weight=float(raw.get("weekend_weight", d.weekend_weight)),
+        timezone=str(raw.get("timezone", d.timezone)))
+    try:
+        ZoneInfo(pace.timezone)
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        raise ValueError(f"timezone: unknown IANA zone {pace.timezone!r}") from e
+    if not 0.0 <= pace.weekend_weight <= 1.0:
+        raise ValueError(f"weekend_weight: must be within 0..1, got {pace.weekend_weight}")
+    if not 0.0 <= pace.pace_margin < 1.0:
+        raise ValueError(f"pace_margin: must be at least 0 and below 1, got {pace.pace_margin}")
+    return pace
+
+
 def _target(raw: dict) -> Target:
     fields = dict(raw)
     has_models = "models" in fields
@@ -92,9 +116,6 @@ def load_config(path: str | Path) -> Config:
     return Config(
         state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
         capacity=raw.get("capacity", 3),
-        budget_threshold=raw.get("budget_threshold", 0.8),
-        racing_minutes=raw.get("racing_minutes", 30),
-        racing_threshold=raw.get("racing_threshold", 0.95),
         session_memory=str(raw.get("session_memory", "2g")),
         session_cpus=str(raw.get("session_cpus", "2")),
         targets=[_target(t) for t in raw.get("targets", [])],
@@ -104,9 +125,11 @@ def load_config(path: str | Path) -> Config:
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
         spec_review_grace_minutes=int(raw.get("spec_review_grace_minutes", 15)),
         done_retention_days=int(raw.get("done_retention_days", 7)),
-        triage_model=str(raw.get("triage_model", "")),
+        triage_model=(check_model_id(str(raw["triage_model"]), "triage_model")
+                      if raw.get("triage_model") else ""),
         pass_interval_minutes=int(raw.get("pass_interval_minutes", 10)),
         loop_caps=_loop_caps(raw.get("loop_caps")),
+        pace=_pace(raw),
     )
 
 
@@ -114,3 +137,16 @@ def policy_for(cfg: Config, target: Target) -> ModelPolicy:
     """A target's own policy replaces the global one wholesale — rule lists are
     never merged, because merge order would make first-match-wins ambiguous."""
     return target.models or cfg.models
+
+
+def referenced_providers(cfg: Config) -> frozenset[str]:
+    """Every provider some configured model id names — the set the usage
+    fetch covers. A provider you hold credentials for but never route to is
+    not polled; one you route to without an adapter shows as unavailable."""
+    ids = cfg.models.model_ids()
+    for t in cfg.targets:
+        if t.models is not None:
+            ids.extend(t.models.model_ids())
+    if cfg.triage_model:
+        ids.append(cfg.triage_model)
+    return frozenset(split_model_id(m)[0] for m in ids)

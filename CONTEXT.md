@@ -46,6 +46,33 @@ e2e fixes, CI fixes on an open PR) may run before the task parks for the
 operator. Parks, never fails.
 _Avoid_: retry limit (that is the plan-format retry)
 
+**Provider**:
+A subscription whose usage windows the box spends (`anthropic`; later
+`openai`, `nvidia`). Named by the `provider/` prefix of a model id; a bare
+id is anthropic's. The same bare model under two providers spends two
+different windows.
+_Avoid_: vendor, backend, API
+
+**Window**:
+One limit a provider reports: a kind (session, weekly), an optional model
+scope (Fable), a used fraction, when it resets, and its nominal length.
+_Avoid_: quota, bucket
+
+**Allowance**:
+The fraction of a window the box may have consumed by now — the session
+threshold, or the weekend-weighted elapsed share of the week plus the pace
+margin.
+_Avoid_: budget (that word now only names the stall marker and the pings)
+
+**Headroom**:
+Allowance minus used on a window. The gate admits a model while every
+window it considers has headroom above zero.
+
+**Binding window**:
+Of the windows a model draws on — unscoped ones plus any scoped window
+whose display name matches the model — the one with the least headroom. It
+decides the verdict and is what the stall note and the console name.
+
 **Claude-home**:
 The box-side persistent Claude config directory (`~/agent-ops-state/claude-home`),
 mounted at `/root/.claude` inside every session. It is the box's "global"
@@ -86,23 +113,26 @@ serialisation fields in `state.py` are exempt, as is read-only presentation of t
 
 1. *(Task state machine)* What work is next?
 2. *(Loop policy)* Is another fix attempt allowed? — owned by `loops.py`.
-3. *(Future: execution-admission policy)* Which suitable model/runtime has allowance, or should it
+3. *(Execution-admission policy)* Which suitable model/runtime has allowance, or should it
    wait?
 
-A non-exhausted loop decision is eligibility to *retry*, not permission to launch. Existing
-budget/capacity checks still decide when launch happens.
+A non-exhausted loop decision is eligibility to *retry*, not permission to launch. The usage gate
+(admission) and capacity still decide when launch happens.
 
 **Reset causes** describe logical work boundaries (new stage/ticket, operator intervention, new PR
 cycle). A replacement process, model switch, or subscription reset is **not** by itself a fresh
 fix-loop allowance.
 
-**Future (not implemented)**: subscription-aware model selection belongs near the existing usage-gate
-/ model-selection code, not inside loop accounting. Loop policy must remain independent of model IDs,
-runtime/provider names, credentials, subscription snapshots, and usage APIs. A global usage denial
-must not prevent considering another suitable runtime with allowance. Waiting for allowance does not
-spend a fix round. A task parked after exhausting fix attempts is distinct from work waiting for
-execution resources. Deferred items: usage collectors, weekly scheduling, model suitability/fallback,
-runtime adapters, cross-runtime session continuation.
+**Execution admission** (question 3) is the `admit` callable each pass builds
+from `dispatcher/usage.py::admits`: a verdict per `provider/model` from the
+provider's windows, asked at every spawn site about the model that spawn
+launches. Usage collectors are `usage_providers.py`
+adapters, one per provider, fetched only for providers the model policy
+references. Loop policy stays independent of all of it: waiting for
+headroom does not spend a fix round, and a denial for one provider never
+prevents considering another. Still deferred: runtime adapters (running a
+session on a non-Anthropic provider), the router that picks among admitted
+models by task type, cross-runtime session continuation.
 
 ## Operator-request ownership
 
