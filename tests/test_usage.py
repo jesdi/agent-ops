@@ -131,3 +131,100 @@ def test_minutes_to_reset_floors_at_zero():
     w = Window("session", None, 0.5, utc(2026, 9, 13, 11, 0), SESSION)
     assert minutes_to_reset(w, utc(2026, 9, 13, 10, 30)) == 30
     assert minutes_to_reset(w, utc(2026, 9, 13, 12, 0)) == 0
+
+
+from dispatcher.usage import Verdict, admits, considered, verdict_note, window_label, judge
+
+NOW = utc(2026, 9, 13, 10, 30)          # Sun 12:30 CEST -> weekly allowance 0.289
+
+
+def anthropic(session=0.05, week=0.13, fable=0.23, source="oauth"):
+    ws = [Window("session", None, session, NOW + timedelta(minutes=89), SESSION),
+          Window("weekly", None, week, RESET, WEEK)]
+    if fable is not None:
+        ws.append(Window("weekly", "Fable", fable, RESET, WEEK))
+    return {"anthropic": ProviderUsage("anthropic", source, 0.0, tuple(ws))}
+
+
+def test_scoped_window_applies_only_to_matching_models():
+    assert [w.scope for w in considered(anthropic()["anthropic"].windows, "claude-fable-5-1")] == [None, None, "Fable"]
+    assert [w.scope for w in considered(anthropic()["anthropic"].windows, "claude-sonnet-4-6")] == [None, None]
+
+
+def test_fable_over_pace_blocks_fable_and_admits_sonnet():
+    u = anthropic(fable=0.35)
+    fable = admits(u, "anthropic/claude-fable-5-1", NOW, PACE)
+    sonnet = admits(u, "claude-sonnet-4-6", NOW, PACE)
+    assert (fable.admitted, fable.reason, fable.window.scope) == (False, "over-pace", "Fable")
+    assert fable.headroom == pytest.approx(0.289 - 0.35, abs=1e-3)
+    assert sonnet.admitted and sonnet.reason == "ok"
+
+
+def test_binding_window_is_the_least_headroom():
+    v = admits(anthropic(), "claude-fable-5-1", NOW, PACE)
+    assert v.admitted and v.window.scope == "Fable"
+    assert v.headroom == pytest.approx(0.289 - 0.23, abs=1e-3)
+    assert v.allowance == pytest.approx(0.289, abs=1e-3)
+
+
+def test_weekly_all_over_pace_blocks_every_model():
+    u = anthropic(week=0.40)
+    assert not admits(u, "claude-sonnet-4-6", NOW, PACE).admitted
+    assert not admits(u, "claude-fable-5-1", NOW, PACE).admitted
+
+
+def test_session_over_threshold_reports_over_threshold():
+    v = admits(anthropic(session=0.85), "claude-sonnet-4-6", NOW, PACE)
+    assert (v.admitted, v.reason, v.window.kind) == (False, "over-threshold", "session")
+
+
+def test_unavailable_or_unknown_provider_fails_closed():
+    dark = admits(anthropic(source="unavailable"), "claude-sonnet-4-6", NOW, PACE)
+    missing = admits(anthropic(), "openai/gpt-5.4-codex", NOW, PACE)
+    assert (dark.admitted, dark.reason, dark.window) == (False, "unavailable", None)
+    assert (missing.admitted, missing.reason, missing.provider) == (False, "unavailable", "openai")
+
+
+def test_absent_window_passes():
+    only_session = {"anthropic": ProviderUsage("anthropic", "ccusage", 0.0, (
+        Window("session", None, 0.5, NOW + timedelta(minutes=100), SESSION),))}
+    assert admits(only_session, "claude-fable-5-1", NOW, PACE).admitted
+
+
+def test_another_provider_spends_its_own_windows():
+    u = {**anthropic(week=0.9),
+         "fake": ProviderUsage("fake", "oauth", 0.0, (
+             Window("weekly", None, 0.1, RESET, WEEK),))}
+    assert not admits(u, "claude-sonnet-4-6", NOW, PACE).admitted
+    assert admits(u, "fake/any-model", NOW, PACE).admitted
+
+
+# The pre-existing session truth table (tests/test_budget_policy.py), through admits.
+@pytest.mark.parametrize("util, mins, source, expected", [
+    (0.5, 200, "oauth", True), (0.85, 200, "oauth", False),
+    (0.9, 20, "oauth", True), (0.97, 20, "oauth", False),
+    (0.1, 200, "unavailable", False), (0.5, 200, "ccusage", True),
+])
+def test_session_truth_table(util, mins, source, expected):
+    u = {"anthropic": ProviderUsage("anthropic", source, 0.0, (
+        Window("session", None, util, NOW + timedelta(minutes=mins), SESSION),))}
+    assert admits(u, "claude-sonnet-4-6", NOW, PACE).admitted is expected
+
+
+def test_window_label_and_note():
+    v = admits(anthropic(fable=0.35), "claude-fable-5-1", NOW, PACE)
+    assert window_label(v.window) == "weekly·Fable"
+    assert verdict_note(v, NOW) == (
+        "anthropic weekly·Fable: 35% used, allowance 29%, headroom -6 pts, resets in 5d 2h")
+    dark = admits(anthropic(source="unavailable"), "claude-sonnet-4-6", NOW, PACE)
+    assert verdict_note(dark, NOW) == "anthropic: usage unavailable"
+
+
+def test_judge_names_binding_window_across_all_provider_windows():
+    """judge() over all windows (incl. Fable) names Fable as binding for Sonnet context.
+    admits() for Sonnet would not consider the Fable window."""
+    u = anthropic()["anthropic"]
+    # Fable window has highest used (0.23) so least headroom among all three
+    v = judge("anthropic", u, u.windows, NOW, PACE)
+    assert v.admitted
+    assert v.window is not None and v.window.scope == "Fable"

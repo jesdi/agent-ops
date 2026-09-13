@@ -5,7 +5,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Iterable, Mapping
 from zoneinfo import ZoneInfo
+
+from dispatcher.models import split_model_id
 
 SESSION = timedelta(hours=5)
 WEEK = timedelta(days=7)
@@ -140,3 +143,67 @@ def allowance(w: Window, now: datetime, cfg: PaceConfig) -> float:
     done = weighted_hours(start, min(now, w.resets_at), cfg.timezone, cfg.weekend_weight)
     elapsed = done / whole if whole > 0 else 1.0
     return min(1.0, elapsed + cfg.pace_margin)
+
+
+@dataclass(frozen=True)
+class Verdict:
+    admitted: bool
+    provider: str
+    window: Window | None     # binding window; None when the provider is unavailable
+    allowance: float
+    headroom: float           # allowance - used on the binding window
+    reason: str               # "ok" | "over-pace" | "over-threshold" | "unavailable"
+
+
+def considered(windows: Iterable[Window], bare_model: str) -> list[Window]:
+    """Unscoped windows always; a scoped one only when its display name is
+    a substring of the model id."""
+    lower = bare_model.lower()
+    return [w for w in windows if w.scope is None or w.scope.lower() in lower]
+
+
+def judge(provider: str, usage: ProviderUsage | None, windows: Iterable[Window],
+          now: datetime, cfg: PaceConfig) -> Verdict:
+    """Pure verdict over the given windows. Task 8 calls this directly over all
+    of a provider's windows to name the binding window regardless of model scope."""
+    if usage is None or usage.source == "unavailable":
+        return Verdict(False, provider, None, 0.0, 0.0, "unavailable")
+    scored = [(allowance(w, now, cfg) - w.used, allowance(w, now, cfg), w)
+              for w in windows]
+    if not scored:
+        return Verdict(True, provider, None, 1.0, 1.0, "ok")
+    headroom, allowed, binding = min(scored, key=lambda s: s[0])
+    if headroom > 0:
+        return Verdict(True, provider, binding, allowed, headroom, "ok")
+    reason = "over-threshold" if binding.kind == "session" else "over-pace"
+    return Verdict(False, provider, binding, allowed, headroom, reason)
+
+
+def admits(usages: Mapping[str, ProviderUsage], model_id: str,
+           now: datetime, cfg: PaceConfig) -> Verdict:
+    provider, bare = split_model_id(model_id)
+    u = usages.get(provider)
+    return judge(provider, u, considered(u.windows, bare) if u else (), now, cfg)
+
+
+def window_label(w: Window) -> str:
+    return f"{w.kind}·{w.scope}" if w.scope else w.kind
+
+
+def _duration(minutes: float) -> str:
+    m = int(minutes)
+    d, m = divmod(m, 1440)
+    h, m = divmod(m, 60)
+    if d:
+        return f"{d}d {h}h"
+    return f"{h}h {m}m" if h else f"{m}m"
+
+
+def verdict_note(v: Verdict, now: datetime) -> str:
+    if v.window is None:
+        return (f"{v.provider}: usage unavailable" if v.reason == "unavailable"
+                else f"{v.provider}: no usage windows reported")
+    w = v.window
+    return (f"{v.provider} {window_label(w)}: {w.used:.0%} used, "
+            f"allowance {v.allowance:.0%}, headroom {v.headroom * 100:.0f} pts, "
+            f"resets in {_duration(minutes_to_reset(w, now))}")
