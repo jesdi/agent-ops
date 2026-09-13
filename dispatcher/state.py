@@ -3,7 +3,7 @@ stage.json signal sessions write into their worktree."""
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from pathlib import Path
 
@@ -22,6 +22,9 @@ class Stage(str, Enum):
     STALLED_ON_BUDGET = "stalled-on-budget"
     DONE = "done"
     CANCELED = "canceled"
+
+
+TERMINAL_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
 
 
 # Stages that occupy capacity and an E2E slot. BLOCKED and
@@ -100,6 +103,7 @@ class TaskState:
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
     feedback_pending: bool = False       # feedback seen, address-review deferred
+    terminal_at: str = ""                # first terminal transition; cleared on reopening
     done_at: str = ""                    # merge-detection time; drives the flush
     spec_path: str = ""                  # approved spec, worktree-relative or absolute
     ticket_cursor: int = 0               # 1-based ticket the implement session works; 0 = none yet
@@ -140,6 +144,13 @@ def _legacy_path(state_dir: str | Path, issue: int) -> Path:
 
 
 def save(state_dir: str | Path, ts: TaskState) -> None:
+    previous = load(state_dir, ts.target, ts.issue)
+    if ts.stage in TERMINAL_STAGES:
+        stamp = (previous.terminal_at or previous.done_at or previous.updated_at
+                 if previous and previous.stage in TERMINAL_STAGES else ts.updated_at)
+        ts = replace(ts, terminal_at=stamp)
+    else:
+        ts = replace(ts, terminal_at="")
     d = asdict(ts)
     d["stage"] = ts.stage.value
     p = _path(state_dir, ts.target, ts.issue)

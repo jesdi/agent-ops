@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { useTaskRequest } from '../hooks/useResources'
+import { useTaskArtifacts, useTaskRequest } from '../hooks/useResources'
 
 /** Unified operator-request panel. Replaces the SpecPanel + ArtifactPanel
  *  dual-mount. Media renderer reused from ArtifactPanel (markdown / sandboxed
@@ -12,6 +12,8 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
   onApprove: () => void
 }) {
   const req = useTaskRequest(target, issue)
+  const artifacts = useTaskArtifacts(target, issue)
+  const spec = artifacts.data?.items.find((item) => item.id === 'spec')
   const [armed, setArmed] = useState(false)
 
   const contentText = req.data?.content.kind === 'readable' ? req.data.content.text : null
@@ -38,24 +40,38 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
       className="rounded border border-gray-300 bg-white p-4"
     >
       <header className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-gray-700">
+        <h2 className="min-w-0 break-words text-sm font-semibold text-gray-700">
           {kind === 'spec-approval' ? 'spec awaiting review' : 'waiting on your answer'}
-          <span className="ml-2 font-mono text-xs font-normal text-gray-400">{content.path}</span>
+          <span className="ml-2 break-all font-mono text-xs font-normal text-gray-400">{content.path}</span>
         </h2>
         {kind === 'spec-approval' && content.kind === 'readable' && (
-          <button
-            className="rounded bg-green-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
-            disabled={busy}
-            onClick={() => {
-              if (!armed) { setArmed(true); return }
-              setArmed(false)
-              onApprove()
-            }}
-          >
-            {armed ? 'tap again to approve' : 'approve spec'}
-          </button>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+            {spec?.github_url && <a href={spec.url} target="_blank" rel="noopener noreferrer"
+              className="inline-flex min-h-11 items-center justify-center rounded border border-gray-300 px-3 text-sm font-medium text-blue-700">
+              View spec on GitHub ↗
+            </a>}
+            <button
+              className="min-h-11 rounded bg-green-600 px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
+              disabled={busy}
+              onClick={() => {
+                if (!armed) { setArmed(true); return }
+                setArmed(false)
+                onApprove()
+              }}
+            >
+              {armed ? 'tap again to approve' : 'approve spec'}
+            </button>
+          </div>
         )}
       </header>
+      {kind === 'spec-approval' && artifacts.data && !spec?.github_url && (
+        <p className="mb-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still read and approve the local spec below.'}
+        </p>
+      )}
+      {kind === 'spec-approval' && artifacts.isError && (
+        <p className="mb-3 text-sm text-amber-800">Could not load the GitHub spec link. Local review is still available.</p>
+      )}
       {content.kind === 'unavailable' && (
         <div data-testid="unavailable-recovery" className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
           <p className="font-medium">content unavailable</p>

@@ -160,3 +160,19 @@ def test_gitignored_artifact_returns_error_not_success(wt, origin):
     assert res.error != ""
     # The gitignored file is not committed and origin stays behind.
     assert _git(wt, "log", "-1", "--pretty=%s") == "chore: ignore spec dir"
+
+
+def test_published_reference_checks_remote_bytes_without_committing(wt):
+    from dispatcher.spec_publish import published_reference
+    path = wt / SPEC_REL
+    path.write_text('# published\n')
+    _publish(wt)
+    url, commit = published_reference(worktree=str(wt), branch=BRANCH,
+                                     repo=REPO, artifact=SPEC_REL, content=path.read_bytes())
+    assert url == spec_url(REPO, BRANCH, SPEC_REL)
+    assert commit == _git(wt, 'rev-parse', 'HEAD')
+    path.write_text('# unpublished revision\n')
+    assert published_reference(worktree=str(wt), branch=BRANCH, repo=REPO,
+                               artifact=SPEC_REL, content=path.read_bytes()) == ('', '')
+    assert _git(wt, 'rev-parse', 'HEAD') == commit
+    assert _git(wt, 'status', '--porcelain', '--', SPEC_REL)

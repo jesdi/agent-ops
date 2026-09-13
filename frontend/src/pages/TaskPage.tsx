@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router'
+import { ArtifactsPanel } from '../components/ArtifactsPanel'
 import { DescriptionPanel } from '../components/DescriptionPanel'
 import { MessageThread } from '../components/MessageThread'
 import { PendingBadge } from '../components/PendingBadge'
@@ -125,7 +126,7 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
         </div>
       )}
 
-      <p className="font-mono text-xs text-gray-500">{worktree}</p>
+      <p className="break-all font-mono text-xs text-gray-500">{worktree}</p>
 
       <DescriptionPanel target={target} issue={issue} />
 
@@ -137,6 +138,8 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
           runIntent(() => api.reply(target, issue, 'Approved — proceed.'))
         }
       />
+
+      <ArtifactsPanel target={target} issue={issue} />
 
       {/* On the load path the page owns the dead/parked state; the console
           below is read-only either way. */}
@@ -194,13 +197,13 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
       <MessageThread messages={messages} />
 
       <div className="flex flex-wrap items-end gap-2">
-        <label className="flex flex-col text-sm">
+        <label className="flex w-full max-w-lg flex-col text-sm">
           Reply
           <textarea
             aria-label="Reply"
             value={replyText}
             onChange={(e) => setReplyText(e.target.value)}
-            className="mt-1 w-96 rounded border border-gray-300 p-2 font-mono text-xs"
+            className="mt-1 w-full rounded border border-gray-300 p-2 font-mono text-xs"
             rows={3}
           />
           <span data-testid="delivery-contract" className="mt-1 text-xs text-gray-500">

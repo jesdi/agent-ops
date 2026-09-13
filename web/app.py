@@ -11,11 +11,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
-from dispatcher import queue_ops
+from dispatcher import queue_ops, task_artifacts
 from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve
 from dispatcher.state import AnswersRequest, SpecApprovalRequest
 from web import read_model
+from web.artifacts import router as artifacts_router
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
                       current_operator)
 
@@ -108,6 +109,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         match = [t for t in tasks if t.target == target and t.issue == issue]
         if match:
             return match[0]
+        archived = task_artifacts.archived_task(cfg.state_dir, target, issue)
+        if archived is not None:
+            return archived
         if not _known_target(target, tasks):
             raise HTTPException(404, f"unknown target {target!r}")
         raise HTTPException(404, f"no task {target}/{issue}")
@@ -124,6 +128,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             undelivered={(t.target, t.issue): mail.get(t.issue, 0)
                          for t in tasks},
             wake_blocked=sources.wake_blocked_issues())
+    app.include_router(artifacts_router(cfg.state_dir, _find_task))
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
@@ -195,8 +200,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         tgt = targets_by_name.get(target)
         if tgt is None:
             raise HTTPException(404, f"unknown target {target!r}")
-        is_task = any(t.target == target and t.issue == issue
-                      for t in sources.tasks())
+        is_task = (any(t.target == target and t.issue == issue
+                       for t in sources.tasks())
+                   or task_artifacts.archived_task(cfg.state_dir, target, issue) is not None)
         is_ghost = any(r["number"] == issue
                        for r in sources.rank_rows(tgt)[0])
         if not (is_task or is_ghost):

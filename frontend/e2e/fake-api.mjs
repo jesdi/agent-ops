@@ -160,6 +160,10 @@ const server = createServer(async (req, res) => {
     const detail = taskDetail(detailMatch[1], Number(detailMatch[2]))
     return detail ? json(200, detail) : json(404, { detail: 'unknown task' })
   }
+  if (/^\/api\/task\/[^/]+\/\d+\/artifacts$/.test(url.pathname)) {
+    return json(200, { items: [], expires_at: '', expired: false })
+  }
+  if (/^\/api\/task\/[^/]+\/\d+\/request$/.test(url.pathname)) return json(200, null)
   const descMatch = url.pathname.match(/^\/api\/task\/([^/]+)\/(\d+)\/description$/)
   if (descMatch && req.method === 'GET') {
     const target = descMatch[1]

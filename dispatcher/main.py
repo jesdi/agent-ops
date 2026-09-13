@@ -29,7 +29,7 @@ from dispatcher import (eventlog, failures, intents, loops, messages, pr_poll,
 from dispatcher.github import GitHubClient
 
 log = logging.getLogger(__name__)
-from dispatcher import spec_publish
+from dispatcher import spec_publish, task_artifacts
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoOp, Notify,
@@ -828,6 +828,9 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
         print(f"[warn] {target.name}: status_done_option_id unset — board "
               f"not updated for #{task.issue}", file=sys.stderr)
     deps.sessions.end(task.target, task.issue)
+    if not dry_run:
+        task_artifacts.collect(cfg.state_dir, task, target.repo)
+        task_artifacts.pin_published(cfg.state_dir, task, target.repo)
     remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
     deps.github.delete_branch(target, task.branch)
     save(cfg.state_dir, replace(task, stage=Stage.DONE, park="",
@@ -1612,6 +1615,17 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _run_pass(cfg, deps, dry_run, config_path)
 
 
+def _sync_artifacts(cfg: Config, *, dry_run: bool = False) -> None:
+    repos = {target.name: target.repo for target in cfg.targets}
+    for task in load_all(cfg.state_dir):
+        try:
+            task_artifacts.collect(cfg.state_dir, task, repos.get(task.target, ""),
+                                   publish=not dry_run and task.stage not in task_artifacts.TERMINAL)
+        except (OSError, ValueError):
+            log.exception("Artifact collection failed for %s/%s", task.target, task.issue)
+    task_artifacts.cleanup(cfg.state_dir)
+
+
 def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
               config_path: str = "targets.yaml") -> None:
     pass_started = _now()
@@ -1651,6 +1665,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         _spawn_feedback(eff, deps, target, budget_ok)
         if budget_ok and not claims_paused:
             _claim_new(eff, deps, target, dry_run, pass_started)
+    _sync_artifacts(cfg, dry_run=dry_run)
     _flush_done(cfg)
     _write_heartbeat(cfg, pass_started)
 

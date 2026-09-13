@@ -100,3 +100,13 @@ export function usePendingIntents() {
     refetchInterval: 3000,
   })
 }
+
+export function useTaskArtifacts(target: string, issue: number) {
+  const refetchInterval = useFallbackInterval()
+  return useQuery({
+    queryKey: queryKeys.artifacts(target, issue),
+    queryFn: () => api.taskArtifacts(target, issue),
+    retry: false,
+    refetchInterval,
+  })
+}

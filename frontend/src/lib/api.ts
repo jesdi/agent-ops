@@ -1,5 +1,6 @@
 import type { components } from './api-types'
 
+export type ArtifactsView = components['schemas']['ArtifactsView']
 export type BoardView = components['schemas']['BoardView']
 export type TaskCard = components['schemas']['TaskCard']
 export type CapacityView = components['schemas']['CapacityView']
@@ -117,6 +118,8 @@ export const api = {
     post<IntentAccepted>(`/task/${target}/${issue}/resume`, text ? { text } : {}),
   taskDescription: (target: string, issue: number) =>
     request<IssueDescription>(`/task/${target}/${issue}/description`),
+  taskArtifacts: (target: string, issue: number) =>
+    request<ArtifactsView>(`/task/${target}/${issue}/artifacts`),
   taskRequest: (target: string, issue: number) =>
     request<OperatorRequest | null>(`/task/${target}/${issue}/request`),
 }

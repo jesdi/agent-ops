@@ -140,7 +140,7 @@ gh label create human-required --repo OWNER/REPO \
 ## Two ways to drive it from your phone
 
 **Web console** (`web/` + `frontend/`) — the board view above, plus per-task
-pages with the stage timeline, the spec awaiting your approval, and a read-only console (pane tail plus scrollable history, snapshot-backed once the session ends). To interact with a session, attach from a terminal: `herdr --remote box` on the desktop (herdr installed locally, same version as the box, `box` an SSH alias over the tailnet), or [Moshi](https://getmoshi.app) on a phone. Operating rule: attach to watch; reply through Telegram or the board — the dispatcher may park a session while you are typing in it. Reply to
+pages with the stage timeline, the spec awaiting your approval, a persistent Artifacts section, and a read-only console (pane tail plus scrollable history, snapshot-backed once the session ends). To interact with a session, attach from a terminal: `herdr --remote box` on the desktop (herdr installed locally, same version as the box, `box` an SSH alias over the tailnet), or [Moshi](https://getmoshi.app) on a phone. Operating rule: attach to watch; reply through Telegram or the board — the dispatcher may park a session while you are typing in it. Reply to
 a parked agent, park, kill, retry, or resume a task, and manage the queue —
 all from the same UI. Failures and history get their own pages, so nothing
 silently disappears.
@@ -221,3 +221,21 @@ and [Actions API permissions](https://docs.github.com/en/rest/actions/workflow-r
 ## License
 
 [MIT](LICENSE) © 2026 jesdi
+
+### Task artifacts
+
+The task page keeps review artifacts accessible across sessions on desktop and
+mobile. Open the spec on GitHub beside **Approve spec**, or use **Artifacts**
+to revisit prototypes, diagrams, questionnaires, answers and other review files.
+Links open the latest published content in a new tab. If GitHub publication
+fails, local review and approval remain available.
+
+Sessions register files automatically using the policy in
+[prompts/artifacts.md](prompts/artifacts.md). HTML previews are self-contained;
+Markdown is committed and pushed to the task branch. On merge, GitHub links
+switch to the last verified commit so deleting the branch does not break them.
+
+Stored box copies expire 30 days after done, failed or canceled, on the next
+dispatcher pass. Paused tasks never start that countdown; reopening cancels it.
+GitHub files and artifact metadata remain, including on archived task pages.
+Existing failed-task worktrees are still preserved for autopsy.

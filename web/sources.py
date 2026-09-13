@@ -279,6 +279,7 @@ class Sources:
             list(root.glob("task-*.json")) + list(root.glob("waiting-*"))
             + list(root.glob("wake-blocked-*"))
             + list((root / "messages").glob("*.jsonl"))
+            + list((root / "artifacts").glob("*/index.json"))
             + [root / "pass.json"])
         budget_d = digest([root / "usage-cache.json",
                            root / "budget-stalled"])

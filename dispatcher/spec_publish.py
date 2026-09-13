@@ -11,6 +11,7 @@ session still works with a local-only spec."""
 from __future__ import annotations
 
 import subprocess
+from urllib.parse import quote
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +25,7 @@ class PublishResult:
 
 
 def spec_url(repo: str, branch: str, artifact: str) -> str:
-    return f"https://github.com/{repo}/blob/{branch}/{artifact}"
+    return f"https://github.com/{repo}/blob/{quote(branch, safe='/')}/{quote(artifact, safe='/')}"
 
 
 def relative_artifact(worktree: str, artifact: str) -> str | None:
@@ -93,3 +94,30 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
     except (OSError, subprocess.SubprocessError) as exc:
         return PublishResult(error=f"git invocation failed: {exc}")
     return PublishResult(url=spec_url(repo, branch, rel))
+
+
+def published_reference(*, worktree: str, branch: str, repo: str,
+                        artifact: str, content: bytes) -> tuple[str, str]:
+    """Verify the collected bytes exist on the remote branch, without writes.
+
+    Sessions own committing review Markdown. Unlike the spec gate's backstop,
+    collection can run while a session is active and must not touch its index.
+    """
+    rel = relative_artifact(worktree, artifact)
+    if not rel:
+        return "", ""
+    try:
+        remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}")
+        fields = remote.stdout.split() if remote.returncode == 0 else []
+        if not fields:
+            return "", ""
+        commit = fields[0]
+        blob = _git(worktree, "rev-parse", f"{commit}:{rel}")
+        hashed = subprocess.run(["git", "-C", worktree, "hash-object", "--stdin"],
+                                input=content, capture_output=True, timeout=_TIMEOUT)
+        if (blob.returncode != 0 or hashed.returncode != 0
+                or blob.stdout.strip().encode() != hashed.stdout.strip()):
+            return "", ""
+        return spec_url(repo, branch, rel), commit
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
