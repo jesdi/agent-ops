@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 SESSION = timedelta(hours=5)
 WEEK = timedelta(days=7)
@@ -95,3 +96,47 @@ def usage_from_json(d: dict) -> ProviderUsage:
                              _aware(w["resets_at"]),
                              timedelta(seconds=float(w["length_seconds"])))
                       for w in d["windows"]))
+
+
+@dataclass(frozen=True)
+class PaceConfig:
+    budget_threshold: float
+    racing_minutes: int
+    racing_threshold: float
+    pace_margin: float
+    weekend_weight: float
+    timezone: str             # IANA name; defines Saturday 00:00 – Monday 00:00
+
+
+def weighted_hours(start: datetime, end: datetime, tz: str,
+                   weekend_weight: float) -> float:
+    """Hours in [start, end) with Saturday/Sunday (local calendar days in
+    `tz`) counted at weekend_weight. Integrated per local day so DST days
+    weigh their true 23 or 25 hours; at most 8 iterations for a week."""
+    zone = ZoneInfo(tz)
+    total, t = 0.0, start
+    while t < end:
+        local = t.astimezone(zone)
+        next_midnight = (local + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        seg_end = min(end, next_midnight.astimezone(timezone.utc))
+        weight = weekend_weight if local.weekday() >= 5 else 1.0
+        total += weight * (seg_end - t).total_seconds() / 3600.0
+        t = seg_end
+    return total
+
+
+def minutes_to_reset(w: Window, now: datetime) -> float:
+    return max(0.0, (w.resets_at - now).total_seconds() / 60.0)
+
+
+def allowance(w: Window, now: datetime, cfg: PaceConfig) -> float:
+    """What fraction of the window the box may have spent by `now`."""
+    if w.kind == "session":
+        racing = minutes_to_reset(w, now) <= cfg.racing_minutes
+        return cfg.racing_threshold if racing else cfg.budget_threshold
+    start = w.resets_at - w.length
+    whole = weighted_hours(start, w.resets_at, cfg.timezone, cfg.weekend_weight)
+    done = weighted_hours(start, min(now, w.resets_at), cfg.timezone, cfg.weekend_weight)
+    elapsed = done / whole if whole > 0 else 1.0
+    return min(1.0, elapsed + cfg.pace_margin)
