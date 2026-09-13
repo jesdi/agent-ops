@@ -158,7 +158,8 @@ def fetch_provider(name: str, state_dir: str | Path, *,
     if cp.exists():
         try:
             cached = json.loads(cp.read_text())
-            if now() - cached["fetched_at"] < MIN_POLL_SECONDS:
+            age = now() - cached["fetched_at"]
+            if 0 <= age < MIN_POLL_SECONDS:
                 return usage_from_json(cached["usage"])
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             pass

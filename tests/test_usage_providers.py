@@ -64,6 +64,18 @@ def test_cache_is_per_provider_and_respects_min_poll(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+def test_cache_clock_step_back_triggers_refetch(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: calls.append(1) or oauth_response())
+    t = [1000.0]
+    now = lambda: t[0]
+    adapters = {"anthropic": up.AnthropicUsage(credentials_path=creds(tmp_path))}
+    up.fetch_provider("anthropic", tmp_path, now=now, adapters=adapters)
+    t[0] = 500.0  # clock stepped back
+    up.fetch_provider("anthropic", tmp_path, now=now, adapters=adapters)
+    assert len(calls) == 2
+
+
 def boom(url, headers):
     raise up.UsageFetchError("dark")
 
