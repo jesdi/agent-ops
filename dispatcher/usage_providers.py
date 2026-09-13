@@ -239,12 +239,30 @@ def cache_path(state_dir: str | Path, provider: str) -> Path:
 
 def _write_atomic(path: Path, doc: dict) -> None:
     """The web process and the dispatcher both write the cache: write a
-    sibling temp file and rename it over, so a reader never sees a torn one."""
+    sibling temp file and rename it over, so a reader never sees a torn one.
+    mkstemp creates 0600 and the two units may run as different users, so
+    the file is opened up to 0644 before the rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     with os.fdopen(fd, "w") as fh:
         json.dump(doc, fh)
+    os.chmod(tmp, 0o644)
     os.replace(tmp, path)
+
+
+def _cached(cp: Path, at: float) -> ProviderUsage | None:
+    """The cached reading if it is fresh and usable; None is a miss. A file
+    this unit cannot read, or cannot parse, is a miss, never a raise. So is
+    a readable reading with no windows (written before readings failed
+    closed): served, it would admit every model until it aged out."""
+    try:
+        cached = json.loads(cp.read_text())
+        if not 0 <= at - cached["fetched_at"] < MIN_POLL_SECONDS:
+            return None
+        u = usage_from_json(cached["usage"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+    return u if u.windows or u.source == "unavailable" else None
 
 
 def fetch_provider(name: str, state_dir: str | Path, *,
@@ -255,13 +273,9 @@ def fetch_provider(name: str, state_dir: str | Path, *,
     serves the whole fetch: the cache age, the reading and the cache stamp."""
     at = now()
     cp = cache_path(state_dir, name)
-    if cp.exists():
-        try:
-            cached = json.loads(cp.read_text())
-            if 0 <= at - cached["fetched_at"] < MIN_POLL_SECONDS:
-                return usage_from_json(cached["usage"])
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            pass
+    hit = _cached(cp, at)
+    if hit is not None:
+        return hit
     adapter = adapters.get(name)
     if adapter is None:
         return unavailable(name, at)

@@ -438,3 +438,41 @@ def test_the_cache_is_written_aside_and_renamed_over(tmp_path, monkeypatch):
     cp = up.cache_path(tmp_path, "fake")
     assert replaced == [(cp.parent, cp)]
     assert [p.name for p in cp.parent.iterdir()] == ["fake.json"]
+
+
+# ---- the cache across units ------------------------------------------------
+
+def test_the_cache_file_is_readable_by_other_units(tmp_path):
+    """mkstemp creates 0600; the web and dispatcher units may run as
+    different users, so the renamed cache file must be 0644."""
+    up.fetch_provider("fake", tmp_path, adapters={"fake": FakeUsage()})
+    assert up.cache_path(tmp_path, "fake").stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize("error", [PermissionError, OSError])
+def test_an_unreadable_cache_file_is_a_miss(tmp_path, monkeypatch, error):
+    fake = FakeUsage()
+    up.fetch_provider("fake", tmp_path, now=lambda: 1000.0, adapters={"fake": fake})
+    cp = up.cache_path(tmp_path, "fake")
+    real_read_text = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self == cp:
+            raise error("denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    u = up.fetch_provider("fake", tmp_path, now=lambda: 1010.0, adapters={"fake": fake})
+    assert fake.calls == 2 and u == fake.result
+
+
+def test_an_empty_cached_reading_is_a_miss(tmp_path):
+    """A cache written before readings failed closed may hold an oauth
+    reading with no windows, which would admit every model for 180s."""
+    fake = FakeUsage()
+    empty = ProviderUsage(provider="fake", source="oauth", fetched_at=1000.0, windows=())
+    up.cache_path(tmp_path, "fake").parent.mkdir(parents=True)
+    up.cache_path(tmp_path, "fake").write_text(
+        json.dumps({"fetched_at": 1000.0, "usage": up.usage_to_json(empty)}))
+    u = up.fetch_provider("fake", tmp_path, now=lambda: 1010.0, adapters={"fake": fake})
+    assert fake.calls == 1 and u == fake.result
