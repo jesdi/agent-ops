@@ -6,7 +6,8 @@ import pytest
 
 from dispatcher import usage
 from dispatcher.usage import (SESSION, WEEK, ProviderUsage, Window,
-                              parse_anthropic, usage_from_json, usage_to_json)
+                              parse_anthropic, usage_from_json, usage_to_json,
+                              PaceConfig, allowance, minutes_to_reset, weighted_hours)
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "anthropic-usage.json").read_text())
 
@@ -74,8 +75,6 @@ def test_parse_locked_without_percent_via_fallback():
     assert ws[0].used == 1.0
     assert ws[1].used == 0.1
 
-
-from dispatcher.usage import PaceConfig, allowance, minutes_to_reset, weighted_hours
 
 PACE = PaceConfig(budget_threshold=0.8, racing_minutes=30, racing_threshold=0.95,
                   pace_margin=0.10, weekend_weight=0.5, timezone="Europe/Madrid")
