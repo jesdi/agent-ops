@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import time
 
-from dispatcher.usage import SESSION, WEEK, ProviderUsage, Window
+from dispatcher.usage import ProviderUsage, Window, WindowKind
 
 
 def session_usage(util=0.2, mins=120.0, source="oauth", week=0.0, fable=None,
@@ -14,10 +14,10 @@ def session_usage(util=0.2, mins=120.0, source="oauth", week=0.0, fable=None,
     `mins`; the weekly window is half elapsed (allowance ~0.6) and `week`
     used, so tests that only care about the session gate keep their meaning."""
     now = now or datetime.now(timezone.utc)
-    ws = [Window("session", None, util, now + timedelta(minutes=mins), SESSION),
-          Window("weekly", None, week, now + timedelta(days=3.5), WEEK)]
+    ws = [Window(WindowKind.SESSION, None, util, now + timedelta(minutes=mins)),
+          Window(WindowKind.WEEKLY, None, week, now + timedelta(days=3.5))]
     if fable is not None:
-        ws.append(Window("weekly", "Fable", fable, now + timedelta(days=3.5), WEEK))
+        ws.append(Window(WindowKind.WEEKLY, "Fable", fable, now + timedelta(days=3.5)))
     return ProviderUsage(provider, source, time.time(), tuple(ws))
 
 

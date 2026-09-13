@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from dispatcher.convergence import pass_lock
-from dispatcher.config import Config, Target, load_config, pace_config, policy_for
+from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import fetch_all
 from dispatcher import (eventlog, failures, intents, loops, messages, pr_poll,
@@ -455,8 +455,8 @@ def _budget_edge(cfg: Config, deps: Deps, verdict: Verdict, now: datetime) -> No
     if not verdict.admitted and not marker.exists():
         marker.write_text(_now())
         deps.notifier.send("budget_stall", issue=0, title="(all tasks)", url="", note=note)
-    elif (verdict.admitted and verdict.headroom >= RESUME_HEADROOM
-          and marker.exists()):
+    elif (verdict.admitted and marker.exists()
+          and (verdict.binding is None or verdict.binding.headroom >= RESUME_HEADROOM)):
         marker.unlink()
         deps.notifier.send("budget_resume", issue=0, title="(all tasks)", url="", note=note)
 
@@ -1781,8 +1781,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _handle_telegram(cfg, deps, dry_run)
     usages = fetch_all(cfg)
     now = datetime.now(timezone.utc)
-    pace = pace_config(cfg)
-    admit: Admit = lambda model: admits(usages, model, now, pace)
+    admit: Admit = lambda model: admits(usages, model, now, cfg.pace)
     default_verdict = admit(cfg.models.default)
     _budget_edge(cfg, deps, default_verdict, now)
     _auth_dark_edge(cfg, deps, usages)

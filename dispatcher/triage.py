@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dispatcher import containers, herdr, triage_apply, triage_prefetch
-from dispatcher.config import Config, pace_config
+from dispatcher.config import Config
 from dispatcher.prompts import render_triage_prompt
 from dispatcher.state import active, load_all
 from dispatcher.usage import admits, verdict_note
@@ -227,7 +227,7 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
     started_date = started[:10]
     usages = fetch_all(cfg)
     now = datetime.now(timezone.utc)
-    verdict = admits(usages, cfg.triage_model or cfg.models.default, now, pace_config(cfg))
+    verdict = admits(usages, cfg.triage_model or cfg.models.default, now, cfg.pace)
     if not verdict.admitted:
         deps.notifier.send("triage_report", lines=[
             f"skipped — usage gate ({verdict_note(verdict, now)})"])

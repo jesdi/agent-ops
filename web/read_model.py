@@ -11,9 +11,8 @@ from pydantic import BaseModel, Field
 
 from dispatcher import messages as msgq
 from dispatcher.models import DEFAULT_MODEL, bare_model_id, split_model_id
-from dispatcher.usage import (PaceConfig, ProviderUsage, allowance,
-                               considered, judge, minutes_to_reset,
-                               verdict_note)
+from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, admits,
+                              minutes_to_reset, readings, verdict_note)
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, consumes_capacity,
@@ -402,38 +401,29 @@ def _severity(headroom: float) -> str:
     return "blocked" if headroom <= 0 else "close" if headroom <= CLOSE_HEADROOM else "ok"
 
 
+def _window_view(r: Reading, now: datetime) -> WindowView:
+    return WindowView(kind=r.window.kind.value, scope=r.window.scope,
+                      used=r.window.used, allowance=r.allowance,
+                      headroom=r.headroom,
+                      minutes_to_reset=minutes_to_reset(r.window, now),
+                      severity=_severity(r.headroom))
+
+
 def usage_views(usages: Mapping[str, ProviderUsage], *, now: datetime,
                 pace: PaceConfig,
                 default_model: str = DEFAULT_MODEL) -> list[ProviderUsageView]:
-    """One view per provider, sorted by name. would_spawn uses considered()
-    scoped to the policy default model; windows lists ALL windows."""
+    """One view per provider, sorted by name: every window it reported, and
+    the verdict for the policy default's bare model on that provider."""
     out = []
     for provider in sorted(usages):
         u = usages[provider]
-        bare = bare_model_id(default_model)
-        verdict = judge(provider, u, considered(u.windows, bare), now, pace)
-        if u.source == "unavailable":
-            out.append(ProviderUsageView(
-                provider=provider, source=u.source, windows=[],
-                would_spawn=False, binding=None,
-                note=verdict_note(verdict, now)))
-            continue
-        views = []
-        for w in u.windows:
-            allowed = allowance(w, now, pace)
-            hr = allowed - w.used
-            views.append(WindowView(
-                kind=w.kind, scope=w.scope, used=w.used, allowance=allowed,
-                headroom=hr, minutes_to_reset=minutes_to_reset(w, now),
-                severity=_severity(hr)))
-        # Map verdict.window → its corresponding WindowView (None when no window)
-        if verdict.window is not None:
-            binding = next((v for v, w in zip(views, u.windows) if w == verdict.window), None)
-        else:
-            binding = None
+        verdict = admits({provider: u}, f"{provider}/{bare_model_id(default_model)}",
+                         now, pace)
         out.append(ProviderUsageView(
-            provider=provider, source=u.source, windows=views,
-            would_spawn=verdict.admitted, binding=binding,
+            provider=provider, source=u.source,
+            windows=[_window_view(r, now) for r in readings(u, now, pace)],
+            would_spawn=verdict.admitted,
+            binding=_window_view(verdict.binding, now) if verdict.binding else None,
             note=verdict_note(verdict, now)))
     return out
 

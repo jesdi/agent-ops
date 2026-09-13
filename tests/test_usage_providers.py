@@ -7,7 +7,7 @@ import pytest
 
 from dispatcher import usage_providers as up
 from dispatcher.config import Config, Target
-from dispatcher.usage import SESSION
+from dispatcher.usage import ProviderUsage, WindowKind
 from tests.usagefakes import FakeUsage, session_usage
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "anthropic-usage.json").read_text())
@@ -27,8 +27,7 @@ def creds(tmp_path: Path) -> Path:
 
 
 def cfg(tmp_path, models=None, triage_model=""):
-    return Config(state_dir=str(tmp_path), capacity=1, budget_threshold=0.8,
-                  racing_minutes=30, racing_threshold=0.95, session_memory="2g",
+    return Config(state_dir=str(tmp_path), capacity=1, session_memory="2g",
                   session_cpus="2", targets=[], triage_model=triage_model,
                   **({"models": models} if models else {}))
 
@@ -99,7 +98,7 @@ def test_falls_back_to_ccusage_with_a_session_window_only(tmp_path, monkeypatch)
     u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
     assert u.source == "ccusage"
     (w,) = u.windows
-    assert (w.kind, w.length) == ("session", SESSION)
+    assert (w.kind, w.length) == (WindowKind.SESSION, timedelta(hours=5))
     assert abs(w.used - 0.62) < 1e-9
     assert 44 <= (w.resets_at - datetime.now(timezone.utc)).total_seconds() / 60 <= 46
 
@@ -315,7 +314,7 @@ def test_a_raising_adapter_reports_unavailable_and_caches_nothing(tmp_path):
 @pytest.mark.parametrize("payload", [
     {"limits": {"kind": "session"}},
     {"limits": ["session"]},
-    {"limits": [dict(FIXTURE["limits"][2], scope="Fable")]},
+    {"limits": [dict(FIXTURE["limits"][0], resets_at=1757764799)]},
     ["not", "an", "object"],
 ])
 def test_a_malformed_anthropic_payload_is_unavailable_not_a_raise(tmp_path, monkeypatch, payload):
@@ -333,3 +332,82 @@ def test_ccusage_used_is_clamped_and_resets_follow_the_injected_clock(tmp_path, 
     (w,) = u.windows
     assert w.used == 1.0
     assert w.resets_at == datetime.fromtimestamp(1_000_000.0, timezone.utc) + timedelta(minutes=45)
+
+
+# ---- Anthropic payload parser ----------------------------------------------
+
+def test_parse_reads_three_windows_from_limits():
+    ws = up.parse_anthropic(FIXTURE)
+    assert [(w.kind, w.scope) for w in ws] == [
+        ("session", None), ("weekly", None), ("weekly", "Fable")]
+    assert [w.used for w in ws] == [0.05, 0.13, 0.23]
+    assert [w.length for w in ws] == [timedelta(hours=5), timedelta(days=7), timedelta(days=7)]
+    assert ws[0].resets_at == datetime(2026, 9, 13, 11, 59, 59, 776452, tzinfo=timezone.utc)
+    assert ws[2].resets_at.tzinfo is not None
+
+
+def test_parse_falls_back_to_named_windows_when_limits_absent():
+    payload = {k: v for k, v in FIXTURE.items() if k != "limits"}
+    ws = up.parse_anthropic(payload)
+    assert [(w.kind, w.scope, w.used) for w in ws] == [
+        ("session", None, 0.05), ("weekly", None, 0.13)]
+
+
+def test_parse_locked_or_full_window_counts_as_fully_used():
+    limits = [dict(FIXTURE["limits"][0], locked_reason="limit_reached"),
+              dict(FIXTURE["limits"][1], percent=130)]
+    ws = up.parse_anthropic({"limits": limits})
+    assert [w.used for w in ws] == [1.0, 1.0]
+
+
+def test_parse_skips_unknown_kinds_and_entries_without_reset():
+    limits = [dict(FIXTURE["limits"][0], kind="monthly_mystery"),
+              dict(FIXTURE["limits"][1], resets_at=None),
+              FIXTURE["limits"][2]]
+    ws = up.parse_anthropic({"limits": limits})
+    assert [(w.kind, w.scope) for w in ws] == [("weekly", "Fable")]
+
+
+def test_parse_skips_non_object_entries_and_reads_a_malformed_scope_as_unscoped():
+    """A scope of unexpected shape must not exempt every other model from the
+    window: it counts as unscoped, the fail-closed reading."""
+    limits = ["session", None, 7, dict(FIXTURE["limits"][2], scope="Fable")]
+    ws = up.parse_anthropic({"limits": limits})
+    assert [(w.kind, w.scope, w.used) for w in ws] == [("weekly", None, 0.23)]
+
+
+def test_parse_locked_without_percent_via_limits():
+    # null percent + locked_reason in limits[] must return 1.0, not skip
+    limits = [dict(FIXTURE["limits"][0], percent=None, locked_reason="limit_reached")]
+    ws = up.parse_anthropic({"limits": limits})
+    assert len(ws) == 1
+    assert ws[0].used == 1.0
+
+
+def test_parse_locked_without_percent_via_fallback():
+    # null utilization + locked_reason in five_hour fallback must return 1.0, not skip
+    payload = {
+        "five_hour": {"utilization": None, "locked_reason": "limit_reached",
+                      "resets_at": "2026-09-13T11:59:59.776452Z"},
+        "seven_day": {"utilization": 10.0, "resets_at": "2026-09-20T00:00:00Z"}
+    }
+    ws = up.parse_anthropic(payload)
+    assert len(ws) == 2
+    assert ws[0].used == 1.0
+    assert ws[1].used == 0.1
+
+
+def test_json_round_trip():
+    u = ProviderUsage(provider="anthropic", source="oauth", fetched_at=1000.0,
+                      windows=up.parse_anthropic(FIXTURE))
+    assert up.usage_from_json(json.loads(json.dumps(up.usage_to_json(u)))) == u
+
+
+def test_cache_with_an_unreadable_window_kind_refetches(tmp_path):
+    fake = FakeUsage()
+    cached = up.usage_to_json(session_usage(provider="fake"))
+    cached["windows"][0]["kind"] = "monthly"
+    up.cache_path(tmp_path, "fake").parent.mkdir(parents=True)
+    up.cache_path(tmp_path, "fake").write_text(json.dumps({"fetched_at": 1000.0, "usage": cached}))
+    up.fetch_provider("fake", tmp_path, now=lambda: 1010.0, adapters={"fake": fake})
+    assert fake.calls == 1

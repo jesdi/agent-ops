@@ -49,6 +49,14 @@ class ModelPolicy:
     default: str
     rules: tuple[ModelRule, ...]
 
+    def model_ids(self) -> list[str]:
+        """Every model id this policy can resolve to: the default plus each
+        rule's use, whether one model or a stage map."""
+        ids = [self.default]
+        for rule in self.rules:
+            ids.extend([rule.use] if isinstance(rule.use, str) else rule.use.values())
+        return ids
+
 
 DEFAULT_POLICY = ModelPolicy(default=DEFAULT_MODEL, rules=())
 
@@ -76,7 +84,7 @@ def _effort_bounds(when: dict) -> tuple[int | None, int | None]:
     return raw.get("min"), raw.get("max")
 
 
-def _check_model_id(value: object, context: str) -> str:
+def check_model_id(value: object, context: str) -> str:
     """A model id must be a non-empty string with no whitespace: no allowlist
     of known ids (deliberately out of scope), but an unusable value (empty,
     a dict coerced via str(), or something with embedded whitespace that
@@ -98,7 +106,7 @@ def _use(rule: dict, name: str) -> str | dict[str, str]:
         raise ValueError(f"models: rule {name!r} has no use:")
     raw = rule["use"]
     if isinstance(raw, str):
-        return _check_model_id(raw, f"rule {name!r} use:")
+        return check_model_id(raw, f"rule {name!r} use:")
     if not isinstance(raw, dict):
         raise ValueError(f"models: rule {name!r} use: must be a model or a stage map")
     unknown = set(raw) - set(STAGES)
@@ -106,7 +114,7 @@ def _use(rule: dict, name: str) -> str | dict[str, str]:
         raise ValueError(
             f"models: rule {name!r} use: has unknown stage(s) {sorted(unknown)}; "
             f"expected any of {list(STAGES)}")
-    return {k: _check_model_id(v, f"rule {name!r} use.{k}:") for k, v in raw.items()}
+    return {k: check_model_id(v, f"rule {name!r} use.{k}:") for k, v in raw.items()}
 
 
 def _rule(raw: dict, index: int) -> ModelRule:
@@ -139,7 +147,7 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
         return DEFAULT_POLICY
     if not isinstance(raw, dict):
         raise ValueError(f"models: must be a mapping, got {raw!r}")
-    default = _check_model_id(raw.get("default", DEFAULT_MODEL), "default")
+    default = check_model_id(raw.get("default", DEFAULT_MODEL), "default")
     rules = raw.get("rules", [])
     if not isinstance(rules, list):
         raise ValueError(f"models: rules must be a list, got {rules!r}")

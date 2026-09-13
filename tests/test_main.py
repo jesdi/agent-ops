@@ -34,8 +34,8 @@ POLICY = parse_policy({
     ],
 })
 
-ADMIT_ALL = lambda m: main.Verdict(admitted=True, provider="anthropic", window=None, allowance=0.8, headroom=1.0, reason="ok")  # noqa: E731
-DENY_ALL = lambda m: main.Verdict(admitted=False, provider="anthropic", window=None, allowance=0.8, headroom=-0.1, reason="pace")  # noqa: E731
+ADMIT_ALL = lambda m: main.Verdict(admitted=True, provider="anthropic", binding=None, reason="ok")  # noqa: E731
+DENY_ALL = lambda m: main.Verdict(admitted=False, provider="anthropic", binding=None, reason="pace")  # noqa: E731
 
 
 class FakeGitHub:
@@ -208,7 +208,6 @@ class FakeNotifier:
 def cfg(tmp_path: Path) -> Config:
     return Config(
         state_dir=str(tmp_path / "state"), capacity=3,
-        budget_threshold=0.8, racing_minutes=30, racing_threshold=0.95,
         session_memory="2g", session_cpus="2",
         targets=[Target(
             name="portfolio_eval", repo="jesdi/portfolio_eval",

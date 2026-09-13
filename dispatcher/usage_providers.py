@@ -1,6 +1,7 @@
-"""Usage adapters: one per provider, each returning a ProviderUsage. I/O
-lives here; the arithmetic lives in usage.py. Research feeding the Anthropic
-adapter: portfolio_eval#155; payload verified 2026-09-13 (tests/fixtures)."""
+"""Usage adapters: one per provider, each returning a ProviderUsage, and the
+per-provider cache. I/O and every provider's payload shape live here; the
+arithmetic lives in usage.py. Research feeding the Anthropic adapter:
+portfolio_eval#155; payload verified 2026-09-13 (tests/fixtures)."""
 from __future__ import annotations
 
 import json
@@ -15,8 +16,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from dispatcher.config import Config, referenced_providers
-from dispatcher.usage import (SESSION, ProviderUsage, Window, _used, parse_anthropic,
-                              unavailable, usage_from_json, usage_to_json)
+from dispatcher.usage import ProviderUsage, Window, WindowKind, unavailable
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,72 @@ class UsageAdapter(Protocol):
     def fetch(self, state_dir: Path, *, now: Callable[[], float] = time.time) -> ProviderUsage: ...
 
 
-# ---- Anthropic ------------------------------------------------------------
+# ---- Anthropic payload ----------------------------------------------------
+
+# Anthropic `limits[].kind` -> our kind. Unknown kinds are skipped.
+_ANTHROPIC_KINDS = {
+    "session": WindowKind.SESSION,
+    "weekly_all": WindowKind.WEEKLY,
+    "weekly_scoped": WindowKind.WEEKLY,
+}
+# The pre-`limits` named objects, and the limits kind each one duplicates.
+_LEGACY_KINDS = (("five_hour", "session"), ("seven_day", "weekly_all"))
+
+
+def _aware(iso: str) -> datetime:
+    dt = datetime.fromisoformat(iso)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _used(percent: object, locked_reason: object) -> float | None:
+    """A percent as a 0..1 fraction; locked counts as fully used."""
+    if locked_reason:
+        return 1.0
+    if percent is None:
+        return None
+    return min(1.0, max(0.0, float(percent) / 100.0))
+
+
+def _legacy_limits(payload: dict) -> list[dict]:
+    """The named five_hour/seven_day objects, reshaped into limits entries."""
+    entries = []
+    for key, kind in _LEGACY_KINDS:
+        w = payload.get(key)
+        if isinstance(w, dict):
+            entries.append({"kind": kind, "percent": w.get("utilization"),
+                            "locked_reason": w.get("locked_reason"),
+                            "resets_at": w.get("resets_at")})
+    return entries
+
+
+def _scope(raw: object) -> str | None:
+    """The scoped model's display name. A scope of unexpected shape reads as
+    no scope, so the window counts against every model — the closed side."""
+    model = raw.get("model") if isinstance(raw, dict) else None
+    name = model.get("display_name") if isinstance(model, dict) else None
+    return name or None
+
+
+def _window(entry: object) -> Window | None:
+    """One limits entry, or None when it is not a window this box can read:
+    not an object, an unknown kind, no reset, or no percent."""
+    if not isinstance(entry, dict):
+        return None
+    kind = _ANTHROPIC_KINDS.get(entry.get("kind"))
+    used = _used(entry.get("percent"), entry.get("locked_reason"))
+    if kind is None or used is None or not entry.get("resets_at"):
+        return None
+    return Window(kind, _scope(entry.get("scope")), used, _aware(entry["resets_at"]))
+
+
+def parse_anthropic(payload: dict) -> tuple[Window, ...]:
+    """`limits[]` is the generic structure; the named five_hour/seven_day
+    objects duplicate its first two entries and are read only without it."""
+    entries = payload.get("limits") or _legacy_limits(payload)
+    return tuple(w for w in map(_window, entries) if w is not None)
+
+
+# ---- Anthropic adapter ----------------------------------------------------
 
 def _http_get_json(url: str, headers: dict) -> dict:
     req = urllib.request.Request(url, headers=headers)
@@ -66,7 +131,7 @@ def _parse_ccusage(data: dict, now: float) -> tuple[Window, ...]:
     b = active[0]
     remaining = float((b.get("projection") or {}).get("remainingMinutes", 0))
     resets = datetime.fromtimestamp(now, timezone.utc) + timedelta(minutes=remaining)
-    return (Window("session", None, _used(b.get("percentUsed") or 0.0, None), resets, SESSION),)
+    return (Window(WindowKind.SESSION, None, _used(b.get("percentUsed") or 0.0, None), resets),)
 
 
 def _read_token(credentials_path: str | Path) -> str | None:
@@ -150,6 +215,22 @@ ADAPTERS: dict[str, UsageAdapter] = {"anthropic": AnthropicUsage()}
 
 
 # ---- cache + fan-out -------------------------------------------------------
+
+def usage_to_json(u: ProviderUsage) -> dict:
+    return {"provider": u.provider, "source": u.source, "fetched_at": u.fetched_at,
+            "windows": [{"kind": w.kind.value, "scope": w.scope, "used": w.used,
+                         "resets_at": w.resets_at.isoformat()}
+                        for w in u.windows]}
+
+
+def usage_from_json(d: dict) -> ProviderUsage:
+    """Raises on anything it cannot read back; the cache then refetches."""
+    return ProviderUsage(
+        provider=d["provider"], source=d["source"], fetched_at=float(d["fetched_at"]),
+        windows=tuple(Window(WindowKind(w["kind"]), w.get("scope"), float(w["used"]),
+                             _aware(w["resets_at"]))
+                      for w in d["windows"]))
+
 
 def cache_path(state_dir: str | Path, provider: str) -> Path:
     return Path(state_dir) / "usage" / f"{provider}.json"

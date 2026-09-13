@@ -120,7 +120,7 @@ def test_rank_failure_without_cache_is_empty_stale(tmp_path):
 
 
 def test_usage_reads_fresh_cache_only(tmp_path):
-    from dispatcher.usage import usage_to_json
+    from dispatcher.usage_providers import usage_to_json
     from tests.usagefakes import session_usage
     clock = FakeClock()
     (tmp_path / "usage").mkdir(parents=True, exist_ok=True)

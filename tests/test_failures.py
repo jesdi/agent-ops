@@ -88,7 +88,6 @@ class FakeDeps:
 def cfg(tmp_path, infra_repo="jesdi/agent-ops"):
     return Config(
         state_dir=str(tmp_path / "state"), capacity=3,
-        budget_threshold=0.8, racing_minutes=30, racing_threshold=0.95,
         session_memory="2g", session_cpus="2",
         targets=[Target(
             name="portfolio_eval", repo="jesdi/portfolio_eval",

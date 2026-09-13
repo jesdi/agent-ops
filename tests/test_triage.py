@@ -102,8 +102,7 @@ def _herdr_fake_creating(monkeypatch, calls, workspace=None, pane_run_ok=True):
 
 def _cfg(tmp_path, targets=(), infra=""):
     return Config(
-        state_dir=str(tmp_path), capacity=2, budget_threshold=0.8,
-        racing_minutes=30, racing_threshold=0.95, session_memory="1500m",
+        state_dir=str(tmp_path), capacity=2, session_memory="1500m",
         session_cpus="2", targets=list(targets), infra_repo=infra)
 
 

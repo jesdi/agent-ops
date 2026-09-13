@@ -19,8 +19,7 @@ def make_target(name="alpha", repo="jesdi/alpha"):
 
 def make_config(state_dir, targets=None, capacity=2):
     return Config(
-        state_dir=str(state_dir), capacity=capacity, budget_threshold=0.8,
-        racing_minutes=30, racing_threshold=0.95, session_memory="2g",
+        state_dir=str(state_dir), capacity=capacity, session_memory="2g",
         session_cpus="2", targets=list(targets or [make_target()]))
 
 

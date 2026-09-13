@@ -23,7 +23,6 @@ def _minimal_config() -> Config:
     )
     return Config(
         state_dir="/tmp/agent-ops-openapi", capacity=2,
-        budget_threshold=0.8, racing_minutes=30, racing_threshold=0.95,
         session_memory="2g", session_cpus="2", targets=[target],
     )
 

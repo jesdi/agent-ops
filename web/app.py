@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
-from dispatcher.config import Config, pace_config, policy_for
+from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve
 from dispatcher.state import AnswersRequest, SpecApprovalRequest
 from web import read_model
@@ -129,7 +129,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def _usage_views():
         return read_model.usage_views(
             sources.usage(), now=datetime.now(timezone.utc),
-            pace=pace_config(cfg), default_model=cfg.models.default)
+            pace=cfg.pace, default_model=cfg.models.default)
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):

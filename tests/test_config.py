@@ -33,7 +33,7 @@ def test_load_config(tmp_path: Path):
     p.write_text(SAMPLE)
     cfg = load_config(p)
     assert cfg.capacity == 3
-    assert cfg.budget_threshold == 0.8
+    assert cfg.pace.budget_threshold == 0.8
     t = cfg.targets[0]
     assert t.repo == "jesdi/portfolio_eval"
     assert t.verify_cmd == "make e2e-slot SLOT={slot}"
@@ -47,9 +47,9 @@ def test_defaults(tmp_path: Path):
     )
     cfg = load_config(p)
     assert cfg.capacity == 3
-    assert cfg.budget_threshold == 0.8
-    assert cfg.racing_minutes == 30
-    assert cfg.racing_threshold == 0.95
+    assert cfg.pace.budget_threshold == 0.8
+    assert cfg.pace.racing_minutes == 30
+    assert cfg.pace.racing_threshold == 0.95
     assert cfg.targets == []
 
 
@@ -429,30 +429,34 @@ def test_unknown_loop_cap_fails_at_load(tmp_path, monkeypatch):
         load_config(p)
 
 
-from dispatcher.config import pace_config, referenced_providers
+from dispatcher.config import referenced_providers
+from dispatcher.usage import PaceConfig
 
 
 def test_pace_knobs_default(tmp_path):
     p = tmp_path / "targets.yaml"
     p.write_text(SAMPLE)
-    cfg = load_config(p)
-    assert (cfg.pace_margin, cfg.weekend_weight, cfg.timezone) == (0.10, 0.5, "UTC")
-    pc = pace_config(cfg)
+    pc = load_config(p).pace
     assert (pc.budget_threshold, pc.racing_minutes, pc.racing_threshold) == (0.8, 30, 0.95)
     assert (pc.pace_margin, pc.weekend_weight, pc.timezone) == (0.10, 0.5, "UTC")
+    assert pc == PaceConfig()
 
 
 def test_pace_knobs_parse(tmp_path):
     p = tmp_path / "targets.yaml"
-    p.write_text(SAMPLE + "pace_margin: 0.05\nweekend_weight: 0.25\ntimezone: Europe/Madrid\n")
-    cfg = load_config(p)
-    assert (cfg.pace_margin, cfg.weekend_weight, cfg.timezone) == (0.05, 0.25, "Europe/Madrid")
+    p.write_text(SAMPLE.replace("budget_threshold: 0.8", "budget_threshold: 0.7")
+                 + "pace_margin: 0.05\nweekend_weight: 0.25\ntimezone: Europe/Madrid\n")
+    pc = load_config(p).pace
+    assert (pc.pace_margin, pc.weekend_weight, pc.timezone) == (0.05, 0.25, "Europe/Madrid")
+    assert pc.budget_threshold == 0.7
 
 
 @pytest.mark.parametrize("extra, msg", [
     ("timezone: Mars/Olympus\n", "timezone"),
     ("weekend_weight: 1.5\n", "weekend_weight"),
     ("weekend_weight: -0.1\n", "weekend_weight"),
+    ("pace_margin: -0.05\n", "pace_margin"),
+    ("pace_margin: 1.0\n", "pace_margin"),
 ])
 def test_bad_pace_knobs_fail_config_load(tmp_path, extra, msg):
     p = tmp_path / "targets.yaml"
