@@ -26,13 +26,26 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
   const allowed = Math.round(w.allowance * 100)
   const remaining = 100 - used
   const foot = w.kind === 'session' ? `cap ${allowed}%` : `headroom ${pts(w.headroom)} pts`
+
+  // Position the sub-track label centred on the head line, but clamp it so it
+  // never overflows the track edges. Below 15%: left-align; above 85%: right-align.
+  const headPct = Math.min(100, allowed)
+  const footStyle: React.CSSProperties =
+    headPct < 15
+      ? { left: `${headPct}%` }
+      : headPct > 85
+      ? { right: `${100 - headPct}%` }
+      : { left: `${headPct}%`, transform: 'translateX(-50%)' }
+
   return (
-    <div className="grid grid-cols-[92px_1fr_auto] items-center gap-2.5 text-xs">
+    // ponytail: minmax(7rem,1fr) ensures the track column never collapses to 0
+    // when the grid has no intrinsic width (all progressbar children are absolute).
+    <div className="grid grid-cols-[92px_minmax(7rem,1fr)_auto] items-center gap-2.5 text-xs">
       <span className="text-gray-600">
         {label(w)}
         <small className="block text-[11px] text-gray-400">{formatDuration(w.minutes_to_reset * 60)}</small>
       </span>
-      <div className="mb-3.5">
+      <div className="mb-3.5 min-w-0">
         <div
           role="progressbar"
           aria-label={`${provider} ${label(w)} used`}
@@ -49,8 +62,8 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
           <div className={`absolute inset-y-[3px] left-0 rounded-sm ${FILL[w.severity]}`} style={{ width: `${used}%` }} />
           <div className="absolute inset-y-0 border-l-2 border-gray-900" style={{ left: `${Math.min(100, allowed)}%` }} />
           <span
-            className="absolute top-4 -translate-x-1/2 whitespace-nowrap text-[11px] text-gray-500"
-            style={{ left: `${Math.min(86, allowed)}%` }}
+            className="absolute top-4 whitespace-nowrap text-[11px] text-gray-500"
+            style={footStyle}
           >
             {foot}
           </span>
@@ -61,11 +74,16 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
   )
 }
 
+/** Each provider occupies its own column in a wrapping row so basis means WIDTH.
+ *  The panel itself is a flex item in BoardPage's header (min-w-0 flex-1 basis-[340px]). */
 export function UsagePanel({ providers }: { providers: ProviderUsageView[] }) {
   return (
-    <div className="flex flex-col gap-3">
+    // ponytail: min-w-0 flex-1 basis-[340px] gives the panel a real width in the
+    // BoardPage header's flex-wrap context; flex-wrap inside lets multiple provider
+    // groups sit side by side, each pinned to their own 300px column.
+    <div className="min-w-0 flex-1 basis-[340px] flex flex-wrap gap-3">
       {providers.map((p) => (
-        <div key={p.provider} className="flex min-w-0 flex-1 basis-[340px] flex-col gap-2.5 sm:max-w-[560px]">
+        <div key={p.provider} className="min-w-0 flex-1 basis-[300px] flex flex-col gap-2.5">
           <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
             {p.provider}
             <span className={`rounded-full px-2 py-px text-[11px] font-medium normal-case tracking-normal ${
