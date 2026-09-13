@@ -52,7 +52,8 @@ is the weighted time elapsed plus the pace margin.
 **Headroom**: allowance minus used. The gate's actual input; positive means
 the box may spawn.
 
-**Binding window**: the provider's window with the least headroom.
+**Binding window**: of the windows a model draws on, the one with the least
+headroom. The verdict carries its `Reading`.
 
 ## Design
 
@@ -86,33 +87,45 @@ secrets in it) and every parser test reads it.
 ### Data model — `dispatcher/usage.py` (new, pure)
 
 ```python
+class WindowKind(StrEnum):
+    SESSION = "session"       # .length 5h — nominal, never from the payload
+    WEEKLY = "weekly"         # .length 7d
+
+
 @dataclass(frozen=True)
 class Window:
-    kind: str                 # "session" | "weekly"
+    kind: WindowKind
     scope: str | None         # model display name ("Fable") or None = all
     used: float               # 0..1; locked or >=100% → 1.0
-    resets_at: datetime       # aware UTC
-    length: timedelta         # 5h | 7d — nominal, never from the payload
+    resets_at: datetime       # aware UTC; length is kind.length
 
 
 @dataclass(frozen=True)
 class ProviderUsage:
     provider: str             # "anthropic"
-    source: str               # "oauth" | "ccusage" | "unavailable"
+    source: Source            # "oauth" | "ccusage" | "unavailable"
     fetched_at: float
     windows: tuple[Window, ...]
+
+
+@dataclass(frozen=True)
+class Reading:                # one window judged at a moment
+    window: Window
+    allowance: float
+    headroom: float           # allowance - used
 
 
 @dataclass(frozen=True)
 class Verdict:
     admitted: bool
     provider: str
-    window: Window | None     # the binding window (None = unavailable)
-    allowance: float          # for the binding window
-    headroom: float           # allowance - used, for the binding window
-    reason: str               # "ok" | "over-pace" | "over-threshold" | "unavailable"
+    binding: Reading | None   # least headroom among the considered readings;
+                              # None = unavailable, or no window applies
+    reason: Reason            # "ok" | "over-pace" | "over-threshold" | "unavailable"
 ```
 
+`readings(usage, now, cfg)` returns one `Reading` per window, and none for
+an unavailable provider; the gate and the read model both consume them.
 `UsageSnapshot` is deleted. Nothing outside `usage.py` computes headroom.
 
 ### Allowance
@@ -135,7 +148,9 @@ schedule stays put, which is the behaviour wanted. Should `resets_at` itself
 ever move on such a reset, the fix is to persist the first-seen `resets_at`
 per window until it passes; that is not built until observed.
 
-`PaceConfig` is the four knobs below plus the two existing session knobs.
+`PaceConfig` holds the three pace knobs below plus the three session knobs;
+`load_config` builds it once as `Config.pace`, which the dispatcher, the
+triage sweep and the web read model all pass to `admits`.
 
 ### The gate
 
@@ -151,8 +166,10 @@ def admits(usages: Mapping[str, ProviderUsage], model_id: str,
    whose display name is a case-insensitive substring of the bare id
    (`"Fable"` matches `claude-fable-5-1`; `"Opus"` would match
    `claude-opus-4-8`).
-4. Headroom per window is `allowance - used`. The binding window is the
-   minimum. Admitted iff every considered window has headroom `> 0`.
+4. Each considered window yields a `Reading` with headroom
+   `allowance - used`; the verdict's `binding` is the one with the least.
+   Admitted iff every considered reading has headroom `> 0`. No considered
+   window at all admits, with `binding=None`.
 
 A window the adapter could not report is simply absent and passes; only a
 whole provider fails closed. `machine.py` and `loops.py` do not change: a
@@ -173,18 +190,29 @@ and they spend different windows.
 ```python
 class UsageAdapter(Protocol):
     name: str
-    def fetch(self, state_dir: Path) -> ProviderUsage: ...
+    def fetch(self, state_dir: Path, *,
+              now: Callable[[], float] = time.time) -> ProviderUsage: ...
 
 ADAPTERS: dict[str, UsageAdapter]   # {"anthropic": AnthropicUsage()}
 ```
 
 `AnthropicUsage` is today's `fetch_usage` moved: the token ladder (env,
 1Password setup token, claude-home store), the OAuth GET, the `ccusage`
-fallback (session window only), unavailable last. `_parse_oauth` reads
-`limits[]` into windows.
+fallback (session window only), unavailable last. `parse_anthropic` reads
+`limits[]` into windows; an entry it cannot read (not an object, unknown
+kind, no reset, no percent) is skipped, and a scope of unexpected shape
+reads as unscoped, so the window counts against every model.
+
+Every unreadable reading fails closed as `unavailable`. An OAuth response
+that parses to no windows counts like a rejected token (next token, then
+`ccusage`, then `unavailable`), because a reading with no windows would
+admit every model. `fetch_provider` catches any exception an adapter
+raises and reports that provider `unavailable`, caching nothing, so one
+broken adapter never crashes the pass or `/api/board`.
 
 ```python
-def fetch_all(cfg: Config, now) -> dict[str, ProviderUsage]
+def fetch_all(cfg: Config, *, now=time.time,
+              adapters=ADAPTERS) -> dict[str, ProviderUsage]
 ```
 
 fetches every provider referenced by the global policy, every target
@@ -194,8 +222,13 @@ visible; it is never silently absent.
 
 Cache: `state_dir/usage/<provider>.json` holding `fetched_at` and the
 serialised `ProviderUsage`, honoured for `MIN_POLL_SECONDS` (180) per file.
-`usage-cache.json` is gone; `_dry_run_copy` and the SSE fingerprint follow
-the directory.
+Only readable results are cached, so an outage never masks a recovery. The
+web and dispatcher units both write it, possibly as different users: each
+write goes to a sibling temp file, set to mode 0644, and is renamed over.
+A cache file that cannot be read or parsed, a negative age (clock stepped
+back), or a cached reading that is not `unavailable` yet has no windows is
+a miss and refetches. `usage-cache.json` is gone; the SSE fingerprint
+follows the directory.
 
 The proof that the seam works is a `FakeUsage` adapter in tests, registered
 under `fake/`, returning any windows a test wants. The Codex adapter is the
@@ -203,27 +236,38 @@ first task of the Codex provider work.
 
 ### Dispatcher
 
-`budget_ok: bool` becomes `admit: Callable[[str], Verdict]`, built once per
-pass:
+`budget_ok: bool` becomes `admit: Admit` (`Callable[[str], Verdict]`),
+built once per pass:
 
 ```python
-usages = usage.fetch_all(cfg, now=time.time)
-admit = lambda model: usage.admits(usages, model, now, pace_cfg(cfg))
+usages = fetch_all(cfg)
+now = datetime.now(timezone.utc)
+admit: Admit = lambda model: admits(usages, model, now, cfg.pace)
 ```
 
 The six consumers keep their shape and ask for the model they are about to
-spawn: `StartTicket`, `RetryStage`, `SpawnStage` in `_drive_task`,
-`_resume_woken`, `_spawn_feedback`, and `_claim_new`, which resolves the
-spec-stage model for the candidate before claiming. `run_sweep` asks for
-`triage_model` (or the policy default).
+spawn, resolved once as a `Launch(stage, model)` so the gate asks about
+exactly the model the spawner then launches: `StartTicket`, `RetryStage`,
+`SpawnStage` in `_drive_task`, `_resume_woken`, `_spawn_feedback`, and
+`_claim_new`, whose `_claimable` resolves each candidate's spec-stage
+`Launch` before claiming; a denied candidate leaves the next one eligible,
+since its model may differ. `run_sweep` asks for `triage_model` (or the
+policy default).
 
 `_budget_edge` keys its marker on the verdict for the global policy default,
-which is what an idle box would spawn next. Its note names the binding
-window and the reason:
+which is what an idle box would spawn next. Its note (`verdict_note`) names
+the binding window and its numbers:
 
 ```
 anthropic week·Fable: 31% used, allowance 29%, headroom −2 pts, resets in 5d 2h
 ```
+
+The pings use resume hysteresis. The stall ping fires on the first denied
+pass; the resume ping waits until the default is admitted with headroom
+of at least `RESUME_HEADROOM` (2 pts), since the weekly allowance grows
+continuously and a box running at pace would otherwise ping a stall/resume
+pair at every zero crossing. An `unavailable` verdict sends neither: there
+is no window to wait out, and `_auth_dark_edge` owns that case.
 
 `budget_stall` copy changes from "usage window exhausted; stalled until
 reset" to "usage gate closed; resumes when headroom returns", since a pace
@@ -241,8 +285,9 @@ timezone: UTC           # IANA zone that defines Saturday 00:00 – Monday 00:00
 ```
 
 `budget_threshold`, `racing_minutes`, `racing_threshold` keep their meaning
-for the session window. `load_config` validates `timezone` with `zoneinfo`
-and `0 <= weekend_weight <= 1`.
+for the session window. `load_config` validates `timezone` with `zoneinfo`,
+`0 <= weekend_weight <= 1` and `0 <= pace_margin < 1`, and gathers all six
+knobs into `Config.pace: PaceConfig`.
 
 ### Read model and API
 
@@ -250,35 +295,51 @@ and `0 <= weekend_weight <= 1`.
 
 ```python
 class WindowView(BaseModel):
-    kind: str; scope: str | None
+    kind: WindowKind; scope: str | None
     used: float; allowance: float; headroom: float
     minutes_to_reset: float
-    severity: str        # "ok" | "close" (headroom <= 0.08) | "blocked"
+    severity: Severity   # "ok" | "close" (headroom <= 0.08) | "blocked"
 
 class ProviderUsageView(BaseModel):
-    provider: str; source: str
+    provider: str; source: Source
     windows: list[WindowView]
-    would_spawn: bool    # verdict for the policy default model
+
+class GateView(BaseModel):   # the verdict for the policy default model
+    model: str; provider: str
+    admitted: bool
+    note: str                # verdict_note: the binding window and its numbers
+    minutes_to_reset: float  # of the binding window; 0 when there is none
     binding: WindowView | None
 
-GET /api/usage -> list[ProviderUsageView]
+class UsageView(BaseModel):
+    providers: list[ProviderUsageView]   # sorted by provider name
+    gate: GateView
+
+GET /api/usage -> UsageView
 ```
 
-The board payload embeds the same list where it embedded `budget`. The SSE
-key `budget` is renamed `usage`. `NextClaimView` gains `blocked_by: str`
-(the note text above) beside `minutes_to_reset`, and the verdict
-`budget-blocked` keeps its name.
+There is one gate, not a verdict per provider: what an idle box would spawn
+next, and the verdict the stall/resume pings key on. The board payload does
+not embed usage; `/api/board` builds the same gate and `next_claim`
+consumes it (`gate: GateView`): a gate that does not admit forecasts
+`budget-blocked` with the gate's `minutes_to_reset` and
+`blocked_by = gate.note`. The forecast stays a partial mirror, since the
+dispatcher gates each candidate on its own spec model. The SSE key `budget`
+is renamed `usage`. `NextClaimView` gains `blocked_by: str` beside
+`minutes_to_reset`, and the verdict `budget-blocked` keeps its name.
 
 Frontend types regenerate from OpenAPI (`pnpm gen:api`), never by hand.
 
 ### Console
 
 `BudgetBar` is replaced by `UsagePanel` in the board header, rendering one
-group per provider. Per group: a provider label, the will-spawn chip, and one
-**headroom bullet** per window, as in the prototype:
+group per provider. Per group: a provider label and one **headroom bullet**
+per window, as in the prototype. The console shows one spawn chip, on the
+group of the gate's provider: `will spawn <model>` or `will not spawn
+<model>` for the policy default, titled with `gate.note`.
 
 ```
-ANTHROPIC  [will spawn]
+ANTHROPIC  [will spawn claude-sonnet-4-6]
 Session · 5h   [▮▮░░░░░░░░░░░░░░░░░░│░░░]  95% left
 1h 29m                          cap 80%
 Week · all     [▮▮▮░░░░░░│░░░░░░░░░░░░░░]  87% left
@@ -358,16 +419,21 @@ is now answered by `admits`, and it still never touches loop accounting.
 - token ladder and cache floor moved from `test_budget_fetch`, keyed per
   provider file; `fetch_all` fetches only referenced providers; missing
   adapter → unavailable.
+- an empty OAuth reading, a malformed payload and a raising adapter all
+  report `unavailable`; the cache is written aside at mode 0644; an
+  unreadable or empty cached reading refetches.
 
 **`tests/test_config.py`** — the three knobs parse, default, and reject a bad
 zone or weight; a `provider/` prefixed model id validates and splits.
 
-**`tests/test_web_read_model.py`** — `ProviderUsageView` severities, binding
-window, `blocked_by` text, `would_spawn` for the default model.
+**`tests/test_web_read_model.py`** — `WindowView` severities; the gate's
+admitted, binding window and note for the default model; `next_claim` takes
+`blocked_by` and `minutes_to_reset` from the gate.
 
 **Dispatcher tests** — every `patch_usage` helper returns a fake `admit`;
 a Fable-blocked pass still starts a Sonnet ticket; `_budget_edge` notes name
-the binding window; `run_sweep` is gated on `triage_model`.
+the binding window, resume waits for 2 pts of headroom, and an unavailable
+verdict pings nothing; `run_sweep` is gated on `triage_model`.
 
 **Frontend** — `UsagePanel.test.tsx`: bullet geometry from `allowance` and
 `used`, severity classes asserted through accessible text, unavailable
