@@ -8,8 +8,16 @@ round forever. Only timestamped events (reviews, comments) newer than the
 cursor trigger, and only from humans other than the box itself."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+
+@dataclass(frozen=True)
+class CIStatus:
+    """Latest result of a workflow or commit-status context on the PR head."""
+    conclusion: str
+    completed_at: str
 
 
 @dataclass(frozen=True)
@@ -19,16 +27,6 @@ class PollResult:
 
 
 _RED = {"FAILURE", "ERROR", "TIMED_OUT"}
-
-
-def _red_at(check: dict) -> str:
-    """Completion timestamp of a failed check (CheckRun or StatusContext),
-    "" when it is not red or carries no timestamp — a red check with no
-    time cannot be cursored, so it never triggers."""
-    verdict = (check.get("conclusion") or check.get("state") or "").upper()
-    if verdict not in _RED:
-        return ""
-    return check.get("completedAt") or check.get("startedAt") or check.get("createdAt") or ""
 
 
 def _ts(raw: str) -> datetime | None:
@@ -51,7 +49,8 @@ def _is_human(author: dict | None, self_login: str) -> bool:
 
 
 def classify(payload: dict, cursor: str, self_login: str,
-             check_cursor: str = "", conflict_cursor: str = "") -> PollResult:
+             check_cursor: str = "", conflict_cursor: str = "",
+             ci_statuses: Sequence[CIStatus] = ()) -> PollResult:
     if payload.get("mergedAt"):
         return PollResult("merged")
     if payload.get("state") == "CLOSED":
@@ -72,8 +71,8 @@ def classify(payload: dict, cursor: str, self_login: str,
         return PollResult("feedback", latest_ts=max(fresh)[1])
     red: list[tuple[datetime, str]] = []
     seen = _ts(check_cursor)
-    for check in payload.get("statusCheckRollup") or []:
-        raw = _red_at(check if isinstance(check, dict) else {})
+    for check in ci_statuses:
+        raw = check.completed_at if check.conclusion.upper() in _RED else ""
         dt = _ts(raw)
         if dt is not None and (seen is None or dt > seen):
             red.append((dt, raw))

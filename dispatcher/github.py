@@ -11,6 +11,7 @@ import subprocess
 from dataclasses import dataclass
 
 from dispatcher.config import Target
+from dispatcher.pr_poll import CIStatus
 
 log = logging.getLogger(__name__)
 
@@ -64,8 +65,65 @@ class GitHubClient:
     def pr_view(self, target: Target, pr_number: int) -> dict:
         out = _run(["gh", "pr", "view", str(pr_number), "--repo", target.repo,
                     "--json",
-                    "state,mergedAt,reviewDecision,reviews,comments,statusCheckRollup,mergeable,headRefOid"])
+                    "state,mergedAt,reviewDecision,reviews,comments,mergeable,headRefOid,headRefName"])
         return json.loads(out)
+
+    def ci_statuses(self, target: Target, head: str, branch: str) -> list[CIStatus]:
+        """PAT-compatible CI reads, isolated from PR lifecycle reads.
+
+        Each source can fail independently; unreadable CI is warned about,
+        never taken as evidence of success or allowed to hide a merge.
+        """
+        results: list[CIStatus] = []
+        if not head:
+            return results
+        for source in (self._workflow_statuses, self._commit_statuses):
+            try:
+                results.extend(source(target, head, branch))
+            except (subprocess.SubprocessError, OSError, ValueError) as exc:
+                detail = getattr(exc, "stderr", None) or str(exc)
+                log.warning("CI poll failed (%s) for %s at %s: %s",
+                            source.__name__, target.repo, head, detail.strip())
+        return results
+
+    def _workflow_statuses(self, target: Target, head: str,
+                           branch: str) -> list[CIStatus]:
+        args = ["gh", "api", f"repos/{target.repo}/actions/runs",
+                "--method", "GET", "--paginate", "--slurp",
+                "-f", f"head_sha={head}", "-f", "per_page=100"]
+        if branch:
+            args += ["-f", f"branch={branch}"]
+        pages = json.loads(_run(args))
+        latest: dict[tuple[int, str, str], dict] = {}
+        for page in pages:
+            for run in page["workflow_runs"]:
+                if run["head_sha"] != head or (branch and run["head_branch"] != branch):
+                    continue
+                # A workflow may run for both push and pull_request. Keep
+                # them separate, but let a newer run supersede an old red one
+                # even when the newer run is still queued or in progress.
+                key = (run["workflow_id"], run["event"], run["head_branch"])
+                order = (run["run_number"], run.get("run_attempt", 1), run["id"])
+                previous = latest.get(key)
+                if previous is None or order > (
+                        previous["run_number"], previous.get("run_attempt", 1), previous["id"]):
+                    latest[key] = run
+        return [CIStatus(run.get("conclusion") or "", run.get("updated_at") or "")
+                for run in latest.values() if run["status"] == "completed"]
+
+    def _commit_statuses(self, target: Target, head: str,
+                         branch: str) -> list[CIStatus]:
+        pages = json.loads(_run([
+            "gh", "api", f"repos/{target.repo}/commits/{head}/statuses?per_page=100",
+            "--paginate", "--slurp"]))
+        latest: dict[str, dict] = {}
+        for page in pages:
+            for status in page:
+                context = status["context"]
+                if context not in latest or status["id"] > latest[context]["id"]:
+                    latest[context] = status
+        return [CIStatus(status["state"], status.get("created_at") or "")
+                for status in latest.values()]
 
     def pr_number_for_branch(self, target: Target, branch: str) -> int:
         """The task's PR for `branch`, resolved deterministically: `gh pr

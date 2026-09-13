@@ -189,6 +189,29 @@ prepares credentials and then executes its arguments. Without it, sessions call
 Podman directly. Use `AGENT_OPS_SESSION_IMAGE` to select your session image.
 Never put credentials in a targets file; supply them through your secret manager.
 
+### GitHub permissions and PR polling
+
+The repository PAT needs **Actions: read** to monitor GitHub Actions runs and
+**Commit statuses: read** to monitor legacy CI status contexts, in addition to
+the existing contents, issues, and pull-request permissions. Dispatching or
+rerunning workflows still requires **Actions: write**.
+
+PR lifecycle polling reads merge status and review feedback independently of CI.
+CI failures cannot prevent a merged task from moving to Done. For an open PR,
+the dispatcher reads Actions runs for its current head SHA and branch, keeping
+the latest run/attempt per workflow and event; it also reads the latest commit
+status per context. Superseded failures never trigger a repair round.
+Unreadable CI sources produce warnings in the dispatcher log; the remaining
+sources and PR lifecycle polling continue. Missing CI data is not a green verdict.
+
+Fine-grained PATs cannot call the Checks API. The dispatcher therefore avoids
+`statusCheckRollup` and `gh pr checks`. Third-party integrations that publish
+only CheckRuns (neither Actions runs nor commit statuses) are not monitored by
+this PAT-compatible path. Such integrations require a different authentication
+method, such as a GitHub App, to monitor their checks. See GitHub's
+[PAT limitations](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#fine-grained-personal-access-tokens-limitations)
+and [Actions API permissions](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository).
+
 ## License
 
 [MIT](LICENSE) © 2026 jesdi

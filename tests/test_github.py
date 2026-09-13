@@ -483,7 +483,7 @@ def test_pr_view_fetches_expected_fields(monkeypatch):
     d = gh.pr_view(TARGET, 12)
     assert d["state"] == "OPEN"
     assert seen[0] == ["gh", "pr", "view", "12", "--repo", TARGET.repo,
-                       "--json", "state,mergedAt,reviewDecision,reviews,comments,statusCheckRollup,mergeable,headRefOid"]
+                       "--json", "state,mergedAt,reviewDecision,reviews,comments,mergeable,headRefOid,headRefName"]
 
 
 def test_pr_number_for_branch(monkeypatch):
@@ -526,3 +526,139 @@ def test_delete_branch_dry_run_calls_nothing(monkeypatch):
     monkeypatch.setattr(github, "_run",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError))
     github.GitHubClient(dry_run=True).delete_branch(TARGET, "agent/task-7")
+
+
+def workflow_run(*, id=10, workflow=1, number=1, attempt=1, event="pull_request",
+                 head="abc", branch="agent/task-7", status="completed",
+                 conclusion="failure", updated="2026-09-12T10:00:00Z"):
+    return {"id": id, "workflow_id": workflow, "run_number": number,
+            "run_attempt": attempt, "event": event, "head_sha": head,
+            "head_branch": branch, "status": status, "conclusion": conclusion,
+            "updated_at": updated}
+
+
+def test_ci_reads_actions_and_statuses_with_current_head_and_pagination(monkeypatch):
+    from dispatcher.pr_poll import CIStatus
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        if "actions/runs" in args[2]:
+            return json.dumps([{"workflow_runs": [workflow_run()]},
+                               {"workflow_runs": [workflow_run(id=11, workflow=2,
+                                                             conclusion="timed_out")]}])
+        return json.dumps([[{"id": 2, "context": "external-ci", "state": "error",
+                             "created_at": "2026-09-12T11:00:00Z"}],
+                           [{"id": 1, "context": "external-ci", "state": "success",
+                             "created_at": "2026-09-12T09:00:00Z"}]])
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    assert got == [CIStatus("failure", "2026-09-12T10:00:00Z"),
+                   CIStatus("timed_out", "2026-09-12T10:00:00Z"),
+                   CIStatus("error", "2026-09-12T11:00:00Z")]
+    assert calls == [
+        ["gh", "api", f"repos/{TARGET.repo}/actions/runs", "--method", "GET",
+         "--paginate", "--slurp", "-f", "head_sha=abc", "-f", "per_page=100",
+         "-f", "branch=agent/task-7"],
+        ["gh", "api", f"repos/{TARGET.repo}/commits/abc/statuses?per_page=100",
+         "--paginate", "--slurp"]]
+
+
+def test_newest_run_supersedes_red_but_other_workflows_and_events_survive(monkeypatch):
+    from dispatcher.pr_poll import CIStatus
+    runs = [workflow_run(id=12, number=2, conclusion="success"),
+            workflow_run(id=10),  # older red run of same workflow/event
+            workflow_run(id=13, event="push"),  # independent trigger
+            workflow_run(id=14, workflow=2),  # independent workflow
+            workflow_run(id=15, head="old-head"),
+            workflow_run(id=16, branch="main")]
+    monkeypatch.setattr(github, "_run", lambda args: json.dumps(
+        [{"workflow_runs": runs}] if "actions/runs" in args[2] else [[]]))
+    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    assert got == [CIStatus("success", "2026-09-12T10:00:00Z"),
+                   CIStatus("failure", "2026-09-12T10:00:00Z"),
+                   CIStatus("failure", "2026-09-12T10:00:00Z")]
+
+
+def test_running_rerun_supersedes_failed_attempt(monkeypatch):
+    runs = [workflow_run(), workflow_run(attempt=2, status="in_progress",
+                                         conclusion=None)]
+    monkeypatch.setattr(github, "_run", lambda args: json.dumps(
+        [{"workflow_runs": runs}] if "actions/runs" in args[2] else [[]]))
+    assert github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7") == []
+
+
+def test_new_failure_after_rerun_uses_new_timestamp(monkeypatch):
+    from dispatcher.pr_poll import CIStatus, classify
+    runs = [workflow_run(attempt=2, updated="2026-09-12T11:00:00Z"), workflow_run()]
+    monkeypatch.setattr(github, "_run", lambda args: json.dumps(
+        [{"workflow_runs": runs}] if "actions/runs" in args[2] else [[]]))
+    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    assert got == [CIStatus("failure", "2026-09-12T11:00:00Z")]
+    assert classify({"state": "OPEN"}, "", "agent-bot", ci_statuses=got,
+                    check_cursor="2026-09-12T10:00:00Z").kind == "check-failed"
+
+
+def test_new_pending_commit_status_supersedes_old_failure(monkeypatch):
+    from dispatcher.pr_poll import classify
+    statuses = [[{"id": 5, "context": "external-ci", "state": "pending",
+                  "created_at": "2026-09-12T11:00:00Z"}],
+                [{"id": 4, "context": "external-ci", "state": "failure",
+                  "created_at": "2026-09-12T10:00:00Z"}]]
+    monkeypatch.setattr(github, "_run", lambda args: json.dumps(
+        [{"workflow_runs": []}] if "actions/runs" in args[2] else statuses))
+    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    assert classify({"state": "OPEN"}, "", "agent-bot", ci_statuses=got).kind == "quiet"
+
+
+def test_commit_status_denial_does_not_hide_failed_action(monkeypatch, caplog):
+    from dispatcher.pr_poll import CIStatus
+
+    def fake_run(args):
+        if "actions/runs" in args[2]:
+            return json.dumps([{"workflow_runs": [workflow_run()]}])
+        raise subprocess.CalledProcessError(1, args, stderr="HTTP 403: statuses denied")
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    assert got == [CIStatus("failure", "2026-09-12T10:00:00Z")]
+    assert "statuses denied" in caplog.text and TARGET.repo in caplog.text
+
+
+def test_actions_denial_does_not_hide_failed_commit_status(monkeypatch, caplog):
+    from dispatcher.pr_poll import CIStatus
+
+    def fake_run(args):
+        if "actions/runs" in args[2]:
+            raise subprocess.CalledProcessError(1, args, stderr="HTTP 403: actions denied")
+        return json.dumps([[{"id": 1, "context": "external-ci", "state": "error",
+                             "created_at": "2026-09-12T11:00:00Z"}]])
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    assert got == [CIStatus("error", "2026-09-12T11:00:00Z")]
+    assert "actions denied" in caplog.text
+
+
+def test_missing_head_does_not_query_repository_wide_ci(monkeypatch):
+    def unexpected(args):
+        raise AssertionError(args)
+
+    monkeypatch.setattr(github, "_run", unexpected)
+    assert github.GitHubClient().ci_statuses(TARGET, "", "agent/task-7") == []
+
+
+def test_actions_timeout_does_not_discard_commit_statuses(monkeypatch, caplog):
+    from dispatcher.pr_poll import CIStatus
+
+    def fake_run(args):
+        if "actions/runs" in args[2]:
+            raise subprocess.TimeoutExpired(args, 120)
+        return json.dumps([[{"id": 1, "context": "external-ci", "state": "failure",
+                             "created_at": "2026-09-12T11:00:00Z"}]])
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    assert github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7") == [
+        CIStatus("failure", "2026-09-12T11:00:00Z")]
+    assert "timed out" in caplog.text
