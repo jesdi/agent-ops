@@ -13,10 +13,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dispatcher import containers, herdr, triage_apply, triage_prefetch
-from dispatcher.budget import fetch_usage, should_spawn
-from dispatcher.config import Config
+from dispatcher.config import Config, pace_config
 from dispatcher.prompts import render_triage_prompt
 from dispatcher.state import active, load_all
+from dispatcher.usage import admits, verdict_note
+from dispatcher.usage_providers import fetch_all
 
 REQUEST_FILE = "triage-request.json"
 CURSORS_FILE = "triage_cursors.json"
@@ -224,12 +225,12 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
     clear_request(cfg.state_dir)
     started = _cursor_now()  # the value every advanced cursor is set to
     started_date = started[:10]
-    usage = fetch_usage(cfg.state_dir)
-    if not should_spawn(usage, cfg.budget_threshold, cfg.racing_minutes,
-                        cfg.racing_threshold):
+    usages = fetch_all(cfg)
+    now = datetime.now(timezone.utc)
+    verdict = admits(usages, cfg.triage_model or cfg.models.default, now, pace_config(cfg))
+    if not verdict.admitted:
         deps.notifier.send("triage_report", lines=[
-            f"skipped — budget gate ({usage.source}: "
-            f"{usage.utilization:.0%})"])
+            f"skipped — usage gate ({verdict_note(verdict, now)})"])
         return
     cursors = load_cursors(cfg.state_dir)
     lines: list[str] = []

@@ -40,8 +40,8 @@ _TEMPLATES = {
     # Box-wide events (issue=0, no single owning task) — never had a real
     # session to attach to, so unlike every per-task template above these
     # carry no session/attach line at all.
-    "budget_stall": "⏳ #{issue} {title} — usage window exhausted; stalled until reset. {note}\n{url}",
-    "budget_resume": "▶️ #{issue} {title} — usage window reset; resuming. {note}\n{url}",
+    "budget_stall": "⏳ #{issue} {title} — usage gate closed; resumes when headroom returns. {note}\n{url}",
+    "budget_resume": "▶️ #{issue} {title} — usage gate open again; resuming. {note}\n{url}",
     "implement_started": "🛠 #{issue} {title} — implement started. Plan: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "parked_question": "❓ #{issue} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
     "spec_parked": ("🌙 #{issue} {title} — spec ready and parked for review. "

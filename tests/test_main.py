@@ -10,9 +10,9 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import failures, spec_publish
-from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
+from tests.usagefakes import session_usage
 from dispatcher.pr_poll import CIStatus
 from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
@@ -222,10 +222,9 @@ def cfg(tmp_path: Path) -> Config:
     )
 
 
-def patch_usage(monkeypatch, util=0.2):
-    monkeypatch.setattr(
-        main, "fetch_usage",
-        lambda state_dir: UsageSnapshot(util, 120.0, "oauth"))
+def patch_usage(monkeypatch, util=0.2, **kw):
+    monkeypatch.setattr(main, "fetch_all",
+                        lambda cfg, **k: {"anthropic": session_usage(util, **kw)})
 
 
 def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
@@ -333,6 +332,31 @@ def test_budget_resume_pings_once(tmp_path, monkeypatch):
     main.run_pass(c, d)
     main.run_pass(c, d)
     assert d.notifier.sent.count("budget_resume") == 1
+
+
+def test_fable_over_pace_blocks_only_fable_spawns(tmp_path, monkeypatch):
+    # weekly allowance in session_usage is ~0.6 (half elapsed + margin); 0.9 used on Fable is over pace
+    patch_usage(monkeypatch, util=0.2, fable=0.9)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = dc_replace(c, models=parse_policy({
+        "default": "claude-sonnet-4-6",
+        "rules": [{"name": "big", "when": {"labels_include": ["big"]}, "use": "claude-fable-5-1"}]}))
+    gh = FakeGitHub([Candidate(1, "A", "u", labels=["auto", "big"]),
+                     Candidate(2, "B", "u", labels=["auto"])])
+    d = deps(gh, FakeSessions())
+    main.run_pass(c, d)
+    assert [n for n in gh.claimed] == [2]
+    assert d.notifier.sent.count("budget_stall") == 0   # the default model is admitted
+
+
+def test_budget_stall_note_names_the_binding_window(tmp_path, monkeypatch):
+    patch_usage(monkeypatch, util=0.95)
+    patch_workspace(monkeypatch, tmp_path)
+    d = deps()
+    main.run_pass(cfg(tmp_path), d)
+    (note,) = [k["note"] for t, k in d.notifier.calls if t == "budget_stall"]
+    assert note.startswith("anthropic session: 95% used, allowance 80%, headroom -15 pts")
 
 
 def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
@@ -3233,9 +3257,8 @@ def test_dry_run_leaves_the_real_state_dir_alone_entirely(
 # ---------------------------------------------------------------------------
 
 def patch_usage_dark(monkeypatch):
-    monkeypatch.setattr(
-        main, "fetch_usage",
-        lambda state_dir: UsageSnapshot(0.0, 0.0, "unavailable"))
+    monkeypatch.setattr(main, "fetch_all",
+                        lambda cfg, **k: {"anthropic": session_usage(0.0, 0.0, source="unavailable")})
 
 
 def dark_marker(c):
@@ -3483,7 +3506,7 @@ def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
     messages.append(c.state_dir, 42, "first", "jesdi@github")
     messages.append(c.state_dir, 42, "second", "jesdi@github")
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     text = d.sessions.resumed[-1][1]
     assert text.index("first") < text.index("second")
     assert messages.undelivered(c.state_dir, 42) == []
@@ -3493,7 +3516,7 @@ def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     assert d.sessions.resumed[-1][1] == "Continue."
 
 
@@ -3516,7 +3539,7 @@ def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
     from dispatcher import messages
     messages.append(c.state_dir, 42, "delivered now", "jesdi@github")
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     messages.append(c.state_dir, 42, "arrived later", "jesdi@github")
     assert [m.text for m in messages.undelivered(c.state_dir, 42)] == [
         "arrived later"]
@@ -3579,7 +3602,7 @@ def test_two_human_parks_no_longer_deadlock_a_resume(tmp_path):
     make_task(c, issue=198, slot=NO_SLOT, park=PARK_WAKE)
     main._reconcile_slots(c)
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     t = load(c.state_dir, "portfolio_eval", 198)
     assert t.park == "" and t.slot != NO_SLOT
 
@@ -3589,8 +3612,8 @@ def test_blocked_wake_emits_one_event_not_one_per_pass(tmp_path):
     make_task(c, issue=41, slot=0, park="")          # holds the only capacity
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert len(blocked) == 1
@@ -3606,7 +3629,7 @@ def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
-    main._resume_woken(c, deps(), c.targets[0], budget_ok=True)
+    main._resume_woken(c, deps(), c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["detail"] for e in blocked] == ["no free slot"]
@@ -3617,10 +3640,10 @@ def test_marker_clears_once_the_wake_succeeds(tmp_path):
     make_task(c, issue=41, slot=0, park="")
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     assert main._wake_blocked_path(c, 42).exists()
     main.delete(c.state_dir, "portfolio_eval", 41)                     # capacity frees up
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     assert not main._wake_blocked_path(c, 42).exists()
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
@@ -3630,7 +3653,7 @@ def test_blocked_feedback_spawn_is_reported_too(tmp_path):
     make_task(c, issue=41, slot=0, park="")
     make_task(c, issue=42, slot=NO_SLOT, stage=Stage.PR_OPEN,
               feedback_pending=True)
-    main._spawn_feedback(c, deps(), c.targets[0], budget_ok=True)
+    main._spawn_feedback(c, deps(), c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["issue"] for e in blocked] == [42]
@@ -3649,7 +3672,7 @@ def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
     make_task(c, issue=41, slot=0, park="")      # holds the only capacity unit
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps(sess=FakeSessions(alive={41}))
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     assert main._wake_blocked_path(c, 42).exists()
 
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
@@ -4150,7 +4173,7 @@ def test_admission_budget_denied_retains_operator_request(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._wake(c, task, "please answer")
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=False)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=False, provider='anthropic', window=None, allowance=0.8, headroom=-0.1, reason='pace'))
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.operator_request == req   # untouched
     assert saved.park == PARK_WAKE         # woken, not resumed
@@ -4172,7 +4195,7 @@ def test_admission_capacity_full_retains_operator_request(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._wake(c, task, "please answer")
     d = deps()
-    main._resume_woken(c, d, c.targets[0], budget_ok=True)
+    main._resume_woken(c, d, c.targets[0], admit=lambda m: main.Verdict(admitted=True, provider='anthropic', window=None, allowance=0.8, headroom=1.0, reason='ok'))
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.operator_request == req   # untouched
     assert saved.park == PARK_WAKE         # still wake-queued, not resumed

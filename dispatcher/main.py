@@ -21,9 +21,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher.budget import UsageSnapshot, fetch_usage, should_spawn
+from typing import Callable
+
 from dispatcher.convergence import pass_lock
-from dispatcher.config import Config, Target, load_config, policy_for
+from dispatcher.config import Config, Target, load_config, pace_config, policy_for
+from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
+from dispatcher.usage_providers import fetch_all
 from dispatcher import (eventlog, failures, intents, loops, messages, pr_poll,
                         queue_ops, relogin, tmux_migration, triage)
 from dispatcher.github import GitHubClient
@@ -50,6 +53,8 @@ from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
+
+Admit = Callable[[str], Verdict]
 
 
 @dataclass
@@ -412,42 +417,37 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     return task
 
 
-def _budget_edge(cfg: Config, deps: Deps, budget_ok: bool, note: str,
-                 usage: UsageSnapshot) -> None:
-    """Edge-triggered stall/resume pings via a marker file.
+def _budget_edge(cfg: Config, deps: Deps, verdict: Verdict, note: str) -> None:
+    """Edge-triggered stall/resume pings via a marker file, keyed on the
+    verdict for the global policy default — what an idle box spawns next.
 
-    Unknowable usage also fail-safes to `budget_ok=False`, but it is not a
-    budget stall: there is no window and nothing will reset, so the
-    "stalled until reset" ping would send an operator off to wait out an
-    outage that only a re-login ends — 30 minutes before the accurate
-    auth_dark alert. _auth_dark_edge owns that case; stay silent for it and
-    leave every readable-usage case exactly as it was."""
-    if usage.source == "unavailable":
+    An unavailable provider also denies, but it is not a budget stall: there
+    is no window and nothing will reset, so the "resumes when headroom
+    returns" ping would send an operator off to wait out an outage that only
+    a re-login ends — 30 minutes before the accurate auth_dark alert.
+    _auth_dark_edge owns that case; stay silent for it."""
+    if verdict.reason == "unavailable":
         return
     marker = Path(cfg.state_dir) / "budget-stalled"
     marker.parent.mkdir(parents=True, exist_ok=True)
-    if not budget_ok and not marker.exists():
+    if not verdict.admitted and not marker.exists():
         marker.write_text(_now())
-        deps.notifier.send("budget_stall", issue=0, title="(all tasks)",
-                           url="", note=note)
-    elif budget_ok and marker.exists():
+        deps.notifier.send("budget_stall", issue=0, title="(all tasks)", url="", note=note)
+    elif verdict.admitted and marker.exists():
         marker.unlink()
-        deps.notifier.send("budget_resume", issue=0, title="(all tasks)",
-                           url="", note=note)
+        deps.notifier.send("budget_resume", issue=0, title="(all tasks)", url="", note=note)
 
 
 AUTH_DARK_GRACE_MINUTES = 30
 
 
-def _auth_dark_edge(cfg: Config, deps: Deps, usage: UsageSnapshot) -> None:
-    """One alert per unknowable-usage incident (auth likely dead).
-
-    Companion to _budget_edge: budget_stall covers "window full, will
-    reset on its own"; this covers "we cannot even tell", which
-    fail-safes every spawn indefinitely and therefore needs a human.
-    30-minute grace absorbs transient API blips."""
+def _auth_dark_edge(cfg: Config, deps: Deps, usages: dict[str, ProviderUsage]) -> None:
+    """One alert per unknowable-usage incident (auth likely dead). Dark means
+    EVERY fetched provider is unavailable; a single dark provider only fails
+    its own models closed and stays visible on the console."""
     marker = Path(cfg.state_dir) / "auth-dark"
-    if usage.source != "unavailable":
+    dark = not usages or all(u.source == "unavailable" for u in usages.values())
+    if not dark:
         marker.unlink(missing_ok=True)
         return
     if not marker.exists():
@@ -886,15 +886,15 @@ def _flush_done(cfg: Config) -> None:
 
 
 def _resume_woken(cfg: Config, deps: Deps, target: Target,
-                  budget_ok: bool, dry_run: bool = False) -> None:
-    if not budget_ok:
-        return
+                  admit: Admit, dry_run: bool = False) -> None:
     woken = sorted(
         [t for t in load_all(cfg.state_dir)
          if t.target == target.name and t.park == PARK_WAKE],
         key=lambda t: t.updated_at,
     )
     for task in woken:
+        if not admit(_model_for(cfg, target, task, task.stage)).admitted:
+            continue  # this model's provider has no headroom; others may
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
             _mark_wake_blocked(cfg, target, task, "capacity full")
@@ -1011,18 +1011,18 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
 
 
 def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
-                    budget_ok: bool) -> None:
+                    admit: Admit) -> None:
     """Spawn address-review for tasks whose PR got feedback — same gates
-    as claiming new work (capacity, budget, slot); a denied spawn just
+    as claiming new work (capacity, usage, slot); a denied spawn just
     stays pr-open+pending and retries next pass, badge showing."""
-    if not budget_ok:
-        return
     pending = sorted(
         [t for t in load_all(cfg.state_dir)
          if t.target == target.name and t.stage is Stage.PR_OPEN
          and t.feedback_pending],
         key=lambda t: t.updated_at)
     for task in pending:
+        if not admit(_model_for(cfg, target, task, Stage.ADDRESS_REVIEW)).admitted:
+            continue
         tasks = [t for t in load_all(cfg.state_dir)
                  if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
@@ -1049,7 +1049,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                budget_ok: bool, dry_run: bool = False) -> None:
+                admit: Admit, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
@@ -1066,7 +1066,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
         if isinstance(act, NoOp):
             continue
         if isinstance(act, StartTicket):
-            if not budget_ok:
+            if not admit(_model_for(cfg, target, task, Stage.IMPLEMENT)).admitted:
                 return  # nothing mutated; the done-signal persists; retried next pass
             # Validate the requested ticket exists before any destructive side
             # effects (ending the previous session, advancing the cursor).
@@ -1112,8 +1112,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             _park_for_ci(cfg, deps, target, task, act.run_id)
             return
         if isinstance(act, RetryStage):
-            if not budget_ok:
-                return  # signal persists; retried next pass once budget clears
+            if not admit(_model_for(cfg, target, task, Stage.PLAN)).admitted:
+                return  # signal persists; retried next pass once headroom returns
             _retry_plan(cfg, deps, target, task, act.reason)
             return
         if isinstance(act, SetTaskStage):
@@ -1152,8 +1152,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             note = act.note + (f"\n{spec_line}" if spec_line else "")
             _notify(deps, target, task, act.template, note)
         elif isinstance(act, SpawnStage):
-            if not budget_ok:
-                return  # signal persists; retried next pass
+            if not admit(_model_for(cfg, target, task, act.stage)).admitted:
+                return  # signal persists; retried next pass once headroom returns
             clear_waiting(cfg.state_dir, task.target, task.issue)
             # The previous stage's claude is usually still alive here — an
             # interactive session cannot exit itself. _launch would type
@@ -1221,7 +1221,7 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
 
 
 def _claim_new(cfg: Config, deps: Deps, target: Target,
-               dry_run: bool, pass_started: str = "") -> None:
+               admit: Admit, dry_run: bool, pass_started: str = "") -> None:
     tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
     free = cfg.capacity - len(active(tasks))
     if free <= 0:
@@ -1251,6 +1251,9 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
                                      cand.number):
             continue
+        spec_model = resolve(policy_for(cfg, target), "spec", cand.effort, cand.labels)
+        if not admit(spec_model).admitted:
+            continue  # no headroom for this candidate's spec model; next candidate may differ
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
             break
@@ -1537,7 +1540,7 @@ def _sandboxed_state(cfg: Config):
     --dry-run stubs every I/O *dependency* (GitHubClient, Sessions, Notifier,
     remove_workspace), but the pass also writes locally — state files, the
     event log, waiting markers, failure reports, the intent queue,
-    the usage cache — and those writes were unguarded, so a dry run advanced
+    the per-provider usage cache — and those writes were unguarded, so a dry run advanced
     tasks to terminal stages and wrote history for real. Guarding each call
     site is what already rotted: `dry_run` is threaded by hand into some
     functions and was never added to _flush_done or _resume_woken.
@@ -1643,28 +1646,27 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     eff = replace(cfg, capacity=max(0, cfg.capacity - 1)) if sweep_running else cfg
     claims_paused = triage.pending(cfg.state_dir)
     _handle_telegram(cfg, deps, dry_run)
-    usage = fetch_usage(cfg.state_dir)
-    budget_ok = should_spawn(usage, cfg.budget_threshold,
-                             cfg.racing_minutes, cfg.racing_threshold)
-    _budget_edge(cfg, deps, budget_ok,
-                 note=f"{usage.source}: {usage.utilization:.0%}, "
-                      f"reset in {usage.minutes_to_reset:.0f}m",
-                 usage=usage)
-    _auth_dark_edge(cfg, deps, usage)
+    usages = fetch_all(cfg)
+    now = datetime.now(timezone.utc)
+    pace = pace_config(cfg)
+    admit: Admit = lambda model: admits(usages, model, now, pace)
+    default_verdict = admit(cfg.models.default)
+    _budget_edge(cfg, deps, default_verdict, note=verdict_note(default_verdict, now))
+    _auth_dark_edge(cfg, deps, usages)
     for target in eff.targets:
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
             try:
-                _drive_task(eff, deps, target, task, budget_ok, dry_run)
+                _drive_task(eff, deps, target, task, admit, dry_run)
             except Exception:
                 _fail_task_crash(eff, deps, target, task, dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
-        _resume_woken(eff, deps, target, budget_ok, dry_run)
-        _spawn_feedback(eff, deps, target, budget_ok)
-        if budget_ok and not claims_paused:
-            _claim_new(eff, deps, target, dry_run, pass_started)
+        _resume_woken(eff, deps, target, admit, dry_run)
+        _spawn_feedback(eff, deps, target, admit)
+        if not claims_paused:
+            _claim_new(eff, deps, target, admit, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
     _flush_done(cfg)
     _write_heartbeat(cfg, pass_started)
