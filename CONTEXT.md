@@ -65,8 +65,13 @@ margin.
 _Avoid_: budget (that word now only names the stall marker and the pings)
 
 **Headroom**:
-Allowance minus used on a window. The gate's actual input; the **binding
-window** is the one with the least headroom.
+Allowance minus used on a window. The gate admits a model while every
+window it considers has headroom above zero.
+
+**Binding window**:
+Of the windows a model draws on — unscoped ones plus any scoped window
+whose display name matches the model — the one with the least headroom. It
+decides the verdict and is what the stall note and the console name.
 
 **Claude-home**:
 The box-side persistent Claude config directory (`~/agent-ops-state/claude-home`),
