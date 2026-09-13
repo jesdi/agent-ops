@@ -1,7 +1,9 @@
 """Hand-written fakes and builders shared by the web/ test suite."""
 from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
+from dispatcher import state
 from dispatcher.state import Stage, TaskState
+from web.sources import Sources, ArtifactListing
 
 HEADERS = {"Tailscale-User-Login": "jesdi@github"}
 
@@ -34,7 +36,8 @@ def make_task(issue=7, **kw):
 class FakeSources:
     """In-memory stand-in for web.sources.Sources — same method surface."""
 
-    def __init__(self):
+    def __init__(self, state_dir=None):
+        self.state_dir = state_dir
         self.tasks_list = []
         self.rank = {}            # target name -> (rows, as_of, stale)
         self.descriptions = {}    # (repo, number) -> dict
@@ -62,6 +65,23 @@ class FakeSources:
 
     def tasks(self):
         return list(self.tasks_list)
+
+    def task(self, target, issue):
+        active = next((t for t in self.tasks_list if (t.target, t.issue) == (target, issue)), None)
+        if active is not None or self.state_dir is None:
+            return active
+        return state.load_archived(self.state_dir, target, issue)
+
+    def artifacts(self, target, issue):
+        if self.state_dir is None:
+            return ArtifactListing([], "", False)
+        return Sources.artifacts(self, target, issue)
+
+    def _artifact_status(self, target, issue, item, expired):
+        return Sources._artifact_status(self, target, issue, item, expired)
+
+    def artifact_content(self, target, issue, artifact_id):
+        return Sources.artifact_content(self, target, issue, artifact_id)
 
     def rank_rows(self, target):
         return self.rank.get(target.name,

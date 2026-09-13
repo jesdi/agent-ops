@@ -7,11 +7,12 @@ import hashlib
 import json
 import subprocess
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
-from dispatcher import budget, eventlog, messages as msgq, queue_ops, state, triage
+from dispatcher import budget, eventlog, messages as msgq, queue_ops, state, task_artifacts, triage
 from dispatcher.budget import UsageSnapshot
 from dispatcher.config import Config, Target
 from dispatcher.intents import write_intent
@@ -27,6 +28,22 @@ DISPATCHER_KICK = ("systemctl", "--user", "start",
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+ArtifactStatus = Literal["published", "local", "expired", "unavailable"]
+
+
+@dataclass(frozen=True)
+class ArtifactResource:
+    item: task_artifacts.StoredArtifact
+    status: ArtifactStatus
+
+
+@dataclass(frozen=True)
+class ArtifactListing:
+    items: list[ArtifactResource]
+    expires_at: str
+    expired: bool
 
 
 class Sources:
@@ -49,6 +66,36 @@ class Sources:
 
     def tasks(self) -> list[TaskState]:
         return state.load_all(self._cfg.state_dir)
+
+    def task(self, target: str, issue: int) -> TaskState | None:
+        active = next((task for task in self.tasks()
+                       if (task.target, task.issue) == (target, issue)), None)
+        return active or state.load_archived(self.state_dir, target, issue)
+
+    def artifacts(self, target: str, issue: int) -> ArtifactListing:
+        index = task_artifacts.read(self.state_dir, target, issue)
+        resources = [ArtifactResource(item, self._artifact_status(target, issue, item, index.expired))
+                     for item in index.items]
+        return ArtifactListing(resources, index.expires_at, index.expired)
+
+    def _artifact_status(self, target: str, issue: int, item: task_artifacts.StoredArtifact,
+                         expired: bool) -> ArtifactStatus:
+        if item.publication:
+            return "published"
+        if expired:
+            return "expired"
+        if task_artifacts.content_path(self.state_dir, target, issue, item.id):
+            return "local"
+        return "unavailable"
+
+    def artifact_content(self, target: str, issue: int, artifact_id: str) -> bytes | None:
+        path = task_artifacts.content_path(self.state_dir, target, issue, artifact_id)
+        if path is None:
+            return None
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            return None
 
     def rank_rows(self, target: Target) -> tuple[list[dict], str, bool]:
         now = self._clock()
@@ -279,6 +326,7 @@ class Sources:
             list(root.glob("task-*.json")) + list(root.glob("waiting-*"))
             + list(root.glob("wake-blocked-*"))
             + list((root / "messages").glob("*.jsonl"))
+            + list((root / "artifacts").glob("*/index.json"))
             + [root / "pass.json"])
         budget_d = digest([root / "usage-cache.json",
                            root / "budget-stalled"])

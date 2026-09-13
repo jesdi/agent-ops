@@ -674,3 +674,24 @@ it('reply clears stale request panel — cached approval disappears after invali
     expect(screen.queryByTestId('request-panel')).not.toBeInTheDocument(),
   )
 })
+
+it.each([
+  ['Resume now', 'resume'],
+  ['Retry', 'retry'],
+])('%s resets destructive confirmations without losing the reply draft', async (label, action) => {
+  let calls = 0
+  server.use(http.post(`/api/task/widget/42/${action}`, () => {
+    calls++
+    return HttpResponse.json({ status: 'pending', intent: `1-42-${action}` }, { status: 202 })
+  }))
+  renderTask()
+  await screen.findByLabelText('Reply')
+  await userEvent.type(screen.getByLabelText('Reply'), 'keep this draft')
+  await userEvent.click(screen.getByRole('button', { name: 'Kill' }))
+  await userEvent.click(screen.getByRole('button', { name: "Won't do" }))
+  await userEvent.click(screen.getByRole('button', { name: label }))
+  await waitFor(() => expect(calls).toBe(1))
+  expect(screen.getByRole('button', { name: 'Kill' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: "Won't do" })).toBeInTheDocument()
+  expect(screen.getByLabelText('Reply')).toHaveValue('keep this draft')
+})

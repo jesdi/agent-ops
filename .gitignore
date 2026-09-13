@@ -18,3 +18,8 @@ targets.yaml
 .claude/skills/ceo-review
 .claude/skills/file-bug-issue
 frontend/dist/
+
+# Quality reports
+.crap/
+.coverage
+frontend/coverage/

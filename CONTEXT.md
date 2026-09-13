@@ -60,8 +60,9 @@ _Avoid_: export, config copy (the seed is authored for the box, not exported
 from a workstation)
 
 **Spec**:
-The design artifact produced by the spec stage. The only committed stage
-artifact — approved by a human, then committed to the task branch.
+The design artifact produced by the spec stage. Draft committed and pushed
+before human review; approved before planning. Other registered Markdown
+review artifacts are also committed to the task branch.
 
 **Repo skills**:
 Skills scoped to a target repo, declared in that repo's `.my-skills.json` and
@@ -148,3 +149,35 @@ Request handling must remain independent of loop comparisons, reset logic, model
   install anything on the box by hand."
 — "Should I also add it to portfolio_eval's `.my-skills.json`?"
 — "No — that's for repo skills. Process skills never ride target repos."
+
+## Task review artifacts
+
+A **review artifact** is a named output used by a human to review the task or
+by later sessions to guide the work: spec, prototype, diagram, questionnaire
+and answers. Scratch files and logs are excluded.
+
+Sessions maintain `.agent/artifacts.json` (`id`, `name`, worktree-relative
+`path`) under the shared policy in `prompts/artifacts.md`. IDs and file paths
+remain stable across revisions; entries survive stage and session changes.
+HTML is self-contained. Sessions commit and push Markdown outside ignored
+scratch directories; collection verifies the remote content before offering
+a GitHub link. Spec publication retains its existing gate backstop.
+
+`dispatcher/task_artifacts.py` owns collection, stored content, publication
+references and cleanup. The store lives in `state_dir/artifacts/`, keyed by
+both target and issue. The web reads it through authenticated artifact routes.
+Each artifact has a stable route which redirects to GitHub or serves isolated
+content. Generated HTML/SVG has an opaque sandbox origin and no API access.
+After merge, GitHub destinations use the last verified published commit,
+because the task branch is deleted. Archived task details survive the normal
+Done-card flush; archive entries do not consume capacity or return to the board.
+
+`TaskState.terminal_at` records the first transition into done, failed or
+canceled. State serialization preserves that timestamp across unrelated
+terminal writes and clears it on reopening. Collection cancels expiry for
+active or parked tasks. Each dispatcher pass removes stored content 30 days
+after the terminal transition; metadata, GitHub links and archived task context
+remain. Task state owns archive serialization and normalizes legacy terminal
+timestamps on read. `Sources` owns active-or-archived lookup and artifact
+delivery resolution; web routes do not read the artifact filesystem directly. Failed-task worktrees remain available for autopsy under the existing
+workspace policy; artifact cleanup only owns its stored copies.

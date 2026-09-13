@@ -1,0 +1,43 @@
+{
+  "base": "origin/main",
+  "targets": [
+    {
+      "name": "backend",
+      "paths": [
+        "dispatcher/**/*.py",
+        "web/**/*.py",
+        "telegram/**/*.py"
+      ],
+      "complexity": {
+        "tool": "python"
+      },
+      "coverage": {
+        "format": "coverage.py",
+        "root": ".",
+        "report": ".crap/backend.json",
+        "command": "python -m coverage run --branch --source=dispatcher,web,telegram -m pytest -q && python -m coverage json -o .crap/backend.json"
+      }
+    },
+    {
+      "name": "frontend",
+      "paths": [
+        "frontend/src/**/*.ts",
+        "frontend/src/**/*.tsx"
+      ],
+      "exclude": [
+        "frontend/src/**/*.test.*",
+        "frontend/src/test/**",
+        "frontend/src/lib/api-types.ts"
+      ],
+      "complexity": {
+        "tool": "typescript",
+        "cwd": "frontend"
+      },
+      "coverage": {
+        "format": "istanbul",
+        "report": "frontend/coverage/coverage-final.json",
+        "command": "cd frontend && pnpm exec vitest run --coverage --coverage.reporter=json --coverage.reportOnFailure=true"
+      }
+    }
+  ]
+}

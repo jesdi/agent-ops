@@ -11,5 +11,6 @@ export const queryKeys = {
   allTasks: ['task'] as const,
   pendingIntents: ['pending-intents'] as const,
   description: (target: string, issue: number) => ['task', target, issue, 'description'] as const,
+  artifacts: (target: string, issue: number) => ['task', target, issue, 'artifacts'] as const,
   request: (target: string, issue: number) => ['task', target, issue, 'request'] as const,
 }

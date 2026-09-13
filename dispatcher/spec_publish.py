@@ -11,6 +11,7 @@ session still works with a local-only spec."""
 from __future__ import annotations
 
 import subprocess
+from urllib.parse import quote
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +25,7 @@ class PublishResult:
 
 
 def spec_url(repo: str, branch: str, artifact: str) -> str:
-    return f"https://github.com/{repo}/blob/{branch}/{artifact}"
+    return f"https://github.com/{repo}/blob/{quote(branch, safe='/')}/{quote(artifact, safe='/')}"
 
 
 def relative_artifact(worktree: str, artifact: str) -> str | None:
@@ -93,3 +94,44 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
     except (OSError, subprocess.SubprocessError) as exc:
         return PublishResult(error=f"git invocation failed: {exc}")
     return PublishResult(url=spec_url(repo, branch, rel))
+
+
+@dataclass(frozen=True)
+class PublishedReference:
+    url: str
+    commit: str
+
+
+class ArtifactPublisher:
+    """Verify artifacts against one remote branch snapshot per collection."""
+
+    def __init__(self, worktree: str, branch: str, repo: str):
+        self.worktree, self.branch, self.repo = worktree, branch, repo
+        self._resolved = False
+        self._commit = ""
+
+    def _remote_commit(self) -> str:
+        if not self._resolved:
+            self._resolved = True
+            remote = _git(self.worktree, "ls-remote", "origin", f"refs/heads/{self.branch}")
+            fields = remote.stdout.split() if remote.returncode == 0 else []
+            self._commit = fields[0] if fields else ""
+        return self._commit
+
+    def reference(self, artifact: str, content: bytes) -> PublishedReference | None:
+        rel = relative_artifact(self.worktree, artifact)
+        if not rel:
+            return None
+        try:
+            commit = self._remote_commit()
+            if not commit:
+                return None
+            blob = _git(self.worktree, "rev-parse", f"{commit}:{rel}")
+            hashed = subprocess.run(["git", "-C", self.worktree, "hash-object", "--stdin"],
+                                    input=content, capture_output=True, timeout=_TIMEOUT)
+            if (blob.returncode != 0 or hashed.returncode != 0
+                    or blob.stdout.strip().encode() != hashed.stdout.strip()):
+                return None
+            return PublishedReference(spec_url(self.repo, self.branch, rel), commit)
+        except (OSError, subprocess.SubprocessError):
+            return None

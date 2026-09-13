@@ -19,7 +19,8 @@ _TEMPLATE_FILES = {
 
 def render_stage_prompt(stage: Stage, ctx: dict) -> str:
     text = (PROMPTS_DIR / _TEMPLATE_FILES[stage]).read_text()
-    return Template(text).substitute(ctx)  # strict: KeyError on missing vars
+    artifacts = (PROMPTS_DIR / "artifacts.md").read_text()
+    return Template(text).substitute(ctx) + "\n\n" + artifacts
 
 
 def render_triage_prompt(ctx: dict) -> str:

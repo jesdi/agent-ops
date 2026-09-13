@@ -225,6 +225,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{target}/{issue}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Artifacts */
+        get: operations["artifacts_api_task__target___issue__artifacts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/task/{target}/{issue}/artifacts/{artifact_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Open Artifact */
+        get: operations["open_artifact_api_task__target___issue__artifacts__artifact_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{target}/{issue}/cancel": {
         parameters: {
             query?: never;
@@ -382,6 +416,39 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** ArtifactView */
+        ArtifactView: {
+            /** Github Url */
+            github_url: string;
+            /** Id */
+            id: string;
+            /** Media Type */
+            media_type: string;
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Stage */
+            stage: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "published" | "local" | "expired" | "unavailable";
+            /** Updated At */
+            updated_at: string;
+            /** Url */
+            url: string;
+        };
+        /** ArtifactsView */
+        ArtifactsView: {
+            /** Expired */
+            expired: boolean;
+            /** Expires At */
+            expires_at: string;
+            /** Items */
+            items: components["schemas"]["ArtifactView"][];
+        };
         /** BoardSnapshot */
         BoardSnapshot: {
             capacity: components["schemas"]["CapacityView"];
@@ -1104,6 +1171,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    artifacts_api_task__target___issue__artifacts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+                issue: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ArtifactsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_artifact_api_task__target___issue__artifacts__artifact_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+                issue: number;
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
