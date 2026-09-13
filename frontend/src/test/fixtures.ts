@@ -90,7 +90,7 @@ export const usage: UsageView = {
   }],
   gate: {
     model: 'claude-opus-4-8', provider: 'anthropic', admitted: true,
-    note: 'anthropic weekly: 13% used, allowance 29%, headroom 16 pts, resets in 5d 2h',
+    note: 'anthropic week: 13% used, allowance 29%, headroom 16 pts, resets in 5d 2h',
     minutes_to_reset: 7320, binding: weekAll,
   },
 }

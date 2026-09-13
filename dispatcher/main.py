@@ -20,7 +20,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
 from typing import Callable, Sequence
 
 from dispatcher.convergence import pass_lock
@@ -1153,7 +1152,7 @@ def _on_arm_spec_approval(turn: _Turn, task: TaskState, act: ArmSpecApproval,
                           launch: Launch | None) -> TaskState:
     # Re-establish spec-approval request cleared by a prior resume.
     # Do NOT touch updated_at — the resume already stamped it; leaving it
-    # preserves the grace deadline (slice 12). No stage transition.
+    # preserves the grace deadline. No stage transition.
     task = replace(task, operator_request=SpecApprovalRequest(),
                    spec_path=act.artifact or task.spec_path)
     save(turn.cfg.state_dir, task)

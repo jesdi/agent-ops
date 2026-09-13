@@ -159,7 +159,7 @@ it('a failing /api/usage states the gap instead of silently dropping the gauge',
   await waitFor(() =>
     expect(screen.getByTestId('usage-error')).toBeInTheDocument(),
   )
-  expect(screen.getByTestId('usage-error')).toHaveTextContent('usage unknown — usage unavailable: usage source exploded')
+  expect(screen.getByTestId('usage-error')).toHaveTextContent(/^usage unknown — usage source exploded$/)
   expect(screen.queryByRole('progressbar', { name: /used$/ })).not.toBeInTheDocument()
 })
 

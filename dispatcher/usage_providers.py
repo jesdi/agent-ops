@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -236,33 +237,43 @@ def cache_path(state_dir: str | Path, provider: str) -> Path:
     return Path(state_dir) / "usage" / f"{provider}.json"
 
 
+def _write_atomic(path: Path, doc: dict) -> None:
+    """The web process and the dispatcher both write the cache: write a
+    sibling temp file and rename it over, so a reader never sees a torn one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    with os.fdopen(fd, "w") as fh:
+        json.dump(doc, fh)
+    os.replace(tmp, path)
+
+
 def fetch_provider(name: str, state_dir: str | Path, *,
                    now: Callable[[], float] = time.time,
                    adapters: dict[str, UsageAdapter] = ADAPTERS) -> ProviderUsage:
     """Cached ≥ MIN_POLL_SECONDS per provider; only readable results are
-    cached, so an outage never masks a recovery for 180s."""
+    cached, so an outage never masks a recovery for 180s. One clock reading
+    serves the whole fetch: the cache age, the reading and the cache stamp."""
+    at = now()
     cp = cache_path(state_dir, name)
     if cp.exists():
         try:
             cached = json.loads(cp.read_text())
-            age = now() - cached["fetched_at"]
-            if 0 <= age < MIN_POLL_SECONDS:
+            if 0 <= at - cached["fetched_at"] < MIN_POLL_SECONDS:
                 return usage_from_json(cached["usage"])
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             pass
     adapter = adapters.get(name)
     if adapter is None:
-        return unavailable(name, now())
+        return unavailable(name, at)
     try:
-        u = adapter.fetch(Path(state_dir), now=now)
+        u = adapter.fetch(Path(state_dir), now=lambda: at)
     except Exception:
         # One broken adapter (a payload shape nobody anticipated) must fail
         # its own provider closed, never crash the pass or /api/board.
         log.exception("usage adapter %r failed", name)
-        return unavailable(name, now())
+        return unavailable(name, at)
     if u.source != "unavailable":
-        cp.parent.mkdir(parents=True, exist_ok=True)
-        cp.write_text(json.dumps({"fetched_at": now(), "usage": usage_to_json(u)}))
+        _write_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
     return u
 
 

@@ -8,9 +8,12 @@ const STATE: Record<Severity, string> = {
   ok: 'on pace', close: 'close to the limit', blocked: 'over the limit',
 }
 
-function pts(x: number): string {
+/** A headroom fraction as percentage points: a true minus sign, "1 pt" singular. */
+function points(x: number): string {
   const v = Math.round(x * 1000) / 10
-  return Number.isInteger(v) ? String(v) : v.toFixed(1)
+  const magnitude = Math.abs(v)
+  const digits = Number.isInteger(magnitude) ? String(magnitude) : magnitude.toFixed(1)
+  return `${v < 0 ? '−' : ''}${digits} ${magnitude === 1 ? 'pt' : 'pts'}`
 }
 
 /** Per window kind: the row label, and the label under the head line — the
@@ -22,7 +25,7 @@ const KIND: Record<WindowKind, { label: (w: WindowView) => string; foot: (w: Win
   },
   weekly: {
     label: (w) => (w.scope ? `Week · ${w.scope}` : 'Week · all'),
-    foot: (w) => `headroom ${pts(w.headroom)} pts`,
+    foot: (w) => `headroom ${points(w.headroom)}`,
   },
 }
 
@@ -35,19 +38,16 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
   const remaining = 100 - used
   const label = KIND[w.kind].label(w)
 
-  // Position the sub-track label centred on the head line, but clamp it so it
-  // never overflows the track edges. Below 15%: left-align; above 85%: right-align.
+  // The sub-track label's own anchor slides with the head line: left-aligned
+  // at 0%, right-aligned at 100%, and in between that same fraction of the
+  // label sits on the line — so it stays inside any track at least as wide
+  // as the label, however narrow the provider column gets.
   const headPct = Math.min(100, allowed)
-  const footStyle: React.CSSProperties =
-    headPct < 15
-      ? { left: `${headPct}%` }
-      : headPct > 85
-      ? { right: `${100 - headPct}%` }
-      : { left: `${headPct}%`, transform: 'translateX(-50%)' }
+  const footStyle: React.CSSProperties = { left: `${headPct}%`, transform: `translateX(-${headPct}%)` }
 
   return (
-    // ponytail: minmax(7rem,1fr) ensures the track column never collapses to 0
-    // when the grid has no intrinsic width (all progressbar children are absolute).
+    // minmax(7rem,1fr) keeps the track column from collapsing to 0: the grid
+    // has no intrinsic width there, since every progressbar child is absolute.
     <div className="grid grid-cols-[92px_minmax(7rem,1fr)_auto] items-center gap-2.5 text-xs">
       <span className="text-gray-600">
         {label}
@@ -123,9 +123,9 @@ function ProviderGroup({ p, gate }: { p: ProviderUsageView; gate: GateView | nul
  *  The panel itself is a flex item in the board header (min-w-0 flex-1 basis-[340px]). */
 export function UsagePanel({ usage }: { usage: UsageView }) {
   return (
-    // ponytail: min-w-0 flex-1 basis-[340px] gives the panel a real width in the
-    // BoardPage header's flex-wrap context; flex-wrap inside lets multiple provider
-    // groups sit side by side, each pinned to their own 300px column.
+    // min-w-0 flex-1 basis-[340px] gives the panel a real width in the header's
+    // flex-wrap row; flex-wrap inside lets provider groups sit side by side,
+    // each in its own 300px column.
     <div className="min-w-0 flex-1 basis-[340px] flex flex-wrap gap-3">
       {usage.providers.map((p) => (
         <ProviderGroup key={p.provider} p={p} gate={p.provider === usage.gate.provider ? usage.gate : null} />

@@ -157,7 +157,15 @@ def admits(usages: Mapping[str, ProviderUsage], model_id: str,
 
 
 def window_label(w: Window) -> str:
-    return f"{w.kind}·{w.scope}" if w.scope else str(w.kind)
+    kind = "session" if w.kind is WindowKind.SESSION else "week"
+    return f"{kind}·{w.scope}" if w.scope else kind
+
+
+def points(fraction: float) -> str:
+    """A headroom fraction as whole percentage points: a true minus sign,
+    and "1 pt" singular."""
+    n = round(fraction * 100)
+    return f"{'−' if n < 0 else ''}{abs(n)} {'pt' if abs(n) == 1 else 'pts'}"
 
 
 def _duration(minutes: float) -> str:
@@ -176,5 +184,5 @@ def verdict_note(v: Verdict, now: datetime) -> str:
                 else f"{v.provider}: no usage windows reported")
     w = b.window
     return (f"{v.provider} {window_label(w)}: {w.used:.0%} used, "
-            f"allowance {b.allowance:.0%}, headroom {b.headroom * 100:.0f} pts, "
+            f"allowance {b.allowance:.0%}, headroom {points(b.headroom)}, "
             f"resets in {_duration(minutes_to_reset(w, now))}")

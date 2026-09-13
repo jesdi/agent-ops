@@ -123,9 +123,10 @@ A non-exhausted loop decision is eligibility to *retry*, not permission to launc
 cycle). A replacement process, model switch, or subscription reset is **not** by itself a fresh
 fix-loop allowance.
 
-**Execution admission** (question 3) is `dispatcher/usage.py::admits(model)`:
-a verdict per `provider/model` from the provider's windows, built once per
-pass and asked at every spawn site. Usage collectors are `usage_providers.py`
+**Execution admission** (question 3) is the `admit` callable each pass builds
+from `dispatcher/usage.py::admits`: a verdict per `provider/model` from the
+provider's windows, asked at every spawn site about the model that spawn
+launches. Usage collectors are `usage_providers.py`
 adapters, one per provider, fetched only for providers the model policy
 references. Loop policy stays independent of all of it: waiting for
 headroom does not spend a fix round, and a denial for one provider never

@@ -12,7 +12,6 @@ import dispatcher.main as main
 from dispatcher import failures, spec_publish
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
-from tests.usagefakes import session_usage
 from dispatcher.pr_poll import CIStatus
 from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
@@ -20,6 +19,7 @@ from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                LoopCaps, SpecApprovalRequest, Stage,
                                TaskState, clear_waiting, has_waiting, load,
                                load_all, mark_waiting, save)
+from tests.usagefakes import session_usage
 
 POLICY = parse_policy({
     "default": "claude-opus-4-8",
@@ -35,7 +35,7 @@ POLICY = parse_policy({
 })
 
 ADMIT_ALL = lambda m: main.Verdict(admitted=True, provider="anthropic", binding=None, reason="ok")  # noqa: E731
-DENY_ALL = lambda m: main.Verdict(admitted=False, provider="anthropic", binding=None, reason="pace")  # noqa: E731
+DENY_ALL = lambda m: main.Verdict(admitted=False, provider="anthropic", binding=None, reason="over-pace")  # noqa: E731
 
 
 class FakeGitHub:
@@ -401,7 +401,7 @@ def test_budget_stall_note_names_the_binding_window(tmp_path, monkeypatch):
     d = deps()
     main.run_pass(cfg(tmp_path), d)
     (note,) = [k["note"] for t, k in d.notifier.calls if t == "budget_stall"]
-    assert note.startswith("anthropic session: 95% used, allowance 80%, headroom -15 pts")
+    assert note.startswith("anthropic session: 95% used, allowance 80%, headroom −15 pts")
 
 
 def test_resume_ping_waits_for_resume_headroom(tmp_path, monkeypatch):

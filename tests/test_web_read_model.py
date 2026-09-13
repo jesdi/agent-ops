@@ -599,7 +599,7 @@ def test_usage_view_severities_and_gate_binding():
 def test_usage_view_blocked_window_closes_the_gate():
     gate = gate_for({"anthropic": session_usage(0.5, week=0.7, now=NOW)})
     assert not gate.admitted and gate.binding.kind == "weekly" and gate.binding.severity == "blocked"
-    assert gate.note.startswith("anthropic weekly: 70% used")
+    assert gate.note.startswith("anthropic week: 70% used")
 
 
 def test_usage_view_unavailable_provider():

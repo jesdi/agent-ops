@@ -329,8 +329,8 @@ class Sources:
             + list((root / "messages").glob("*.jsonl"))
             + list((root / "artifacts").glob("*/index.json"))
             + [root / "pass.json"])
-        budget_d = digest(sorted((root / "usage").glob("*.json"))
-                          + [root / "budget-stalled"])
+        usage = digest(sorted((root / "usage").glob("*.json"))
+                       + [root / "budget-stalled"])
         failures = digest(
             (list((root / "failures").iterdir())
              if (root / "failures").exists() else [])
@@ -344,7 +344,7 @@ class Sources:
         # This is harmless — the 15 s rank_rows TTL absorbs the extra ping —
         # but it was not deliberate coupling; recorded here for future readers.
         return json.dumps({"board": board, "queue": board,
-                           "usage": budget_d, "failures": failures,
+                           "usage": usage, "failures": failures,
                            "history": history}, sort_keys=True)
 
     def messages(self, issue: int) -> list:

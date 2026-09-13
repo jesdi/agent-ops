@@ -44,7 +44,14 @@ it('a blocked window names itself', () => {
   expect(screen.getByText('will not spawn claude-opus-4-8')).toBeInTheDocument()
   expect(screen.getByRole('progressbar')).toHaveAttribute(
     'aria-valuetext', '40% used of 29% allowed now, 60% remaining, over the limit')
-  expect(screen.getByText('headroom -11.1 pts')).toBeInTheDocument()
+  expect(screen.getByText('headroom −11.1 pts')).toBeInTheDocument()
+})
+
+it('a headroom of exactly one point reads singular', () => {
+  const onePoint: UsageView = { ...usage,
+    providers: [{ ...usage.providers[0]!, windows: [{ ...usage.providers[0]!.windows[1]!, headroom: 0.01 }] }] }
+  render(<UsagePanel usage={onePoint} />)
+  expect(screen.getByText('headroom 1 pt')).toBeInTheDocument()
 })
 
 it('with two providers the chip shows once, on the gate provider only', () => {

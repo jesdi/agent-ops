@@ -178,8 +178,18 @@ def test_session_truth_table(util, mins, source, expected):
 
 def test_window_label_and_note():
     v = admits(anthropic(fable=0.35), "claude-fable-5-1", NOW, PACE)
-    assert window_label(v.binding.window) == "weekly·Fable"
+    assert window_label(v.binding.window) == "week·Fable"
+    assert window_label(Window(WEEKLY, None, 0.1, RESET)) == "week"
+    assert window_label(Window(SESSION, None, 0.1, RESET)) == "session"
     assert verdict_note(v, NOW) == (
-        "anthropic weekly·Fable: 35% used, allowance 29%, headroom -6 pts, resets in 5d 2h")
+        "anthropic week·Fable: 35% used, allowance 29%, headroom −6 pts, resets in 5d 2h")
     dark = admits(anthropic(source="unavailable"), "claude-sonnet-4-6", NOW, PACE)
     assert verdict_note(dark, NOW) == "anthropic: usage unavailable"
+
+
+@pytest.mark.parametrize("fraction, text", [
+    (0.159, "16 pts"), (0.01, "1 pt"), (-0.01, "−1 pt"), (-0.061, "−6 pts"),
+    (0.0, "0 pts"), (-0.004, "0 pts"),
+])
+def test_points_use_a_true_minus_and_a_singular_point(fraction, text):
+    assert usage.points(fraction) == text

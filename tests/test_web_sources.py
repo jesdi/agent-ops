@@ -372,6 +372,17 @@ def test_state_fingerprint_changes_when_pass_json_changes(tmp_path):
     assert f2["board"] != f1["board"]
 
 
+def test_state_fingerprint_usage_key_follows_the_usage_cache(tmp_path):
+    """A fresh usage/<provider>.json must reach open consoles over SSE."""
+    _, src = make_sources(tmp_path)
+    f1 = json.loads(src.state_fingerprint())
+    (tmp_path / "usage").mkdir()
+    (tmp_path / "usage" / "anthropic.json").write_text('{"fetched_at": 1}')
+    f2 = json.loads(src.state_fingerprint())
+    assert f2["usage"] != f1["usage"]
+    assert f2["board"] == f1["board"]
+
+
 def test_triage_state_degrades_to_false(tmp_path, monkeypatch):
     """Both triage flags degrade to False when the underlying call raises.
     Monkeypatching forces the error path so the test does not depend on

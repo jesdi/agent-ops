@@ -20,7 +20,7 @@ export function BoardHeader({ board }: { board: BoardSnapshot }) {
       {usageQuery.isError ? (
         <span data-testid="usage-error"
           className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          usage unknown — usage unavailable: {usageQuery.error.message}
+          usage unknown — {usageQuery.error.message}
         </span>
       ) : (
         usageQuery.data && <UsagePanel usage={usageQuery.data} />

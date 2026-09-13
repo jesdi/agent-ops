@@ -39,7 +39,9 @@ agent-ops closes both gaps:
   columns — Queued, In progress, **Needs review**, PR open, **Parked**,
   Awaiting CI, Resuming, Stalled on budget, Failed. The two bold ones are
   yours: everything else is the box's problem. Capacity and a usage panel
-  sit above the board so you always know how hard the box is working.
+  sit above the board so you always know how hard the box is working: every
+  provider's windows with their headroom, and one gate saying whether the
+  box would spawn its default model right now.
 
 ## How it works
 

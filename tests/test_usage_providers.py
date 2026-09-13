@@ -411,3 +411,30 @@ def test_cache_with_an_unreadable_window_kind_refetches(tmp_path):
     up.cache_path(tmp_path, "fake").write_text(json.dumps({"fetched_at": 1000.0, "usage": cached}))
     up.fetch_provider("fake", tmp_path, now=lambda: 1010.0, adapters={"fake": fake})
     assert fake.calls == 1
+
+
+def test_one_clock_reading_serves_the_whole_fetch(tmp_path, monkeypatch):
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: oauth_response())
+    ticks = iter(range(1000, 2000))
+    adapters = {"anthropic": up.AnthropicUsage(credentials_path=creds(tmp_path))}
+    u = up.fetch_provider("anthropic", tmp_path, now=lambda: float(next(ticks)),
+                          adapters=adapters)
+    cached = json.loads(up.cache_path(tmp_path, "anthropic").read_text())
+    assert cached["fetched_at"] == u.fetched_at == cached["usage"]["fetched_at"]
+
+
+def test_the_cache_is_written_aside_and_renamed_over(tmp_path, monkeypatch):
+    """The web process and the dispatcher both write the cache; a reader must
+    never see a half-written file."""
+    replaced = []
+    real_replace = up.os.replace
+
+    def spy(src, dst):
+        replaced.append((Path(src).parent, Path(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(up.os, "replace", spy)
+    up.fetch_provider("fake", tmp_path, adapters={"fake": FakeUsage()})
+    cp = up.cache_path(tmp_path, "fake")
+    assert replaced == [(cp.parent, cp)]
+    assert [p.name for p in cp.parent.iterdir()] == ["fake.json"]
