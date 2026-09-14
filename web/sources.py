@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
-from dispatcher import eventlog, messages as msgq, queue_ops, state, task_artifacts, triage
+from dispatcher import (eventlog, execution_overrides, messages as msgq,
+                        queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import fetch_all
 from dispatcher.config import Config, Target
@@ -72,6 +73,16 @@ class Sources:
         active = next((task for task in self.tasks()
                        if (task.target, task.issue) == (target, issue)), None)
         return active or state.load_archived(self.state_dir, target, issue)
+
+    def execution_override(self, target: str, issue: int):
+        return execution_overrides.load(self.state_dir, target, issue)
+
+    def set_execution_override(self, target: str, issue: int, *, model: str,
+                               bypass_usage: bool) -> None:
+        execution_overrides.save(
+            self.state_dir, target, issue,
+            execution_overrides.ExecutionOverride(model, bypass_usage))
+        self._kick_dispatcher()
 
     def artifacts(self, target: str, issue: int) -> ArtifactListing:
         index = task_artifacts.read(self.state_dir, target, issue)
@@ -326,6 +337,7 @@ class Sources:
         board = digest(
             list(root.glob("task-*.json")) + list(root.glob("waiting-*"))
             + list(root.glob("wake-blocked-*"))
+            + list((root / execution_overrides.DIR).glob("*.json"))
             + list((root / "messages").glob("*.jsonl"))
             + list((root / "artifacts").glob("*/index.json"))
             + [root / "pass.json"])
@@ -378,14 +390,17 @@ class Sources:
 
     # -- writes ----------------------------------------------------------
 
-    def submit_intent(self, action: str, target: str, issue: int,
-                      payload: dict, actor: str) -> str:
-        path = write_intent(self._cfg.state_dir, action, target, issue,
-                            payload, actor, int(self._clock() * 1000))
+    def _kick_dispatcher(self) -> None:
         try:  # best-effort kick; the 10-minute timer is the floor
             subprocess.run(self._systemctl, capture_output=True, timeout=30)
         except (OSError, subprocess.SubprocessError) as e:
             print(f"dispatcher kick failed (non-fatal): {e}")
+
+    def submit_intent(self, action: str, target: str, issue: int,
+                      payload: dict, actor: str) -> str:
+        path = write_intent(self._cfg.state_dir, action, target, issue,
+                            payload, actor, int(self._clock() * 1000))
+        self._kick_dispatcher()
         return path.name
 
     def apply_queue_plan(self, target: Target, issue: int,
@@ -396,4 +411,3 @@ class Sources:
                      actor: str = "", detail: str = "") -> None:
         eventlog.append_event(self._cfg.state_dir, event, target=target,
                               issue=issue, actor=actor, detail=detail)
-

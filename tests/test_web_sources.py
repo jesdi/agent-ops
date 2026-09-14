@@ -3,7 +3,7 @@ import json
 import pytest
 import subprocess
 
-from dispatcher import eventlog, state
+from dispatcher import eventlog, execution_overrides, state
 from dispatcher.queue_ops import QueuePlan
 from tests.webfakes import make_config, make_target
 from web.sources import DESCRIPTION_TTL_SECONDS, RANK_TTL_SECONDS, Sources
@@ -78,6 +78,19 @@ def test_tasks_reads_state_dir(tmp_path):
     state.save(tmp_path, make_task(issue=5))
     _, src = make_sources(tmp_path)
     assert [t.issue for t in src.tasks()] == [5]
+
+
+def test_execution_override_is_durable_and_invalidates_board(tmp_path):
+    _, src = make_sources(tmp_path)
+    before = json.loads(src.state_fingerprint())["board"]
+
+    src.set_execution_override(
+        "alpha", 9, model="claude-fable-5", bypass_usage=True)
+
+    assert src.execution_override("alpha", 9) == (
+        execution_overrides.ExecutionOverride(
+            model="claude-fable-5", bypass_usage=True))
+    assert json.loads(src.state_fingerprint())["board"] != before
 
 
 def test_rank_rows_cached_within_ttl(tmp_path):

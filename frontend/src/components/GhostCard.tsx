@@ -1,5 +1,6 @@
 import { Link } from 'react-router'
 import type { GhostCard } from '../lib/api'
+import { AdmissionWarning } from './AdmissionWarning'
 
 /** A ranked, not-yet-claimed candidate. Deliberately muted and dashed: it is
  *  a forecast, not work in flight. Actions reuse /api/queue/* unchanged. */
@@ -40,6 +41,9 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
         {ghost.score != null && <span>score {ghost.score}</span>}
         {ghost.boost !== 0 && <span>boost {ghost.boost}</span>}
       </div>
+      {ghost.admission && (
+        <AdmissionWarning target={ghost.target} issue={ghost.number} admission={ghost.admission} />
+      )}
       <div className="mt-2 flex gap-1">
         <button type="button" className="rounded border px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => onBoost(ghost.number, 1)}>Boost</button>
         <button type="button" className="rounded border px-2 text-xs disabled:opacity-50" disabled={busy} onClick={() => onBoost(ghost.number, -1)}>Demote</button>

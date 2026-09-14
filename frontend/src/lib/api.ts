@@ -127,6 +127,11 @@ export const api = {
       ...(options.model ? { model: options.model } : {}),
       ...(options.bypassUsage ? { bypass_usage: true } : {}),
     }),
+  forceRun: (target: string, issue: number, options: ResumeOptions = {}) =>
+    post<QueueActionResult>(`/task/${target}/${issue}/run`, {
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.bypassUsage ? { bypass_usage: true } : {}),
+    }),
   taskDescription: (target: string, issue: number) =>
     request<IssueDescription>(`/task/${target}/${issue}/description`),
   taskArtifacts: (target: string, issue: number) =>

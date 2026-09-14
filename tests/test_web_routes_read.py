@@ -285,6 +285,28 @@ def test_board_carries_next_claim_upcoming_and_timeline(tmp_path):
     assert detail["timeline"][0]["ongoing"] is True
 
 
+def test_capacity_blocked_queue_candidate_exposes_force_choices(tmp_path):
+    fake = FakeSources()
+    cfg = replace(make_config(tmp_path), models=parse_policy({
+        "default": "claude-fable-5",
+        "rules": [{"name": "fallback", "use": {
+            "implement": "claude-opus-4-8"}}]}))
+    fake.rank["alpha"] = ([{
+        "number": 73, "title": "t73", "url": "u", "status": "Ready",
+        "labels": ["auto"], "blocked": False, "score": 2.0, "boost": 0,
+    }], "now", False)
+    from tests.usagefakes import session_usage
+    fake.usages = {"anthropic": session_usage(0.2, fable=0.9)}
+    body = TestClient(create_app(cfg, fake)).get(
+        "/api/board", headers=HEADERS).json()
+    admission = body["upcoming"][0]["admission"]
+    assert admission["requested"]["model"] == "claude-fable-5"
+    assert admission["requested"]["admitted"] is False
+    assert [(x["model"], x["admitted"])
+            for x in admission["alternatives"]] == [
+                ("claude-opus-4-8", True)]
+
+
 def test_board_next_claim_claims_paused(tmp_path):
     fake, client = rig(tmp_path)
     # Fresh heartbeat so next_claim does not short-circuit to "unknown".

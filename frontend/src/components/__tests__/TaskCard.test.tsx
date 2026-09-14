@@ -101,7 +101,7 @@ test('a slot-less card carries no slot chip', () => {
 
 test('model-capacity warning explains the block and can choose another model', async () => {
   let posted: unknown = null
-  server.use(http.post('/api/task/widget/44/resume', async ({ request }) => {
+  server.use(http.post('/api/task/widget/44/run', async ({ request }) => {
     posted = await request.json()
     return HttpResponse.json({ status: 'pending', intent: 'resume-44' }, { status: 202 })
   }))
@@ -121,7 +121,7 @@ test('model-capacity warning explains the block and can choose another model', a
     },
   })
 
-  await userEvent.click(screen.getByRole('button', { name: /waiting for fable-5 capacity/i }))
+  await userEvent.click(screen.getByRole('button', { name: /fable-5 capacity limited/i }))
   expect(screen.getByRole('dialog', { name: 'Model capacity options' })).toHaveTextContent(
     '46% used, allowance 41%',
   )

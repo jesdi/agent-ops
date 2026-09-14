@@ -14,7 +14,8 @@ from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
 from dispatcher.models import resolve_for_stage
-from dispatcher.state import AnswersRequest, PARK_WAKE, SpecApprovalRequest
+from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
+                              SpecApprovalRequest)
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
@@ -70,6 +71,11 @@ class ResumeReq(BaseModel):
     bypass_usage: bool = False
 
 
+class RunReq(BaseModel):
+    model: str = ""
+    bypass_usage: bool = False
+
+
 class NextReq(BaseModel):
     issue: int
     force: bool = False
@@ -100,13 +106,18 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return resolve_for_stage(policy, stage, t.effort, list(t.labels))
 
     def _task_admission(t, usages, now):
-        if t.park != PARK_WAKE or t.resume_bypass_usage:
+        if t.stage in TERMINAL_STAGES or t.resume_bypass_usage:
             return None
+        if sources.execution_override(t.target, t.issue) is not None:
+            return None
+        return _admission_for_model(t.target, _model_for(t), usages, now)
+
+    def _admission_for_model(target_name, model, usages, now):
         requested = read_model.model_admission_view(
-            usages, now=now, pace=cfg.pace, model=_model_for(t))
+            usages, now=now, pace=cfg.pace, model=model)
         if requested.admitted:
             return None
-        target = targets_by_name.get(t.target)
+        target = targets_by_name.get(target_name)
         policy = policy_for(cfg, target) if target else cfg.models
         models = dict.fromkeys(policy.model_ids())
         alternatives = [read_model.model_admission_view(
@@ -114,6 +125,19 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             for model in models if model != requested.model]
         return read_model.TaskAdmissionView(
             requested=requested, alternatives=alternatives)
+
+    def _candidate_model(target, row):
+        policy = policy_for(cfg, target)
+        return resolve_for_stage(
+            policy, "spec", row.get("effort"), list(row.get("labels") or []))
+
+    def _candidate_admissions(queues, usages, now):
+        return {(target.name, row["number"]): admission
+                for target, rows in queues for row in rows
+                if read_model._is_candidate(row)
+                and sources.execution_override(target.name, row["number"]) is None
+                and (admission := _admission_for_model(
+                    target.name, _candidate_model(target, row), usages, now))}
 
     def _known_target(target: str, tasks: list) -> bool:
         """A target is servable if it is still in the live config OR any
@@ -161,11 +185,12 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             usages, now=now, pace=cfg.pace,
             default_model=cfg.models.default)
         claims_paused, triage_running = sources.triage_state()
-        queues, stale_any = [], False
+        queues, queue_targets, stale_any = [], [], False
         for target in cfg.targets:
             rows, _as_of, stale = sources.rank_rows(target)
             stale_any = stale_any or stale
             queues.append((target.name, rows))
+            queue_targets.append((target, rows))
         # undelivered_counts() is still issue-keyed — dispatcher/messages.py
         # is a deferred rekey, tracked as a known cross-target gap (a task's
         # message queue can still cross with a same-numbered issue on
@@ -188,7 +213,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             wake_blocked=sources.wake_blocked_issues(),
             admissions={(t.target, t.issue): admission
                         for t in tasks
-                        if (admission := _task_admission(t, usages, now))})
+                        if (admission := _task_admission(t, usages, now))},
+            candidate_admissions=_candidate_admissions(
+                queue_targets, usages, now))
 
     @app.get("/api/task/{target}/{issue}",
              response_model=read_model.TaskDetail)
@@ -466,6 +493,61 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if req.bypass_usage:
             payload["bypass_usage"] = True
         return _accepted("resume", target, issue, payload, op)
+
+    def _queue_candidate(configured_target, target: str, issue: int):
+        rows, _as_of, stale = sources.rank_rows(configured_target)
+        row = next((candidate for candidate in rows
+                    if candidate.get("number") == issue
+                    and read_model._is_candidate(candidate)), None)
+        if row is not None:
+            return row
+        detail = (f"queue for {target!r} is stale"
+                  if stale else f"no runnable task {target}/{issue}")
+        raise HTTPException(409 if stale else 404, detail)
+
+    def _runnable_work(configured_target, target: str, issue: int):
+        task = next((candidate for candidate in sources.tasks()
+                     if (candidate.target, candidate.issue) == (target, issue)),
+                    None)
+        if task is None:
+            return None, _queue_candidate(configured_target, target, issue)
+        if task.stage in TERMINAL_STAGES:
+            raise HTTPException(422, f"task {target}/{issue} is terminal")
+        return task, None
+
+    def _run_model(configured_target, target: str, req: RunReq, task, row):
+        policy = policy_for(cfg, configured_target)
+        if req.model and req.model not in policy.model_ids():
+            raise HTTPException(422, f"model {req.model!r} is not configured "
+                                f"for target {target!r}")
+        if req.model:
+            return req.model
+        if task is not None:
+            return _model_for(task)
+        return _candidate_model(configured_target, row)
+
+    def _arm_run(target: str, issue: int, req: RunReq, task, model: str,
+                 op: Operator):
+        if task is not None and task.park:
+            payload = {"model": model}
+            if req.bypass_usage:
+                payload["bypass_usage"] = True
+            return _accepted("resume", target, issue, payload, op)
+        sources.set_execution_override(
+            target, issue, model=model, bypass_usage=req.bypass_usage)
+        sources.append_event("execution-forced", target=target, issue=issue,
+                             actor=op.login, detail=f"model={model}")
+        return {"ok": True, "reason": f"#{issue} will run with {model}"}
+
+    @app.post("/api/task/{target}/{issue}/run")
+    def force_run(target: str, issue: int, req: RunReq,
+                  op: Operator = Depends(current_operator)):
+        configured_target = targets_by_name.get(target)
+        if configured_target is None:
+            raise HTTPException(404, f"unknown target {target!r}")
+        task, row = _runnable_work(configured_target, target, issue)
+        model = _run_model(configured_target, target, req, task, row)
+        return _arm_run(target, issue, req, task, model, op)
 
     @app.get("/api/pending-intents")
     def pending_intents(op: Operator = Depends(current_operator)):

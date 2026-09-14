@@ -147,8 +147,8 @@ gh label create human-required --repo OWNER/REPO \
 **Web console** (`web/` + `frontend/`) — the board view above, plus per-task
 pages with the stage timeline, the spec awaiting your approval, a persistent Artifacts section, and a read-only console (pane tail plus scrollable history, snapshot-backed once the session ends). To interact with a session, attach from a terminal: `herdr --remote box` on the desktop (herdr installed locally, same version as the box, `box` an SSH alias over the tailnet), or [Moshi](https://getmoshi.app) on a phone. Operating rule: attach to watch; reply through Telegram or the board — the dispatcher may park a session while you are typing in it. Reply to
 a parked agent, park, kill, retry, or resume a task, and manage the queue —
-including a model-capacity warning on a queued resume, with one-shot controls
-to run despite that usage limit or resume with another configured model —
+including model-capacity warnings on queued and claimed tasks, with one-shot
+controls to run despite that usage limit or use another configured model —
 all from the same UI. Failures and history get their own pages, so nothing
 silently disappears.
 

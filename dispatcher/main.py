@@ -26,8 +26,9 @@ from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import fetch_all
-from dispatcher import (eventlog, failures, intents, loops, messages, pr_poll,
-                        queue_ops, relogin, tmux_migration, triage)
+from dispatcher import (eventlog, execution_overrides, failures, intents, loops,
+                        messages, pr_poll, queue_ops, relogin, tmux_migration,
+                        triage)
 from dispatcher.github import GitHubClient
 
 log = logging.getLogger(__name__)
@@ -115,6 +116,19 @@ class Launch:
 def _launch_for(cfg: Config, target: Target | None, task: TaskState,
             stage: Stage) -> Launch:
     return Launch(stage, _model_for(cfg, target, task.effort, task.labels, stage))
+
+
+def _execution_choice(cfg: Config, target: str, issue: int,
+                      launch: Launch) -> tuple[Launch, bool]:
+    override = execution_overrides.load(cfg.state_dir, target, issue)
+    if override is None:
+        return launch, False
+    chosen = replace(launch, model=override.model) if override.model else launch
+    return chosen, override.bypass_usage
+
+
+def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
+    execution_overrides.delete(cfg.state_dir, target, issue)
 
 
 def _log_model(worktree: str, stage: Stage, model: str) -> None:
@@ -1061,7 +1075,9 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
         key=lambda t: t.updated_at)
     for task in pending:
         launch = _launch_for(cfg, target, task, Stage.ADDRESS_REVIEW)
-        if not admit(launch.model).admitted:
+        launch, bypass_usage = _execution_choice(
+            cfg, task.target, task.issue, launch)
+        if not bypass_usage and not admit(launch.model).admitted:
             continue
         tasks = [t for t in load_all(cfg.state_dir)
                  if t.target == target.name]
@@ -1086,6 +1102,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
         # the podman command into the live claude's input box.
         deps.sessions.end(task.target, task.issue)
         _spawn_stage(cfg, deps, target, task, launch)
+        _consume_execution_choice(cfg, task.target, task.issue)
 
 
 @dataclass
@@ -1296,9 +1313,17 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             caps=cfg.loop_caps):
         stage = _action_stage(act)
         launch = _launch_for(cfg, target, task, stage) if stage else None
-        if launch is not None and not admit(launch.model).admitted:
+        bypass_usage = False
+        if launch is not None:
+            launch, bypass_usage = _execution_choice(
+                cfg, task.target, task.issue, launch)
+        if (launch is not None and not bypass_usage
+                and not admit(launch.model).admitted):
             return  # nothing mutated; the signal persists; retried once headroom returns
+        choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)
+        if launch is not None:
+            _consume_execution_choice(cfg, *choice_key)
         if task is None:
             return
 
@@ -1377,7 +1402,9 @@ def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
             continue
         launch = Launch(Stage.SPEC, _model_for(cfg, target, cand.effort,
                                                cand.labels, Stage.SPEC))
-        if admit(launch.model).admitted:
+        launch, bypass_usage = _execution_choice(
+            cfg, target.name, cand.number, launch)
+        if bypass_usage or admit(launch.model).admitted:
             yield cand, launch
 
 
@@ -1417,6 +1444,7 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         try:
             deps.github.claim(target, cand)  # irreversible board mutation — last
             _spawn_stage(cfg, deps, target, task, launch)
+            _consume_execution_choice(cfg, target.name, cand.number)
         except Exception:
             deps.github.release(target, cand.number, "claim/spawn failed after provisioning")
             raise

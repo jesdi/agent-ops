@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
-from dispatcher import failures, spec_publish
+from dispatcher import execution_overrides, failures, spec_publish
 from dispatcher.config import Config, Target
 from dispatcher.github import Candidate
 from dispatcher.pr_poll import CIStatus
@@ -322,6 +322,39 @@ def test_budget_denied_blocks_spawns_and_pings_once(tmp_path, monkeypatch):
     main.run_pass(c, d)  # second pass must not re-ping
     assert gh.claimed == []
     assert d.notifier.sent.count("budget_stall") == 1
+
+
+def test_forced_queue_candidate_claims_despite_usage_gate(tmp_path, monkeypatch):
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    execution_overrides.save(
+        c.state_dir, "portfolio_eval", 42,
+        execution_overrides.ExecutionOverride(
+            model="claude-sonnet-4-6", bypass_usage=True))
+    gh = FakeGitHub([Candidate(42, "Forced", "u42")])
+    sess = FakeSessions()
+
+    main._claim_new(c, deps(gh, sess), c.targets[0], DENY_ALL, False)
+
+    assert gh.claimed == [42]
+    assert [spawn[:3] for spawn in sess.spawned] == [
+        (42, "spec", "claude-sonnet-4-6")]
+    assert execution_overrides.load(
+        c.state_dir, "portfolio_eval", 42) is None
+
+
+def test_forced_queue_candidate_keeps_choice_when_no_slot(tmp_path, monkeypatch):
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 0)
+    choice = execution_overrides.ExecutionOverride(
+        model="claude-sonnet-4-6", bypass_usage=True)
+    execution_overrides.save(c.state_dir, "portfolio_eval", 42, choice)
+
+    main._claim_new(c, deps(FakeGitHub([Candidate(42, "Forced", "u42")])),
+                    c.targets[0], DENY_ALL, False)
+
+    assert execution_overrides.load(
+        c.state_dir, "portfolio_eval", 42) == choice
 
 
 def test_budget_resume_pings_once(tmp_path, monkeypatch):
@@ -1536,6 +1569,28 @@ def test_frontend_task_spawns_plan_on_fable_and_implement_on_opus(
     t = load(c.state_dir, "portfolio_eval", 42)
     assert main._model_for(c, c.targets[0], t.effort, t.labels,
                            Stage.IMPLEMENT) == "claude-opus-4-8"
+
+
+def test_forced_active_task_uses_choice_at_next_stage(tmp_path):
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW)
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "spec", "status": "done", "note": "",
+        "artifact": "spec.md"}))
+    execution_overrides.save(
+        c.state_dir, "portfolio_eval", 42,
+        execution_overrides.ExecutionOverride(
+            model="claude-sonnet-4-6", bypass_usage=True))
+    sess = FakeSessions(alive=(42,))
+
+    main._drive_task(c, deps(sess=sess), c.targets[0],
+                     load(c.state_dir, "portfolio_eval", 42), DENY_ALL)
+
+    assert [spawn[:3] for spawn in sess.spawned] == [
+        (42, Stage.PLAN.value, "claude-sonnet-4-6")]
+    assert execution_overrides.load(
+        c.state_dir, "portfolio_eval", 42) is None
 
 
 def test_resume_uses_the_model_for_the_parked_stage(tmp_path, monkeypatch):

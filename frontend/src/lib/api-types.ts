@@ -395,6 +395,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{target}/{issue}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force Run */
+        post: operations["force_run_api_task__target___issue__run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/usage": {
         parameters: {
             query?: never;
@@ -563,6 +580,7 @@ export interface components {
          *     consume next, rendered in the Queued column ahead of being claimed.
          */
         GhostCard: {
+            admission?: components["schemas"]["TaskAdmissionView"] | null;
             /** Boost */
             boost: number;
             /** Number */
@@ -773,6 +791,19 @@ export interface components {
              * @default
              */
             text: string;
+        };
+        /** RunReq */
+        RunReq: {
+            /**
+             * Bypass Usage
+             * @default false
+             */
+            bypass_usage: boolean;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
         };
         /** TargetQueue */
         TargetQueue: {
@@ -1589,6 +1620,42 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    force_run_api_task__target___issue__run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+                issue: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

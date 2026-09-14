@@ -177,6 +177,7 @@ class GhostCard(BaseModel):
     url: str
     score: float | None
     boost: int
+    admission: TaskAdmissionView | None = None
 
 
 class CapacityView(BaseModel):
@@ -313,7 +314,8 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 triage_running: bool,
                 undelivered: dict[tuple[str, int], int] | None = None,
                 wake_blocked: set[tuple[str, int]] | None = None,
-                admissions: dict[tuple[str, int], TaskAdmissionView] | None = None
+                admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
+                candidate_admissions: dict[tuple[str, int], TaskAdmissionView] | None = None
                 ) -> BoardView:
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
@@ -323,9 +325,11 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
     # (cf. dispatcher/main.py:223 which acknowledges number collisions).
     known = {(t.target, t.issue) for t in tasks}
+    ghost_admissions = candidate_admissions or {}
     upcoming = [GhostCard(number=r["number"], target=name,
                           title=r.get("title", ""), url=r.get("url", ""),
-                          score=r.get("score"), boost=int(r.get("boost") or 0))
+                          score=r.get("score"), boost=int(r.get("boost") or 0),
+                          admission=ghost_admissions.get((name, r["number"])))
                 for name, rows in queues for r in rows
                 if _is_candidate(r) and (name, r["number"]) not in known]
     return BoardView(
