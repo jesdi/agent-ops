@@ -225,6 +225,48 @@ def task_card(t: TaskState, *, model: str,
         wake_blocked=wake_blocked, admission=admission)
 
 
+def _score_index(queues: list[tuple[str, list[dict]]]
+                 ) -> dict[tuple[str, int], float | None]:
+    return {(name, row["number"]): row.get("score")
+            for name, rows in queues for row in rows}
+
+
+def _task_cards(tasks: list[TaskState], *,
+                models: dict[tuple[str, int], str],
+                claimed: dict[tuple[str, int], str],
+                scores: dict[tuple[str, int], float | None],
+                mail: dict[tuple[str, int], int],
+                blocked: set[tuple[str, int]],
+                admissions: dict[tuple[str, int], TaskAdmissionView]
+                ) -> list[TaskCard]:
+    cards = []
+    for task in tasks:
+        key = (task.target, task.issue)
+        at = claimed_at(claimed, task.target, task.issue)
+        cards.append(task_card(
+            task, model=models.get(key, ""), claimed_at=at,
+            cycle_seconds=cycle_seconds(at, task.done_at),
+            score=scores.get(key), undelivered_messages=mail.get(key, 0),
+            wake_blocked=key in blocked, admission=admissions.get(key)))
+    return cards
+
+
+def _cards_by_column(cards: list[TaskCard]) -> dict[str, list[TaskCard]]:
+    by_column: dict[str, list[TaskCard]] = {key: [] for key, _ in COLUMNS}
+    for card in cards:
+        by_column[card.column].append(card)
+    for col_cards in by_column.values():
+        col_cards.sort(key=lambda card: (
+            card.score is None, -(card.score or 0.0), card.issue))
+    return by_column
+
+
+def _held_slots(tasks: list[TaskState]) -> list[int]:
+    in_flight = [task for task in tasks if task.stage in IN_FLIGHT_STAGES]
+    return sorted({task.slot for task in in_flight
+                   if holds_slot(task) and task.slot != NO_SLOT})
+
+
 def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                          models: dict[tuple[str, int], str], events: list[dict],
                          queues: list[tuple[str, list[dict]]],
@@ -237,37 +279,17 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
     blocked = wake_blocked or set()
     task_admissions = admissions or {}
     claimed = claimed_at_index(events)
-    # (target, number) -> score from the rank rows already on the request, so
-    # a task card can show the same backlog score its ghost card would.
-    scores = {(name, r["number"]): r.get("score")
-              for name, rows in queues for r in rows}
-    cards = []
-    for t in tasks:
-        key = (t.target, t.issue)
-        at = claimed_at(claimed, t.target, t.issue)
-        cards.append(task_card(t, model=models.get(key, ""),
-                               claimed_at=at,
-                               cycle_seconds=cycle_seconds(at, t.done_at),
-                               score=scores.get(key),
-                               undelivered_messages=mail.get(key, 0),
-                               wake_blocked=key in blocked,
-                               admission=task_admissions.get(key)))
-    by_column: dict[str, list[TaskCard]] = {key: [] for key, _ in COLUMNS}
-    for card in cards:
-        by_column[card.column].append(card)
-    # Highest score at the top of every column; unscored cards fall to the
-    # bottom, issue number as a stable tiebreaker.
-    for col_cards in by_column.values():
-        col_cards.sort(key=lambda c: (c.score is None, -(c.score or 0.0),
-                                      c.issue))
+    cards = _task_cards(tasks, models=models, claimed=claimed,
+                        scores=_score_index(queues), mail=mail,
+                        blocked=blocked, admissions=task_admissions)
+    by_column = _cards_by_column(cards)
     in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
     # Which numbers, not just how many: the console colours a card by its
     # slot, and the gauge must light the same segments. slots_used is the
     # LENGTH of that list, never a second count — counting `slot != NO_SLOT`
     # instead made old on-disk state (a parked task still recording a slot)
     # read "1/4" with zero segments lit.
-    slots_held = sorted({t.slot for t in in_flight
-                         if holds_slot(t) and t.slot != NO_SLOT})
+    slots_held = _held_slots(tasks)
     return BoardSnapshot(
         columns=[Column(key=key, title=title, cards=by_column[key])
                  for key, title in COLUMNS],

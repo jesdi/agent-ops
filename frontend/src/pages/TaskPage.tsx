@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
-import type { TaskDetail } from '../lib/api'
+import type { PendingIntent, TaskDetail } from '../lib/api'
 import { useParams } from 'react-router'
 import { ArtifactsPanel } from '../components/ArtifactsPanel'
 import { AdmissionWarning } from '../components/AdmissionWarning'
@@ -42,13 +42,26 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
   const detailQuery = useTaskDetail(target, issue)
   const intentsQuery = usePendingIntents()
   const actions = useTaskActions(target, issue)
-  const { busy, actionError, runIntent } = actions
   // Local, not in the store: navigating to another task must open on its
   // live tail, never on a history view left behind by the previous one.
   const [showHistory, setShowHistory] = useState(false)
   useEffect(() => setShowHistory(false), [target, issue])
 
+  return <TaskQueryView target={target} issue={issue} detailQuery={detailQuery}
+    intentsQuery={intentsQuery} actions={actions} showHistory={showHistory}
+    setShowHistory={setShowHistory} />
+}
 
+function TaskQueryView({ target, issue, detailQuery, intentsQuery, actions,
+  showHistory, setShowHistory }: {
+  target: string
+  issue: number
+  detailQuery: ReturnType<typeof useTaskDetail>
+  intentsQuery: ReturnType<typeof usePendingIntents>
+  actions: ReturnType<typeof useTaskActions>
+  showHistory: boolean
+  setShowHistory: Dispatch<SetStateAction<boolean>>
+}) {
   if (detailQuery.isPending) return <p className="p-4 text-gray-500">loading task…</p>
   if (detailQuery.isError) {
     if (detailQuery.error instanceof ApiError && detailQuery.error.status === 404) {
@@ -56,44 +69,28 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
     }
     return <p className="p-4 text-red-600">{detailQuery.error.message}</p>
   }
+  return <LoadedTaskView target={target} issue={issue} detail={detailQuery.data}
+    intents={intentsQuery.data?.intents ?? []} actions={actions}
+    showHistory={showHistory} setShowHistory={setShowHistory} />
+}
 
-  const { card, pane_tail, session_alive, worktree, messages, delivery_contract } =
-    detailQuery.data
-  // A target-less legacy intent (written before the target field existed)
-  // cannot be attributed to one target over another, so it matches by issue
-  // alone; anything else must match this exact target too.
-  const myIntents = (intentsQuery.data?.intents ?? []).filter(
-    (i) => i.issue === issue && (i.target === target || i.target === ''),
-  )
+function LoadedTaskView({ target, issue, detail, intents, actions,
+  showHistory, setShowHistory }: {
+  target: string
+  issue: number
+  detail: TaskDetail
+  intents: NonNullable<ReturnType<typeof usePendingIntents>['data']>['intents']
+  actions: ReturnType<typeof useTaskActions>
+  showHistory: boolean
+  setShowHistory: Dispatch<SetStateAction<boolean>>
+}) {
+  const { busy, actionError, runIntent } = actions
+  const { card, pane_tail, session_alive, worktree, messages, delivery_contract } = detail
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <header className="flex flex-wrap items-center gap-3">
-        <h1 className="text-lg font-semibold">{card.title}</h1>
-        <span className="text-sm text-gray-500">
-          {card.target}#{card.issue} · {stageLabel(card.stage)} · {card.model} ·
-          branch {card.branch} · updated {relativeTime(card.updated_at)}
-        </span>
-        {card.park !== '' && (
-          <span className="rounded bg-purple-100 px-2 py-0.5 text-sm text-purple-700">
-            parked: {card.park}
-          </span>
-        )}
-        {myIntents.map((i) => (
-          <PendingBadge key={`${i.action}-${i.created_at}`} action={i.action} />
-        ))}
-      </header>
-
-      {detailQuery.data.timeline.length > 0 && (
-        <div data-testid="stage-timeline" className="flex flex-wrap gap-2 text-xs text-gray-500">
-          {detailQuery.data.timeline.map((seg, i) => (
-            <span key={i}
-              className={`rounded px-1.5 py-0.5 ${seg.kind === 'parked' ? 'bg-purple-50 text-purple-700' : 'bg-gray-100'}`}>
-              {seg.label} {formatDuration(seg.seconds)}{seg.ongoing ? ' — ongoing' : ''}
-            </span>
-          ))}
-        </div>
-      )}
+      <TaskHeader card={card} intents={intents} target={target} issue={issue} />
+      <StageTimeline timeline={detail.timeline} />
 
       <p className="break-all font-mono text-xs text-gray-500">{worktree}</p>
 
@@ -118,18 +115,8 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
           (snapshot-backed once the session is dead). Interactive attach is
           external — herdr from a terminal — so the board never holds a PTY
           and the dispatcher never waits on a viewer. */}
-      <div data-testid="console" className="h-96 w-full">
-        {showHistory ? (
-          <TerminalHistory target={target} issue={issue} onClose={() => setShowHistory(false)} />
-        ) : (
-          <pre
-            data-testid="pane-tail"
-            className="h-full overflow-auto rounded bg-gray-900 p-3 font-mono text-xs text-gray-100"
-          >
-            {pane_tail}
-          </pre>
-        )}
-      </div>
+      <TaskConsole target={target} issue={issue} paneTail={pane_tail}
+        showHistory={showHistory} setShowHistory={setShowHistory} />
       <p data-testid="attach-guidance" className="text-xs text-gray-500">
         To interact with the session, attach from a terminal:{' '}
         <code>herdr --remote box</code> (desktop) or Moshi (phone). Attach to
@@ -152,6 +139,65 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
         actions={actions} showHistory={showHistory} setShowHistory={setShowHistory} />
     </div>
   )
+}
+
+function TaskHeader({ card, intents, target, issue }: {
+  card: TaskDetail['card']
+  intents: PendingIntent[]
+  target: string
+  issue: number
+}) {
+  // Target-less legacy intents match by issue alone; current intents must
+  // match the exact target because issue numbers are repository-local.
+  const myIntents = intents.filter(
+    (intent) => intent.issue === issue && (intent.target === target || intent.target === ''),
+  )
+  return <header className="flex flex-wrap items-center gap-3">
+    <h1 className="text-lg font-semibold">{card.title}</h1>
+    <span className="text-sm text-gray-500">
+      {card.target}#{card.issue} · {stageLabel(card.stage)} · {card.model} ·
+      branch {card.branch} · updated {relativeTime(card.updated_at)}
+    </span>
+    {card.park !== '' && (
+      <span className="rounded bg-purple-100 px-2 py-0.5 text-sm text-purple-700">
+        parked: {card.park}
+      </span>
+    )}
+    {myIntents.map((intent) => (
+      <PendingBadge key={`${intent.action}-${intent.created_at}`} action={intent.action} />
+    ))}
+  </header>
+}
+
+function StageTimeline({ timeline }: { timeline: TaskDetail['timeline'] }) {
+  if (timeline.length === 0) return null
+  return <div data-testid="stage-timeline" className="flex flex-wrap gap-2 text-xs text-gray-500">
+    {timeline.map((segment, index) => (
+      <span key={index}
+        className={`rounded px-1.5 py-0.5 ${segment.kind === 'parked' ? 'bg-purple-50 text-purple-700' : 'bg-gray-100'}`}>
+        {segment.label} {formatDuration(segment.seconds)}{segment.ongoing ? ' — ongoing' : ''}
+      </span>
+    ))}
+  </div>
+}
+
+function TaskConsole({ target, issue, paneTail, showHistory, setShowHistory }: {
+  target: string
+  issue: number
+  paneTail: string
+  showHistory: boolean
+  setShowHistory: Dispatch<SetStateAction<boolean>>
+}) {
+  return <div data-testid="console" className="h-96 w-full">
+    {showHistory ? (
+      <TerminalHistory target={target} issue={issue} onClose={() => setShowHistory(false)} />
+    ) : (
+      <pre data-testid="pane-tail"
+        className="h-full overflow-auto rounded bg-gray-900 p-3 font-mono text-xs text-gray-100">
+        {paneTail}
+      </pre>
+    )}
+  </div>
 }
 
 function GhostTaskView({ target, issue }: { target: string; issue: number }) {

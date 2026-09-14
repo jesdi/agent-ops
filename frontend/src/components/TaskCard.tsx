@@ -16,84 +16,98 @@ export function TaskCardView({ card, pendingActions }: {
         card.slot >= 0 ? slotBorder(card.slot) : 'border-l-transparent hover:border-l-transparent'
       }`}
     >
-      <Link
-        to={`/task/${card.target}/${card.issue}`}
-        data-testid={`card-${card.issue}`}
-        draggable
-        onDragStart={(e) => {
-          e.dataTransfer.setData(
-            'application/x-agent-ops-card',
-            JSON.stringify({ issue: card.issue, target: card.target, title: card.title }),
-          )
-        }}
-        className="block"
-      >
-        {/* Colour is never the only signal — and this must not be an aria-label
-            on the Link, which would clobber its accessible name. */}
-        {card.consuming_capacity && <span className="sr-only">holding a capacity unit</span>}
-        {card.slot >= 0 && <span className="sr-only">holding E2E slot {card.slot}</span>}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs text-gray-500">
-            {card.target}#{card.issue}
-          </span>
-          {(pendingActions ?? []).map((action, i) => (
-            <PendingBadge key={`${action}-${i}`} action={action} />
-          ))}
-        </div>
-        <p className="mt-1 text-sm font-medium">{card.title}</p>
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-        <span>{stageLabel(card.stage)}</span>
-        <span>{card.model}</span>
-        {card.score != null && (
-          <span className="rounded bg-gray-100 px-1.5 font-medium text-gray-600">
-            score {card.score}
-          </span>
-        )}
-        {card.slot >= 0 && (
-          <span data-testid="slot-chip" className={`rounded px-1.5 ${slotChip(card.slot)}`}>
-            slot {card.slot}
-          </span>
-        )}
-        {card.park !== '' && (
-          <span className="rounded bg-purple-100 px-1.5 text-purple-700">
-            parked: {card.park}
-          </span>
-        )}
-        {card.park_note_pending && (
-          <span className="rounded bg-blue-100 px-1.5 text-blue-700">
-            notify pending
-          </span>
-        )}
-        {card.feedback_pending && (
-          <span className="rounded bg-amber-100 px-1.5 text-amber-700">
-            feedback queued
-          </span>
-        )}
-        {card.undelivered_messages > 0 && (
-          <span
-            data-testid="mail-badge"
-            className="rounded bg-blue-100 px-1.5 text-blue-700"
-            title="queued operator messages"
-          >
-            ✉ {card.undelivered_messages}
-          </span>
-        )}
-        {card.wake_blocked && (
-          <span className="rounded bg-amber-100 px-1.5 text-amber-800">
-            waiting for a free slot
-          </span>
-        )}
-        {card.stage === 'done' && card.cycle_seconds != null ? (
-          <span>took {formatDuration(card.cycle_seconds)}</span>
-        ) : (
-          card.claimed_at !== '' && <span>claimed {relativeTime(card.claimed_at)}</span>
-        )}
-        <span>{relativeTime(card.updated_at)}</span>
-        </div>
-      </Link>
+      <TaskCardLink card={card} pendingActions={pendingActions} />
       {card.admission && (
         <AdmissionWarning target={card.target} issue={card.issue} admission={card.admission} />
       )}
     </article>
   )
+}
+
+function TaskCardLink({ card, pendingActions }: {
+  card: TaskCard
+  pendingActions?: readonly string[]
+}) {
+  return (
+    <Link
+      to={`/task/${card.target}/${card.issue}`}
+      data-testid={`card-${card.issue}`}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData(
+          'application/x-agent-ops-card',
+          JSON.stringify({ issue: card.issue, target: card.target, title: card.title }),
+        )
+      }}
+      className="block"
+    >
+      {/* Colour is never the only signal — and this must not be an aria-label
+          on the Link, which would clobber its accessible name. */}
+      {card.consuming_capacity && <span className="sr-only">holding a capacity unit</span>}
+      {card.slot >= 0 && <span className="sr-only">holding E2E slot {card.slot}</span>}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs text-gray-500">
+          {card.target}#{card.issue}
+        </span>
+        {(pendingActions ?? []).map((action, index) => (
+          <PendingBadge key={`${action}-${index}`} action={action} />
+        ))}
+      </div>
+      <p className="mt-1 text-sm font-medium">{card.title}</p>
+      <TaskCardFacts card={card} />
+    </Link>
+  )
+}
+
+function TaskCardFacts({ card }: { card: TaskCard }) {
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+      <span>{stageLabel(card.stage)}</span>
+      <span>{card.model}</span>
+      <TaskCardBadges card={card} />
+      <TaskCardTiming card={card} />
+    </div>
+  )
+}
+
+function TaskCardBadges({ card }: { card: TaskCard }) {
+  return <>
+    {card.score != null && (
+      <span className="rounded bg-gray-100 px-1.5 font-medium text-gray-600">
+        score {card.score}
+      </span>
+    )}
+    {card.slot >= 0 && (
+      <span data-testid="slot-chip" className={`rounded px-1.5 ${slotChip(card.slot)}`}>
+        slot {card.slot}
+      </span>
+    )}
+    {card.park !== '' && (
+      <span className="rounded bg-purple-100 px-1.5 text-purple-700">parked: {card.park}</span>
+    )}
+    {card.park_note_pending && (
+      <span className="rounded bg-blue-100 px-1.5 text-blue-700">notify pending</span>
+    )}
+    {card.feedback_pending && (
+      <span className="rounded bg-amber-100 px-1.5 text-amber-700">feedback queued</span>
+    )}
+    {card.undelivered_messages > 0 && (
+      <span data-testid="mail-badge" className="rounded bg-blue-100 px-1.5 text-blue-700"
+        title="queued operator messages">
+        ✉ {card.undelivered_messages}
+      </span>
+    )}
+    {card.wake_blocked && (
+      <span className="rounded bg-amber-100 px-1.5 text-amber-800">waiting for a free slot</span>
+    )}
+  </>
+}
+
+function TaskCardTiming({ card }: { card: TaskCard }) {
+  if (card.stage === 'done' && card.cycle_seconds != null) {
+    return <><span>took {formatDuration(card.cycle_seconds)}</span>
+      <span>{relativeTime(card.updated_at)}</span></>
+  }
+  return <>{card.claimed_at !== '' && <span>claimed {relativeTime(card.claimed_at)}</span>}
+    <span>{relativeTime(card.updated_at)}</span></>
 }
