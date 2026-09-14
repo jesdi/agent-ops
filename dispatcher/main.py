@@ -38,7 +38,7 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoO
                                 ParkForCI, ParkForInput, ParkForReview, PublishSpec,
                                 RetryStage, SetTaskStage, StartTicket,
                                 SpawnStage, next_actions)
-from dispatcher.models import resolve
+from dispatcher.models import resolve_for_stage
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
@@ -93,18 +93,14 @@ def _cursor_now() -> str:
 # TaskState (nothing in machine.py sets it), so they deliberately fall
 # through to stage.value, which matches no `use:` key and lands on the
 # policy default.
-_POLICY_STAGE = {Stage.QUEUED: "spec", Stage.AWAITING_SPEC_REVIEW: "spec",
-                 Stage.ADDRESS_REVIEW: "implement"}
-
-
 def _model_for(cfg: Config, target: Target | None, effort: int | None,
                labels: Sequence[str], stage: Stage) -> str:
     """target is None for a task whose target has left the config — it still
     resolves, against the global policy, since there is no per-target one to
     look up. Every model resolution — tasks and unclaimed candidates alike —
-    goes through here, so the stage mapping above is applied exactly once."""
+    goes through the shared runtime-stage mapping in models.py."""
     policy = policy_for(cfg, target) if target else cfg.models
-    return resolve(policy, _POLICY_STAGE.get(stage, stage.value), effort, labels)
+    return resolve_for_stage(policy, stage.value, effort, labels)
 
 
 @dataclass(frozen=True)
@@ -172,10 +168,13 @@ def _drain(cfg: Config, issue: int) -> tuple[str, list[str]]:
 
 
 def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
-          actor: str = "dispatcher") -> None:
+          actor: str = "dispatcher", *, model_override: str = "",
+          bypass_usage: bool = False) -> None:
     _queue_message(cfg, task.issue, text, actor)
     task = loops.reset(task, ResetCause.OPERATOR_WAKE)
     save(cfg.state_dir, replace(task, park=PARK_WAKE, hold_for_attach=hold,
+                                resume_model_override=model_override,
+                                resume_bypass_usage=bypass_usage,
                                 updated_at=_now()))
 
 
@@ -921,7 +920,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
     )
     for task in woken:
         launch = _resume_launch(cfg, target, task)
-        if not admit(launch.model).admitted:
+        if not task.resume_bypass_usage and not admit(launch.model).admitted:
             continue  # this model's provider has no headroom; others may
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
@@ -947,7 +946,9 @@ def _resume_launch(cfg: Config, target: Target, task: TaskState) -> Launch:
     """A parked pr-open task has no session to continue: it resumes as a
     fresh address-review round, on that stage's model."""
     stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
-    return _launch_for(cfg, target, task, stage)
+    launch = _launch_for(cfg, target, task, stage)
+    return replace(launch, model=task.resume_model_override) \
+        if task.resume_model_override else launch
 
 
 def _resume_one(cfg: Config, deps: Deps, target: Target,
@@ -972,6 +973,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
         task = replace(task, park="", park_msg_id=0, park_note="",
                        hold_for_attach=False, feedback_pending=False,
                        attention="operator", feedback_cursor=_cursor_now(),
+                       resume_model_override="", resume_bypass_usage=False,
                        operator_request=None)
         _clear_wake_blocked(cfg, task.issue)
         _spawn_stage(cfg, deps, target, task, launch)
@@ -997,6 +999,8 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     _clear_wake_blocked(cfg, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                 park_msg_id=0, park_note="",
+                                resume_model_override="",
+                                resume_bypass_usage=False,
                                 operator_request=None,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
@@ -1434,155 +1438,180 @@ def _task_for_intent(cfg: Config, intent: intents.Intent) -> TaskState | None:
     return hits[0] if len(hits) == 1 else None   # ambiguous legacy → skip
 
 
+def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
+                        intent: intents.Intent) -> None:
+    """Deliver a reply, or inject it when a login prompt owns the pane."""
+    if task is not None and task.park == PARK_LOGIN:
+        _inject_login_code(cfg, deps, task, intent.payload.get("text", ""))
+        return
+    _queue_message(cfg, intent.issue, intent.payload.get("text", ""),
+                   intent.actor or "operator")
+    if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
+        task = loops.reset(task, ResetCause.OPERATOR_WAKE)
+        save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
+
+
+def _parkable_task(deps: Deps, task: TaskState | None, issue: int) -> bool:
+    return bool(task is not None
+                and task.stage in IN_FLIGHT_STAGES
+                and not task.park
+                and deps.sessions.is_alive(task.target, issue))
+
+
+def _apply_park_intent(cfg: Config, deps: Deps, by_name: dict,
+                       task: TaskState | None, issue: int) -> None:
+    if not _parkable_task(deps, task, issue):
+        print(f"[warn] park intent for #{issue}: no live unparked task "
+              f"— skipped", file=sys.stderr)
+        return
+    assert task is not None
+    target = by_name.get(task.target)
+    if target is None:
+        print(f"[warn] park intent for #{issue}: target "
+              f"{task.target!r} left the config — skipped", file=sys.stderr)
+        return
+    _park_for_input(cfg, deps, target, task, note="parked by operator")
+
+
+def _release_killed_task(cfg: Config, deps: Deps, by_name: dict,
+                         task: TaskState, issue: int) -> None:
+    target = by_name.get(task.target)
+    if target is not None:
+        try:
+            deps.github.release(target, issue, "abandoned by operator")
+        except Exception as exc:
+            print(f"[warn] release failed while killing #{issue}: {exc}",
+                  file=sys.stderr)
+    save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
+                                hold_for_attach=False, operator_request=None,
+                                updated_at=_now()))
+
+
+def _apply_kill_intent(cfg: Config, deps: Deps, by_name: dict,
+                       task: TaskState | None, intent: intents.Intent) -> None:
+    issue = intent.issue
+    kill_target = intent.target or (task.target if task is not None else "")
+    if not kill_target:
+        print(f"[warn] kill intent for #{issue}: no unique matching task "
+              f"— skipped", file=sys.stderr)
+        return
+    deps.sessions.end(kill_target, issue)
+    if task is not None:
+        _release_killed_task(cfg, deps, by_name, task, issue)
+    clear_waiting(cfg.state_dir, kill_target, issue)
+    eventlog.append_event(cfg.state_dir, "failed", target=kill_target,
+                          issue=issue,
+                          stage=task.stage.value if task is not None else "",
+                          actor=intent.actor, detail="killed by operator")
+
+
+def _cancel_board_issue(deps: Deps, by_name: dict, target_name: str,
+                        issue: int) -> None:
+    target = by_name.get(target_name)
+    if target is None:
+        log.warning("cancel intent for %s/#%d: target left the config "
+                    "— board/issue untouched", target_name, issue)
+        return
+    try:
+        deps.github.cancel(target, issue)
+    except Exception:
+        log.warning("github cancel failed for %s/#%d", target_name, issue,
+                    exc_info=True)
+
+
+def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
+                         task: TaskState | None, intent: intents.Intent) -> None:
+    issue = intent.issue
+    cancel_target = intent.target or (task.target if task is not None else "")
+    if not cancel_target:
+        log.warning("cancel intent for #%d: no unique matching task — skipped",
+                    issue)
+        return
+    deps.sessions.end(cancel_target, issue)
+    _cancel_board_issue(deps, by_name, cancel_target, issue)
+    if task is not None:
+        save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
+                                    hold_for_attach=False, slot=NO_SLOT,
+                                    operator_request=None, updated_at=_now()))
+    clear_waiting(cfg.state_dir, cancel_target, issue)
+    eventlog.append_event(cfg.state_dir, "canceled", target=cancel_target,
+                          issue=issue, stage=task.stage.value if task else "",
+                          actor=intent.actor, detail="canceled by operator")
+
+
+def _apply_retry_intent(cfg: Config, issue: int) -> None:
+    for target in cfg.targets:
+        qp = failures.quarantine_path(cfg.state_dir, target.name, issue)
+        if not qp.exists():
+            continue
+        try:
+            fp = json.loads(qp.read_text()).get("fingerprint")
+        except (json.JSONDecodeError, OSError):
+            fp = None
+        if fp:
+            failures.fingerprint_path(cfg.state_dir, fp).unlink(missing_ok=True)
+        qp.unlink(missing_ok=True)
+
+
+def _resume_model_is_configured(cfg: Config, by_name: dict,
+                                task: TaskState, model: str) -> bool:
+    target = by_name.get(task.target)
+    policy = policy_for(cfg, target) if target else cfg.models
+    return not model or model in policy.model_ids()
+
+
+def _save_queued_resume(cfg: Config, task: TaskState, model: str,
+                        bypass_usage: bool) -> None:
+    save(cfg.state_dir, replace(task, resume_model_override=model,
+                                resume_bypass_usage=bypass_usage))
+
+
+def _is_parked(task: TaskState | None) -> bool:
+    return task is not None and bool(task.park)
+
+
+def _apply_resume_intent(cfg: Config, by_name: dict,
+                         task: TaskState | None, intent: intents.Intent) -> None:
+    issue = intent.issue
+    if not _is_parked(task):
+        print(f"[warn] resume intent for #{issue}: task not parked — skipped",
+              file=sys.stderr)
+        return
+    assert task is not None
+    requested_model = str(intent.payload.get("model") or "")
+    if not _resume_model_is_configured(cfg, by_name, task, requested_model):
+        print(f"[warn] resume intent for #{issue}: model "
+              f"{requested_model!r} is not configured — skipped",
+              file=sys.stderr)
+        return
+    bypass_usage = intent.payload.get("bypass_usage") is True
+    if task.park == PARK_WAKE:
+        _save_queued_resume(cfg, task, requested_model, bypass_usage)
+        return
+    _wake(cfg, task,
+          intent.payload.get("text")
+          or "The operator resumed this task. Continue.",
+          hold=False, actor=intent.actor or "operator",
+          model_override=requested_model, bypass_usage=bypass_usage)
+
+
 def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
                       intent: intents.Intent) -> None:
+    """Route one operator intent to its action-specific handler."""
     issue = intent.issue
     task = _task_for_intent(cfg, intent)
     if intent.action == "reply":
-        # One exception to "every reply is a message": a reply to a login
-        # park is the OAuth authorization code, and the only thing that can
-        # act on it is the live pane it was issued for. Queueing it would
-        # promise a delivery that cannot do what the operator intended (the
-        # resume ENDS that pane) and would persist a single-use credential in
-        # messages/<issue>.jsonl and render it in the console thread. Same
-        # path the Telegram reply takes — including its "the pane left the
-        # login prompt" refusal.
-        if task is not None and task.park == PARK_LOGIN:
-            _inject_login_code(cfg, deps, task,
-                               intent.payload.get("text", ""))
-            return
-        # Otherwise unconditional: EVERY card accepts messages, including a
-        # running session, a done/failed tombstone, and an issue with no task
-        # file at all (a pre-briefing left on a backlog card, delivered at
-        # claim time). The old park-state guard dropped these with only a
-        # journald warning — the silent message loss this change exists to kill.
-        _queue_message(cfg, issue, intent.payload.get("text", ""),
-                       intent.actor or "operator")
-        if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
-            task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-            save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
+        _apply_reply_intent(cfg, deps, task, intent)
     elif intent.action == "park":
-        if (task is None or task.stage not in IN_FLIGHT_STAGES or task.park
-                or not deps.sessions.is_alive(task.target, issue)):
-            print(f"[warn] park intent for #{issue}: no live unparked task "
-                  f"— skipped", file=sys.stderr)
-            return
-        target = by_name.get(task.target)
-        if target is None:
-            print(f"[warn] park intent for #{issue}: target "
-                  f"{task.target!r} left the config — skipped", file=sys.stderr)
-            return
-        _park_for_input(cfg, deps, target, task, note="parked by operator")
+        _apply_park_intent(cfg, deps, by_name, task, issue)
     elif intent.action == "kill":
-        # A target-carrying intent always knows which session to end, even
-        # with no state file at all — e.g. _flush_done deletes a DONE task's
-        # state, but a leaked session can still be sitting there, and
-        # the operator needs to be able to kill it. Only a legacy/ambiguous
-        # intent (target == "", no unique task match) has no knowable
-        # target — that is the one case with nothing to act on, so it alone
-        # is skipped, same as every other action _task_for_intent can't
-        # resolve.
-        kill_target = intent.target or (task.target if task is not None else "")
-        if not kill_target:
-            print(f"[warn] kill intent for #{issue}: no unique matching "
-                  f"task — skipped", file=sys.stderr)
-            return
-        deps.sessions.end(kill_target, issue)
-        if task is not None:
-            target = by_name.get(task.target)
-            if target is not None:
-                try:
-                    deps.github.release(target, issue, "abandoned by operator")
-                except Exception as exc:
-                    print(f"[warn] release failed while killing #{issue}: "
-                          f"{exc}", file=sys.stderr)
-            # Write a FAILED tombstone instead of deleting the state file.
-            # github.release() flips the board status back to Ready+auto, so
-            # the issue becomes a live candidate again. Without a tombstone,
-            # _claim_new's guard (known = {t.issue for t in tasks}) would not
-            # contain it and would re-claim the just-killed issue the same pass.
-            save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
-                                        hold_for_attach=False,
-                                        operator_request=None,
-                                        updated_at=_now()))
-        # The park is cleared with it: a killed task waits for nothing, so it
-        # must leave the wake queue (_resume_woken filters on park alone) —
-        # otherwise a killed PARK_WAKE task keeps asking for a slot it will
-        # never use, re-arming the wake-blocked marker every pass that
-        # _reconcile_slots clears it. Cleared unconditionally on kill_target:
-        # a stray session with no task can't have parked in the first place,
-        # so this is a no-op for it, not a risk.
-        clear_waiting(cfg.state_dir, kill_target, issue)
-        eventlog.append_event(cfg.state_dir, "failed",
-                              target=kill_target, issue=issue,
-                              stage=task.stage.value if task is not None else "",
-                              actor=intent.actor, detail="killed by operator")
+        _apply_kill_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "cancel":
-        # Operator won't-do. Unlike kill, the card is retired (Wont do +
-        # issue closed as not planned), never released back to Ready. Also
-        # unlike kill, it works for cards with no task file (a backlog card
-        # canceled from the board): the intent carries its target, so no
-        # state file is needed to know which board to write. Only a
-        # legacy/ambiguous intent (target == "", no unique task match) has
-        # nothing to act on — same rule as kill's kill_target.
-        cancel_target = intent.target or (
-            task.target if task is not None else "")
-        if not cancel_target:
-            log.warning("cancel intent for #%d: no unique matching task "
-                        "— skipped", issue)
-            return
-        deps.sessions.end(cancel_target, issue)
-        target = by_name.get(cancel_target)
-        if target is not None:
-            try:
-                deps.github.cancel(target, issue)
-            except Exception:
-                log.warning("github cancel failed for %s/#%d",
-                            cancel_target, issue, exc_info=True)
-        else:
-            log.warning("cancel intent for %s/#%d: target left the config "
-                        "— board/issue untouched", cancel_target, issue)
-        if task is not None:
-            # CANCELED tombstone, same reasoning as kill's FAILED one: the
-            # board write can lag or fail, so _claim_new's known-issues guard
-            # must contain the issue this same pass. Park cleared with it,
-            # and the slot released at transition time (park precedent) so
-            # the capacity view never shows a retired task holding one.
-            save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
-                                        hold_for_attach=False, slot=NO_SLOT,
-                                        operator_request=None,
-                                        updated_at=_now()))
-        clear_waiting(cfg.state_dir, cancel_target, issue)
-        eventlog.append_event(cfg.state_dir, "canceled",
-                              target=cancel_target, issue=issue,
-                              stage=task.stage.value if task else "",
-                              actor=intent.actor,
-                              detail="canceled by operator")
+        _apply_cancel_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "retry":
-        # Mirror check_quarantine's clear path (failures.py:160): drop the
-        # fingerprint marker too, or the dedupe silently swallows the next
-        # report of the same failure.
-        for target in cfg.targets:
-            qp = failures.quarantine_path(cfg.state_dir, target.name, issue)
-            if not qp.exists():
-                continue
-            try:
-                fp = json.loads(qp.read_text()).get("fingerprint")
-            except (json.JSONDecodeError, OSError):
-                fp = None
-            if fp:
-                failures.fingerprint_path(cfg.state_dir, fp).unlink(
-                    missing_ok=True)
-            qp.unlink(missing_ok=True)
+        _apply_retry_intent(cfg, issue)
     elif intent.action == "resume":
-        if task is None or not task.park:
-            print(f"[warn] resume intent for #{issue}: task not parked — "
-                  f"skipped", file=sys.stderr)
-            return
-        _wake(cfg, task,
-              intent.payload.get("text")
-              or "The operator resumed this task. Continue.",
-              hold=False, actor=intent.actor or "operator")
+        _apply_resume_intent(cfg, by_name, task, intent)
     else:
         print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
               file=sys.stderr)

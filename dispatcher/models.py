@@ -12,6 +12,8 @@ from typing import Sequence
 DEFAULT_MODEL = "claude-opus-4-8"
 STAGES = ("spec", "plan", "implement", "review")
 DEFAULT_PROVIDER = "anthropic"
+_POLICY_STAGES = {"queued": "spec", "awaiting-spec-review": "spec",
+                  "address-review": "implement"}
 
 
 def split_model_id(model_id: str) -> tuple[str, str]:
@@ -181,3 +183,14 @@ def resolve(policy: ModelPolicy, stage: str, effort: int | None,
             return rule.use
         return rule.use.get(stage, policy.default)
     return policy.default
+
+
+def resolve_for_stage(policy: ModelPolicy, stage: str, effort: int | None,
+                      labels: Sequence[str]) -> str:
+    """Resolve runtime stages through the policy's four stage vocabulary.
+
+    Queued and approval-gate sessions run the spec model; address-review is
+    implementation work. Keeping this translation beside the model policy
+    lets the dispatcher and console show the same model for the next launch.
+    """
+    return resolve(policy, _POLICY_STAGES.get(stage, stage), effort, labels)

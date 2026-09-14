@@ -57,6 +57,24 @@ def test_park_kill_resume(tmp_path):
         ("park", {}), ("kill", {}), ("resume", {"text": "go on"})]
 
 
+def test_resume_accepts_model_and_usage_override(tmp_path):
+    fake, client = rig(tmp_path)
+    r = client.post("/api/task/alpha/7/resume", headers=HEADERS,
+                    json={"model": "claude-opus-4-8",
+                          "bypass_usage": True})
+    assert r.status_code == 202
+    assert fake.intents[-1][3] == {
+        "model": "claude-opus-4-8", "bypass_usage": True}
+
+
+def test_resume_rejects_unconfigured_model(tmp_path):
+    fake, client = rig(tmp_path)
+    r = client.post("/api/task/alpha/7/resume", headers=HEADERS,
+                    json={"model": "unknown/model"})
+    assert r.status_code == 422
+    assert fake.intents == []
+
+
 def test_cancel_writes_intent_for_a_live_task(tmp_path):
     fake, client = rig(tmp_path)
     r = client.post("/api/task/alpha/7/cancel", headers=HEADERS, json={})

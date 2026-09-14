@@ -13,8 +13,8 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
-from dispatcher.models import resolve
-from dispatcher.state import AnswersRequest, SpecApprovalRequest
+from dispatcher.models import resolve_for_stage
+from dispatcher.state import AnswersRequest, PARK_WAKE, SpecApprovalRequest
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
@@ -66,6 +66,8 @@ class ReplyReq(BaseModel):
 
 class ResumeReq(BaseModel):
     text: str = ""
+    model: str = ""
+    bypass_usage: bool = False
 
 
 class NextReq(BaseModel):
@@ -90,9 +92,28 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     targets_by_name = {t.name: t for t in cfg.targets}
 
     def _model_for(t):
+        if t.park == PARK_WAKE and t.resume_model_override:
+            return t.resume_model_override
         target = targets_by_name.get(t.target)
         policy = policy_for(cfg, target) if target else cfg.models
-        return resolve(policy, t.stage.value, t.effort, list(t.labels))
+        stage = "address-review" if t.stage.value == "pr-open" else t.stage.value
+        return resolve_for_stage(policy, stage, t.effort, list(t.labels))
+
+    def _task_admission(t, usages, now):
+        if t.park != PARK_WAKE or t.resume_bypass_usage:
+            return None
+        requested = read_model.model_admission_view(
+            usages, now=now, pace=cfg.pace, model=_model_for(t))
+        if requested.admitted:
+            return None
+        target = targets_by_name.get(t.target)
+        policy = policy_for(cfg, target) if target else cfg.models
+        models = dict.fromkeys(policy.model_ids())
+        alternatives = [read_model.model_admission_view(
+            usages, now=now, pace=cfg.pace, model=model)
+            for model in models if model != requested.model]
+        return read_model.TaskAdmissionView(
+            requested=requested, alternatives=alternatives)
 
     def _known_target(target: str, tasks: list) -> bool:
         """A target is servable if it is still in the live config OR any
@@ -134,6 +155,11 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         tasks = sources.tasks()
+        now = datetime.now(timezone.utc)
+        usages = sources.usage()
+        usage = read_model.usage_view(
+            usages, now=now, pace=cfg.pace,
+            default_model=cfg.models.default)
         claims_paused, triage_running = sources.triage_state()
         queues, stale_any = [], False
         for target in cfg.targets:
@@ -152,20 +178,25 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             models={(t.target, t.issue): _model_for(t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=sources.pass_heartbeat(),
-            now=datetime.now(timezone.utc),
-            gate=_usage_view().gate,
+            now=now,
+            gate=usage.gate,
             queues=queues, queue_stale=stale_any,
             # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,
             undelivered={(t.target, t.issue): mail.get(t.issue, 0)
                         for t in tasks},
-            wake_blocked=sources.wake_blocked_issues())
+            wake_blocked=sources.wake_blocked_issues(),
+            admissions={(t.target, t.issue): admission
+                        for t in tasks
+                        if (admission := _task_admission(t, usages, now))})
 
     @app.get("/api/task/{target}/{issue}",
              response_model=read_model.TaskDetail)
     def task_detail(target: str, issue: int,
                     op: Operator = Depends(current_operator)):
         t = _find_task(target, issue)
+        now = datetime.now(timezone.utc)
+        usages = sources.usage()
         # Legacy intent files predate the target field (Task 3); they carry
         # target="" and still belong to whichever task's issue they name —
         # i.get("target") in ("", target) keeps them showing up here instead
@@ -179,10 +210,11 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             pane_tail=sources.pane_tail(target, issue),
             session_alive=sources.session_alive(target, issue),
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
-            now=datetime.now(timezone.utc),
+            now=now,
             messages=sources.messages(issue),
             pending_sends=pending,
-            wake_blocked=(target, issue) in sources.wake_blocked_issues())
+            wake_blocked=(target, issue) in sources.wake_blocked_issues(),
+            admission=_task_admission(t, usages, now))
 
     @app.get("/api/task/{target}/{issue}/description",
              response_model=read_model.IssueDescription)
@@ -420,8 +452,19 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     @app.post("/api/task/{target}/{issue}/resume", status_code=202)
     def intent_resume(target: str, issue: int, req: ResumeReq,
                       op: Operator = Depends(current_operator)):
-        _require_task(target, issue)
+        task = _find_task(target, issue)
+        configured_target = targets_by_name.get(task.target)
+        policy = (policy_for(cfg, configured_target)
+                  if configured_target else cfg.models)
+        configured = policy.model_ids()
+        if req.model and req.model not in configured:
+            raise HTTPException(422, f"model {req.model!r} is not configured "
+                                f"for target {target!r}")
         payload = {"text": req.text} if req.text else {}
+        if req.model:
+            payload["model"] = req.model
+        if req.bypass_usage:
+            payload["bypass_usage"] = True
         return _accepted("resume", target, issue, payload, op)
 
     @app.get("/api/pending-intents")

@@ -6,7 +6,10 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from dispatcher import messages as msgq
-from dispatcher.state import PARK_HUMAN, Stage
+from dataclasses import replace
+
+from dispatcher.models import parse_policy
+from dispatcher.state import PARK_HUMAN, PARK_WAKE, Stage
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_task)
 from web.app import create_app
 
@@ -132,6 +135,31 @@ def test_task_detail_reports_a_starved_wake(tmp_path):
     assert body["card"]["wake_blocked"] is True
     assert body["delivery_contract"] == (
         "will deliver when the session resumes — waiting for a free slot")
+
+
+def test_wake_blocked_by_model_exposes_reason_and_alternatives(tmp_path):
+    fake = FakeSources()
+    cfg = replace(make_config(tmp_path), models=parse_policy({
+        "default": "claude-opus-4-8",
+        "rules": [{"name": "spec", "use": {
+            "spec": "claude-fable-5", "implement": "claude-opus-4-8"}}]}))
+    client = TestClient(create_app(cfg, fake))
+    fake.tasks_list = [make_task(
+        issue=7, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_WAKE)]
+    from tests.usagefakes import session_usage
+    fake.usages = {"anthropic": session_usage(0.2, fable=0.9)}
+
+    body = client.get("/api/task/alpha/7", headers=HEADERS).json()
+    admission = body["card"]["admission"]
+    assert admission["requested"]["model"] == "claude-fable-5"
+    assert admission["requested"]["admitted"] is False
+    assert "week·Fable" in admission["requested"]["note"]
+    assert [(x["model"], x["admitted"]) for x in admission["alternatives"]] == [
+        ("claude-opus-4-8", True)]
+    assert body["card"]["model"] == "claude-fable-5"
+    board = client.get("/api/board", headers=HEADERS).json()
+    card = next(c for column in board["columns"] for c in column["cards"])
+    assert card["admission"] == admission
 
 
 def test_usage_base_allowance(tmp_path):

@@ -1,15 +1,14 @@
-import { render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { TaskCardView } from '../TaskCard'
 import { inProgressCard, loginParkedCard, parkedCard, reviewCard } from '../../test/fixtures'
 import { SLOT_COLORS } from '../../lib/capacity'
+import { renderWithProviders } from '../../test/render'
+import { server } from '../../test/msw-server'
 
 function renderCard(card: typeof parkedCard, pendingActions?: string[]) {
-  return render(
-    <MemoryRouter>
-      <TaskCardView card={card} pendingActions={pendingActions} />
-    </MemoryRouter>,
-  )
+  return renderWithProviders(<TaskCardView card={card} pendingActions={pendingActions} />)
 }
 
 it('renders slot number for a slotted card', () => {
@@ -90,18 +89,42 @@ test('a starved wake says so on the card', () => {
 })
 
 test('a card holding a slot is bordered and chipped in that slot colour', () => {
-  const { container } = render(
-    <MemoryRouter>
-      <TaskCardView card={{ ...inProgressCard, slot: 2 }} />
-    </MemoryRouter>)
+  const { container } = renderCard({ ...inProgressCard, slot: 2 })
   expect(screen.getByTestId('slot-chip')).toHaveTextContent('slot 2')
   expect(container.firstElementChild?.className).toContain(SLOT_COLORS[2])
 })
 
 test('a slot-less card carries no slot chip', () => {
-  render(
-    <MemoryRouter>
-      <TaskCardView card={{ ...reviewCard, slot: -1 }} />
-    </MemoryRouter>)
+  renderCard({ ...reviewCard, slot: -1 })
   expect(screen.queryByTestId('slot-chip')).toBeNull()
+})
+
+test('model-capacity warning explains the block and can choose another model', async () => {
+  let posted: unknown = null
+  server.use(http.post('/api/task/widget/44/resume', async ({ request }) => {
+    posted = await request.json()
+    return HttpResponse.json({ status: 'pending', intent: 'resume-44' }, { status: 202 })
+  }))
+  renderCard({
+    ...reviewCard,
+    park: 'unpark-requested',
+    column: 'resuming',
+    admission: {
+      requested: {
+        model: 'claude-fable-5', provider: 'anthropic', admitted: false,
+        note: 'anthropic week·Fable: 46% used, allowance 41%, headroom −5 pts, resets in 4d 3h',
+      },
+      alternatives: [{
+        model: 'claude-opus-4-8', provider: 'anthropic', admitted: true,
+        note: 'anthropic week: capacity available',
+      }],
+    },
+  })
+
+  await userEvent.click(screen.getByRole('button', { name: /waiting for fable-5 capacity/i }))
+  expect(screen.getByRole('dialog', { name: 'Model capacity options' })).toHaveTextContent(
+    '46% used, allowance 41%',
+  )
+  await userEvent.click(screen.getByRole('button', { name: /run with opus-4-8/i }))
+  await waitFor(() => expect(posted).toEqual({ model: 'claude-opus-4-8' }))
 })

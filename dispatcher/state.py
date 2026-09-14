@@ -118,6 +118,10 @@ class TaskState:
     check_cursor: str = ""               # completedAt of the newest red check acted on
     conflict_cursor: str = ""            # head sha of the last conflict acted on
     attention: str = ""                  # why address-review is pending: feedback|check-failed|conflict|operator
+    # One-shot operator choice for a wake already queued behind admission.
+    # Cleared after the session successfully resumes.
+    resume_model_override: str = ""
+    resume_bypass_usage: bool = False
     # None=no request; SpecApprovalRequest while at gate; AnswersRequest written
     # ONLY by _park_for_input in dispatcher/main.py, and only when a
     # worktree-contained path resolves — so an answers request never exists
