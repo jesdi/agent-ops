@@ -20,7 +20,7 @@ export function AdmissionWarning({ target, issue, admission }: {
   const queryClient = useQueryClient()
   const override = useMutation({
     mutationFn: ({ model, bypassUsage }: { model: string; bypassUsage: boolean }) =>
-      api.resume(target, issue, { model, bypassUsage }),
+      api.forceRun(target, issue, { model, bypassUsage }),
     onSuccess: () => {
       setError(null)
       setOpen(false)
@@ -40,7 +40,7 @@ export function AdmissionWarning({ target, issue, admission }: {
         onClick={() => setOpen((value) => !value)}
         className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900"
       >
-        ⚠ waiting for {shortModel(admission.requested.model)} capacity
+        ⚠ {shortModel(admission.requested.model)} capacity limited
       </button>
       {open && (
         <div
@@ -50,7 +50,7 @@ export function AdmissionWarning({ target, issue, admission }: {
         >
           <p>{admission.requested.note}</p>
           <p className="mt-2 text-gray-600">
-            Keep waiting, run despite the usage limit, or resume with another configured model.
+            Keep waiting, run despite the usage limit, or process this task with another configured model.
           </p>
           <div className="mt-2 flex flex-col items-start gap-1.5">
             {choices.map((choice) => {

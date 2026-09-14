@@ -75,6 +75,72 @@ def test_resume_rejects_unconfigured_model(tmp_path):
     assert fake.intents == []
 
 
+def test_force_run_arms_an_active_task_without_resuming_it(tmp_path):
+    fake, client = rig(tmp_path)
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS,
+                    json={"model": "claude-opus-4-8",
+                          "bypass_usage": True})
+    assert r.status_code == 200
+    assert fake.execution_overrides[("alpha", 7)] == (
+        "claude-opus-4-8", True)
+    assert fake.intents == []
+    assert fake.appended[-1][:3] == ("execution-forced", "alpha", 7)
+
+
+def test_force_run_resumes_a_parked_task(tmp_path):
+    from dataclasses import replace
+    from dispatcher.state import PARK_HUMAN
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [replace(fake.tasks_list[0], park=PARK_HUMAN)]
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS,
+                    json={"model": "claude-opus-4-8",
+                          "bypass_usage": True})
+    assert r.status_code == 202
+    assert fake.intents[-1][0] == "resume"
+    assert fake.intents[-1][3] == {
+        "model": "claude-opus-4-8", "bypass_usage": True}
+
+
+def test_force_run_arms_an_unclaimed_queue_candidate(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = []
+    fake.rank["alpha"] = ([{
+        "number": 9, "title": "Queued", "url": "u", "status": "Ready",
+        "labels": ["auto"], "blocked": False, "score": 2, "boost": 0,
+    }], "now", False)
+    r = client.post("/api/task/alpha/9/run", headers=HEADERS,
+                    json={"model": "claude-opus-4-8",
+                          "bypass_usage": True})
+    assert r.status_code == 200
+    assert fake.execution_overrides[("alpha", 9)] == (
+        "claude-opus-4-8", True)
+
+
+def test_force_run_rejects_missing_or_stale_queue_work(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = []
+
+    missing = client.post("/api/task/alpha/9/run", headers=HEADERS, json={})
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "no runnable task alpha/9"
+
+    fake.rank["alpha"] = ([], "now", True)
+    stale = client.post("/api/task/alpha/9/run", headers=HEADERS, json={})
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == "queue for 'alpha' is stale"
+
+
+def test_force_run_rejects_unknown_or_terminal_work(tmp_path):
+    from dataclasses import replace
+    from dispatcher.state import Stage
+    fake, client = rig(tmp_path)
+    assert client.post("/api/task/alpha/7/run", headers=HEADERS,
+                       json={"model": "unknown/model"}).status_code == 422
+    fake.tasks_list = [replace(fake.tasks_list[0], stage=Stage.DONE)]
+    assert client.post("/api/task/alpha/7/run", headers=HEADERS,
+                       json={}).status_code == 422
+
+
 def test_cancel_writes_intent_for_a_live_task(tmp_path):
     fake, client = rig(tmp_path)
     r = client.post("/api/task/alpha/7/cancel", headers=HEADERS, json={})

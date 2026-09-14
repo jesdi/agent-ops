@@ -61,6 +61,7 @@ class FakeSources:
         self.messages_by_issue = {}   # issue -> list[msgq.Message]
         self.undelivered = {}         # issue -> int
         self.blocked_wakes = set()    # (target, issue) with a wake-blocked marker
+        self.execution_overrides = {}  # (target, issue) -> model/bypass tuple
 
     def tasks(self):
         return list(self.tasks_list)
@@ -88,6 +89,12 @@ class FakeSources:
 
     def usage(self):
         return self.usages
+
+    def execution_override(self, target, issue):
+        return self.execution_overrides.get((target, issue))
+
+    def set_execution_override(self, target, issue, *, model, bypass_usage):
+        self.execution_overrides[(target, issue)] = (model, bypass_usage)
 
     def quarantine_entries(self):
         return list(self.quarantine)
