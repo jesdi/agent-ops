@@ -442,6 +442,42 @@ def test_woken_pr_open_task_is_gated_on_the_model_it_spawns(tmp_path):
         (42, Stage.ADDRESS_REVIEW.value, "claude-fable-5-1")]
 
 
+def test_operator_can_bypass_usage_gate_for_one_resume(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+              park=PARK_WAKE, resume_bypass_usage=True)
+    d = deps()
+    main._resume_woken(c, d, c.targets[0], admit=DENY_ALL)
+    assert d.sessions.resumed == [(42, "Continue.", "claude-opus-4-8")]
+    saved = load(c.state_dir, "portfolio_eval", 42)
+    assert saved.park == ""
+    assert saved.resume_bypass_usage is False
+    assert saved.resume_model_override == ""
+
+
+def test_operator_can_resume_with_another_configured_model(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
+              park=PARK_WAKE, resume_model_override="claude-sonnet-4-6")
+    d = deps()
+    admit_sonnet = lambda model: ADMIT_ALL(model) if "sonnet" in model else DENY_ALL(model)  # noqa: E731
+    main._resume_woken(c, d, c.targets[0], admit=admit_sonnet)
+    assert d.sessions.resumed == [(42, "Continue.", "claude-sonnet-4-6")]
+
+
+def test_resume_override_waits_for_capacity_without_losing_choice(tmp_path):
+    c = replace_capacity(cfg(tmp_path), 1)
+    make_task(c, issue=41)
+    make_task(c, issue=42, park=PARK_WAKE,
+              resume_model_override="claude-sonnet-4-6",
+              resume_bypass_usage=True)
+    main._resume_woken(c, deps(), c.targets[0], admit=DENY_ALL)
+    saved = load(c.state_dir, "portfolio_eval", 42)
+    assert saved.park == PARK_WAKE
+    assert saved.resume_model_override == "claude-sonnet-4-6"
+    assert saved.resume_bypass_usage is True
+
+
 def test_every_machine_action_has_a_drive_handler():
     """_drive_task dispatches on the action type; an action machine.py can
     emit without a handler would crash the task instead of driving it."""
@@ -2123,6 +2159,28 @@ def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
     assert "ship it" in sess.resumed[0][1]
 
 
+def test_resume_intent_can_override_a_wake_without_duplicate_message(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch, util=0.95)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_WAKE)
+    from dispatcher import messages
+    messages.append(c.state_dir, 42, "original wake", "op")
+    intents_mod.write_intent(
+        c.state_dir, "resume", "portfolio_eval", 42,
+        {"model": "claude-sonnet-4-6", "bypass_usage": True}, "op", 1)
+    sess = FakeSessions()
+
+    main.run_pass(c, deps(sess=sess))
+
+    assert [(issue, model) for issue, _text, model in sess.resumed] == [
+        (42, "claude-sonnet-4-6")]
+    assert "original wake" in sess.resumed[0][1]
+    assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
+        "original wake"]
+
+
 def test_failed_intent_does_not_abort_pass_or_remaining_intents(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -2134,10 +2192,10 @@ def test_failed_intent_does_not_abort_pass_or_remaining_intents(tmp_path, monkey
 
     real_wake = main._wake
 
-    def wake_or_boom(cfg_, task, text, hold=False, actor="dispatcher"):
+    def wake_or_boom(cfg_, task, text, hold=False, actor="dispatcher", **kwargs):
         if task.issue == 42:
             raise RuntimeError("disk full")
-        real_wake(cfg_, task, text, hold=hold, actor=actor)
+        real_wake(cfg_, task, text, hold=hold, actor=actor, **kwargs)
 
     monkeypatch.setattr(main, "_wake", wake_or_boom)
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)

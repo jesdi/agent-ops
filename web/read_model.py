@@ -118,6 +118,18 @@ def delivery_contract(t: TaskState | None, *, wake_blocked: bool) -> str:
             "still running")
 
 
+class ModelAdmissionView(BaseModel):
+    model: str
+    provider: str
+    admitted: bool
+    note: str
+
+
+class TaskAdmissionView(BaseModel):
+    requested: ModelAdmissionView
+    alternatives: list[ModelAdmissionView]
+
+
 class TaskCard(BaseModel):
     issue: int
     target: str
@@ -146,6 +158,8 @@ class TaskCard(BaseModel):
     undelivered_messages: int = 0
     # A wake this task asked for was denied for want of capacity or a slot.
     wake_blocked: bool = False
+    # Present only while a queued wake is denied by its model's usage gate.
+    admission: TaskAdmissionView | None = None
 
 
 class Column(BaseModel):
@@ -190,7 +204,8 @@ def task_card(t: TaskState, *, model: str,
               cycle_seconds: float | None = None,
               score: float | None = None,
               undelivered_messages: int = 0,
-              wake_blocked: bool = False) -> TaskCard:
+              wake_blocked: bool = False,
+              admission: TaskAdmissionView | None = None) -> TaskCard:
     return TaskCard(
         issue=t.issue, target=t.target, title=t.title,
         stage=t.stage.value, park=t.park,
@@ -207,18 +222,20 @@ def task_card(t: TaskState, *, model: str,
         consuming_capacity=consumes_capacity(t),
         claimed_at=claimed_at, cycle_seconds=cycle_seconds, score=score,
         undelivered_messages=undelivered_messages,
-        wake_blocked=wake_blocked)
+        wake_blocked=wake_blocked, admission=admission)
 
 
 def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                          models: dict[tuple[str, int], str], events: list[dict],
                          queues: list[tuple[str, list[dict]]],
                          undelivered: dict[tuple[str, int], int] | None = None,
-                         wake_blocked: set[tuple[str, int]] | None = None
+                         wake_blocked: set[tuple[str, int]] | None = None,
+                         admissions: dict[tuple[str, int], TaskAdmissionView] | None = None
                          ) -> BoardSnapshot:
     """Cards and capacity without any live-service dependencies."""
     mail = undelivered or {}
     blocked = wake_blocked or set()
+    task_admissions = admissions or {}
     claimed = claimed_at_index(events)
     # (target, number) -> score from the rank rows already on the request, so
     # a task card can show the same backlog score its ghost card would.
@@ -233,7 +250,8 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                                cycle_seconds=cycle_seconds(at, t.done_at),
                                score=scores.get(key),
                                undelivered_messages=mail.get(key, 0),
-                               wake_blocked=key in blocked))
+                               wake_blocked=key in blocked,
+                               admission=task_admissions.get(key)))
     by_column: dict[str, list[TaskCard]] = {key: [] for key, _ in COLUMNS}
     for card in cards:
         by_column[card.column].append(card)
@@ -272,11 +290,13 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 queue_stale: bool, claims_paused: bool,
                 triage_running: bool,
                 undelivered: dict[tuple[str, int], int] | None = None,
-                wake_blocked: set[tuple[str, int]] | None = None
+                wake_blocked: set[tuple[str, int]] | None = None,
+                admissions: dict[tuple[str, int], TaskAdmissionView] | None = None
                 ) -> BoardView:
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
-        undelivered=undelivered, wake_blocked=wake_blocked)
+        undelivered=undelivered, wake_blocked=wake_blocked,
+        admissions=admissions)
     # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
     # (cf. dispatcher/main.py:223 which acknowledges number collisions).
@@ -315,7 +335,8 @@ def task_detail(t: TaskState, *, model: str,
                 events: list[dict], now: datetime,
                 messages: list[msgq.Message] | None = None,
                 pending_sends: list[dict] | None = None,
-                wake_blocked: bool = False) -> TaskDetail:
+                wake_blocked: bool = False,
+                admission: TaskAdmissionView | None = None) -> TaskDetail:
     at = claimed_at(claimed_at_index(events), t.target, t.issue)
     msgs = messages or []
     return TaskDetail(
@@ -324,7 +345,7 @@ def task_detail(t: TaskState, *, model: str,
                        cycle_seconds=cycle_seconds(at, t.done_at),
                        undelivered_messages=len(
                            [m for m in msgs if not m.delivered_at]),
-                       wake_blocked=wake_blocked),
+                       wake_blocked=wake_blocked, admission=admission),
         pane_tail=pane_tail, session_alive=session_alive,
         worktree=t.worktree,
         messages=message_views(msgs, pending_sends or []),
@@ -421,6 +442,14 @@ def _window_view(r: Reading, now: datetime) -> WindowView:
                       headroom=r.headroom,
                       minutes_to_reset=minutes_to_reset(r.window, now),
                       severity=_severity(r.headroom))
+
+
+def model_admission_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
+                         pace: PaceConfig, model: str) -> ModelAdmissionView:
+    verdict = admits(usages, model, now, pace)
+    return ModelAdmissionView(model=model, provider=verdict.provider,
+                              admitted=verdict.admitted,
+                              note=verdict_note(verdict, now))
 
 
 def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,

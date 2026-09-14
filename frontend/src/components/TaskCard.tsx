@@ -3,6 +3,7 @@ import type { TaskCard } from '../lib/api'
 import { slotBorder, slotChip } from '../lib/capacity'
 import { formatDuration, relativeTime, stageLabel } from '../lib/format'
 import { PendingBadge } from './PendingBadge'
+import { AdmissionWarning } from './AdmissionWarning'
 
 export function TaskCardView({ card, pendingActions }: {
   card: TaskCard
@@ -10,34 +11,37 @@ export function TaskCardView({ card, pendingActions }: {
   pendingActions?: readonly string[]
 }) {
   return (
-    <Link
-      to={`/task/${card.target}/${card.issue}`}
-      data-testid={`card-${card.issue}`}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData(
-          'application/x-agent-ops-card',
-          JSON.stringify({ issue: card.issue, target: card.target, title: card.title }),
-        )
-      }}
-      className={`block rounded border border-gray-200 bg-white p-3 shadow-sm hover:border-gray-400 border-l-4 ${
+    <article
+      className={`rounded border border-gray-200 bg-white p-3 shadow-sm hover:border-gray-400 border-l-4 ${
         card.slot >= 0 ? slotBorder(card.slot) : 'border-l-transparent hover:border-l-transparent'
       }`}
     >
-      {/* Colour is never the only signal — and this must not be an aria-label
-          on the Link, which would clobber its accessible name. */}
-      {card.consuming_capacity && <span className="sr-only">holding a capacity unit</span>}
-      {card.slot >= 0 && <span className="sr-only">holding E2E slot {card.slot}</span>}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs text-gray-500">
-          {card.target}#{card.issue}
-        </span>
-        {(pendingActions ?? []).map((action, i) => (
-          <PendingBadge key={`${action}-${i}`} action={action} />
-        ))}
-      </div>
-      <p className="mt-1 text-sm font-medium">{card.title}</p>
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+      <Link
+        to={`/task/${card.target}/${card.issue}`}
+        data-testid={`card-${card.issue}`}
+        draggable
+        onDragStart={(e) => {
+          e.dataTransfer.setData(
+            'application/x-agent-ops-card',
+            JSON.stringify({ issue: card.issue, target: card.target, title: card.title }),
+          )
+        }}
+        className="block"
+      >
+        {/* Colour is never the only signal — and this must not be an aria-label
+            on the Link, which would clobber its accessible name. */}
+        {card.consuming_capacity && <span className="sr-only">holding a capacity unit</span>}
+        {card.slot >= 0 && <span className="sr-only">holding E2E slot {card.slot}</span>}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-gray-500">
+            {card.target}#{card.issue}
+          </span>
+          {(pendingActions ?? []).map((action, i) => (
+            <PendingBadge key={`${action}-${i}`} action={action} />
+          ))}
+        </div>
+        <p className="mt-1 text-sm font-medium">{card.title}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
         <span>{stageLabel(card.stage)}</span>
         <span>{card.model}</span>
         {card.score != null && (
@@ -85,7 +89,11 @@ export function TaskCardView({ card, pendingActions }: {
           card.claimed_at !== '' && <span>claimed {relativeTime(card.claimed_at)}</span>
         )}
         <span>{relativeTime(card.updated_at)}</span>
-      </div>
-    </Link>
+        </div>
+      </Link>
+      {card.admission && (
+        <AdmissionWarning target={card.target} issue={card.issue} admission={card.admission} />
+      )}
+    </article>
   )
 }

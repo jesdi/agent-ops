@@ -4,6 +4,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { TaskDetail } from '../lib/api'
 import { useParams } from 'react-router'
 import { ArtifactsPanel } from '../components/ArtifactsPanel'
+import { AdmissionWarning } from '../components/AdmissionWarning'
 import { DescriptionPanel } from '../components/DescriptionPanel'
 import { MessageThread } from '../components/MessageThread'
 import { PendingBadge } from '../components/PendingBadge'
@@ -139,6 +140,10 @@ function TaskView({ target, issue }: { target: string; issue: number }) {
         <p data-testid="action-error" className="text-sm text-red-600">
           {actionError}
         </p>
+      )}
+
+      {card.admission && (
+        <AdmissionWarning target={target} issue={issue} admission={card.admission} />
       )}
 
       <MessageThread messages={messages} />

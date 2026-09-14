@@ -37,6 +37,7 @@ export interface PendingIntent {
 export interface PendingIntentsView { intents: PendingIntent[] }
 export interface QueueActionResult { ok: true; reason: string }
 export interface IntentAccepted { status: 'pending'; intent: string }
+export interface ResumeOptions { text?: string; model?: string; bypassUsage?: boolean }
 
 export class ApiError extends Error {
   status: number
@@ -120,8 +121,12 @@ export const api = {
     post<IntentAccepted>(`/task/${target}/${issue}/cancel`, {}),
   retry: (target: string, issue: number) =>
     post<IntentAccepted>(`/task/${target}/${issue}/retry`, {}),
-  resume: (target: string, issue: number, text?: string) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/resume`, text ? { text } : {}),
+  resume: (target: string, issue: number, options: ResumeOptions = {}) =>
+    post<IntentAccepted>(`/task/${target}/${issue}/resume`, {
+      ...(options.text ? { text: options.text } : {}),
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.bypassUsage ? { bypass_usage: true } : {}),
+    }),
   taskDescription: (target: string, issue: number) =>
     request<IssueDescription>(`/task/${target}/${issue}/description`),
   taskArtifacts: (target: string, issue: number) =>

@@ -614,6 +614,17 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** ModelAdmissionView */
+        ModelAdmissionView: {
+            /** Admitted */
+            admitted: boolean;
+            /** Model */
+            model: string;
+            /** Note */
+            note: string;
+            /** Provider */
+            provider: string;
+        };
         /** NextClaimView */
         NextClaimView: {
             /**
@@ -748,6 +759,16 @@ export interface components {
         /** ResumeReq */
         ResumeReq: {
             /**
+             * Bypass Usage
+             * @default false
+             */
+            bypass_usage: boolean;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /**
              * Text
              * @default
              */
@@ -764,8 +785,15 @@ export interface components {
             /** Target */
             target: string;
         };
+        /** TaskAdmissionView */
+        TaskAdmissionView: {
+            /** Alternatives */
+            alternatives: components["schemas"]["ModelAdmissionView"][];
+            requested: components["schemas"]["ModelAdmissionView"];
+        };
         /** TaskCard */
         TaskCard: {
+            admission?: components["schemas"]["TaskAdmissionView"] | null;
             /** Branch */
             branch: string;
             /** Claimed At */

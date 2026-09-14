@@ -38,7 +38,7 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoO
                                 ParkForCI, ParkForInput, ParkForReview, PublishSpec,
                                 RetryStage, SetTaskStage, StartTicket,
                                 SpawnStage, next_actions)
-from dispatcher.models import resolve
+from dispatcher.models import resolve_for_stage
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
@@ -93,18 +93,14 @@ def _cursor_now() -> str:
 # TaskState (nothing in machine.py sets it), so they deliberately fall
 # through to stage.value, which matches no `use:` key and lands on the
 # policy default.
-_POLICY_STAGE = {Stage.QUEUED: "spec", Stage.AWAITING_SPEC_REVIEW: "spec",
-                 Stage.ADDRESS_REVIEW: "implement"}
-
-
 def _model_for(cfg: Config, target: Target | None, effort: int | None,
                labels: Sequence[str], stage: Stage) -> str:
     """target is None for a task whose target has left the config — it still
     resolves, against the global policy, since there is no per-target one to
     look up. Every model resolution — tasks and unclaimed candidates alike —
-    goes through here, so the stage mapping above is applied exactly once."""
+    goes through the shared runtime-stage mapping in models.py."""
     policy = policy_for(cfg, target) if target else cfg.models
-    return resolve(policy, _POLICY_STAGE.get(stage, stage.value), effort, labels)
+    return resolve_for_stage(policy, stage.value, effort, labels)
 
 
 @dataclass(frozen=True)
@@ -172,10 +168,13 @@ def _drain(cfg: Config, issue: int) -> tuple[str, list[str]]:
 
 
 def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
-          actor: str = "dispatcher") -> None:
+          actor: str = "dispatcher", *, model_override: str = "",
+          bypass_usage: bool = False) -> None:
     _queue_message(cfg, task.issue, text, actor)
     task = loops.reset(task, ResetCause.OPERATOR_WAKE)
     save(cfg.state_dir, replace(task, park=PARK_WAKE, hold_for_attach=hold,
+                                resume_model_override=model_override,
+                                resume_bypass_usage=bypass_usage,
                                 updated_at=_now()))
 
 
@@ -921,7 +920,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
     )
     for task in woken:
         launch = _resume_launch(cfg, target, task)
-        if not admit(launch.model).admitted:
+        if not task.resume_bypass_usage and not admit(launch.model).admitted:
             continue  # this model's provider has no headroom; others may
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
@@ -947,7 +946,9 @@ def _resume_launch(cfg: Config, target: Target, task: TaskState) -> Launch:
     """A parked pr-open task has no session to continue: it resumes as a
     fresh address-review round, on that stage's model."""
     stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
-    return _launch_for(cfg, target, task, stage)
+    launch = _launch_for(cfg, target, task, stage)
+    return replace(launch, model=task.resume_model_override) \
+        if task.resume_model_override else launch
 
 
 def _resume_one(cfg: Config, deps: Deps, target: Target,
@@ -972,6 +973,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
         task = replace(task, park="", park_msg_id=0, park_note="",
                        hold_for_attach=False, feedback_pending=False,
                        attention="operator", feedback_cursor=_cursor_now(),
+                       resume_model_override="", resume_bypass_usage=False,
                        operator_request=None)
         _clear_wake_blocked(cfg, task.issue)
         _spawn_stage(cfg, deps, target, task, launch)
@@ -997,6 +999,8 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     _clear_wake_blocked(cfg, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                 park_msg_id=0, park_note="",
+                                resume_model_override="",
+                                resume_bypass_usage=False,
                                 operator_request=None,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
@@ -1579,10 +1583,27 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
             print(f"[warn] resume intent for #{issue}: task not parked — "
                   f"skipped", file=sys.stderr)
             return
+        requested_model = str(intent.payload.get("model") or "")
+        target = by_name.get(task.target)
+        policy = policy_for(cfg, target) if target else cfg.models
+        if requested_model and requested_model not in policy.model_ids():
+            print(f"[warn] resume intent for #{issue}: model "
+                  f"{requested_model!r} is not configured — skipped",
+                  file=sys.stderr)
+            return
+        bypass_usage = intent.payload.get("bypass_usage") is True
+        if task.park == PARK_WAKE:
+            # The original wake already queued its message and owns its queue
+            # position. Changing admission must do neither a second time.
+            save(cfg.state_dir, replace(
+                task, resume_model_override=requested_model,
+                resume_bypass_usage=bypass_usage))
+            return
         _wake(cfg, task,
               intent.payload.get("text")
               or "The operator resumed this task. Continue.",
-              hold=False, actor=intent.actor or "operator")
+              hold=False, actor=intent.actor or "operator",
+              model_override=requested_model, bypass_usage=bypass_usage)
     else:
         print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
               file=sys.stderr)
