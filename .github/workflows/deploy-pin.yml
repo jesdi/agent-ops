@@ -1,0 +1,32 @@
+name: deploy-pin
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+jobs:
+  bump-app-revision:
+    if: >
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bump agent-ops-infra's app-revision
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          TOKEN: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          git clone --quiet "https://x-access-token:${TOKEN}@github.com/jesdi/agent-ops-infra.git" infra
+          cd infra
+          current=$(cat config/app-revision)
+          if [ "$current" = "$SHA" ]; then
+            echo "app-revision already at $SHA, nothing to do"
+            exit 0
+          fi
+          printf '%s\n' "$SHA" > config/app-revision
+          git config user.name "agent-ops-deploy-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -am "deploy: bump app-revision to agent-ops@${SHA:0:7}"
+          git push origin main
