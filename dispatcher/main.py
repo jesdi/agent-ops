@@ -135,7 +135,10 @@ def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
     override = execution_overrides.load(cfg.state_dir, task.target, task.issue)
     bypass = bool(override and override.bypass_usage)
     if override is not None and override.model:
-        return Launch(stage, parse_entry(override.model, "override")), bypass
+        launch = Launch(stage, parse_entry(override.model, "override"))
+        if bypass or admit(launch.model).admitted:
+            return launch, bypass
+        return None, bypass
     launch = _launch_for(cfg, target, task, stage, _admitted(admit, bypass))
     if launch is None or (not bypass and not admit(launch.model).admitted):
         return None, bypass

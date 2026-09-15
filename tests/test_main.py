@@ -350,6 +350,21 @@ def test_forced_queue_candidate_claims_despite_usage_gate(tmp_path, monkeypatch)
         c.state_dir, "portfolio_eval", 42) is None
 
 
+def test_override_model_without_bypass_still_checked_by_usage_gate(tmp_path, monkeypatch):
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    execution_overrides.save(
+        c.state_dir, "portfolio_eval", 42,
+        execution_overrides.ExecutionOverride(
+            model="claude-sonnet-4-6", bypass_usage=False))
+
+    launch, bypass = main._choose_launch(c, c.targets[0], task, Stage.IMPLEMENT, DENY_ALL)
+
+    assert (launch, bypass) == (None, False)
+
+
 def test_forced_queue_candidate_keeps_choice_when_no_slot(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = replace_capacity(cfg(tmp_path), 0)
