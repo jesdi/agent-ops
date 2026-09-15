@@ -489,3 +489,55 @@ def test_gate_does_not_rearm_when_operator_request_already_set():
     acts = next_actions(t, sig("spec", "awaiting-review", artifact="docs/spec.md"),
                         session_alive=True, grace_elapsed=False)
     assert acts == [NoOp()]
+
+
+TRACKS = frozenset({"trivial", "standard"})
+
+
+def test_spec_awaiting_review_with_unknown_track_retries_in_place():
+    sig = StageSignal(stage="spec", status="awaiting-review", artifact="s.md", track="deep")
+    acts = next_actions(task(Stage.SPEC), sig, True, tracks=TRACKS)
+    assert acts == [RetryStage(Stage.SPEC, "stage.json names track 'deep'; it must be "
+                                           "one of ['standard', 'trivial']")]
+
+
+def test_spec_awaiting_review_with_missing_track_retries_in_place():
+    sig = StageSignal(stage="spec", status="awaiting-review", artifact="s.md")
+    (act,) = next_actions(task(Stage.SPEC), sig, True, tracks=TRACKS)
+    assert isinstance(act, RetryStage) and act.stage is Stage.SPEC and "''" in act.reason
+
+
+def test_spec_track_retry_exhausted_parks_for_the_operator():
+    sig = StageSignal(stage="spec", status="awaiting-review", artifact="s.md")
+    t = replace(task(Stage.SPEC), spec_retries=1)
+    (act,) = next_actions(t, sig, True, tracks=TRACKS)
+    assert isinstance(act, ParkForInput) and "must be one of" in act.note
+
+
+def test_spec_awaiting_review_with_known_track_transitions_as_before():
+    sig = StageSignal(stage="spec", status="awaiting-review", artifact="s.md", track="trivial")
+    acts = next_actions(task(Stage.SPEC), sig, True, tracks=TRACKS)
+    assert acts[0] == SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact="s.md")
+
+
+def test_spec_done_with_unknown_track_retries_before_the_format_check(tmp_path):
+    (tmp_path / "s.md").write_text("# tiny\n")     # would FAIL check_spec
+    sig = StageSignal(stage="spec", status="done", artifact="s.md", track="nope")
+    (act,) = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)),
+                          sig, True, tracks=TRACKS)
+    assert isinstance(act, RetryStage) and act.stage is Stage.SPEC
+
+
+def test_spec_done_with_known_track_spawns_plan(tmp_path):
+    (tmp_path / "s.md").write_text(GOOD_SPEC)
+    sig = StageSignal(stage="spec", status="done", artifact="s.md", track="standard")
+    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)),
+                        sig, True, tracks=TRACKS)
+    assert acts == [SpawnStage(Stage.PLAN)]
+
+
+def test_tracks_none_skips_validation(tmp_path):
+    (tmp_path / "s.md").write_text(GOOD_SPEC)
+    sig = StageSignal(stage="spec", status="done", artifact="s.md")
+    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)), sig, True)
+    assert acts == [SpawnStage(Stage.PLAN)]
