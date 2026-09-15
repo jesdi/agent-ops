@@ -554,13 +554,14 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     def _run_model(configured_target, target: str, req: RunReq, task, row):
         policy = policy_for(cfg, configured_target)
-        if req.model and req.model not in policy.model_ids():
+        if (req.model and req.model not in policy.model_ids()
+                and req.model not in {str(e) for e in policy.entries()}):
             raise HTTPException(422, f"model {req.model!r} is not configured "
                                 f"for target {target!r}")
         if req.model:
             return req.model
         if task is not None:
-            return _model_for(task)
+            return task.picks.get(policy_stage(_stage(task))) or _model_for(task)
         return _candidate_model(configured_target, row)
 
     def _arm_run(target: str, issue: int, req: RunReq, task, model: str,

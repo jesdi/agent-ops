@@ -101,6 +101,16 @@ def test_force_run_resumes_a_parked_task(tmp_path):
         "model": "anthropic/claude-opus-5", "bypass_usage": True}
 
 
+def test_force_run_with_no_model_keeps_the_sticky_pick_s_effort(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(
+        issue=7, picks={"implement": "anthropic/claude-opus-5@high"})]
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS, json={})
+    assert r.status_code == 200
+    assert fake.execution_overrides[("alpha", 7)] == (
+        "anthropic/claude-opus-5@high", False)
+
+
 def test_force_run_arms_an_unclaimed_queue_candidate(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = []
