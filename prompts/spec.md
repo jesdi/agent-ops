@@ -10,9 +10,9 @@ stuck.
   then STOP — end your turn. The task parks, the operator sees the file on
   the console or their phone, and you are resumed with their answers as an
   operator message.
-- `{"stage": "spec", "status": "awaiting-review", "artifact": "<spec path>", "note": "<one line>"}`
+- `{"stage": "spec", "status": "awaiting-review", "artifact": "<spec path>", "track": "<name>", "note": "<one line>"}`
   once the spec is committed and pushed (step 4), then wait for approval.
-- `{"stage": "spec", "status": "done", "artifact": "<spec path>", "note": "approved"}`
+- `{"stage": "spec", "status": "done", "artifact": "<spec path>", "track": "<name>", "note": "approved"}`
   only after the operator explicitly approves; then exit the session.
 - `{"stage": "spec", "status": "blocked", "note": "<what blocks you>"}` when
   you cannot proceed at all (missing access, a contradiction no answer can
@@ -65,6 +65,19 @@ page, no build step, no server. Signal `awaiting-answers` with
 stop. Record the verdict the operator sends as an issue comment
 (`gh issue comment $issue_number --repo $repo --body "..."`) so the next
 stage's fresh session can read it, then continue.
+
+## Track
+Now that the scope is settled, pick the track the plan, implement and
+review stages run on. Judge how hard and how risky the work is; do not
+guess at models or budgets — the operator maps tracks to models. Pick one
+name from this list and write it as `"track"` in the signals of steps 4
+and 5. A signal without a configured track name is bounced back to you.
+Security-tagged work is never below the security track.
+
+$tracks
+
+If the operator's approval names a track ("approved, but run it as
+security"), use that one in the `done` signal.
 
 ## 4. Write, commit, push, signal
 Use the `to-spec` skill (file destination) to write
