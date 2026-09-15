@@ -28,6 +28,24 @@ Never committed; the numeric prefix is the execution order.
 _Avoid_: plan (the plan stage now produces tickets, not a plan file), task
 (that is the whole issue)
 
+**Track**:
+An operator-named kind of work (`trivial`, `standard`, `security`) defined in
+`targets.yaml` by a prose `when` and, per stage, an ordered list of entries.
+Triage picks the track for the spec stage (label `track:<name>`); the spec
+session picks it for plan, implement and review and writes it in its signal.
+_Avoid_: tier, profile, rule
+
+**Entry**:
+One element of a track's stage list: `provider/model[@effort]`.
+_Avoid_: profile (a Claude Code term)
+
+**Pick**:
+The entry chosen when a task enters a stage, recorded in `TaskState.picks`
+and reused by every session of that stage. A denied pick waits.
+
+**Untracked**:
+A candidate with no `track:` label; it specs on `models.untracked`.
+
 **Review stage**:
 The session that reads only the issue, the spec, the tickets and the diff —
 never a summary — fixes what it finds, rebases onto main, runs the gates
@@ -130,9 +148,8 @@ launches. Usage collectors are `usage_providers.py`
 adapters, one per provider, fetched only for providers the model policy
 references. Loop policy stays independent of all of it: waiting for
 headroom does not spend a fix round, and a denial for one provider never
-prevents considering another. Still deferred: runtime adapters (running a
-session on a non-Anthropic provider), the router that picks among admitted
-models by task type, cross-runtime session continuation.
+prevents considering another. The router is `dispatcher/models.py::resolve`: first admitted entry of the task's track for the stage; labels and board effort are not routing inputs. Still deferred: runtime adapters (running a
+session on a non-Anthropic provider), cross-runtime session continuation.
 
 A model-limited queue candidate or claimed task may carry a durable, one-shot
 execution override. Queue claims and active stage transitions store it under

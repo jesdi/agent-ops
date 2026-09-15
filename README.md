@@ -31,7 +31,7 @@ agent-ops closes both gaps:
   (relaxed when the reset is close). The weekly windows follow a spending
   schedule that counts weekend hours at half weight, so the box holds back
   on Saturday and Sunday and spends the saved share Monday to Friday. A
-  provider whose usage can't be read fails safe and spawns nothing.
+  provider whose usage can't be read fails safe and spawns nothing. Which model runs is a **track**: triage picks one for the spec stage, the spec session picks one for the rest, and each track lists models per stage in order of preference, so the box takes the first one with headroom and keeps it for the whole stage.
 - **24-hour access from your phone, PC off.** The box is reachable over
   Tailscale only. The web console and Telegram bot are always on — you can
   check progress, answer an agent's question, or approve a spec from anywhere.
@@ -148,7 +148,7 @@ gh label create human-required --repo OWNER/REPO \
 pages with the stage timeline, the spec awaiting your approval, a persistent Artifacts section, and a read-only console (pane tail plus scrollable history, snapshot-backed once the session ends). To interact with a session, attach from a terminal: `herdr --remote box` on the desktop (herdr installed locally, same version as the box, `box` an SSH alias over the tailnet), or [Moshi](https://getmoshi.app) on a phone. Operating rule: attach to watch; reply through Telegram or the board — the dispatcher may park a session while you are typing in it. Reply to
 a parked agent, park, kill, retry, or resume a task, and manage the queue —
 including model-capacity warnings on queued and claimed tasks, with one-shot
-controls to run despite that usage limit or use another configured model —
+controls to run despite that usage limit or use another entry of the task's track —
 all from the same UI. Failures and history get their own pages, so nothing
 silently disappears.
 
