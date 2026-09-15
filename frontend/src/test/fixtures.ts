@@ -6,7 +6,7 @@ import type {
 export const parkedCard: TaskCard = {
   issue: 42, target: 'widget', title: 'Fix login redirect',
   stage: 'implement', park: 'question', column: 'parked', slot: 1,
-  branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
+  branch: 'fix/login-redirect', model: 'sonnet', track: 'standard', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?', feedback_pending: false,
   updated_at: '2026-07-25T10:00:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
@@ -17,7 +17,7 @@ export const reviewCard: TaskCard = {
   issue: 44, target: 'widget', title: 'Add search feature',
   stage: 'awaiting-spec-review', park: 'awaiting-review', column: 'needs-review',
   slot: -1,
-  branch: 'feat/search', model: 'opus', park_note_pending: false,
+  branch: 'feat/search', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: 'spec ready for review', feedback_pending: false,
   updated_at: '2026-07-25T09:00:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
@@ -27,7 +27,7 @@ export const reviewCard: TaskCard = {
 export const inProgressCard: TaskCard = {
   issue: 41, target: 'widget', title: 'Add CSV export',
   stage: 'implement', park: '', column: 'in-progress', slot: 2,
-  branch: 'feat/csv-export', model: 'opus', park_note_pending: false,
+  branch: 'feat/csv-export', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T11:30:00Z', consuming_capacity: true,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
@@ -38,7 +38,7 @@ export const inProgressCard: TaskCard = {
 export const loginParkedCard: TaskCard = {
   issue: 45, target: 'widget', title: 'Rate-limit webhooks',
   stage: 'spec', park: 'parked-login', column: 'parked', slot: 0,
-  branch: 'feat/rate-limit', model: 'opus', park_note_pending: false,
+  branch: 'feat/rate-limit', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T11:00:00Z', consuming_capacity: true,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
@@ -48,7 +48,7 @@ export const loginParkedCard: TaskCard = {
 export const ciParkedCard: TaskCard = {
   issue: 46, target: 'widget', title: 'Fix nightly digest',
   stage: 'implement', park: 'awaiting-ci', column: 'awaiting-ci', slot: 1,
-  branch: 'fix/nightly-digest', model: 'sonnet', park_note_pending: false,
+  branch: 'fix/nightly-digest', model: 'sonnet', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T10:30:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
@@ -119,6 +119,7 @@ export const taskDetail: TaskDetail = {
   worktree: '/home/agent/worktrees/task-42',
   messages: [],
   delivery_contract: 'will deliver when the session resumes',
+  track_when: 'Everything.',
   ci_run_id: 0,
   effort: 3,
   labels: ['auto'],

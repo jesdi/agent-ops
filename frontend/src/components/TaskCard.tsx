@@ -64,6 +64,7 @@ function TaskCardFacts({ card }: { card: TaskCard }) {
     <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
       <span>{stageLabel(card.stage)}</span>
       <span>{card.model}</span>
+      {card.track && <span>track {card.track}</span>}
       <TaskCardBadges card={card} />
       <TaskCardTiming card={card} />
     </div>
