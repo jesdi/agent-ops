@@ -320,31 +320,6 @@ def test_sweep_budget_gate_skips_everything(tmp_path):
     assert "usage gate" in "\n".join(deps.notifier.sent[0][1]["lines"])
 
 
-FABLE_HOT = {"anthropic": session_usage(0.1, fable=0.9)}
-
-
-@pytest.mark.parametrize("triage_model, default, runs", [
-    ("claude-sonnet-4-6", "claude-fable-5-1", True),
-    ("claude-fable-5-1", "claude-sonnet-4-6", False),
-])
-def test_sweep_gate_asks_triage_model_not_the_default(tmp_path, triage_model,
-                                                      default, runs):
-    """The sweep spawns triage_model, so a Fable-over-pace week must not
-    skip a Sonnet sweep just because the policy default is Fable."""
-    cfg = replace(_sweep_cfg(tmp_path), triage_model=triage_model,
-                  models=parse_policy({"default": default}))
-    deps = FakeDeps()
-    triage.save_cursors(tmp_path, {"o/a": OLD})
-    with patch.object(triage, "fetch_all", return_value=FABLE_HOT), \
-         patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB) as prefetch, \
-         patch.object(triage, "_run_session", return_value={"issues": []}), \
-         patch.object(triage.triage_apply, "apply", return_value=RESULT):
-        triage.run_sweep(cfg, deps)
-    assert prefetch.called is runs
-    skipped = "usage gate" in "\n".join(deps.notifier.sent[0][1]["lines"])
-    assert skipped is not runs
-
-
 def test_sweep_holds_cursor_when_every_write_failed(tmp_path):
     """apply no longer raises on a gh failure, so an expired token or a rate
     limit would otherwise complete the repo and advance its cursor — that

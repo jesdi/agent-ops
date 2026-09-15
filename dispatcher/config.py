@@ -8,8 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from dispatcher.models import (DEFAULT_POLICY, ModelPolicy, check_model_id,
-                               parse_policy, split_model_id)
+from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy
 from dispatcher.state import LoopCaps
 from dispatcher.usage import PaceConfig
 
@@ -54,7 +53,6 @@ class Config:
     # file is flushed. The durable record (merged PR, closed issue, board
     # item, event log) outlives the card.
     done_retention_days: int = 7
-    triage_model: str = ""  # "" = use models.default for triage sessions
     # Minutes between dispatcher passes. Paired with OnUnitActiveSec in
     # agent-ops-infra/provision/agent-ops-dispatcher.timer — change both together; the web
     # console's next-pass countdown is computed from this value.
@@ -113,6 +111,9 @@ def _target(raw: dict) -> Target:
 
 def load_config(path: str | Path) -> Config:
     raw = yaml.safe_load(Path(path).read_text())
+    if "triage_model" in raw:
+        raise ValueError("triage_model: is gone; write models.triage: (a list of "
+                         "entries, see targets.example.yaml)")
     return Config(
         state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
         capacity=raw.get("capacity", 3),
@@ -125,8 +126,6 @@ def load_config(path: str | Path) -> Config:
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
         spec_review_grace_minutes=int(raw.get("spec_review_grace_minutes", 15)),
         done_retention_days=int(raw.get("done_retention_days", 7)),
-        triage_model=(check_model_id(str(raw["triage_model"]), "triage_model")
-                      if raw.get("triage_model") else ""),
         pass_interval_minutes=int(raw.get("pass_interval_minutes", 10)),
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),
@@ -140,13 +139,12 @@ def policy_for(cfg: Config, target: Target) -> ModelPolicy:
 
 
 def referenced_providers(cfg: Config) -> frozenset[str]:
-    """Every provider some configured model id names — the set the usage
-    fetch covers. A provider you hold credentials for but never route to is
-    not polled; one you route to without an adapter shows as unavailable."""
+    """Every provider some configured entry names — the set the usage fetch
+    covers. A provider you hold credentials for but never route to is not
+    polled; one you route to without an adapter shows as unavailable (and
+    main() warns once at startup)."""
     ids = cfg.models.model_ids()
     for t in cfg.targets:
         if t.models is not None:
             ids.extend(t.models.model_ids())
-    if cfg.triage_model:
-        ids.append(cfg.triage_model)
-    return frozenset(split_model_id(m)[0] for m in ids)
+    return frozenset(m.partition("/")[0] for m in ids)
