@@ -13,9 +13,11 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
-from dispatcher.models import resolve_for_stage
+from dispatcher.models import (candidates, parse_entry, policy_stage,
+                               resolve, track_from_labels)
+from dispatcher.usage import admits
 from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
-                              SpecApprovalRequest)
+                              SpecApprovalRequest, Stage)
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
@@ -97,39 +99,67 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     targets_by_name = {t.name: t for t in cfg.targets}
 
-    def _model_for(t):
+    def _policy(target_name):
+        target = targets_by_name.get(target_name)
+        return policy_for(cfg, target) if target else cfg.models
+
+    def _stage(t):
+        return "address-review" if t.stage is Stage.PR_OPEN else t.stage.value
+
+    def _avoid(t):
+        pick = t.picks.get("implement")
+        return parse_entry(pick, "pick").provider if pick else ""
+
+    def _choices(t, usages, now):
+        """The ordered entries the dispatcher would walk for t's next launch."""
+        policy = _policy(t.target)
+        if t.track not in policy.tracks:
+            return ()
+        return candidates(policy, t.track, _stage(t), _avoid(t))
+
+    def _model_for(t, usages=None, now=None):
         if t.park == PARK_WAKE and t.resume_model_override:
             return t.resume_model_override
-        target = targets_by_name.get(t.target)
-        policy = policy_for(cfg, target) if target else cfg.models
-        stage = "address-review" if t.stage.value == "pr-open" else t.stage.value
-        return resolve_for_stage(policy, stage, t.effort, list(t.labels))
+        pick = t.picks.get(policy_stage(_stage(t)))
+        if pick:
+            return parse_entry(pick, "pick").model_id
+        choices = _choices(t, usages, now)
+        if not choices:
+            return ""
+        if usages is not None:
+            admitted = next((e for e in choices
+                             if admits(usages, e.model_id, now, cfg.pace).admitted), None)
+            if admitted is not None:
+                return admitted.model_id
+        return choices[0].model_id
 
     def _task_admission(t, usages, now):
         if t.stage in TERMINAL_STAGES or t.resume_bypass_usage:
             return None
         if sources.execution_override(t.target, t.issue) is not None:
             return None
-        return _admission_for_model(t.target, _model_for(t), usages, now)
+        return _admission_for_model(_model_for(t, usages, now),
+                                    [e.model_id for e in _choices(t, usages, now)],
+                                    usages, now)
 
-    def _admission_for_model(target_name, model, usages, now):
+    def _admission_for_model(model, choices, usages, now):
         requested = read_model.model_admission_view(
             usages, now=now, pace=cfg.pace, model=model)
         if requested.admitted:
             return None
-        target = targets_by_name.get(target_name)
-        policy = policy_for(cfg, target) if target else cfg.models
-        models = dict.fromkeys(policy.model_ids())
         alternatives = [read_model.model_admission_view(
-            usages, now=now, pace=cfg.pace, model=model)
-            for model in models if model != requested.model]
+            usages, now=now, pace=cfg.pace, model=m)
+            for m in dict.fromkeys(choices) if m != requested.model]
         return read_model.TaskAdmissionView(
             requested=requested, alternatives=alternatives)
 
-    def _candidate_model(target, row):
+    def _candidate_choices(target, row):
         policy = policy_for(cfg, target)
-        return resolve_for_stage(
-            policy, "spec", row.get("effort"), list(row.get("labels") or []))
+        track = track_from_labels(list(row.get("labels") or []), policy)
+        return [e.model_id for e in candidates(policy, track, "spec")]
+
+    def _candidate_model(target, row):
+        return _candidate_choices(target, row)[0]
 
     def _candidate_admissions(queues, usages, now):
         return {(target.name, row["number"]): admission
@@ -137,7 +167,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 if read_model._is_candidate(row)
                 and sources.execution_override(target.name, row["number"]) is None
                 and (admission := _admission_for_model(
-                    target.name, _candidate_model(target, row), usages, now))}
+                    _candidate_model(target, row), _candidate_choices(target, row),
+                    usages, now))}
 
     def _known_target(target: str, tasks: list) -> bool:
         """A target is servable if it is still in the live config OR any
@@ -174,7 +205,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def _usage_view() -> read_model.UsageView:
         return read_model.usage_view(
             sources.usage(), now=datetime.now(timezone.utc),
-            pace=cfg.pace, default_model=cfg.models.default)
+            pace=cfg.pace, default_model=cfg.models.gate_entry().model_id)
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
@@ -183,7 +214,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         usages = sources.usage()
         usage = read_model.usage_view(
             usages, now=now, pace=cfg.pace,
-            default_model=cfg.models.default)
+            default_model=cfg.models.gate_entry().model_id)
         claims_paused, triage_running = sources.triage_state()
         queues, queue_targets, stale_any = [], [], False
         for target in cfg.targets:
@@ -200,7 +231,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         mail = sources.undelivered_counts()
         return read_model.build_board(
             tasks, capacity=cfg.capacity,
-            models={(t.target, t.issue): _model_for(t) for t in tasks},
+            models={(t.target, t.issue): _model_for(t, usages, now)
+                    for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=sources.pass_heartbeat(),
             now=now,
@@ -232,8 +264,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                    if i.get("issue") == issue
                    and i.get("target", "") in ("", target)
                    and i.get("action") in ("reply", "resume")]
+        policy = _policy(t.target)
         return read_model.task_detail(
-            t, model=_model_for(t),
+            t, model=_model_for(t, usages, now),
             pane_tail=sources.pane_tail(target, issue),
             session_alive=sources.session_alive(target, issue),
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
@@ -241,7 +274,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             messages=sources.messages(issue),
             pending_sends=pending,
             wake_blocked=(target, issue) in sources.wake_blocked_issues(),
-            admission=_task_admission(t, usages, now))
+            admission=_task_admission(t, usages, now),
+            track_when=(policy.tracks[t.track].when
+                       if t.track in policy.tracks else ""))
 
     @app.get("/api/task/{target}/{issue}/description",
              response_model=read_model.IssueDescription)

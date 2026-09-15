@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from dispatcher import messages as msgq
 from dataclasses import replace
 
-from dispatcher.models import parse_policy
 from dispatcher.state import PARK_HUMAN, PARK_WAKE, Stage
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_task)
 from web.app import create_app
@@ -138,28 +137,43 @@ def test_task_detail_reports_a_starved_wake(tmp_path):
 
 
 def test_wake_blocked_by_model_exposes_reason_and_alternatives(tmp_path):
+    from tests.webfakes import tracks_policy
     fake = FakeSources()
-    cfg = replace(make_config(tmp_path), models=parse_policy({
-        "default": "claude-opus-4-8",
-        "rules": [{"name": "spec", "use": {
-            "spec": "claude-fable-5", "implement": "claude-opus-4-8"}}]}))
+    cfg = replace(make_config(tmp_path), models=tracks_policy(
+        spec=["claude-fable-5-1@high", "claude-opus-5"]))
     client = TestClient(create_app(cfg, fake))
-    fake.tasks_list = [make_task(
-        issue=7, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_WAKE)]
+    fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_WAKE,
+                                 picks={"spec": "anthropic/claude-fable-5-1@high"})]
     from tests.usagefakes import session_usage
     fake.usages = {"anthropic": session_usage(0.2, fable=0.9)}
 
     body = client.get("/api/task/alpha/7", headers=HEADERS).json()
     admission = body["card"]["admission"]
-    assert admission["requested"]["model"] == "claude-fable-5"
+    assert admission["requested"]["model"] == "anthropic/claude-fable-5-1"
     assert admission["requested"]["admitted"] is False
     assert "week·Fable" in admission["requested"]["note"]
     assert [(x["model"], x["admitted"]) for x in admission["alternatives"]] == [
-        ("claude-opus-4-8", True)]
-    assert body["card"]["model"] == "claude-fable-5"
+        ("anthropic/claude-opus-5", True)]
+    assert body["card"]["model"] == "anthropic/claude-fable-5-1"
+    assert body["card"]["track"] == "standard"
+    assert body["track_when"] == "Everything."
     board = client.get("/api/board", headers=HEADERS).json()
     card = next(c for column in board["columns"] for c in column["cards"])
     assert card["admission"] == admission
+
+
+def test_card_model_is_the_first_admitted_entry_when_no_pick_yet(tmp_path):
+    from tests.webfakes import tracks_policy
+    from tests.usagefakes import session_usage
+    fake = FakeSources()
+    cfg = replace(make_config(tmp_path), models=tracks_policy(
+        plan=["claude-fable-5-1", "claude-opus-5"]))
+    client = TestClient(create_app(cfg, fake))
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN)]
+    fake.usages = {"anthropic": session_usage(0.2, fable=0.9)}
+    body = client.get("/api/task/alpha/7", headers=HEADERS).json()
+    assert body["card"]["model"] == "anthropic/claude-opus-5"
+    assert body["card"]["admission"] is None
 
 
 def test_usage_base_allowance(tmp_path):
@@ -174,7 +188,7 @@ def test_usage_base_allowance(tmp_path):
     assert set(provider) == {"provider", "source", "windows"}
     gate = body["gate"]
     assert (gate["model"], gate["provider"], gate["admitted"]) == (
-        "claude-opus-4-8", "anthropic", True)
+        "anthropic/claude-opus-5", "anthropic", True)
     assert gate["binding"]["kind"] == "session"
 
 
@@ -286,11 +300,10 @@ def test_board_carries_next_claim_upcoming_and_timeline(tmp_path):
 
 
 def test_capacity_blocked_queue_candidate_exposes_force_choices(tmp_path):
+    from tests.webfakes import tracks_policy
     fake = FakeSources()
-    cfg = replace(make_config(tmp_path), models=parse_policy({
-        "default": "claude-fable-5",
-        "rules": [{"name": "fallback", "use": {
-            "implement": "claude-opus-4-8"}}]}))
+    cfg = replace(make_config(tmp_path), models=tracks_policy(
+        spec=["claude-fable-5-1", "claude-opus-5"]))
     fake.rank["alpha"] = ([{
         "number": 73, "title": "t73", "url": "u", "status": "Ready",
         "labels": ["auto"], "blocked": False, "score": 2.0, "boost": 0,
@@ -300,11 +313,11 @@ def test_capacity_blocked_queue_candidate_exposes_force_choices(tmp_path):
     body = TestClient(create_app(cfg, fake)).get(
         "/api/board", headers=HEADERS).json()
     admission = body["upcoming"][0]["admission"]
-    assert admission["requested"]["model"] == "claude-fable-5"
+    assert admission["requested"]["model"] == "anthropic/claude-fable-5-1"
     assert admission["requested"]["admitted"] is False
     assert [(x["model"], x["admitted"])
             for x in admission["alternatives"]] == [
-                ("claude-opus-4-8", True)]
+                ("anthropic/claude-opus-5", True)]
 
 
 def test_board_next_claim_claims_paused(tmp_path):
