@@ -1382,16 +1382,20 @@ _DRIVE: dict[type, Callable[..., TaskState | None]] = {
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 admit: Admit, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
+    policy = policy_for(cfg, target)
     # A spec-stage signal carries the track for every later stage (see
     # StageSignal.track). Adopt it before anything below reads task.track —
     # the "track configured" guard and the launch this same turn may spawn
     # (e.g. PLAN off a spec "done" signal) both need the fresh value, not
-    # whatever was recorded when the task was last saved.
-    if signal is not None and signal.track and signal.track != task.track:
+    # whatever was recorded when the task was last saved. Only a CONFIGURED
+    # track is adopted here: an unknown/misspelled one must reach
+    # next_actions' bounce-then-park ladder (_track_actions) instead of being
+    # written onto the task and mis-parked as "no longer configured".
+    if (signal is not None and signal.track and signal.track != task.track
+            and signal.track in policy.tracks):
         task = replace(task, track=signal.track)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
-    policy = policy_for(cfg, target)
     if task.track not in policy.tracks:
         _park_for_input(cfg, deps, target, task,
                         f"track {task.track!r} is no longer configured (have "

@@ -472,6 +472,34 @@ def test_spec_signal_without_a_track_is_bounced_once_then_parks(tmp_path, monkey
     assert t.park == PARK_HUMAN and "must be one of" in t.park_note
 
 
+def test_spec_signal_with_a_misspelled_track_is_bounced_not_mis_parked(tmp_path, monkeypatch):
+    """A signal naming an UNKNOWN track (not merely a missing one) must not be
+    adopted onto the task before the "track configured" guard runs — doing so
+    would park the task immediately with the bad value baked into state,
+    instead of letting next_actions' bounce-then-park ladder run (resume once
+    with the reason, park only on the second failure — same as the missing-
+    track case above)."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard",
+                   picks={"spec": "anthropic/claude-opus-5"})
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "artifact": "spec.md",
+         "track": "tivial"}))
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    (resume,) = sess.resumed
+    assert "must be one of" in resume[1] and "'tivial'" in resume[1]
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.SPEC and t.spec_retries == 1
+    assert t.track == "standard", "the unknown track must not be adopted onto the task"
+    assert t.park == ""
+    assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
+
+
 def test_pick_is_reused_for_every_ticket_of_the_stage(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
