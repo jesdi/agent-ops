@@ -188,3 +188,16 @@ def test_null_label_lists_are_noop():
     run = FakeRun()
     res = apply("o/r", _d(add_labels=None, remove_labels=None), INV, run=run)
     assert res.labeled == 0 and res.rejected == () and run.calls == []
+
+
+def test_at_most_one_track_label():
+    inv = INV | {"track:trivial", "track:standard"}
+    res = apply("o/r", _d(add_labels=["track:trivial", "track:standard"]), inv, run=FakeRun())
+    assert res.labeled == 0 and "more than one track label" in res.rejected[0]
+
+
+def test_one_track_label_is_applied():
+    inv = INV | {"track:trivial"}
+    run = FakeRun()
+    res = apply("o/r", _d(add_labels=["auto", "track:trivial"]), inv, run=run)
+    assert res.labeled == 1 and "--add-label" in run.calls[0]

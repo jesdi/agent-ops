@@ -12,6 +12,7 @@ CTX = dict(
     tickets_dir=".agent/tickets", ticket_number=2, ticket_count=5,
     ticket_path=".agent/tickets/02-widget-api.md", pr_number=12,
     reason="check-failed", labels="auto, frontend",
+    tracks="- `trivial`: Rote edits.\n- `standard`: Else.",
 )
 
 STAGES = [Stage.SPEC, Stage.PLAN, Stage.IMPLEMENT, Stage.REVIEW, Stage.ADDRESS_REVIEW]
@@ -32,6 +33,13 @@ def test_spec_prompt_speaks_answers_and_review_signals():
                   "awaiting-review", "docs: draft spec for #42",
                   "docs: spec for #42 (agent-ops)", "auto, frontend"):
         assert token in out
+
+
+def test_spec_prompt_carries_the_track_list_and_signal_field():
+    out = render_stage_prompt(Stage.SPEC, CTX)
+    assert "- `trivial`: Rote edits." in out
+    assert '"track": "<name>"' in out
+    assert "approval names a track" in out
 
 
 def test_plan_prompt_names_the_tickets_dir_and_spec():
@@ -74,6 +82,7 @@ def test_render_triage_prompt():
         "repo": "o/r",
         "decisions_path": "/triage/o-r-2026-07-30.json",
         "context_json": '{"issues": []}',
+        "tracks": "- `t`: w",
     })
     assert "o/r" in text and "/triage/o-r-2026-07-30.json" in text
     assert '{"issues": []}' in text and "auto" in text and "human-required" in text
@@ -82,3 +91,11 @@ def test_render_triage_prompt():
 def test_render_triage_prompt_missing_var_raises():
     with pytest.raises(KeyError):
         render_triage_prompt({"repo": "o/r"})
+
+
+def test_triage_prompt_lists_the_tracks_and_the_label_rule():
+    out = render_triage_prompt({"repo": "o/r", "decisions_path": "/triage/x.json",
+                                "context_json": "{}",
+                                "tracks": "- `trivial`: Rote edits.\n- `standard`: Else."})
+    assert "- `trivial`: Rote edits." in out
+    assert "track:<name>" in out and "exactly one" in out

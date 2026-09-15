@@ -30,7 +30,7 @@ def test_budget_recovery_starts_the_unworked_ticket_before_review(
     main.run_pass(config, dependencies)
 
     assert len(sessions.spawned) == 1
-    issue, stage, _model, prompt = sessions.spawned[0]
+    issue, stage, _model, prompt, _effort = sessions.spawned[0]
     assert (issue, stage) == (42, "implement")
     assert ".agent/tickets/02-t2.md" in prompt
 
@@ -94,7 +94,7 @@ def test_plan_done_denied_then_recovered_starts_ticket_one(tmp_path, monkeypatch
     patch_usage(monkeypatch, util=0.2)
     main.run_pass(config, dependencies)
     assert len(sessions.spawned) == 1
-    issue, stage, _model, prompt = sessions.spawned[0]
+    issue, stage, _model, prompt, _effort = sessions.spawned[0]
     assert (issue, stage) == (42, "implement")
     assert ".agent/tickets/01-t1.md" in prompt
     task = load(config.state_dir, "portfolio_eval", 42)
@@ -158,7 +158,7 @@ def test_last_ticket_completion_launches_review_deferred_under_denial(tmp_path, 
     patch_usage(monkeypatch, util=0.2)
     main.run_pass(config, dependencies)
     assert len(sessions.spawned) == 1
-    issue, stage_name, _model, _prompt = sessions.spawned[0]
+    issue, stage_name, _model, _prompt, _effort = sessions.spawned[0]
     assert (issue, stage_name) == (42, "review")
     task = load(config.state_dir, "portfolio_eval", 42)
     assert task.stage == Stage.REVIEW
@@ -196,7 +196,7 @@ def test_missing_requested_ticket_fails_without_start_or_review(tmp_path, monkey
     task = load(config.state_dir, "portfolio_eval", 42)
     assert task.ticket_cursor == 1
     # No review spawn
-    assert (42, "review") not in [(i, s) for i, s, _, _ in sessions.spawned]
+    assert (42, "review") not in [(i, s) for i, s, _, _, _ in sessions.spawned]
     # Existing failure outcome: task marked FAILED with a "failed" event
     assert task.stage == Stage.FAILED
     failed_events = [e for e in eventlog.read_tail(config.state_dir) if e["event"] == "failed"]

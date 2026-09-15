@@ -13,7 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dispatcher import containers, herdr, triage_apply, triage_prefetch
-from dispatcher.config import Config
+from dispatcher.config import Config, policy_for
+from dispatcher.models import Entry, triage_entry, tracks_text
 from dispatcher.prompts import render_triage_prompt
 from dispatcher.state import active, load_all
 from dispatcher.usage import admits, verdict_note
@@ -164,8 +165,13 @@ def _session_name(repo: str) -> str:
     return "triage-" + repo.replace("/", "-")
 
 
+def _policy_for_repo(cfg: Config, repo: str):
+    target = next((t for t in cfg.targets if t.repo == repo), None)
+    return policy_for(cfg, target) if target else cfg.models
+
+
 def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
-                 run=subprocess.run) -> dict:
+                 entry: Entry, run=subprocess.run) -> dict:
     triage_dir = Path(cfg.state_dir) / TRIAGE_DIR
     triage_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{repo.replace('/', '-')}-{started_date}"
@@ -176,17 +182,17 @@ def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
         "repo": repo,
         "decisions_path": f"/triage/{fname}",
         "context_json": json.dumps(triage_prefetch.bound(blob), indent=2),
+        "tracks": tracks_text(_policy_for_repo(cfg, repo)),
     })
     # The prompt goes through the /triage mount, never through argv — see
     # containers.triage_cmd for the 128 KiB MAX_ARG_STRLEN reason.
     prompt_name = f"{stem}-prompt.md"
     (triage_dir / prompt_name).write_text(prompt)
-    model = cfg.triage_model or cfg.models.default
     name = _session_name(repo)
     cmd = containers.triage_cmd(name, _clone_for(cfg, repo),
                                 str(triage_dir), cfg.session_memory,
-                                cfg.session_cpus, model,
-                                f"/triage/{prompt_name}")
+                                cfg.session_cpus, entry.model_id,
+                                f"/triage/{prompt_name}", effort=entry.effort)
     try:
         proc = run(cmd, capture_output=True, text=True,
                    timeout=SESSION_TIMEOUT_SECONDS)
@@ -227,10 +233,12 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
     started_date = started[:10]
     usages = fetch_all(cfg)
     now = datetime.now(timezone.utc)
-    verdict = admits(usages, cfg.triage_model or cfg.models.default, now, cfg.pace)
-    if not verdict.admitted:
+    admitted = lambda m: admits(usages, m, now, cfg.pace).admitted  # noqa: E731
+    entry = triage_entry(cfg.models, admitted)
+    if entry is None:
+        first = admits(usages, cfg.models.triage[0].model_id, now, cfg.pace)
         deps.notifier.send("triage_report", lines=[
-            f"skipped — usage gate ({verdict_note(verdict, now)})"])
+            f"skipped — usage gate ({verdict_note(first, now)})"])
         return
     cursors = load_cursors(cfg.state_dir)
     lines: list[str] = []
@@ -246,7 +254,7 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
                 cursors[repo] = started
                 lines.append(f"{repo}: nothing new")
                 continue
-            decisions = _run_session(cfg, repo, blob, started_date, run=run)
+            decisions = _run_session(cfg, repo, blob, started_date, entry, run=run)
             inventory = frozenset(l["name"] for l in blob["labels"])
             result = triage_apply.apply(repo, decisions, inventory, run=run)
             lines.extend(_summary(repo, result))

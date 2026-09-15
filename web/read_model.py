@@ -141,6 +141,7 @@ class TaskCard(BaseModel):
     slot: int
     branch: str
     model: str
+    track: str
     park_note_pending: bool
     feedback_pending: bool
     updated_at: str
@@ -212,7 +213,7 @@ def task_card(t: TaskState, *, model: str,
         stage=t.stage.value, park=t.park,
         park_note=t.park_note,
         column=column_for(t.stage.value, t.park),
-        slot=t.slot, branch=t.branch, model=model,
+        slot=t.slot, branch=t.branch, model=model, track=t.track,
         # PARK_HUMAN only: it is the one park whose Telegram ping may be
         # missing, and the console is then the only way to answer it. A login
         # park always has a message id (a failed send degrades to PARK_HUMAN),
@@ -354,6 +355,7 @@ class TaskDetail(BaseModel):
     effort: int | None
     labels: list[str]
     timeline: list[TimelineEntry]
+    track_when: str = ""
 
 
 def task_detail(t: TaskState, *, model: str,
@@ -362,7 +364,8 @@ def task_detail(t: TaskState, *, model: str,
                 messages: list[msgq.Message] | None = None,
                 pending_sends: list[dict] | None = None,
                 wake_blocked: bool = False,
-                admission: TaskAdmissionView | None = None) -> TaskDetail:
+                admission: TaskAdmissionView | None = None,
+                track_when: str = "") -> TaskDetail:
     at = claimed_at(claimed_at_index(events), t.target, t.issue)
     msgs = messages or []
     return TaskDetail(
@@ -377,7 +380,8 @@ def task_detail(t: TaskState, *, model: str,
         messages=message_views(msgs, pending_sends or []),
         delivery_contract=delivery_contract(t, wake_blocked=wake_blocked),
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
-        timeline=stage_timeline(events, t.target, t.issue, now=now))
+        timeline=stage_timeline(events, t.target, t.issue, now=now),
+        track_when=track_when)
 
 
 class IssueDescription(BaseModel):
@@ -440,8 +444,9 @@ class ProviderUsageView(BaseModel):
 
 
 class GateView(BaseModel):
-    """The usage verdict for the policy default model: what an idle box would
-    spawn next, and the verdict the dispatcher's stall/resume pings key on."""
+    """The usage verdict for the untracked track's first spec entry: what an
+    idle box would spawn next, and the verdict the dispatcher's stall/resume
+    pings key on."""
     model: str
     provider: str
     admitted: bool

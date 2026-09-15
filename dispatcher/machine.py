@@ -109,6 +109,9 @@ class ParkForReview:
 # heading slip — resume the session with the reason this many times before
 # giving up and failing the task.
 PLAN_RETRY_LIMIT = 1
+# A spec signal that names no configured track is a forgotten field, not a
+# judgment: resume the session once with the list, then park for the operator.
+SPEC_RETRY_LIMIT = 1
 
 
 def _artifact_path(task: TaskState, signal: StageSignal) -> Path:
@@ -133,6 +136,18 @@ def _loop_actions(task: TaskState, signal: StageSignal,
     return [ApplyDecision(decision)]
 
 
+def _track_actions(task: TaskState, signal: StageSignal,
+                   tracks: frozenset[str] | None) -> list[object]:
+    """Empty when the spec signal's track is valid (or validation is off)."""
+    if tracks is None or signal.track in tracks:
+        return []
+    reason = (f"stage.json names track {signal.track!r}; it must be one of "
+              f"{sorted(tracks)}")
+    if task.spec_retries < SPEC_RETRY_LIMIT:
+        return [RetryStage(Stage.SPEC, reason)]
+    return [ParkForInput(reason)]
+
+
 def next_actions(
     task: TaskState,
     signal: StageSignal | None,
@@ -142,6 +157,7 @@ def next_actions(
     stall_after: float = 600.0,
     grace_elapsed: bool = False,
     caps: LoopCaps = LoopCaps(),
+    tracks: frozenset[str] | None = None,
 ) -> list[object]:
     if task.park:
         return [NoOp()]  # wake/resume is dispatcher-side; never re-park
@@ -201,9 +217,10 @@ def next_actions(
             return [NoOp()]  # already notified on a previous pass
         if task.stage != Stage.SPEC:
             return [NoOp()]  # only the SPEC stage emits awaiting-review
-        return [SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact=signal.artifact),
-                PublishSpec(artifact=signal.artifact),
-                Notify("awaiting_spec_review", signal.note)]
+        return _track_actions(task, signal, tracks) or [
+            SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact=signal.artifact),
+            PublishSpec(artifact=signal.artifact),
+            Notify("awaiting_spec_review", signal.note)]
 
     if done:
         if task.stage == Stage.IMPLEMENT:
@@ -225,6 +242,9 @@ def next_actions(
             return [StartTicket(1, result.count),
                     Notify("implement_started", f"{result.count} ticket(s)")]
         if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
+            bounced = _track_actions(task, signal, tracks)
+            if bounced:
+                return bounced
             result = check_spec(_artifact_path(task, signal))
             if not result.ok:
                 return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]

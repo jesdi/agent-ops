@@ -11,6 +11,8 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 
+from dispatcher.models import TRACK_LABEL_PREFIX
+
 TYPE_LABELS = frozenset({"bug", "enhancement", "documentation", "question"})
 AREA_LABELS = frozenset({"frontend", "backend", "infra", "ci", "security",
                          "performance", "testing", "dependencies"})
@@ -46,6 +48,8 @@ def _validate(number: int, add: list[str], remove: list[str],
         return f"#{number}: more than one type label in {add}"
     if len([l for l in add if l in AREA_LABELS]) > 2:
         return f"#{number}: more than two area labels in {add}"
+    if len([l for l in add if l.startswith(TRACK_LABEL_PREFIX)]) > 1:
+        return f"#{number}: more than one track label in {add}"
     return None
 
 

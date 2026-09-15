@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
@@ -100,6 +100,9 @@ class TaskState:
     hold_for_attach: bool = False
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time
+    track: str = ""                      # configured track name (spec/2026-09-14-model-tracks)
+    picks: dict[str, str] = field(default_factory=dict)  # policy stage -> "provider/model[@effort]", sticky per stage
+    spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track)
     plan_retries: int = 0                # in-session plan-format retries used
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
@@ -138,6 +141,7 @@ class StageSignal:
     run_id: int = 0
     loop: str = ""    # bounded loop a working session is in: review | gate
     round: int = 0    # 1-based round of that loop
+    track: str = ""   # spec stage only: the track for plan/implement/review
 
 
 def _path(state_dir: str | Path, target: str, issue: int) -> Path:
@@ -180,6 +184,7 @@ def _read(p: Path) -> TaskState | None:
     else:
         d["terminal_at"] = ""
     d["labels"] = tuple(d.get("labels", ()))
+    d["picks"] = dict(d.get("picks") or {})
     d.pop("pending_reply", None)   # retired field, see original comment
     if "operator_request" not in d:
         # Legacy record: derive from unambiguous gate evidence.
@@ -283,6 +288,7 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
             run_id=int(d.get("run_id", 0) or 0),
             loop=str(d.get("loop", "") or ""),
             round=int(d.get("round", 0) or 0),
+            track=str(d.get("track", "") or ""),
         )
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None

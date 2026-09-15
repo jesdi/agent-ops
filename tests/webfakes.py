@@ -1,6 +1,7 @@
 """Hand-written fakes and builders shared by the web/ test suite."""
 from dispatcher.config import Config, Target
 from dispatcher import state
+from dispatcher.models import parse_policy
 from tests.usagefakes import session_usage
 from dispatcher.state import Stage, TaskState
 from web.sources import Sources, ArtifactListing
@@ -17,17 +18,28 @@ def make_target(name="alpha", repo="jesdi/alpha"):
         status_in_progress_option_id="P", boost_field_id="B")
 
 
+def tracks_policy(**stage_lists):
+    """A one-track policy 'standard' whose stage lists are the kwargs
+    (default every stage = [claude-opus-5])."""
+    stages = {s: stage_lists.get(s, ["claude-opus-5"])
+              for s in ("spec", "plan", "implement", "review")}
+    return parse_policy({"triage": ["claude-opus-5"], "untracked": "standard",
+                         "tracks": {"standard": {"when": "Everything.", **stages}}})
+
+
 def make_config(state_dir, targets=None, capacity=2):
     return Config(
         state_dir=str(state_dir), capacity=capacity, session_memory="2g",
-        session_cpus="2", targets=list(targets or [make_target()]))
+        session_cpus="2", targets=list(targets or [make_target()]),
+        models=tracks_policy())
 
 
 def make_task(issue=7, **kw):
     defaults = dict(
         issue=issue, target="alpha", stage=Stage.IMPLEMENT, slot=0,
         worktree=f"/tmp/worktrees/alpha/{issue}", branch=f"task/{issue}",
-        title=f"Task {issue}", updated_at="2026-07-25T10:00:00+00:00")
+        title=f"Task {issue}", updated_at="2026-07-25T10:00:00+00:00",
+        track="standard")
     defaults.update(kw)
     return TaskState(**defaults)
 

@@ -634,3 +634,35 @@ def test_legacy_gate_record_backfills_spec_path_from_artifact(tmp_path):
     assert ts.operator_request == SpecApprovalRequest()
     assert ts.spec_path == "/abs/path/to/spec.md", (
         f"spec_path must be backfilled from artifact in legacy records, got {ts.spec_path!r}")
+
+
+def test_track_and_picks_round_trip(tmp_path: Path):
+    ts = make(track="security", picks={"spec": "anthropic/claude-fable-5-1@high"},
+              spec_retries=1)
+    save(tmp_path, ts)
+    got = load(tmp_path, "portfolio_eval", 101)
+    assert got.track == "security"
+    assert got.picks == {"spec": "anthropic/claude-fable-5-1@high"}
+    assert got.spec_retries == 1
+
+
+def test_legacy_record_without_track_fields_loads_with_defaults(tmp_path: Path):
+    import dataclasses
+    d = dataclasses.asdict(make())
+    d["stage"] = "spec"
+    for k in ("track", "picks", "spec_retries"):
+        d.pop(k)
+    (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
+    got = load(tmp_path, "portfolio_eval", 101)
+    assert (got.track, got.picks, got.spec_retries) == ("", {}, 0)
+
+
+def test_read_stage_signal_carries_track(tmp_path: Path):
+    agent = tmp_path / ".agent"
+    agent.mkdir()
+    (agent / "stage.json").write_text(json.dumps({
+        "stage": "spec", "status": "awaiting-review", "artifact": "s.md",
+        "track": "standard"}))
+    assert read_stage_signal(tmp_path).track == "standard"
+    (agent / "stage.json").write_text(json.dumps({"stage": "spec", "status": "done"}))
+    assert read_stage_signal(tmp_path).track == ""

@@ -558,8 +558,9 @@ export interface components {
         };
         /**
          * GateView
-         * @description The usage verdict for the policy default model: what an idle box would
-         *     spawn next, and the verdict the dispatcher's stall/resume pings key on.
+         * @description The usage verdict for the untracked track's first spec entry: what an
+         *     idle box would spawn next, and the verdict the dispatcher's stall/resume
+         *     pings key on.
          */
         GateView: {
             /** Admitted */
@@ -857,6 +858,8 @@ export interface components {
             target: string;
             /** Title */
             title: string;
+            /** Track */
+            track: string;
             /**
              * Undelivered Messages
              * @default 0
@@ -889,6 +892,11 @@ export interface components {
             session_alive: boolean;
             /** Timeline */
             timeline: components["schemas"]["TimelineEntry"][];
+            /**
+             * Track When
+             * @default
+             */
+            track_when: string;
             /** Worktree */
             worktree: string;
         };
