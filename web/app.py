@@ -143,6 +143,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                                     usages, now)
 
     def _admission_for_model(model, choices, usages, now):
+        if not model:
+            return None
         requested = read_model.model_admission_view(
             usages, now=now, pace=cfg.pace, model=model)
         if requested.admitted:

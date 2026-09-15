@@ -176,6 +176,28 @@ def test_card_model_is_the_first_admitted_entry_when_no_pick_yet(tmp_path):
     assert body["card"]["admission"] is None
 
 
+def test_task_admission_is_none_when_track_is_unconfigured(tmp_path):
+    """A task carrying a track the policy doesn't know (e.g. the legacy
+    track="" default, or a renamed/removed track) has no candidates to
+    launch on — _model_for is "". That must never be fed to the usage gate
+    as a bare model id (it defaults to anthropic and fabricates a false
+    "blocked on capacity" verdict); it must show no admission at all."""
+    from tests.webfakes import tracks_policy
+    from tests.usagefakes import session_usage
+    fake = FakeSources()
+    cfg = replace(make_config(tmp_path), models=tracks_policy())
+    client = TestClient(create_app(cfg, fake))
+    fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_SPEC_REVIEW,
+                                 park=PARK_WAKE, track="")]
+    fake.usages = {"anthropic": session_usage(0.99)}
+    body = client.get("/api/task/alpha/7", headers=HEADERS).json()
+    assert body["card"]["model"] == ""
+    assert body["card"]["admission"] is None
+    board = client.get("/api/board", headers=HEADERS).json()
+    card = next(c for column in board["columns"] for c in column["cards"])
+    assert card["admission"] is None
+
+
 def test_usage_base_allowance(tmp_path):
     from tests.usagefakes import session_usage
     fake, client = rig(tmp_path)
