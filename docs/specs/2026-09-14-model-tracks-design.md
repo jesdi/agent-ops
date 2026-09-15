@@ -111,7 +111,7 @@ models:
       spec:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
       plan:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
       implement: [claude-fable-5-1@medium, claude-opus-5@medium]
-      review:    [claude-fable-5-1@medium, claude-opus-5@medium]
+      review:    [openai/gpt-astra@medium, claude-opus-5@medium]
     security:
       when: Touches auth, secrets, permissions, or input at a trust boundary. Never below this track.
       spec:      [claude-fable-5-1@high, openai/gpt-astra@high]
@@ -120,10 +120,10 @@ models:
       review:    [openai/gpt-astra@high, claude-fable-5-1@high]
 ```
 
-The `frontend` track exists to put Fable first at every stage of UI-heavy
-work. Its review list is Anthropic-only on purpose: the cross-provider review
-preference below would otherwise move Fable behind an OpenAI entry. That is
-the documented way to opt a track out of the preference; there is no flag.
+The `frontend` track exists to put Fable first for the spec, plan and
+implement stages of UI-heavy work. Review is still a different model, on
+another provider when one is admitted: fresh eyes are the point of the stage,
+so no track lists the implement model first on review.
 
 Validation at config load, all fatal:
 
@@ -245,7 +245,7 @@ Record that labels and effort are not routing inputs.
   different provider than ticket 1.
 - **Every implement entry and every review entry share one provider**: the
   reorder is a no-op; review runs on the same provider. Preference, not a
-  hard rule; the `frontend` track relies on this to keep Fable first.
+  hard rule.
 - **Spec session omits `track` or invents one**: bounced, not accepted, not
   defaulted.
 - **Two `track:` labels on an issue**: `triage_apply` keeps the newest, the
