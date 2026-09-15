@@ -20,16 +20,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable
 
 from dispatcher.convergence import pass_lock
-from dispatcher.config import Config, Target, load_config, policy_for
+from dispatcher.config import Config, Target, load_config, policy_for, referenced_providers
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
-from dispatcher.usage_providers import fetch_all
+from dispatcher.usage_providers import ADAPTERS, fetch_all
 from dispatcher import (eventlog, execution_overrides, failures, intents, loops,
                         messages, pr_poll, queue_ops, relogin, tmux_migration,
                         triage)
-from dispatcher.github import GitHubClient
+from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish, task_artifacts
@@ -39,7 +39,8 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoO
                                 ParkForCI, ParkForInput, ParkForReview, PublishSpec,
                                 RetryStage, SetTaskStage, StartTicket,
                                 SpawnStage, next_actions)
-from dispatcher.models import resolve_for_stage
+from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates, parse_entry,
+                               policy_stage, resolve, track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
@@ -84,51 +85,91 @@ def _cursor_now() -> str:
             - timedelta(seconds=1)).isoformat()
 
 
-# Stages that aren't policy stages but hold a live session from one: a
-# claimed task is about to spawn spec, and a task at the spec-review gate
-# still has its spec session running. ADDRESS_REVIEW is an implement-shaped
-# stage — it writes production code and pushes it to the PR — so it resolves
-# against the `implement:` key rather than falling through to the policy
-# default. Stage.BLOCKED and
-# Stage.STALLED_ON_BUDGET genuinely lose the originating stage in
-# TaskState (nothing in machine.py sets it), so they deliberately fall
-# through to stage.value, which matches no `use:` key and lands on the
-# policy default.
-def _model_for(cfg: Config, target: Target | None, effort: int | None,
-               labels: Sequence[str], stage: Stage) -> str:
+def _policy(cfg: Config, target: Target | None) -> ModelPolicy:
     """target is None for a task whose target has left the config — it still
-    resolves, against the global policy, since there is no per-target one to
-    look up. Every model resolution — tasks and unclaimed candidates alike —
-    goes through the shared runtime-stage mapping in models.py."""
-    policy = policy_for(cfg, target) if target else cfg.models
-    return resolve_for_stage(policy, stage.value, effort, labels)
+    resolves, against the global policy."""
+    return policy_for(cfg, target) if target else cfg.models
 
 
 @dataclass(frozen=True)
 class Launch:
-    """The stage a spawn site is about to start and the model it runs on,
-    resolved once: the usage gate asks about exactly the model the spawner
-    then launches."""
+    """The stage a spawn site is about to start and the entry it runs on,
+    chosen once: the usage gate asks about exactly the model the spawner
+    then launches, and the spawner records the entry as the stage's pick."""
     stage: Stage
-    model: str
+    entry: Entry
+
+    @property
+    def model(self) -> str:
+        return self.entry.model_id
 
 
 def _launch_for(cfg: Config, target: Target | None, task: TaskState,
-            stage: Stage) -> Launch:
-    return Launch(stage, _model_for(cfg, target, task.effort, task.labels, stage))
+                stage: Stage, admitted: Admitted) -> Launch | None:
+    """The stage's recorded pick, else the first admitted entry of the task's
+    track. None: the track is not configured, or nothing is admitted — wait.
+    Review avoids the provider that ran implement."""
+    policy = _policy(cfg, target)
+    pstage = policy_stage(stage.value)
+    if pstage in task.picks:
+        return Launch(stage, parse_entry(task.picks[pstage], "pick"))
+    if task.track not in policy.tracks:
+        return None
+    avoid = ""
+    if pstage == "review" and "implement" in task.picks:
+        avoid = parse_entry(task.picks["implement"], "pick").provider
+    entry = resolve(policy, task.track, stage.value, admitted, avoid)
+    return Launch(stage, entry) if entry else None
 
 
-def _execution_choice(cfg: Config, target: str, issue: int,
-                      launch: Launch) -> tuple[Launch, bool]:
-    override = execution_overrides.load(cfg.state_dir, target, issue)
-    if override is None:
-        return launch, False
-    chosen = replace(launch, model=override.model) if override.model else launch
-    return chosen, override.bypass_usage
+def _admitted(admit: Admit, bypass: bool) -> Admitted:
+    return (lambda m: True) if bypass else (lambda m: admit(m).admitted)
+
+
+def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
+                   stage: Stage, admit: Admit) -> tuple[Launch | None, bool]:
+    """What a spawn site launches and whether usage is bypassed. A one-shot
+    operator override names the entry outright; otherwise the sticky pick or
+    the track decides, and a denied launch is (None, bypass): nothing
+    mutated, the signal persists, retried once headroom returns."""
+    override = execution_overrides.load(cfg.state_dir, task.target, task.issue)
+    bypass = bool(override and override.bypass_usage)
+    if override is not None and override.model:
+        return Launch(stage, parse_entry(override.model, "override")), bypass
+    launch = _launch_for(cfg, target, task, stage, _admitted(admit, bypass))
+    if launch is None or (not bypass and not admit(launch.model).admitted):
+        return None, bypass
+    return launch, bypass
+
+
+def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
+                      admit: Admit) -> tuple[Launch | None, bool]:
+    """An unclaimed candidate has no picks: its spec entry comes from the
+    track its labels name (else the untracked track)."""
+    policy = policy_for(cfg, target)
+    probe = TaskState(issue=cand.number, target=target.name, stage=Stage.QUEUED,
+                      slot=NO_SLOT, worktree="", branch="", title=cand.title,
+                      updated_at="", track=track_from_labels(cand.labels, policy))
+    return _choose_launch(cfg, target, probe, Stage.SPEC, admit)
 
 
 def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
     execution_overrides.delete(cfg.state_dir, target, issue)
+
+
+def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
+    """The entry a task runs or would run next, for status lines: its pick for
+    the current stage, else the first candidate, else ''."""
+    policy = _policy(cfg, target)
+    stage = "address-review" if task.stage is Stage.PR_OPEN else task.stage.value
+    pick = task.picks.get(policy_stage(stage))
+    if pick:
+        return pick
+    if task.track in policy.tracks:
+        cands = candidates(policy, task.track, stage)
+        if cands:
+            return str(cands[0])
+    return ""
 
 
 def _log_model(worktree: str, stage: Stage, model: str) -> None:
@@ -222,8 +263,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     signal = read_stage_signal(task.worktree)
     if signal is not None and signal.status != "working":
         by_name = {t.name: t for t in cfg.targets}
-        model = _model_for(cfg, by_name.get(task.target), task.effort,
-                           task.labels, task.stage)
+        model = _display_entry(cfg, by_name.get(task.target), task)
         agent_dir = Path(task.worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / "stage.json").write_text(json.dumps(
@@ -240,7 +280,7 @@ def _status_lines(cfg: Config) -> list[str]:
     tasks = [t for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
     lines = []
     for t in tasks:
-        model = _model_for(cfg, by_name.get(t.target), t.effort, t.labels, t.stage)
+        model = _display_entry(cfg, by_name.get(t.target), t)
         slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
         lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
                      + (f" [{t.park}]" if t.park else "") + f" {slot}")
@@ -397,7 +437,8 @@ def _notify(deps: Deps, target: Target, task: TaskState, template: str,
 
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  launch: Launch, spec_path: str = "", ticket: int = 0) -> TaskState:
-    stage, model = launch.stage, launch.model
+    stage, entry = launch.stage, launch.entry
+    model = entry.model_id
     ticket_path = ""
     if ticket:
         files = ticket_files(Path(task.worktree) / TICKETS_DIR)
@@ -418,6 +459,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         pr_number=task.pr_number,
         reason=task.attention or "feedback",
         labels=", ".join(task.labels),
+        tracks=tracks_text(_policy(cfg, target)),
     )
     prompt = render_stage_prompt(stage, ctx)
     block, drained = _drain(cfg, task.issue)
@@ -426,19 +468,21 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": stage.value, "status": "working", "model": model}))
-    _log_model(task.worktree, stage, model)
+        {"stage": stage.value, "status": "working", "model": model,
+         "effort": entry.effort}))
+    _log_model(task.worktree, stage, str(entry))
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
-                              stage.value, model)
+                              stage.value, model, entry.effort)
     messages.mark_delivered(cfg.state_dir, task.issue, drained)
     # A fresh stage is a fresh budget for the loops it runs; ci_rounds belongs
     # to the PR, not the stage, and is reset by _poll_prs/_resume_one.
     task = loops.reset(task, ResetCause.STAGE_STARTED)
     task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
-                   operator_request=None, updated_at=_now())
+                   operator_request=None, updated_at=_now(),
+                   picks={**task.picks, policy_stage(stage.value): str(entry)})
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
-                          issue=task.issue, stage=stage.value, model=model,
+                          issue=task.issue, stage=stage.value, model=str(entry),
                           detail=f"ticket {ticket}/{task.ticket_count} {ticket_path}" if ticket else "")
     return task
 
@@ -631,14 +675,15 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     context survives ending the (zombie) session first — which we must do, or
     _launch would type `claude --continue` INTO the stopped claude's input box
     (same failure mode as spawning over a live session)."""
-    model = launch.model
+    entry = launch.entry
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     # Rewrite the signal to working BEFORE resuming, or the next pass re-reads
     # `done`, re-checks the still-unfixed plan, and burns the retry immediately.
     (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": "plan", "status": "working", "model": model}))
-    _log_model(task.worktree, Stage.PLAN, model)
+        {"stage": "plan", "status": "working", "model": entry.model_id,
+         "effort": entry.effort}))
+    _log_model(task.worktree, Stage.PLAN, str(entry))
     clear_waiting(cfg.state_dir, task.target, task.issue)
     deps.sessions.end(task.target, task.issue)
     block, drained = _drain(cfg, task.issue)
@@ -652,11 +697,38 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if block:
         retry_text = f"{retry_text}\n\n{block}"
     deps.sessions.resume(task.target, task.issue, task.worktree, retry_text,
-                         model)
+                         entry.model_id, entry.effort)
     messages.mark_delivered(cfg.state_dir, task.issue, drained)
     save(cfg.state_dir, replace(task, plan_retries=task.plan_retries + 1,
                                 updated_at=_now()))
     _notify(deps, target, task, "plan_retry", reason)
+
+
+def _retry_spec(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                launch: Launch, reason: str) -> None:
+    """Resume the spec session with the track list, in place. Same shape as
+    _retry_plan: rewrite the signal to working first, end the zombie, then
+    --continue with the correction."""
+    entry = launch.entry
+    agent_dir = Path(task.worktree) / ".agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "working", "model": entry.model_id,
+         "effort": entry.effort}))
+    _log_model(task.worktree, Stage.SPEC, str(entry))
+    clear_waiting(cfg.state_dir, task.target, task.issue)
+    deps.sessions.end(task.target, task.issue)
+    block, drained = _drain(cfg, task.issue)
+    text = (f"Your .agent/stage.json was rejected: {reason}. Re-write the same "
+            f"signal with a \"track\" field naming one of those tracks (the "
+            f"list with each track's meaning is in your stage prompt).")
+    if block:
+        text = f"{text}\n\n{block}"
+    deps.sessions.resume(task.target, task.issue, task.worktree, text,
+                         entry.model_id, entry.effort)
+    messages.mark_delivered(cfg.state_dir, task.issue, drained)
+    save(cfg.state_dir, replace(task, spec_retries=task.spec_retries + 1,
+                                updated_at=_now()))
 
 
 def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -933,8 +1005,9 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         key=lambda t: t.updated_at,
     )
     for task in woken:
-        launch = _resume_launch(cfg, target, task)
-        if not task.resume_bypass_usage and not admit(launch.model).admitted:
+        launch = _resume_launch(cfg, target, task, admit)
+        if launch is None or (not task.resume_bypass_usage
+                              and not admit(launch.model).admitted):
             continue  # this model's provider has no headroom; others may
         tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
         if len(active(tasks)) >= cfg.capacity:
@@ -956,25 +1029,29 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
             _fail_task_crash(cfg, deps, target, task, dry_run)
 
 
-def _resume_launch(cfg: Config, target: Target, task: TaskState) -> Launch:
+def _resume_launch(cfg: Config, target: Target, task: TaskState,
+                   admit: Admit) -> Launch | None:
     """A parked pr-open task has no session to continue: it resumes as a
     fresh address-review round, on that stage's model."""
     stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
-    launch = _launch_for(cfg, target, task, stage)
-    return replace(launch, model=task.resume_model_override) \
-        if task.resume_model_override else launch
+    if task.resume_model_override:
+        return Launch(stage, parse_entry(task.resume_model_override, "override"))
+    return _launch_for(cfg, target, task, stage,
+                       _admitted(admit, task.resume_bypass_usage))
 
 
 def _resume_one(cfg: Config, deps: Deps, target: Target,
                 task: TaskState, launch: Launch) -> None:
-    model = launch.model
+    entry = launch.entry
+    model = entry.model_id
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     # Rewrite stage.json BEFORE resuming, or the next pass re-reads
     # blocked/awaiting-ci and re-parks the freshly resumed session.
     (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": task.stage.value, "status": "working", "model": model}))
-    _log_model(task.worktree, task.stage, model)
+        {"stage": task.stage.value, "status": "working", "model": model,
+         "effort": entry.effort}))
+    _log_model(task.worktree, task.stage, str(entry))
     # End first, unconditionally. Most parks already stopped the session,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
@@ -993,7 +1070,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
         _spawn_stage(cfg, deps, target, task, launch)
         eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
-                              model=model)
+                              model=str(entry))
         return
     block, drained = _drain(cfg, task.issue)
     if task.hold_for_attach:
@@ -1002,13 +1079,13 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
         if block:
             text = f"{text}\n\n{block}"
         deps.sessions.resume(task.target, task.issue, task.worktree, text,
-                             model)
+                             model, entry.effort)
         deps.notifier.send("resumed_for_attach", issue=task.issue,
                            title=task.title, url=_url(target, task.issue),
                            target=target.name, note="")
     else:
         deps.sessions.resume(task.target, task.issue, task.worktree,
-                             block or "Continue.", model)
+                             block or "Continue.", model, entry.effort)
     messages.mark_delivered(cfg.state_dir, task.issue, drained)
     _clear_wake_blocked(cfg, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
@@ -1016,10 +1093,12 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
                                 operator_request=None,
+                                picks={**task.picks,
+                                      policy_stage(task.stage.value): str(entry)},
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                           issue=task.issue, stage=task.stage.value,
-                          model=model)
+                          model=str(entry))
 
 
 def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
@@ -1074,10 +1153,9 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
          and t.feedback_pending],
         key=lambda t: t.updated_at)
     for task in pending:
-        launch = _launch_for(cfg, target, task, Stage.ADDRESS_REVIEW)
-        launch, bypass_usage = _execution_choice(
-            cfg, task.target, task.issue, launch)
-        if not bypass_usage and not admit(launch.model).admitted:
+        launch, bypass_usage = _choose_launch(cfg, target, task,
+                                              Stage.ADDRESS_REVIEW, admit)
+        if launch is None:
             continue
         tasks = [t for t in load_all(cfg.state_dir)
                  if t.target == target.name]
@@ -1122,7 +1200,7 @@ def _action_stage(act: object) -> Stage | None:
     if isinstance(act, StartTicket):
         return Stage.IMPLEMENT
     if isinstance(act, RetryStage):
-        return Stage.PLAN  # _retry_plan resumes the plan session in place
+        return act.stage  # _retry_plan/_retry_spec resume the session in place
     return act.stage if isinstance(act, SpawnStage) else None
 
 
@@ -1192,7 +1270,8 @@ def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
 
 def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
                     launch: Launch) -> None:
-    _retry_plan(turn.cfg, turn.deps, turn.target, task, launch, act.reason)
+    fn = _retry_spec if act.stage is Stage.SPEC else _retry_plan
+    fn(turn.cfg, turn.deps, turn.target, task, launch, act.reason)
 
 
 def _stage_extra(act: SetTaskStage, signal) -> dict:
@@ -1203,6 +1282,8 @@ def _stage_extra(act: SetTaskStage, signal) -> dict:
         extra: dict = {"operator_request": SpecApprovalRequest()}
         if act.artifact:
             extra["spec_path"] = act.artifact
+        if signal is not None:
+            extra["track"] = signal.track
         return extra
     if act.stage is not Stage.PR_OPEN or signal is None:
         return {}
@@ -1257,6 +1338,8 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
     # name would collide). End it first; no-op when already dead.
     turn.deps.sessions.end(task.target, task.issue)
     spec_path = turn.signal.artifact if act.stage is Stage.PLAN else ""
+    if act.stage is Stage.PLAN:
+        task = replace(task, track=turn.signal.track)
     return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
 
 
@@ -1299,8 +1382,22 @@ _DRIVE: dict[type, Callable[..., TaskState | None]] = {
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 admit: Admit, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
+    # A spec-stage signal carries the track for every later stage (see
+    # StageSignal.track). Adopt it before anything below reads task.track —
+    # the "track configured" guard and the launch this same turn may spawn
+    # (e.g. PLAN off a spec "done" signal) both need the fresh value, not
+    # whatever was recorded when the task was last saved.
+    if signal is not None and signal.track and signal.track != task.track:
+        task = replace(task, track=signal.track)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
+    policy = policy_for(cfg, target)
+    if task.track not in policy.tracks:
+        _park_for_input(cfg, deps, target, task,
+                        f"track {task.track!r} is no longer configured (have "
+                        f"{sorted(policy.tracks)}); restore it in targets.yaml or "
+                        f"run the task with a model override")
+        return
     # Query idle only when it can matter: detection enabled and the
     # session alive (the crash path owns dead sessions).
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
@@ -1310,15 +1407,12 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             idle_seconds=idle,
                             stall_after=cfg.stall_after_seconds,
                             grace_elapsed=_grace_elapsed(cfg, task),
-                            caps=cfg.loop_caps):
+                            caps=cfg.loop_caps,
+                            tracks=frozenset(policy.tracks)):
         stage = _action_stage(act)
-        launch = _launch_for(cfg, target, task, stage) if stage else None
-        bypass_usage = False
-        if launch is not None:
-            launch, bypass_usage = _execution_choice(
-                cfg, task.target, task.issue, launch)
-        if (launch is not None and not bypass_usage
-                and not admit(launch.model).admitted):
+        launch, bypass_usage = ((None, False) if stage is None
+                                else _choose_launch(cfg, target, task, stage, admit))
+        if stage is not None and launch is None:
             return  # nothing mutated; the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)
@@ -1400,11 +1494,8 @@ def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
         if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
                                      cand.number):
             continue
-        launch = Launch(Stage.SPEC, _model_for(cfg, target, cand.effort,
-                                               cand.labels, Stage.SPEC))
-        launch, bypass_usage = _execution_choice(
-            cfg, target.name, cand.number, launch)
-        if bypass_usage or admit(launch.model).admitted:
+        launch, _bypass = _candidate_launch(cfg, target, cand, admit)
+        if launch is not None:
             yield cand, launch
 
 
@@ -1437,7 +1528,8 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
                          stage=Stage.QUEUED, slot=slot, worktree=wt,
                          branch=f"agent/task-{cand.number}",
                          title=cand.title, updated_at=_now(),
-                         effort=cand.effort, labels=cand.labels)
+                         effort=cand.effort, labels=cand.labels,
+                         track=track_from_labels(cand.labels, policy_for(cfg, target)))
         save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
         eventlog.append_event(cfg.state_dir, "claimed", target=target.name,
                               issue=cand.number, stage=Stage.QUEUED.value)
@@ -1838,7 +1930,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     usages = fetch_all(cfg)
     now = datetime.now(timezone.utc)
     admit: Admit = lambda model: admits(usages, model, now, cfg.pace)
-    default_verdict = admit(cfg.models.default)
+    default_verdict = admit(cfg.models.gate_entry().model_id)
     _budget_edge(cfg, deps, default_verdict, now)
     _auth_dark_edge(cfg, deps, usages)
     for target in eff.targets:
@@ -1888,6 +1980,10 @@ def main() -> None:
     ap.add_argument("--migrate-tmux", action="store_true")
     args = ap.parse_args()
     cfg = load_config(args.config)
+    missing = referenced_providers(cfg) - set(ADAPTERS)
+    if missing:
+        print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
+              f"their entries are never admitted", file=sys.stderr)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory, cpus=cfg.session_cpus, state_dir=cfg.state_dir),
                 notifier=Notifier(dry_run=args.dry_run,
