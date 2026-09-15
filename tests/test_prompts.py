@@ -74,6 +74,7 @@ def test_render_triage_prompt():
         "repo": "o/r",
         "decisions_path": "/triage/o-r-2026-07-30.json",
         "context_json": '{"issues": []}',
+        "tracks": "- `t`: w",
     })
     assert "o/r" in text and "/triage/o-r-2026-07-30.json" in text
     assert '{"issues": []}' in text and "auto" in text and "human-required" in text
@@ -82,3 +83,11 @@ def test_render_triage_prompt():
 def test_render_triage_prompt_missing_var_raises():
     with pytest.raises(KeyError):
         render_triage_prompt({"repo": "o/r"})
+
+
+def test_triage_prompt_lists_the_tracks_and_the_label_rule():
+    out = render_triage_prompt({"repo": "o/r", "decisions_path": "/triage/x.json",
+                                "context_json": "{}",
+                                "tracks": "- `trivial`: Rote edits.\n- `standard`: Else."})
+    assert "- `trivial`: Rote edits." in out
+    assert "track:<name>" in out and "exactly one" in out

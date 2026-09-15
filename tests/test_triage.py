@@ -1,9 +1,11 @@
 """Triage request/cursor state and repo enumeration."""
 import json
 import re
+import subprocess
 import subprocess as _subprocess
 import sys
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -320,6 +322,57 @@ def test_sweep_budget_gate_skips_everything(tmp_path):
     assert "usage gate" in "\n".join(deps.notifier.sent[0][1]["lines"])
 
 
+def _policy(*triage):
+    return parse_policy({"triage": list(triage), "untracked": "t", "tracks": {
+        "t": {"when": "w", "spec": ["claude-opus-5"], "plan": ["claude-opus-5"],
+              "implement": ["claude-opus-5"], "review": ["claude-opus-5"]}}})
+
+
+FABLE_HOT = {"anthropic": session_usage(0.1, fable=0.9)}
+
+
+def test_sweep_runs_on_the_first_admitted_triage_entry(tmp_path):
+    cfg = replace(_sweep_cfg(tmp_path), models=_policy("claude-fable-5-1@high",
+                                                       "claude-sonnet-5@low"))
+    deps = FakeDeps()
+    triage.save_cursors(tmp_path, {"o/a": OLD})
+    seen = {}
+    def fake_run_session(cfg, repo, blob, started_date, entry, run=None):
+        seen["entry"] = str(entry)
+        return {"issues": []}
+    with patch.object(triage, "fetch_all", return_value=FABLE_HOT), \
+         patch.object(triage.triage_prefetch, "prefetch", return_value=BLOB), \
+         patch.object(triage, "_run_session", side_effect=fake_run_session), \
+         patch.object(triage.triage_apply, "apply", return_value=RESULT):
+        triage.run_sweep(cfg, deps)
+    assert seen["entry"] == "anthropic/claude-sonnet-5@low"
+
+
+def test_sweep_skips_when_no_triage_entry_is_admitted(tmp_path):
+    cfg = replace(_sweep_cfg(tmp_path), models=_policy("claude-fable-5-1@high"))
+    deps = FakeDeps()
+    triage.save_cursors(tmp_path, {"o/a": OLD})
+    with patch.object(triage, "fetch_all", return_value=FABLE_HOT), \
+         patch.object(triage.triage_prefetch, "prefetch") as prefetch:
+        triage.run_sweep(cfg, deps)
+    prefetch.assert_not_called()
+    assert "usage gate" in "\n".join(deps.notifier.sent[0][1]["lines"])
+
+
+def test_run_session_passes_effort_and_tracks(tmp_path):
+    cfg = replace(_sweep_cfg(tmp_path), models=_policy("claude-sonnet-5@low"))
+    calls = []
+    def run(cmd, capture_output, text, timeout):
+        calls.append(cmd)
+        (Path(cfg.state_dir) / triage.TRIAGE_DIR / "o-a-2026-07-30.json").write_text('{"issues": []}')
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    triage._run_session(cfg, "o/a", BLOB, "2026-07-30",
+                        cfg.models.triage[0], run=run)
+    assert "--model claude-sonnet-5 --effort low" in calls[0][-1]
+    prompt = (Path(cfg.state_dir) / triage.TRIAGE_DIR / "o-a-2026-07-30-prompt.md").read_text()
+    assert "- `t`: w" in prompt
+
+
 def test_sweep_holds_cursor_when_every_write_failed(tmp_path):
     """apply no longer raises on a gh failure, so an expired token or a rate
     limit would otherwise complete the repo and advance its cursor — that
@@ -425,7 +478,7 @@ def test_run_session_timeout_kills_and_raises(tmp_path):
         return _subprocess.CompletedProcess(args, 0, "", "")
 
     with pytest.raises(triage.SweepError):
-        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", run=fake_run)
+        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run)
     assert ["podman", "kill", "triage-o-a"] in calls
 
 
@@ -436,7 +489,7 @@ def test_run_session_missing_decisions_raises(tmp_path):
         return _subprocess.CompletedProcess(args, 0, "", "")
 
     with pytest.raises(triage.SweepError):
-        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", run=fake_run)
+        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run)
 
 
 def test_run_session_reads_decisions(tmp_path):
@@ -450,7 +503,7 @@ def test_run_session_reads_decisions(tmp_path):
         (tdir / "o-a-2026-07-30.json").write_text('{"issues": []}')
         return _subprocess.CompletedProcess(args, 0, "", "")
 
-    got = triage._run_session(cfg, "o/a", BLOB, "2026-07-30", run=fake_run)
+    got = triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run)
     assert got == {"issues": []}
     argv = captured[0]
     assert f"{tdir}:/triage" in argv
@@ -477,7 +530,7 @@ def test_run_session_prompt_never_in_argv_for_a_huge_blob(tmp_path):
         (tdir / "o-a-2026-07-30.json").write_text('{"issues": []}')
         return _subprocess.CompletedProcess(args, 0, "", "")
 
-    triage._run_session(cfg, "o/a", huge, "2026-07-30", run=fake_run)
+    triage._run_session(cfg, "o/a", huge, "2026-07-30", cfg.models.triage[0], run=fake_run)
     assert max(len(a) for a in captured[0]) < 4096
     prompt = (tdir / "o-a-2026-07-30-prompt.md").read_text()
     # bounded, and the session is told the context was cut
@@ -509,7 +562,7 @@ def test_run_session_prompt_stays_under_the_argv_ceiling(tmp_path):
         (tdir / "o-a-2026-07-30.json").write_text('{"issues": []}')
         return _subprocess.CompletedProcess(args, 0, "", "")
 
-    triage._run_session(cfg, "o/a", worst, "2026-07-30", run=fake_run)
+    triage._run_session(cfg, "o/a", worst, "2026-07-30", cfg.models.triage[0], run=fake_run)
     written = (tdir / "o-a-2026-07-30-prompt.md").read_text().encode()
     assert len(written) < ARGV_CEILING_BYTES
     assert len(written) < 0.75 * ARGV_CEILING_BYTES  # real margin, not 5%
@@ -522,7 +575,7 @@ def test_run_session_nonzero_rc_surfaces_rc_and_stderr(tmp_path):
         return _subprocess.CompletedProcess(args, 1, "", "fatal: image pull failed")
 
     with pytest.raises(triage.SweepError) as exc_info:
-        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", run=fake_run)
+        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run)
     msg = str(exc_info.value)
     assert "rc=1" in msg
     assert "fatal: image pull failed" in msg
