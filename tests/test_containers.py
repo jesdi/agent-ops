@@ -229,3 +229,32 @@ def test_triage_cmd_model_prefix_never_reaches_the_cli(monkeypatch, tmp_path):
     shell_line = cmd[-1]
     assert "--model gpt-5" in shell_line
     assert "openai/" not in shell_line
+
+
+def test_session_cmd_passes_effort_after_the_model(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
+    wt, _clone = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-luna",
+                                 "--continue 'hi'", effort="xhigh")
+    assert cmd.endswith("--model gpt-luna --effort xhigh --continue 'hi'")
+
+
+def test_session_cmd_omits_effort_when_unset(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
+    wt, _clone = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5-1", "P")
+    assert "--effort" not in cmd
+
+
+def test_triage_cmd_passes_effort_after_the_model():
+    cmd = containers.triage_cmd(
+        "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+        "claude-opus-5", "/triage/o-r-2026-07-30-prompt.md", effort="low")
+    assert "--model claude-opus-5 --effort low" in cmd[-1]
+
+
+def test_triage_cmd_omits_effort_when_unset():
+    cmd = containers.triage_cmd(
+        "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+        "claude-opus-5", "/triage/o-r-2026-07-30-prompt.md")
+    assert "--effort" not in cmd[-1]

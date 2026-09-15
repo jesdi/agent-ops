@@ -167,6 +167,18 @@ def test_herdr_agent_is_never_in_the_container_command(tmp_path):
                                            "2g", "2", "m", "x")
 
 
+def test_podman_cmd_carries_effort(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    clone = tmp_path / "repos" / "pe"
+    wt = tmp_path / "repos" / "pe.worktrees" / "task-42"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text(f"gitdir: {clone}/.git/worktrees/task-42\n")
+    cmd = podman_cmd("portfolio_eval", 42, str(wt), "2g", "2", "claude-opus-5",
+                     "P", effort="medium")
+    assert "--model claude-opus-5 --effort medium P" in cmd
+
+
 # --- is_alive ----------------------------------------------------------------
 
 def test_is_alive_true_only_for_a_tab_whose_shell_is_busy(monkeypatch):
