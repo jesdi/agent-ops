@@ -212,3 +212,66 @@ def test_prefixed_id_names_its_provider():
 def test_malformed_prefix_is_rejected(bad):
     with pytest.raises(ValueError, match="model id"):
         split_model_id(bad)
+
+
+# -- resolution ---------------------------------------------------------------
+
+from dispatcher.models import candidates, resolve, triage_entry  # noqa: E402
+
+ALL = lambda m: True  # noqa: E731
+NONE = lambda m: False  # noqa: E731
+
+
+def test_candidates_are_the_tracks_stage_list_in_order():
+    assert [str(e) for e in candidates(policy(), "standard", "implement")] == [
+        "anthropic/claude-sonnet-5@medium", "openai/gpt-sol@medium"]
+
+
+def test_candidates_map_runtime_stages_through_policy_stage():
+    p = policy()
+    assert candidates(p, "trivial", "queued") == p.tracks["trivial"].stages["spec"]
+    assert candidates(p, "trivial", "awaiting-spec-review") == p.tracks["trivial"].stages["spec"]
+    assert candidates(p, "trivial", "address-review") == p.tracks["trivial"].stages["implement"]
+
+
+def test_candidates_for_a_non_policy_stage_are_empty():
+    assert candidates(policy(), "standard", "blocked") == ()
+
+
+def test_avoid_provider_moves_its_entries_to_the_back_stably():
+    p = parse_policy({**RAW, "tracks": {"t": {
+        "when": "w", "spec": ["m"], "plan": ["m"], "implement": ["m"],
+        "review": ["anthropic/a1", "openai/o1", "anthropic/a2", "nvidia/n1"]}},
+        "untracked": "t"})
+    assert [e.model_id for e in candidates(p, "t", "review", avoid_provider="anthropic")] == [
+        "openai/o1", "nvidia/n1", "anthropic/a1", "anthropic/a2"]
+
+
+def test_avoid_provider_is_a_no_op_when_every_entry_shares_it():
+    p = policy()
+    assert candidates(p, "trivial", "plan", avoid_provider="anthropic") == \
+        p.tracks["trivial"].stages["plan"]
+
+
+def test_resolve_takes_the_first_admitted_entry():
+    p = policy()
+    assert str(resolve(p, "standard", "implement", ALL)) == "anthropic/claude-sonnet-5@medium"
+    only_openai = lambda m: m.startswith("openai/")  # noqa: E731
+    assert str(resolve(p, "standard", "implement", only_openai)) == "openai/gpt-sol@medium"
+
+
+def test_resolve_is_none_when_nothing_is_admitted():
+    assert resolve(policy(), "standard", "implement", NONE) is None
+
+
+def test_resolve_honours_avoid_provider():
+    p = policy()
+    assert resolve(p, "standard", "review", ALL, avoid_provider="openai").model_id == \
+        "anthropic/claude-opus-5"
+
+
+def test_triage_entry_is_the_first_admitted_triage_entry():
+    p = parse_policy({**RAW, "triage": ["anthropic/a@low", "openai/b@high"]})
+    assert str(triage_entry(p, ALL)) == "anthropic/a@low"
+    assert str(triage_entry(p, lambda m: m.startswith("openai/"))) == "openai/b@high"
+    assert triage_entry(p, NONE) is None

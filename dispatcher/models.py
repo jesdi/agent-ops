@@ -187,3 +187,31 @@ def track_from_labels(labels: Sequence[str], policy: ModelPolicy) -> str:
             if name in policy.tracks:
                 return name
     return policy.untracked
+
+
+Admitted = Callable[[str], bool]   # model id -> does the usage gate admit it
+
+
+def candidates(policy: ModelPolicy, track: str, stage: str,
+               avoid_provider: str = "") -> tuple[Entry, ...]:
+    """The ordered entries a stage may launch. Review prefers a provider
+    other than the one that ran implement: its entries move to the back,
+    order otherwise kept, so a track whose every entry shares one provider
+    is unchanged (preference, not a rule)."""
+    entries = policy.tracks[track].stages.get(policy_stage(stage), ())
+    if not avoid_provider:
+        return entries
+    return (tuple(e for e in entries if e.provider != avoid_provider)
+            + tuple(e for e in entries if e.provider == avoid_provider))
+
+
+def resolve(policy: ModelPolicy, track: str, stage: str, admitted: Admitted,
+            avoid_provider: str = "") -> Entry | None:
+    """First admitted entry, or None: the caller waits, never falls through
+    to a model outside the list."""
+    return next((e for e in candidates(policy, track, stage, avoid_provider)
+                 if admitted(e.model_id)), None)
+
+
+def triage_entry(policy: ModelPolicy, admitted: Admitted) -> Entry | None:
+    return next((e for e in policy.triage if admitted(e.model_id)), None)
