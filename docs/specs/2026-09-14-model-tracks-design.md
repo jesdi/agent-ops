@@ -52,11 +52,11 @@ Out of scope, deferred by name:
 ## Language
 
 **Track**: an operator-named kind of work (`trivial`, `standard`,
-`security`), defined in config by a prose `when` and a model list per stage.
+`frontend`, `security`), defined in config by a prose `when` and a model list per stage.
 The closed set of track names is the only thing a session may choose from.
 
 **Entry**: one element of a track's stage list: `provider/model@effort`,
-e.g. `anthropic/claude-opus-4-8@medium`. Effort is one of
+e.g. `anthropic/claude-opus-5@medium`. Effort is one of
 `low | medium | high | xhigh | max` and is optional; unset means the CLI's
 default. Not called a profile: that word already means something in Claude
 Code.
@@ -91,28 +91,39 @@ Nothing at spawn time calls a model.
 
 ```yaml
 models:
-  triage:    [anthropic/claude-sonnet-4-6@medium]
+  triage:    [claude-sonnet-5@medium]
   untracked: standard                # spec-stage track when no track: label
   tracks:
     trivial:
       when: Rote rename, typo, formatting, dependency bump, doc edit with no product decision.
-      spec:      [anthropic/claude-haiku-4-5@low]
-      plan:      [anthropic/claude-sonnet-4-6@medium]
-      implement: [anthropic/claude-sonnet-4-6@medium, openai/gpt-luna@xhigh]
-      review:    [openai/gpt-luna@xhigh, anthropic/claude-sonnet-4-6@medium]
+      spec:      [claude-sonnet-5@low]
+      plan:      [claude-sonnet-5@medium]
+      implement: [claude-sonnet-5@medium, openai/gpt-luna@high]
+      review:    [openai/gpt-luna@xhigh, claude-sonnet-5@medium]
     standard:
       when: Bounded change with a clear scope after the questionnaire.
-      spec:      [anthropic/claude-opus-4-8@medium]
-      plan:      [anthropic/claude-opus-4-8@medium, openai/gpt-sol@medium]
-      implement: [openai/gpt-luna@xhigh, anthropic/claude-opus-4-8@medium]
-      review:    [anthropic/claude-opus-4-8@medium, openai/gpt-sol@medium]
+      spec:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
+      plan:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
+      implement: [claude-sonnet-5@medium, openai/gpt-sol@medium]
+      review:    [openai/gpt-astra@medium, claude-opus-5@medium]
+    frontend:
+      when: Mostly UI or frontend work — components, styling, layout, client behaviour.
+      spec:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
+      plan:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
+      implement: [claude-fable-5-1@medium, claude-opus-5@medium]
+      review:    [claude-fable-5-1@medium, claude-opus-5@medium]
     security:
       when: Touches auth, secrets, permissions, or input at a trust boundary. Never below this track.
-      spec:      [anthropic/claude-fable-5-1@high]
-      plan:      [anthropic/claude-opus-4-8@high]
-      implement: [anthropic/claude-opus-4-8@high]
-      review:    [openai/gpt-sol@high, anthropic/claude-fable-5-1@high]
+      spec:      [claude-fable-5-1@high, openai/gpt-astra@high]
+      plan:      [claude-fable-5-1@high, openai/gpt-astra@high]
+      implement: [claude-opus-5@medium, openai/gpt-sol@high]
+      review:    [openai/gpt-astra@high, claude-fable-5-1@high]
 ```
+
+The `frontend` track exists to put Fable first at every stage of UI-heavy
+work. Its review list is Anthropic-only on purpose: the cross-provider review
+preference below would otherwise move Fable behind an OpenAI entry. That is
+the documented way to opt a track out of the preference; there is no flag.
 
 Validation at config load, all fatal:
 
@@ -234,7 +245,7 @@ Record that labels and effort are not routing inputs.
   different provider than ticket 1.
 - **Every implement entry and every review entry share one provider**: the
   reorder is a no-op; review runs on the same provider. Preference, not a
-  hard rule.
+  hard rule; the `frontend` track relies on this to keep Fable first.
 - **Spec session omits `track` or invents one**: bounced, not accepted, not
   defaulted.
 - **Two `track:` labels on an issue**: `triage_apply` keeps the newest, the
