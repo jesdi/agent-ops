@@ -42,73 +42,46 @@ loop_caps:
   gate: 2     # gate_cmd failures per ticket
   e2e: 3      # failed end-to-end runs
   ci: 3       # fixes on an open PR (red check, conflict, failed run)
-# Model for the daily triage sessions. Unset -> the models.default below.
-# triage_model: claude-sonnet-4-6
-# Which model runs which stage. First matching rule wins; anything unmatched
-# gets `default`. An unset Effort on the board never matches an `effort:`
-# constraint (fail closed to `default`). A target may carry its own `models:`
-# block, which REPLACES this one for that target — rule lists are not merged.
-# Labels come from the backlog skill's taxonomy (type: bug/enhancement/
-# documentation/question; area: frontend/backend/infra/...), applied at
-# capture and confirmed at triage.
+# Which model, at which effort, runs which stage. A TRACK is a kind of work
+# you name; its `when:` sentence is shown to the triage sweep (which picks the
+# track for the spec stage, as the label track:<name>) and to the spec
+# session (which picks the track for plan/implement/review once the scope is
+# known). Each stage lists entries `provider/model[@effort]` in order of
+# preference; the dispatcher launches the FIRST entry the usage gate admits,
+# keeps that pick for every session of the stage, and waits when none is
+# admitted. Review moves the provider that ran implement to the back of its
+# list. A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
+# A target may carry its own `models:` block, which REPLACES this one.
 models:
-  default: claude-sonnet-4-6
-  rules:
-    # Research / exploration: the work IS the judgment — Fable end to end.
-    # Two rules because labels_include is AND, and repos differ on which
-    # label they carry (`research` on example-app, `question` from the
-    # backlog taxonomy).
-    - name: research
-      when:
-        labels_include: [research]
-      use: anthropic/claude-sonnet-4-6  # provider-prefixed id; bare "claude-sonnet-4-6" is equivalent
-    - name: question
-      when:
-        labels_include: [question]
-      use: claude-sonnet-4-6
-
-    # Mechanical chores at low effort: dependency bumps, doc edits, CI
-    # plumbing — no Fable anywhere. Security-tagged work never takes a
-    # cheap exit, whatever its effort score.
-    - name: deps-chore
-      when:
-        effort: {max: 2}
-        labels_include: [dependencies]
-        labels_exclude: [security]
-      use: claude-sonnet-4-6
-    - name: docs-chore
-      when:
-        effort: {max: 2}
-        labels_include: [documentation]
-        labels_exclude: [security]
-      use: claude-sonnet-4-6
-    - name: ci-chore
-      when:
-        effort: {max: 2}
-        labels_include: [ci]
-        labels_exclude: [security]
-      use: claude-sonnet-4-6
-
-    # Very low effort, backend-only change: Opus everywhere. Anything
-    # touching frontend/infra, security, or needing a product decision
-    # stays on the standard track.
-    - name: trivial-backend
-      when:
-        effort: {max: 1}
-        labels_include: [backend]
-        labels_exclude: [frontend, infra, security, product]
-      use: claude-sonnet-4-6
-
-    # Everything else — including unscored tasks (unset Effort never
-    # matches an effort: rule, so they fail closed to here): Fable writes
-    # the spec and the plan (the leverage stages); the multiagent
-    # implement stage always runs on Opus.
-    - name: standard
-      use:
-        spec:      claude-sonnet-4-6
-        plan:      claude-sonnet-4-6
-        review:    claude-sonnet-4-6
-        implement: claude-sonnet-4-6
+  triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted
+  untracked: standard                    # spec-stage track when no track: label
+  tracks:
+    trivial:
+      when: Rote rename, typo, formatting, dependency bump, doc edit with no product decision.
+      spec:      [claude-sonnet-5@low]
+      plan:      [claude-sonnet-5@medium]
+      implement: [claude-sonnet-5@medium, openai/gpt-luna@high]
+      review:    [openai/gpt-luna@xhigh, claude-sonnet-5@medium]
+    standard:
+      when: Bounded change with a clear scope after the questionnaire.
+      spec:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
+      plan:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
+      implement: [claude-sonnet-5@medium, openai/gpt-sol@medium]
+      review:    [openai/gpt-astra@medium, claude-opus-5@medium]
+    frontend:
+      # Fable first for spec, plan and implement; review is still a
+      # different model, on another provider when one is admitted.
+      when: Mostly UI or frontend work — components, styling, layout, client behaviour.
+      spec:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
+      plan:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
+      implement: [claude-fable-5-1@medium, claude-opus-5@medium]
+      review:    [openai/gpt-astra@medium, claude-opus-5@medium]
+    security:
+      when: Touches auth, secrets, permissions, or input at a trust boundary. Never below this track.
+      spec:      [claude-fable-5-1@high, openai/gpt-astra@high]
+      plan:      [claude-fable-5-1@high, openai/gpt-astra@high]
+      implement: [claude-opus-5@medium, openai/gpt-sol@high]
+      review:    [openai/gpt-astra@high, claude-fable-5-1@high]
 
 targets:
   - name: example-app

@@ -90,6 +90,9 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
   return (
     <div className="flex flex-col gap-4 p-4">
       <TaskHeader card={card} intents={intents} target={target} issue={issue} />
+      {detail.track_when && (
+        <p data-testid="track-when" className="text-xs text-gray-500">{detail.track_when}</p>
+      )}
       <StageTimeline timeline={detail.timeline} />
 
       <p className="break-all font-mono text-xs text-gray-500">{worktree}</p>
@@ -155,7 +158,8 @@ function TaskHeader({ card, intents, target, issue }: {
   return <header className="flex flex-wrap items-center gap-3">
     <h1 className="text-lg font-semibold">{card.title}</h1>
     <span className="text-sm text-gray-500">
-      {card.target}#{card.issue} · {stageLabel(card.stage)} · {card.model} ·
+      {card.target}#{card.issue} · {stageLabel(card.stage)} · {card.model}
+      {card.track && <> · track {card.track}</>} ·
       branch {card.branch} · updated {relativeTime(card.updated_at)}
     </span>
     {card.park !== '' && (

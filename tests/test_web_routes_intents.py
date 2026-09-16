@@ -60,11 +60,11 @@ def test_park_kill_resume(tmp_path):
 def test_resume_accepts_model_and_usage_override(tmp_path):
     fake, client = rig(tmp_path)
     r = client.post("/api/task/alpha/7/resume", headers=HEADERS,
-                    json={"model": "claude-opus-4-8",
+                    json={"model": "anthropic/claude-opus-5",
                           "bypass_usage": True})
     assert r.status_code == 202
     assert fake.intents[-1][3] == {
-        "model": "claude-opus-4-8", "bypass_usage": True}
+        "model": "anthropic/claude-opus-5", "bypass_usage": True}
 
 
 def test_resume_rejects_unconfigured_model(tmp_path):
@@ -78,11 +78,11 @@ def test_resume_rejects_unconfigured_model(tmp_path):
 def test_force_run_arms_an_active_task_without_resuming_it(tmp_path):
     fake, client = rig(tmp_path)
     r = client.post("/api/task/alpha/7/run", headers=HEADERS,
-                    json={"model": "claude-opus-4-8",
+                    json={"model": "anthropic/claude-opus-5",
                           "bypass_usage": True})
     assert r.status_code == 200
     assert fake.execution_overrides[("alpha", 7)] == (
-        "claude-opus-4-8", True)
+        "anthropic/claude-opus-5", True)
     assert fake.intents == []
     assert fake.appended[-1][:3] == ("execution-forced", "alpha", 7)
 
@@ -93,12 +93,22 @@ def test_force_run_resumes_a_parked_task(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [replace(fake.tasks_list[0], park=PARK_HUMAN)]
     r = client.post("/api/task/alpha/7/run", headers=HEADERS,
-                    json={"model": "claude-opus-4-8",
+                    json={"model": "anthropic/claude-opus-5",
                           "bypass_usage": True})
     assert r.status_code == 202
     assert fake.intents[-1][0] == "resume"
     assert fake.intents[-1][3] == {
-        "model": "claude-opus-4-8", "bypass_usage": True}
+        "model": "anthropic/claude-opus-5", "bypass_usage": True}
+
+
+def test_force_run_with_no_model_keeps_the_sticky_pick_s_effort(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(
+        issue=7, picks={"implement": "anthropic/claude-opus-5@high"})]
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS, json={})
+    assert r.status_code == 200
+    assert fake.execution_overrides[("alpha", 7)] == (
+        "anthropic/claude-opus-5@high", False)
 
 
 def test_force_run_arms_an_unclaimed_queue_candidate(tmp_path):
@@ -109,11 +119,11 @@ def test_force_run_arms_an_unclaimed_queue_candidate(tmp_path):
         "labels": ["auto"], "blocked": False, "score": 2, "boost": 0,
     }], "now", False)
     r = client.post("/api/task/alpha/9/run", headers=HEADERS,
-                    json={"model": "claude-opus-4-8",
+                    json={"model": "anthropic/claude-opus-5",
                           "bypass_usage": True})
     assert r.status_code == 200
     assert fake.execution_overrides[("alpha", 9)] == (
-        "claude-opus-4-8", True)
+        "anthropic/claude-opus-5", True)
 
 
 def test_force_run_rejects_missing_or_stale_queue_work(tmp_path):

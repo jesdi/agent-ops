@@ -1,19 +1,24 @@
-"""Which Claude model runs which stage of which task.
+"""Which model, at which effort, runs which stage of which task.
 
 Pure policy: `parse_policy` turns the `models:` block of targets.yaml into
 frozen dataclasses (raising at config-load time on anything malformed), and
-`resolve` maps (policy, stage, effort, labels) to a model string. No I/O, and
-no import of dispatcher.state — callers pass `stage` as a plain string."""
+`resolve` walks a track's stage list to the first entry the usage gate
+admits. No I/O, and no import of dispatcher.state — callers pass `stage` as
+a plain string. See docs/specs/2026-09-14-model-tracks-design.md."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Mapping, Sequence
 
-DEFAULT_MODEL = "claude-opus-4-8"
 STAGES = ("spec", "plan", "implement", "review")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 DEFAULT_PROVIDER = "anthropic"
+DEFAULT_MODEL = "claude-opus-5"
+TRACK_LABEL_PREFIX = "track:"
 _POLICY_STAGES = {"queued": "spec", "awaiting-spec-review": "spec",
                   "address-review": "implement"}
+_OLD_KEYS = ("default", "rules")
+_TOP_KEYS = frozenset({"triage", "untracked", "tracks"})
 
 
 def split_model_id(model_id: str) -> tuple[str, str]:
@@ -32,165 +37,181 @@ def bare_model_id(model_id: str) -> str:
     return split_model_id(model_id)[1]
 
 
-_WHEN_KEYS = frozenset({"effort", "labels_include", "labels_exclude"})
-_EFFORT_KEYS = frozenset({"min", "max"})
+def policy_stage(stage: str) -> str:
+    """Runtime stage -> the four-stage policy vocabulary. Queued and the
+    approval gate run the spec model; address-review is implementation work.
+    Anything else passes through (and, if it is not a policy stage, resolves
+    to nothing)."""
+    return _POLICY_STAGES.get(stage, stage)
 
 
 @dataclass(frozen=True)
-class ModelRule:
+class Entry:
+    """One element of a track's stage list: provider, bare model, effort
+    ("" = the CLI's default). Written `provider/model[@effort]`."""
+    provider: str
+    model: str
+    effort: str = ""
+
+    @property
+    def model_id(self) -> str:
+        return f"{self.provider}/{self.model}"
+
+    def __str__(self) -> str:
+        return self.model_id + (f"@{self.effort}" if self.effort else "")
+
+
+def parse_entry(value: object, context: str) -> Entry:
+    """`provider/model[@effort]` -> Entry. Whitespace is rejected because the
+    value lands unquoted in a shell command; a bad effort is rejected because
+    the CLI would."""
+    if not isinstance(value, str) or value == "" or any(c.isspace() for c in value):
+        raise ValueError(f"models: {context} must be a non-empty entry "
+                         f"'provider/model[@effort]' with no whitespace, got {value!r}")
+    model_id, at, effort = value.partition("@")
+    if at and effort not in EFFORTS:
+        raise ValueError(f"models: {context} effort must be one of "
+                         f"{list(EFFORTS)}, got {effort!r}")
+    try:
+        provider, model = split_model_id(model_id)
+    except ValueError as e:
+        raise ValueError(f"models: {context} {e}") from e
+    return Entry(provider, model, effort)
+
+
+def _entries(raw: object, context: str) -> tuple[Entry, ...]:
+    if isinstance(raw, str) or not isinstance(raw, list) or not raw:
+        raise ValueError(f"models: {context} must be a non-empty list of "
+                         f"entries, got {raw!r}")
+    return tuple(parse_entry(v, f"{context}[{i}]") for i, v in enumerate(raw))
+
+
+@dataclass(frozen=True)
+class Track:
     name: str
-    effort_min: int | None
-    effort_max: int | None
-    labels_include: tuple[str, ...]
-    labels_exclude: tuple[str, ...]
-    use: str | dict[str, str]
+    when: str
+    stages: Mapping[str, tuple[Entry, ...]]  # every STAGES key present
 
 
 @dataclass(frozen=True)
 class ModelPolicy:
-    default: str
-    rules: tuple[ModelRule, ...]
+    triage: tuple[Entry, ...]
+    untracked: str          # the track a candidate with no track: label specs on
+    tracks: Mapping[str, Track]
+
+    def entries(self) -> list[Entry]:
+        out = list(self.triage)
+        for track in self.tracks.values():
+            for stage in STAGES:
+                out.extend(track.stages[stage])
+        return out
 
     def model_ids(self) -> list[str]:
-        """Every model id this policy can resolve to: the default plus each
-        rule's use, whether one model or a stage map."""
-        ids = [self.default]
-        for rule in self.rules:
-            ids.extend([rule.use] if isinstance(rule.use, str) else rule.use.values())
-        return ids
+        """Every model id this policy can launch, deduplicated, order kept."""
+        return list(dict.fromkeys(e.model_id for e in self.entries()))
+
+    def gate_entry(self) -> Entry:
+        """What an idle box would spawn next: the untracked track's first
+        spec entry. The console header and the stall/resume pings key on it."""
+        return self.tracks[self.untracked].stages["spec"][0]
 
 
-DEFAULT_POLICY = ModelPolicy(default=DEFAULT_MODEL, rules=())
+_STANDARD = Track("standard", "Any task.",
+                  {s: (Entry(DEFAULT_PROVIDER, DEFAULT_MODEL),) for s in STAGES})
+DEFAULT_POLICY = ModelPolicy(triage=_STANDARD.stages["spec"], untracked="standard",
+                             tracks={"standard": _STANDARD})
 
 
-def _labels(when: dict, key: str) -> tuple[str, ...]:
-    raw = when.get(key, ())
-    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
-        raise ValueError(f"models: {key} must be a list of label names, got {raw!r}")
-    return tuple(str(x) for x in raw)
-
-
-def _effort_bounds(when: dict) -> tuple[int | None, int | None]:
-    raw = when.get("effort")
-    if raw is None:
-        return None, None
+def _track(name: str, raw: object) -> Track:
+    if not name or ":" in name or any(c.isspace() for c in name):
+        raise ValueError(f"models: track name {name!r} must be non-empty with no "
+                         f"whitespace or ':' (it becomes the label track:<name>)")
     if not isinstance(raw, dict):
-        raise ValueError(f"models: effort must be a mapping of min/max, got {raw!r}")
-    unknown = set(raw) - _EFFORT_KEYS
+        raise ValueError(f"models: track {name!r} must be a mapping, got {raw!r}")
+    unknown = set(raw) - set(STAGES) - {"when"}
     if unknown:
-        raise ValueError(
-            f"models: effort accepts exactly min/max, got unknown {sorted(unknown)}")
-    for key, value in raw.items():
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"models: effort {key} must be an integer, got {value!r}")
-    return raw.get("min"), raw.get("max")
-
-
-def check_model_id(value: object, context: str) -> str:
-    """A model id must be a non-empty string with no whitespace: no allowlist
-    of known ids (deliberately out of scope), but an unusable value (empty,
-    a dict coerced via str(), or something with embedded whitespace that
-    would land unquoted in a shell command) must kill the pass at config
-    load rather than mis-resolve silently at spawn time."""
-    if not isinstance(value, str) or value == "" or any(c.isspace() for c in value):
-        raise ValueError(
-            f"models: {context} must be a non-empty model id with no "
-            f"whitespace, got {value!r}")
-    try:
-        split_model_id(value)
-    except ValueError as e:
-        raise ValueError(f"models: {context} {e}") from e
-    return value
-
-
-def _use(rule: dict, name: str) -> str | dict[str, str]:
-    if "use" not in rule:
-        raise ValueError(f"models: rule {name!r} has no use:")
-    raw = rule["use"]
-    if isinstance(raw, str):
-        return check_model_id(raw, f"rule {name!r} use:")
-    if not isinstance(raw, dict):
-        raise ValueError(f"models: rule {name!r} use: must be a model or a stage map")
-    unknown = set(raw) - set(STAGES)
-    if unknown:
-        raise ValueError(
-            f"models: rule {name!r} use: has unknown stage(s) {sorted(unknown)}; "
-            f"expected any of {list(STAGES)}")
-    return {k: check_model_id(v, f"rule {name!r} use.{k}:") for k, v in raw.items()}
-
-
-def _rule(raw: dict, index: int) -> ModelRule:
-    if not isinstance(raw, dict):
-        raise ValueError(f"models: rule #{index} must be a mapping, got {raw!r}")
-    name = str(raw.get("name", f"rule-{index}"))
-    when = raw.get("when") or {}
-    if not isinstance(when, dict):
-        raise ValueError(f"models: rule {name!r} when: must be a mapping")
-    unknown = set(when) - _WHEN_KEYS
-    if unknown:
-        raise ValueError(
-            f"models: rule {name!r} when: has unknown key(s) {sorted(unknown)}; "
-            f"expected any of {sorted(_WHEN_KEYS)}")
-    effort_min, effort_max = _effort_bounds(when)
-    return ModelRule(
-        name=name,
-        effort_min=effort_min,
-        effort_max=effort_max,
-        labels_include=_labels(when, "labels_include"),
-        labels_exclude=_labels(when, "labels_exclude"),
-        use=_use(raw, name),
-    )
+        raise ValueError(f"models: track {name!r} has unknown key(s) "
+                         f"{sorted(unknown)}; expected when: plus {list(STAGES)}")
+    missing = [s for s in STAGES if s not in raw]
+    if missing:
+        raise ValueError(f"models: track {name!r} names no {missing} list; "
+                         f"every track names all of {list(STAGES)}")
+    when = raw.get("when")
+    if not isinstance(when, str) or not when.strip():
+        raise ValueError(f"models: track {name!r} needs a non-empty when: sentence")
+    return Track(name, when.strip(),
+                 {s: _entries(raw[s], f"track {name!r} {s}:") for s in STAGES})
 
 
 def parse_policy(raw: dict | None) -> ModelPolicy:
     """Validate the `models:` block. Raises ValueError so a typo kills the
-    pass loudly at config load instead of silently never matching."""
+    pass loudly at config load instead of silently mis-routing."""
     if not raw:
         return DEFAULT_POLICY
     if not isinstance(raw, dict):
         raise ValueError(f"models: must be a mapping, got {raw!r}")
-    default = check_model_id(raw.get("default", DEFAULT_MODEL), "default")
-    rules = raw.get("rules", [])
-    if not isinstance(rules, list):
-        raise ValueError(f"models: rules must be a list, got {rules!r}")
-    return ModelPolicy(default=default,
-                       rules=tuple(_rule(r, i) for i, r in enumerate(rules)))
+    old = [k for k in _OLD_KEYS if k in raw]
+    if old:
+        raise ValueError(f"models: {old} are gone; write tracks:, untracked: "
+                         f"and triage: (see targets.example.yaml)")
+    unknown = set(raw) - _TOP_KEYS
+    if unknown:
+        raise ValueError(f"models: unknown key(s) {sorted(unknown)}; expected "
+                         f"tracks:, untracked:, triage:")
+    tracks_raw = raw.get("tracks")
+    if not isinstance(tracks_raw, dict) or not tracks_raw:
+        raise ValueError("models: tracks: must be a non-empty mapping of "
+                         "track name to track")
+    tracks = {str(n): _track(str(n), t) for n, t in tracks_raw.items()}
+    untracked = raw.get("untracked")
+    if untracked not in tracks:
+        raise ValueError(f"models: untracked: must name a defined track "
+                         f"{sorted(tracks)}, got {untracked!r}")
+    if "triage" not in raw:
+        raise ValueError("models: triage: list is required")
+    return ModelPolicy(triage=_entries(raw["triage"], "triage:"),
+                       untracked=untracked, tracks=tracks)
 
 
-def _matches(rule: ModelRule, effort: int | None, labels: frozenset[str]) -> bool:
-    # An unset effort never satisfies an effort constraint — fail closed to the
-    # default rather than downgrading an unscored task.
-    if rule.effort_min is not None and (effort is None or effort < rule.effort_min):
-        return False
-    if rule.effort_max is not None and (effort is None or effort > rule.effort_max):
-        return False
-    if any(l not in labels for l in rule.labels_include):
-        return False
-    if any(l in labels for l in rule.labels_exclude):
-        return False
-    return True
+def tracks_text(policy: ModelPolicy) -> str:
+    """The track list as the prompts show it: one line per track."""
+    return "\n".join(f"- `{t.name}`: {t.when}" for t in policy.tracks.values())
 
 
-def resolve(policy: ModelPolicy, stage: str, effort: int | None,
-            labels: Sequence[str]) -> str:
-    """First matching rule wins; a stage the winning rule doesn't name falls
-    back to the policy default, not to later rules."""
-    have = frozenset(labels)
-    for rule in policy.rules:
-        if not _matches(rule, effort, have):
-            continue
-        if isinstance(rule.use, str):
-            return rule.use
-        return rule.use.get(stage, policy.default)
-    return policy.default
+def track_from_labels(labels: Sequence[str], policy: ModelPolicy) -> str:
+    """The first `track:<name>` label naming a configured track, else the
+    untracked track. Only ever decides who writes the spec."""
+    for label in labels:
+        if label.startswith(TRACK_LABEL_PREFIX):
+            name = label[len(TRACK_LABEL_PREFIX):]
+            if name in policy.tracks:
+                return name
+    return policy.untracked
 
 
-def resolve_for_stage(policy: ModelPolicy, stage: str, effort: int | None,
-                      labels: Sequence[str]) -> str:
-    """Resolve runtime stages through the policy's four stage vocabulary.
+Admitted = Callable[[str], bool]   # model id -> does the usage gate admit it
 
-    Queued and approval-gate sessions run the spec model; address-review is
-    implementation work. Keeping this translation beside the model policy
-    lets the dispatcher and console show the same model for the next launch.
-    """
-    return resolve(policy, _POLICY_STAGES.get(stage, stage), effort, labels)
+
+def candidates(policy: ModelPolicy, track: str, stage: str,
+               avoid_provider: str = "") -> tuple[Entry, ...]:
+    """The ordered entries a stage may launch. Review prefers a provider
+    other than the one that ran implement: its entries move to the back,
+    order otherwise kept, so a track whose every entry shares one provider
+    is unchanged (preference, not a rule)."""
+    entries = policy.tracks[track].stages.get(policy_stage(stage), ())
+    if not avoid_provider:
+        return entries
+    return (tuple(e for e in entries if e.provider != avoid_provider)
+            + tuple(e for e in entries if e.provider == avoid_provider))
+
+
+def resolve(policy: ModelPolicy, track: str, stage: str, admitted: Admitted,
+            avoid_provider: str = "") -> Entry | None:
+    """First admitted entry, or None: the caller waits, never falls through
+    to a model outside the list."""
+    return next((e for e in candidates(policy, track, stage, avoid_provider)
+                 if admitted(e.model_id)), None)
+
+
+def triage_entry(policy: ModelPolicy, admitted: Admitted) -> Entry | None:
+    return next((e for e in policy.triage if admitted(e.model_id)), None)

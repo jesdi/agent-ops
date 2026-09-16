@@ -22,16 +22,21 @@ from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
 from tests.usagefakes import session_usage
 
 POLICY = parse_policy({
-    "default": "claude-opus-4-8",
-    "rules": [
-        {"name": "trivial-backend",
-         "when": {"effort": {"max": 1}, "labels_exclude": ["frontend"]},
-         "use": "claude-sonnet-4-6"},
-        {"name": "frontend-substantial",
-         "when": {"effort": {"min": 2}, "labels_include": ["frontend"]},
-         "use": {"spec": "claude-fable-5", "plan": "claude-fable-5",
-                 "implement": "claude-opus-4-8"}},
-    ],
+    "triage": ["claude-sonnet-5@low"],
+    "untracked": "standard",
+    "tracks": {
+        "trivial": {"when": "Rote edits.",
+                    "spec": ["claude-sonnet-5"], "plan": ["claude-sonnet-5"],
+                    "implement": ["claude-sonnet-5"], "review": ["claude-sonnet-5"]},
+        "standard": {"when": "Everything else.",
+                     "spec": ["claude-opus-5"], "plan": ["claude-opus-5"],
+                     "implement": ["claude-opus-5"], "review": ["claude-opus-5"]},
+        "deep": {"when": "Big or risky.",
+                 "spec": ["claude-fable-5-1@high", "claude-opus-5"],
+                 "plan": ["claude-fable-5-1@high", "claude-opus-5"],
+                 "implement": ["claude-opus-5@medium"],
+                 "review": ["openai/gpt-sol@high", "claude-fable-5-1@high", "claude-opus-5"]},
+    },
 })
 
 ADMIT_ALL = lambda m: main.Verdict(admitted=True, provider="anthropic", binding=None, reason="ok")  # noqa: E731
@@ -169,17 +174,17 @@ class FakeSessions:
     def send_text(self, target, issue, text):
         self.sent_text.append((issue, text))
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model):
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort=""):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
-        self.spawned.append((issue, stage_name, model, prompt))
+        self.spawned.append((issue, stage_name, model, prompt, effort))
 
-    def resume(self, target, issue, worktree, message, model):
+    def resume(self, target, issue, worktree, message, model, effort=""):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
-        self.resumed.append((issue, message, model))
+        self.resumed.append((issue, message, model, effort))
 
     def capture_tail(self, target, issue, lines=25):
         self.call_log.append(("capture_tail", target, issue))
@@ -252,12 +257,12 @@ def deps(gh=None, sess=None, notifier=None):
 
 
 def make_task(c, issue=42, stage=Stage.IMPLEMENT, slot=0,
-              updated_at="2026-07-21T00:00:00+00:00", **kw):
+              updated_at="2026-07-21T00:00:00+00:00", track="standard", **kw):
     wt = Path(c.targets[0].worktrees_path) / f"task-{issue}"
     (wt / ".agent").mkdir(parents=True, exist_ok=True)
     ts = TaskState(issue=issue, target="portfolio_eval", stage=stage, slot=slot,
                    worktree=str(wt), branch=f"agent/task-{issue}", title="t",
-                   updated_at=updated_at, **kw)
+                   updated_at=updated_at, track=track, **kw)
     save(c.state_dir, ts)
     return wt
 
@@ -275,13 +280,14 @@ def test_new_candidate_claimed_and_spec_spawned(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess))
 
     assert gh.claimed == [42]
-    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-opus-4-8")]
+    assert [s[:3] for s in sess.spawned] == [(42, "spec", "anthropic/claude-opus-5")]
     ts = load(c.state_dir, "portfolio_eval", 42)
     assert ts.stage is Stage.SPEC and ts.slot == 0 and ts.title == "Add widget"
     sig = json.loads(
         (Path(c.targets[0].worktrees_path) / "task-42" / ".agent" / "stage.json")
         .read_text())
-    assert sig == {"stage": "spec", "status": "working", "model": "claude-opus-4-8"}
+    assert sig == {"stage": "spec", "status": "working",
+                   "model": "anthropic/claude-opus-5", "effort": ""}
 
 
 def test_claim_snapshots_effort_and_labels(tmp_path, monkeypatch):
@@ -306,7 +312,8 @@ def test_capacity_blocks_new_claims(tmp_path, monkeypatch):
         save(c.state_dir, TaskState(issue=issue, target="portfolio_eval",
                                     stage=Stage.SPEC, slot=i, worktree=str(wt),
                                     branch=f"agent/task-{issue}", title="t",
-                                    updated_at="2026-07-14T00:00:00+00:00"))
+                                    updated_at="2026-07-14T00:00:00+00:00",
+                                    track="standard"))
     gh = FakeGitHub([Candidate(99, "X", "u")])
     main.run_pass(c, deps(gh, FakeSessions(alive={1, 2, 3})))
     assert gh.claimed == []
@@ -338,9 +345,24 @@ def test_forced_queue_candidate_claims_despite_usage_gate(tmp_path, monkeypatch)
 
     assert gh.claimed == [42]
     assert [spawn[:3] for spawn in sess.spawned] == [
-        (42, "spec", "claude-sonnet-4-6")]
+        (42, "spec", "anthropic/claude-sonnet-4-6")]
     assert execution_overrides.load(
         c.state_dir, "portfolio_eval", 42) is None
+
+
+def test_override_model_without_bypass_still_checked_by_usage_gate(tmp_path, monkeypatch):
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.IMPLEMENT)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    execution_overrides.save(
+        c.state_dir, "portfolio_eval", 42,
+        execution_overrides.ExecutionOverride(
+            model="claude-sonnet-4-6", bypass_usage=False))
+
+    launch, bypass = main._choose_launch(c, c.targets[0], task, Stage.IMPLEMENT, DENY_ALL)
+
+    assert (launch, bypass) == (None, False)
 
 
 def test_forced_queue_candidate_keeps_choice_when_no_slot(tmp_path, monkeypatch):
@@ -369,47 +391,236 @@ def test_budget_resume_pings_once(tmp_path, monkeypatch):
     assert d.notifier.sent.count("budget_resume") == 1
 
 
-def test_fable_over_pace_blocks_only_fable_spawns(tmp_path, monkeypatch):
-    # weekly allowance in session_usage is ~0.6 (half elapsed + margin); 0.9 used on Fable is over pace
+def test_spawn_uses_the_untracked_track_when_no_track_label(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
+    sess = FakeSessions()
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(gh, sess))
+    assert [s[:3] for s in sess.spawned] == [(42, "spec", "anthropic/claude-opus-5")]
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.track == "standard"
+    assert t.picks == {"spec": "anthropic/claude-opus-5"}
+
+
+def test_spawn_uses_the_track_label_for_spec(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", effort=None, labels=("auto", "track:deep"))])
+    sess = FakeSessions()
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(gh, sess))
+    assert [s[:3] + (s[4],) for s in sess.spawned] == [
+        (42, "spec", "anthropic/claude-fable-5-1", "high")]
+    assert load(c.state_dir, "portfolio_eval", 42).track == "deep"
+
+
+def test_spec_resolution_skips_a_denied_entry_to_the_next(tmp_path, monkeypatch):
+    patch_usage(monkeypatch, util=0.2, fable=0.9)      # Fable week over pace
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", labels=("auto", "track:deep"))])
+    sess = FakeSessions()
+    main.run_pass(cfg(tmp_path), deps(gh, sess))
+    assert [s[:3] for s in sess.spawned] == [(42, "spec", "anthropic/claude-opus-5")]
+
+
+def test_nothing_admitted_waits_without_claiming(tmp_path, monkeypatch):
+    patch_usage(monkeypatch, util=0.95)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", labels=("auto",))])
+    sess = FakeSessions()
+    main.run_pass(cfg(tmp_path), deps(gh, sess))
+    assert sess.spawned == [] and gh.claimed == []
+
+
+def test_spec_done_signal_sets_the_task_track_and_spawns_plan_on_it(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, track="standard")
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "done", "artifact": "spec.md", "track": "trivial"}))
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    assert [s[:3] for s in sess.spawned] == [(42, "plan", "anthropic/claude-sonnet-5")]
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.track == "trivial" and t.picks["plan"] == "anthropic/claude-sonnet-5"
+
+
+def test_spec_awaiting_review_records_the_track_on_the_task(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard")
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "artifact": "spec.md", "track": "deep"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.AWAITING_SPEC_REVIEW and t.track == "deep"
+
+
+def test_spec_signal_without_a_track_is_bounced_once_then_parks(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard",
+                   picks={"spec": "anthropic/claude-opus-5"})
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "artifact": "spec.md"}))
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    (resume,) = sess.resumed
+    assert "must be one of" in resume[1] and "'deep'" in resume[1]
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.SPEC and t.spec_retries == 1
+    assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
+    # second time: park for the operator
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "artifact": "spec.md"}))
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN and "must be one of" in t.park_note
+
+
+def test_spec_signal_with_a_misspelled_track_is_bounced_not_mis_parked(tmp_path, monkeypatch):
+    """A signal naming an UNKNOWN track (not merely a missing one) must not be
+    adopted onto the task before the "track configured" guard runs — doing so
+    would park the task immediately with the bad value baked into state,
+    instead of letting next_actions' bounce-then-park ladder run (resume once
+    with the reason, park only on the second failure — same as the missing-
+    track case above)."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard",
+                   picks={"spec": "anthropic/claude-opus-5"})
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-review", "artifact": "spec.md",
+         "track": "tivial"}))
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    (resume,) = sess.resumed
+    assert "must be one of" in resume[1] and "'tivial'" in resume[1]
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.SPEC and t.spec_retries == 1
+    assert t.track == "standard", "the unknown track must not be adopted onto the task"
+    assert t.park == ""
+    assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
+
+
+def test_pick_is_reused_for_every_ticket_of_the_stage(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, track="deep",
+                   ticket_cursor=1, ticket_count=2,
+                   picks={"implement": "anthropic/claude-sonnet-5@low"})  # a forced pick
+    (wt / ".agent" / "tickets").mkdir(parents=True)
+    for i in (1, 2):
+        (wt / ".agent" / "tickets" / f"0{i}-t.md").write_text("# t\n\n**What to build:** x\n\n**Blocked by:** None\n\n- [ ] ok\n")
+    (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    assert [s[:3] + (s[4],) for s in sess.spawned] == [
+        (42, "implement", "anthropic/claude-sonnet-5", "low")]
+
+
+def test_denied_pick_waits_and_never_re_walks_the_list(tmp_path, monkeypatch):
     patch_usage(monkeypatch, util=0.2, fable=0.9)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    c = dc_replace(c, models=parse_policy({
-        "default": "claude-sonnet-4-6",
-        "rules": [{"name": "big", "when": {"labels_include": ["big"]}, "use": "claude-fable-5-1"}]}))
-    gh = FakeGitHub([Candidate(1, "A", "u", labels=["auto", "big"]),
-                     Candidate(2, "B", "u", labels=["auto"])])
-    d = deps(gh, FakeSessions())
-    main.run_pass(c, d)
-    assert [n for n in gh.claimed] == [2]
-    assert d.notifier.sent.count("budget_stall") == 0   # the default model is admitted
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, track="deep",
+                   picks={"plan": "anthropic/claude-fable-5-1@high"})
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "done", "artifact": "spec.md", "track": "deep"}))
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    assert sess.spawned == []
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.AWAITING_SPEC_REVIEW
+
+
+def test_review_prefers_a_provider_other_than_implements(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, track="deep",
+                   ticket_cursor=1, ticket_count=1,
+                   picks={"implement": "anthropic/claude-opus-5@medium"})
+    (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    # openai/gpt-sol is first but has no adapter (denied); anthropic entries were
+    # moved to the back and the first admitted one wins.
+    assert [s[:3] for s in sess.spawned] == [(42, "review", "anthropic/claude-fable-5-1")]
+
+
+def test_unknown_task_track_parks_with_a_note(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, track="renamed")
+    (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "working"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN and "'renamed'" in t.park_note
+
+
+def test_spawn_writes_effort_into_stage_json_and_models_log(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", labels=("auto", "track:deep"))])
+    c = cfg(tmp_path)
+    main.run_pass(c, deps(gh, FakeSessions()))
+    agent_dir = Path(c.targets[0].worktrees_path) / "task-42" / ".agent"
+    sig = json.loads((agent_dir / "stage.json").read_text())
+    assert (sig["model"], sig["effort"]) == ("anthropic/claude-fable-5-1", "high")
+    assert (agent_dir / "models.log").read_text().strip().endswith(
+        "spec anthropic/claude-fable-5-1@high")
+
+
+def test_budget_edge_keys_on_the_untracked_spec_entry(tmp_path, monkeypatch):
+    """Fable over pace must not stall the box when the untracked track specs
+    on Opus."""
+    patch_usage(monkeypatch, util=0.2, fable=0.9)
+    patch_workspace(monkeypatch, tmp_path)
+    d = deps()
+    main.run_pass(cfg(tmp_path), d)
+    assert d.notifier.sent.count("budget_stall") == 0
 
 
 def test_drive_task_admits_per_spawned_stage_model(tmp_path, monkeypatch):
     """Stage model routing in _drive_task: SpawnStage uses the target stage's
-    model, not a single global flag. Fable over pace blocks the Fable-routed
-    spawn while the Sonnet-routed spawn in the same pass proceeds."""
+    model, not a single global flag. Fable over pace on task A's PLAN just
+    skips to the next entry in the deep track's plan list (Opus) rather than
+    blocking — resolution walks the list, it doesn't stop at the first deny.
+    Task B's REVIEW proceeds independently on its own (trivial) track."""
     patch_usage(monkeypatch, util=0.2, fable=0.9)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    # plan → Fable (over pace); every other stage → Sonnet (admitted)
-    c = dc_replace(c, models=parse_policy({
-        "default": "claude-sonnet-4-6",
-        "rules": [{"name": "fable-plan",
-                   "use": {"plan": "claude-fable-5-1"}}]}))
-    # Task A: AWAITING_SPEC_REVIEW + done signal → SpawnStage(PLAN) → Fable → denied
+    # Task A: AWAITING_SPEC_REVIEW + done signal → SpawnStage(PLAN); deep's
+    # plan list is [Fable@high, Opus] — Fable over pace, so Opus wins.
     wt_a = Path(c.targets[0].worktrees_path) / "task-1"
     (wt_a / ".agent").mkdir(parents=True)
     spec = wt_a / "spec.md"
     spec.write_text("# t — design\n\n## Problem\n\n" + "x " * 400
                     + "\n\n## Decisions\n\n" + "y " * 400)
     (wt_a / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md",
+         "track": "deep"}))
     save(c.state_dir, TaskState(issue=1, target="portfolio_eval",
                                 stage=Stage.AWAITING_SPEC_REVIEW, slot=0,
                                 worktree=str(wt_a), branch="agent/task-1",
-                                title="A", updated_at="2026-07-14T00:00:00+00:00"))
-    # Task B: IMPLEMENT last-ticket done → SpawnStage(REVIEW) → Sonnet → admitted
+                                title="A", track="deep",
+                                updated_at="2026-07-14T00:00:00+00:00"))
+    # Task B: IMPLEMENT last-ticket done → SpawnStage(REVIEW) → trivial → Sonnet
     wt_b = Path(c.targets[0].worktrees_path) / "task-2"
     (wt_b / ".agent").mkdir(parents=True)
     (wt_b / ".agent" / "stage.json").write_text(json.dumps(
@@ -418,13 +629,16 @@ def test_drive_task_admits_per_spawned_stage_model(tmp_path, monkeypatch):
                                 stage=Stage.IMPLEMENT, slot=1,
                                 ticket_cursor=1, ticket_count=1,
                                 worktree=str(wt_b), branch="agent/task-2",
-                                title="B", updated_at="2026-07-14T00:00:00+00:00"))
+                                title="B", track="trivial",
+                                updated_at="2026-07-14T00:00:00+00:00"))
     sess = FakeSessions(alive={1, 2})
     main.run_pass(c, deps(sess=sess))
     spawned_issues = [s[0] for s in sess.spawned]
-    assert 1 not in spawned_issues, "Fable-routed PLAN spawn must be blocked by pace"
-    assert 2 in spawned_issues, "Sonnet-routed REVIEW spawn must proceed"
-    assert load(c.state_dir, "portfolio_eval", 1).stage is Stage.AWAITING_SPEC_REVIEW
+    assert 1 in spawned_issues, "Fable-over-pace must skip to Opus, not block PLAN"
+    assert [s[:3] for s in sess.spawned if s[0] == 1] == [
+        (1, "plan", "anthropic/claude-opus-5")]
+    assert 2 in spawned_issues, "trivial-track REVIEW spawn must proceed"
+    assert load(c.state_dir, "portfolio_eval", 1).stage is Stage.PLAN
     assert load(c.state_dir, "portfolio_eval", 2).stage is Stage.REVIEW
 
 
@@ -458,21 +672,19 @@ def test_resume_ping_waits_for_resume_headroom(tmp_path, monkeypatch):
 
 def test_woken_pr_open_task_is_gated_on_the_model_it_spawns(tmp_path):
     """A parked pr-open task resumes as a fresh address-review round, which
-    runs on the implement model — that is the model the gate must ask, not
-    the one the pr-open stage itself would resolve to."""
-    c = dc_replace(cfg(tmp_path), models=parse_policy({
-        "default": "claude-sonnet-4-6",
-        "rules": [{"name": "fable-implement",
-                   "use": {"implement": "claude-fable-5-1"}}]}))
-    make_task(c, issue=42, stage=Stage.PR_OPEN, park=PARK_WAKE, pr_number=7)
-    fable_over_pace = lambda m: DENY_ALL(m) if "fable" in m else ADMIT_ALL(m)  # noqa: E731
+    runs on the implement entry — that is the model the gate must ask, not
+    whatever the pr-open stage itself would (not) resolve to."""
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.PR_OPEN, park=PARK_WAKE, pr_number=7,
+              track="deep")
+    opus_over_pace = lambda m: DENY_ALL(m) if "opus" in m else ADMIT_ALL(m)  # noqa: E731
     d = deps()
-    main._resume_woken(c, d, c.targets[0], admit=fable_over_pace)
+    main._resume_woken(c, d, c.targets[0], admit=opus_over_pace)
     assert d.sessions.spawned == [] and d.sessions.resumed == []
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
     main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
-    assert [s[:3] for s in d.sessions.spawned] == [
-        (42, Stage.ADDRESS_REVIEW.value, "claude-fable-5-1")]
+    assert [s[:3] + (s[4],) for s in d.sessions.spawned] == [
+        (42, Stage.ADDRESS_REVIEW.value, "anthropic/claude-opus-5", "medium")]
 
 
 def test_operator_can_bypass_usage_gate_for_one_resume(tmp_path):
@@ -481,7 +693,7 @@ def test_operator_can_bypass_usage_gate_for_one_resume(tmp_path):
               park=PARK_WAKE, resume_bypass_usage=True)
     d = deps()
     main._resume_woken(c, d, c.targets[0], admit=DENY_ALL)
-    assert d.sessions.resumed == [(42, "Continue.", "claude-opus-4-8")]
+    assert d.sessions.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.park == ""
     assert saved.resume_bypass_usage is False
@@ -495,7 +707,8 @@ def test_operator_can_resume_with_another_configured_model(tmp_path):
     d = deps()
     admit_sonnet = lambda model: ADMIT_ALL(model) if "sonnet" in model else DENY_ALL(model)  # noqa: E731
     main._resume_woken(c, d, c.targets[0], admit=admit_sonnet)
-    assert d.sessions.resumed == [(42, "Continue.", "claude-sonnet-4-6")]
+    assert d.sessions.resumed == [
+        (42, "Continue.", "anthropic/claude-sonnet-4-6", "")]
 
 
 def test_resume_override_waits_for_capacity_without_losing_choice(tmp_path):
@@ -529,7 +742,8 @@ def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
     spec_path = str(wt / "docs" / "x-design.md")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
-         "artifact": spec_path}))
+         "artifact": spec_path,
+         "track": "standard"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_SPEC_REVIEW
@@ -543,7 +757,8 @@ SPEC_URL = ("https://github.com/jesdi/portfolio_eval/blob/agent/task-42/"
 def _awaiting_review_task(c, wt):
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
-         "artifact": "docs/superpowers/specs/x-design.md"}))
+         "artifact": "docs/superpowers/specs/x-design.md",
+         "track": "standard"}))
 
 
 def test_awaiting_review_publishes_comments_and_links(tmp_path, monkeypatch):
@@ -615,7 +830,8 @@ def test_awaiting_review_sets_operator_request_and_spec_path(tmp_path, monkeypat
     wt = make_task(c, stage=Stage.SPEC)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
-         "artifact": spec_artifact}))
+         "artifact": spec_artifact,
+         "track": "standard"}))
     monkeypatch.setattr(main.spec_publish, "ensure_published",
                         lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
@@ -635,7 +851,8 @@ def test_repeated_awaiting_review_preserves_grace_and_request(tmp_path, monkeypa
     wt = make_task(c, stage=Stage.SPEC)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
-         "artifact": spec_artifact}))
+         "artifact": spec_artifact,
+         "track": "standard"}))
     monkeypatch.setattr(main.spec_publish, "ensure_published",
                         lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
     sess = FakeSessions(alive={42})
@@ -674,14 +891,15 @@ def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
     spec.write_text("# t — design\n\n## Problem\n\n" + "x " * 400
                     + "\n\n## Decisions\n\n" + "y " * 400)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md", "track": "standard"}))
     save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
                                 stage=Stage.AWAITING_SPEC_REVIEW, slot=0,
                                 worktree=str(wt), branch="agent/task-42",
-                                title="t", updated_at="2026-07-14T00:00:00+00:00"))
+                                title="t", track="standard",
+                                updated_at="2026-07-14T00:00:00+00:00"))
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
-    assert [s[:3] for s in sess.spawned] == [(42, "plan", "claude-opus-4-8")]
+    assert [s[:3] for s in sess.spawned] == [(42, "plan", "anthropic/claude-opus-5")]
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PLAN
 
 
@@ -697,6 +915,7 @@ def test_plan_format_failure_retries_in_session_then_fails(tmp_path, monkeypatch
     save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
                                 stage=Stage.PLAN, slot=0, worktree=str(wt),
                                 branch="agent/task-42", title="t",
+                                track="standard",
                                 updated_at="2026-07-14T00:00:00+00:00"))
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
@@ -735,11 +954,12 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
     spec.write_text("# t — design\n\n## Problem\n\n" + "x " * 400
                     + "\n\n## Decisions\n\n" + "y " * 400)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md", "track": "standard"}))
     save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
                                 stage=Stage.SPEC, slot=0,
                                 worktree=str(wt), branch="agent/task-42",
-                                title="t", updated_at="2026-07-14T00:00:00+00:00"))
+                                title="t", track="standard",
+                                updated_at="2026-07-14T00:00:00+00:00"))
 
     class OrderedSessions(FakeSessions):
         def __init__(self, alive=()):
@@ -750,9 +970,9 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
             self.ops.append(("end", issue))
             super().end(target, issue)
 
-        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model):
+        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort=""):
             self.ops.append(("spawn", stage_name))
-            super().spawn_stage(target, issue, worktree, prompt, stage_name, model)
+            super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
 
     sess = OrderedSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
@@ -767,7 +987,7 @@ def test_dead_session_is_crash(tmp_path, monkeypatch):
     (wt / ".agent").mkdir(parents=True)
     save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
                                 stage=Stage.IMPLEMENT, slot=0, worktree=str(wt),
-                                branch="agent/task-42", title="t",
+                                branch="agent/task-42", title="t", track="standard",
                                 updated_at="2026-07-14T00:00:00+00:00"))
     gh = FakeGitHub()
     d = deps(gh, FakeSessions(alive=set()))
@@ -1030,7 +1250,7 @@ def test_woken_task_resumes_before_new_claims(tmp_path, monkeypatch):
     gh = FakeGitHub([Candidate(99, "fresh", "u")])
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
-    assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
+    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
     assert gh.claimed == []  # head-of-queue: resume consumed the only slot
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == "" and t.park_msg_id == 0
@@ -1520,64 +1740,14 @@ def valid_spec(wt: Path) -> Path:
     return p
 
 
-def test_spawn_uses_the_rule_matched_model(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    patch_workspace(monkeypatch, tmp_path)
-    gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
-    sess = FakeSessions()
-    c = cfg(tmp_path)
-    main.run_pass(c, deps(gh, sess))
-    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-sonnet-4-6")]
-
-
-def test_unmatched_task_spawns_on_the_default_model(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    patch_workspace(monkeypatch, tmp_path)
-    gh = FakeGitHub([Candidate(42, "T", "u42", effort=None, labels=("auto",))])
-    sess = FakeSessions()
-    c = cfg(tmp_path)
-    main.run_pass(c, deps(gh, sess))
-    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-opus-4-8")]
-
-
-def test_frontend_task_spawns_spec_on_fable(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    patch_workspace(monkeypatch, tmp_path)
-    gh = FakeGitHub([Candidate(42, "T", "u42", effort=3,
-                               labels=("auto", "frontend"))])
-    sess = FakeSessions()
-    c = cfg(tmp_path)
-    main.run_pass(c, deps(gh, sess))
-    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-fable-5")]
-
-
-def test_frontend_task_spawns_plan_on_fable_and_implement_on_opus(
-        tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    patch_workspace(monkeypatch, tmp_path)
-    c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
-                   effort=3, labels=("auto", "frontend"))
-    valid_spec(wt)
-    (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
-    sess = FakeSessions(alive={42})
-    main.run_pass(c, deps(sess=sess))
-    assert [s[:3] for s in sess.spawned] == [(42, "plan", "claude-fable-5")]
-
-    # …and the implement stage of the same task drops to opus
-    t = load(c.state_dir, "portfolio_eval", 42)
-    assert main._model_for(c, c.targets[0], t.effort, t.labels,
-                           Stage.IMPLEMENT) == "claude-opus-4-8"
-
-
 def test_forced_active_task_uses_choice_at_next_stage(tmp_path):
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW)
     valid_spec(wt)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "spec", "status": "done", "note": "",
-        "artifact": "spec.md"}))
+        "artifact": "spec.md",
+         "track": "standard"}))
     execution_overrides.save(
         c.state_dir, "portfolio_eval", 42,
         execution_overrides.ExecutionOverride(
@@ -1588,7 +1758,7 @@ def test_forced_active_task_uses_choice_at_next_stage(tmp_path):
                      load(c.state_dir, "portfolio_eval", 42), DENY_ALL)
 
     assert [spawn[:3] for spawn in sess.spawned] == [
-        (42, Stage.PLAN.value, "claude-sonnet-4-6")]
+        (42, Stage.PLAN.value, "anthropic/claude-sonnet-4-6")]
     assert execution_overrides.load(
         c.state_dir, "portfolio_eval", 42) is None
 
@@ -1597,40 +1767,24 @@ def test_resume_uses_the_model_for_the_parked_stage(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    make_task(c, issue=42, stage=Stage.IMPLEMENT, park=PARK_WAKE,
-              effort=1, labels=("auto",))
+    make_task(c, issue=42, stage=Stage.IMPLEMENT, park=PARK_WAKE)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
-    assert sess.resumed == [(42, "Continue.", "claude-sonnet-4-6")]
-
-
-def test_spawn_writes_model_into_stage_json_and_models_log(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    patch_workspace(monkeypatch, tmp_path)
-    gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
-    c = cfg(tmp_path)
-    main.run_pass(c, deps(gh))
-    agent_dir = Path(c.targets[0].worktrees_path) / "task-42" / ".agent"
-    sig = json.loads((agent_dir / "stage.json").read_text())
-    assert sig["model"] == "claude-sonnet-4-6"
-    log = (agent_dir / "models.log").read_text().strip().splitlines()
-    assert len(log) == 1
-    assert log[0].endswith(" spec claude-sonnet-4-6")
+    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
 
 
 def test_models_log_appends_one_line_per_spawn(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
-                   effort=1, labels=("auto",))
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW)
     valid_spec(wt)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md", "track": "standard"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     log = (wt / ".agent" / "models.log").read_text().strip().splitlines()
     assert len(log) == 1
-    assert log[0].endswith(" plan claude-sonnet-4-6")
+    assert log[0].endswith(" plan anthropic/claude-opus-5")
 
 
 def test_status_lines_carry_the_resolved_model(tmp_path):
@@ -1638,30 +1792,29 @@ def test_status_lines_carry_the_resolved_model(tmp_path):
     save(c.state_dir, TaskState(
         issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
         worktree="/wt", branch="agent/task-42", title="Fix rounding",
-        updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",)))
+        updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     save(c.state_dir, TaskState(
         issue=43, target="portfolio_eval", stage=Stage.SPEC, slot=1,
         worktree="/wt2", branch="agent/task-43", title="New chart",
-        updated_at="2026-07-24T00:00:00+00:00", effort=3,
-        labels=("auto", "frontend")))
+        updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     lines = main._status_lines(c)
-    assert lines[0] == "#42 Fix rounding — implement [claude-sonnet-4-6] (slot 0)"
-    assert lines[1] == "#43 New chart — spec [claude-fable-5] (slot 1)"
+    assert lines[0] == "#42 Fix rounding — implement [anthropic/claude-opus-5] (slot 0)"
+    assert lines[1] == "#43 New chart — spec [anthropic/claude-opus-5] (slot 1)"
 
 
 def test_status_line_for_task_parked_at_spec_review_shows_the_spec_model(tmp_path):
-    """Finding A: a frontend task lingering at the spec-review gate is still
-    running its SPEC session — /status must show that stage's model, not
-    fall through the policy default because 'awaiting-spec-review' matches
-    no `use:` key."""
+    """Finding A: a task lingering at the spec-review gate is still running
+    its SPEC session — /status must show that stage's model, not fall
+    through the policy default because 'awaiting-spec-review' matches no
+    policy stage key."""
     c = cfg(tmp_path)
     save(c.state_dir, TaskState(
         issue=42, target="portfolio_eval", stage=Stage.AWAITING_SPEC_REVIEW,
         slot=0, worktree="/wt", branch="agent/task-42", title="New chart",
-        updated_at="2026-07-24T00:00:00+00:00", effort=3,
-        labels=("auto", "frontend")))
+        updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     lines = main._status_lines(c)
-    assert lines[0] == "#42 New chart — awaiting-spec-review [claude-fable-5] (slot 0)"
+    assert lines[0] == ("#42 New chart — awaiting-spec-review "
+                        "[anthropic/claude-opus-5] (slot 0)")
 
 
 def test_resume_at_spec_review_gate_uses_the_spec_model(tmp_path, monkeypatch):
@@ -1671,11 +1824,10 @@ def test_resume_at_spec_review_gate_uses_the_spec_model(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_WAKE,
-              effort=3, labels=("auto", "frontend"))
+    make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_WAKE)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
-    assert sess.resumed == [(42, "Continue.", "claude-fable-5")]
+    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
 
 
 def test_status_lines_survive_a_task_whose_target_is_gone(tmp_path):
@@ -1683,24 +1835,23 @@ def test_status_lines_survive_a_task_whose_target_is_gone(tmp_path):
     save(c.state_dir, TaskState(
         issue=44, target="retired_target", stage=Stage.PLAN, slot=0,
         worktree="/wt", branch="agent/task-44", title="Orphan",
-        updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",)))
+        updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     lines = main._status_lines(c)
-    assert "[claude-sonnet-4-6]" in lines[0]   # falls back to the global policy
+    assert "[anthropic/claude-opus-5]" in lines[0]   # falls back to the global policy
 
 
 def test_orphaned_task_at_the_spec_review_gate_still_maps_to_the_spec_model(
         tmp_path):
     # The global-policy fallback must go through the same stage mapping as the
-    # normal path, or a frontend task parked at the gate misreports as opus.
+    # normal path, or a task parked at the gate misreports its model.
     c = cfg(tmp_path)
     save(c.state_dir, TaskState(
         issue=45, target="retired_target", stage=Stage.AWAITING_SPEC_REVIEW,
         slot=0, worktree="/wt", branch="agent/task-45", title="Orphan chart",
-        updated_at="2026-07-24T00:00:00+00:00", effort=3,
-        labels=("auto", "frontend")))
+        updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     lines = main._status_lines(c)
     assert lines[0] == ("#45 Orphan chart — awaiting-spec-review "
-                        "[claude-fable-5] (slot 0)")
+                        "[anthropic/claude-opus-5] (slot 0)")
 
 
 def test_status_line_for_a_parked_task_puts_model_before_park(tmp_path):
@@ -1711,10 +1862,10 @@ def test_status_line_for_a_parked_task_puts_model_before_park(tmp_path):
     save(c.state_dir, TaskState(
         issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
         worktree="/wt", branch="agent/task-42", title="Fix rounding",
-        updated_at="2026-07-24T00:00:00+00:00", effort=1, labels=("auto",),
+        updated_at="2026-07-24T00:00:00+00:00", track="standard",
         park=PARK_HUMAN))
     lines = main._status_lines(c)
-    assert lines[0] == ("#42 Fix rounding — implement [claude-sonnet-4-6] "
+    assert lines[0] == ("#42 Fix rounding — implement [anthropic/claude-opus-5] "
                         f"[{PARK_HUMAN}] (slot 0)")
 
 
@@ -1766,18 +1917,24 @@ def test_digest_content_carries_the_status_lines(tmp_path):
 def test_target_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
     """Finding D: a per-target `models:` override was only ever verified in
     isolation against `policy_for` — never end-to-end through `_spawn_stage`.
-    The global POLICY's `trivial-backend` rule would resolve effort=1,
-    no-frontend to claude-sonnet-4-6; the target's OWN policy (no rules)
-    must win instead and resolve to its own default."""
+    The global POLICY's untracked/standard track resolves to Opus; the
+    target's OWN policy must win instead and resolve to its own model."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    target_policy = parse_policy({"default": "claude-fable-5", "rules": []})
+    target_policy = parse_policy({
+        "triage": ["claude-sonnet-5"],
+        "untracked": "standard",
+        "tracks": {"standard": {
+            "when": "Everything.",
+            "spec": ["claude-fable-5-1"], "plan": ["claude-fable-5-1"],
+            "implement": ["claude-fable-5-1"], "review": ["claude-fable-5-1"]}},
+    })
     c = dc_replace(c, targets=[dc_replace(c.targets[0], models=target_policy)])
     gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
-    assert [s[:3] for s in sess.spawned] == [(42, "spec", "claude-fable-5")]
+    assert [s[:3] for s in sess.spawned] == [(42, "spec", "anthropic/claude-fable-5-1")]
 
 
 from dispatcher import eventlog
@@ -1793,7 +1950,7 @@ def test_claim_and_spawn_append_claimed_and_stage_started_events(tmp_path, monke
         ("claimed", 42), ("stage-started", 42)]
     assert events[0]["target"] == "portfolio_eval"
     assert events[1]["stage"] == "spec"
-    assert events[1]["model"] == "claude-opus-4-8"
+    assert events[1]["model"] == "anthropic/claude-opus-5"
 
 
 def test_park_for_input_appends_parked_event(tmp_path, monkeypatch):
@@ -1831,7 +1988,7 @@ def test_resume_appends_resumed_event(tmp_path, monkeypatch):
     resumed = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "resumed"]
     assert len(resumed) == 1
     assert resumed[0]["issue"] == 42 and resumed[0]["stage"] == "implement"
-    assert resumed[0]["model"] == "claude-opus-4-8"
+    assert resumed[0]["model"] == "anthropic/claude-opus-5"
 
 
 def test_review_done_appends_pr_opened_event(tmp_path, monkeypatch):
@@ -2224,13 +2381,13 @@ def test_resume_intent_can_override_a_wake_without_duplicate_message(
     messages.append(c.state_dir, 42, "original wake", "op")
     intents_mod.write_intent(
         c.state_dir, "resume", "portfolio_eval", 42,
-        {"model": "claude-sonnet-4-6", "bypass_usage": True}, "op", 1)
+        {"model": "anthropic/claude-sonnet-5", "bypass_usage": True}, "op", 1)
     sess = FakeSessions()
 
     main.run_pass(c, deps(sess=sess))
 
-    assert [(issue, model) for issue, _text, model in sess.resumed] == [
-        (42, "claude-sonnet-4-6")]
+    assert [(issue, model) for issue, _text, model, _effort in sess.resumed] == [
+        (42, "anthropic/claude-sonnet-5")]
     assert "original wake" in sess.resumed[0][1]
     assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
         "original wake"]
@@ -2283,7 +2440,7 @@ def test_a_stale_attached_marker_no_longer_holds_anything(tmp_path, monkeypatch)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     # The stale marker is ignored; the task resumes normally
-    assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
+    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
@@ -2419,7 +2576,7 @@ def test_resume_woken_ends_session_before_resuming(tmp_path, monkeypatch):
     sess = FakeSessions(alive=[42])
     main.run_pass(c, deps(sess=sess))
     assert sess.ended == [42]
-    assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
+    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
 
 
 def test_reply_to_login_park_injects_code(tmp_path, monkeypatch):
@@ -2532,7 +2689,8 @@ def gate_signal(wt: Path, artifact: str = "spec.md") -> None:
     """The spec session's 'draft ready, review it' signal."""
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
-         "artifact": artifact}))
+         "artifact": artifact,
+         "track": "standard"}))
 
 
 def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatch):
@@ -2670,7 +2828,7 @@ def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == ""
     assert t.slot in range(3)   # a real slot, not NO_SLOT
-    assert sess.resumed == [(42, "Continue.", "claude-opus-4-8")]
+    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
 
 
 def test_woken_gate_parked_task_waits_when_every_slot_is_taken(tmp_path, monkeypatch):
@@ -2688,7 +2846,7 @@ def test_woken_gate_parked_task_waits_when_every_slot_is_taken(tmp_path, monkeyp
     main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE and t.slot == NO_SLOT  # still parked, retried next pass
-    assert 42 not in [issue for issue, _msg, _model in sess.resumed]
+    assert 42 not in [issue for issue, _msg, _model, _effort in sess.resumed]
 
 
 def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, monkeypatch):
@@ -2709,7 +2867,7 @@ def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, mon
               updated_at="2026-07-21T00:00:01+00:00")
     sess = FakeSessions(alive={1, 2})
     main.run_pass(c, deps(sess=sess))
-    assert 43 in [issue for issue, _msg, _model in sess.resumed]
+    assert 43 in [issue for issue, _msg, _model, _effort in sess.resumed]
 
 
 def test_spec_parked_ping_links_spec(tmp_path, monkeypatch):
@@ -2719,7 +2877,8 @@ def test_spec_parked_ping_links_spec(tmp_path, monkeypatch):
                    spec_path="docs/superpowers/specs/x-design.md")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "ready",
-         "artifact": "docs/superpowers/specs/x-design.md"}))
+         "artifact": "docs/superpowers/specs/x-design.md",
+         "track": "standard"}))
     monkeypatch.setattr(main.spec_publish, "ensure_published",
                         lambda **kw: spec_publish.PublishResult(url=SPEC_URL))
     d = deps(sess=FakeSessions(alive={42}))
@@ -2739,7 +2898,8 @@ def test_spec_parked_note_says_local_only_when_publish_fails(
                    spec_path="docs/superpowers/specs/x-design.md")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "ready",
-         "artifact": "docs/superpowers/specs/x-design.md"}))
+         "artifact": "docs/superpowers/specs/x-design.md",
+         "track": "standard"}))
     monkeypatch.setattr(
         main.spec_publish, "ensure_published",
         lambda **kw: spec_publish.PublishResult(error="git push failed: auth"))
@@ -2758,7 +2918,8 @@ def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
     wt = make_task(c, stage=Stage.SPEC)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "ready",
-         "artifact": "docs/specs/x-design.md"}))
+         "artifact": "docs/specs/x-design.md",
+         "track": "standard"}))
     token_error = (
         "git push failed: fatal: unable to access "
         "'https://x-access-token:ghp_SECRET@github.com/jesdi/r.git/': "
@@ -2862,12 +3023,12 @@ class LiveUntilEnded(FakeSessions):
     frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
     express across a dozen passes."""
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model):
-        super().spawn_stage(target, issue, worktree, prompt, stage_name, model)
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort=""):
+        super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
         self.alive_set.add(issue)
 
-    def resume(self, target, issue, worktree, message, model):
-        super().resume(target, issue, worktree, message, model)
+    def resume(self, target, issue, worktree, message, model, effort=""):
+        super().resume(target, issue, worktree, message, model, effort)
         self.alive_set.add(issue)
 
     def end(self, target, issue):
@@ -2912,7 +3073,7 @@ def test_overnight_drain_parks_every_ready_spec_then_one_reply_advances_one(
 
     valid_spec(Path(woken.worktree))
     (Path(woken.worktree) / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md", "track": "standard"}))
     patch_events(monkeypatch, [])
     main.run_pass(c, d)
     assert load(c.state_dir, "portfolio_eval", woken.issue).stage is Stage.PLAN
@@ -3280,24 +3441,21 @@ def test_remove_workspace_dry_run_flag_reaches_the_real_teardown(
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PR_OPEN
 
 
-def test_address_review_resolves_the_implement_model(tmp_path, monkeypatch):
-    """address-review writes production code and pushes it to the PR, so it
-    resolves against the policy's `implement:` key — not the cheap default
-    it silently fell through to."""
+def test_address_review_reuses_the_implement_pick(tmp_path, monkeypatch):
+    """address-review is implement-shaped work: a pr-open task resuming it
+    reuses the implement stage's sticky pick, same mechanism as
+    test_pick_is_reused_for_every_ticket_of_the_stage — not a fresh policy
+    resolution that would silently fall through to something else."""
     patch_usage(monkeypatch)
-    policy = parse_policy({
-        "default": "claude-fable-5",
-        "rules": [{"name": "everything", "when": {"effort": {"min": 0}},
-                   "use": {"spec": "claude-fable-5",
-                           "implement": "claude-opus-4-8"}}],
-    })
-    c = dc_replace(cfg(tmp_path), models=policy)
-    pr_open_task(c, feedback_pending=True, effort=1)
+    c = cfg(tmp_path)
+    pr_open_task(c, feedback_pending=True, track="deep",
+                 picks={"implement": "anthropic/claude-opus-5@medium"})
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload()
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
-    assert [s[:3] for s in sess.spawned] == [(42, "address-review", "claude-opus-4-8")]
+    assert [s[:3] + (s[4],) for s in sess.spawned] == [
+        (42, "address-review", "anthropic/claude-opus-5", "medium")]
 
 
 def test_cursor_now_never_seals_the_second_it_was_taken_in():
@@ -3692,7 +3850,7 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.SPEC))
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True))
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
@@ -3706,7 +3864,7 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.SPEC))
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True))
     assert "## Operator messages" not in d.sessions.spawned[-1][3]
 
 
@@ -3739,7 +3897,8 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._retry_plan(c, d, c.targets[0], task,
-                     main._launch_for(c, c.targets[0], task, Stage.PLAN),
+                     main._launch_for(c, c.targets[0], task, Stage.PLAN,
+                                      lambda m: True),
                      "missing Goal line")
     assert "keep the scope small" in d.sessions.resumed[-1][1]
     assert messages.undelivered(c.state_dir, 42) == []
@@ -4030,7 +4189,7 @@ def test_plan_done_starts_ticket_one_with_its_path_in_the_prompt(tmp_path, monke
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.ticket_cursor, t.ticket_count) == (Stage.IMPLEMENT, 1, 3)
-    issue, stage_name, model, prompt = sess.spawned[-1]
+    issue, stage_name, model, prompt, effort = sess.spawned[-1]
     assert stage_name == "implement"
     assert ".agent/tickets/01-t1.md" in prompt and "docs/specs/x-design.md" in prompt
     assert "implement_started" in d.notifier.sent
@@ -4044,7 +4203,7 @@ def test_spec_approval_records_the_spec_path_for_later_stages(tmp_path, monkeypa
     (wt / "spec.md").write_text("# t — design\n\n## Problem\n\n" + "x " * 400
                                 + "\n\n## Decisions\n\n" + "y " * 400)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md"}))
+        {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md", "track": "standard"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).spec_path == "spec.md"
 
@@ -4327,7 +4486,7 @@ def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.SPEC))
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
     assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
@@ -4482,7 +4641,8 @@ def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
                    updated_at=fresh_ts)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "",
-         "artifact": spec_artifact}))
+         "artifact": spec_artifact,
+         "track": "standard"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_SPEC_REVIEW, "stage must stay unchanged"
@@ -4558,7 +4718,8 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.IMPLEMENT))
+                      main._launch_for(c, c.targets[0], task, Stage.IMPLEMENT,
+                                       lambda m: True))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
         f"stage advance must clear operator_request, got {t.operator_request!r}")

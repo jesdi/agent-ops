@@ -44,7 +44,7 @@ def _wrapper() -> list[str]:
 
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
-                claude_args: str) -> str:
+                claude_args: str, effort: str = "") -> str:
     clone = clone_root(worktree)
     branch = task_branch(worktree)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
@@ -93,12 +93,13 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         # store provides. It is a session-config flag, orthogonal to
         # --continue on the resume path.
         f"{image()} claude --remote-control {name} "
-        f"--permission-mode auto --model {bare_model_id(model)} {claude_args}"
+        f"--permission-mode auto --model {bare_model_id(model)}"
+        f"{' --effort ' + effort if effort else ''} {claude_args}"
     )
 
 
 def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
-               cpus: str, model: str, prompt_path: str) -> list[str]:
+               cpus: str, model: str, prompt_path: str, effort: str = "") -> list[str]:
     """Headless read-only triage session: argv for subprocess.run (no pane,
     no -it). The clone is :ro — the session decides, it never writes; its
     only writable surface is /triage, where the prompt is read from and the
@@ -119,7 +120,8 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     composed; the podman argv stays a list so its shape stays assertable."""
     home = str(Path.home())
     claude = (f"claude -p \"$(cat {shlex.quote(prompt_path)})\" "
-              f"--permission-mode auto --model {shlex.quote(bare_model_id(model))}")
+              f"--permission-mode auto --model {shlex.quote(bare_model_id(model))}"
+              + (f" --effort {shlex.quote(effort)}" if effort else ""))
     return [
         *_wrapper(),
         "podman", "run", "--rm", "--name", name,

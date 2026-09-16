@@ -128,3 +128,8 @@ test('model-capacity warning explains the block and can choose another model', a
   await userEvent.click(screen.getByRole('button', { name: /run with opus-4-8/i }))
   await waitFor(() => expect(posted).toEqual({ model: 'claude-opus-4-8' }))
 })
+
+it('shows the track chip', () => {
+  renderCard({ ...inProgressCard, track: 'security' })
+  expect(screen.getByText('track security')).toBeInTheDocument()
+})

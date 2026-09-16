@@ -19,6 +19,13 @@ Rules:
 - If the issue is trivial or similar to tasks automated previously,
   record the `auto` label. If substantial fog of war remains that would
   need heavy human interaction, record `human-required`.
+- Record exactly one track label `track:<name>` for every issue you label
+  `auto`: the track that fits the issue as written (it only decides who
+  writes the spec; the spec session picks the track for the rest). If the
+  issue already carries a different `track:` label, put it in
+  `remove_labels`. The tracks:
+
+$tracks
 - If the issue is incomplete, draft a comment asking the author for the
   specific missing information, and record no other decisions for it.
 - Never draft routine triage-report comments; a comment exists only to

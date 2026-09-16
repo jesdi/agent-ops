@@ -1,27 +1,43 @@
 import pytest
 
-from dispatcher.models import (DEFAULT_MODEL, DEFAULT_POLICY, ModelPolicy,
-                               parse_policy, resolve)
+from dispatcher.models import (DEFAULT_MODEL, DEFAULT_POLICY, EFFORTS, STAGES,
+                               Entry, ModelPolicy, bare_model_id, parse_entry,
+                               parse_policy, policy_stage, split_model_id,
+                               track_from_labels, tracks_text)
 
-# The two rules from the spec, as they will appear in targets.yaml.
 RAW = {
-    "default": "claude-opus-4-8",
-    "rules": [
-        {
-            "name": "trivial-backend",
-            "when": {"effort": {"max": 1}, "labels_exclude": ["frontend"]},
-            "use": "claude-sonnet-4-6",
+    "triage": ["anthropic/claude-sonnet-5@medium"],
+    "untracked": "standard",
+    "tracks": {
+        "trivial": {
+            "when": "Rote rename, typo, formatting, dependency bump.",
+            "spec": ["anthropic/claude-sonnet-5@low"],
+            "plan": ["anthropic/claude-sonnet-5@medium"],
+            "implement": ["anthropic/claude-sonnet-5@medium", "openai/gpt-luna@high"],
+            "review": ["openai/gpt-luna@xhigh", "anthropic/claude-sonnet-5@medium"],
         },
-        {
-            "name": "frontend-substantial",
-            "when": {"effort": {"min": 2}, "labels_include": ["frontend"]},
-            "use": {
-                "spec": "claude-fable-5",
-                "plan": "claude-fable-5",
-                "implement": "claude-opus-4-8",
-            },
+        "standard": {
+            "when": "Bounded change with a clear scope after the questionnaire.",
+            "spec": ["anthropic/claude-fable-5-1@medium", "openai/gpt-astra@medium"],
+            "plan": ["anthropic/claude-fable-5-1@medium", "openai/gpt-astra@medium"],
+            "implement": ["anthropic/claude-sonnet-5@medium", "openai/gpt-sol@medium"],
+            "review": ["openai/gpt-astra@medium", "anthropic/claude-opus-5@medium"],
         },
-    ],
+        "frontend": {
+            "when": "Mostly UI or frontend work: components, styling, layout, client behaviour. Fable first.",
+            "spec": ["anthropic/claude-fable-5-1@medium", "openai/gpt-astra@medium"],
+            "plan": ["anthropic/claude-fable-5-1@medium", "openai/gpt-astra@medium"],
+            "implement": ["anthropic/claude-fable-5-1@medium", "anthropic/claude-opus-5@medium"],
+            "review": ["openai/gpt-astra@medium", "anthropic/claude-opus-5@medium"],
+        },
+        "security": {
+            "when": "Touches auth, secrets, permissions. Never below this track.",
+            "spec": ["anthropic/claude-fable-5-1@high", "openai/gpt-astra@high"],
+            "plan": ["anthropic/claude-fable-5-1@high", "openai/gpt-astra@high"],
+            "implement": ["anthropic/claude-opus-5@medium", "openai/gpt-sol@high"],
+            "review": ["openai/gpt-astra@high", "anthropic/claude-fable-5-1@high"],
+        },
+    },
 }
 
 
@@ -29,274 +45,233 @@ def policy() -> ModelPolicy:
     return parse_policy(RAW)
 
 
-# -- the two worked rules ------------------------------------------------
+# -- entries ---------------------------------------------------------------
 
-def test_trivial_backend_uses_sonnet_for_every_stage():
+def test_entry_parses_provider_model_and_effort():
+    e = parse_entry("openai/gpt-luna@xhigh", "t")
+    assert e == Entry("openai", "gpt-luna", "xhigh")
+    assert e.model_id == "openai/gpt-luna"
+    assert str(e) == "openai/gpt-luna@xhigh"
+
+
+def test_bare_entry_is_anthropic_with_no_effort():
+    e = parse_entry("claude-opus-5", "t")
+    assert e == Entry("anthropic", "claude-opus-5", "")
+    assert str(e) == "anthropic/claude-opus-5"
+
+
+@pytest.mark.parametrize("bad", ["", "model with space", "claude@fast", "openai/", "/gpt",
+                                 "a/b/c", "claude@", ["x"]])
+def test_entry_rejects_unusable_values(bad):
+    with pytest.raises(ValueError, match="t:"):
+        parse_entry(bad, "t:")
+
+
+def test_efforts_are_the_cli_set():
+    assert EFFORTS == ("low", "medium", "high", "xhigh", "max")
+
+
+# -- parsing ----------------------------------------------------------------
+
+def test_parse_keeps_track_order_and_stage_lists():
     p = policy()
-    for stage in ("spec", "plan", "implement"):
-        assert resolve(p, stage, 1, ["auto"]) == "claude-sonnet-4-6"
+    assert list(p.tracks) == ["trivial", "standard", "frontend", "security"]
+    assert [str(e) for e in p.tracks["standard"].stages["implement"]] == [
+        "anthropic/claude-sonnet-5@medium", "openai/gpt-sol@medium"]
+    assert p.tracks["security"].when.startswith("Touches auth")
+    assert p.untracked == "standard"
+    assert [str(e) for e in p.triage] == ["anthropic/claude-sonnet-5@medium"]
 
 
-def test_frontend_substantial_splits_fable_and_opus_by_stage():
-    p = policy()
-    labels = ["auto", "frontend"]
-    assert resolve(p, "spec", 3, labels) == "claude-fable-5"
-    assert resolve(p, "plan", 3, labels) == "claude-fable-5"
-    assert resolve(p, "implement", 3, labels) == "claude-opus-4-8"
+def test_model_ids_are_every_entry_deduplicated_in_order():
+    ids = policy().model_ids()
+    assert ids[0] == "anthropic/claude-sonnet-5"          # triage first
+    assert ids.count("anthropic/claude-fable-5-1") == 1
+    assert {"openai/gpt-luna", "openai/gpt-sol", "openai/gpt-astra"} <= set(ids)
 
 
-# -- the gaps all fall through to default --------------------------------
-
-def test_effort_one_with_frontend_falls_through_to_default():
-    assert resolve(policy(), "implement", 1, ["frontend"]) == DEFAULT_MODEL
+def test_gate_entry_is_the_untracked_tracks_first_spec_entry():
+    assert str(policy().gate_entry()) == "anthropic/claude-fable-5-1@medium"
 
 
-def test_high_effort_without_frontend_falls_through_to_default():
-    assert resolve(policy(), "implement", 3, ["auto"]) == DEFAULT_MODEL
-
-
-def test_unset_effort_never_matches_a_max_constraint():
-    # effort is None -> must NOT be downgraded by {max: 1}
-    assert resolve(policy(), "implement", None, ["auto"]) == DEFAULT_MODEL
-
-
-def test_unset_effort_never_matches_a_min_constraint():
-    assert resolve(policy(), "spec", None, ["frontend"]) == DEFAULT_MODEL
-
-
-# -- matcher semantics ---------------------------------------------------
-
-def test_first_matching_rule_wins():
-    p = parse_policy({
-        "default": "claude-opus-4-8",
-        "rules": [
-            {"name": "broad", "when": {"effort": {"max": 5}}, "use": "model-a"},
-            {"name": "narrow", "when": {"effort": {"max": 1}}, "use": "model-b"},
-        ],
-    })
-    assert resolve(p, "spec", 1, []) == "model-a"
-
-
-def test_empty_when_is_a_catch_all():
-    p = parse_policy({
-        "default": "claude-opus-4-8",
-        "rules": [{"name": "everything", "when": {}, "use": "model-a"}],
-    })
-    assert resolve(p, "spec", None, []) == "model-a"
-
-
-def test_rule_without_when_is_a_catch_all():
-    p = parse_policy({
-        "default": "claude-opus-4-8",
-        "rules": [{"name": "everything", "use": "model-a"}],
-    })
-    assert resolve(p, "plan", 4, ["frontend"]) == "model-a"
-
-
-def test_labels_include_requires_every_listed_label():
-    p = parse_policy({
-        "default": "d",
-        "rules": [{"name": "r", "when": {"labels_include": ["frontend", "auto"]},
-                   "use": "model-a"}],
-    })
-    assert resolve(p, "spec", 2, ["frontend", "auto"]) == "model-a"
-    assert resolve(p, "spec", 2, ["frontend"]) == "d"
-
-
-def test_labels_exclude_rejects_on_any_overlap():
-    p = parse_policy({
-        "default": "d",
-        "rules": [{"name": "r", "when": {"labels_exclude": ["frontend", "wip"]},
-                   "use": "model-a"}],
-    })
-    assert resolve(p, "spec", 2, ["auto"]) == "model-a"
-    assert resolve(p, "spec", 2, ["auto", "wip"]) == "d"
-
-
-def test_label_matching_is_case_sensitive():
-    p = parse_policy({
-        "default": "d",
-        "rules": [{"name": "r", "when": {"labels_include": ["frontend"]},
-                   "use": "model-a"}],
-    })
-    assert resolve(p, "spec", 2, ["Frontend"]) == "d"
-
-
-def test_effort_min_and_max_together_form_a_range():
-    p = parse_policy({
-        "default": "d",
-        "rules": [{"name": "r", "when": {"effort": {"min": 2, "max": 3}},
-                   "use": "model-a"}],
-    })
-    assert resolve(p, "spec", 2, []) == "model-a"
-    assert resolve(p, "spec", 3, []) == "model-a"
-    assert resolve(p, "spec", 4, []) == "d"
-    assert resolve(p, "spec", 1, []) == "d"
-
-
-def test_use_map_omitting_a_stage_falls_back_to_default_not_later_rules():
-    p = parse_policy({
-        "default": "claude-opus-4-8",
-        "rules": [
-            {"name": "partial", "when": {}, "use": {"spec": "model-a"}},
-            {"name": "later", "when": {}, "use": "model-b"},
-        ],
-    })
-    assert resolve(p, "spec", 1, []) == "model-a"
-    assert resolve(p, "implement", 1, []) == "claude-opus-4-8"
-
-
-# -- parsing -------------------------------------------------------------
-
-def test_parse_none_yields_opus_default_with_no_rules():
-    p = parse_policy(None)
-    assert p == DEFAULT_POLICY
-    assert p.default == "claude-opus-4-8"
-    assert p.rules == ()
-
-
-def test_parse_empty_dict_yields_opus_default():
+def test_parse_none_or_empty_yields_the_default_policy():
+    assert parse_policy(None) == DEFAULT_POLICY
     assert parse_policy({}) == DEFAULT_POLICY
+    assert list(DEFAULT_POLICY.tracks) == ["standard"]
+    assert DEFAULT_POLICY.untracked == "standard"
+    for stage in STAGES:
+        assert [e.model_id for e in DEFAULT_POLICY.tracks["standard"].stages[stage]] == [
+            f"anthropic/{DEFAULT_MODEL}"]
+    assert DEFAULT_POLICY.gate_entry().model_id == f"anthropic/{DEFAULT_MODEL}"
 
 
-def test_parse_keeps_rule_order_and_names():
-    p = policy()
-    assert [r.name for r in p.rules] == ["trivial-backend", "frontend-substantial"]
+@pytest.mark.parametrize("old", [{"default": "x"}, {"rules": []}])
+def test_parse_rejects_the_old_shape_naming_the_new_keys(old):
+    with pytest.raises(ValueError, match="tracks"):
+        parse_policy({**RAW, **old})
 
 
-def test_parse_rejects_unknown_when_key():
-    with pytest.raises(ValueError, match="label_include"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {"label_include": ["frontend"]}, "use": "m"}]})
+def test_parse_rejects_unknown_top_level_key():
+    with pytest.raises(ValueError, match="triage_model"):
+        parse_policy({**RAW, "triage_model": "x"})
 
 
-def test_parse_rejects_unknown_stage_in_use_map():
+def test_parse_rejects_track_missing_a_stage():
+    raw = {**RAW, "tracks": {"t": {"when": "w", "spec": ["m"], "plan": ["m"],
+                                   "implement": ["m"]}}, "untracked": "t"}
+    with pytest.raises(ValueError, match="review"):
+        parse_policy(raw)
+
+
+def test_parse_rejects_track_with_unknown_key():
+    raw = {**RAW, "tracks": {"t": {"when": "w", "spec": ["m"], "plan": ["m"],
+                                   "implement": ["m"], "review": ["m"],
+                                   "verify": ["m"]}}, "untracked": "t"}
     with pytest.raises(ValueError, match="verify"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {}, "use": {"verify": "m"}}]})
+        parse_policy(raw)
 
 
-def test_parse_rejects_non_mapping_effort():
-    with pytest.raises(ValueError, match="effort"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {"effort": 1}, "use": "m"}]})
+def test_parse_rejects_empty_stage_list_and_bare_string():
+    base = {"when": "w", "spec": ["m"], "plan": ["m"], "implement": ["m"]}
+    with pytest.raises(ValueError, match="review"):
+        parse_policy({**RAW, "untracked": "t", "tracks": {"t": {**base, "review": []}}})
+    with pytest.raises(ValueError, match="review"):
+        parse_policy({**RAW, "untracked": "t", "tracks": {"t": {**base, "review": "m"}}})
 
 
-def test_parse_rejects_unknown_effort_bound():
-    with pytest.raises(ValueError, match="exactly"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {"effort": {"lt": 2}}, "use": "m"}]})
+def test_parse_rejects_track_without_when():
+    raw = {**RAW, "tracks": {"t": {"spec": ["m"], "plan": ["m"], "implement": ["m"],
+                                   "review": ["m"]}}, "untracked": "t"}
+    with pytest.raises(ValueError, match="when"):
+        parse_policy(raw)
 
 
-def test_parse_rejects_non_int_effort_bound():
-    with pytest.raises(ValueError, match="integer"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {"effort": {"max": "one"}}, "use": "m"}]})
+def test_parse_rejects_untracked_naming_no_track():
+    with pytest.raises(ValueError, match="untracked"):
+        parse_policy({**RAW, "untracked": "nope"})
 
 
-def test_parse_rejects_rule_without_use():
-    with pytest.raises(ValueError, match="use"):
-        parse_policy({"default": "d", "rules": [{"name": "r", "when": {}}]})
+def test_parse_rejects_missing_triage_list():
+    raw = dict(RAW)
+    del raw["triage"]
+    with pytest.raises(ValueError, match="triage"):
+        parse_policy(raw)
 
 
-def test_parse_rejects_non_string_default():
-    with pytest.raises(ValueError, match="default"):
-        parse_policy({"default": ["claude-opus-4-8"], "rules": []})
+def test_parse_rejects_bad_effort_inside_a_track():
+    raw = {**RAW, "tracks": {"t": {"when": "w", "spec": ["m@turbo"], "plan": ["m"],
+                                   "implement": ["m"], "review": ["m"]}},
+           "untracked": "t"}
+    with pytest.raises(ValueError, match="turbo"):
+        parse_policy(raw)
 
 
-def test_parse_rejects_non_list_rules():
-    with pytest.raises(ValueError, match="rules"):
-        parse_policy({"default": "d", "rules": {"name": "r"}})
+@pytest.mark.parametrize("name", ["", "has space", "with:colon"])
+def test_parse_rejects_label_unsafe_track_names(name):
+    raw = {**RAW, "tracks": {name: RAW["tracks"]["standard"]}, "untracked": name}
+    with pytest.raises(ValueError, match="track name"):
+        parse_policy(raw)
 
 
-def test_parse_rejects_non_mapping_rule():
-    with pytest.raises(ValueError, match="mapping"):
-        parse_policy({"default": "d", "rules": ["foo"]})
+# -- helpers ----------------------------------------------------------------
+
+def test_policy_stage_maps_runtime_stages():
+    assert policy_stage("queued") == "spec"
+    assert policy_stage("awaiting-spec-review") == "spec"
+    assert policy_stage("address-review") == "implement"
+    assert policy_stage("review") == "review"
+    assert policy_stage("blocked") == "blocked"
 
 
-def test_parse_rejects_bare_string_labels_include():
-    with pytest.raises(ValueError, match="labels_include"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {"labels_include": "frontend"}, "use": "m"}]})
+def test_tracks_text_lists_name_and_when_per_line():
+    text = tracks_text(policy())
+    assert text.splitlines()[0] == "- `trivial`: Rote rename, typo, formatting, dependency bump."
+    assert len(text.splitlines()) == 4
 
 
-# -- model id validation (finding E: reject unusable model strings) ------
-
-def test_parse_rejects_empty_string_default():
-    with pytest.raises(ValueError, match="default"):
-        parse_policy({"default": "", "rules": []})
-
-
-def test_parse_rejects_empty_scalar_use():
-    with pytest.raises(ValueError, match="use"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {}, "use": ""}]})
+def test_track_from_labels_takes_the_first_configured_track_label():
+    p = policy()
+    assert track_from_labels(["auto", "track:security"], p) == "security"
+    assert track_from_labels(["track:nope", "track:trivial"], p) == "trivial"
+    assert track_from_labels(["auto"], p) == "standard"
+    assert track_from_labels([], p) == "standard"
 
 
-def test_parse_rejects_whitespace_in_scalar_use():
-    with pytest.raises(ValueError, match="use"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {}, "use": "model with space"}]})
-
-
-def test_parse_rejects_semicolon_bearing_use_is_still_flagged_by_whitespace_rule():
-    # A ';' alone isn't whitespace, but any real injection attempt in practice
-    # carries a space too (e.g. "model; rm -rf ." or "model;rm -rf"). Confirm
-    # the whitespace check catches the space-bearing form actually seen in
-    # shell-injection payloads handed to tmux send-keys.
-    with pytest.raises(ValueError, match="use"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {}, "use": "model; rm -rf ."}]})
-
-
-def test_parse_rejects_non_string_value_in_use_map():
-    with pytest.raises(ValueError, match="use"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {}, "use": {"spec": {"a": "b"}}}]})
-
-
-def test_parse_rejects_whitespace_in_use_map_value():
-    with pytest.raises(ValueError, match="use"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {}, "use": {"spec": "model with space"}}]})
-
-
-def test_parse_rejects_empty_use_map_value():
-    with pytest.raises(ValueError, match="use"):
-        parse_policy({"default": "d", "rules": [
-            {"name": "r", "when": {}, "use": {"spec": ""}}]})
-
-
-def test_review_is_a_policy_stage():
-    from dispatcher.models import STAGES, parse_policy, resolve
-    assert "review" in STAGES
-    p = parse_policy({"default": "claude-opus-4-8", "rules": [
-        {"name": "std", "use": {"review": "claude-fable-5"}}]})
-    assert resolve(p, "review", None, []) == "claude-fable-5"
-    assert resolve(p, "implement", None, []) == "claude-opus-4-8"
-
-
-# -- provider/model split ---------------------------------------------------
+# -- provider/model split (unchanged) -----------------------------------------
 
 def test_bare_id_is_anthropic():
-    from dispatcher.models import split_model_id
-    assert split_model_id("claude-sonnet-4-6") == ("anthropic", "claude-sonnet-4-6")
+    assert split_model_id("claude-sonnet-5") == ("anthropic", "claude-sonnet-5")
 
 
 def test_prefixed_id_names_its_provider():
-    from dispatcher.models import split_model_id, bare_model_id
     assert split_model_id("openai/gpt-5.4-codex") == ("openai", "gpt-5.4-codex")
-    assert split_model_id("nvidia/claude-sonnet-4-6") == ("nvidia", "claude-sonnet-4-6")
-    assert bare_model_id("nvidia/claude-sonnet-4-6") == "claude-sonnet-4-6"
+    assert bare_model_id("nvidia/claude-sonnet-5") == "claude-sonnet-5"
 
 
 @pytest.mark.parametrize("bad", ["openai/", "/gpt", "a/b/c"])
-def test_malformed_prefix_is_rejected_at_config_load(bad):
+def test_malformed_prefix_is_rejected(bad):
     with pytest.raises(ValueError, match="model id"):
-        parse_policy({"default": bad})
+        split_model_id(bad)
 
 
-def test_policy_accepts_prefixed_ids():
-    p = parse_policy({"default": "anthropic/claude-sonnet-4-6",
-                      "rules": [{"name": "r", "use": {"spec": "openai/gpt-5.4-codex"}}]})
-    assert p.default == "anthropic/claude-sonnet-4-6"
+# -- resolution ---------------------------------------------------------------
+
+from dispatcher.models import candidates, resolve, triage_entry  # noqa: E402
+
+ALL = lambda m: True  # noqa: E731
+NONE = lambda m: False  # noqa: E731
+
+
+def test_candidates_are_the_tracks_stage_list_in_order():
+    assert [str(e) for e in candidates(policy(), "standard", "implement")] == [
+        "anthropic/claude-sonnet-5@medium", "openai/gpt-sol@medium"]
+
+
+def test_candidates_map_runtime_stages_through_policy_stage():
+    p = policy()
+    assert candidates(p, "trivial", "queued") == p.tracks["trivial"].stages["spec"]
+    assert candidates(p, "trivial", "awaiting-spec-review") == p.tracks["trivial"].stages["spec"]
+    assert candidates(p, "trivial", "address-review") == p.tracks["trivial"].stages["implement"]
+
+
+def test_candidates_for_a_non_policy_stage_are_empty():
+    assert candidates(policy(), "standard", "blocked") == ()
+
+
+def test_avoid_provider_moves_its_entries_to_the_back_stably():
+    p = parse_policy({**RAW, "tracks": {"t": {
+        "when": "w", "spec": ["m"], "plan": ["m"], "implement": ["m"],
+        "review": ["anthropic/a1", "openai/o1", "anthropic/a2", "nvidia/n1"]}},
+        "untracked": "t"})
+    assert [e.model_id for e in candidates(p, "t", "review", avoid_provider="anthropic")] == [
+        "openai/o1", "nvidia/n1", "anthropic/a1", "anthropic/a2"]
+
+
+def test_avoid_provider_is_a_no_op_when_every_entry_shares_it():
+    p = policy()
+    assert candidates(p, "trivial", "plan", avoid_provider="anthropic") == \
+        p.tracks["trivial"].stages["plan"]
+
+
+def test_resolve_takes_the_first_admitted_entry():
+    p = policy()
+    assert str(resolve(p, "standard", "implement", ALL)) == "anthropic/claude-sonnet-5@medium"
+    only_openai = lambda m: m.startswith("openai/")  # noqa: E731
+    assert str(resolve(p, "standard", "implement", only_openai)) == "openai/gpt-sol@medium"
+
+
+def test_resolve_is_none_when_nothing_is_admitted():
+    assert resolve(policy(), "standard", "implement", NONE) is None
+
+
+def test_resolve_honours_avoid_provider():
+    p = policy()
+    assert resolve(p, "standard", "review", ALL, avoid_provider="openai").model_id == \
+        "anthropic/claude-opus-5"
+
+
+def test_triage_entry_is_the_first_admitted_triage_entry():
+    p = parse_policy({**RAW, "triage": ["anthropic/a@low", "openai/b@high"]})
+    assert str(triage_entry(p, ALL)) == "anthropic/a@low"
+    assert str(triage_entry(p, lambda m: m.startswith("openai/"))) == "openai/b@high"
+    assert triage_entry(p, NONE) is None

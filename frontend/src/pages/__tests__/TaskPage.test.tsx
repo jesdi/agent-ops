@@ -695,3 +695,18 @@ it.each([
   expect(screen.getByRole('button', { name: "Won't do" })).toBeInTheDocument()
   expect(screen.getByLabelText('Reply')).toHaveValue('keep this draft')
 })
+
+it('shows the track and its meaning in the header', async () => {
+  server.use(
+    http.get('/api/task/:target/:issue', () =>
+      HttpResponse.json({
+        ...taskDetail,
+        track_when: 'Touches auth.',
+        card: { ...taskDetail.card, track: 'security' },
+      }),
+    ),
+  )
+  renderTask()
+  expect(await screen.findByText(/track security/)).toBeInTheDocument()
+  expect(screen.getByText('Touches auth.')).toBeInTheDocument()
+})

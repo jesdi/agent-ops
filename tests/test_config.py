@@ -153,13 +153,15 @@ def test_target_boost_field_id_defaults_empty(tmp_path, monkeypatch):
 WITH_MODELS = """\
 state_dir: /tmp/s
 models:
-  default: claude-opus-4-8
-  rules:
-    - name: trivial-backend
-      when:
-        effort: {max: 1}
-        labels_exclude: [frontend]
-      use: claude-sonnet-4-6
+  triage: [claude-sonnet-5@medium]
+  untracked: standard
+  tracks:
+    standard:
+      when: Bounded change with a clear scope.
+      spec: [claude-opus-5@medium]
+      plan: [claude-opus-5@medium]
+      implement: [claude-sonnet-5@medium, openai/gpt-luna@xhigh]
+      review: [openai/gpt-luna@xhigh, claude-sonnet-5@medium]
 targets:
   - name: portfolio_eval
     repo: jesdi/portfolio_eval
@@ -175,8 +177,15 @@ targets:
     status_ready_option_id: R
     status_in_progress_option_id: I
     models:
-      default: claude-fable-5
-      rules: []
+      triage: [claude-fable-5-1]
+      untracked: only
+      tracks:
+        only:
+          when: Everything.
+          spec: [claude-fable-5-1]
+          plan: [claude-fable-5-1]
+          implement: [claude-fable-5-1]
+          review: [claude-fable-5-1]
 """
 
 
@@ -184,10 +193,11 @@ def test_global_policy_is_parsed(tmp_path: Path):
     p = tmp_path / "targets.yaml"
     p.write_text(WITH_MODELS)
     cfg = load_config(p)
-    assert cfg.models.default == "claude-opus-4-8"
-    assert [r.name for r in cfg.models.rules] == ["trivial-backend"]
-    assert cfg.models.rules[0].effort_max == 1
-    assert cfg.models.rules[0].labels_exclude == ("frontend",)
+    assert list(cfg.models.tracks) == ["standard"]
+    assert cfg.models.untracked == "standard"
+    assert [str(e) for e in cfg.models.tracks["standard"].stages["implement"]] == [
+        "anthropic/claude-sonnet-5@medium", "openai/gpt-luna@xhigh"]
+    assert str(cfg.models.triage[0]) == "anthropic/claude-sonnet-5@medium"
 
 
 def test_target_policy_replaces_the_global_one(tmp_path: Path):
@@ -195,8 +205,7 @@ def test_target_policy_replaces_the_global_one(tmp_path: Path):
     p.write_text(WITH_MODELS)
     cfg = load_config(p)
     target = cfg.targets[0]
-    assert policy_for(cfg, target).default == "claude-fable-5"
-    assert policy_for(cfg, target).rules == ()   # replaced wholesale, not merged
+    assert list(policy_for(cfg, target).tracks) == ["only"]   # replaced wholesale, not merged
 
 
 def test_target_without_models_inherits_the_global_policy(tmp_path: Path):
@@ -206,24 +215,46 @@ def test_target_without_models_inherits_the_global_policy(tmp_path: Path):
     assert policy_for(cfg, cfg.targets[0]) is cfg.models
 
 
-def test_absent_models_block_defaults_to_opus(tmp_path: Path):
+def test_absent_models_block_is_the_default_policy(tmp_path: Path):
     p = tmp_path / "targets.yaml"
     p.write_text("state_dir: /tmp/s\ntargets: []\n")
     cfg = load_config(p)
     assert cfg.models == DEFAULT_POLICY
-    assert cfg.models.default == "claude-opus-4-8"
+
+
+def test_old_models_shape_is_rejected_at_load(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\ntargets: []\nmodels:\n  default: claude-opus-5\n  rules: []\n")
+    with pytest.raises(ValueError, match="tracks"):
+        load_config(p)
+
+
+def test_top_level_triage_model_is_rejected_at_load(tmp_path: Path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\ntargets: []\ntriage_model: claude-sonnet-5\n")
+    with pytest.raises(ValueError, match="models.triage"):
+        load_config(p)
+
+
+def test_referenced_providers_come_from_every_entry(tmp_path: Path):
+    from dispatcher.config import referenced_providers
+    p = tmp_path / "targets.yaml"
+    p.write_text(WITH_MODELS)
+    assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})
 
 
 WITH_EMPTY_TARGET_MODELS = """\
 state_dir: /tmp/s
 models:
-  default: claude-opus-4-8
-  rules:
-    - name: trivial-backend
-      when:
-        effort: {max: 1}
-        labels_exclude: [frontend]
-      use: claude-sonnet-4-6
+  triage: [claude-opus-5]
+  untracked: standard
+  tracks:
+    standard:
+      when: Any task.
+      spec: [claude-opus-5]
+      plan: [claude-opus-5]
+      implement: [claude-opus-5]
+      review: [claude-opus-5]
 targets:
   - name: portfolio_eval
     repo: jesdi/portfolio_eval
@@ -245,31 +276,14 @@ targets:
 def test_target_with_empty_models_block_opts_out_of_global_policy(tmp_path: Path):
     """An explicit `models: {}` on a target means "override with nothing",
     not "inherit the global policy" — it's the natural way to opt one
-    target out of global rules (finding B)."""
+    target out of global tracks (finding B)."""
     p = tmp_path / "targets.yaml"
     p.write_text(WITH_EMPTY_TARGET_MODELS)
     cfg = load_config(p)
     target = cfg.targets[0]
     assert policy_for(cfg, target) == DEFAULT_POLICY
-    assert policy_for(cfg, target).rules == ()
-    assert policy_for(cfg, target).default == "claude-opus-4-8"
-    # the global policy still has its rule — only the target opted out
-    assert cfg.models.rules != ()
-
-
-def test_malformed_rule_fails_at_load(tmp_path: Path):
-    p = tmp_path / "targets.yaml"
-    p.write_text(
-        "state_dir: /tmp/s\ntargets: []\n"
-        "models:\n"
-        "  default: claude-opus-4-8\n"
-        "  rules:\n"
-        "    - name: typo\n"
-        "      when: {label_include: [frontend]}\n"
-        "      use: claude-sonnet-4-6\n"
-    )
-    with pytest.raises(ValueError, match="label_include"):
-        load_config(p)
+    # the global policy still has its own tracks — only the target opted out
+    assert list(cfg.models.tracks) == ["standard"]
 
 
 def test_stall_after_seconds_defaults_to_600(tmp_path):
@@ -357,19 +371,6 @@ def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
     cfg = load_config(write_yaml(tmp_path, top_extra={"done_retention_days": 3}))
     assert cfg.done_retention_days == 3
     assert load_config(write_yaml(tmp_path)).done_retention_days == 7
-
-
-def test_triage_model_defaults_empty(tmp_path):
-    p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\ntargets: []\n")
-    assert load_config(p).triage_model == ""
-
-
-def test_triage_model_loaded(tmp_path):
-    p = tmp_path / "targets.yaml"
-    p.write_text(
-        "state_dir: /tmp/s\ntriage_model: claude-opus-4-8\ntargets: []\n")
-    assert load_config(p).triage_model == "claude-opus-4-8"
 
 
 def test_pass_interval_minutes_default_and_override(tmp_path):
@@ -465,31 +466,20 @@ def test_bad_pace_knobs_fail_config_load(tmp_path, extra, msg):
         load_config(p)
 
 
-def test_referenced_providers_walks_every_policy_and_triage_model(tmp_path):
-    p = tmp_path / "targets.yaml"
-    p.write_text(SAMPLE + """\
-triage_model: openai/gpt-5.4-codex
-models:
-  default: claude-sonnet-4-6
-  rules:
-    - name: r
-      use: {spec: nvidia/claude-sonnet-4-6}
-""")
-    cfg = load_config(p)
-    assert referenced_providers(cfg) == frozenset({"anthropic", "openai", "nvidia"})
-
-
 def test_referenced_providers_includes_target_policies(tmp_path):
+    target_models = """\
+    models:
+      triage: [fake/m]
+      untracked: t
+      tracks:
+        t:
+          when: w
+          spec: [fake/m]
+          plan: [fake/m]
+          implement: [fake/m]
+          review: [fake/m]
+"""
     p = tmp_path / "targets.yaml"
     p.write_text(SAMPLE.replace("    status_in_progress_option_id: def456\n",
-                                "    status_in_progress_option_id: def456\n"
-                                "    models: {default: fake/m}\n"))
+                                "    status_in_progress_option_id: def456\n" + target_models))
     assert referenced_providers(load_config(p)) == frozenset({"anthropic", "fake"})
-
-
-def test_invalid_triage_model_raises_at_load(tmp_path):
-    """A malformed triage_model must fail load_config, not a later pass."""
-    p = tmp_path / "targets.yaml"
-    p.write_text(SAMPLE + "triage_model: anthropic/\n")
-    with pytest.raises(ValueError, match="triage_model"):
-        load_config(p)
