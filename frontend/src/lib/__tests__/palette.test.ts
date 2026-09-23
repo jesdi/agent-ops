@@ -1,32 +1,38 @@
+/// <reference types="node" />
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, resolve } from 'node:path'
+import { __unstable__loadDesignSystem } from 'tailwindcss'
+
 // index.css deletes Tailwind's default palette (`--color-*: initial`), so a
-// raw palette class would silently render with no colour. Tokens only.
-const sources = import.meta.glob(['../../**/*.{ts,tsx}', '!../../**/__tests__/**'], {
-  query: '?raw', import: 'default', eager: true,
-}) as Record<string, string>
+// raw palette class such as bg-red-500 compiles to nothing and renders
+// uncoloured. Compile index.css and check every colour utility the sources
+// use through Tailwind's own scanner and compiler produces a rule.
+const require = createRequire(import.meta.url)
+const { Scanner } = createRequire(require.resolve('@tailwindcss/vite'))('@tailwindcss/oxide')
+const srcDir = resolve(__dirname, '../..')
+const twDir = dirname(require.resolve('tailwindcss/package.json'))
 
-const HUES = 'slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose'
-const RAW = new RegExp(`\\b[a-z-]+-(?:(?:${HUES})-\\d{2,3}|black|white)(?:/\\d+)?\\b`, 'g')
+const COLOUR_UTILITY =
+  /^(?:[a-z-]+:)*-?(?:bg|text|border(?:-[xytrbles])?|ring|ring-offset|outline|fill|stroke|from|via|to|divide(?:-[xy])?|placeholder|accent|caret|decoration|shadow)-[a-z][a-z-]*(?:-\d+|-fg|-bg)?(?:\/\d+)?$/
 
-test('no source file uses a raw Tailwind palette class', () => {
-  expect(Object.keys(sources).length).toBeGreaterThan(20)
-  const hits = Object.entries(sources).flatMap(([file, text]) =>
-    [...text.matchAll(RAW)].map((m) => `${file}: ${m[0]}`))
-  expect(hits).toEqual([])
-})
-
-// Status tone lives in lib/tone.ts: a status fill or the neutral chip fill
-// anywhere else is a hand-rolled chip or banner that will drift. Status text
-// and dot colours (`text-failed-fg`, `bg-running-fg`) stay free.
-const TONE_FILL = /\b(?:bg-(?:running|waiting|failed|parked)-bg|bg-ink\/10)\b/g
-const TONE_FILL_ALLOWED: Record<string, string> = {
-  '../../components/UsagePanel.tsx': 'bg-ink/10', // usage bar track, not a chip
-}
-
-test('status chips and banners come only from lib/tone.ts', () => {
-  const hits = Object.entries(sources)
-    .filter(([file]) => file !== '../tone.ts')
-    .flatMap(([file, text]) => [...text.matchAll(TONE_FILL)]
-      .filter((m) => !(TONE_FILL_ALLOWED[file] ?? '').split(' ').includes(m[0]))
-      .map((m) => `${file}: ${m[0]}`))
-  expect(hits).toEqual([])
+test('every colour utility in the sources compiles against index.css', async () => {
+  const design = await __unstable__loadDesignSystem(readFileSync(resolve(srcDir, 'index.css'), 'utf8'), {
+    base: srcDir,
+    loadStylesheet: async (id: string, base: string) => {
+      const path = id === 'tailwindcss' ? resolve(twDir, 'index.css') : resolve(base, id)
+      return { path, base: dirname(path), content: readFileSync(path, 'utf8') }
+    },
+  })
+  const candidates = new Scanner({ sources: [
+    { base: srcDir, pattern: '**/*.{ts,tsx}', negated: false },
+    { base: srcDir, pattern: '**/__tests__/**', negated: true },
+  ] })
+    .scan()
+    .filter((c: string) => COLOUR_UTILITY.test(c))
+  expect(candidates.length).toBeGreaterThan(20)
+  const css = design.candidatesToCss(candidates)
+  const dead = candidates.filter((_: string, i: number) => css[i] === null)
+  expect(dead).toEqual([])
+  expect(design.candidatesToCss(['bg-red-500'])).toEqual([null])
 })

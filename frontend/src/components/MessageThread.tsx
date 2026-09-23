@@ -1,7 +1,8 @@
 import type { MessageView } from '../lib/api'
 import { relativeTime } from '../lib/format'
-import { chip } from '../lib/tone'
+import { chip, type Tone } from '../lib/tone'
 
+const STATE_TONE: Record<string, Tone> = { queued: 'waiting', delivered: 'running' }
 
 export function MessageThread({ messages }: { messages: MessageView[] }) {
   if (messages.length === 0) return null
@@ -20,7 +21,7 @@ export function MessageThread({ messages }: { messages: MessageView[] }) {
                 file exists but no dispatcher pass has drained it; "queued"
                 means it is in the durable message file; "delivered" means a
                 session actually got it. */}
-            <span data-testid="message-state" className={chip.neutral}>
+            <span data-testid="message-state" className={chip[STATE_TONE[m.state] ?? 'neutral']}>
               {m.state}
               {m.state === 'delivered' && m.delivered_at !== ''
                 ? ` ${relativeTime(m.delivered_at)}`

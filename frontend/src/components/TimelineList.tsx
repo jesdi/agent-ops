@@ -8,7 +8,10 @@ const EVENT_TONE: Partial<Record<string, Tone>> = {
   claimed: 'running',
   parked: 'parked',
   resumed: 'running',
+  'login-code-injected': 'running',
+  'pr-opened': 'running',
   failed: 'failed',
+  'intent-applied': 'waiting',
 }
 
 export function TimelineList({ events }: { events: EventEntry[] }) {
