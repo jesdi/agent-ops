@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { DragEvent, ReactNode } from 'react'
 import type { Column } from '../lib/api'
 import { TaskCardView } from './TaskCard'
 
@@ -6,6 +6,23 @@ export interface DraggedCard {
   issue: number
   target: string
   title: string
+}
+
+/** Drop-target handlers for the card drag payload. Shared by the Wont do
+ *  column and its count-strip chip, so both accept the same drags. */
+export function cardDropTarget(onCardDrop: ((card: DraggedCard) => void) | undefined) {
+  if (!onCardDrop) return {}
+  return {
+    onDragOver: (e: DragEvent) => e.preventDefault(),
+    onDrop: (e: DragEvent) => {
+      e.preventDefault()
+      const raw = e.dataTransfer.getData('application/x-agent-ops-card')
+      if (!raw) return
+      try {
+        onCardDrop(JSON.parse(raw) as DraggedCard)
+      } catch { /* foreign drag — ignore */ }
+    },
+  }
 }
 
 export interface ColumnProps {
@@ -17,65 +34,45 @@ export interface ColumnProps {
    * and cannot be attributed to one target over another.
    */
   pendingByKey: ReadonlyMap<string, readonly string[]>
-  collapsed: boolean
-  onToggle: () => void
-  /** Extra content (e.g. ghost cards) rendered after the task cards, hidden when collapsed. */
+  /** Extra content (e.g. ghost cards) rendered after the task cards. */
   extra?: ReactNode
   /** Added to the card count shown in the column header. */
   extraCount?: number
-  /**
-   * Alert content rendered inside the header button itself, visible even when
-   * the column is collapsed. Use for degraded-state indicators that must never
-   * be hidden (e.g. stale-queue marker, action error).
-   */
+  /** Degraded-state indicators shown beside the count (e.g. stale-queue marker, action error). */
   headerExtra?: ReactNode
   /** When set, the column accepts card drags and reports each drop. */
   onCardDrop?: (card: DraggedCard) => void
 }
 
-export function BoardColumn({ column, pendingByKey, collapsed, onToggle, extra, extraCount, headerExtra, onCardDrop }: ColumnProps) {
+export function BoardColumn({ column, pendingByKey, extra, extraCount, headerExtra, onCardDrop }: ColumnProps) {
   return (
     <section
       data-testid={`column-${column.key}`}
       className="w-64 shrink-0"
-      onDragOver={onCardDrop && ((e) => e.preventDefault())}
-      onDrop={onCardDrop && ((e) => {
-        e.preventDefault()
-        const raw = e.dataTransfer.getData('application/x-agent-ops-card')
-        if (!raw) return
-        try {
-          onCardDrop(JSON.parse(raw) as DraggedCard)
-        } catch { /* foreign drag — ignore */ }
-      })}
+      {...cardDropTarget(onCardDrop)}
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between rounded bg-ink/5 px-2 py-1 text-left text-sm font-semibold"
-      >
+      <div className="flex items-center justify-between rounded bg-ink/5 px-2 py-1 text-sm font-semibold">
         <span>{column.title}</span>
         <span className="flex items-center gap-1">
           {headerExtra}
           <span className="text-ink-muted">{column.cards.length + (extraCount ?? 0)}</span>
         </span>
-      </button>
-      {!collapsed && (
-        <div className="mt-2 flex flex-col gap-2">
-          {column.cards.map((card) => (
-            <TaskCardView
-              // Issue numbers are per-target: alpha#73 and beta#73 must not
-              // collide on one React key.
-              key={`${card.target}#${card.issue}`}
-              card={card}
-              pendingActions={[
-                ...(pendingByKey.get(`${card.target}#${card.issue}`) ?? []),
-                ...(pendingByKey.get(`#${card.issue}`) ?? []),
-              ]}
-            />
-          ))}
-          {extra}
-        </div>
-      )}
+      </div>
+      <div className="mt-2 flex flex-col gap-2">
+        {column.cards.map((card) => (
+          <TaskCardView
+            // Issue numbers are per-target: alpha#73 and beta#73 must not
+            // collide on one React key.
+            key={`${card.target}#${card.issue}`}
+            card={card}
+            pendingActions={[
+              ...(pendingByKey.get(`${card.target}#${card.issue}`) ?? []),
+              ...(pendingByKey.get(`#${card.issue}`) ?? []),
+            ]}
+          />
+        ))}
+        {extra}
+      </div>
     </section>
   )
 }

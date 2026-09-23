@@ -1,11 +1,11 @@
 import { BoardColumn, type DraggedCard } from '../components/BoardColumn'
 import { BoardHeader } from '../components/BoardHeader'
+import { CountStrip, type EmptyColumn } from '../components/CountStrip'
 import { GhostCardView } from '../components/GhostCard'
 import type { Column, GhostCard, NextClaimView, PendingIntent, Zone } from '../lib/api'
 import { useBoardSnapshot, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useWontDo } from '../hooks/useWontDo'
-import { useUiStore } from '../store/ui'
 
 type QueueActions = ReturnType<typeof useQueueActions>
 
@@ -24,8 +24,8 @@ function pendingIntentsByKey(intents: PendingIntent[]): Map<string, string[]> {
   return byKey
 }
 
-/** Stale indicator and action error live in the column header so they are
- *  visible even when Queued is collapsed (headerExtra survives collapse). */
+/** Stale indicator and action error ride on the Queued header, or on the
+ *  Queued chip when it is empty, so degraded state is never hidden. */
 function QueuedHeaderExtra({ stale, error }: { stale: boolean | undefined; error: QueueActions['queueError'] }) {
   return (
     <>
@@ -55,7 +55,6 @@ function GhostStack({ upcoming, nextClaim, queue }: {
 }) {
   return (
     <>
-      {queue.queueError && <p className="text-xs text-failed-fg">{queue.queueError}</p>}
       {/* busy disables every ghost's buttons at once: each action re-ranks the
           shared queue, so a second click would act on pre-mutation ranks and
           creates a last-writer-wins race on the error state. */}
@@ -143,8 +142,6 @@ export function BoardPage() {
   const boardQuery = useTasks()
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
   const intentsQuery = usePendingIntents()
-  const collapsedColumns = useUiStore((s) => s.collapsedColumns)
-  const toggleColumn = useUiStore((s) => s.toggleColumn)
   const queue = useQueueActions()
   const wontDo = useWontDo()
 
@@ -156,17 +153,29 @@ export function BoardPage() {
 
   const upcoming = boardQuery.data?.upcoming ?? []
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
+  const queuedMarkers = <QueuedHeaderExtra stale={boardQuery.data?.upcoming_stale} error={queue.queueError} />
   const queuedExtras = {
     extra: <GhostStack upcoming={upcoming} nextClaim={boardQuery.data?.next_claim} queue={queue} />,
     extraCount: upcoming.length,
-    headerExtra: <QueuedHeaderExtra stale={boardQuery.data?.upcoming_stale} error={queue.queueError} />,
+    headerExtra: queuedMarkers,
   }
+  const dropFor = (key: string) => (key === 'wont-do' ? wontDo.propose : undefined)
+  // A column with no cards and no ghosts is a chip; anything occupied stays
+  // in the row, so a card can never disappear into the strip.
+  const occupied = (column: Column) =>
+    column.cards.length > 0 || (column.key === 'queued' && upcoming.length > 0)
+  const empty: EmptyColumn[] = board.columns.filter((c) => !occupied(c)).map((column) => ({
+    column,
+    markers: column.key === 'queued' ? queuedMarkers : undefined,
+    onCardDrop: dropFor(column.key),
+  }))
 
   return (
     <div className="flex flex-col gap-4 p-4">
       <BoardHeader board={board} />
+      <CountStrip columns={empty} />
       <div className="flex gap-4 overflow-x-auto pb-4">
-        {zonesInOrder(board.columns).map(({ zone, columns }) => (
+        {zonesInOrder(board.columns.filter(occupied)).map(({ zone, columns }) => (
           <section
             key={zone}
             data-testid={`zone-${zone}`}
@@ -182,10 +191,8 @@ export function BoardPage() {
                   key={column.key}
                   column={column}
                   pendingByKey={pendingByKey}
-                  collapsed={collapsedColumns[column.key] ?? false}
-                  onToggle={() => toggleColumn(column.key)}
                   {...(column.key === 'queued' ? queuedExtras : {})}
-                  onCardDrop={column.key === 'wont-do' ? wontDo.propose : undefined}
+                  onCardDrop={dropFor(column.key)}
                 />
               ))}
             </div>
