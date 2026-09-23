@@ -21,7 +21,13 @@ test('empty columns are chips and the Wont do chip takes a drop', async ({ page 
   await expect(page.getByTestId('column-queued')).toBeVisible()
 
   await showColumn(page, 'parked')
-  await page.getByTestId('card-42').dragTo(page.getByTestId('chip-wont-do'))
+  // Not dragTo: the chip accepts a drop only after a dragover, and Playwright
+  // needs a second move over the target to fire one reliably.
+  await page.getByTestId('card-42').hover()
+  await page.mouse.down()
+  await page.getByTestId('chip-wont-do').hover()
+  await page.getByTestId('chip-wont-do').hover()
+  await page.mouse.up()
   await expect(page.getByTestId('wont-do-confirm')).toContainText('#42')
   await page.getByRole('button', { name: "Confirm won't do?" }).click()
   await expect(page.getByTestId('wont-do-confirm')).toHaveCount(0)
