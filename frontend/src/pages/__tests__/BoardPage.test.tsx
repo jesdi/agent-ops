@@ -501,6 +501,30 @@ describe('phone tabs', () => {
     expect(tabNames()).toHaveLength(3)
   })
 
+  it('the default tab stays put when Queued fills in front of it', async () => {
+    const columns = fx_board.columns.map((c) => (c.zone === 'needs-you' ? { ...c, cards: [] } : c))
+    let release = () => {}
+    const boardHeld = new Promise<void>((resolve) => { release = resolve })
+    server.use(
+      http.get('/api/board/snapshot', () => HttpResponse.json({
+        columns, capacity: fx_board.capacity, median_cycle_seconds: fx_board.median_cycle_seconds,
+      })),
+      http.get('/api/board', async () => {
+        await boardHeld
+        return HttpResponse.json({
+          ...fx_board, columns,
+          upcoming: [{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }],
+        })
+      }),
+    )
+    renderWithProviders(<BoardPage />)
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('In progress 1')
+    release()
+    expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()
+    expect(selected()).toBe('In progress 1')
+  })
+
   it('Queued counts its ghosts', async () => {
     server.use(http.get('/api/board', () => HttpResponse.json({
       ...fx_board,

@@ -55,7 +55,10 @@ export function BoardColumn({ column, pendingByKey, extra, extraCount, headerExt
       className={`flex min-h-0 w-full shrink-0 flex-col md:w-64 ${className}`}
       {...cardDropTarget(onCardDrop)}
     >
-      <div className="flex shrink-0 items-center justify-between rounded bg-ink/5 px-2 py-1 text-sm font-semibold">
+      {/* On phones the active tab already names the column and its count, so
+          the header only shows when it carries degraded-state markers. */}
+      <div className={`flex shrink-0 items-center justify-between rounded bg-ink/5 px-2 py-1 text-sm font-semibold ${
+        headerExtra ? '' : 'max-md:hidden'}`}>
         <span>{column.title}</span>
         <span className="flex items-center gap-1">
           {headerExtra}
@@ -65,7 +68,7 @@ export function BoardColumn({ column, pendingByKey, extra, extraCount, headerExt
       {/* The body scrolls on its own once the board caps its height; the
           header sits outside it, so it stays pinned. */}
       <div data-testid={`scroll-${column.key}`}
-        className="mt-2 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+        className={`flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto ${headerExtra ? 'mt-2' : 'md:mt-2'}`}>
         {column.cards.map((card) => (
           <TaskCardView
             // Issue numbers are per-target: alpha#73 and beta#73 must not

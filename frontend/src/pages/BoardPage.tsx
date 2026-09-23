@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { useSearchParams } from 'react-router'
 import { BoardColumn, type DraggedCard } from '../components/BoardColumn'
 import { BoardHeader } from '../components/BoardHeader'
@@ -147,6 +148,7 @@ export function BoardPage() {
   const queue = useQueueActions()
   const wontDo = useWontDo()
   const [params, setParams] = useSearchParams()
+  const shown = useRef<string | undefined>(undefined)
 
   const board = boardQuery.data ?? snapshotQuery.data
   if (!board && (boardQuery.isPending || snapshotQuery.isPending)) return <p className="p-4 text-ink-muted">loading board…</p>
@@ -156,7 +158,11 @@ export function BoardPage() {
 
   const upcoming = boardQuery.data?.upcoming ?? []
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
-  const queuedMarkers = <QueuedHeaderExtra stale={boardQuery.data?.upcoming_stale} error={queue.queueError} />
+  const stale = boardQuery.data?.upcoming_stale
+  // Undefined when healthy, so the phone board can drop the Queued header.
+  const queuedMarkers = stale || queue.queueError
+    ? <QueuedHeaderExtra stale={stale} error={queue.queueError} />
+    : undefined
   const queuedExtras = {
     extra: <GhostStack upcoming={upcoming} nextClaim={boardQuery.data?.next_claim} queue={queue} />,
     extraCount: upcoming.length,
@@ -170,9 +176,13 @@ export function BoardPage() {
   const inRow = board.columns.filter(occupied)
   const count = (column: Column) => column.cards.length + (column.key === 'queued' ? upcoming.length : 0)
   // Phones show one column: the one named in the URL, so back and reload
-  // land on the same tab, else the first occupied one. A key that is not
-  // (or no longer) in the row falls back the same way.
-  const active = (inRow.find((c) => c.key === params.get('column')) ?? inRow[0])?.key
+  // land on the same tab, else the one already on screen, else the first
+  // occupied one. Keeping the one on screen stops the default tab jumping
+  // when a column fills in front of it, e.g. Queued once ghosts arrive. A key
+  // that is not (or no longer) in the row falls through.
+  const inRowKey = (key: string | null | undefined) => inRow.find((c) => c.key === key)?.key
+  const active = inRowKey(params.get('column')) ?? inRowKey(shown.current) ?? inRow[0]?.key
+  shown.current = active
   // Replace, not push: switching tabs is not a navigation back should undo.
   const selectColumn = (key: string) =>
     setParams((p) => { p.set('column', key); return p }, { replace: true })
@@ -198,7 +208,7 @@ export function BoardPage() {
         onSelect={selectColumn}
       />
       <CountStrip columns={empty} />
-      <div data-testid="board-row" className="-mx-4 flex gap-4 overflow-x-auto px-4 pb-4 md:min-h-0 md:grow md:basis-0">
+      <div data-testid="board-row" className="relative -mx-4 flex gap-4 overflow-x-auto px-4 pb-4 md:min-h-0 md:grow md:basis-0">
         {zonesInOrder(inRow).map(({ zone, columns }) => (
           <section
             key={zone}

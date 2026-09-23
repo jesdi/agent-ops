@@ -7,7 +7,7 @@ import { AdmissionWarning } from './AdmissionWarning'
 import { ExpandToggle, useExpand } from './Expand'
 
 const CHIP = 'rounded px-1.5'
-const NEUTRAL = `${CHIP} bg-surface text-ink`
+const NEUTRAL = `${CHIP} bg-ink/10 text-ink`
 const WAITING = `${CHIP} bg-waiting-bg text-waiting-fg`
 
 /** Compact by default: identifier, title link, and a signal line only when
@@ -38,14 +38,19 @@ export function TaskCardView({ card, pendingActions }: {
       {/* Colour is never the only signal. */}
       {card.consuming_capacity && <span className="sr-only">holding a capacity unit</span>}
       {card.slot >= 0 && <span className="sr-only">holding E2E slot {card.slot}</span>}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-muted">
-        <span>{id}</span>
-        {(pendingActions ?? []).map((action, index) => (
-          <PendingBadge key={`${action}-${index}`} action={action} />
-        ))}
-        <span className="ml-auto">{relativeTime(card.updated_at)}</span>
-        <ExpandToggle expanded={expanded} controls={detailId} label={`Details for ${id}`}
-          onToggle={toggle} />
+      {/* Badges wrap among themselves; the stamp and chevron stay top-right. */}
+      <div className="flex items-start gap-2 text-xs text-ink-muted">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <span>{id}</span>
+          {(pendingActions ?? []).map((action, index) => (
+            <PendingBadge key={`${action}-${index}`} action={action} />
+          ))}
+        </div>
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          {relativeTime(card.updated_at)}
+          <ExpandToggle expanded={expanded} controls={detailId} label={`Details for ${id}`}
+            onToggle={toggle} />
+        </span>
       </div>
       <Link
         to={`/task/${card.target}/${card.issue}`}
@@ -92,7 +97,7 @@ function TaskCardDetail({ id, card }: { id: string; card: TaskCard }) {
     <div id={id} className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t pt-2 text-xs text-ink-muted">
       <span>{card.model}</span>
       {card.track && <span>track {card.track}</span>}
-      {card.score != null && <span className={`${CHIP} bg-surface`}>score {card.score}</span>}
+      {card.score != null && <span className={`${CHIP} bg-ink/10`}>score {card.score}</span>}
       {card.slot >= 0 && (
         <span data-testid="slot-chip" className={`${CHIP} ${slotChip(card.slot)}`}>
           slot {card.slot}
