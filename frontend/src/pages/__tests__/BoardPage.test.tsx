@@ -289,7 +289,9 @@ test('stale indicator survives collapsing the Queued column', async () => {
 it('a task card links to /task/{target}/{issue}', async () => {
   renderWithProviders(<BoardPage />)
   await waitFor(() => expect(screen.getByTestId('card-41')).toBeInTheDocument())
-  expect(screen.getByTestId('card-41')).toHaveAttribute('href', '/task/widget/41')
+  expect(within(screen.getByTestId('card-41')).getByRole('link')).toHaveAttribute(
+    'href', '/task/widget/41',
+  )
 })
 
 it('two claimed cards sharing an issue number across targets both render with distinct keys', async () => {

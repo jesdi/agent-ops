@@ -4,33 +4,24 @@ import { slotBorder, slotChip } from '../lib/capacity'
 import { formatDuration, relativeTime, stageLabel } from '../lib/format'
 import { PendingBadge } from './PendingBadge'
 import { AdmissionWarning } from './AdmissionWarning'
+import { ExpandToggle, useExpand } from './Expand'
 
+const CHIP = 'rounded px-1.5'
+const NEUTRAL = `${CHIP} bg-surface text-ink`
+const WAITING = `${CHIP} bg-waiting-bg text-waiting-fg`
+
+/** Compact by default: identifier, title link, and a signal line only when
+ *  something needs action or explains the column. The article is the drag
+ *  source; the title is the only link. */
 export function TaskCardView({ card, pendingActions }: {
   card: TaskCard
   /** Every pending intent on this issue — one badge each, never collapsed. */
   pendingActions?: readonly string[]
 }) {
+  const { expanded, detailId, toggle, onPointerUp } = useExpand()
+  const id = `${card.target}#${card.issue}`
   return (
     <article
-      className={`rounded border border-gray-200 bg-white p-3 shadow-sm hover:border-gray-400 border-l-4 ${
-        card.slot >= 0 ? slotBorder(card.slot) : 'border-l-transparent hover:border-l-transparent'
-      }`}
-    >
-      <TaskCardLink card={card} pendingActions={pendingActions} />
-      {card.admission && (
-        <AdmissionWarning target={card.target} issue={card.issue} admission={card.admission} />
-      )}
-    </article>
-  )
-}
-
-function TaskCardLink({ card, pendingActions }: {
-  card: TaskCard
-  pendingActions?: readonly string[]
-}) {
-  return (
-    <Link
-      to={`/task/${card.target}/${card.issue}`}
       data-testid={`card-${card.issue}`}
       draggable
       onDragStart={(event) => {
@@ -39,76 +30,76 @@ function TaskCardLink({ card, pendingActions }: {
           JSON.stringify({ issue: card.issue, target: card.target, title: card.title }),
         )
       }}
-      className="block"
+      onPointerUp={onPointerUp}
+      className={`rounded border border-l-4 bg-surface-raised px-2.5 py-2 shadow-sm ${
+        card.slot >= 0 ? slotBorder(card.slot) : 'border-l-transparent'
+      }`}
     >
-      {/* Colour is never the only signal — and this must not be an aria-label
-          on the Link, which would clobber its accessible name. */}
+      {/* Colour is never the only signal. */}
       {card.consuming_capacity && <span className="sr-only">holding a capacity unit</span>}
       {card.slot >= 0 && <span className="sr-only">holding E2E slot {card.slot}</span>}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs text-gray-500">
-          {card.target}#{card.issue}
-        </span>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-muted">
+        <span>{id}</span>
         {(pendingActions ?? []).map((action, index) => (
           <PendingBadge key={`${action}-${index}`} action={action} />
         ))}
+        <span className="ml-auto">{relativeTime(card.updated_at)}</span>
+        <ExpandToggle expanded={expanded} controls={detailId} label={`Details for ${id}`}
+          onToggle={toggle} />
       </div>
-      <p className="mt-1 text-sm font-medium">{card.title}</p>
-      <TaskCardFacts card={card} />
-    </Link>
+      <Link
+        to={`/task/${card.target}/${card.issue}`}
+        draggable={false}
+        className={`mt-0.5 block text-sm font-medium text-ink hover:underline ${
+          expanded ? '' : 'line-clamp-2'
+        }`}
+      >
+        {card.title}
+      </Link>
+      <TaskCardSignals card={card} />
+      {card.admission && (
+        <AdmissionWarning target={card.target} issue={card.issue} admission={card.admission} />
+      )}
+      {expanded && <TaskCardDetail id={detailId} card={card} />}
+    </article>
   )
 }
 
-function TaskCardFacts({ card }: { card: TaskCard }) {
-  return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-      <span>{stageLabel(card.stage)}</span>
-      <span>{card.model}</span>
-      {card.track && <span>track {card.track}</span>}
-      <TaskCardBadges card={card} />
-      <TaskCardTiming card={card} />
-    </div>
-  )
-}
-
-function TaskCardBadges({ card }: { card: TaskCard }) {
-  return <>
-    {card.score != null && (
-      <span className="rounded bg-gray-100 px-1.5 font-medium text-gray-600">
-        score {card.score}
-      </span>
-    )}
-    {card.slot >= 0 && (
-      <span data-testid="slot-chip" className={`rounded px-1.5 ${slotChip(card.slot)}`}>
-        slot {card.slot}
-      </span>
-    )}
-    {card.park !== '' && (
-      <span className="rounded bg-purple-100 px-1.5 text-purple-700">parked: {card.park}</span>
-    )}
-    {card.park_note_pending && (
-      <span className="rounded bg-blue-100 px-1.5 text-blue-700">notify pending</span>
-    )}
-    {card.feedback_pending && (
-      <span className="rounded bg-amber-100 px-1.5 text-amber-700">feedback queued</span>
-    )}
-    {card.undelivered_messages > 0 && (
-      <span data-testid="mail-badge" className="rounded bg-blue-100 px-1.5 text-blue-700"
-        title="queued operator messages">
+function TaskCardSignals({ card }: { card: TaskCard }) {
+  const signals = [
+    card.column === 'in-progress' && (
+      <span key="stage" className="text-ink-muted">{stageLabel(card.stage)}</span>
+    ),
+    card.column === 'parked' && card.park !== '' && (
+      <span key="park" className={`${CHIP} bg-parked-bg text-parked-fg`}>parked: {card.park}</span>
+    ),
+    card.undelivered_messages > 0 && (
+      <span key="mail" data-testid="mail-badge" className={NEUTRAL} title="queued operator messages">
         ✉ {card.undelivered_messages}
       </span>
-    )}
-    {card.wake_blocked && (
-      <span className="rounded bg-amber-100 px-1.5 text-amber-800">waiting for a free slot</span>
-    )}
-  </>
+    ),
+    card.wake_blocked && <span key="wake" className={WAITING}>waiting for a free slot</span>,
+    card.feedback_pending && <span key="feedback" className={WAITING}>feedback queued</span>,
+    card.park_note_pending && <span key="notify" className={NEUTRAL}>notify pending</span>,
+  ].filter(Boolean)
+  if (signals.length === 0) return null
+  return <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">{signals}</div>
 }
 
-function TaskCardTiming({ card }: { card: TaskCard }) {
-  if (card.stage === 'done' && card.cycle_seconds != null) {
-    return <><span>took {formatDuration(card.cycle_seconds)}</span>
-      <span>{relativeTime(card.updated_at)}</span></>
-  }
-  return <>{card.claimed_at !== '' && <span>claimed {relativeTime(card.claimed_at)}</span>}
-    <span>{relativeTime(card.updated_at)}</span></>
+function TaskCardDetail({ id, card }: { id: string; card: TaskCard }) {
+  const took = card.stage === 'done' ? card.cycle_seconds : null
+  return (
+    <div id={id} className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t pt-2 text-xs text-ink-muted">
+      <span>{card.model}</span>
+      {card.track && <span>track {card.track}</span>}
+      {card.score != null && <span className={`${CHIP} bg-surface`}>score {card.score}</span>}
+      {card.slot >= 0 && (
+        <span data-testid="slot-chip" className={`${CHIP} ${slotChip(card.slot)}`}>
+          slot {card.slot}
+        </span>
+      )}
+      {took != null && <span>took {formatDuration(took)}</span>}
+      {took == null && card.claimed_at !== '' && <span>claimed {relativeTime(card.claimed_at)}</span>}
+    </div>
+  )
 }
