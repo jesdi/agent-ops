@@ -1,8 +1,9 @@
 import type { GateView, ProviderUsageView, Severity, UsageView, WindowKind, WindowView } from '../lib/api'
 import { formatDuration } from '../lib/format'
+import { banner, chip } from '../lib/tone'
 
 const FILL: Record<Severity, string> = {
-  ok: 'bg-emerald-500', close: 'bg-amber-500', blocked: 'bg-red-500',
+  ok: 'bg-running-fg', close: 'bg-waiting-fg', blocked: 'bg-failed-fg',
 }
 const STATE: Record<Severity, string> = {
   ok: 'on pace', close: 'close to the limit', blocked: 'over the limit',
@@ -49,9 +50,9 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
     // minmax(7rem,1fr) keeps the track column from collapsing to 0: the grid
     // has no intrinsic width there, since every progressbar child is absolute.
     <div className="grid grid-cols-[92px_minmax(7rem,1fr)_auto] items-center gap-2.5 text-xs">
-      <span className="text-gray-600">
+      <span className="text-ink-muted">
         {label}
-        <small className="block text-[11px] text-gray-400">{formatDuration(w.minutes_to_reset * 60)}</small>
+        <small className="block text-[11px] text-ink-muted">{formatDuration(w.minutes_to_reset * 60)}</small>
       </span>
       <div className="mb-3.5 min-w-0">
         <div
@@ -61,23 +62,23 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
           aria-valuemax={100}
           aria-valuenow={used}
           aria-valuetext={`${used}% used of ${allowed}% allowed now, ${remaining}% remaining, ${STATE[w.severity]}`}
-          className="relative h-3.5 rounded-sm bg-gray-200"
+          className="relative h-3.5 rounded-sm bg-ink/10"
         >
           <div
-            className="absolute inset-y-0 left-0 rounded-sm bg-gray-300 [background-image:repeating-linear-gradient(135deg,transparent_0_3px,rgb(0_0_0/0.07)_3px_4px)]"
+            className="absolute inset-y-0 left-0 rounded-sm bg-ink/15 [background-image:repeating-linear-gradient(135deg,transparent_0_3px,color-mix(in_oklab,var(--color-ink)_12%,transparent)_3px_4px)]"
             style={{ width: `${headPct}%` }}
           />
           <div className={`absolute inset-y-[3px] left-0 rounded-sm ${FILL[w.severity]}`} style={{ width: `${used}%` }} />
-          <div className="absolute inset-y-0 border-l-2 border-gray-900" style={{ left: `${headPct}%` }} />
+          <div className="absolute inset-y-0 border-l-2 border-ink" style={{ left: `${headPct}%` }} />
           <span
-            className="absolute top-4 whitespace-nowrap text-[11px] text-gray-500"
+            className="absolute top-4 whitespace-nowrap text-[11px] text-ink-muted"
             style={footStyle}
           >
             {KIND[w.kind].foot(w)}
           </span>
         </div>
       </div>
-      <span className="whitespace-nowrap font-semibold text-gray-900">{remaining}% left</span>
+      <span className="whitespace-nowrap font-semibold text-ink">{remaining}% left</span>
     </div>
   )
 }
@@ -87,11 +88,10 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
  *  the chip names only the model. The note says why, on hover. */
 function SpawnChip({ gate }: { gate: GateView }) {
   const model = gate.model.slice(gate.model.indexOf('/') + 1)
-  const tone = gate.admitted ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
   return (
     <span
       title={gate.note}
-      className={`min-w-0 truncate rounded-full px-2 py-px text-[11px] font-medium normal-case tracking-normal ${tone}`}
+      className={`min-w-0 truncate normal-case tracking-normal ${chip[gate.admitted ? 'running' : 'failed']}`}
     >
       {`${gate.admitted ? 'will spawn' : 'will not spawn'} ${model}`}
     </span>
@@ -101,19 +101,19 @@ function SpawnChip({ gate }: { gate: GateView }) {
 function ProviderGroup({ p, gate }: { p: ProviderUsageView; gate: GateView | null }) {
   return (
     <div className="min-w-0 flex-1 basis-[300px] flex flex-col gap-2.5">
-      <span className="flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500">
+      <span className="flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
         {p.provider}
         {gate && <SpawnChip gate={gate} />}
       </span>
       {p.source === 'unavailable' ? (
-        <div className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <div className={banner.waiting}>
           usage unknown — dispatcher will not spawn on {p.provider}
         </div>
       ) : (
         p.windows.map((w) => <Bullet key={`${w.kind}:${w.scope ?? ''}`} provider={p.provider} w={w} />)
       )}
       {p.source === 'ccusage' && (
-        <span className="text-[11px] text-gray-400">via ccusage · weekly unknown</span>
+        <span className="text-[11px] text-ink-muted">via ccusage · weekly unknown</span>
       )}
     </div>
   )

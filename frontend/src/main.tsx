@@ -20,7 +20,7 @@ createRoot(document.getElementById('root')!).render(
         <BrowserRouter>
           <AppShell>
             <PageErrorBoundary>
-              <Suspense fallback={<p className="p-4 text-gray-500">loading page…</p>}>
+              <Suspense fallback={<p className="p-4 text-ink-muted">loading page…</p>}>
                 <Routes>
                   <Route path="/" element={<BoardPage />} />
                   <Route path="/task/:target/:issue" element={<TaskPage />} />

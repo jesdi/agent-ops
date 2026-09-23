@@ -1,26 +1,83 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
+import { useLocation } from 'react-router'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
 import {
   board as fx_board, usageUnavailable, inProgressCard, pendingReplyIntent,
 } from '../../test/fixtures'
 import { renderWithProviders } from '../../test/render'
-import type { UsageView } from '../../lib/api'
+import { onPhone } from '../../test/viewport'
+import type { GhostCard, UsageView } from '../../lib/api'
 import { BoardPage } from '../BoardPage'
 
 beforeEach(() => server.use(...defaultHandlers))
 
-it('renders all eleven columns with cards and capacity', async () => {
+const withGhosts = (ghosts: GhostCard[], columns = fx_board.columns) =>
+  columns.map((c) => (c.key === 'queued' ? { ...c, ghosts } : c))
+
+const testIds = (els: HTMLElement[]) => els.map((el) => el.getAttribute('data-testid'))
+
+it('occupied columns render in the row, empty ones as chips, never both', async () => {
   renderWithProviders(<BoardPage />)
   await waitFor(() =>
     expect(screen.getByTestId('column-parked')).toBeInTheDocument(),
   )
-  expect(screen.getAllByTestId(/^column-/)).toHaveLength(11)
+  expect(testIds(screen.getAllByTestId(/^column-/)))
+    .toEqual(['column-parked', 'column-in-progress', 'column-awaiting-ci'])
+  expect(testIds(screen.getAllByTestId(/^chip-/))).toEqual([
+    'chip-needs-review', 'chip-pr-open', 'chip-failed', 'chip-stalled',
+    'chip-queued', 'chip-resuming', 'chip-done', 'chip-wont-do'])
   expect(screen.getByText('Fix login redirect')).toBeInTheDocument()
   expect(screen.getByText('Add CSV export')).toBeInTheDocument()
-  expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
+  // The meter, and the summary line that stands in for it on phones.
+  expect(screen.getAllByText(/2\/3 active/)).toHaveLength(2)
+})
+
+it('renders the Needs you zone before Pipeline, columns in the order received', async () => {
+  renderWithProviders(<BoardPage />)
+  await waitFor(() => expect(screen.getByTestId('column-parked')).toBeInTheDocument())
+  const zones = screen.getAllByTestId(/^zone-/)
+  expect(zones.map((z) => z.getAttribute('data-testid'))).toEqual(['zone-needs-you', 'zone-pipeline'])
+  expect(within(zones[0]!).getByRole('heading', { name: 'Needs you' })).toBeInTheDocument()
+  expect(within(zones[1]!).getByRole('heading', { name: 'Pipeline' })).toBeInTheDocument()
+  const keysIn = (zone: HTMLElement) =>
+    within(zone).getAllByTestId(/^column-/).map((el) => el.getAttribute('data-testid'))
+  expect(keysIn(zones[0]!)).toEqual(['column-parked'])
+  expect(keysIn(zones[1]!)).toEqual(['column-in-progress', 'column-awaiting-ci'])
+})
+
+it('a zone with no occupied columns leaves the row; its columns are chips', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    columns: fx_board.columns.map((c) => (c.zone === 'needs-you' ? { ...c, cards: [] } : c)),
+  })))
+  renderWithProviders(<BoardPage />)
+  // The snapshot paints Parked first; the live board then empties it.
+  await screen.findByTestId('chip-parked')
+  expect(screen.queryByTestId('column-parked')).not.toBeInTheDocument()
+  expect(testIds(screen.getAllByTestId(/^zone-/))).toEqual(['zone-pipeline'])
+})
+
+it('the count strip is a list naming each empty column and its count', async () => {
+  renderWithProviders(<BoardPage />)
+  const strip = await screen.findByRole('list', { name: 'Empty columns' })
+  expect(within(strip).getByRole('listitem', { name: 'Failed: 0' })).toBeInTheDocument()
+  expect(within(strip).getByRole('listitem', { name: 'Wont do: 0' })).toBeInTheDocument()
+  expect(within(strip).getAllByRole('listitem')).toHaveLength(8)
+})
+
+it('holds no column order of its own: a reordered board renders as received', async () => {
+  const reversed = { ...fx_board, columns: [...fx_board.columns].reverse() }
+  server.use(http.get('/api/board', () => HttpResponse.json(reversed)))
+  renderWithProviders(<BoardPage />)
+  await waitFor(() => expect(screen.getAllByTestId(/^column-/)[0]).toHaveAttribute('data-testid', 'column-awaiting-ci'))
+  expect(testIds(screen.getAllByTestId(/^column-/)))
+    .toEqual(['column-awaiting-ci', 'column-in-progress', 'column-parked'])
+  expect(testIds(screen.getAllByTestId(/^chip-/))[0]).toBe('chip-wont-do')
+  expect(screen.getAllByTestId(/^zone-/).map((z) => z.getAttribute('data-testid')))
+    .toEqual(['zone-pipeline', 'zone-needs-you'])
 })
 
 it('renders a column\'s cards in the order the API returns (server sorts by score)', async () => {
@@ -57,7 +114,7 @@ function fakeDataTransfer() {
   }
 }
 
-it('dropping a card on Wont do asks for confirmation before any intent fires', async () => {
+it('dropping a card on the empty Wont do chip asks for confirmation before any intent fires', async () => {
   const posts: unknown[] = []
   server.use(
     http.post('/api/task/widget/42/cancel', async ({ request }) => {
@@ -72,8 +129,8 @@ it('dropping a card on Wont do asks for confirmation before any intent fires', a
   await waitFor(() => expect(screen.getByTestId('card-42')).toBeInTheDocument())
   const dt = fakeDataTransfer()
   fireEvent.dragStart(screen.getByTestId('card-42'), { dataTransfer: dt })
-  fireEvent.dragOver(screen.getByTestId('column-wont-do'), { dataTransfer: dt })
-  fireEvent.drop(screen.getByTestId('column-wont-do'), { dataTransfer: dt })
+  fireEvent.dragOver(screen.getByTestId('chip-wont-do'), { dataTransfer: dt })
+  fireEvent.drop(screen.getByTestId('chip-wont-do'), { dataTransfer: dt })
   // the double check: nothing fires until the operator confirms
   expect(posts).toEqual([])
   expect(screen.getByTestId('wont-do-confirm')).toHaveTextContent('#42')
@@ -97,7 +154,7 @@ it('backing out of the drop confirmation fires nothing', async () => {
   await waitFor(() => expect(screen.getByTestId('card-42')).toBeInTheDocument())
   const dt = fakeDataTransfer()
   fireEvent.dragStart(screen.getByTestId('card-42'), { dataTransfer: dt })
-  fireEvent.drop(screen.getByTestId('column-wont-do'), { dataTransfer: dt })
+  fireEvent.drop(screen.getByTestId('chip-wont-do'), { dataTransfer: dt })
   await userEvent.click(screen.getByRole('button', { name: 'Keep task' }))
   expect(posts).toEqual([])
   expect(screen.queryByTestId('wont-do-confirm')).not.toBeInTheDocument()
@@ -219,17 +276,18 @@ it('the accented cards reconcile with the header meter', async () => {
   )
   expect(screen.getAllByText('holding a capacity unit')).toHaveLength(2)
   expect(screen.getAllByTestId('cap-pip-filled')).toHaveLength(2)
-  expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
+  // The meter, and the summary line that stands in for it on phones.
+  expect(screen.getAllByText(/2\/3 active/)).toHaveLength(2)
 })
 
 test('queued column renders ghost cards in rank order with count and stale hint', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
-    upcoming: [
+    columns: withGhosts([
       { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
       { number: 74, target: 'widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
-    ],
-    upcoming_stale: true,
+    ]),
+    queue_stale: true,
     next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'widget' },
   })))
   renderWithProviders(<BoardPage />)
@@ -247,10 +305,10 @@ test('same issue number on two targets renders two distinct ghosts', async () =>
   // and only the forecast target may wear the "next" badge.
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
-    upcoming: [
+    columns: withGhosts([
       { number: 73, target: 'alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
       { number: 73, target: 'beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
-    ],
+    ]),
     next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'beta' },
   })))
   renderWithProviders(<BoardPage />)
@@ -261,35 +319,57 @@ test('same issue number on two targets renders two distinct ghosts', async () =>
   expect(within(queued).getAllByText('next')).toHaveLength(1)
 })
 
-test('stale indicator survives collapsing the Queued column', async () => {
+test('a failed queue action shows its error marker in the Queued header', async () => {
+  server.use(
+    http.get('/api/board', () => HttpResponse.json({
+      ...fx_board,
+      columns: withGhosts([
+        { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      ]),
+      queue_stale: true,
+      next_claim: { ...fx_board.next_claim, verdict: 'no-candidates' },
+    })),
+    http.post('/api/queue/boost', () => HttpResponse.json({ detail: 'queue locked' }, { status: 422 })),
+  )
+  renderWithProviders(<BoardPage />)
+  const queued = await screen.findByTestId('column-queued')
+  // Ghosts arrive with /api/board, after the snapshot paints.
+  await userEvent.click(await within(queued).findByRole('button', { name: 'Details for widget#73' }))
+  await userEvent.click(within(queued).getByRole('button', { name: 'Boost' }))
+  // Collapsing the ghost again must not hide degraded queue state.
+  await userEvent.click(within(queued).getByRole('button', { name: 'Details for widget#73' }))
+  // Visible text, not a tooltip: touch has no hover.
+  expect(await within(queued).findByTestId('queue-error')).toHaveTextContent('queue locked')
+  expect(within(queued).getByTestId('queue-stale')).toBeInTheDocument()
+})
+
+test('a Queued column holding only ghosts stays in the row', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
-    upcoming: [
+    columns: withGhosts([
       { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
-    ],
-    upcoming_stale: true,
-    next_claim: { ...fx_board.next_claim, verdict: 'no-candidates' },
+    ]),
   })))
   renderWithProviders(<BoardPage />)
   const queued = await screen.findByTestId('column-queued')
-
-  // Confirm ghost is visible before collapse.
   expect(within(queued).getByTestId('ghost-73')).toBeInTheDocument()
+  expect(screen.queryByTestId('chip-queued')).not.toBeInTheDocument()
+})
 
-  // Collapse the column by clicking the header toggle button.
-  await userEvent.click(within(queued).getByRole('button', { name: /Queued/i }))
-
-  // Ghost cards must be hidden once collapsed.
-  expect(within(queued).queryByTestId('ghost-73')).not.toBeInTheDocument()
-
-  // Stale indicator must still be visible in the header.
-  expect(within(queued).getByTestId('queue-stale')).toBeInTheDocument()
+test('an empty Queued chip still carries the stale marker', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({ ...fx_board, queue_stale: true })))
+  renderWithProviders(<BoardPage />)
+  const chip = await screen.findByTestId('chip-queued')
+  expect(await within(chip).findByTestId('queue-stale')).toBeInTheDocument()
+  expect(screen.queryByTestId('column-queued')).not.toBeInTheDocument()
 })
 
 it('a task card links to /task/{target}/{issue}', async () => {
   renderWithProviders(<BoardPage />)
   await waitFor(() => expect(screen.getByTestId('card-41')).toBeInTheDocument())
-  expect(screen.getByTestId('card-41')).toHaveAttribute('href', '/task/widget/41')
+  expect(within(screen.getByTestId('card-41')).getByRole('link')).toHaveAttribute(
+    'href', '/task/widget/41',
+  )
 })
 
 it('two claimed cards sharing an issue number across targets both render with distinct keys', async () => {
@@ -354,7 +434,9 @@ it('renders saved cards while live checks wait, then adds the ranked queue', asy
   try {
     expect(await screen.findByText('Fix login redirect')).toBeInTheDocument()
     expect(screen.getByText('loading queue and forecast…')).toBeInTheDocument()
-    expect(screen.getAllByTestId(/^column-/)).toHaveLength(11)
+    // Ghosts only arrive with the live board, so Queued is a chip until then.
+    expect(screen.getByTestId('chip-queued')).toBeInTheDocument()
+    expect(screen.getAllByTestId(/^(column|chip)-/)).toHaveLength(11)
   } finally {
     finish()
   }
@@ -377,4 +459,153 @@ it('falls back to the full board if the snapshot fails', async () => {
   )))
   renderWithProviders(<BoardPage />)
   expect(await screen.findByText('Fix login redirect')).toBeInTheDocument()
+})
+
+function Search() {
+  return <output data-testid="search">{useLocation().search}</output>
+}
+
+test('desktop: the URL stays clean and columns are not tab panels', async () => {
+  renderWithProviders(<><BoardPage /><Search /></>)
+  await screen.findByTestId('column-parked')
+  expect(screen.getByTestId('search')).toHaveTextContent(/^$/)
+  expect(screen.queryAllByRole('tabpanel')).toEqual([])
+})
+
+describe('phone tabs', () => {
+  beforeEach(onPhone)
+
+  it('the URL names the tab on screen', async () => {
+    renderWithProviders(<><BoardPage /><Search /></>)
+    await waitFor(() => expect(screen.getByTestId('search')).toHaveTextContent('?column=parked'))
+  })
+
+  const tabNames = () => screen.getAllByRole('tab').map((t) => t.textContent)
+  const selected = () => screen.getByRole('tab', { selected: true }).textContent
+
+  it('one tab per occupied column, in the order received, with counts', async () => {
+    renderWithProviders(<BoardPage />)
+    const tablist = await screen.findByRole('tablist', { name: 'Columns' })
+    expect(within(tablist).getAllByRole('tab').map((t) => t.textContent))
+      .toEqual(['Parked 2', 'In progress 1', 'Awaiting CI 1'])
+    expect(screen.getByRole('tab', { name: 'Parked 2' })).toHaveAttribute('aria-controls', 'column-parked')
+    expect(document.getElementById('column-parked')).toBe(screen.getByTestId('column-parked'))
+    expect(screen.getByRole('tabpanel', { name: 'Parked 2' })).toBe(screen.getByTestId('column-parked'))
+  })
+
+  it('with no parameter the first occupied column is active', async () => {
+    renderWithProviders(<BoardPage />)
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Parked 2')
+  })
+
+  it('the column parameter picks the tab; an empty or unknown key falls back', async () => {
+    const { unmount } = renderWithProviders(<BoardPage />, { route: '/?column=awaiting-ci' })
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Awaiting CI 1')
+    unmount()
+    renderWithProviders(<BoardPage />, { route: '/?column=failed' })
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Parked 2')
+  })
+
+  it('selecting a tab selects it; arrow keys move along the row', async () => {
+    renderWithProviders(<BoardPage />)
+    await screen.findByRole('tablist')
+    await userEvent.click(screen.getByRole('tab', { name: 'In progress 1' }))
+    expect(selected()).toBe('In progress 1')
+    expect(screen.getByRole('tab', { name: 'In progress 1' })).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('tab', { name: 'Parked 2' })).toHaveAttribute('tabindex', '-1')
+    await userEvent.keyboard('{ArrowRight}')
+    expect(selected()).toBe('Awaiting CI 1')
+    expect(screen.getByRole('tab', { name: 'Awaiting CI 1' })).toHaveFocus()
+    await userEvent.keyboard('{ArrowRight}')
+    expect(selected()).toBe('Parked 2')
+    await userEvent.keyboard('{End}')
+    expect(selected()).toBe('Awaiting CI 1')
+    expect(tabNames()).toHaveLength(3)
+  })
+
+  it('the default tab stays put when Queued fills in front of it', async () => {
+    const columns = fx_board.columns.map((c) => (c.zone === 'needs-you' ? { ...c, cards: [] } : c))
+    let release = () => {}
+    const boardHeld = new Promise<void>((resolve) => { release = resolve })
+    server.use(
+      http.get('/api/board/snapshot', () => HttpResponse.json({
+        columns, capacity: fx_board.capacity, median_cycle_seconds: fx_board.median_cycle_seconds,
+      })),
+      http.get('/api/board', async () => {
+        await boardHeld
+        return HttpResponse.json({
+          ...fx_board,
+          columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }], columns),
+        })
+      }),
+    )
+    renderWithProviders(<BoardPage />)
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('In progress 1')
+    release()
+    expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()
+    expect(selected()).toBe('In progress 1')
+  })
+
+  it('a drained column hands the URL to the fallback, so a refill does not jump back', async () => {
+    const drained = fx_board.columns.map((c) => (c.key === 'awaiting-ci' ? { ...c, cards: [] } : c))
+    let current = drained
+    server.use(
+      http.get('/api/board/snapshot', () => HttpResponse.json({
+        columns: current, capacity: fx_board.capacity, median_cycle_seconds: fx_board.median_cycle_seconds,
+      })),
+      http.get('/api/board', () => HttpResponse.json({ ...fx_board, columns: current })),
+    )
+    const { queryClient } = renderWithProviders(<BoardPage />, { route: '/?column=awaiting-ci' })
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Parked 2')
+    current = fx_board.columns
+    await queryClient.invalidateQueries()
+    expect(await screen.findByRole('tab', { name: 'Awaiting CI 1' })).toBeInTheDocument()
+    expect(selected()).toBe('Parked 2')
+  })
+
+  it('a link to Queued survives the ghost-less snapshot', async () => {
+    let release = () => {}
+    const boardHeld = new Promise<void>((resolve) => { release = resolve })
+    server.use(http.get('/api/board', async () => {
+      await boardHeld
+      return HttpResponse.json({
+        ...fx_board,
+        columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
+      })
+    }))
+    renderWithProviders(<BoardPage />, { route: '/?column=queued' })
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Parked 2')
+    release()
+    await waitFor(() => expect(selected()).toBe('Queued 1'))
+  })
+
+  it('Queued counts its ghosts', async () => {
+    server.use(http.get('/api/board', () => HttpResponse.json({
+      ...fx_board,
+      columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
+    })))
+    renderWithProviders(<BoardPage />)
+    expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()
+    expect(tabNames()).toEqual(['Parked 2', 'Queued 1', 'In progress 1', 'Awaiting CI 1'])
+  })
+})
+
+test('phone header: one summary line with capacity and the next-claim verdict', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    next_claim: { verdict: 'capacity-full', next_pass_eta: new Date(Date.now() + 300_000).toISOString(), next_issue: 0, next_target: '', minutes_to_reset: 0, blocked_by: '' },
+  })))
+  renderWithProviders(<BoardPage />)
+  const summary = await screen.findByRole('button', { name: /2\/3 active capacity full — waits for a free slot/ })
+  expect(summary).toHaveAttribute('aria-expanded', 'false')
+  const row = document.getElementById(summary.getAttribute('aria-controls')!)!
+  expect(row).toContainElement(screen.getByTestId('next-claim'))
+  await userEvent.click(summary)
+  expect(summary).toHaveAttribute('aria-expanded', 'true')
 })

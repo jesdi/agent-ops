@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { showColumn, showHeader } from './phone.js'
 
 // Reset the mutable queue state before each attempt so the spec is idempotent
 // across Playwright retries. The webServer is NOT restarted between retries
@@ -12,9 +13,11 @@ test('ghosts -> slim view -> description -> boost reorders', async ({ page }) =>
 
   // Header: next-claim line and median cycle.
   await expect(page.getByTestId('next-claim')).toContainText('will claim #73')
+  await showHeader(page)
   await expect(page.getByText('≈2h per task')).toBeVisible()
 
   // Queued column holds the ranked ghosts in order; head carries the badge.
+  await showColumn(page, 'queued')
   const queued = page.getByTestId('column-queued')
   const ghosts = queued.locator('[data-testid^="ghost-"]')
   await expect(ghosts).toHaveCount(2)
@@ -29,7 +32,11 @@ test('ghosts -> slim view -> description -> boost reorders', async ({ page }) =>
 
   // Boost #74 from the board; order flips and the badge moves.
   await page.goto('/')
-  await queued.locator('[data-testid="ghost-74"]').getByRole('button', { name: 'Boost' }).click()
+  await showColumn(page, 'queued')
+  // Ranking actions sit behind the ghost's expand toggle.
+  const ghost74 = queued.locator('[data-testid="ghost-74"]')
+  await ghost74.getByRole('button', { name: 'Details for widget#74' }).click()
+  await ghost74.getByRole('button', { name: 'Boost' }).click()
   await expect(ghosts.first()).toContainText('Fix flaky test')
   await expect(page.getByTestId('next-claim')).toContainText('will claim #74')
 })

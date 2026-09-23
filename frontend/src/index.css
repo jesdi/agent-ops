@@ -1,1 +1,117 @@
 @import "tailwindcss";
+
+/* The one token system. Utilities: bg-surface, bg-surface-raised, text-ink,
+   text-ink-muted, border-border, bg-surface-attention (Needs you zone), and
+   {bg,text,border}-{running,waiting,failed,parked}-{bg,fg}.
+   Status hues mean state and nothing else: running, waiting on you, failed, parked. */
+@theme {
+  /* Tokens only: Tailwind's default palette is deleted, so a raw class such
+     as bg-blue-500 generates nothing. */
+  --color-*: initial;
+
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --color-surface: #f5f7fa;
+  --color-surface-raised: #ffffff;
+  --color-ink: #1e293b;
+  --color-ink-muted: #5b6577;
+  --color-border: #dce1e8;
+  /* Faint warm tint: the Needs you zone, the board's one emphasis. */
+  --color-surface-attention: #fbf6ec;
+
+  --color-running-bg: #dcfce7;
+  --color-running-fg: #166534;
+  --color-waiting-bg: #fef3c7;
+  --color-waiting-fg: #92400e;
+  --color-failed-bg: #fee2e2;
+  --color-failed-fg: #991b1b;
+  --color-parked-bg: #ede9fe;
+  --color-parked-fg: #5b21b6;
+
+  /* Modal scrim over the page. */
+  --color-scrim: rgb(15 23 42 / 0.3);
+
+  /* E2E slot hues, indexed by slot number: the accent (card border, gauge
+     segment) and the chip text. Spaced to stay apart under the common
+     red/green deficiencies: blue, amber, violet, teal, rose, lime. */
+  --color-slot-0: #3b82f6;
+  --color-slot-0-fg: #1e40af;
+  --color-slot-1: #f59e0b;
+  --color-slot-1-fg: #92400e;
+  --color-slot-2: #8b5cf6;
+  --color-slot-2-fg: #5b21b6;
+  --color-slot-3: #14b8a6;
+  --color-slot-3-fg: #115e59;
+  --color-slot-4: #f43f5e;
+  --color-slot-4-fg: #9f1239;
+  --color-slot-5: #65a30d;
+  --color-slot-5-fg: #3f6212;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: #0f141a;
+    --color-surface-raised: #181e27;
+    --color-ink: #e4e8ee;
+    --color-ink-muted: #98a2b1;
+    --color-border: #2b3340;
+    --color-surface-attention: #1f1b15;
+
+    --color-running-bg: #10301e;
+    --color-running-fg: #86efac;
+    --color-waiting-bg: #372812;
+    --color-waiting-fg: #fcd34d;
+    --color-failed-bg: #3a1619;
+    --color-failed-fg: #fca5a5;
+    --color-parked-bg: #291f45;
+    --color-parked-fg: #c4b5fd;
+
+    --color-scrim: rgb(0 0 0 / 0.6);
+
+    --color-slot-0: #60a5fa;
+    --color-slot-0-fg: #93c5fd;
+    --color-slot-1: #fbbf24;
+    --color-slot-1-fg: #fcd34d;
+    --color-slot-2: #a78bfa;
+    --color-slot-2-fg: #c4b5fd;
+    --color-slot-3: #2dd4bf;
+    --color-slot-3-fg: #5eead4;
+    --color-slot-4: #fb7185;
+    --color-slot-4-fg: #fda4af;
+    --color-slot-5: #84cc16;
+    --color-slot-5-fg: #bef264;
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
+
+  body {
+    background-color: var(--color-surface);
+    color: var(--color-ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A bare `border` takes the token instead of currentColor. */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

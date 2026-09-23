@@ -296,7 +296,7 @@ def test_task_history_404_for_unknown_task(tmp_path):
                       headers=HEADERS).status_code == 404
 
 
-def test_board_carries_next_claim_upcoming_and_timeline(tmp_path):
+def test_board_carries_next_claim_ghosts_and_timeline(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT)]
     # Heartbeat derived from real now so it is always within the staleness
@@ -313,7 +313,8 @@ def test_board_carries_next_claim_upcoming_and_timeline(tmp_path):
                     "model": "", "actor": "dispatcher", "detail": ""}]
     body = client.get("/api/board", headers=HEADERS).json()
     assert body["next_claim"]["next_issue"] == 73
-    assert [g["number"] for g in body["upcoming"]] == [73]
+    queued = next(c for c in body["columns"] if c["key"] == "queued")
+    assert [g["number"] for g in queued["ghosts"]] == [73]
     card = [c for col in body["columns"] for c in col["cards"]][0]
     assert card["claimed_at"] == "2026-07-31T10:00:00+00:00"
     detail = client.get("/api/task/alpha/7", headers=HEADERS).json()
@@ -334,7 +335,8 @@ def test_capacity_blocked_queue_candidate_exposes_force_choices(tmp_path):
     fake.usages = {"anthropic": session_usage(0.2, fable=0.9)}
     body = TestClient(create_app(cfg, fake)).get(
         "/api/board", headers=HEADERS).json()
-    admission = body["upcoming"][0]["admission"]
+    queued = next(c for c in body["columns"] if c["key"] == "queued")
+    admission = queued["ghosts"][0]["admission"]
     assert admission["requested"]["model"] == "anthropic/claude-fable-5-1"
     assert admission["requested"]["admitted"] is False
     assert [(x["model"], x["admitted"])

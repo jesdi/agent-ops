@@ -35,13 +35,17 @@ agent-ops closes both gaps:
 - **24-hour access from your phone, PC off.** The box is reachable over
   Tailscale only. The web console and Telegram bot are always on — you can
   check progress, answer an agent's question, or approve a spec from anywhere.
-- **A board that answers "what needs me?" at a glance.** Tasks flow across
-  columns — Queued, In progress, **Needs review**, PR open, **Parked**,
-  Awaiting CI, Resuming, Stalled on budget, Failed. The two bold ones are
-  yours: everything else is the box's problem. Capacity and a usage panel
-  sit above the board so you always know how hard the box is working: every
-  provider's windows with their headroom, and one gate saying whether the
-  box would spawn its default model right now.
+- **A board that answers "what needs me?" at a glance.** The board is two
+  zones. **Needs you** comes first — Needs review, PR review, Parked, Failed,
+  Stalled on budget — and everything in the pipeline zone (Queued, In
+  progress, Awaiting CI, Resuming, Done, Wont do) is the box's problem.
+  Queued shows the ranked, not-yet-claimed issues as ghost cards behind the
+  claimed ones. Empty columns collapse into a strip of zero-count chips, so
+  "no failures" is visible rather than missing. On a phone the board shows
+  one column at a time through tabs. Capacity and a usage panel sit above
+  the board so you always know how hard the box is working: every provider's
+  windows with their headroom, and one gate saying whether the box would
+  spawn its default model right now.
 
 ## How it works
 
@@ -153,9 +157,9 @@ all from the same UI. Failures and history get their own pages, so nothing
 silently disappears.
 
 The board renders saved task cards and capacity from `/api/board/snapshot`
-while `/api/board` fetches live queue rankings and the claim forecast. Cards
-may reorder when scores arrive; a loading or unavailable message stays visible
-until live details are available. Secondary pages load when opened to keep the
+while `/api/board` fetches live queue rankings (the ghost cards in Queued) and
+the claim forecast. Cards may reorder when scores arrive; a loading or
+unavailable message stays visible until live details are available. Secondary pages load when opened to keep the
 initial board download small.
 
 **Telegram** (`telegram/`) — outbound notifications and digests, plus inbound

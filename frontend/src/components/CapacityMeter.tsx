@@ -3,7 +3,7 @@ import { ACCENT_PIP, capacityAccent, slotSegment } from '../lib/capacity'
 
 export function CapacityMeter({ capacity }: { capacity: CapacityView }) {
   const text = (
-    <span className="text-sm text-gray-600">
+    <span className="text-sm text-ink-muted">
       {capacity.active}/{capacity.capacity} active · slots{' '}
       {capacity.slots_used}/{capacity.max_slots}
     </span>
@@ -31,7 +31,7 @@ export function CapacityMeter({ capacity }: { capacity: CapacityView }) {
           <span
             key={i}
             data-testid={filled ? 'cap-pip-filled' : 'cap-pip-empty'}
-            className={`h-3 w-3 rounded-sm ${filled ? pipClass : 'bg-gray-200'}`}
+            className={`h-3 w-3 rounded-sm ${filled ? pipClass : 'bg-ink/15'}`}
           />
         ))}
       </div>
@@ -47,7 +47,7 @@ export function CapacityMeter({ capacity }: { capacity: CapacityView }) {
               key={i}
               data-testid={`slot-seg-${i}`}
               data-held={String(held)}
-              className={`h-3 w-2 rounded-sm ${held ? slotSegment(i) : 'bg-gray-200'}`}
+              className={`h-3 w-2 rounded-sm ${held ? slotSegment(i) : 'bg-ink/15'}`}
             >
               {held && <span className="sr-only">slot {i} in use</span>}
             </span>

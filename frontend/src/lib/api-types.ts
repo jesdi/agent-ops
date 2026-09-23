@@ -482,10 +482,8 @@ export interface components {
             /** Median Cycle Seconds */
             median_cycle_seconds: number | null;
             next_claim: components["schemas"]["NextClaimView"];
-            /** Upcoming */
-            upcoming: components["schemas"]["GhostCard"][];
-            /** Upcoming Stale */
-            upcoming_stale: boolean;
+            /** Queue Stale */
+            queue_stale: boolean;
         };
         /** BoostReq */
         BoostReq: {
@@ -514,10 +512,20 @@ export interface components {
         Column: {
             /** Cards */
             cards: components["schemas"]["TaskCard"][];
+            /**
+             * Ghosts
+             * @default []
+             */
+            ghosts: components["schemas"]["GhostCard"][];
             /** Key */
             key: string;
             /** Title */
             title: string;
+            /**
+             * Zone
+             * @enum {string}
+             */
+            zone: "needs-you" | "pipeline";
         };
         /** EventEntry */
         EventEntry: {

@@ -4,7 +4,8 @@ import pytest
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                               PARK_REVIEW, PARK_WAKE, Stage)
 from tests.webfakes import make_task
-from web.read_model import COLUMNS, build_board, column_for, task_card
+from web.read_model import (COLUMNS, build_board, build_board_snapshot,
+                             column_for, task_card)
 
 STAGE_COLUMNS = {
     Stage.QUEUED: "queued",
@@ -156,14 +157,25 @@ def test_cards_sort_by_score_descending_nulls_last_within_a_column():
     assert [c.issue for c in cards] == [3, 1, 2, 4]
 
 
-def test_board_column_order_is_stable():
+def test_snapshot_columns_in_zone_order():
+    snapshot = build_board_snapshot([], capacity=2, models={}, events=[],
+                                    queues=[])
+    assert [(c.key, c.zone) for c in snapshot.columns] == [
+        ("needs-review", "needs-you"), ("pr-open", "needs-you"),
+        ("parked", "needs-you"), ("failed", "needs-you"),
+        ("stalled", "needs-you"),
+        ("queued", "pipeline"), ("in-progress", "pipeline"),
+        ("awaiting-ci", "pipeline"), ("resuming", "pipeline"),
+        ("done", "pipeline"), ("wont-do", "pipeline")]
+
+
+def test_board_reuses_snapshot_zones():
     board = build_board([], capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
-    assert [c.key for c in board.columns] == [
-        "queued", "in-progress", "needs-review", "pr-open", "done", "parked",
-        "awaiting-ci", "resuming", "stalled", "failed", "wont-do"]
+    assert [(c.key, c.zone) for c in board.columns] == [
+        (key, zone) for key, _, zone in COLUMNS]
 
 
 def test_new_stage_columns():
@@ -171,17 +183,11 @@ def test_new_stage_columns():
     assert column_for("done", "") == "done"
 
 
-def test_wont_do_column_titled_and_last():
-    keys = [k for k, _ in COLUMNS]
-    assert keys[-1] == "wont-do"
-    assert dict(COLUMNS)["wont-do"] == "Wont do"
-
-
-def test_done_column_present_after_pr_review():
-    keys = [k for k, _ in COLUMNS]
-    assert keys.index("done") == keys.index("pr-open") + 1
-    titles = dict(COLUMNS)
+def test_column_titles():
+    titles = {key: title for key, title, _ in COLUMNS}
+    assert titles["wont-do"] == "Wont do"
     assert titles["pr-open"] == "PR review" and titles["done"] == "Done"
+    assert titles["stalled"] == "Stalled on budget"
 
 
 def test_task_card_carries_feedback_pending():
@@ -638,6 +644,10 @@ def test_next_claim_follows_the_default_models_gate():
     assert v2.verdict == "will-claim"
 
 
+def queued(board):
+    return next(c for c in board.columns if c.key == "queued")
+
+
 def test_build_board_merges_ghosts_next_claim_and_durations():
     tasks = [make_task(issue=7, stage=Stage.IMPLEMENT),
              make_task(issue=9, stage=Stage.DONE, slot=-1,
@@ -651,12 +661,13 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
         queues=[("alpha", [row(7), row(73), row(74, blocked=True)])],
         queue_stale=False, claims_paused=False, triage_running=False)
     # ghosts: candidates only, minus in-flight; rank order preserved
-    assert [g.number for g in board.upcoming] == [73]
-    assert board.upcoming[0].target == "alpha"
+    assert [g.number for g in queued(board).ghosts] == [73]
+    assert queued(board).ghosts[0].target == "alpha"
+    assert all(c.ghosts == [] for c in board.columns if c.key != "queued")
     assert board.next_claim.verdict == "will-claim"
     assert board.next_claim.next_issue == 73
     assert board.median_cycle_seconds == 7200.0
-    assert board.upcoming_stale is False
+    assert board.queue_stale is False
     cards = {c.issue: c for col in board.columns for c in col.cards}
     assert cards[7].claimed_at == T0 and cards[7].cycle_seconds is None
     assert cards[9].cycle_seconds == 7200.0
@@ -670,8 +681,8 @@ def test_build_board_degrades_without_events_or_heartbeat():
         claims_paused=False, triage_running=False)
     assert board.next_claim.verdict == "unknown"
     assert board.median_cycle_seconds is None
-    assert board.upcoming == [] and board.upcoming_stale is True
-    card = board.columns[1].cards[0]  # in-progress
+    assert queued(board).ghosts == [] and board.queue_stale is True
+    card = {c.key: c for c in board.columns}["in-progress"].cards[0]
     assert card.claimed_at == "" and card.cycle_seconds is None
 
 
@@ -691,7 +702,7 @@ def test_build_board_cross_target_ghost_not_suppressed():
         events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
         queues=queues, queue_stale=False,
         claims_paused=False, triage_running=False)
-    ghost_targets = [(g.number, g.target) for g in board.upcoming]
+    ghost_targets = [(g.number, g.target) for g in queued(board).ghosts]
     assert (73, "beta") in ghost_targets, \
         "beta#73 ghost missing — known set wrongly keyed on bare issue number"
     assert (73, "alpha") not in ghost_targets, \
@@ -707,7 +718,7 @@ def test_build_board_same_target_still_excluded():
         events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
         queues=[("alpha", [row(73), row(74)])], queue_stale=False,
         claims_paused=False, triage_running=False)
-    assert [g.number for g in board.upcoming] == [74]
+    assert [g.number for g in queued(board).ghosts] == [74]
 
 
 def test_next_claim_cross_target_not_suppressed():

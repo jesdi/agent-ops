@@ -57,20 +57,20 @@ export const ciParkedCard: TaskCard = {
 
 export const board: BoardView = {
   columns: [
-    { key: 'queued', title: 'Queued', cards: [] },
-    { key: 'in-progress', title: 'In progress', cards: [inProgressCard] },
-    { key: 'needs-review', title: 'Needs review', cards: [] },
-    { key: 'pr-open', title: 'PR review', cards: [] },
-    { key: 'done', title: 'Done', cards: [] },
-    { key: 'parked', title: 'Parked', cards: [parkedCard, loginParkedCard] },
-    { key: 'awaiting-ci', title: 'Awaiting CI', cards: [ciParkedCard] },
-    { key: 'resuming', title: 'Resuming', cards: [] },
-    { key: 'stalled', title: 'Stalled', cards: [] },
-    { key: 'failed', title: 'Failed', cards: [] },
-    { key: 'wont-do', title: 'Wont do', cards: [] },
+    { key: 'needs-review', title: 'Needs review', zone: 'needs-you', cards: [], ghosts: [] },
+    { key: 'pr-open', title: 'PR review', zone: 'needs-you', cards: [], ghosts: [] },
+    { key: 'parked', title: 'Parked', zone: 'needs-you', cards: [parkedCard, loginParkedCard], ghosts: [] },
+    { key: 'failed', title: 'Failed', zone: 'needs-you', cards: [], ghosts: [] },
+    { key: 'stalled', title: 'Stalled on budget', zone: 'needs-you', cards: [], ghosts: [] },
+    { key: 'queued', title: 'Queued', zone: 'pipeline', cards: [], ghosts: [] },
+    { key: 'in-progress', title: 'In progress', zone: 'pipeline', cards: [inProgressCard], ghosts: [] },
+    { key: 'awaiting-ci', title: 'Awaiting CI', zone: 'pipeline', cards: [ciParkedCard], ghosts: [] },
+    { key: 'resuming', title: 'Resuming', zone: 'pipeline', cards: [], ghosts: [] },
+    { key: 'done', title: 'Done', zone: 'pipeline', cards: [], ghosts: [] },
+    { key: 'wont-do', title: 'Wont do', zone: 'pipeline', cards: [], ghosts: [] },
   ],
   capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3, slots_held: [1, 2] },
-  upcoming: [], upcoming_stale: false, median_cycle_seconds: null,
+  queue_stale: false, median_cycle_seconds: null,
   next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0, blocked_by: '' },
 }
 
