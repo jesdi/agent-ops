@@ -28,9 +28,9 @@ export function FailuresPage() {
       })),
   })
 
-  if (failuresQuery.isPending) return <p className="p-4 text-gray-500">loading failures…</p>
+  if (failuresQuery.isPending) return <p className="p-4 text-ink-muted">loading failures…</p>
   if (failuresQuery.isError) {
-    return <p className="p-4 text-red-600">failures unavailable: {failuresQuery.error.message}</p>
+    return <p className="p-4 text-failed-fg">failures unavailable: {failuresQuery.error.message}</p>
   }
   return (
     <div className="p-4">

@@ -1,1 +1,75 @@
 @import "tailwindcss";
+
+/* The one token system. Utilities: bg-surface, bg-surface-raised, text-ink,
+   text-ink-muted, border-border, and {bg,text,border}-{running,waiting,failed,parked}-{bg,fg}.
+   Status hues mean state and nothing else: running, waiting on you, failed, parked. */
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --color-surface: #f5f7fa;
+  --color-surface-raised: #ffffff;
+  --color-ink: #1e293b;
+  --color-ink-muted: #5b6577;
+  --color-border: #dce1e8;
+
+  --color-running-bg: #dcfce7;
+  --color-running-fg: #166534;
+  --color-waiting-bg: #fef3c7;
+  --color-waiting-fg: #92400e;
+  --color-failed-bg: #fee2e2;
+  --color-failed-fg: #991b1b;
+  --color-parked-bg: #ede9fe;
+  --color-parked-fg: #5b21b6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: #0f141a;
+    --color-surface-raised: #181e27;
+    --color-ink: #e4e8ee;
+    --color-ink-muted: #98a2b1;
+    --color-border: #2b3340;
+
+    --color-running-bg: #10301e;
+    --color-running-fg: #86efac;
+    --color-waiting-bg: #372812;
+    --color-waiting-fg: #fcd34d;
+    --color-failed-bg: #3a1619;
+    --color-failed-fg: #fca5a5;
+    --color-parked-bg: #291f45;
+    --color-parked-fg: #c4b5fd;
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+  }
+
+  body {
+    background-color: var(--color-surface);
+    color: var(--color-ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A bare `border` takes the token instead of currentColor. */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

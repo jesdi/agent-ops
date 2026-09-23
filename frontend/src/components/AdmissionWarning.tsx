@@ -38,7 +38,7 @@ export function AdmissionWarning({ target, issue, admission }: {
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-900"
+        className="rounded bg-waiting-bg px-1.5 py-0.5 text-xs font-medium text-waiting-fg"
       >
         ⚠ {shortModel(admission.requested.model)} capacity limited
       </button>
@@ -46,10 +46,10 @@ export function AdmissionWarning({ target, issue, admission }: {
         <div
           role="dialog"
           aria-label="Model capacity options"
-          className="mt-2 rounded border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 shadow-sm"
+          className="mt-2 rounded border border-waiting-fg/30 bg-waiting-bg p-3 text-xs text-waiting-fg shadow-sm"
         >
           <p>{admission.requested.note}</p>
-          <p className="mt-2 text-gray-600">
+          <p className="mt-2 text-ink-muted">
             Keep waiting, run despite the usage limit, or process this task with another configured model.
           </p>
           <div className="mt-2 flex flex-col items-start gap-1.5">
@@ -62,18 +62,18 @@ export function AdmissionWarning({ target, issue, admission }: {
                   disabled={override.isPending}
                   title={choice.note}
                   onClick={() => override.mutate({ model: choice.model, bypassUsage })}
-                  className="rounded border border-amber-400 bg-white px-2 py-1 text-left disabled:opacity-50"
+                  className="rounded border border-waiting-fg/30 bg-surface-raised px-2 py-1 text-left disabled:opacity-50"
                 >
                   {bypassUsage ? 'Run anyway with ' : 'Run with '}
                   {shortModel(choice.model)}
-                  <span className="ml-1 text-gray-500">
+                  <span className="ml-1 text-ink-muted">
                     ({choice.admitted ? 'capacity available' : 'limited'})
                   </span>
                 </button>
               )
             })}
           </div>
-          {error && <p className="mt-2 text-red-700">{error}</p>}
+          {error && <p className="mt-2 text-failed-fg">{error}</p>}
         </div>
       )}
     </div>

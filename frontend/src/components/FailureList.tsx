@@ -18,7 +18,7 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
       <section>
         <h2 className="text-sm font-semibold">Quarantined</h2>
         {failures.quarantined.length === 0 && (
-          <p className="text-sm text-gray-500">nothing quarantined</p>
+          <p className="text-sm text-ink-muted">nothing quarantined</p>
         )}
         <ul className="mt-2 flex flex-col gap-2">
           {failures.quarantined.map((q) => {
@@ -26,22 +26,22 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
             return (
             <li
               key={`${q.target}#${q.task_issue}`}
-              className="flex flex-wrap items-center gap-2 rounded border border-gray-200 bg-white p-3 text-sm"
+              className="flex flex-wrap items-center gap-2 rounded border border-border bg-surface-raised p-3 text-sm"
             >
               <span className="font-mono text-xs">{q.fingerprint}</span>
-              <span className="text-gray-500">
+              <span className="text-ink-muted">
                 {q.target} task #{q.task_issue} → blocker #{q.blocker_issue} ({q.blocker_repo})
               </span>
               {q.blocker_open === true && (
-                <span className="rounded bg-red-100 px-1.5 text-xs text-red-700">blocker open</span>
+                <span className="rounded bg-failed-bg px-1.5 text-xs text-failed-fg">blocker open</span>
               )}
               {q.blocker_open === false && (
-                <span className="rounded bg-emerald-100 px-1.5 text-xs text-emerald-700">blocker closed</span>
+                <span className="rounded bg-surface px-1.5 text-xs text-ink">blocker closed</span>
               )}
               {q.blocker_open === null && (
-                <span className="rounded bg-gray-100 px-1.5 text-xs text-gray-600">blocker state unknown</span>
+                <span className="rounded bg-surface px-1.5 text-xs text-ink-muted">blocker state unknown</span>
               )}
-              <span className="text-xs text-gray-400">{relativeTime(q.created_at)}</span>
+              <span className="text-xs text-ink-muted">{relativeTime(q.created_at)}</span>
               <button
                 type="button"
                 className="ml-auto rounded border px-2 py-0.5 text-xs disabled:opacity-50"
@@ -53,7 +53,7 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
               {error && (
                 <p
                   data-testid={`retry-error-${q.task_issue}`}
-                  className="w-full text-xs text-red-600"
+                  className="w-full text-xs text-failed-fg"
                 >
                   {error}
                 </p>
@@ -69,7 +69,7 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
           {failures.fingerprints.map((f) => (
             <li key={`${f.fingerprint}-${f.when}`} className="flex gap-2">
               <span className="font-mono text-xs">{f.fingerprint} ({f.repo}#{f.issue})</span>
-              <span className="text-xs text-gray-400">{relativeTime(f.when)}</span>
+              <span className="text-xs text-ink-muted">{relativeTime(f.when)}</span>
             </li>
           ))}
         </ul>

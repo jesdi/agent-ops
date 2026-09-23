@@ -21,7 +21,7 @@ export function TaskPage() {
   // An empty/missing target would otherwise request /api/task//<issue>.
   if (!target) {
     return (
-      <p className="p-4 text-red-600">
+      <p className="p-4 text-failed-fg">
         not found — a task needs a target
       </p>
     )
@@ -30,7 +30,7 @@ export function TaskPage() {
   // /task/x/abc would otherwise request /api/task/x/NaN.
   if (!Number.isInteger(issue) || issue <= 0) {
     return (
-      <p className="p-4 text-red-600">
+      <p className="p-4 text-failed-fg">
         not found — "{rawIssue}" is not a task number
       </p>
     )
@@ -62,12 +62,12 @@ function TaskQueryView({ target, issue, detailQuery, intentsQuery, actions,
   showHistory: boolean
   setShowHistory: Dispatch<SetStateAction<boolean>>
 }) {
-  if (detailQuery.isPending) return <p className="p-4 text-gray-500">loading task…</p>
+  if (detailQuery.isPending) return <p className="p-4 text-ink-muted">loading task…</p>
   if (detailQuery.isError) {
     if (detailQuery.error instanceof ApiError && detailQuery.error.status === 404) {
       return <GhostTaskView target={target} issue={issue} />
     }
-    return <p className="p-4 text-red-600">{detailQuery.error.message}</p>
+    return <p className="p-4 text-failed-fg">{detailQuery.error.message}</p>
   }
   return <LoadedTaskView target={target} issue={issue} detail={detailQuery.data}
     intents={intentsQuery.data?.intents ?? []} actions={actions}
@@ -91,11 +91,11 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
     <div className="flex flex-col gap-4 p-4">
       <TaskHeader card={card} intents={intents} target={target} issue={issue} />
       {detail.track_when && (
-        <p data-testid="track-when" className="text-xs text-gray-500">{detail.track_when}</p>
+        <p data-testid="track-when" className="text-xs text-ink-muted">{detail.track_when}</p>
       )}
       <StageTimeline timeline={detail.timeline} />
 
-      <p className="break-all font-mono text-xs text-gray-500">{worktree}</p>
+      <p className="break-all font-mono text-xs text-ink-muted">{worktree}</p>
 
       <DescriptionPanel target={target} issue={issue} />
 
@@ -120,14 +120,14 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
           and the dispatcher never waits on a viewer. */}
       <TaskConsole target={target} issue={issue} paneTail={pane_tail}
         showHistory={showHistory} setShowHistory={setShowHistory} />
-      <p data-testid="attach-guidance" className="text-xs text-gray-500">
+      <p data-testid="attach-guidance" className="text-xs text-ink-muted">
         To interact with the session, attach from a terminal:{' '}
         <code>herdr --remote box</code> (desktop) or Moshi (phone). Attach to
         watch; reply here or on Telegram.
       </p>
 
       {actionError && (
-        <p data-testid="action-error" className="text-sm text-red-600">
+        <p data-testid="action-error" className="text-sm text-failed-fg">
           {actionError}
         </p>
       )}
@@ -157,13 +157,13 @@ function TaskHeader({ card, intents, target, issue }: {
   )
   return <header className="flex flex-wrap items-center gap-3">
     <h1 className="text-lg font-semibold">{card.title}</h1>
-    <span className="text-sm text-gray-500">
+    <span className="text-sm text-ink-muted">
       {card.target}#{card.issue} · {stageLabel(card.stage)} · {card.model}
       {card.track && <> · track {card.track}</>} ·
       branch {card.branch} · updated {relativeTime(card.updated_at)}
     </span>
     {card.park !== '' && (
-      <span className="rounded bg-purple-100 px-2 py-0.5 text-sm text-purple-700">
+      <span className="rounded bg-parked-bg px-2 py-0.5 text-sm text-parked-fg">
         parked: {card.park}
       </span>
     )}
@@ -175,10 +175,10 @@ function TaskHeader({ card, intents, target, issue }: {
 
 function StageTimeline({ timeline }: { timeline: TaskDetail['timeline'] }) {
   if (timeline.length === 0) return null
-  return <div data-testid="stage-timeline" className="flex flex-wrap gap-2 text-xs text-gray-500">
+  return <div data-testid="stage-timeline" className="flex flex-wrap gap-2 text-xs text-ink-muted">
     {timeline.map((segment, index) => (
       <span key={index}
-        className={`rounded px-1.5 py-0.5 ${segment.kind === 'parked' ? 'bg-purple-50 text-purple-700' : 'bg-gray-100'}`}>
+        className={`rounded px-1.5 py-0.5 ${segment.kind === 'parked' ? 'bg-parked-bg text-parked-fg' : 'bg-surface'}`}>
         {segment.label} {formatDuration(segment.seconds)}{segment.ongoing ? ' — ongoing' : ''}
       </span>
     ))}
@@ -197,7 +197,7 @@ function TaskConsole({ target, issue, paneTail, showHistory, setShowHistory }: {
       <TerminalHistory target={target} issue={issue} onClose={() => setShowHistory(false)} />
     ) : (
       <pre data-testid="pane-tail"
-        className="h-full overflow-auto rounded bg-gray-900 p-3 font-mono text-xs text-gray-100">
+        className="h-full overflow-auto rounded bg-ink p-3 font-mono text-xs text-surface dark:bg-surface-raised dark:text-ink">
         {paneTail}
       </pre>
     )}
@@ -211,12 +211,12 @@ function GhostTaskView({ target, issue }: { target: string; issue: number }) {
     <div data-testid="ghost-task-view" className="flex flex-col gap-4 p-4">
       <header className="flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-semibold">{desc.data?.title || `#${issue}`}</h1>
-        <span className="rounded border border-dashed border-gray-300 px-2 py-0.5 text-sm text-gray-500">
+        <span className="rounded border border-dashed border-border px-2 py-0.5 text-sm text-ink-muted">
           upcoming — not claimed yet
         </span>
       </header>
       <DescriptionPanel target={target} issue={issue} defaultOpen />
-      {queueError && <p data-testid="queue-error" className="text-sm text-red-600">{queueError}</p>}
+      {queueError && <p data-testid="queue-error" className="text-sm text-failed-fg">{queueError}</p>}
       <div className="flex gap-2">
         <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, 1)}>Boost</button>
         <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, -1)}>Demote</button>
@@ -288,16 +288,16 @@ function TaskControls({ target, issue, card, deliveryContract, actions, showHist
           aria-label="Reply"
           value={replyText}
           onChange={(e) => setReplyText(e.target.value)}
-          className="mt-1 w-full rounded border border-gray-300 p-2 font-mono text-xs"
+          className="mt-1 w-full rounded border border-border p-2 font-mono text-xs"
           rows={3}
         />
-        <span data-testid="delivery-contract" className="mt-1 text-xs text-gray-500">
+        <span data-testid="delivery-contract" className="mt-1 text-xs text-ink-muted">
           {deliveryContract}
         </span>
       </label>
       <button
         type="button"
-        className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+        className="rounded bg-ink px-3 py-1.5 text-sm text-surface-raised disabled:opacity-50"
         disabled={replyText.trim() === '' || busy}
         onClick={() => runIntent(() => api.reply(target, issue, replyText), true)}
       >
@@ -319,7 +319,7 @@ function TaskControls({ target, issue, card, deliveryContract, actions, showHist
         href="https://claude.ai/code"
         target="_blank"
         rel="noreferrer"
-        className="rounded border px-3 py-1.5 text-sm text-blue-700"
+        className="rounded border px-3 py-1.5 text-sm"
       >
         Open in Claude ↗
       </a>
@@ -353,7 +353,7 @@ function ConfirmAction({ armed, setArmed, busy, label, confirmation, cancel, onC
 }) {
   return <>
     <button type="button"
-      className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
+      className="rounded border border-failed-fg/30 px-3 py-1.5 text-sm text-failed-fg disabled:opacity-50"
       disabled={busy} onClick={() => armed ? onConfirm() : setArmed(true)}>
       {armed ? confirmation : label}
     </button>
@@ -371,7 +371,7 @@ function SessionStatus({ card, sessionAlive, issue }: {
     {card.park !== '' ? (
       <div
         data-testid="parked-panel"
-        className="rounded border border-purple-300 bg-purple-50 px-3 py-2 text-sm text-purple-800"
+        className="rounded border border-parked-fg/30 bg-parked-bg px-3 py-2 text-sm text-parked-fg"
       >
         <p className="font-medium">
           parked ({card.park}) — reply below to wake this task
@@ -384,7 +384,7 @@ function SessionStatus({ card, sessionAlive, issue }: {
       !sessionAlive && (
         <p
           data-testid="session-dead"
-          className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800"
+          className="rounded border border-waiting-fg/30 bg-waiting-bg px-3 py-2 text-sm font-medium text-waiting-fg"
         >
           session task-{issue} is not running
         </p>

@@ -62,7 +62,7 @@ export function TerminalHistory({
         type="button"
         aria-label="Return to live terminal"
         data-testid="terminal-history-back"
-        className="absolute right-2 top-2 z-10 rounded border bg-white px-2 py-0.5 text-xs shadow"
+        className="absolute right-2 top-2 z-10 rounded border bg-surface-raised px-2 py-0.5 text-xs shadow"
         onClick={onClose}
       >
         Back to live
@@ -71,7 +71,7 @@ export function TerminalHistory({
         ref={paneRef}
         data-testid="terminal-history-pane"
         onScroll={handleScroll}
-        className="h-full w-full overflow-auto rounded bg-gray-900 p-3 font-mono text-xs text-gray-100"
+        className="h-full w-full overflow-auto rounded bg-ink p-3 font-mono text-xs text-surface dark:bg-surface-raised dark:text-ink"
       >
         {query.isPending ? 'loading history…' : (query.data?.text ?? '')}
       </pre>

@@ -13,11 +13,11 @@ class Boundary extends Component<{ children: ReactNode }, State> {
   render() {
     if (!this.state.failed) return this.props.children
     return (
-      <div role="alert" className="p-4 text-sm text-gray-700">
+      <div role="alert" className="p-4 text-sm text-ink">
         <p>this page could not be loaded — the console may have been updated.</p>
         <button
           type="button"
-          className="mt-2 rounded border border-gray-300 bg-white px-3 py-1 hover:bg-gray-100"
+          className="mt-2 rounded border border-border bg-surface-raised px-3 py-1 hover:bg-surface"
           onClick={() => window.location.reload()}
         >
           reload

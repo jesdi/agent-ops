@@ -5,9 +5,9 @@ import { relativeTime } from '../lib/format'
 // intent file exists but no dispatcher pass has drained it; "queued" means it
 // is in the durable message file; "delivered" means a session actually got it.
 const CHIP: Record<string, string> = {
-  sending: 'bg-gray-100 text-gray-600',
-  queued: 'bg-amber-100 text-amber-800',
-  delivered: 'bg-emerald-100 text-emerald-800',
+  sending: 'bg-surface text-ink-muted',
+  queued: 'bg-surface text-ink-muted',
+  delivered: 'bg-surface text-ink',
 }
 
 export function MessageThread({ messages }: { messages: MessageView[] }) {
@@ -18,9 +18,9 @@ export function MessageThread({ messages }: { messages: MessageView[] }) {
         <div
           key={m.id}
           data-testid={`message-${m.id}`}
-          className="rounded border border-gray-200 bg-white px-3 py-2 text-sm"
+          className="rounded border border-border bg-surface-raised px-3 py-2 text-sm"
         >
-          <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
             <span>{m.actor || 'operator'}</span>
             {m.created_at !== '' && <span>{relativeTime(m.created_at)}</span>}
             <span
