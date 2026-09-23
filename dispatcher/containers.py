@@ -37,6 +37,18 @@ def _state_dir() -> str:
                           str(Path.home() / "agent-ops-state"))
 
 
+def _host_claude() -> list[str]:
+    """Run the host's native claude inside the container, read-only, so the
+    box has one claude at one version (the image used to npm-install its
+    own, which drifted behind the auto-updating host install). Resolved at
+    spawn: a running container keeps its version even after the host
+    updater moves on. The auto-updater is off inside, since the binary is the
+    host's to update."""
+    binary = os.path.realpath(Path.home() / ".local" / "bin" / "claude")
+    return ["-v", f"{binary}:/usr/local/bin/claude:ro",
+            "-e", "DISABLE_AUTOUPDATER=1"]
+
+
 def _wrapper() -> list[str]:
     """Optional deployment-owned executable that prepares the session environment."""
     path = os.environ.get("AGENT_OPS_COMMAND_WRAPPER", "")
@@ -78,6 +90,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         f"-v {clone}:{clone} "
         f"-v {_state_dir()}/claude-home:/root/.claude "
         f"-e CLAUDE_CODE_OAUTH_TOKEN "
+        f"{shlex.join(_host_claude())} "
         f"-v {home}/.config/gh:/root/.config/gh:ro "
         f"-v {home}/.gitconfig:/root/.gitconfig:ro "
         # auto: the classifier approves routine actions and stops only for
@@ -130,6 +143,7 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         "-e", "CLAUDE_CODE_OAUTH_TOKEN",
         "-v", f"{clone}:{clone}:ro", "-w", clone,
         "-v", f"{_state_dir()}/claude-home:/root/.claude",
+        *_host_claude(),
         "-v", f"{home}/.config/gh:/root/.config/gh:ro",
         "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
         "-v", f"{triage_dir}:/triage",
