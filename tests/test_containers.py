@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from dispatcher import containers
@@ -258,3 +259,28 @@ def test_triage_cmd_omits_effort_when_unset():
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
         "claude-opus-5", "/triage/o-r-2026-07-30-prompt.md")
     assert "--effort" not in cmd[-1]
+
+
+def test_containers_run_the_hosts_claude_read_only(tmp_path: Path, monkeypatch):
+    # One claude on the box: the containers mount the host's native binary
+    # (resolved through the ~/.local/bin symlink, so the version is pinned
+    # at spawn) instead of a copy baked into the image.
+    home = tmp_path / "home"
+    versions = home / ".local" / "share" / "claude" / "versions"
+    versions.mkdir(parents=True)
+    (versions / "2.1.280").write_text("")
+    (home / ".local" / "bin").mkdir(parents=True)
+    (home / ".local" / "bin" / "claude").symlink_to(versions / "2.1.280")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    mount = f"{os.path.realpath(versions / '2.1.280')}:/usr/local/bin/claude:ro"
+
+    wt, clone = make_worktree(tmp_path)
+    session = containers.session_cmd("task-x", wt, "4g", "2", "opus", "")
+    assert f"-v {mount}" in session
+    assert "-e DISABLE_AUTOUPDATER=1" in session
+
+    triage = containers.triage_cmd("triage-x", clone, str(tmp_path / "t"),
+                                   "4g", "2", "opus", str(tmp_path / "p"))
+    assert mount in triage
+    assert "DISABLE_AUTOUPDATER=1" in triage
