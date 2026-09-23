@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import type { DraggedCard } from '../components/BoardColumn'
+import type { DraggedCard } from '../components/cardDrag'
 import { api, ApiError } from '../lib/api'
 import { queryKeys } from './queryKeys'
 

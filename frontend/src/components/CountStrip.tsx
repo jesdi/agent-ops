@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { Column } from '../lib/api'
-import { cardDropTarget, type DraggedCard } from './BoardColumn'
+import { cardDropTarget, type DraggedCard } from './cardDrag'
 
 export interface EmptyColumn {
   column: Column

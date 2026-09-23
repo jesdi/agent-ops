@@ -5,6 +5,7 @@ import { formatDuration, relativeTime, stageLabel } from '../lib/format'
 import { PendingBadge } from './PendingBadge'
 import { AdmissionWarning } from './AdmissionWarning'
 import { ExpandToggle, useExpand } from './Expand'
+import { cardDragSource } from './cardDrag'
 
 const CHIP = 'rounded px-1.5'
 const NEUTRAL = `${CHIP} bg-ink/10 text-ink`
@@ -23,13 +24,7 @@ export function TaskCardView({ card, pendingActions }: {
   return (
     <article
       data-testid={`card-${card.issue}`}
-      draggable
-      onDragStart={(event) => {
-        event.dataTransfer.setData(
-          'application/x-agent-ops-card',
-          JSON.stringify({ issue: card.issue, target: card.target, title: card.title }),
-        )
-      }}
+      {...cardDragSource({ issue: card.issue, target: card.target, title: card.title })}
       onPointerUp={onPointerUp}
       className={`rounded border border-l-4 bg-surface-raised px-2.5 py-2 shadow-sm ${
         card.slot >= 0 ? slotBorder(card.slot) : 'border-l-transparent'
@@ -55,8 +50,10 @@ export function TaskCardView({ card, pendingActions }: {
       <Link
         to={`/task/${card.target}/${card.issue}`}
         draggable={false}
-        className={`mt-0.5 block text-sm font-medium text-ink hover:underline ${
-          expanded ? '' : 'line-clamp-2'
+        // Not `block` alongside the clamp: `.block` sorts after `.line-clamp-2`
+        // and would override its display, so the clamp would never apply.
+        className={`mt-0.5 text-sm font-medium text-ink hover:underline ${
+          expanded ? 'block' : 'line-clamp-2'
         }`}
       >
         {card.title}
@@ -95,6 +92,7 @@ function TaskCardDetail({ id, card }: { id: string; card: TaskCard }) {
   const took = card.stage === 'done' ? card.cycle_seconds : null
   return (
     <div id={id} className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t pt-2 text-xs text-ink-muted">
+      <span>{stageLabel(card.stage)}</span>
       <span>{card.model}</span>
       {card.track && <span>track {card.track}</span>}
       {card.score != null && <span className={`${CHIP} bg-ink/10`}>score {card.score}</span>}

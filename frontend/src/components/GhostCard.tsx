@@ -2,6 +2,7 @@ import { Link } from 'react-router'
 import type { GhostCard } from '../lib/api'
 import { AdmissionWarning } from './AdmissionWarning'
 import { ExpandToggle, useExpand } from './Expand'
+import { cardDragSource } from './cardDrag'
 
 const ACTION = 'rounded border px-2 text-xs text-ink hover:bg-ink/5 disabled:opacity-50'
 
@@ -22,13 +23,7 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
   return (
     <div
       data-testid={`ghost-${ghost.number}`}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData(
-          'application/x-agent-ops-card',
-          JSON.stringify({ issue: ghost.number, target: ghost.target, title: ghost.title }),
-        )
-      }}
+      {...cardDragSource({ issue: ghost.number, target: ghost.target, title: ghost.title })}
       onPointerUp={onPointerUp}
       className="rounded border border-dashed bg-surface px-2.5 py-2 text-ink-muted"
     >
@@ -44,7 +39,7 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
       <Link
         to={`/task/${ghost.target}/${ghost.number}`}
         draggable={false}
-        className={`mt-0.5 block text-sm font-medium hover:underline ${expanded ? '' : 'line-clamp-2'}`}
+        className={`mt-0.5 text-sm font-medium hover:underline ${expanded ? 'block' : 'line-clamp-2'}`}
       >
         {ghost.title}
       </Link>

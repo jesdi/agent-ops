@@ -43,6 +43,22 @@ it('parked cards show the park reason and in-progress cards the stage while comp
   expect(screen.getByText('Implementing')).toBeInTheDocument()
 })
 
+it('the expanded detail block names the stage on every card, not only In progress', async () => {
+  await renderExpanded(parkedCard)
+  const chevron = screen.getByRole('button', { name: 'Details for widget#42' })
+  expect(document.getElementById(chevron.getAttribute('aria-controls')!)).toHaveTextContent('Implementing')
+})
+
+it('the title clamps to two lines while compact and unclamps when expanded', async () => {
+  renderCard(inProgressCard)
+  const link = screen.getByRole('link', { name: inProgressCard.title })
+  // `block` would override the clamp's display, so it must not ride along.
+  expect(link).toHaveClass('line-clamp-2')
+  expect(link).not.toHaveClass('block')
+  await userEvent.click(screen.getByRole('button', { name: 'Details for widget#41' }))
+  expect(link).not.toHaveClass('line-clamp-2')
+})
+
 it('the chevron expands the detail block and flips aria-expanded', async () => {
   renderCard({ ...inProgressCard, track: 'security' })
   const chevron = screen.getByRole('button', { name: 'Details for widget#41' })
