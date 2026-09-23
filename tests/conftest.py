@@ -29,6 +29,11 @@ def _no_ambient_claude_token(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN", raising=False)
     monkeypatch.delenv("AGENT_OPS_COMMAND_WRAPPER", raising=False)
+    # The host store is a usage-token fallback too; the dev machine's real
+    # ~/.claude must not leak in. Tests exercising it set it explicitly.
+    from dispatcher import usage_providers
+    monkeypatch.setattr(usage_providers, "HOST_CREDENTIALS",
+                        str(Path(__file__).parent / "no-host-credentials.json"))
 
 
 @pytest.fixture(autouse=True)

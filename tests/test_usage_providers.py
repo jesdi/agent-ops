@@ -156,6 +156,29 @@ def test_default_prefers_claude_home_store(tmp_path, monkeypatch):
     assert seen["headers"]["Authorization"] == "Bearer tok-home"
 
 
+def test_refused_claude_home_token_falls_through_to_host_store(tmp_path, monkeypatch):
+    """The box on 2026-09-23: claude-home held a token the endpoint 429s
+    while the host login was live — the gate must read usage via the host."""
+    tried = []
+
+    def fake_get(url, headers):
+        tried.append(headers["Authorization"])
+        if headers["Authorization"] == "Bearer tok-home":
+            raise up.UsageFetchError("HTTP Error 429: Too Many Requests")
+        return oauth_response()
+
+    monkeypatch.setattr(up, "_http_get_json", fake_get)
+    home_store = tmp_path / "claude-home" / ".credentials.json"
+    home_store.parent.mkdir()
+    home_store.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok-home"}}))
+    host_store = tmp_path / "host-credentials.json"
+    host_store.write_text(json.dumps({"claudeAiOauth": {"accessToken": "tok-host"}}))
+    monkeypatch.setattr(up, "HOST_CREDENTIALS", str(host_store))
+    u = up.AnthropicUsage().fetch(tmp_path)
+    assert u.source == "oauth"
+    assert tried == ["Bearer tok-home", "Bearer tok-host"]
+
+
 def test_default_falls_back_to_host_store(tmp_path, monkeypatch):
     seen = {}
 
