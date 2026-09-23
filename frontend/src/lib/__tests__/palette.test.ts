@@ -14,7 +14,7 @@ const srcDir = resolve(__dirname, '../..')
 const twDir = dirname(require.resolve('tailwindcss/package.json'))
 
 const COLOUR_UTILITY =
-  /^(?:[a-z-]+:)*-?(?:bg|text|border(?:-[xytrbles])?|ring|ring-offset|outline|fill|stroke|from|via|to|divide(?:-[xy])?|placeholder|accent|caret|decoration|shadow)-[a-z][a-z-]*(?:-\d+|-fg|-bg)?(?:\/\d+)?$/
+  /^(?:[a-z-]+:)*-?(?:bg|text|border(?:-[xytrbles])?|ring|ring-offset|outline|fill|stroke|from|via|to|divide(?:-[xy])?|placeholder|accent|caret|decoration|shadow)-[a-z][a-z-]*(?:-\d+)?(?:-fg|-bg)?(?:\/\d+)?$/
 
 test('every colour utility in the sources compiles against index.css', async () => {
   const design = await __unstable__loadDesignSystem(readFileSync(resolve(srcDir, 'index.css'), 'utf8'), {
