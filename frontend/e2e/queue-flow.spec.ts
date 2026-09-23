@@ -29,7 +29,10 @@ test('ghosts -> slim view -> description -> boost reorders', async ({ page }) =>
 
   // Boost #74 from the board; order flips and the badge moves.
   await page.goto('/')
-  await queued.locator('[data-testid="ghost-74"]').getByRole('button', { name: 'Boost' }).click()
+  // Ranking actions sit behind the ghost's expand toggle.
+  const ghost74 = queued.locator('[data-testid="ghost-74"]')
+  await ghost74.getByRole('button', { name: 'Details for widget#74' }).click()
+  await ghost74.getByRole('button', { name: 'Boost' }).click()
   await expect(ghosts.first()).toContainText('Fix flaky test')
   await expect(page.getByTestId('next-claim')).toContainText('will claim #74')
 })

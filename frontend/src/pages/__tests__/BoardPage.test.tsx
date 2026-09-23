@@ -288,6 +288,29 @@ test('same issue number on two targets renders two distinct ghosts', async () =>
   expect(within(queued).getAllByText('next')).toHaveLength(1)
 })
 
+test('a failed queue action shows its error marker in the Queued header', async () => {
+  server.use(
+    http.get('/api/board', () => HttpResponse.json({
+      ...fx_board,
+      upcoming: [
+        { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      ],
+      upcoming_stale: true,
+      next_claim: { ...fx_board.next_claim, verdict: 'no-candidates' },
+    })),
+    http.post('/api/queue/boost', () => HttpResponse.json({ detail: 'queue locked' }, { status: 422 })),
+  )
+  renderWithProviders(<BoardPage />)
+  const queued = await screen.findByTestId('column-queued')
+  // Ghosts arrive with /api/board, after the snapshot paints.
+  await userEvent.click(await within(queued).findByRole('button', { name: 'Details for widget#73' }))
+  await userEvent.click(within(queued).getByRole('button', { name: 'Boost' }))
+  // Collapsing the ghost again must not hide degraded queue state.
+  await userEvent.click(within(queued).getByRole('button', { name: 'Details for widget#73' }))
+  expect(await within(queued).findByTestId('queue-error')).toHaveAttribute('title', 'queue locked')
+  expect(within(queued).getByTestId('queue-stale')).toBeInTheDocument()
+})
+
 test('stale indicator survives collapsing the Queued column', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
