@@ -165,17 +165,17 @@ def _token_from_op() -> str | None:
     return r.stdout.strip() or None
 
 
-def _resolve_credentials(state_dir: str | Path,
-                         credentials_path: str | Path | None) -> str | Path:
+def _credential_stores(state_dir: str | Path,
+                       credentials_path: str | Path | None) -> list[str | Path]:
     # The claude-home store (mounted into every session container, renewed
-    # by the keepalive) is the only one the fleet keeps fresh; the host's
-    # ~/.claude lapses ~8h after the last host-side claude run and would
-    # take the budget check dark with it. Prefer claude-home, fall back to
-    # the host store for dev machines without one.
+    # by the keepalive) is the one the fleet keeps fresh, so it goes first.
+    # The host's ~/.claude follows rather than only standing in when
+    # claude-home is absent: claude-home can hold a token the usage endpoint
+    # refuses (a static one it 429s) while a host-side login is live, and
+    # the updater that copies host over claude-home can itself be down.
     if credentials_path is not None:
-        return credentials_path
-    claude_home = Path(state_dir) / "claude-home" / ".credentials.json"
-    return claude_home if claude_home.exists() else HOST_CREDENTIALS
+        return [credentials_path]
+    return [Path(state_dir) / "claude-home" / ".credentials.json", HOST_CREDENTIALS]
 
 
 class AnthropicUsage:
@@ -187,13 +187,14 @@ class AnthropicUsage:
     def fetch(self, state_dir: Path, *, now: Callable[[], float] = time.time) -> ProviderUsage:
         """OAuth endpoint → ccusage → unavailable. Token preference: explicit
         env override, the box's long-lived setup-token read from 1P at fetch
-        time, then the shared OAuth store (kept as a live fallback: the usage
-        endpoint is unofficial and may reject the static token)."""
-        candidates = [t for t in (
+        time, then the OAuth stores, claude-home before the host's (kept as
+        live fallbacks: the usage endpoint is unofficial and rejects the
+        static token — 403 as of 2026-09-23)."""
+        candidates = [t for t in dict.fromkeys((
             os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
             _token_from_op(),
-            _read_token(_resolve_credentials(state_dir, self._credentials_path)),
-        ) if t]
+            *map(_read_token, _credential_stores(state_dir, self._credentials_path)),
+        )) if t]
         at = now()
         for token in candidates:
             try:
