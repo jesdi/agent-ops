@@ -168,13 +168,6 @@ class TaskCard(BaseModel):
     admission: TaskAdmissionView | None = None
 
 
-class Column(BaseModel):
-    key: str
-    title: str
-    zone: Zone
-    cards: list[TaskCard]
-
-
 class GhostCard(BaseModel):
     """A ranked, not-yet-claimed candidate: exactly what _claim_new would
     consume next, rendered in the Queued column ahead of being claimed."""
@@ -185,6 +178,16 @@ class GhostCard(BaseModel):
     score: float | None
     boost: int
     admission: TaskAdmissionView | None = None
+
+
+class Column(BaseModel):
+    key: str
+    title: str
+    zone: Zone
+    cards: list[TaskCard]
+    # Ranked candidates behind the cards. Only Queued has any, and only on the
+    # full board: the snapshot never runs the ranking.
+    ghosts: list[GhostCard] = []
 
 
 class CapacityView(BaseModel):
@@ -202,8 +205,8 @@ class BoardSnapshot(BaseModel):
 
 
 class BoardView(BoardSnapshot):
-    upcoming: list[GhostCard]
-    upcoming_stale: bool
+    # The ranking behind Queued's ghosts failed and a cached one is shown.
+    queue_stale: bool
     next_claim: NextClaimView
 
 
@@ -280,9 +283,11 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                          queues: list[tuple[str, list[dict]]],
                          undelivered: dict[tuple[str, int], int] | None = None,
                          wake_blocked: set[tuple[str, int]] | None = None,
-                         admissions: dict[tuple[str, int], TaskAdmissionView] | None = None
+                         admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
+                         ghosts: list[GhostCard] | None = None
                          ) -> BoardSnapshot:
-    """Cards and capacity without any live-service dependencies."""
+    """Cards and capacity without any live-service dependencies; `ghosts`
+    join the Queued column."""
     mail = undelivered or {}
     blocked = wake_blocked or set()
     task_admissions = admissions or {}
@@ -299,7 +304,8 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
     # read "1/4" with zero segments lit.
     slots_held = _held_slots(tasks)
     return BoardSnapshot(
-        columns=[Column(key=key, title=title, zone=zone, cards=by_column[key])
+        columns=[Column(key=key, title=title, zone=zone, cards=by_column[key],
+                        ghosts=(ghosts or []) if key == "queued" else [])
                  for key, title, zone in COLUMNS],
         capacity=CapacityView(
             # via dispatcher.state.active so the console never shows a
@@ -324,25 +330,25 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
                 candidate_admissions: dict[tuple[str, int], TaskAdmissionView] | None = None
                 ) -> BoardView:
-    snapshot = build_board_snapshot(
-        tasks, capacity=capacity, models=models, events=events, queues=queues,
-        undelivered=undelivered, wake_blocked=wake_blocked,
-        admissions=admissions)
     # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
     # (cf. dispatcher/main.py:223 which acknowledges number collisions).
     known = {(t.target, t.issue) for t in tasks}
     ghost_admissions = candidate_admissions or {}
-    upcoming = [GhostCard(number=r["number"], target=name,
-                          title=r.get("title", ""), url=r.get("url", ""),
-                          score=r.get("score"), boost=int(r.get("boost") or 0),
-                          admission=ghost_admissions.get((name, r["number"])))
-                for name, rows in queues for r in rows
-                if _is_candidate(r) and (name, r["number"]) not in known]
+    ghosts = [GhostCard(number=r["number"], target=name,
+                        title=r.get("title", ""), url=r.get("url", ""),
+                        score=r.get("score"), boost=int(r.get("boost") or 0),
+                        admission=ghost_admissions.get((name, r["number"])))
+              for name, rows in queues for r in rows
+              if _is_candidate(r) and (name, r["number"]) not in known]
+    snapshot = build_board_snapshot(
+        tasks, capacity=capacity, models=models, events=events, queues=queues,
+        undelivered=undelivered, wake_blocked=wake_blocked,
+        admissions=admissions, ghosts=ghosts)
     return BoardView(
         columns=snapshot.columns, capacity=snapshot.capacity,
         median_cycle_seconds=snapshot.median_cycle_seconds,
-        upcoming=upcoming, upcoming_stale=queue_stale,
+        queue_stale=queue_stale,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
                               capacity=capacity, gate=gate,
                               queues=queues,

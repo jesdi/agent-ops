@@ -106,10 +106,11 @@ test('phone: the header is one summary line; the disclosure reveals the rest', a
   await expect(page.getByRole('progressbar', { name: /Session · 5h used/ }).first()).toBeVisible()
 })
 
-test('desktop: no tab row and no summary line', async ({ page, isMobile }) => {
+test('desktop: no tab row, no summary line, no column in the URL', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop only')
   await page.goto('/')
   await expect(page.getByTestId('column-queued')).toBeVisible()
+  await expect(page).toHaveURL(/:\d+\/$/)
   await expect(page.getByRole('tablist')).toBeHidden()
   await expect(page.getByRole('button', { name: /active/ })).toBeHidden()
   await expect(page.getByText('≈2h per task')).toBeVisible()

@@ -644,6 +644,10 @@ def test_next_claim_follows_the_default_models_gate():
     assert v2.verdict == "will-claim"
 
 
+def queued(board):
+    return next(c for c in board.columns if c.key == "queued")
+
+
 def test_build_board_merges_ghosts_next_claim_and_durations():
     tasks = [make_task(issue=7, stage=Stage.IMPLEMENT),
              make_task(issue=9, stage=Stage.DONE, slot=-1,
@@ -657,12 +661,13 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
         queues=[("alpha", [row(7), row(73), row(74, blocked=True)])],
         queue_stale=False, claims_paused=False, triage_running=False)
     # ghosts: candidates only, minus in-flight; rank order preserved
-    assert [g.number for g in board.upcoming] == [73]
-    assert board.upcoming[0].target == "alpha"
+    assert [g.number for g in queued(board).ghosts] == [73]
+    assert queued(board).ghosts[0].target == "alpha"
+    assert all(c.ghosts == [] for c in board.columns if c.key != "queued")
     assert board.next_claim.verdict == "will-claim"
     assert board.next_claim.next_issue == 73
     assert board.median_cycle_seconds == 7200.0
-    assert board.upcoming_stale is False
+    assert board.queue_stale is False
     cards = {c.issue: c for col in board.columns for c in col.cards}
     assert cards[7].claimed_at == T0 and cards[7].cycle_seconds is None
     assert cards[9].cycle_seconds == 7200.0
@@ -676,7 +681,7 @@ def test_build_board_degrades_without_events_or_heartbeat():
         claims_paused=False, triage_running=False)
     assert board.next_claim.verdict == "unknown"
     assert board.median_cycle_seconds is None
-    assert board.upcoming == [] and board.upcoming_stale is True
+    assert queued(board).ghosts == [] and board.queue_stale is True
     card = {c.key: c for c in board.columns}["in-progress"].cards[0]
     assert card.claimed_at == "" and card.cycle_seconds is None
 
@@ -697,7 +702,7 @@ def test_build_board_cross_target_ghost_not_suppressed():
         events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
         queues=queues, queue_stale=False,
         claims_paused=False, triage_running=False)
-    ghost_targets = [(g.number, g.target) for g in board.upcoming]
+    ghost_targets = [(g.number, g.target) for g in queued(board).ghosts]
     assert (73, "beta") in ghost_targets, \
         "beta#73 ghost missing — known set wrongly keyed on bare issue number"
     assert (73, "alpha") not in ghost_targets, \
@@ -713,7 +718,7 @@ def test_build_board_same_target_still_excluded():
         events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
         queues=[("alpha", [row(73), row(74)])], queue_stale=False,
         claims_paused=False, triage_running=False)
-    assert [g.number for g in board.upcoming] == [74]
+    assert [g.number for g in queued(board).ghosts] == [74]
 
 
 def test_next_claim_cross_target_not_suppressed():

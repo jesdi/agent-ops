@@ -1,12 +1,11 @@
-import { useEffect } from 'react'
-import { useSearchParams } from 'react-router'
-import { BoardColumn } from '../components/BoardColumn'
+import { BoardColumn, type ColumnView } from '../components/BoardColumn'
 import type { DraggedCard } from '../components/cardDrag'
 import { BoardHeader } from '../components/BoardHeader'
 import { ColumnTabs } from '../components/ColumnTabs'
-import { CountStrip, type EmptyColumn } from '../components/CountStrip'
+import { CountStrip } from '../components/CountStrip'
 import { GhostCardView } from '../components/GhostCard'
-import type { Column, GhostCard, NextClaimView, PendingIntent, Zone } from '../lib/api'
+import { useActiveColumn } from '../components/useActiveColumn'
+import type { GhostCard, NextClaimView, PendingIntent, Zone } from '../lib/api'
 import { useBoardSnapshot, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useWontDo } from '../hooks/useWontDo'
@@ -28,41 +27,15 @@ function pendingIntentsByKey(intents: PendingIntent[]): Map<string, string[]> {
   return byKey
 }
 
-/** Stale indicator and action error ride on the Queued header, or on the
- *  Queued chip when it is empty, so degraded state is never hidden. */
-function QueuedHeaderExtra({ stale, error }: { stale: boolean | undefined; error: QueueActions['queueError'] }) {
-  return (
-    <>
-      {stale && (
-        <span
-          data-testid="queue-stale"
-          className="rounded bg-waiting-bg px-1.5 text-xs font-normal text-waiting-fg"
-          title="queue order may be outdated"
-        >
-          stale
-        </span>
-      )}
-      {error && (
-        <span
-          data-testid="queue-error"
-          className="rounded bg-failed-bg px-1.5 text-xs font-normal text-failed-fg"
-        >
-          {error}
-        </span>
-      )}
-    </>
-  )
-}
-
-function GhostStack({ upcoming, nextClaim, queue }: {
-  upcoming: GhostCard[]; nextClaim: NextClaimView | undefined; queue: QueueActions
+function Ghosts({ ghosts, nextClaim, queue }: {
+  ghosts: GhostCard[]; nextClaim: NextClaimView | undefined; queue: QueueActions
 }) {
   return (
     <>
       {/* busy disables every ghost's buttons at once: each action re-ranks the
           shared queue, so a second click would act on pre-mutation ranks and
           creates a last-writer-wins race on the error state. */}
-      {upcoming.map((g) => (
+      {ghosts.map((g) => (
         <GhostCardView
           /* Issue numbers are per-repo: alpha#73 and beta#73 can both be
              ghosts, so the key (and the next-badge match) needs the target. */
@@ -81,12 +54,12 @@ function GhostStack({ upcoming, nextClaim, queue }: {
 
 /** Zone and column order are the read model's; the page only groups
  *  consecutive columns that share a zone, so it holds no ordering of its own. */
-function zonesInOrder(columns: Column[]): { zone: Zone; columns: Column[] }[] {
-  const zones: { zone: Zone; columns: Column[] }[] = []
-  for (const column of columns) {
+function zonesInOrder(columns: ColumnView[]): { zone: Zone; columns: ColumnView[] }[] {
+  const zones: { zone: Zone; columns: ColumnView[] }[] = []
+  for (const view of columns) {
     const last = zones.at(-1)
-    if (last?.zone === column.zone) last.columns.push(column)
-    else zones.push({ zone: column.zone, columns: [column] })
+    if (last?.zone === view.column.zone) last.columns.push(view)
+    else zones.push({ zone: view.column.zone, columns: [view] })
   }
   return zones
 }
@@ -148,31 +121,21 @@ export function BoardPage() {
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
-  const [params, setParams] = useSearchParams()
 
   const board = boardQuery.data ?? snapshotQuery.data
-  const upcoming = boardQuery.data?.upcoming ?? []
-  // Queued also holds the ghosts. A column with no cards and no ghosts is a
-  // chip; anything occupied stays in the row, so a card can never disappear
-  // into the strip.
-  const count = (column: Column) => column.cards.length + (column.key === 'queued' ? upcoming.length : 0)
-  const occupied = (column: Column) => count(column) > 0
-  const inRow = (board?.columns ?? []).filter(occupied)
-  // Phones show one column: the one named in the URL if it is occupied, else
-  // the first occupied one. The effect writes that choice back, so the URL
-  // always names the column on screen: back and reload land on it, and a
-  // column filling or refilling elsewhere never moves the view. The snapshot
-  // carries no ghosts, so until the full board lands it may only fill in a
-  // missing key, never overwrite one: a link to Queued must survive it.
-  const urlColumn = params.get('column')
-  const active = inRow.find((c) => c.key === urlColumn)?.key ?? inRow[0]?.key
-  const settled = boardQuery.data !== undefined || urlColumn === null
-  // Replace, not push: switching tabs is not a navigation back should undo.
-  const selectColumn = (key: string) =>
-    setParams((p) => { p.set('column', key); return p }, { replace: true })
-  useEffect(() => {
-    if (settled && active && active !== urlColumn) selectColumn(active)
-  }, [settled, active, urlColumn]) // eslint-disable-line react-hooks/exhaustive-deps -- selectColumn is rebuilt each render
+  // Queue trouble lives on Queued, the column the ranking and the actions feed.
+  const stale = boardQuery.data?.queue_stale ?? false
+  const queueDegraded = stale || queue.queueError ? { stale, error: queue.queueError } : null
+  const views: ColumnView[] = (board?.columns ?? []).map((column) => ({
+    column,
+    count: column.cards.length + column.ghosts.length,
+    degraded: column.key === 'queued' ? queueDegraded : null,
+    onCardDrop: column.key === 'wont-do' ? wontDo.propose : undefined,
+  }))
+  // Anything occupied stays in the row, so a card can never disappear into
+  // the strip.
+  const inRow = views.filter((v) => v.count > 0)
+  const tabs = useActiveColumn(inRow.map((v) => v.column.key), boardQuery.data !== undefined)
 
   if (!board && (boardQuery.isPending || snapshotQuery.isPending)) return <p className="p-4 text-ink-muted">loading board…</p>
   if (!board) {
@@ -180,22 +143,6 @@ export function BoardPage() {
   }
 
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
-  const stale = boardQuery.data?.upcoming_stale
-  // Undefined when healthy, so the phone board can drop the Queued header.
-  const queuedMarkers = stale || queue.queueError
-    ? <QueuedHeaderExtra stale={stale} error={queue.queueError} />
-    : undefined
-  const queuedExtras = {
-    extra: <GhostStack upcoming={upcoming} nextClaim={boardQuery.data?.next_claim} queue={queue} />,
-    headerExtra: queuedMarkers,
-  }
-  const dropFor = (key: string) => (key === 'wont-do' ? wontDo.propose : undefined)
-  const phoneHidden = (visible: boolean) => (visible ? '' : 'max-md:hidden')
-  const empty: EmptyColumn[] = board.columns.filter((c) => !occupied(c)).map((column) => ({
-    column,
-    markers: column.key === 'queued' ? queuedMarkers : undefined,
-    onCardDrop: dropFor(column.key),
-  }))
 
   // From md up the board is exactly the viewport below the nav (AppShell is a
   // min-h-dvh flex column; a zero-basis grow item cannot push it taller), so
@@ -206,12 +153,8 @@ export function BoardPage() {
   return (
     <div className="flex flex-col gap-4 p-4 md:min-h-0 md:grow md:basis-0 md:pb-0">
       <BoardHeader board={board} />
-      <ColumnTabs
-        tabs={inRow.map((c) => ({ key: c.key, title: c.title, count: count(c) }))}
-        active={active}
-        onSelect={selectColumn}
-      />
-      <CountStrip columns={empty} />
+      <ColumnTabs tabs={inRow} active={tabs.active} onSelect={tabs.select} />
+      <CountStrip columns={views.filter((v) => v.count === 0)} />
       <div data-testid="board-row" className="relative -mx-4 flex gap-4 overflow-x-auto px-4 pb-4 md:min-h-0 md:grow md:basis-0">
         {zonesInOrder(inRow).map(({ zone, columns }) => (
           <section
@@ -220,22 +163,22 @@ export function BoardPage() {
             aria-labelledby={`zone-${zone}-title`}
             // Hugs its tallest column, capped at the row height.
             className={`flex max-h-full min-h-0 shrink-0 flex-col gap-2 self-start max-md:w-full ${ZONE_STYLE[zone].section} ${
-              phoneHidden(columns.some((c) => c.key === active))}`}
+              columns.some((v) => v.column.key === tabs.active) ? '' : 'max-md:hidden'}`}
           >
             <h2 id={`zone-${zone}-title`} className={`px-1 ${ZONE_STYLE[zone].header}`}>
               {ZONE_TITLE[zone]}
             </h2>
             <div className="flex min-h-0 flex-auto gap-4">
-              {columns.map((column) => (
+              {columns.map((view) => (
                 <BoardColumn
-                  key={column.key}
-                  column={column}
-                  count={count(column)}
+                  key={view.column.key}
+                  view={view}
                   pendingByKey={pendingByKey}
-                  {...(column.key === 'queued' ? queuedExtras : {})}
-                  onCardDrop={dropFor(column.key)}
-                  className={phoneHidden(column.key === active)}
-                />
+                  active={view.column.key === tabs.active}
+                  tabbed={tabs.tabbed}
+                >
+                  <Ghosts ghosts={view.column.ghosts} nextClaim={boardQuery.data?.next_claim} queue={queue} />
+                </BoardColumn>
               ))}
             </div>
           </section>

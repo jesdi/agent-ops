@@ -1,22 +1,14 @@
-import type { ReactNode } from 'react'
-import type { Column } from '../lib/api'
-import { cardDropTarget, type DraggedCard } from './cardDrag'
-
-export interface EmptyColumn {
-  column: Column
-  /** Degraded-state markers that must stay visible while the column is empty. */
-  markers?: ReactNode
-  /** When set, the chip accepts card drags, like the column it stands for. */
-  onCardDrop?: (card: DraggedCard) => void
-}
+import { DegradedMarkers, type ColumnView } from './BoardColumn'
+import { cardDropTarget } from './cardDrag'
 
 /** Empty columns as greyed zero-count chips, so "no failures" is a visible
- *  zero rather than a missing column. Derived from the board, never stored. */
-export function CountStrip({ columns }: { columns: EmptyColumn[] }) {
+ *  zero rather than a missing column. A chip keeps its column's degraded
+ *  markers and drop target. Derived from the board, never stored. */
+export function CountStrip({ columns }: { columns: ColumnView[] }) {
   if (columns.length === 0) return null
   return (
     <ul aria-label="Empty columns" className="flex flex-wrap gap-2">
-      {columns.map(({ column, markers, onCardDrop }) => (
+      {columns.map(({ column, degraded, onCardDrop }) => (
         <li
           key={column.key}
           data-testid={`chip-${column.key}`}
@@ -25,7 +17,7 @@ export function CountStrip({ columns }: { columns: EmptyColumn[] }) {
           {...cardDropTarget(onCardDrop)}
         >
           <span>{column.title}</span>
-          {markers}
+          {degraded && <DegradedMarkers {...degraded} />}
           <span className="font-semibold">0</span>
         </li>
       ))}

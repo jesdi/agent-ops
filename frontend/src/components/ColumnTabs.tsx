@@ -1,10 +1,5 @@
 import { useEffect, useRef, type KeyboardEvent } from 'react'
-
-export interface ColumnTab {
-  key: string
-  title: string
-  count: number
-}
+import type { ColumnView } from './BoardColumn'
 
 const STEP: Partial<Record<string, (index: number, last: number) => number>> = {
   ArrowRight: (i, last) => (i === last ? 0 : i + 1),
@@ -17,7 +12,7 @@ const STEP: Partial<Record<string, (index: number, last: number) => number>> = {
  *  received, each naming its count. Hidden from md up, where every column
  *  is on screen. Selection follows focus; arrows, Home and End move it. */
 export function ColumnTabs({ tabs, active, onSelect }: {
-  tabs: ColumnTab[]
+  tabs: ColumnView[]
   active: string | undefined
   onSelect: (key: string) => void
 }) {
@@ -34,10 +29,10 @@ export function ColumnTabs({ tabs, active, onSelect }: {
     const step = STEP[event.key]
     if (!step) return
     event.preventDefault()
-    const index = tabs.findIndex((t) => t.key === active)
-    const next = tabs[step(Math.max(index, 0), tabs.length - 1)]!
-    onSelect(next.key)
-    refs.current.get(next.key)?.focus()
+    const index = tabs.findIndex((t) => t.column.key === active)
+    const { key } = tabs[step(Math.max(index, 0), tabs.length - 1)]!.column
+    onSelect(key)
+    refs.current.get(key)?.focus()
   }
 
   return (
@@ -49,7 +44,7 @@ export function ColumnTabs({ tabs, active, onSelect }: {
       // column is always one tap away.
       className="sticky top-0 z-10 -mx-4 flex overflow-x-auto border-b border-border bg-surface px-2 md:hidden"
     >
-      {tabs.map(({ key, title, count }) => {
+      {tabs.map(({ column: { key, title }, count }) => {
         const selected = key === active
         return (
           <button

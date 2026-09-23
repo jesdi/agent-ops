@@ -1,16 +1,21 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
+import { useLocation } from 'react-router'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
 import {
   board as fx_board, usageUnavailable, inProgressCard, pendingReplyIntent,
 } from '../../test/fixtures'
 import { renderWithProviders } from '../../test/render'
-import type { UsageView } from '../../lib/api'
+import { onPhone } from '../../test/viewport'
+import type { GhostCard, UsageView } from '../../lib/api'
 import { BoardPage } from '../BoardPage'
 
 beforeEach(() => server.use(...defaultHandlers))
+
+const withGhosts = (ghosts: GhostCard[], columns = fx_board.columns) =>
+  columns.map((c) => (c.key === 'queued' ? { ...c, ghosts } : c))
 
 const testIds = (els: HTMLElement[]) => els.map((el) => el.getAttribute('data-testid'))
 
@@ -278,11 +283,11 @@ it('the accented cards reconcile with the header meter', async () => {
 test('queued column renders ghost cards in rank order with count and stale hint', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
-    upcoming: [
+    columns: withGhosts([
       { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
       { number: 74, target: 'widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
-    ],
-    upcoming_stale: true,
+    ]),
+    queue_stale: true,
     next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'widget' },
   })))
   renderWithProviders(<BoardPage />)
@@ -300,10 +305,10 @@ test('same issue number on two targets renders two distinct ghosts', async () =>
   // and only the forecast target may wear the "next" badge.
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
-    upcoming: [
+    columns: withGhosts([
       { number: 73, target: 'alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
       { number: 73, target: 'beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
-    ],
+    ]),
     next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'beta' },
   })))
   renderWithProviders(<BoardPage />)
@@ -318,10 +323,10 @@ test('a failed queue action shows its error marker in the Queued header', async 
   server.use(
     http.get('/api/board', () => HttpResponse.json({
       ...fx_board,
-      upcoming: [
+      columns: withGhosts([
         { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
-      ],
-      upcoming_stale: true,
+      ]),
+      queue_stale: true,
       next_claim: { ...fx_board.next_claim, verdict: 'no-candidates' },
     })),
     http.post('/api/queue/boost', () => HttpResponse.json({ detail: 'queue locked' }, { status: 422 })),
@@ -341,9 +346,9 @@ test('a failed queue action shows its error marker in the Queued header', async 
 test('a Queued column holding only ghosts stays in the row', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
-    upcoming: [
+    columns: withGhosts([
       { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
-    ],
+    ]),
   })))
   renderWithProviders(<BoardPage />)
   const queued = await screen.findByTestId('column-queued')
@@ -352,7 +357,7 @@ test('a Queued column holding only ghosts stays in the row', async () => {
 })
 
 test('an empty Queued chip still carries the stale marker', async () => {
-  server.use(http.get('/api/board', () => HttpResponse.json({ ...fx_board, upcoming_stale: true })))
+  server.use(http.get('/api/board', () => HttpResponse.json({ ...fx_board, queue_stale: true })))
   renderWithProviders(<BoardPage />)
   const chip = await screen.findByTestId('chip-queued')
   expect(await within(chip).findByTestId('queue-stale')).toBeInTheDocument()
@@ -456,7 +461,25 @@ it('falls back to the full board if the snapshot fails', async () => {
   expect(await screen.findByText('Fix login redirect')).toBeInTheDocument()
 })
 
+function Search() {
+  return <output data-testid="search">{useLocation().search}</output>
+}
+
+test('desktop: the URL stays clean and columns are not tab panels', async () => {
+  renderWithProviders(<><BoardPage /><Search /></>)
+  await screen.findByTestId('column-parked')
+  expect(screen.getByTestId('search')).toHaveTextContent(/^$/)
+  expect(screen.queryAllByRole('tabpanel')).toEqual([])
+})
+
 describe('phone tabs', () => {
+  beforeEach(onPhone)
+
+  it('the URL names the tab on screen', async () => {
+    renderWithProviders(<><BoardPage /><Search /></>)
+    await waitFor(() => expect(screen.getByTestId('search')).toHaveTextContent('?column=parked'))
+  })
+
   const tabNames = () => screen.getAllByRole('tab').map((t) => t.textContent)
   const selected = () => screen.getByRole('tab', { selected: true }).textContent
 
@@ -514,8 +537,8 @@ describe('phone tabs', () => {
       http.get('/api/board', async () => {
         await boardHeld
         return HttpResponse.json({
-          ...fx_board, columns,
-          upcoming: [{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }],
+          ...fx_board,
+          columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }], columns),
         })
       }),
     )
@@ -552,7 +575,7 @@ describe('phone tabs', () => {
       await boardHeld
       return HttpResponse.json({
         ...fx_board,
-        upcoming: [{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }],
+        columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
       })
     }))
     renderWithProviders(<BoardPage />, { route: '/?column=queued' })
@@ -565,7 +588,7 @@ describe('phone tabs', () => {
   it('Queued counts its ghosts', async () => {
     server.use(http.get('/api/board', () => HttpResponse.json({
       ...fx_board,
-      upcoming: [{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }],
+      columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
     })))
     renderWithProviders(<BoardPage />)
     expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()

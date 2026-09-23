@@ -19,8 +19,9 @@ export async function routeLongBoard(page: Page) {
         })
       }
     }
+    const queued = board.columns.find((c: { key: string }) => c.key === 'queued')
     for (let n = 0; n < 40; n++) {
-      board.upcoming.push({
+      queued.ghosts.push({
         number: 200 + n, target: 'widget', title: `Queued idea ${200 + n}`,
         url: `https://github.com/jesdi/widget/issues/${200 + n}`, score: 3 - n / 100, boost: 0,
       })

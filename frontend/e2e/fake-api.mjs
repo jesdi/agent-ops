@@ -26,29 +26,32 @@ const parkedCard = {
   undelivered_messages: 0, wake_blocked: true,
 }
 
+const seedGhosts = () => [
+  { number: 73, target: 'widget', title: 'Ship dark mode',
+    url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
+  { number: 74, target: 'widget', title: 'Fix flaky test',
+    url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
+]
+
+const queued = () => state.board.columns.find((c) => c.key === 'queued')
+
 const state = {
   board: {
     columns: [
-      { key: 'needs-review', title: 'Needs review', zone: 'needs-you', cards: [] },
-      { key: 'pr-open', title: 'PR review', zone: 'needs-you', cards: [] },
-      { key: 'parked', title: 'Parked', zone: 'needs-you', cards: [{ ...parkedCard }] },
-      { key: 'failed', title: 'Failed', zone: 'needs-you', cards: [] },
-      { key: 'stalled', title: 'Stalled on budget', zone: 'needs-you', cards: [] },
-      { key: 'queued', title: 'Queued', zone: 'pipeline', cards: [] },
-      { key: 'in-progress', title: 'In progress', zone: 'pipeline', cards: [] },
-      { key: 'awaiting-ci', title: 'Awaiting CI', zone: 'pipeline', cards: [] },
-      { key: 'resuming', title: 'Resuming', zone: 'pipeline', cards: [] },
-      { key: 'done', title: 'Done', zone: 'pipeline', cards: [] },
-      { key: 'wont-do', title: 'Wont do', zone: 'pipeline', cards: [] },
+      { key: 'needs-review', title: 'Needs review', zone: 'needs-you', cards: [], ghosts: [] },
+      { key: 'pr-open', title: 'PR review', zone: 'needs-you', cards: [], ghosts: [] },
+      { key: 'parked', title: 'Parked', zone: 'needs-you', cards: [{ ...parkedCard }], ghosts: [] },
+      { key: 'failed', title: 'Failed', zone: 'needs-you', cards: [], ghosts: [] },
+      { key: 'stalled', title: 'Stalled on budget', zone: 'needs-you', cards: [], ghosts: [] },
+      { key: 'queued', title: 'Queued', zone: 'pipeline', cards: [], ghosts: seedGhosts() },
+      { key: 'in-progress', title: 'In progress', zone: 'pipeline', cards: [], ghosts: [] },
+      { key: 'awaiting-ci', title: 'Awaiting CI', zone: 'pipeline', cards: [], ghosts: [] },
+      { key: 'resuming', title: 'Resuming', zone: 'pipeline', cards: [], ghosts: [] },
+      { key: 'done', title: 'Done', zone: 'pipeline', cards: [], ghosts: [] },
+      { key: 'wont-do', title: 'Wont do', zone: 'pipeline', cards: [], ghosts: [] },
     ],
     capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 5, slots_held: [] },
-    upcoming: [
-      { number: 73, target: 'widget', title: 'Ship dark mode',
-        url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
-      { number: 74, target: 'widget', title: 'Fix flaky test',
-        url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
-    ],
-    upcoming_stale: false,
+    queue_stale: false,
     median_cycle_seconds: 7200,
     next_claim: {
       verdict: 'will-claim',
@@ -156,8 +159,11 @@ const server = createServer(async (req, res) => {
     return
   }
   if (url.pathname === '/api/board/snapshot') {
+    // Like the real one: local state only, so no ranking and no ghosts.
     const { columns, capacity, median_cycle_seconds } = state.board
-    return json(200, { columns, capacity, median_cycle_seconds })
+    return json(200, {
+      columns: columns.map((c) => ({ ...c, ghosts: [] })), capacity, median_cycle_seconds,
+    })
   }
   if (url.pathname === '/api/board') return json(200, state.board)
   if (url.pathname === '/api/queue') return json(200, state.queue)
@@ -194,7 +200,7 @@ const server = createServer(async (req, res) => {
         fetched_at: new Date().toISOString(), error: '',
       })
     }
-    const ghost = state.board.upcoming.find(
+    const ghost = queued().ghosts.find(
       (g) => g.target === target && g.number === n)
     if (ghost) {
       return json(200, {
@@ -235,11 +241,11 @@ const server = createServer(async (req, res) => {
         json(400, { detail: 'invalid json body' }); return
       }
       const { issue, amount } = parsed
-      const g = state.board.upcoming.find((x) => x.number === issue)
+      const g = queued().ghosts.find((x) => x.number === issue)
       if (g) {
         g.boost += amount
-        state.board.upcoming.sort((a, b) => b.boost - a.boost || b.score - a.score)
-        state.board.next_claim = { ...state.board.next_claim, next_issue: state.board.upcoming[0].number }
+        queued().ghosts.sort((a, b) => b.boost - a.boost || b.score - a.score)
+        state.board.next_claim = { ...state.board.next_claim, next_issue: queued().ghosts[0].number }
       }
       push(['board', 'queue'])
       json(200, { ok: true, reason: 'boosted' })
@@ -258,12 +264,7 @@ const server = createServer(async (req, res) => {
   // Resets only the mutable queue state touched by queue-flow.spec.ts so the
   // spec is idempotent across Playwright retries (workers:1, no parallel runs).
   if (url.pathname === '/__control__/reset-queue' && req.method === 'POST') {
-    state.board.upcoming = [
-      { number: 73, target: 'widget', title: 'Ship dark mode',
-        url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
-      { number: 74, target: 'widget', title: 'Fix flaky test',
-        url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
-    ]
+    queued().ghosts = seedGhosts()
     state.board.next_claim = {
       verdict: 'will-claim',
       next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
