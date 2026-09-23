@@ -6,7 +6,11 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1, // the fake server holds mutable seed state
   use: { baseURL: 'http://127.0.0.1:8481' },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  // Every spec runs on both: the phone layout is a different board.
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'pixel-7', use: { ...devices['Pixel 7'] } },
+  ],
   webServer: {
     command: 'node e2e/fake-api.mjs',
     url: 'http://127.0.0.1:8481',

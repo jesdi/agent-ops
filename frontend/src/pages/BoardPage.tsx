@@ -1,5 +1,7 @@
+import { useSearchParams } from 'react-router'
 import { BoardColumn, type DraggedCard } from '../components/BoardColumn'
 import { BoardHeader } from '../components/BoardHeader'
+import { ColumnTabs } from '../components/ColumnTabs'
 import { CountStrip, type EmptyColumn } from '../components/CountStrip'
 import { GhostCardView } from '../components/GhostCard'
 import type { Column, GhostCard, NextClaimView, PendingIntent, Zone } from '../lib/api'
@@ -144,6 +146,7 @@ export function BoardPage() {
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
+  const [params, setParams] = useSearchParams()
 
   const board = boardQuery.data ?? snapshotQuery.data
   if (!board && (boardQuery.isPending || snapshotQuery.isPending)) return <p className="p-4 text-ink-muted">loading board…</p>
@@ -164,6 +167,16 @@ export function BoardPage() {
   // in the row, so a card can never disappear into the strip.
   const occupied = (column: Column) =>
     column.cards.length > 0 || (column.key === 'queued' && upcoming.length > 0)
+  const inRow = board.columns.filter(occupied)
+  const count = (column: Column) => column.cards.length + (column.key === 'queued' ? upcoming.length : 0)
+  // Phones show one column: the one named in the URL, so back and reload
+  // land on the same tab, else the first occupied one. A key that is not
+  // (or no longer) in the row falls back the same way.
+  const active = (inRow.find((c) => c.key === params.get('column')) ?? inRow[0])?.key
+  // Replace, not push: switching tabs is not a navigation back should undo.
+  const selectColumn = (key: string) =>
+    setParams((p) => { p.set('column', key); return p }, { replace: true })
+  const phoneHidden = (shown: boolean) => (shown ? '' : 'max-md:hidden')
   const empty: EmptyColumn[] = board.columns.filter((c) => !occupied(c)).map((column) => ({
     column,
     markers: column.key === 'queued' ? queuedMarkers : undefined,
@@ -174,19 +187,26 @@ export function BoardPage() {
   // min-h-dvh flex column; a zero-basis grow item cannot push it taller), so
   // the page never scrolls: the row scrolls sideways with its scrollbar on the
   // bottom edge, and each column body scrolls on its own. Below md the page
-  // scrolls as before.
+  // scrolls, a tab row picks the column, and only that column is shown, at
+  // full width.
   return (
     <div className="flex flex-col gap-4 p-4 md:min-h-0 md:grow md:basis-0 md:pb-0">
       <BoardHeader board={board} />
+      <ColumnTabs
+        tabs={inRow.map((c) => ({ key: c.key, title: c.title, count: count(c) }))}
+        active={active}
+        onSelect={selectColumn}
+      />
       <CountStrip columns={empty} />
       <div data-testid="board-row" className="-mx-4 flex gap-4 overflow-x-auto px-4 pb-4 md:min-h-0 md:grow md:basis-0">
-        {zonesInOrder(board.columns.filter(occupied)).map(({ zone, columns }) => (
+        {zonesInOrder(inRow).map(({ zone, columns }) => (
           <section
             key={zone}
             data-testid={`zone-${zone}`}
             aria-labelledby={`zone-${zone}-title`}
             // Hugs its tallest column, capped at the row height.
-            className={`flex max-h-full min-h-0 shrink-0 flex-col gap-2 self-start ${ZONE_STYLE[zone].section}`}
+            className={`flex max-h-full min-h-0 shrink-0 flex-col gap-2 self-start max-md:w-full ${ZONE_STYLE[zone].section} ${
+              phoneHidden(columns.some((c) => c.key === active))}`}
           >
             <h2 id={`zone-${zone}-title`} className={`px-1 ${ZONE_STYLE[zone].header}`}>
               {ZONE_TITLE[zone]}
@@ -199,6 +219,7 @@ export function BoardPage() {
                   pendingByKey={pendingByKey}
                   {...(column.key === 'queued' ? queuedExtras : {})}
                   onCardDrop={dropFor(column.key)}
+                  className={phoneHidden(column.key === active)}
                 />
               ))}
             </div>

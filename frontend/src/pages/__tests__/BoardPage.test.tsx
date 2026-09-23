@@ -26,7 +26,8 @@ it('occupied columns render in the row, empty ones as chips, never both', async 
     'chip-queued', 'chip-resuming', 'chip-done', 'chip-wont-do'])
   expect(screen.getByText('Fix login redirect')).toBeInTheDocument()
   expect(screen.getByText('Add CSV export')).toBeInTheDocument()
-  expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
+  // The meter, and the summary line that stands in for it on phones.
+  expect(screen.getAllByText(/2\/3 active/)).toHaveLength(2)
 })
 
 it('renders the Needs you zone before Pipeline, columns in the order received', async () => {
@@ -270,7 +271,8 @@ it('the accented cards reconcile with the header meter', async () => {
   )
   expect(screen.getAllByText('holding a capacity unit')).toHaveLength(2)
   expect(screen.getAllByTestId('cap-pip-filled')).toHaveLength(2)
-  expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
+  // The meter, and the summary line that stands in for it on phones.
+  expect(screen.getAllByText(/2\/3 active/)).toHaveLength(2)
 })
 
 test('queued column renders ghost cards in rank order with count and stale hint', async () => {
@@ -451,4 +453,75 @@ it('falls back to the full board if the snapshot fails', async () => {
   )))
   renderWithProviders(<BoardPage />)
   expect(await screen.findByText('Fix login redirect')).toBeInTheDocument()
+})
+
+describe('phone tabs', () => {
+  const tabNames = () => screen.getAllByRole('tab').map((t) => t.textContent)
+  const selected = () => screen.getByRole('tab', { selected: true }).textContent
+
+  it('one tab per occupied column, in the order received, with counts', async () => {
+    renderWithProviders(<BoardPage />)
+    const tablist = await screen.findByRole('tablist', { name: 'Columns' })
+    expect(within(tablist).getAllByRole('tab').map((t) => t.textContent))
+      .toEqual(['Parked 2', 'In progress 1', 'Awaiting CI 1'])
+    expect(screen.getByRole('tab', { name: 'Parked 2' })).toHaveAttribute('aria-controls', 'column-parked')
+    expect(document.getElementById('column-parked')).toBe(screen.getByTestId('column-parked'))
+  })
+
+  it('with no parameter the first occupied column is active', async () => {
+    renderWithProviders(<BoardPage />)
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Parked 2')
+  })
+
+  it('the column parameter picks the tab; an empty or unknown key falls back', async () => {
+    const { unmount } = renderWithProviders(<BoardPage />, { route: '/?column=awaiting-ci' })
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Awaiting CI 1')
+    unmount()
+    renderWithProviders(<BoardPage />, { route: '/?column=failed' })
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Parked 2')
+  })
+
+  it('selecting a tab selects it; arrow keys move along the row', async () => {
+    renderWithProviders(<BoardPage />)
+    await screen.findByRole('tablist')
+    await userEvent.click(screen.getByRole('tab', { name: 'In progress 1' }))
+    expect(selected()).toBe('In progress 1')
+    expect(screen.getByRole('tab', { name: 'In progress 1' })).toHaveAttribute('tabindex', '0')
+    expect(screen.getByRole('tab', { name: 'Parked 2' })).toHaveAttribute('tabindex', '-1')
+    await userEvent.keyboard('{ArrowRight}')
+    expect(selected()).toBe('Awaiting CI 1')
+    expect(screen.getByRole('tab', { name: 'Awaiting CI 1' })).toHaveFocus()
+    await userEvent.keyboard('{ArrowRight}')
+    expect(selected()).toBe('Parked 2')
+    await userEvent.keyboard('{End}')
+    expect(selected()).toBe('Awaiting CI 1')
+    expect(tabNames()).toHaveLength(3)
+  })
+
+  it('Queued counts its ghosts', async () => {
+    server.use(http.get('/api/board', () => HttpResponse.json({
+      ...fx_board,
+      upcoming: [{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }],
+    })))
+    renderWithProviders(<BoardPage />)
+    expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()
+    expect(tabNames()).toEqual(['Parked 2', 'Queued 1', 'In progress 1', 'Awaiting CI 1'])
+  })
+})
+
+test('phone header: one summary line with capacity and the next-claim verdict', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    next_claim: { verdict: 'capacity-full', next_pass_eta: new Date(Date.now() + 300_000).toISOString(), next_issue: 0, next_target: '', minutes_to_reset: 0, blocked_by: '' },
+  })))
+  renderWithProviders(<BoardPage />)
+  const summary = await screen.findByRole('button', { name: /2\/3 active capacity full — waits for a free slot/ })
+  expect(summary).toHaveAttribute('aria-expanded', 'false')
+  const row = document.getElementById(summary.getAttribute('aria-controls')!)!
+  expect(row).toContainElement(screen.getByTestId('next-claim'))
+  await userEvent.click(summary)
+  expect(summary).toHaveAttribute('aria-expanded', 'true')
 })

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { showColumn } from './phone.js'
 
 test('park -> reply -> pending -> confirmed', async ({ page, request }) => {
   // Restore the seed so this spec is idempotent across Playwright retries and
@@ -33,6 +34,7 @@ test('park -> reply -> pending -> confirmed', async ({ page, request }) => {
 
   // The card moved to in-progress on the board.
   await page.goto('/')
+  await showColumn(page, 'in-progress')
   await expect(
     page.getByTestId('column-in-progress').getByText('Fix login redirect'),
   ).toBeVisible()

@@ -42,13 +42,17 @@ export interface ColumnProps {
   headerExtra?: ReactNode
   /** When set, the column accepts card drags and reports each drop. */
   onCardDrop?: (card: DraggedCard) => void
+  /** Layout classes from the page, e.g. hiding an inactive tab on phones. */
+  className?: string
 }
 
-export function BoardColumn({ column, pendingByKey, extra, extraCount, headerExtra, onCardDrop }: ColumnProps) {
+export function BoardColumn({ column, pendingByKey, extra, extraCount, headerExtra, onCardDrop, className = '' }: ColumnProps) {
   return (
     <section
+      id={`column-${column.key}`}
       data-testid={`column-${column.key}`}
-      className="flex min-h-0 w-64 shrink-0 flex-col"
+      // Full width on phones, where it is the only column on screen.
+      className={`flex min-h-0 w-full shrink-0 flex-col md:w-64 ${className}`}
       {...cardDropTarget(onCardDrop)}
     >
       <div className="flex shrink-0 items-center justify-between rounded bg-ink/5 px-2 py-1 text-sm font-semibold">
