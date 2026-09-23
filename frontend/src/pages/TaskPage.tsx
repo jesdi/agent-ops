@@ -15,6 +15,7 @@ import { useQueueActions } from '../hooks/useQueueActions'
 import { useIssueDescription, usePendingIntents, useTaskDetail } from '../hooks/useResources'
 import { api, ApiError } from '../lib/api'
 import { formatDuration, relativeTime, stageLabel } from '../lib/format'
+import { banner, chip } from '../lib/tone'
 
 export function TaskPage() {
   const { target, issue: rawIssue } = useParams()
@@ -163,7 +164,7 @@ function TaskHeader({ card, intents, target, issue }: {
       branch {card.branch} · updated {relativeTime(card.updated_at)}
     </span>
     {card.park !== '' && (
-      <span className="rounded bg-parked-bg px-2 py-0.5 text-sm text-parked-fg">
+      <span className={chip.parked}>
         parked: {card.park}
       </span>
     )}
@@ -178,7 +179,7 @@ function StageTimeline({ timeline }: { timeline: TaskDetail['timeline'] }) {
   return <div data-testid="stage-timeline" className="flex flex-wrap gap-2 text-xs text-ink-muted">
     {timeline.map((segment, index) => (
       <span key={index}
-        className={`rounded px-1.5 py-0.5 ${segment.kind === 'parked' ? 'bg-parked-bg text-parked-fg' : 'bg-ink/10'}`}>
+        className={chip[segment.kind === 'parked' ? 'parked' : 'neutral']}>
         {segment.label} {formatDuration(segment.seconds)}{segment.ongoing ? ' — ongoing' : ''}
       </span>
     ))}
@@ -371,7 +372,7 @@ function SessionStatus({ card, sessionAlive, issue }: {
     {card.park !== '' ? (
       <div
         data-testid="parked-panel"
-        className="rounded border border-parked-fg/30 bg-parked-bg px-3 py-2 text-sm text-parked-fg"
+        className={banner.parked}
       >
         <p className="font-medium">
           parked ({card.park}) — reply below to wake this task
@@ -384,7 +385,7 @@ function SessionStatus({ card, sessionAlive, issue }: {
       !sessionAlive && (
         <p
           data-testid="session-dead"
-          className="rounded border border-waiting-fg/30 bg-waiting-bg px-3 py-2 text-sm font-medium text-waiting-fg"
+          className={`font-medium ${banner.waiting}`}
         >
           session task-{issue} is not running
         </p>

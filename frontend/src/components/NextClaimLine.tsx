@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { NextClaimView } from '../lib/api'
 import { formatDuration } from '../lib/format'
 import { nextClaimDetail, nextClaimTone } from '../lib/nextClaim'
+import { banner } from '../lib/tone'
 
 /** Countdown is client-side (1s tick, zero requests) and re-anchors whenever
  *  the board payload changes — the SSE fingerprint includes pass.json. */
@@ -18,7 +19,7 @@ export function NextClaimLine({ nextClaim }: { nextClaim: NextClaimView }) {
 
   if (nextClaim.verdict === 'unknown') {
     return (
-      <span data-testid="next-claim" className="rounded border border-waiting-fg/30 bg-waiting-bg px-3 py-2 text-sm text-waiting-fg">
+      <span data-testid="next-claim" className={banner.waiting}>
         dispatcher not running? — no recent pass heartbeat
       </span>
     )

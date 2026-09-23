@@ -13,3 +13,22 @@ test('no source file uses a raw Tailwind palette class', () => {
     [...text.matchAll(RAW)].map((m) => `${file}: ${m[0]}`))
   expect(hits).toEqual([])
 })
+
+// Status tone lives in lib/tone.ts: a status fill or the neutral chip fill
+// anywhere else is a hand-rolled chip or banner that will drift. Status text
+// and dot colours (`text-failed-fg`, `bg-running-fg`) stay free.
+const TONE_FILL = /\b(?:bg-(?:running|waiting|failed|parked)-bg|bg-ink\/10)\b/g
+const TONE_FILL_ALLOWED: Record<string, string> = {
+  '../../components/UsagePanel.tsx': 'bg-ink/10', // usage bar track, not a chip
+  // ponytail: follow-up converts BoardPage's queue-stale/error chips to tone.
+  '../../pages/BoardPage.tsx': 'bg-waiting-bg bg-failed-bg',
+}
+
+test('status chips and banners come only from lib/tone.ts', () => {
+  const hits = Object.entries(sources)
+    .filter(([file]) => file !== '../tone.ts')
+    .flatMap(([file, text]) => [...text.matchAll(TONE_FILL)]
+      .filter((m) => !(TONE_FILL_ALLOWED[file] ?? '').split(' ').includes(m[0]))
+      .map((m) => `${file}: ${m[0]}`))
+  expect(hits).toEqual([])
+})

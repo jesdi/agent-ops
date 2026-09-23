@@ -1,14 +1,7 @@
 import type { MessageView } from '../lib/api'
 import { relativeTime } from '../lib/format'
+import { chip } from '../lib/tone'
 
-// State is never colour-only: each chip carries its word. "sending" means the
-// intent file exists but no dispatcher pass has drained it; "queued" means it
-// is in the durable message file; "delivered" means a session actually got it.
-const CHIP: Record<string, string> = {
-  sending: 'bg-ink/10 text-ink-muted',
-  queued: 'bg-ink/10 text-ink-muted',
-  delivered: 'bg-ink/10 text-ink',
-}
 
 export function MessageThread({ messages }: { messages: MessageView[] }) {
   if (messages.length === 0) return null
@@ -23,10 +16,11 @@ export function MessageThread({ messages }: { messages: MessageView[] }) {
           <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
             <span>{m.actor || 'operator'}</span>
             {m.created_at !== '' && <span>{relativeTime(m.created_at)}</span>}
-            <span
-              data-testid="message-state"
-              className={`rounded px-1.5 ${CHIP[m.state] ?? CHIP.queued}`}
-            >
+            {/* The chip carries the state's word. "sending" means the intent
+                file exists but no dispatcher pass has drained it; "queued"
+                means it is in the durable message file; "delivered" means a
+                session actually got it. */}
+            <span data-testid="message-state" className={chip.neutral}>
               {m.state}
               {m.state === 'delivered' && m.delivered_at !== ''
                 ? ` ${relativeTime(m.delivered_at)}`

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { OperatorRequest } from '../lib/api'
 import { useTaskArtifacts, useTaskRequest } from '../hooks/useResources'
+import { banner } from '../lib/tone'
 
 /** Review requests offer approval only when their spec content is readable. */
 export function RequestPanel({ target, issue, busy, onApprove }: {
@@ -16,8 +17,8 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
 
   if (req.isError) {
     return (
-      <section data-testid="request-error" className="rounded border border-failed-fg/30 bg-failed-bg p-4">
-        <p className="text-sm text-failed-fg">
+      <section data-testid="request-error" className={banner.failed}>
+        <p>
           failed to load request: {req.error instanceof Error ? req.error.message : 'unknown error'}
         </p>
       </section>
@@ -47,7 +48,7 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
         )}
       </header>
       {kind === 'spec-approval' && artifacts.data && !spec?.github_url && (
-        <p className="mb-3 rounded border border-waiting-fg/30 bg-waiting-bg p-3 text-sm text-waiting-fg">
+        <p className={`mb-3 ${banner.waiting}`}>
           Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still read and approve the local spec below.'}
         </p>
       )}
@@ -62,10 +63,10 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
 function RequestContent({ content }: { content: OperatorRequest['content'] }) {
   if (content.kind === 'unavailable') {
     return (
-      <div data-testid="unavailable-recovery" className="rounded border border-waiting-fg/30 bg-waiting-bg px-3 py-2 text-sm text-waiting-fg">
+      <div data-testid="unavailable-recovery" className={banner.waiting}>
         <p className="font-medium">content unavailable</p>
         <p className="mt-1 font-mono text-xs">{content.path}</p>
-        <p className="mt-1 text-xs text-waiting-fg">{content.reason}</p>
+        <p className="mt-1 text-xs">{content.reason}</p>
         <p className="mt-2 text-xs text-ink-muted">
           The spec file could not be read. Use{' '}
           <code>herdr --remote box</code> to inspect the worktree, then reply here once resolved.

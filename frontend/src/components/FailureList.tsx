@@ -1,5 +1,6 @@
 import type { FailuresView } from '../lib/api'
 import { relativeTime } from '../lib/format'
+import { chip } from '../lib/tone'
 
 export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
   failures: FailuresView
@@ -33,13 +34,13 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
                 {q.target} task #{q.task_issue} → blocker #{q.blocker_issue} ({q.blocker_repo})
               </span>
               {q.blocker_open === true && (
-                <span className="rounded bg-failed-bg px-1.5 text-xs text-failed-fg">blocker open</span>
+                <span className={chip.failed}>blocker open</span>
               )}
               {q.blocker_open === false && (
-                <span className="rounded bg-ink/10 px-1.5 text-xs text-ink">blocker closed</span>
+                <span className={chip.neutral}>blocker closed</span>
               )}
               {q.blocker_open === null && (
-                <span className="rounded bg-ink/10 px-1.5 text-xs text-ink-muted">blocker state unknown</span>
+                <span className={chip.neutral}>blocker state unknown</span>
               )}
               <span className="text-xs text-ink-muted">{relativeTime(q.created_at)}</span>
               <button

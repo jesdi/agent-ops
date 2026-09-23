@@ -4,9 +4,10 @@ import { formatDuration } from '../lib/format'
 import { nextClaimDetail, nextClaimTone } from '../lib/nextClaim'
 import { useTasks, useUsage } from '../hooks/useResources'
 import { CapacityMeter } from './CapacityMeter'
-import { Chevron } from './Expand'
+import { Chevron } from './Chevron'
 import { NextClaimLine } from './NextClaimLine'
 import { UsagePanel } from './UsagePanel'
+import { banner } from '../lib/tone'
 
 /** The row above the board: capacity, usage, the next-claim forecast and the
  *  median cycle time. Owns the usage query; the forecast rides on the full
@@ -47,8 +48,7 @@ export function BoardHeader({ board }: { board: BoardSnapshot }) {
         {/* A failed /api/usage must not silently vanish the gauge — the
             operator would read "no gauge" as "nothing to worry about". */}
         {usageQuery.isError ? (
-          <span data-testid="usage-error"
-            className="rounded border border-waiting-fg/30 bg-waiting-bg px-3 py-2 text-sm text-waiting-fg">
+          <span data-testid="usage-error" className={banner.waiting}>
             usage unknown — {usageQuery.error.message}
           </span>
         ) : (

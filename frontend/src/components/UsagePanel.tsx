@@ -1,5 +1,6 @@
 import type { GateView, ProviderUsageView, Severity, UsageView, WindowKind, WindowView } from '../lib/api'
 import { formatDuration } from '../lib/format'
+import { banner, chip } from '../lib/tone'
 
 const FILL: Record<Severity, string> = {
   ok: 'bg-running-fg', close: 'bg-waiting-fg', blocked: 'bg-failed-fg',
@@ -87,11 +88,10 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
  *  the chip names only the model. The note says why, on hover. */
 function SpawnChip({ gate }: { gate: GateView }) {
   const model = gate.model.slice(gate.model.indexOf('/') + 1)
-  const tone = gate.admitted ? 'bg-running-bg text-running-fg' : 'bg-failed-bg text-failed-fg'
   return (
     <span
       title={gate.note}
-      className={`min-w-0 truncate rounded-full px-2 py-px text-[11px] font-medium normal-case tracking-normal ${tone}`}
+      className={`min-w-0 truncate normal-case tracking-normal ${chip[gate.admitted ? 'running' : 'failed']}`}
     >
       {`${gate.admitted ? 'will spawn' : 'will not spawn'} ${model}`}
     </span>
@@ -106,7 +106,7 @@ function ProviderGroup({ p, gate }: { p: ProviderUsageView; gate: GateView | nul
         {gate && <SpawnChip gate={gate} />}
       </span>
       {p.source === 'unavailable' ? (
-        <div className="rounded border border-waiting-fg/30 bg-waiting-bg px-3 py-2 text-sm text-waiting-fg">
+        <div className={banner.waiting}>
           usage unknown — dispatcher will not spawn on {p.provider}
         </div>
       ) : (

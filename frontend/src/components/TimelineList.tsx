@@ -1,16 +1,14 @@
 import { Link } from 'react-router'
 import type { EventEntry } from '../lib/api'
 import { relativeTime } from '../lib/format'
+import { chip, type Tone } from '../lib/tone'
 
-const EVENT_COLORS: Record<string, string> = {
-  claimed: 'bg-running-bg text-running-fg',
-  'stage-started': 'bg-ink/10 text-ink',
-  parked: 'bg-parked-bg text-parked-fg',
-  resumed: 'bg-running-bg text-running-fg',
-  'login-code-injected': 'bg-ink/10 text-ink',
-  'pr-opened': 'bg-ink/10 text-ink',
-  failed: 'bg-failed-bg text-failed-fg',
-  'intent-applied': 'bg-ink/10 text-ink',
+// Events not listed here are neutral.
+const EVENT_TONE: Partial<Record<string, Tone>> = {
+  claimed: 'running',
+  parked: 'parked',
+  resumed: 'running',
+  failed: 'failed',
 }
 
 export function TimelineList({ events }: { events: EventEntry[] }) {
@@ -23,7 +21,7 @@ export function TimelineList({ events }: { events: EventEntry[] }) {
           className="flex flex-wrap items-center gap-2 border-b border-border py-1.5 text-sm"
         >
           <span className="w-20 shrink-0 text-xs text-ink-muted">{relativeTime(e.ts)}</span>
-          <span className={`rounded px-1.5 text-xs ${EVENT_COLORS[e.event] ?? 'bg-ink/10'}`}>
+          <span className={chip[EVENT_TONE[e.event] ?? 'neutral']}>
             {e.event}
           </span>
           {e.target ? (

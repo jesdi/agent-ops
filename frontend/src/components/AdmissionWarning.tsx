@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { queryKeys } from '../hooks/queryKeys'
 import type { TaskCard } from '../lib/api'
 import { api, ApiError } from '../lib/api'
+import { banner, chip } from '../lib/tone'
 
 type Admission = NonNullable<TaskCard['admission']>
 
@@ -38,7 +39,7 @@ export function AdmissionWarning({ target, issue, admission }: {
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="rounded bg-waiting-bg px-1.5 py-0.5 text-xs font-medium text-waiting-fg"
+        className={chip.waiting}
       >
         ⚠ {shortModel(admission.requested.model)} capacity limited
       </button>
@@ -46,34 +47,37 @@ export function AdmissionWarning({ target, issue, admission }: {
         <div
           role="dialog"
           aria-label="Model capacity options"
-          className="mt-2 rounded border border-waiting-fg/30 bg-waiting-bg p-3 text-xs text-waiting-fg shadow-sm"
+          className={`mt-2 shadow-sm ${banner.waiting}`}
         >
-          <p>{admission.requested.note}</p>
-          <p className="mt-2 text-ink-muted">
-            Keep waiting, run despite the usage limit, or process this task with another configured model.
-          </p>
-          <div className="mt-2 flex flex-col items-start gap-1.5">
-            {choices.map((choice) => {
-              const bypassUsage = !choice.admitted
-              return (
-                <button
-                  type="button"
-                  key={choice.model}
-                  disabled={override.isPending}
-                  title={choice.note}
-                  onClick={() => override.mutate({ model: choice.model, bypassUsage })}
-                  className="rounded border border-waiting-fg/30 bg-surface-raised px-2 py-1 text-left disabled:opacity-50"
-                >
-                  {bypassUsage ? 'Run anyway with ' : 'Run with '}
-                  {shortModel(choice.model)}
-                  <span className="ml-1 text-ink-muted">
-                    ({choice.admitted ? 'capacity available' : 'limited'})
-                  </span>
-                </button>
-              )
-            })}
+          {/* Banner shape, card-sized text. */}
+          <div className="text-xs">
+            <p>{admission.requested.note}</p>
+            <p className="mt-2 text-ink-muted">
+              Keep waiting, run despite the usage limit, or process this task with another configured model.
+            </p>
+            <div className="mt-2 flex flex-col items-start gap-1.5">
+              {choices.map((choice) => {
+                const bypassUsage = !choice.admitted
+                return (
+                  <button
+                    type="button"
+                    key={choice.model}
+                    disabled={override.isPending}
+                    title={choice.note}
+                    onClick={() => override.mutate({ model: choice.model, bypassUsage })}
+                    className="rounded border border-waiting-fg/30 bg-surface-raised px-2 py-1 text-left disabled:opacity-50"
+                  >
+                    {bypassUsage ? 'Run anyway with ' : 'Run with '}
+                    {shortModel(choice.model)}
+                    <span className="ml-1 text-ink-muted">
+                      ({choice.admitted ? 'capacity available' : 'limited'})
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+            {error && <p className="mt-2 text-failed-fg">{error}</p>}
           </div>
-          {error && <p className="mt-2 text-failed-fg">{error}</p>}
         </div>
       )}
     </div>

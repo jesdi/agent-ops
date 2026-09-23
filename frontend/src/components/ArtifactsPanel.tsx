@@ -1,5 +1,6 @@
 import type { ArtifactsView } from '../lib/api'
 import { useTaskArtifacts } from '../hooks/useResources'
+import { chip } from '../lib/tone'
 
 export function ArtifactsPanel({ target, issue }: { target: string; issue: number }) {
   const query = useTaskArtifacts(target, issue)
@@ -7,7 +8,7 @@ export function ArtifactsPanel({ target, issue }: { target: string; issue: numbe
     <section aria-label="Artifacts" className="overflow-hidden rounded border border-border bg-surface-raised">
       <header className="p-4">
         <h2 className="text-sm font-semibold text-ink">
-          Artifacts {query.data && <span className="ml-2 rounded bg-ink/10 px-2 py-0.5 text-xs">{query.data.items.length}</span>}
+          Artifacts {query.data && <span className={`ml-2 ${chip.neutral}`}>{query.data.items.length}</span>}
         </h2>
         <p className="mt-1 text-xs text-ink-muted">Review material from every session of this task.</p>
       </header>
