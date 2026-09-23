@@ -178,7 +178,7 @@ function StageTimeline({ timeline }: { timeline: TaskDetail['timeline'] }) {
   return <div data-testid="stage-timeline" className="flex flex-wrap gap-2 text-xs text-ink-muted">
     {timeline.map((segment, index) => (
       <span key={index}
-        className={`rounded px-1.5 py-0.5 ${segment.kind === 'parked' ? 'bg-parked-bg text-parked-fg' : 'bg-surface'}`}>
+        className={`rounded px-1.5 py-0.5 ${segment.kind === 'parked' ? 'bg-parked-bg text-parked-fg' : 'bg-ink/10'}`}>
         {segment.label} {formatDuration(segment.seconds)}{segment.ongoing ? ' — ongoing' : ''}
       </span>
     ))}

@@ -36,10 +36,10 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
                 <span className="rounded bg-failed-bg px-1.5 text-xs text-failed-fg">blocker open</span>
               )}
               {q.blocker_open === false && (
-                <span className="rounded bg-surface px-1.5 text-xs text-ink">blocker closed</span>
+                <span className="rounded bg-ink/10 px-1.5 text-xs text-ink">blocker closed</span>
               )}
               {q.blocker_open === null && (
-                <span className="rounded bg-surface px-1.5 text-xs text-ink-muted">blocker state unknown</span>
+                <span className="rounded bg-ink/10 px-1.5 text-xs text-ink-muted">blocker state unknown</span>
               )}
               <span className="text-xs text-ink-muted">{relativeTime(q.created_at)}</span>
               <button

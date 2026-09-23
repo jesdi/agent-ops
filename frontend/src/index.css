@@ -5,6 +5,10 @@
    {bg,text,border}-{running,waiting,failed,parked}-{bg,fg}.
    Status hues mean state and nothing else: running, waiting on you, failed, parked. */
 @theme {
+  /* Tokens only: Tailwind's default palette is deleted, so a raw class such
+     as bg-blue-500 generates nothing. */
+  --color-*: initial;
+
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
 
   --color-surface: #f5f7fa;
@@ -23,6 +27,25 @@
   --color-failed-fg: #991b1b;
   --color-parked-bg: #ede9fe;
   --color-parked-fg: #5b21b6;
+
+  /* Modal scrim over the page. */
+  --color-scrim: rgb(15 23 42 / 0.3);
+
+  /* E2E slot hues, indexed by slot number: the accent (card border, gauge
+     segment) and the chip text. Spaced to stay apart under the common
+     red/green deficiencies: blue, amber, violet, teal, rose, lime. */
+  --color-slot-0: #3b82f6;
+  --color-slot-0-fg: #1e40af;
+  --color-slot-1: #f59e0b;
+  --color-slot-1-fg: #92400e;
+  --color-slot-2: #8b5cf6;
+  --color-slot-2-fg: #5b21b6;
+  --color-slot-3: #14b8a6;
+  --color-slot-3-fg: #115e59;
+  --color-slot-4: #f43f5e;
+  --color-slot-4-fg: #9f1239;
+  --color-slot-5: #65a30d;
+  --color-slot-5-fg: #3f6212;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -42,6 +65,21 @@
     --color-failed-fg: #fca5a5;
     --color-parked-bg: #291f45;
     --color-parked-fg: #c4b5fd;
+
+    --color-scrim: rgb(0 0 0 / 0.6);
+
+    --color-slot-0: #60a5fa;
+    --color-slot-0-fg: #93c5fd;
+    --color-slot-1: #fbbf24;
+    --color-slot-1-fg: #fcd34d;
+    --color-slot-2: #a78bfa;
+    --color-slot-2-fg: #c4b5fd;
+    --color-slot-3: #2dd4bf;
+    --color-slot-3-fg: #5eead4;
+    --color-slot-4: #fb7185;
+    --color-slot-4-fg: #fda4af;
+    --color-slot-5: #84cc16;
+    --color-slot-5-fg: #bef264;
   }
 }
 

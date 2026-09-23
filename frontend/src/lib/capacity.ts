@@ -11,45 +11,39 @@ export const ACCENT_PIP: Record<Accent, string> = {
   headroom: 'bg-running-fg',
 }
 
-/** Fixed palette indexed by SLOT NUMBER, so slot 0 is the same hue on the
- *  card border, the card chip and the capacity gauge. Post-fix only live
- *  sessions and login parks hold a slot, so a colour truthfully marks a
- *  running session. Hues are spaced for light-theme contrast and stay
- *  distinguishable under the common red/green deficiencies (blue → amber →
- *  violet → teal → rose → lime). */
-export const SLOT_COLORS = [
-  'blue-500', 'amber-500', 'violet-500', 'teal-500', 'rose-500', 'lime-600',
-] as const
+/** Slot hues are tokens (--color-slot-N in index.css), indexed by SLOT
+ *  NUMBER, so slot 0 is the same hue on the card border, the card chip and
+ *  the capacity gauge, in either theme. Post-fix only live sessions and login
+ *  parks hold a slot, so a colour truthfully marks a running session. */
+export const SLOT_COLORS = ['slot-0', 'slot-1', 'slot-2', 'slot-3', 'slot-4', 'slot-5'] as const
 
 // Full literal class strings, keyed by palette entry — Tailwind scans source
 // text, so a class built by interpolation would never reach the stylesheet.
-// hover: variants repeat the border colour because hover:border-gray-400 on
-// the card would otherwise win on specificity and erase the accent on hover.
 const BORDER: Record<string, string> = {
-  'blue-500': 'border-l-blue-500 hover:border-l-blue-500',
-  'amber-500': 'border-l-amber-500 hover:border-l-amber-500',
-  'violet-500': 'border-l-violet-500 hover:border-l-violet-500',
-  'teal-500': 'border-l-teal-500 hover:border-l-teal-500',
-  'rose-500': 'border-l-rose-500 hover:border-l-rose-500',
-  'lime-600': 'border-l-lime-600 hover:border-l-lime-600',
+  'slot-0': 'border-l-slot-0',
+  'slot-1': 'border-l-slot-1',
+  'slot-2': 'border-l-slot-2',
+  'slot-3': 'border-l-slot-3',
+  'slot-4': 'border-l-slot-4',
+  'slot-5': 'border-l-slot-5',
 }
 
 const CHIP: Record<string, string> = {
-  'blue-500': 'bg-blue-500/10 text-blue-800',
-  'amber-500': 'bg-amber-500/10 text-amber-800',
-  'violet-500': 'bg-violet-500/10 text-violet-800',
-  'teal-500': 'bg-teal-500/10 text-teal-800',
-  'rose-500': 'bg-rose-500/10 text-rose-800',
-  'lime-600': 'bg-lime-600/10 text-lime-800',
+  'slot-0': 'bg-slot-0/15 text-slot-0-fg',
+  'slot-1': 'bg-slot-1/15 text-slot-1-fg',
+  'slot-2': 'bg-slot-2/15 text-slot-2-fg',
+  'slot-3': 'bg-slot-3/15 text-slot-3-fg',
+  'slot-4': 'bg-slot-4/15 text-slot-4-fg',
+  'slot-5': 'bg-slot-5/15 text-slot-5-fg',
 }
 
 const SEGMENT: Record<string, string> = {
-  'blue-500': 'bg-blue-500',
-  'amber-500': 'bg-amber-500',
-  'violet-500': 'bg-violet-500',
-  'teal-500': 'bg-teal-500',
-  'rose-500': 'bg-rose-500',
-  'lime-600': 'bg-lime-600',
+  'slot-0': 'bg-slot-0',
+  'slot-1': 'bg-slot-1',
+  'slot-2': 'bg-slot-2',
+  'slot-3': 'bg-slot-3',
+  'slot-4': 'bg-slot-4',
+  'slot-5': 'bg-slot-5',
 }
 
 const hue = (slot: number) => SLOT_COLORS[slot % SLOT_COLORS.length]!

@@ -4,13 +4,13 @@ import { relativeTime } from '../lib/format'
 
 const EVENT_COLORS: Record<string, string> = {
   claimed: 'bg-running-bg text-running-fg',
-  'stage-started': 'bg-surface text-ink',
+  'stage-started': 'bg-ink/10 text-ink',
   parked: 'bg-parked-bg text-parked-fg',
   resumed: 'bg-running-bg text-running-fg',
-  'login-code-injected': 'bg-surface text-ink',
-  'pr-opened': 'bg-surface text-ink',
+  'login-code-injected': 'bg-ink/10 text-ink',
+  'pr-opened': 'bg-ink/10 text-ink',
   failed: 'bg-failed-bg text-failed-fg',
-  'intent-applied': 'bg-surface text-ink',
+  'intent-applied': 'bg-ink/10 text-ink',
 }
 
 export function TimelineList({ events }: { events: EventEntry[] }) {
@@ -23,7 +23,7 @@ export function TimelineList({ events }: { events: EventEntry[] }) {
           className="flex flex-wrap items-center gap-2 border-b border-border py-1.5 text-sm"
         >
           <span className="w-20 shrink-0 text-xs text-ink-muted">{relativeTime(e.ts)}</span>
-          <span className={`rounded px-1.5 text-xs ${EVENT_COLORS[e.event] ?? 'bg-surface'}`}>
+          <span className={`rounded px-1.5 text-xs ${EVENT_COLORS[e.event] ?? 'bg-ink/10'}`}>
             {e.event}
           </span>
           {e.target ? (

@@ -5,9 +5,9 @@ import { relativeTime } from '../lib/format'
 // intent file exists but no dispatcher pass has drained it; "queued" means it
 // is in the durable message file; "delivered" means a session actually got it.
 const CHIP: Record<string, string> = {
-  sending: 'bg-surface text-ink-muted',
-  queued: 'bg-surface text-ink-muted',
-  delivered: 'bg-surface text-ink',
+  sending: 'bg-ink/10 text-ink-muted',
+  queued: 'bg-ink/10 text-ink-muted',
+  delivered: 'bg-ink/10 text-ink',
 }
 
 export function MessageThread({ messages }: { messages: MessageView[] }) {

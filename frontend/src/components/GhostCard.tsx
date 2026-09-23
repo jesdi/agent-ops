@@ -3,7 +3,7 @@ import type { GhostCard } from '../lib/api'
 import { AdmissionWarning } from './AdmissionWarning'
 import { ExpandToggle, useExpand } from './Expand'
 
-const ACTION = 'rounded border px-2 text-xs text-ink hover:bg-surface disabled:opacity-50'
+const ACTION = 'rounded border px-2 text-xs text-ink hover:bg-ink/5 disabled:opacity-50'
 
 /** A ranked, not-yet-claimed candidate. Deliberately muted and dashed: it is
  *  a forecast, not work in flight. Compact like a task card: identifier, the
