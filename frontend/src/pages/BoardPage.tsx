@@ -1,6 +1,7 @@
-import { useRef } from 'react'
+import { useEffect } from 'react'
 import { useSearchParams } from 'react-router'
-import { BoardColumn, type DraggedCard } from '../components/BoardColumn'
+import { BoardColumn } from '../components/BoardColumn'
+import type { DraggedCard } from '../components/cardDrag'
 import { BoardHeader } from '../components/BoardHeader'
 import { ColumnTabs } from '../components/ColumnTabs'
 import { CountStrip, type EmptyColumn } from '../components/CountStrip'
@@ -45,9 +46,9 @@ function QueuedHeaderExtra({ stale, error }: { stale: boolean | undefined; error
         <span
           data-testid="queue-error"
           className="rounded bg-failed-bg px-1.5 text-xs font-normal text-failed-fg"
-          title={error}
         >
-          !</span>
+          {error}
+        </span>
       )}
     </>
   )
@@ -148,15 +149,36 @@ export function BoardPage() {
   const queue = useQueueActions()
   const wontDo = useWontDo()
   const [params, setParams] = useSearchParams()
-  const shown = useRef<string | undefined>(undefined)
 
   const board = boardQuery.data ?? snapshotQuery.data
+  const upcoming = boardQuery.data?.upcoming ?? []
+  // Queued also holds the ghosts. A column with no cards and no ghosts is a
+  // chip; anything occupied stays in the row, so a card can never disappear
+  // into the strip.
+  const count = (column: Column) => column.cards.length + (column.key === 'queued' ? upcoming.length : 0)
+  const occupied = (column: Column) => count(column) > 0
+  const inRow = (board?.columns ?? []).filter(occupied)
+  // Phones show one column: the one named in the URL if it is occupied, else
+  // the first occupied one. The effect writes that choice back, so the URL
+  // always names the column on screen: back and reload land on it, and a
+  // column filling or refilling elsewhere never moves the view. The snapshot
+  // carries no ghosts, so until the full board lands it may only fill in a
+  // missing key, never overwrite one: a link to Queued must survive it.
+  const urlColumn = params.get('column')
+  const active = inRow.find((c) => c.key === urlColumn)?.key ?? inRow[0]?.key
+  const settled = boardQuery.data !== undefined || urlColumn === null
+  // Replace, not push: switching tabs is not a navigation back should undo.
+  const selectColumn = (key: string) =>
+    setParams((p) => { p.set('column', key); return p }, { replace: true })
+  useEffect(() => {
+    if (settled && active && active !== urlColumn) selectColumn(active)
+  }, [settled, active, urlColumn]) // eslint-disable-line react-hooks/exhaustive-deps -- selectColumn is rebuilt each render
+
   if (!board && (boardQuery.isPending || snapshotQuery.isPending)) return <p className="p-4 text-ink-muted">loading board…</p>
   if (!board) {
     return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
   }
 
-  const upcoming = boardQuery.data?.upcoming ?? []
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
   const stale = boardQuery.data?.upcoming_stale
   // Undefined when healthy, so the phone board can drop the Queued header.
@@ -165,28 +187,10 @@ export function BoardPage() {
     : undefined
   const queuedExtras = {
     extra: <GhostStack upcoming={upcoming} nextClaim={boardQuery.data?.next_claim} queue={queue} />,
-    extraCount: upcoming.length,
     headerExtra: queuedMarkers,
   }
   const dropFor = (key: string) => (key === 'wont-do' ? wontDo.propose : undefined)
-  // A column with no cards and no ghosts is a chip; anything occupied stays
-  // in the row, so a card can never disappear into the strip.
-  const occupied = (column: Column) =>
-    column.cards.length > 0 || (column.key === 'queued' && upcoming.length > 0)
-  const inRow = board.columns.filter(occupied)
-  const count = (column: Column) => column.cards.length + (column.key === 'queued' ? upcoming.length : 0)
-  // Phones show one column: the one named in the URL, so back and reload
-  // land on the same tab, else the one already on screen, else the first
-  // occupied one. Keeping the one on screen stops the default tab jumping
-  // when a column fills in front of it, e.g. Queued once ghosts arrive. A key
-  // that is not (or no longer) in the row falls through.
-  const inRowKey = (key: string | null | undefined) => inRow.find((c) => c.key === key)?.key
-  const active = inRowKey(params.get('column')) ?? inRowKey(shown.current) ?? inRow[0]?.key
-  shown.current = active
-  // Replace, not push: switching tabs is not a navigation back should undo.
-  const selectColumn = (key: string) =>
-    setParams((p) => { p.set('column', key); return p }, { replace: true })
-  const phoneHidden = (shown: boolean) => (shown ? '' : 'max-md:hidden')
+  const phoneHidden = (visible: boolean) => (visible ? '' : 'max-md:hidden')
   const empty: EmptyColumn[] = board.columns.filter((c) => !occupied(c)).map((column) => ({
     column,
     markers: column.key === 'queued' ? queuedMarkers : undefined,
@@ -226,6 +230,7 @@ export function BoardPage() {
                 <BoardColumn
                   key={column.key}
                   column={column}
+                  count={count(column)}
                   pendingByKey={pendingByKey}
                   {...(column.key === 'queued' ? queuedExtras : {})}
                   onCardDrop={dropFor(column.key)}

@@ -333,7 +333,8 @@ test('a failed queue action shows its error marker in the Queued header', async 
   await userEvent.click(within(queued).getByRole('button', { name: 'Boost' }))
   // Collapsing the ghost again must not hide degraded queue state.
   await userEvent.click(within(queued).getByRole('button', { name: 'Details for widget#73' }))
-  expect(await within(queued).findByTestId('queue-error')).toHaveAttribute('title', 'queue locked')
+  // Visible text, not a tooltip: touch has no hover.
+  expect(await within(queued).findByTestId('queue-error')).toHaveTextContent('queue locked')
   expect(within(queued).getByTestId('queue-stale')).toBeInTheDocument()
 })
 
@@ -466,6 +467,7 @@ describe('phone tabs', () => {
       .toEqual(['Parked 2', 'In progress 1', 'Awaiting CI 1'])
     expect(screen.getByRole('tab', { name: 'Parked 2' })).toHaveAttribute('aria-controls', 'column-parked')
     expect(document.getElementById('column-parked')).toBe(screen.getByTestId('column-parked'))
+    expect(screen.getByRole('tabpanel', { name: 'Parked 2' })).toBe(screen.getByTestId('column-parked'))
   })
 
   it('with no parameter the first occupied column is active', async () => {
@@ -523,6 +525,41 @@ describe('phone tabs', () => {
     release()
     expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()
     expect(selected()).toBe('In progress 1')
+  })
+
+  it('a drained column hands the URL to the fallback, so a refill does not jump back', async () => {
+    const drained = fx_board.columns.map((c) => (c.key === 'awaiting-ci' ? { ...c, cards: [] } : c))
+    let current = drained
+    server.use(
+      http.get('/api/board/snapshot', () => HttpResponse.json({
+        columns: current, capacity: fx_board.capacity, median_cycle_seconds: fx_board.median_cycle_seconds,
+      })),
+      http.get('/api/board', () => HttpResponse.json({ ...fx_board, columns: current })),
+    )
+    const { queryClient } = renderWithProviders(<BoardPage />, { route: '/?column=awaiting-ci' })
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Parked 2')
+    current = fx_board.columns
+    await queryClient.invalidateQueries()
+    expect(await screen.findByRole('tab', { name: 'Awaiting CI 1' })).toBeInTheDocument()
+    expect(selected()).toBe('Parked 2')
+  })
+
+  it('a link to Queued survives the ghost-less snapshot', async () => {
+    let release = () => {}
+    const boardHeld = new Promise<void>((resolve) => { release = resolve })
+    server.use(http.get('/api/board', async () => {
+      await boardHeld
+      return HttpResponse.json({
+        ...fx_board,
+        upcoming: [{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }],
+      })
+    }))
+    renderWithProviders(<BoardPage />, { route: '/?column=queued' })
+    await screen.findByRole('tablist')
+    expect(selected()).toBe('Parked 2')
+    release()
+    await waitFor(() => expect(selected()).toBe('Queued 1'))
   })
 
   it('Queued counts its ghosts', async () => {

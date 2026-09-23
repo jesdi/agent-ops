@@ -46,7 +46,8 @@ test('phone: tapping the card body expands it instead of navigating', async ({ p
   const card = page.getByTestId('card-42')
   await card.getByText('widget#42').tap()
   await expect(card.getByText('sonnet')).toBeVisible()
-  await expect(page).toHaveURL(/\/$/)
+  // Still the board: the path is `/`, whatever tab the query names.
+  await expect(page).toHaveURL(/:\d+\/(\?|$)/)
 })
 
 test('phone: one tab per occupied column, Needs you first, with counts', async ({ page, isMobile }) => {
