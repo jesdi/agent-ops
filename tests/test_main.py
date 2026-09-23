@@ -449,6 +449,24 @@ def test_spec_done_signal_sets_the_task_track_and_spawns_plan_on_it(tmp_path, mo
     assert t.track == "trivial" and t.picks["plan"] == "anthropic/claude-sonnet-5"
 
 
+def test_pre_router_task_runs_on_the_untracked_track(tmp_path, monkeypatch):
+    """A task claimed before tracks existed has no track, and its spec signal
+    carries none: it adopts the untracked track instead of parking or being
+    bounced back to spec, and keeps it."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, track="")
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "done", "artifact": "spec.md"}))
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    assert [s[:3] for s in sess.spawned] == [(42, "plan", "anthropic/claude-opus-5")]
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.track == "standard" and not t.park
+
+
 def test_spec_awaiting_review_records_the_track_on_the_task(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)

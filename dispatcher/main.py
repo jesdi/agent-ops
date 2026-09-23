@@ -1386,6 +1386,15 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 admit: Admit, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
     policy = policy_for(cfg, target)
+    if not task.track:
+        # Claimed before tracks existed (#121): no triage label was read and
+        # its spec signal names none. Run it as untracked work, the same as
+        # a candidate without a track label, and record that for the console.
+        task = replace(task, track=policy.untracked)
+        if not dry_run:
+            save(cfg.state_dir, task)
+        if signal is not None and not signal.track:
+            signal = replace(signal, track=task.track)
     # A spec-stage signal carries the track for every later stage (see
     # StageSignal.track). Adopt it before anything below reads task.track —
     # the "track configured" guard and the launch this same turn may spawn
