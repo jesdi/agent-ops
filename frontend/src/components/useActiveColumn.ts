@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { useSearchParams } from 'react-router'
 
 // Tailwind's md: from here up every column is on screen and the tabs are hidden.
@@ -18,16 +18,24 @@ const isWide = () => window.matchMedia(WIDE).matches
  *
  *  Until `settled` (the snapshot carries no ghosts, so Queued may still
  *  fill) the write-back may only fill in a missing key, never overwrite one:
- *  a link to Queued must survive the snapshot. */
+ *  a link to Queued must survive the snapshot.
+ *
+ *  The write is a router transition, so a board refresh can render before it
+ *  lands; the pending choice stands in for the stale URL until it does. */
 export function useActiveColumn(keys: string[], settled: boolean) {
   const [params, setParams] = useSearchParams()
   const tabbed = !useSyncExternalStore(subscribe, isWide)
   const urlColumn = params.get('column')
-  const active = keys.find((k) => k === urlColumn) ?? keys[0]
+  const pending = useRef<string | null>(null)
+  const wanted = pending.current ?? urlColumn
+  const active = keys.find((k) => k === wanted) ?? keys[0]
   // Replace, not push: switching tabs is not a navigation back should undo.
-  const select = useCallback((key: string) =>
-    setParams((p) => { p.set('column', key); return p }, { replace: true }), [setParams])
+  const select = useCallback((key: string) => {
+    pending.current = key
+    setParams((p) => { p.set('column', key); return p }, { replace: true })
+  }, [setParams])
   useEffect(() => {
+    if (pending.current === urlColumn) pending.current = null
     if (tabbed && (settled || urlColumn === null) && active && active !== urlColumn) select(active)
   }, [tabbed, settled, active, urlColumn, select])
   return { active, tabbed, select }
