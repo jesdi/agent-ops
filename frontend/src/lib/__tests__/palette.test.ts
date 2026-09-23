@@ -20,8 +20,6 @@ test('no source file uses a raw Tailwind palette class', () => {
 const TONE_FILL = /\b(?:bg-(?:running|waiting|failed|parked)-bg|bg-ink\/10)\b/g
 const TONE_FILL_ALLOWED: Record<string, string> = {
   '../../components/UsagePanel.tsx': 'bg-ink/10', // usage bar track, not a chip
-  // ponytail: follow-up converts BoardPage's queue-stale/error chips to tone.
-  '../../pages/BoardPage.tsx': 'bg-waiting-bg bg-failed-bg',
 }
 
 test('status chips and banners come only from lib/tone.ts', () => {

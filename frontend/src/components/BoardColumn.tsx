@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { Column } from '../lib/api'
+import { chip } from '../lib/tone'
 import { TaskCardView } from './TaskCard'
 import { cardDropTarget, type DraggedCard } from './cardDrag'
 
@@ -29,7 +30,7 @@ export function DegradedMarkers({ stale, error }: Degraded) {
       {stale && (
         <span
           data-testid="queue-stale"
-          className="rounded bg-waiting-bg px-1.5 text-xs font-normal text-waiting-fg"
+          className={chip.waiting}
           title="queue order may be outdated"
         >
           stale
@@ -38,7 +39,7 @@ export function DegradedMarkers({ stale, error }: Degraded) {
       {error && (
         <span
           data-testid="queue-error"
-          className="rounded bg-failed-bg px-1.5 text-xs font-normal text-failed-fg"
+          className={chip.failed}
         >
           {error}
         </span>
