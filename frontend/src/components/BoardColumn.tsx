@@ -48,17 +48,20 @@ export function BoardColumn({ column, pendingByKey, extra, extraCount, headerExt
   return (
     <section
       data-testid={`column-${column.key}`}
-      className="w-64 shrink-0"
+      className="flex min-h-0 w-64 shrink-0 flex-col"
       {...cardDropTarget(onCardDrop)}
     >
-      <div className="flex items-center justify-between rounded bg-ink/5 px-2 py-1 text-sm font-semibold">
+      <div className="flex shrink-0 items-center justify-between rounded bg-ink/5 px-2 py-1 text-sm font-semibold">
         <span>{column.title}</span>
         <span className="flex items-center gap-1">
           {headerExtra}
           <span className="text-ink-muted">{column.cards.length + (extraCount ?? 0)}</span>
         </span>
       </div>
-      <div className="mt-2 flex flex-col gap-2">
+      {/* The body scrolls on its own once the board caps its height; the
+          header sits outside it, so it stays pinned. */}
+      <div data-testid={`scroll-${column.key}`}
+        className="mt-2 flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
         {column.cards.map((card) => (
           <TaskCardView
             // Issue numbers are per-target: alpha#73 and beta#73 must not

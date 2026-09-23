@@ -1,14 +1,14 @@
 /** Full-vs-headroom lives here alone, so the header meter and the card
  *  accents can never disagree about what colour "now" is. */
-export type Accent = 'amber' | 'blue'
+export type Accent = 'full' | 'headroom'
 
 export function capacityAccent(c: { active: number; capacity: number }): Accent {
-  return c.active >= c.capacity ? 'amber' : 'blue'
+  return c.active >= c.capacity ? 'full' : 'headroom'
 }
 
 export const ACCENT_PIP: Record<Accent, string> = {
-  amber: 'bg-amber-500',
-  blue: 'bg-blue-500',
+  full: 'bg-waiting-fg',
+  headroom: 'bg-running-fg',
 }
 
 /** Fixed palette indexed by SLOT NUMBER, so slot 0 is the same hue on the

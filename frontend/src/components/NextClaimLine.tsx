@@ -30,7 +30,7 @@ export function NextClaimLine({ nextClaim }: { nextClaim: NextClaimView }) {
 
   if (nextClaim.verdict === 'unknown') {
     return (
-      <span data-testid="next-claim" className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+      <span data-testid="next-claim" className="rounded border border-waiting-fg/30 bg-waiting-bg px-3 py-2 text-sm text-waiting-fg">
         dispatcher not running? — no recent pass heartbeat
       </span>
     )
@@ -54,8 +54,8 @@ export function NextClaimLine({ nextClaim }: { nextClaim: NextClaimView }) {
 
   const isGood = nextClaim.verdict === 'will-claim'
   return (
-    <span data-testid="next-claim" className="text-sm text-gray-600">
-      {pass} — <span className={isGood ? 'text-emerald-700' : 'text-gray-700'}>{detail}</span>
+    <span data-testid="next-claim" className="text-sm text-ink-muted">
+      {pass} — <span className={isGood ? 'text-running-fg' : 'text-ink'}>{detail}</span>
     </span>
   )
 }

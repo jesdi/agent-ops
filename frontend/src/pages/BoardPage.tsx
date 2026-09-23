@@ -170,22 +170,28 @@ export function BoardPage() {
     onCardDrop: dropFor(column.key),
   }))
 
+  // From md up the board is exactly the viewport below the nav (AppShell is a
+  // min-h-dvh flex column; a zero-basis grow item cannot push it taller), so
+  // the page never scrolls: the row scrolls sideways with its scrollbar on the
+  // bottom edge, and each column body scrolls on its own. Below md the page
+  // scrolls as before.
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className="flex flex-col gap-4 p-4 md:min-h-0 md:grow md:basis-0 md:pb-0">
       <BoardHeader board={board} />
       <CountStrip columns={empty} />
-      <div className="flex gap-4 overflow-x-auto pb-4">
+      <div data-testid="board-row" className="-mx-4 flex gap-4 overflow-x-auto px-4 pb-4 md:min-h-0 md:grow md:basis-0">
         {zonesInOrder(board.columns.filter(occupied)).map(({ zone, columns }) => (
           <section
             key={zone}
             data-testid={`zone-${zone}`}
             aria-labelledby={`zone-${zone}-title`}
-            className={`flex shrink-0 flex-col gap-2 ${ZONE_STYLE[zone].section}`}
+            // Hugs its tallest column, capped at the row height.
+            className={`flex max-h-full min-h-0 shrink-0 flex-col gap-2 self-start ${ZONE_STYLE[zone].section}`}
           >
             <h2 id={`zone-${zone}-title`} className={`px-1 ${ZONE_STYLE[zone].header}`}>
               {ZONE_TITLE[zone]}
             </h2>
-            <div className="flex gap-4">
+            <div className="flex min-h-0 flex-auto gap-4">
               {columns.map((column) => (
                 <BoardColumn
                   key={column.key}

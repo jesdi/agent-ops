@@ -19,19 +19,19 @@ export function BoardHeader({ board }: { board: BoardSnapshot }) {
           operator would read "no gauge" as "nothing to worry about". */}
       {usageQuery.isError ? (
         <span data-testid="usage-error"
-          className="rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          className="rounded border border-waiting-fg/30 bg-waiting-bg px-3 py-2 text-sm text-waiting-fg">
           usage unknown — {usageQuery.error.message}
         </span>
       ) : (
         usageQuery.data && <UsagePanel usage={usageQuery.data} />
       )}
       {nextClaim ? <NextClaimLine nextClaim={nextClaim} /> : (
-        <span role="status" className="text-sm text-gray-500">
+        <span role="status" className="text-sm text-ink-muted">
           {boardQuery.isError ? 'queue and forecast unavailable' : 'loading queue and forecast…'}
         </span>
       )}
       {board.median_cycle_seconds != null && (
-        <span className="text-sm text-gray-500">
+        <span className="text-sm text-ink-muted">
           ≈{formatDuration(board.median_cycle_seconds)} per task
         </span>
       )}

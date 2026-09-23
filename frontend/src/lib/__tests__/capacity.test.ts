@@ -1,19 +1,19 @@
 import { capacityAccent, SLOT_COLORS, slotBorder, slotChip, slotSegment } from '../capacity'
 
-it('is blue while there is headroom', () => {
-  expect(capacityAccent({ active: 2, capacity: 3 })).toBe('blue')
+it('has headroom while there is headroom', () => {
+  expect(capacityAccent({ active: 2, capacity: 3 })).toBe('headroom')
 })
 
-it('is amber exactly at full — the state that explains a stalled dispatcher', () => {
-  expect(capacityAccent({ active: 3, capacity: 3 })).toBe('amber')
+it('is full exactly at full — the state that explains a stalled dispatcher', () => {
+  expect(capacityAccent({ active: 3, capacity: 3 })).toBe('full')
 })
 
-it('is amber when active overshoots a lowered capacity', () => {
-  expect(capacityAccent({ active: 3, capacity: 2 })).toBe('amber')
+it('is full when active overshoots a lowered capacity', () => {
+  expect(capacityAccent({ active: 3, capacity: 2 })).toBe('full')
 })
 
-it('is blue when nothing is running', () => {
-  expect(capacityAccent({ active: 0, capacity: 3 })).toBe('blue')
+it('has headroom when nothing is running', () => {
+  expect(capacityAccent({ active: 0, capacity: 3 })).toBe('headroom')
 })
 
 test('slot 0 gets the same colour everywhere', () => {

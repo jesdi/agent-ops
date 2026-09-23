@@ -9,7 +9,7 @@ const links = [
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-surface text-ink">
+    <div className="flex min-h-dvh flex-col bg-surface text-ink">
       <nav className="flex gap-4 border-b border-border bg-surface-raised px-4 py-2">
         {links.map((l) => (
           <NavLink
