@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { TaskCard } from '../lib/api'
+import type { Column } from '../lib/api'
 import { TaskCardView } from './TaskCard'
 
 export interface DraggedCard {
@@ -9,7 +9,7 @@ export interface DraggedCard {
 }
 
 export interface ColumnProps {
-  column: { key: string; title: string; cards: TaskCard[] }
+  column: Column
   /**
    * Keyed `${target}#${issue}`. A legacy (target-less) pending intent is
    * stored under the key `#${issue}` (empty target) and applies to any card
@@ -51,12 +51,12 @@ export function BoardColumn({ column, pendingByKey, collapsed, onToggle, extra, 
       <button
         type="button"
         onClick={onToggle}
-        className="flex w-full items-center justify-between rounded bg-gray-100 px-2 py-1 text-left text-sm font-semibold"
+        className="flex w-full items-center justify-between rounded bg-ink/5 px-2 py-1 text-left text-sm font-semibold"
       >
         <span>{column.title}</span>
         <span className="flex items-center gap-1">
           {headerExtra}
-          <span className="text-gray-500">{column.cards.length + (extraCount ?? 0)}</span>
+          <span className="text-ink-muted">{column.cards.length + (extraCount ?? 0)}</span>
         </span>
       </button>
       {!collapsed && (

@@ -20,19 +20,24 @@ from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
 
 FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
 
-# (key, title) in display order — the single place column semantics live.
-COLUMNS: tuple[tuple[str, str], ...] = (
-    ("queued", "Queued"),
-    ("in-progress", "In progress"),
-    ("needs-review", "Needs review"),
-    ("pr-open", "PR review"),
-    ("done", "Done"),
-    ("parked", "Parked"),
-    ("awaiting-ci", "Awaiting CI"),
-    ("resuming", "Resuming"),
-    ("stalled", "Stalled on budget"),
-    ("failed", "Failed"),
-    ("wont-do", "Wont do"),
+Zone = Literal["needs-you", "pipeline"]
+
+# (key, title, zone) in display order — the single place column semantics
+# live. Needs you first, in action order: a review is a read, a PR a merge, a
+# park usually a short reply, a failure an investigation, a budget stall a
+# wait. Then the pipeline in flow order. Consumers render this order as-is.
+COLUMNS: tuple[tuple[str, str, Zone], ...] = (
+    ("needs-review", "Needs review", "needs-you"),
+    ("pr-open", "PR review", "needs-you"),
+    ("parked", "Parked", "needs-you"),
+    ("failed", "Failed", "needs-you"),
+    ("stalled", "Stalled on budget", "needs-you"),
+    ("queued", "Queued", "pipeline"),
+    ("in-progress", "In progress", "pipeline"),
+    ("awaiting-ci", "Awaiting CI", "pipeline"),
+    ("resuming", "Resuming", "pipeline"),
+    ("done", "Done", "pipeline"),
+    ("wont-do", "Wont do", "pipeline"),
 )
 
 # PARK_LOGIN shares the Parked column: it is a task waiting on the operator,
@@ -166,6 +171,7 @@ class TaskCard(BaseModel):
 class Column(BaseModel):
     key: str
     title: str
+    zone: Zone
     cards: list[TaskCard]
 
 
@@ -254,7 +260,7 @@ def _task_cards(tasks: list[TaskState], *,
 
 
 def _cards_by_column(cards: list[TaskCard]) -> dict[str, list[TaskCard]]:
-    by_column: dict[str, list[TaskCard]] = {key: [] for key, _ in COLUMNS}
+    by_column: dict[str, list[TaskCard]] = {key: [] for key, _, _ in COLUMNS}
     for card in cards:
         by_column[card.column].append(card)
     for col_cards in by_column.values():
@@ -293,8 +299,8 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
     # read "1/4" with zero segments lit.
     slots_held = _held_slots(tasks)
     return BoardSnapshot(
-        columns=[Column(key=key, title=title, cards=by_column[key])
-                 for key, title in COLUMNS],
+        columns=[Column(key=key, title=title, zone=zone, cards=by_column[key])
+                 for key, title, zone in COLUMNS],
         capacity=CapacityView(
             # via dispatcher.state.active so the console never shows a
             # different capacity than the one the dispatcher enforces

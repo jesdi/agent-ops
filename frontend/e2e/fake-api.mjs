@@ -29,15 +29,17 @@ const parkedCard = {
 const state = {
   board: {
     columns: [
-      { key: 'queued', title: 'Queued', cards: [] },
-      { key: 'in-progress', title: 'In progress', cards: [] },
-      { key: 'needs-review', title: 'Needs review', cards: [] },
-      { key: 'parked', title: 'Parked', cards: [{ ...parkedCard }] },
-      { key: 'awaiting-ci', title: 'Awaiting CI', cards: [] },
-      { key: 'resuming', title: 'Resuming', cards: [] },
-      { key: 'stalled', title: 'Stalled', cards: [] },
-      { key: 'failed', title: 'Failed', cards: [] },
-      { key: 'pr-open', title: 'PR open', cards: [] },
+      { key: 'needs-review', title: 'Needs review', zone: 'needs-you', cards: [] },
+      { key: 'pr-open', title: 'PR review', zone: 'needs-you', cards: [] },
+      { key: 'parked', title: 'Parked', zone: 'needs-you', cards: [{ ...parkedCard }] },
+      { key: 'failed', title: 'Failed', zone: 'needs-you', cards: [] },
+      { key: 'stalled', title: 'Stalled on budget', zone: 'needs-you', cards: [] },
+      { key: 'queued', title: 'Queued', zone: 'pipeline', cards: [] },
+      { key: 'in-progress', title: 'In progress', zone: 'pipeline', cards: [] },
+      { key: 'awaiting-ci', title: 'Awaiting CI', zone: 'pipeline', cards: [] },
+      { key: 'resuming', title: 'Resuming', zone: 'pipeline', cards: [] },
+      { key: 'done', title: 'Done', zone: 'pipeline', cards: [] },
+      { key: 'wont-do', title: 'Wont do', zone: 'pipeline', cards: [] },
     ],
     capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 5, slots_held: [] },
     upcoming: [

@@ -4,7 +4,8 @@ import pytest
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                               PARK_REVIEW, PARK_WAKE, Stage)
 from tests.webfakes import make_task
-from web.read_model import COLUMNS, build_board, column_for, task_card
+from web.read_model import (COLUMNS, build_board, build_board_snapshot,
+                             column_for, task_card)
 
 STAGE_COLUMNS = {
     Stage.QUEUED: "queued",
@@ -156,14 +157,25 @@ def test_cards_sort_by_score_descending_nulls_last_within_a_column():
     assert [c.issue for c in cards] == [3, 1, 2, 4]
 
 
-def test_board_column_order_is_stable():
+def test_snapshot_columns_in_zone_order():
+    snapshot = build_board_snapshot([], capacity=2, models={}, events=[],
+                                    queues=[])
+    assert [(c.key, c.zone) for c in snapshot.columns] == [
+        ("needs-review", "needs-you"), ("pr-open", "needs-you"),
+        ("parked", "needs-you"), ("failed", "needs-you"),
+        ("stalled", "needs-you"),
+        ("queued", "pipeline"), ("in-progress", "pipeline"),
+        ("awaiting-ci", "pipeline"), ("resuming", "pipeline"),
+        ("done", "pipeline"), ("wont-do", "pipeline")]
+
+
+def test_board_reuses_snapshot_zones():
     board = build_board([], capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False)
-    assert [c.key for c in board.columns] == [
-        "queued", "in-progress", "needs-review", "pr-open", "done", "parked",
-        "awaiting-ci", "resuming", "stalled", "failed", "wont-do"]
+    assert [(c.key, c.zone) for c in board.columns] == [
+        (key, zone) for key, _, zone in COLUMNS]
 
 
 def test_new_stage_columns():
@@ -171,17 +183,11 @@ def test_new_stage_columns():
     assert column_for("done", "") == "done"
 
 
-def test_wont_do_column_titled_and_last():
-    keys = [k for k, _ in COLUMNS]
-    assert keys[-1] == "wont-do"
-    assert dict(COLUMNS)["wont-do"] == "Wont do"
-
-
-def test_done_column_present_after_pr_review():
-    keys = [k for k, _ in COLUMNS]
-    assert keys.index("done") == keys.index("pr-open") + 1
-    titles = dict(COLUMNS)
+def test_column_titles():
+    titles = {key: title for key, title, _ in COLUMNS}
+    assert titles["wont-do"] == "Wont do"
     assert titles["pr-open"] == "PR review" and titles["done"] == "Done"
+    assert titles["stalled"] == "Stalled on budget"
 
 
 def test_task_card_carries_feedback_pending():
@@ -671,7 +677,7 @@ def test_build_board_degrades_without_events_or_heartbeat():
     assert board.next_claim.verdict == "unknown"
     assert board.median_cycle_seconds is None
     assert board.upcoming == [] and board.upcoming_stale is True
-    card = board.columns[1].cards[0]  # in-progress
+    card = {c.key: c for c in board.columns}["in-progress"].cards[0]
     assert card.claimed_at == "" and card.cycle_seconds is None
 
 

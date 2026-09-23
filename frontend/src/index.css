@@ -1,7 +1,8 @@
 @import "tailwindcss";
 
 /* The one token system. Utilities: bg-surface, bg-surface-raised, text-ink,
-   text-ink-muted, border-border, and {bg,text,border}-{running,waiting,failed,parked}-{bg,fg}.
+   text-ink-muted, border-border, bg-surface-attention (Needs you zone), and
+   {bg,text,border}-{running,waiting,failed,parked}-{bg,fg}.
    Status hues mean state and nothing else: running, waiting on you, failed, parked. */
 @theme {
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
@@ -11,6 +12,8 @@
   --color-ink: #1e293b;
   --color-ink-muted: #5b6577;
   --color-border: #dce1e8;
+  /* Faint warm tint: the Needs you zone, the board's one emphasis. */
+  --color-surface-attention: #fbf6ec;
 
   --color-running-bg: #dcfce7;
   --color-running-fg: #166534;
@@ -29,6 +32,7 @@
     --color-ink: #e4e8ee;
     --color-ink-muted: #98a2b1;
     --color-border: #2b3340;
+    --color-surface-attention: #1f1b15;
 
     --color-running-bg: #10301e;
     --color-running-fg: #86efac;

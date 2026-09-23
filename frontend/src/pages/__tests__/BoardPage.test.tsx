@@ -23,6 +23,33 @@ it('renders all eleven columns with cards and capacity', async () => {
   expect(screen.getByText(/2\/3 active/)).toBeInTheDocument()
 })
 
+it('renders the Needs you zone before Pipeline, columns in the order received', async () => {
+  renderWithProviders(<BoardPage />)
+  await waitFor(() => expect(screen.getByTestId('column-parked')).toBeInTheDocument())
+  const zones = screen.getAllByTestId(/^zone-/)
+  expect(zones.map((z) => z.getAttribute('data-testid'))).toEqual(['zone-needs-you', 'zone-pipeline'])
+  expect(within(zones[0]!).getByRole('heading', { name: 'Needs you' })).toBeInTheDocument()
+  expect(within(zones[1]!).getByRole('heading', { name: 'Pipeline' })).toBeInTheDocument()
+  const keysIn = (zone: HTMLElement) =>
+    within(zone).getAllByTestId(/^column-/).map((el) => el.getAttribute('data-testid'))
+  expect(keysIn(zones[0]!)).toEqual(
+    ['column-needs-review', 'column-pr-open', 'column-parked', 'column-failed', 'column-stalled'])
+  expect(keysIn(zones[1]!)).toEqual(
+    ['column-queued', 'column-in-progress', 'column-awaiting-ci', 'column-resuming',
+      'column-done', 'column-wont-do'])
+})
+
+it('holds no column order of its own: a reordered board renders as received', async () => {
+  const reversed = { ...fx_board, columns: [...fx_board.columns].reverse() }
+  server.use(http.get('/api/board', () => HttpResponse.json(reversed)))
+  renderWithProviders(<BoardPage />)
+  await waitFor(() => expect(screen.getAllByTestId(/^column-/)[0]).toHaveAttribute('data-testid', 'column-wont-do'))
+  expect(screen.getAllByTestId(/^column-/).map((el) => el.getAttribute('data-testid')))
+    .toEqual(reversed.columns.map((c) => `column-${c.key}`))
+  expect(screen.getAllByTestId(/^zone-/).map((z) => z.getAttribute('data-testid')))
+    .toEqual(['zone-pipeline', 'zone-needs-you'])
+})
+
 it('renders a column\'s cards in the order the API returns (server sorts by score)', async () => {
   // The board API is the single source of card order (score-descending); the
   // page must render that order verbatim and never re-sort client-side.

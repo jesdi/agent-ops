@@ -1,7 +1,7 @@
 import { BoardColumn, type DraggedCard } from '../components/BoardColumn'
 import { BoardHeader } from '../components/BoardHeader'
 import { GhostCardView } from '../components/GhostCard'
-import type { GhostCard, NextClaimView, PendingIntent } from '../lib/api'
+import type { Column, GhostCard, NextClaimView, PendingIntent, Zone } from '../lib/api'
 import { useBoardSnapshot, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useWontDo } from '../hooks/useWontDo'
@@ -32,7 +32,7 @@ function QueuedHeaderExtra({ stale, error }: { stale: boolean | undefined; error
       {stale && (
         <span
           data-testid="queue-stale"
-          className="rounded bg-amber-100 px-1.5 text-xs font-normal text-amber-800"
+          className="rounded bg-waiting-bg px-1.5 text-xs font-normal text-waiting-fg"
           title="queue order may be outdated"
         >
           stale
@@ -41,7 +41,7 @@ function QueuedHeaderExtra({ stale, error }: { stale: boolean | undefined; error
       {error && (
         <span
           data-testid="queue-error"
-          className="rounded bg-red-100 px-1.5 text-xs font-normal text-red-700"
+          className="rounded bg-failed-bg px-1.5 text-xs font-normal text-failed-fg"
           title={error}
         >
           !</span>
@@ -55,7 +55,7 @@ function GhostStack({ upcoming, nextClaim, queue }: {
 }) {
   return (
     <>
-      {queue.queueError && <p className="text-xs text-red-600">{queue.queueError}</p>}
+      {queue.queueError && <p className="text-xs text-failed-fg">{queue.queueError}</p>}
       {/* busy disables every ghost's buttons at once: each action re-ranks the
           shared queue, so a second click would act on pre-mutation ranks and
           creates a last-writer-wins race on the error state. */}
@@ -76,6 +76,32 @@ function GhostStack({ upcoming, nextClaim, queue }: {
   )
 }
 
+/** Zone and column order are the read model's; the page only groups
+ *  consecutive columns that share a zone, so it holds no ordering of its own. */
+function zonesInOrder(columns: Column[]): { zone: Zone; columns: Column[] }[] {
+  const zones: { zone: Zone; columns: Column[] }[] = []
+  for (const column of columns) {
+    const last = zones.at(-1)
+    if (last?.zone === column.zone) last.columns.push(column)
+    else zones.push({ zone: column.zone, columns: [column] })
+  }
+  return zones
+}
+
+const ZONE_TITLE: Record<Zone, string> = { 'needs-you': 'Needs you', pipeline: 'Pipeline' }
+
+/** Needs you is the one deliberate emphasis: a warm tint and a heavier header. */
+const ZONE_STYLE: Record<Zone, { section: string; header: string }> = {
+  'needs-you': {
+    section: 'rounded-lg bg-surface-attention p-2',
+    header: 'text-sm font-semibold text-ink',
+  },
+  pipeline: {
+    section: 'p-2',
+    header: 'text-sm font-medium text-ink-muted',
+  },
+}
+
 function WontDoConfirm({ card, error, busy, onKeep, onConfirm }: {
   card: DraggedCard; error: string | null; busy: boolean
   onKeep: () => void; onConfirm: (card: DraggedCard) => void
@@ -84,13 +110,13 @@ function WontDoConfirm({ card, error, busy, onKeep, onConfirm }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
       <div
         data-testid="wont-do-confirm"
-        className="w-96 rounded border bg-white p-4 shadow-lg"
+        className="w-96 rounded border bg-surface-raised p-4 shadow-lg"
       >
         <p className="text-sm">
           Move <span className="font-medium">#{card.issue} {card.title}</span>{' '}
           to Wont do? The board card is retired and the issue closes as not planned.
         </p>
-        {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+        {error && <p className="mt-2 text-xs text-failed-fg">{error}</p>}
         <div className="mt-3 flex justify-end gap-2">
           <button
             type="button"
@@ -101,7 +127,7 @@ function WontDoConfirm({ card, error, busy, onKeep, onConfirm }: {
           </button>
           <button
             type="button"
-            className="rounded border border-red-300 px-3 py-1.5 text-sm text-red-700 disabled:opacity-50"
+            className="rounded border border-failed-fg/30 px-3 py-1.5 text-sm text-failed-fg disabled:opacity-50"
             disabled={busy}
             onClick={() => onConfirm(card)}
           >
@@ -123,9 +149,9 @@ export function BoardPage() {
   const wontDo = useWontDo()
 
   const board = boardQuery.data ?? snapshotQuery.data
-  if (!board && (boardQuery.isPending || snapshotQuery.isPending)) return <p className="p-4 text-gray-500">loading board…</p>
+  if (!board && (boardQuery.isPending || snapshotQuery.isPending)) return <p className="p-4 text-ink-muted">loading board…</p>
   if (!board) {
-    return <p className="p-4 text-red-600">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
+    return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
   }
 
   const upcoming = boardQuery.data?.upcoming ?? []
@@ -140,16 +166,30 @@ export function BoardPage() {
     <div className="flex flex-col gap-4 p-4">
       <BoardHeader board={board} />
       <div className="flex gap-4 overflow-x-auto pb-4">
-        {board.columns.map((column) => (
-          <BoardColumn
-            key={column.key}
-            column={column}
-            pendingByKey={pendingByKey}
-            collapsed={collapsedColumns[column.key] ?? false}
-            onToggle={() => toggleColumn(column.key)}
-            {...(column.key === 'queued' ? queuedExtras : {})}
-            onCardDrop={column.key === 'wont-do' ? wontDo.propose : undefined}
-          />
+        {zonesInOrder(board.columns).map(({ zone, columns }) => (
+          <section
+            key={zone}
+            data-testid={`zone-${zone}`}
+            aria-labelledby={`zone-${zone}-title`}
+            className={`flex shrink-0 flex-col gap-2 ${ZONE_STYLE[zone].section}`}
+          >
+            <h2 id={`zone-${zone}-title`} className={`px-1 ${ZONE_STYLE[zone].header}`}>
+              {ZONE_TITLE[zone]}
+            </h2>
+            <div className="flex gap-4">
+              {columns.map((column) => (
+                <BoardColumn
+                  key={column.key}
+                  column={column}
+                  pendingByKey={pendingByKey}
+                  collapsed={collapsedColumns[column.key] ?? false}
+                  onToggle={() => toggleColumn(column.key)}
+                  {...(column.key === 'queued' ? queuedExtras : {})}
+                  onCardDrop={column.key === 'wont-do' ? wontDo.propose : undefined}
+                />
+              ))}
+            </div>
+          </section>
         ))}
       </div>
       {wontDo.candidate && (

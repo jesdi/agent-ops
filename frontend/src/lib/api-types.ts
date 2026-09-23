@@ -518,6 +518,11 @@ export interface components {
             key: string;
             /** Title */
             title: string;
+            /**
+             * Zone
+             * @enum {string}
+             */
+            zone: "needs-you" | "pipeline";
         };
         /** EventEntry */
         EventEntry: {

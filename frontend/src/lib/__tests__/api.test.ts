@@ -6,7 +6,7 @@ it('GET /api/board returns typed BoardView', async () => {
   server.use(
     http.get('/api/board', () =>
       HttpResponse.json({
-        columns: [{ key: 'parked', title: 'Parked', cards: [] }],
+        columns: [{ key: 'parked', title: 'Parked', zone: 'needs-you', cards: [] }],
         capacity: { active: 1, capacity: 3, slots_used: 1, max_slots: 3 },
       }),
     ),
