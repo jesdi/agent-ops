@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# agent-ops post-checkout hook, installed by scripts/setup.sh.
+# Git runs it on `git worktree add` too, so every new worktree gets the
+# general-skills, however it was created. A no-op when they are installed.
+# Never fails the checkout.
+[ -f .my-skills.json ] && [ ! -d .my-skills ] && [ -x scripts/install-skills.sh ] || exit 0
+echo "post-checkout: installing agent skills (scripts/install-skills.sh)"
+scripts/install-skills.sh || echo "post-checkout: skill install failed; run scripts/install-skills.sh" >&2
+exit 0

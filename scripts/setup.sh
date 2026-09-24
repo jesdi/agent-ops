@@ -16,3 +16,13 @@ fi
 .venv/bin/pip install -q -e '.[dev]'
 (cd frontend && pnpm install --frozen-lockfile)
 ./scripts/install-skills.sh
+
+# Hooks live in the shared .git, so this covers every worktree, present and
+# future. Refuse to overwrite a post-checkout hook we did not write.
+hook="$(git rev-parse --git-path hooks)/post-checkout"
+if [ -e "$hook" ] && ! grep -q 'installed by scripts/setup.sh' "$hook"; then
+  echo "setup: $hook exists and is not ours; skipping the skills hook" >&2
+else
+  mkdir -p "$(dirname "$hook")"
+  cp scripts/git-hooks/post-checkout "$hook"
+fi
