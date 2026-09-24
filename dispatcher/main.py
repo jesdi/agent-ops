@@ -1004,14 +1004,18 @@ def _flush_done(cfg: Config) -> None:
                                   stage=Stage.DONE.value)
 
 
-def _resume_woken(cfg: Config, deps: Deps, target: Target,
-                  admit: Admit, dry_run: bool = False) -> None:
+def _resume_woken(cfg: Config, deps: Deps, admit: Admit,
+                  dry_run: bool = False) -> None:
+    """Box-wide, oldest wake first across every target: capacity is shared,
+    so target listing order must not decide whose approved work waits."""
+    targets = {t.name: t for t in cfg.targets}
     woken = sorted(
         [t for t in load_all(cfg.state_dir)
-         if t.target == target.name and t.park == PARK_WAKE],
+         if t.target in targets and t.park == PARK_WAKE],
         key=lambda t: t.updated_at,
     )
     for task in woken:
+        target = targets[task.target]
         launch = _resume_launch(cfg, target, task, admit)
         if launch is None or (not task.resume_bypass_usage
                               and not admit(launch.model).admitted):
@@ -1177,17 +1181,19 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
     failures.report_failure(cfg, deps, rep, dry_run=dry_run)
 
 
-def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
-                    admit: Admit) -> None:
-    """Spawn address-review for tasks whose PR got feedback — same gates
-    as claiming new work (capacity, usage, slot); a denied spawn just
-    stays pr-open+pending and retries next pass, badge showing."""
+def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit) -> None:
+    """Spawn address-review for tasks whose PR got feedback, box-wide and
+    oldest first — same gates as claiming new work (capacity, usage, slot);
+    a denied spawn just stays pr-open+pending and retries next pass, badge
+    showing."""
+    targets = {t.name: t for t in cfg.targets}
     pending = sorted(
         [t for t in load_all(cfg.state_dir)
-         if t.target == target.name and t.stage is Stage.PR_OPEN
+         if t.target in targets and t.stage is Stage.PR_OPEN
          and t.feedback_pending],
         key=lambda t: t.updated_at)
     for task in pending:
+        target = targets[task.target]
         launch, bypass_usage = _choose_launch(cfg, target, task,
                                               Stage.ADDRESS_REVIEW, admit)
         if launch is None:
@@ -2014,6 +2020,8 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     default_verdict = admit(cfg.models.gate_entry().model_id)
     _budget_edge(cfg, deps, default_verdict, now)
     _auth_dark_edge(cfg, deps, usages)
+    # Phase 1: work already in progress, on every target, before any claim —
+    # so one target's new claims never starve another's approved spec.
     for target in eff.targets:
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
@@ -2024,9 +2032,11 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
                 _fail_task_crash(eff, deps, target, task, dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
-        _resume_woken(eff, deps, target, admit, dry_run)
-        _spawn_feedback(eff, deps, target, admit)
-        if not claims_paused:
+    _resume_woken(eff, deps, admit, dry_run)
+    _spawn_feedback(eff, deps, admit)
+    # Phase 2: new claims, with whatever capacity phase 1 left.
+    if not claims_paused:
+        for target in eff.targets:
             _claim_new(eff, deps, target, admit, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
     _flush_done(cfg)
