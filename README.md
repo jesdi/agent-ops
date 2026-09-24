@@ -186,9 +186,11 @@ are never forceable).
 Requires Python ≥ 3.11.
 
 ```bash
-pip install -e '.[dev]'
+./scripts/setup.sh    # .venv, Python and frontend deps, agent skills
 pytest
 ```
+
+Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills.
 
 ### Agent skills
 
@@ -199,11 +201,7 @@ Two kinds of agent skills live in this repo:
 
 Global Claude Code config (rules, hooks, and plugins like engram, ponytail and codex, which lets Claude hand work to Codex) lives in the private [jesdi/claude-config](https://github.com/jesdi/claude-config). Run its `install.sh` once per machine.
 
-After a checkout, install the project skills (needs Node and pnpm):
-
-```bash
-./scripts/install-skills.sh
-```
+`scripts/setup.sh` installs the project skills. To install only them (needs Node and pnpm), run `./scripts/install-skills.sh`.
 
 To add a new one, run `pnpm dlx @jesdi/skills-cli install <skill> --agent claude` and add its `.claude/skills/<skill>` line to `.gitignore`.
 
