@@ -1565,17 +1565,53 @@ def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
             yield cand, launch
 
 
-def _claim_new(cfg: Config, deps: Deps, target: Target,
+def _pick_target(targets: list[Target], active_counts: dict[str, int],
+                 last_claimed: dict[str, str]) -> Target | None:
+    """The target the next free unit goes to: fewest active among those under
+    `max_active`, ties to the least recent claim ("" = never = oldest), then
+    list order (min is stable). None when every target is capped."""
+    open_ = [t for t in targets
+             if t.max_active is None or active_counts[t.name] < t.max_active]
+    return min(open_, key=lambda t: (active_counts[t.name],
+                                     last_claimed.get(t.name, "")),
+               default=None)
+
+
+def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
                admit: Admit, dry_run: bool, pass_started: str = "") -> None:
+    """Claim free units one at a time, each via _pick_target. A target leaves
+    the round when its candidates run out or provisioning fails for it."""
     all_tasks = load_all(cfg.state_dir)
-    target_tasks = [t for t in all_tasks if t.target == target.name]
     free = _box_free(cfg, all_tasks)
     if free <= 0:
         return
-    for cand, launch in _claimable(cfg, deps, target, target_tasks, admit, pass_started):
+    counts = {t.name: 0 for t in targets}
+    for t in active(all_tasks):
+        if t.target in counts:
+            counts[t.target] += 1
+    last = {}
+    for e in eventlog.read_tail(cfg.state_dir, limit=sys.maxsize):
+        if e.get("event") == "claimed":
+            last[e.get("target")] = max(last.get(e.get("target"), ""), e.get("ts", ""))
+    # Generator bodies run on first next(), so a target's rank_cmd runs only
+    # when it gets a turn.
+    gens = {t.name: _claimable(cfg, deps, t,
+                               [x for x in all_tasks if x.target == t.name],
+                               admit, pass_started)
+            for t in targets}
+    in_round = list(targets)
+    while free > 0:
+        target = _pick_target(in_round, counts, last)
+        if target is None:
+            return
+        picked = next(gens[target.name], None)
+        if picked is None:
+            in_round.remove(target)
+            continue
+        cand, launch = picked
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
-            break
+            return
         try:
             wt = create_workspace(target, cand.number, dry_run=dry_run)
         except Exception:
@@ -1585,12 +1621,11 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
             # Cap at one provisioning failure per target per pass: a
             # systemic fault (git remote down, podman down, worktrees
             # volume full) would otherwise fail EVERY remaining Ready
-            # candidate in this loop, filing an issue + ping + quarantine
-            # record per candidate. A systemic cause is far likelier than a
-            # per-candidate one, so stop here — the next pass retries the
-            # remaining candidates. This `break` only exits this target's
-            # candidate loop; run_pass still processes other targets.
-            break
+            # candidate, filing an issue + ping + quarantine record per
+            # candidate. The target leaves this pass's round; the next pass
+            # retries its remaining candidates, and other targets keep claiming.
+            in_round.remove(target)
+            continue
         task = TaskState(issue=cand.number, target=target.name,
                          stage=Stage.QUEUED, slot=slot, worktree=wt,
                          branch=f"agent/task-{cand.number}",
@@ -1607,9 +1642,9 @@ def _claim_new(cfg: Config, deps: Deps, target: Target,
         except Exception:
             deps.github.release(target, cand.number, "claim/spawn failed after provisioning")
             raise
-        free -= 1
-        if free <= 0:
-            break  # before the generator vets (and sweeps for) a candidate it cannot claim
+        counts[target.name] += 1
+        last[target.name] = _now()
+        free -= 1  # checked before the next pull, so no candidate is vetted (or swept) that cannot be claimed
 
 
 def _task_for_intent(cfg: Config, intent: intents.Intent) -> TaskState | None:
@@ -2043,8 +2078,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _spawn_feedback(eff, deps, admit)
     # Phase 2: new claims, with whatever capacity phase 1 left.
     if not claims_paused:
-        for target in eff.targets:
-            _claim_new(eff, deps, target, admit, dry_run, pass_started)
+        _claim_new(eff, deps, eff.targets, admit, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
     _flush_done(cfg)
     _write_heartbeat(cfg, pass_started)

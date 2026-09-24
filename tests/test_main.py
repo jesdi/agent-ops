@@ -359,7 +359,7 @@ def test_forced_queue_candidate_claims_despite_usage_gate(tmp_path, monkeypatch)
     gh = FakeGitHub([Candidate(42, "Forced", "u42")])
     sess = FakeSessions()
 
-    main._claim_new(c, deps(gh, sess), c.targets[0], DENY_ALL, False)
+    main._claim_new(c, deps(gh, sess), [c.targets[0]], DENY_ALL, False)
 
     assert gh.claimed == [42]
     assert [spawn[:3] for spawn in sess.spawned] == [
@@ -391,7 +391,7 @@ def test_forced_queue_candidate_keeps_choice_when_no_slot(tmp_path, monkeypatch)
     execution_overrides.save(c.state_dir, "portfolio_eval", 42, choice)
 
     main._claim_new(c, deps(FakeGitHub([Candidate(42, "Forced", "u42")])),
-                    c.targets[0], DENY_ALL, False)
+                    [c.targets[0]], DENY_ALL, False)
 
     assert execution_overrides.load(
         c.state_dir, "portfolio_eval", 42) == choice
