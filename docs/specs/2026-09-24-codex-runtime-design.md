@@ -306,7 +306,7 @@ def override_allowed(picks: Mapping[str, str], stage: str, model_id: str) -> boo
 Enforced at both places that accept an override:
 
 - `web/app.py` `intent_resume` and `_run_model`: 422 with
-  "stage <s> runs on <provider>; pick a <provider> model".
+  "stage <s> runs on <provider>; pick a model from <provider>".
 - `main._resume_model_is_configured`, the dispatcher's authoritative check
   when it applies a resume intent. A rejected intent is dropped with an
   event, as an unconfigured model is today.
