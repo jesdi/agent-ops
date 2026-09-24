@@ -285,3 +285,16 @@ def resolve(policy: ModelPolicy, track: str, stage: str, admitted: Admitted,
 
 def triage_entry(policy: ModelPolicy, admitted: Admitted) -> Entry | None:
     return next((e for e in policy.triage if admitted(e.model_id)), None)
+
+
+def second_model(policy: ModelPolicy, stage: str, entry: Entry,
+                 admitted: Admitted) -> Entry | None:
+    """The `review_second` entry a Claude review session may also run
+    (`codex exec` in review-diff), or None: set, a review stage on an
+    anthropic entry, and admitted by the gate itself. The caller passes the
+    real gate, never a bypass: an operator bypass forces the stage's own
+    pick, not a second subscription."""
+    if (stage != "review" or entry.provider != DEFAULT_PROVIDER
+            or not policy.review_second or not admitted(policy.review_second)):
+        return None
+    return parse_entry(policy.review_second, "review_second:")
