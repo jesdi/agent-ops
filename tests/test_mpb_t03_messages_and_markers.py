@@ -139,14 +139,13 @@ def test_sources_messages_and_mail_count_are_target_scoped(tmp_path):
 def test_wake_blocked_marker_is_scoped_to_its_own_target(tmp_path):
     c = two_target_cfg(tmp_path)
     c = dc_replace(c, capacity=1)
-    # factorial is full on its OWN active count (capacity is still
-    # per-target here) — this must not depend on box-wide accounting.
+    # The box is full (two active tasks, capacity 1), so factorial#12 stays
+    # woken and is marked — the marker must not leak to portfolio_eval#12.
     make_task_for(c, "factorial", issue=99, slot=0, park="")
     make_task_for(c, "factorial", issue=12, slot=NO_SLOT, park=PARK_WAKE)
     make_task_for(c, "portfolio_eval", issue=12, slot=0, park="")
 
-    factorial_target = next(t for t in c.targets if t.name == "factorial")
-    main._resume_woken(c, main_deps(), factorial_target, admit=ADMIT_ALL)
+    main._resume_woken(c, main_deps(), admit=ADMIT_ALL)
 
     src = Sources(
         webfakes.make_config(
