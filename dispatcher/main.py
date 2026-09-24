@@ -715,8 +715,8 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     than failing the task. The resume reads the transcript from the runtime's
     mounted home, so context survives ending the (zombie) session first —
     which we must do, or _launch would type the resume command INTO the
-    stopped session's input box
-    (same failure mode as spawning over a live session)."""
+    stopped session's input box (same failure mode as spawning over a live
+    session)."""
     entry = launch.entry
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
