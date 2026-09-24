@@ -752,6 +752,8 @@ def _grace_elapsed(cfg: Config, task: TaskState) -> bool:
     so no extra timer field is needed and the pass stays stateless. An
     unparseable timestamp never expires — failing closed keeps a corrupt state
     file from parking the whole queue."""
+    if cfg.spec_review_grace_minutes is None:
+        return False
     try:
         since = datetime.fromisoformat(task.updated_at)
     except (TypeError, ValueError):
