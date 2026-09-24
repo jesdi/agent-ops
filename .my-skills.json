@@ -72,20 +72,6 @@
       ]
     },
     "to-openspec": {
-      "version": "0.1.2",
-      "package": "0.0.22",
-      "agents": [
-        "claude"
-      ]
-    },
-    "red-team-data-model": {
-      "version": "0.1.1",
-      "package": "0.0.22",
-      "agents": [
-        "claude"
-      ]
-    },
-    "to-openspec": {
       "version": "0.1.0",
       "package": "0.0.20",
       "agents": [
