@@ -19,6 +19,7 @@ function admission(overrides: Partial<Admission> = {}): Admission {
       model: 'anthropic/claude-opus-5', provider: 'anthropic',
       admitted: false, note: 'over pace',
     },
+    any_provider: false,
     alternatives: [
       { model: 'anthropic/claude-sonnet-5', provider: 'anthropic',
         admitted: true, note: 'capacity available' },
