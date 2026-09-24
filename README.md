@@ -190,7 +190,7 @@ Requires Python ≥ 3.11.
 pytest
 ```
 
-Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills.
+Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills. Setup also installs a `post-checkout` git hook that installs the skills in any new worktree, including a plain `git worktree add` or one Claude Code creates.
 
 ### Agent skills
 
