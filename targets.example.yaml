@@ -96,7 +96,7 @@ targets:
     # npm/xdg cache volumes are mounted. Optional: empty/omitted skips provisioning.
     setup_cmd: "scripts/provision-worktree.sh"
     # Optional. Empty or omitted means no pre-PR e2e run; the review and
-    # implement sessions skip their e2e step and rely on PR checks instead.
+    # address-review sessions skip their e2e step and rely on PR checks instead.
     verify_cmd: "make e2e-remote"
     # Run by the session after every ticket and again in the review stage.
     # The repo decides what "green" means (tests, lint, the CRAP gate).
