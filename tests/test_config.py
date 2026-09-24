@@ -579,3 +579,35 @@ def test_referenced_providers_includes_target_policies(tmp_path):
     p.write_text(SAMPLE.replace("    status_in_progress_option_id: def456\n",
                                 "    status_in_progress_option_id: def456\n" + target_models))
     assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})
+
+
+CLAUDE_TRACKS_WITH_SECOND = """\
+models:
+  triage: [anthropic/m]
+  untracked: t
+  review_second: openai/gpt-5-codex
+  tracks:
+    t:
+      when: w
+      spec: [anthropic/m]
+      plan: [anthropic/m]
+      implement: [anthropic/m]
+      review: [anthropic/m]
+"""
+
+
+@pytest.mark.parametrize("where", ["global", "target"])
+def test_referenced_providers_includes_review_second(tmp_path, where):
+    """Claude-only tracks plus review_second: openai must still be fetched,
+    or the gate fails closed and the second model never fires."""
+    p = tmp_path / "targets.yaml"
+    if where == "global":
+        text = CLAUDE_TRACKS_WITH_SECOND + SAMPLE
+    else:
+        text = SAMPLE.replace(
+            "    status_in_progress_option_id: def456\n",
+            "    status_in_progress_option_id: def456\n"
+            + "".join("    " + line + "\n"
+                      for line in CLAUDE_TRACKS_WITH_SECOND.splitlines()))
+    p.write_text(text)
+    assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})
