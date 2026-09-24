@@ -325,17 +325,8 @@ def tick(cfg: Config, deps, config_path: str) -> None:
         deps.notifier.send("triage_report",
                            lines=["skipped — no capacity within 2 h"])
         return
-    # Deliberately global, unlike the rest of the dispatcher: _claim_new,
-    # _resume_woken and _spawn_feedback all filter by `t.target` first, so
-    # `capacity` is per-target there, while this counts every active task
-    # across every target against the one number. With a single target (the
-    # box's shape) the two agree. With N > 1 targets this is the stricter
-    # reading: steady-state active can reach N × capacity, so the sweep would
-    # never find a free slot and would expire every morning reporting
-    # "skipped — no capacity within 2 h" — a misdiagnosis to recognise rather
-    # than debug. Symmetrically, main's `capacity - 1` reduction while the
-    # sweep runs subtracts a unit per target. Both directions are safe (the
-    # sweep never over-commits the box); the model is deliberately left alone.
+    # Box-wide, like every spawn site in main (_box_free): `capacity` is one
+    # number across all targets.
     if len(active(load_all(cfg.state_dir))) >= cfg.capacity:
         return  # wait for a natural release; never preempt
     tab = herdr.Tab.ensure(herdr.SYSTEM_WORKSPACE, TAB_LABEL, _repo_dir(),
