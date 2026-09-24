@@ -10,6 +10,14 @@ sessions to a finished PR.
 The dedicated VPS that runs the dispatcher and all sessions. There is exactly one.
 _Avoid_: server, host, VPS (in prose — "box" everywhere)
 
+**Capacity**:
+How many sessions the box runs at once, shared by every target. Each pass
+spends it on work already in flight first, then claims new issues one unit at
+a time: each unit goes to the target with the fewest active tasks that still
+has a candidate and is under its `max_active`, ties to the one that claimed
+least recently.
+_Avoid_: slots per target (there are none; `max_active` is only a cap)
+
 **Session**:
 One `podman run … claude` invocation in a herdr tab, working a single stage of
 one task. Sessions are disposable; state lives in artifacts and claude-home.
@@ -55,7 +63,9 @@ _Avoid_: PR stage, verify stage
 **Gate**:
 The target repository's own green check (`gate_cmd` in targets.yaml —
 tests, lint, CRAP), run by the session after every ticket and in review.
-End to end (`verify_cmd`) is separate and runs once, off-box.
+End to end (`verify_cmd`) is separate and runs once, off-box. A target with
+no `verify_cmd` has no pre-PR e2e run; the PR's GitHub checks are the only
+e2e signal.
 _Avoid_: verification ladder
 
 **Loop cap**:

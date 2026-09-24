@@ -157,8 +157,27 @@ class StageSignal:
     track: str = ""   # spec stage only: the track for plan/implement/review
 
 
+# The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
+# state_dir. Written by dispatcher.main, read by web.sources.
+WAKE_BLOCKED_PREFIX = "wake-blocked-"
+
+
+def task_key(target: str, issue: int) -> str:
+    """`<target>-<issue>`: the (target, issue) key every per-task file in
+    state_dir is named by."""
+    return f"{target}-{issue}"
+
+
+def parse_task_key(name: str) -> tuple[str, int] | None:
+    """(target, issue) from a `<target>-<issue>` key, else None (including
+    a legacy bare `<issue>`). rpartition, since target names may themselves
+    contain '-'."""
+    target, _, issue = name.rpartition("-")
+    return (target, int(issue)) if target and issue.isdigit() else None
+
+
 def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"task-{target}-{issue}.json"
+    return Path(state_dir) / f"task-{task_key(target, issue)}.json"
 
 
 def _legacy_path(state_dir: str | Path, issue: int) -> Path:
@@ -175,7 +194,15 @@ def save(state_dir: str | Path, ts: TaskState) -> None:
         ts = replace(ts, terminal_at="")
     _write_task(_path(state_dir, ts.target, ts.issue), ts)
     # Lazy migration: the first save under the new key retires the legacy twin.
-    _legacy_path(state_dir, ts.issue).unlink(missing_ok=True)
+    _retire_legacy(state_dir, ts.target, ts.issue)
+
+
+def _retire_legacy(state_dir: str | Path, target: str, issue: int) -> None:
+    """Unlink task-{issue}.json only when it speaks for `target`; another
+    target's task with the same issue number must survive."""
+    legacy = _read(_legacy_path(state_dir, issue))
+    if legacy is not None and legacy.target == target:
+        _legacy_path(state_dir, issue).unlink(missing_ok=True)
 
 
 def _write_task(p: Path, ts: TaskState) -> None:
@@ -256,9 +283,7 @@ def load_all(state_dir: str | Path) -> list[TaskState]:
 
 def delete(state_dir: str | Path, target: str, issue: int) -> None:
     _path(state_dir, target, issue).unlink(missing_ok=True)
-    legacy = _read(_legacy_path(state_dir, issue))
-    if legacy is not None and legacy.target == target:
-        _legacy_path(state_dir, issue).unlink(missing_ok=True)
+    _retire_legacy(state_dir, target, issue)
 
 
 def max_slots(capacity: int) -> int:
@@ -327,7 +352,7 @@ def parked(tasks: list[TaskState]) -> list[TaskState]:
 
 
 def _waiting_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"waiting-{target}-{issue}"
+    return Path(state_dir) / f"waiting-{task_key(target, issue)}"
 
 
 def _legacy_waiting_path(state_dir: str | Path, issue: int) -> Path:

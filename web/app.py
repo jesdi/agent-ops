@@ -199,7 +199,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             tasks, capacity=cfg.capacity,
             models={(t.target, t.issue): _model_for(t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT), queues=[],
-            undelivered={(t.target, t.issue): mail.get(t.issue, 0)
+            undelivered={(t.target, t.issue): mail.get((t.target, t.issue), 0)
                          for t in tasks},
             wake_blocked=sources.wake_blocked_issues())
     app.include_router(artifacts_router(sources, _find_task))
@@ -224,12 +224,6 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             stale_any = stale_any or stale
             queues.append((target.name, rows))
             queue_targets.append((target, rows))
-        # undelivered_counts() is still issue-keyed — dispatcher/messages.py
-        # is a deferred rekey, tracked as a known cross-target gap (a task's
-        # message queue can still cross with a same-numbered issue on
-        # another target). Paired here with each task's OWN target rather
-        # than left bare, so at least this dict's shape matches every other
-        # per-card lookup on the board.
         mail = sources.undelivered_counts()
         return read_model.build_board(
             tasks, capacity=cfg.capacity,
@@ -242,14 +236,16 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             queues=queues, queue_stale=stale_any,
             # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,
-            undelivered={(t.target, t.issue): mail.get(t.issue, 0)
+            undelivered={(t.target, t.issue): mail.get((t.target, t.issue), 0)
                         for t in tasks},
             wake_blocked=sources.wake_blocked_issues(),
             admissions={(t.target, t.issue): admission
                         for t in tasks
                         if (admission := _task_admission(t, usages, now))},
             candidate_admissions=_candidate_admissions(
-                queue_targets, usages, now))
+                queue_targets, usages, now),
+            max_active={t.name: t.max_active for t in cfg.targets},
+            last_claimed=sources.last_claims())
 
     @app.get("/api/task/{target}/{issue}",
              response_model=read_model.TaskDetail)
@@ -273,7 +269,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             session_alive=sources.session_alive(target, issue),
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             now=now,
-            messages=sources.messages(issue),
+            messages=sources.messages(target, issue),
             pending_sends=pending,
             wake_blocked=(target, issue) in sources.wake_blocked_issues(),
             admission=_task_admission(t, usages, now),

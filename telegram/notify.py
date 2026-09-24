@@ -18,13 +18,15 @@ def _http_post(url: str, payload: dict) -> dict:
 
 
 class Notifier:
-    def __init__(self, dry_run: bool = False, console_url: str = ""):
+    def __init__(self, dry_run: bool = False, console_url: str = "",
+                 multi_target: bool = False):
         self.dry_run = dry_run
         self.console_url = console_url
+        self.multi_target = multi_target
 
     def send(self, template: str, **ctx) -> int:
         ctx.setdefault("console", self.console_url)
-        text = render(template, **ctx)
+        text = render(template, multi_target=self.multi_target, **ctx)
         if self.dry_run:
             print(f"[dry-run] telegram {template}: {text}")
             return 0

@@ -36,3 +36,4 @@ frontend/coverage/
 .worktrees/
 .pnpm-store/
 .scratch/
+.agent/

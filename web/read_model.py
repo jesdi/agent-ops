@@ -10,6 +10,7 @@ from typing import Annotated, Literal, Mapping
 from pydantic import BaseModel, Field
 
 from dispatcher import messages as msgq
+from dispatcher.claims import box_free, pick_target
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
                               verdict_note)
@@ -330,7 +331,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 undelivered: dict[tuple[str, int], int] | None = None,
                 wake_blocked: set[tuple[str, int]] | None = None,
                 admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
-                candidate_admissions: dict[tuple[str, int], TaskAdmissionView] | None = None
+                candidate_admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
+                max_active: Mapping[str, int | None],
+                last_claimed: Mapping[str, str],
                 ) -> BoardView:
     # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
@@ -355,7 +358,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                               capacity=capacity, gate=gate,
                               queues=queues,
                               claims_paused=claims_paused,
-                              triage_running=triage_running))
+                              triage_running=triage_running,
+                              max_active=max_active,
+                              last_claimed=last_claimed))
 
 
 class TaskDetail(BaseModel):
@@ -667,7 +672,7 @@ class NextClaimView(BaseModel):
 
 
 def _is_candidate(r: dict) -> bool:
-    """Mirror of GitHubClient.candidates: what _claim_new would consume."""
+    """Mirror of GitHubClient.candidates: what the claim round would consume."""
     return (r.get("status") == "Ready" and not r.get("blocked")
             and "auto" in (r.get("labels") or []))
 
@@ -689,16 +694,36 @@ def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
     return (finished + timedelta(minutes=interval)).isoformat() if fresh else None
 
 
+def _queue_heads(queues: list[tuple[str, list[dict]]],
+                 tasks: list[TaskState]) -> dict[str, int]:
+    """target -> its front-of-queue candidate issue, over rows not already
+    known as tasks. Key on (target, issue) — same rationale as build_board:
+    issue numbers are per-repo so alpha#73 must not shadow beta#73 in the
+    claim forecast."""
+    known = {(t.target, t.issue) for t in tasks}
+    heads = {}
+    for name, rows in queues:
+        mine = [r["number"] for r in rows
+                if _is_candidate(r) and (name, r["number"]) not in known]
+        if mine:
+            heads[name] = mine[0]
+    return heads
+
+
 def next_claim(heartbeat: dict | None, *, now: datetime,
                tasks: list[TaskState], capacity: int,
                gate: GateView,
                queues: list[tuple[str, list[dict]]],
                claims_paused: bool = False,
-               triage_running: bool = False) -> NextClaimView:
-    """A forecast of what _claim_new consumes next, from data already on the
-    board request. It is a PARTIAL mirror, deliberately: the gates it models
-    are the ones readable from local state (heartbeat, usage, capacity, the
-    triage pause, the cached rank rows).
+               triage_running: bool = False,
+               max_active: Mapping[str, int | None],
+               last_claimed: Mapping[str, str]) -> NextClaimView:
+    """A forecast of what the claim round (dispatcher main._claim_new)
+    consumes next, from data already on the board request. The target comes
+    from the same claims.pick_target the dispatcher uses, over box-wide free
+    capacity. It is a PARTIAL mirror, deliberately: the gates it models are
+    the ones readable from local state (heartbeat, usage, capacity,
+    max_active, the triage pause, the cached rank rows).
 
     The usage gate here is the policy default model's verdict, while the
     dispatcher gates each candidate on its own spec model: a candidate a rule
@@ -710,7 +735,7 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
         claimable. Resolving it needs a live `gh issue view` per record, which
         does not belong on a route polled once per second; the record is
         visible on /failures instead.
-      * slot exhaustion (_claim_new breaks when allocate_slot returns None)
+      * slot exhaustion (the round stops when allocate_slot returns None)
         and a create_workspace failure — only knowable at claim time.
       * queue movement since the rank rows were cached (rank_rows has a TTL,
         so the dispatcher's own pass may see a different head).
@@ -726,27 +751,17 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
         return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
                              minutes_to_reset=gate.minutes_to_reset,
                              blocked_by=gate.note)
-    # Mirror the dispatcher pass: capacity is reduced by 1 while triage runs,
-    # floored at 0 so a capacity=1 system does not claim during a triage sweep.
-    eff_capacity = max(0, capacity - 1) if triage_running else capacity
-    # Key on (target, issue) — same rationale as build_board: issue numbers
-    # are per-repo so alpha#73 must not shadow beta#73 in the claim forecast.
-    known = {(t.target, t.issue) for t in tasks}
-    any_candidate = False
-    for name, rows in queues:
-        heads = [r for r in rows
-                 if _is_candidate(r) and (name, r["number"]) not in known]
-        if not heads:
-            continue
-        any_candidate = True
-        mine = [t for t in tasks if t.target == name]
-        if eff_capacity - len(active(mine)) > 0:
-            return NextClaimView(verdict="will-claim", next_pass_eta=eta,
-                                 next_issue=heads[0]["number"],
-                                 next_target=name)
-    return NextClaimView(
-        verdict="capacity-full" if any_candidate else "no-candidates",
-        next_pass_eta=eta)
+    heads = _queue_heads(queues, tasks)
+    if not heads:
+        return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
+    running = active(tasks)
+    counts = {n: sum(t.target == n for t in running) for n in heads}
+    name = (pick_target(list(heads), counts, last_claimed, max_active)
+            if box_free(capacity, tasks, triage_running) > 0 else None)
+    if name is None:
+        return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
+    return NextClaimView(verdict="will-claim", next_pass_eta=eta,
+                         next_issue=heads[name], next_target=name)
 
 
 def stage_timeline(events: list[dict], target: str, issue: int, *,

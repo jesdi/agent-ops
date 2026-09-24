@@ -316,20 +316,20 @@ def test_queued_messages_delivered_only_after_successful_start(tmp_path, monkeyp
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "implement", "status": "done", "note": "ticket 1 complete",
     }))
-    messages.append(config.state_dir, 42, "use the staging URL", "jesdi@github")
+    messages.append(config.state_dir, "portfolio_eval", 42, "use the staging URL", "jesdi@github")
     sessions = FakeSessions(alive={42})
     dependencies = deps(sess=sessions)
 
     # Denied pass: message still undelivered
     patch_usage(monkeypatch, util=0.99)
     main.run_pass(config, dependencies)
-    assert len(messages.undelivered(config.state_dir, 42)) == 1
-    assert messages.undelivered(config.state_dir, 42)[0].text == "use the staging URL"
+    assert len(messages.undelivered(config.state_dir, "portfolio_eval", 42)) == 1
+    assert messages.undelivered(config.state_dir, "portfolio_eval", 42)[0].text == "use the staging URL"
 
     # Admitted pass: message delivered exactly once
     patch_usage(monkeypatch, util=0.2)
     main.run_pass(config, dependencies)
-    assert messages.undelivered(config.state_dir, 42) == []
-    all_msgs = messages.all_messages(config.state_dir, 42)
+    assert messages.undelivered(config.state_dir, "portfolio_eval", 42) == []
+    all_msgs = messages.all_messages(config.state_dir, "portfolio_eval", 42)
     assert len(all_msgs) == 1
     assert all_msgs[0].delivered_at != ""

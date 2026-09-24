@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
-from dispatcher import (eventlog, execution_overrides, messages as msgq,
+from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
                         queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import fetch_all
@@ -175,11 +175,8 @@ class Sources:
         root = self.state_dir / "quarantine"
         entries = []
         for p in sorted(root.glob("*.json")) if root.exists() else []:
-            target, _, raw = p.stem.rpartition("-")
-            try:
-                keyed_issue: int | None = int(raw)
-            except ValueError:
-                keyed_issue = None
+            parsed = state.parse_task_key(p.stem)
+            target, keyed_issue = parsed if parsed else ("", None)
             try:
                 d = json.loads(p.read_text())
             except (OSError, ValueError):
@@ -261,6 +258,14 @@ class Sources:
         except (OSError, ValueError):
             return []
 
+    def last_claims(self) -> dict[str, str]:
+        # Same degrade as events_tail: an unreadable log only loses the
+        # forecast's tie-break, never /api/board.
+        try:
+            return claims.last_claims(self._cfg.state_dir)
+        except (OSError, ValueError):
+            return {}
+
     def pane_tail(self, target: str, issue: int) -> str:
         try:
             if self._sessions.is_alive(target, issue):
@@ -336,7 +341,7 @@ class Sources:
 
         board = digest(
             list(root.glob("task-*.json")) + list(root.glob("waiting-*"))
-            + list(root.glob("wake-blocked-*"))
+            + list(root.glob(f"{state.WAKE_BLOCKED_PREFIX}*"))
             + list((root / execution_overrides.DIR).glob("*.json"))
             + list((root / "messages").glob("*.jsonl"))
             + list((root / "artifacts").glob("*/index.json"))
@@ -359,34 +364,23 @@ class Sources:
                            "usage": usage, "failures": failures,
                            "history": history}, sort_keys=True)
 
-    def messages(self, issue: int) -> list:
-        return msgq.all_messages(self._cfg.state_dir, issue)
+    def messages(self, target: str, issue: int) -> list:
+        return msgq.all_messages(self._cfg.state_dir, target, issue)
 
-    def undelivered_counts(self) -> dict[int, int]:
+    def undelivered_counts(self) -> dict[tuple[str, int], int]:
         return msgq.undelivered_counts(self._cfg.state_dir)
 
     def wake_blocked_issues(self) -> set[tuple[str, int]]:
         """(target, issue) pairs currently denied a wake for want of a free
-        slot/capacity.
-
-        The on-disk marker (wake-blocked-<issue>) predates the (target,
-        issue) rekey and is still bare-issue-keyed (dispatcher/main.py) — a
-        known, tracked gap (deferred rekey of this one marker format). A
-        marker therefore cannot say WHICH target it belongs to, so it is
-        read here as blocking that issue number on every configured target,
-        matching the marker's pre-existing any-target semantics rather than
-        inventing a new file layout for it.
-        """
-        issues: set[int] = set()
-        for p in self.state_dir.glob("wake-blocked-*"):
-            try:
-                issues.add(int(p.name.removeprefix("wake-blocked-")))
-            except ValueError:
-                continue
-        if not issues:
-            return set()
-        return {(target.name, issue)
-                for target in self._cfg.targets for issue in issues}
+        slot/capacity, parsed from wake-blocked-<target>-<issue> markers.
+        A legacy issue-only marker names no target and is skipped; the
+        dispatcher migrates or drops those at pass start."""
+        out: set[tuple[str, int]] = set()
+        for p in self.state_dir.glob(f"{state.WAKE_BLOCKED_PREFIX}*"):
+            key = state.parse_task_key(p.name.removeprefix(state.WAKE_BLOCKED_PREFIX))
+            if key is not None:
+                out.add(key)
+        return out
 
     # -- writes ----------------------------------------------------------
 

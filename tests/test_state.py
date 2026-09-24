@@ -466,6 +466,16 @@ def test_legacy_state_file_read_and_upgraded_on_save(tmp_path):
     assert (tmp_path / "task-portfolio_eval-7.json").exists()
 
 
+def test_save_keeps_another_targets_legacy_file(tmp_path):
+    import json
+    from dispatcher import state
+    d = state.asdict(_ts(7, "alpha")); d["stage"] = "spec"
+    (tmp_path / "task-7.json").write_text(json.dumps(d))
+    state.save(tmp_path, _ts(7, "beta"))
+    assert state.load(tmp_path, "alpha", 7) is not None
+    assert state.load(tmp_path, "beta", 7) is not None
+
+
 def test_delete_removes_both_stylings(tmp_path):
     import json
     from dispatcher import state

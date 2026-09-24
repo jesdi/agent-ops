@@ -8,8 +8,7 @@ message is appended below). You have no memory of earlier sessions and
 nobody is watching this chat.
 
 ## Signals (write `.agent/stage.json`, then do what the line says)
-- `{"stage": "address-review", "status": "awaiting-ci", "run_id": <id>}` then STOP.
-- `{"stage": "address-review", "status": "done", "note": "<one line>"}` then exit.
+${e2e_signal}- `{"stage": "address-review", "status": "done", "note": "<one line>"}` then exit.
 - `{"stage": "address-review", "status": "blocked", "note": "<specific>"}` then stop.
 
 ## 1. Find out what needs doing
@@ -42,10 +41,7 @@ the code.
 Run `$gate_cmd`; it must pass. After a rebase rerun it, then push with the
 only sanctioned forced push, alone on its line:
     git push --force-with-lease origin $branch
-Otherwise a plain push. Then run `$verify_cmd`, signal `awaiting-ci` with
-the run id it prints, and stop; on resume with a failing conclusion, fix
-and repeat this step. The dispatcher caps these rounds and parks the task
-past the cap.
+Otherwise a plain push. $e2e_step
 
 ## 4. Report
 `gh pr comment $pr_number --repo $repo --body "..."` summarizing what changed

@@ -31,39 +31,40 @@ _RELOGIN = ("ssh -t agent@{host} 'CLAUDE_CONFIG_DIR=$HOME/agent-ops-state/"
             "claude-home $HOME/.local/bin/claude' then /login")
 
 _TEMPLATES = {
-    "awaiting_spec_review": "📝 #{issue} {title} — spec ready for review.\n{url}\nsession task-{target}-{issue} · {note}\n" + _ATTACH,
-    "stage_blocked": "🚧 #{issue} {title} — stage blocked: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "pr_opened": "✅ #{issue} {title} — PR opened: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "artifact_failed": "❌ #{issue} {title} — artifact sanity check failed: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "plan_retry": "🔁 #{issue} {title} — ticket set failed its format check; resuming the session to fix it: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "session_crashed": "💀 #{issue} {title} — session died mid-stage. Worktree preserved for autopsy.\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "awaiting_spec_review": "📝 {ref} {title} — spec ready for review.\n{url}\nsession task-{target}-{issue} · {note}\n" + _ATTACH,
+    "stage_blocked": "🚧 {ref} {title} — stage blocked: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "pr_opened": "✅ {ref} {title} — PR opened: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "artifact_failed": "❌ {ref} {title} — artifact sanity check failed: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "plan_retry": "🔁 {ref} {title} — ticket set failed its format check; resuming the session to fix it: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "session_crashed": "💀 {ref} {title} — session died mid-stage. Worktree preserved for autopsy.\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     # Box-wide events (issue=0, no single owning task) — never had a real
     # session to attach to, so unlike every per-task template above these
-    # carry no session/attach line at all.
+    # carry no session/attach line at all. They stay on a bare "#{issue}"
+    # regardless of multi_target: there is no single project to name.
     "budget_stall": "⏳ #{issue} {title} — usage gate closed; resumes when headroom returns. {note}\n{url}",
     "budget_resume": "▶️ #{issue} {title} — usage gate open again; resuming. {note}\n{url}",
-    "implement_started": "🛠 #{issue} {title} — implement started. Plan: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "parked_question": "❓ #{issue} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
-    "spec_parked": ("🌙 #{issue} {title} — spec ready and parked for review. "
+    "implement_started": "🛠 {ref} {title} — implement started. Plan: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "parked_question": "❓ {ref} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
+    "spec_parked": ("🌙 {ref} {title} — spec ready and parked for review. "
                     "Session ended; capacity and slot released.\n{note}\n{url}\n"
                     "Reply to THIS message with review feedback (or `ok` to "
                     "continue to plan), or /attach {issue}.\n" + _ATTACH),
-    "needs_relogin": ("🔐 #{issue} {title} — Claude Code needs re-login. "
+    "needs_relogin": ("🔐 {ref} {title} — Claude Code needs re-login. "
                       "Session task-{target}-{issue} is parked but still LIVE.\n"
                       "Authorize here:\n{login_url}\n\n{note}\n{url}\n"
                       "Shared claude-home: one re-login likely fixes every "
                       "session on this box.\n"
                       "Reply to THIS message with the authorization code.\n"
                       + _ATTACH),
-    "resumed_for_attach": "🎹 #{issue} {title} — session resumed and holding for you.\n{url}\n" + _ATTACH,
-    "task_failed": "🔥 #{issue} {title} — {note}\n{url}",
-    "review_started": "🔍 #{issue} {title} — every ticket landed; review started. {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "last_round": "⚠️ #{issue} {title} — {note}: last round before this task parks.\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "pr_attention": "🔴 #{issue} {title} — PR needs attention ({note}); queued for rework.\n{url}",
-    "pr_feedback": "💬 #{issue} {title} — review feedback on the PR; queued for rework.\n{note}\n{url}",
-    "pr_updated": "🔁 #{issue} {title} — feedback addressed, PR updated: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "task_done": "🎉 #{issue} {title} — PR merged; task done. {note}\n{url}",
-    "pr_closed": "🚫 #{issue} {title} — PR closed without merge: {note}\n{url}",
+    "resumed_for_attach": "🎹 {ref} {title} — session resumed and holding for you.\n{url}\n" + _ATTACH,
+    "task_failed": "🔥 {ref} {title} — {note}\n{url}",
+    "review_started": "🔍 {ref} {title} — every ticket landed; review started. {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "last_round": "⚠️ {ref} {title} — {note}: last round before this task parks.\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "pr_attention": "🔴 {ref} {title} — PR needs attention ({note}); queued for rework.\n{url}",
+    "pr_feedback": "💬 {ref} {title} — review feedback on the PR; queued for rework.\n{note}\n{url}",
+    "pr_updated": "🔁 {ref} {title} — feedback addressed, PR updated: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "task_done": "🎉 {ref} {title} — PR merged; task done. {note}\n{url}",
+    "pr_closed": "🚫 {ref} {title} — PR closed without merge: {note}\n{url}",
     "unit_failed": ("🚨 {unit} FAILED on {host}. If this is the keepalive, "
                     "the Claude OAuth token is dying — re-login now:\n"
                     + _RELOGIN),
@@ -73,7 +74,13 @@ _TEMPLATES = {
 }
 
 
-def render(template: str, **ctx) -> str:
+def task_ref(target: str, issue: int, multi_target: bool) -> str:
+    """How a message names a task: `target#issue` once the box runs more
+    than one project, a bare `#issue` otherwise."""
+    return f"{target}#{issue}" if multi_target and target else f"#{issue}"
+
+
+def render(template: str, multi_target: bool = False, **ctx) -> str:
     if template == "daily_digest":
         return "📋 agent-ops daily digest\n" + "\n".join(ctx["lines"])
     if template == "status":
@@ -83,6 +90,9 @@ def render(template: str, **ctx) -> str:
     if template == "triage_report":
         return _triage_report(list(ctx["lines"]),
                               ctx.get("triage_dir") or "<state_dir>/triage/")
+    if "issue" in ctx:
+        ctx = {**ctx, "ref": task_ref(ctx.get("target", ""), ctx["issue"],
+                                      multi_target)}
     text = _TEMPLATES[template].format(**ctx)
     if template in ("awaiting_spec_review", "spec_parked", "parked_question") and ctx.get("console"):
         text += (f"\nread & approve: {ctx['console']}/task/"

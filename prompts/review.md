@@ -9,8 +9,7 @@ them. Nobody is watching this chat.
 ## Signals (write `.agent/stage.json`, then do what the line says)
 - Before fix round N of the review loop (step 2):
   `{"stage": "review", "status": "working", "loop": "review", "round": N}`.
-- `{"stage": "review", "status": "awaiting-ci", "run_id": <id>}` then STOP (step 4).
-- `{"stage": "review", "status": "done", "note": "<PR URL>", "artifact": "<PR URL>"}` then exit.
+${e2e_signal}- `{"stage": "review", "status": "done", "note": "<PR URL>", "artifact": "<PR URL>"}` then exit.
 - `{"stage": "review", "status": "blocked", "note": "<specific>"}` then stop.
 
 ## 1. Read
@@ -39,16 +38,11 @@ shape and alone on its line:
     git push --force-with-lease origin $branch
 
 ## 4. End to end
-Run `$verify_cmd` — it dispatches the repository's e2e workflow for $branch
-and prints the run id. Signal `awaiting-ci` with that id and stop; you are
-resumed with "E2E run <id> concluded: <conclusion>". On a failure fetch the
-logs (`gh run view <id> --log-failed`), fix, commit, push (a plain push, or
-the lease push above if you rebased again), and repeat this step. The
-dispatcher counts these rounds and parks the task past the cap.
+$e2e_step
 
 ## 5. Open the PR
 `gh pr create --repo $repo --head $branch` with a body holding, in this
 order: `Closes #$issue_number`; a summary; **Findings** — each review
 finding and its fix; **Rounds** — review, gate and e2e rounds used;
-**Verification** — the gate output summary and the green e2e run URL.
+**Verification** — $e2e_verification.
 Then signal `done` with the PR URL and exit.

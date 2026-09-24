@@ -12,11 +12,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher import containers, herdr, triage_apply, triage_prefetch
+from dispatcher import claims, containers, herdr, triage_apply, triage_prefetch
 from dispatcher.config import Config, policy_for
 from dispatcher.models import Entry, triage_entry, tracks_text
 from dispatcher.prompts import render_triage_prompt
-from dispatcher.state import active, load_all
+from dispatcher.state import load_all
 from dispatcher.usage import admits, verdict_note
 from dispatcher.usage_providers import fetch_all
 
@@ -325,18 +325,9 @@ def tick(cfg: Config, deps, config_path: str) -> None:
         deps.notifier.send("triage_report",
                            lines=["skipped — no capacity within 2 h"])
         return
-    # Deliberately global, unlike the rest of the dispatcher: _claim_new,
-    # _resume_woken and _spawn_feedback all filter by `t.target` first, so
-    # `capacity` is per-target there, while this counts every active task
-    # across every target against the one number. With a single target (the
-    # box's shape) the two agree. With N > 1 targets this is the stricter
-    # reading: steady-state active can reach N × capacity, so the sweep would
-    # never find a free slot and would expire every morning reporting
-    # "skipped — no capacity within 2 h" — a misdiagnosis to recognise rather
-    # than debug. Symmetrically, main's `capacity - 1` reduction while the
-    # sweep runs subtracts a unit per target. Both directions are safe (the
-    # sweep never over-commits the box); the model is deliberately left alone.
-    if len(active(load_all(cfg.state_dir))) >= cfg.capacity:
+    # Box-wide, like every spawn site in main. No sweep is running here.
+    if claims.box_free(cfg.capacity, load_all(cfg.state_dir),
+                       triage_running=False) <= 0:
         return  # wait for a natural release; never preempt
     tab = herdr.Tab.ensure(herdr.SYSTEM_WORKSPACE, TAB_LABEL, _repo_dir(),
                            env=_launch_env())

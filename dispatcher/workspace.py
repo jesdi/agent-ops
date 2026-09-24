@@ -224,9 +224,10 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
         _sh(["git", "worktree", "add", "-b", branch, wt, "origin/main"],
             cwd=target.clone_path)
         _mark_provisioned(wt)
-    _sh(containers.setup_cmd(f"task-{target.name}-{issue}-setup", wt,
-                             target.setup_cmd),
-        cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
+    if target.setup_cmd:
+        _sh(containers.setup_cmd(f"task-{target.name}-{issue}-setup", wt,
+                                 target.setup_cmd),
+            cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
 
     agent_dir = Path(wt) / ".agent"
     agent_dir.mkdir(exist_ok=True)

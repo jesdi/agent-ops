@@ -1,4 +1,4 @@
-capacity: 2
+capacity: 2   # box-wide: shared by every target, in-flight work first, then claims fewest-active-first
 state_dir: /home/agent/agent-ops-state
 # pass_interval_minutes: 10   # must match OnUnitActiveSec in the systemd timer
 # Optional: repo where provisioning/pass-crash failure issues are filed.
@@ -32,6 +32,7 @@ stall_after_seconds: 600
 # rest of the Ready queue overnight. Reply to the Telegram park message (or
 # resume from the web console) to pick the review back up. 0 = park on the
 # next pass; attaching holds the task — it will not park while you are attached.
+# null = never auto-park (wait for the operator no matter how long it takes).
 spec_review_grace_minutes: 15
 # Days a merged task's Done card stays on the console before flush.
 done_retention_days: 7
@@ -91,12 +92,15 @@ targets:
     rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
     # Runs INSIDE a one-shot session-image container (podman run --rm),
     # cwd = the freshly created worktree, before the first session spawns.
-    # Must be idempotent. The worktree, the main clone, and persistent
-    # npm/xdg cache volumes are mounted; nothing else is.
+    # Must be idempotent; only the worktree, main clone, and persistent
+    # npm/xdg cache volumes are mounted. Optional: empty/omitted skips provisioning.
     setup_cmd: "scripts/provision-worktree.sh"
+    # Optional. Empty or omitted means no pre-PR e2e run; the review and
+    # address-review sessions skip their e2e step and rely on PR checks instead.
     verify_cmd: "make e2e-remote"
     # Run by the session after every ticket and again in the review stage.
     # The repo decides what "green" means (tests, lint, the CRAP gate).
+    # Required — a target with no gate_cmd fails config load.
     gate_cmd: "make gate"
     project_number: 1
     project_owner: example
@@ -105,3 +109,7 @@ targets:
     status_in_progress_option_id: def456
     status_done_option_id: ghi789   # single-select option id of the board's Done status
     boost_field_id: REPLACE_WITH_PROJECT_ID
+    # Optional per-target cap on active tasks, even when box capacity is
+    # free. It limits new claims only; woken work and PR feedback still run.
+    # Must be between 1 and capacity; omit for no target-specific cap.
+    # max_active: 1
