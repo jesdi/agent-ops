@@ -377,68 +377,93 @@ def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
     deps.notifier.send("status", lines=plan.reason.split("\n"))
 
 
+# A failing gh or rank call answers in chat instead of crashing the pass.
+_COMMAND_ERRORS = (subprocess.CalledProcessError, OSError, LookupError,
+                   ValueError)
+
+
+def _reply_parked(tasks: list[TaskState]) -> list[TaskState]:
+    # Both parks answer the same way — a reply is text for the session. They
+    # stay distinct kinds so /status and the board can say "needs input
+    # mid-stage" vs "spec ready, review at leisure".
+    return [t for t in tasks if t.park in (PARK_HUMAN, PARK_REVIEW)]
+
+
 def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
     if dry_run:
         return
     tasks = load_all(cfg.state_dir)
-    # Both parks answer the same way — a reply is text for the session. They
-    # stay distinct kinds so /status and the board can say "needs input
-    # mid-stage" vs "spec ready, review at leisure".
-    reply_parked = [t for t in tasks if t.park in (PARK_HUMAN, PARK_REVIEW)]
-    login_parked = [t for t in tasks if t.park == PARK_LOGIN]
     for ev in inbound.fetch_events(cfg.state_dir):
-        if isinstance(ev, Command) and ev.name == "status":
-            deps.notifier.send("status", lines=_status_lines(cfg))
-        elif isinstance(ev, Command) and ev.name == "attach":
-            match = [t for t in tasks if t.issue == ev.issue and t.park]
-            if len(match) == 1:
-                _wake(cfg, match[0], "", hold=True)
-            elif match:
-                deps.notifier.send("status", lines=(
-                    [f"#{ev.issue} is ambiguous; parked tasks with that number:"]
-                    + [_ref(cfg, t) for t in match]))
-            else:
-                deps.notifier.send("status",
-                                   lines=[f"#{ev.issue} is not parked"])
-        elif isinstance(ev, Command) and ev.name == "queue":
-            try:
-                deps.notifier.send("queue", lines=_queue_lines(cfg, deps))
-            except (subprocess.CalledProcessError, OSError,
-                    LookupError, ValueError) as exc:
-                deps.notifier.send("status", lines=[f"/queue failed: {exc}"])
-        elif isinstance(ev, Command) and ev.name == "boost":
-            try:
-                _handle_boost(cfg, deps, ev.issue, ev.amount)
-            except (subprocess.CalledProcessError, OSError,
-                    LookupError, ValueError) as exc:
-                deps.notifier.send("status",
-                                   lines=[f"#{ev.issue} boost failed: {exc}"])
-        elif isinstance(ev, Command) and ev.name == "next":
-            try:
-                _handle_next(cfg, deps, ev.issue, ev.force)
-            except (subprocess.CalledProcessError, OSError,
-                    LookupError, ValueError) as exc:
-                deps.notifier.send("status",
-                                   lines=[f"#{ev.issue} next failed: {exc}"])
+        if isinstance(ev, Command):
+            _handle_command(cfg, deps, tasks, ev)
         elif isinstance(ev, Reply):
-            login = [t for t in login_parked
-                     if t.park_msg_id == ev.reply_to_msg_id]
-            match = [t for t in reply_parked
-                     if t.park_msg_id == ev.reply_to_msg_id]
-            if login:
-                _inject_login_code(cfg, deps, login[0], ev.text)
-            elif match:
-                _wake(cfg, match[0], ev.text)
-            else:
-                deps.notifier.send("status",
-                                   lines=["(reply didn't match any parked task)"])
+            _handle_reply(cfg, deps, tasks, ev)
         elif isinstance(ev, Plain):
-            if len(reply_parked) == 1:
-                _wake(cfg, reply_parked[0], ev.text)
-            else:
-                deps.notifier.send("status", lines=(
-                    ["Which task? Reply directly to its parked message:"]
-                    + [f"{_ref(cfg, t)} {t.title}" for t in reply_parked]))
+            _handle_plain(cfg, deps, _reply_parked(tasks), ev.text)
+
+
+def _handle_command(cfg: Config, deps: Deps, tasks: list[TaskState],
+                    ev: Command) -> None:
+    if ev.name == "status":
+        deps.notifier.send("status", lines=_status_lines(cfg))
+    elif ev.name == "attach":
+        _handle_attach(cfg, deps, tasks, ev.issue)
+    else:
+        _handle_board_command(cfg, deps, ev)
+
+
+def _handle_attach(cfg: Config, deps: Deps, tasks: list[TaskState],
+                   issue: int) -> None:
+    """A bare number names one task only while no other target has the same
+    number parked; when two do, wake nothing and list them."""
+    match = [t for t in tasks if t.issue == issue and t.park]
+    if len(match) == 1:
+        _wake(cfg, match[0], "", hold=True)
+    elif match:
+        deps.notifier.send("status", lines=(
+            [f"#{issue} is ambiguous; parked tasks with that number:"]
+            + [_ref(cfg, t) for t in match]))
+    else:
+        deps.notifier.send("status", lines=[f"#{issue} is not parked"])
+
+
+def _handle_board_command(cfg: Config, deps: Deps, ev: Command) -> None:
+    """/queue, /boost and /next."""
+    try:
+        if ev.name == "queue":
+            deps.notifier.send("queue", lines=_queue_lines(cfg, deps))
+        elif ev.name == "boost":
+            _handle_boost(cfg, deps, ev.issue, ev.amount)
+        elif ev.name == "next":
+            _handle_next(cfg, deps, ev.issue, ev.force)
+    except _COMMAND_ERRORS as exc:
+        what = "/queue" if ev.name == "queue" else f"#{ev.issue} {ev.name}"
+        deps.notifier.send("status", lines=[f"{what} failed: {exc}"])
+
+
+def _handle_reply(cfg: Config, deps: Deps, tasks: list[TaskState],
+                  ev: Reply) -> None:
+    login = [t for t in tasks
+             if t.park == PARK_LOGIN and t.park_msg_id == ev.reply_to_msg_id]
+    match = [t for t in _reply_parked(tasks)
+             if t.park_msg_id == ev.reply_to_msg_id]
+    if login:
+        _inject_login_code(cfg, deps, login[0], ev.text)
+    elif match:
+        _wake(cfg, match[0], ev.text)
+    else:
+        deps.notifier.send("status",
+                           lines=["(reply didn't match any parked task)"])
+
+
+def _handle_plain(cfg: Config, deps: Deps, reply_parked: list[TaskState],
+                  text: str) -> None:
+    if len(reply_parked) == 1:
+        _wake(cfg, reply_parked[0], text)
+    else:
+        deps.notifier.send("status", lines=(
+            ["Which task? Reply directly to its parked message:"]
+            + [f"{_ref(cfg, t)} {t.title}" for t in reply_parked]))
 
 
 def _notify(deps: Deps, target: Target, task: TaskState, template: str,

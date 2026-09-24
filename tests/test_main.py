@@ -1442,6 +1442,17 @@ def test_attach_with_an_ambiguous_issue_number_wakes_nothing(tmp_path, monkeypat
     assert sorted(lines[1:]) == ["factorial#7", "portfolio_eval#7"]
 
 
+def test_attach_on_an_unparked_issue_says_so(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42)
+    patch_events(monkeypatch, [Command(name="attach", issue=42)])
+    d = deps(sess=FakeSessions(alive={42}))
+    main.run_pass(c, d)
+    assert ("status", {"lines": ["#42 is not parked"]}) in d.notifier.calls
+
+
 def test_attach_command_queues_no_message(tmp_path, monkeypatch):
     """/attach is a wake, not a message. The empty text it hands _wake must
     not land in the queue: a zero-length message shows a phantom ✉ badge on
