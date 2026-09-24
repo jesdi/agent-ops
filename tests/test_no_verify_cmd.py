@@ -13,7 +13,7 @@ from dataclasses import replace as dc_replace
 
 import dispatcher.main as main
 from dispatcher.pr_poll import CIStatus
-from dispatcher.state import PARK_HUMAN, LoopCaps, Stage, load
+from dispatcher.state import PARK_HUMAN, Stage, load
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
                              deps, make_task, patch_usage, payload,
                              pr_open_task)
@@ -133,8 +133,9 @@ def test_red_e2e_check_without_verify_cmd_parks_past_the_ci_cap(tmp_path, monkey
     """Guard: past loop_caps.ci rounds the task parks instead of spawning
     again. May already pass."""
     patch_usage(monkeypatch)
-    c = dc_replace(cfg_no_verify(tmp_path), loop_caps=LoopCaps(ci=1))
-    pr_open_task(c, ci_rounds=1)
+    c = cfg_no_verify(tmp_path)
+    assert c.loop_caps.ci == 3
+    pr_open_task(c, ci_rounds=3)
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload()
     gh.ci = [CIStatus("failure", "2026-09-07T10:00:00Z")]

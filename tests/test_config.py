@@ -410,7 +410,7 @@ def test_missing_gate_cmd_fails_at_load(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
     p.write_text(GATED_YAML.replace('    gate_cmd: "make gate SLOT={slot}"\n', ""))
-    with pytest.raises(ValueError, match="gate_cmd"):
+    with pytest.raises(ValueError, match=r"alpha.*gate_cmd"):
         load_config(p)
 
 
