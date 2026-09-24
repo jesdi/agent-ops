@@ -30,7 +30,9 @@ In scope:
 - per-provider **effort** validation;
 - a **git shim** in the session image replacing the Claude-only git
   guardrail hook, for both runtimes;
-- the **provider-fixed-per-stage** rule on operator overrides.
+- the **provider-fixed-per-stage** rule on operator overrides;
+- a **gated second model** for Claude review sessions: `review-diff`'s
+  `codex exec` correctness pass gets Codex only when the gate admits it.
 
 Out of scope, deferred by name:
 
@@ -72,6 +74,7 @@ class Runtime:
     mount: str              # "/root/.claude" | "/root/.codex"
     env: tuple[str, ...]    # -e flags: CLAUDE_CONFIG_DIR=…, CLAUDE_CODE_OAUTH_TOKEN | CODEX_HOME=…
     herdr_agent: str        # "claude" | "codex"
+    binary: str             # host install mounted :ro at /usr/local/bin/<cli>: ~/.local/bin/claude | ~/.local/bin/codex
     efforts: tuple[str, ...]
     launch: Callable[[str, str, str, str], str]   # (name, worktree, model, effort) -> shell prefix
     resume: Callable[[str], str]                  # (quoted message) -> trailing args
@@ -120,8 +123,10 @@ reached through `runtime_for(entry.model_id)`.
 `session_cmd` keeps its shared part (name, memory, cpus, state-dir wait
 mount, worktree and clone mounts, gh and gitconfig mounts,
 `AGENT_OPS_TASK_BRANCH`) and takes from the runtime: the home mount
-`-v <state_dir>/<home>:<mount>`, its `-e` flags, and the command. A Claude
-session mounts only claude-home and a Codex session only codex-home.
+`-v <state_dir>/<home>:<mount>`, its `-e` flags, its host `binary`, and the
+command. A Claude session mounts claude-home, plus the Codex binary and
+codex-home when it is granted a second model (see below). A Codex session
+mounts only codex-home.
 
 `Sessions._launch` sets `HERDR_AGENT` from `runtime.herdr_agent` instead of
 the literal `"claude"`. `spawn_stage` and `resume` keep their signatures; the
@@ -149,7 +154,40 @@ a config error too.
 
 - Triage entries must be anthropic: `parse_policy` rejects any other provider
   in `triage:` at load time.
-- No new keys. Rollout is done by ordering the track lists (see Rollout).
+- One new optional key, `models.review_second: openai/<model>`: the model a
+  Claude review session's `codex exec` calls run on. Unset means Claude
+  sessions never get Codex. It must name a non-anthropic provider that has a
+  runtime; anything else is a config error. It must match the `model` in the
+  codex-home seed's `config.toml`, because `codex exec` reads its model from
+  there. A mismatch misreports only the console label, since OpenAI's windows
+  are unscoped and admission is the same for every `openai/…` model.
+- Rollout is done by ordering the track lists (see Rollout).
+
+### Second model in Claude review sessions
+
+The review stage runs the `review-diff` skill. Its correctness reviewer runs
+`codex exec` when `codex` is on PATH, and otherwise falls back to a subagent on
+the session's own model. The skill knows nothing of the gate, so **the mount
+is the permission**:
+
+- When a review-stage session launches on an anthropic entry, the dispatcher
+  asks the same gate, `admit(models.review_second)`. If admitted, the session
+  also gets the host `codex` binary and codex-home mounted, with
+  `CODEX_HOME`. If denied or unset, it gets neither, and review-diff takes its
+  fallback. The skill is unchanged.
+- The decision is made **at spawn**, on the review stage only (not
+  address-review), and a resume re-decides it. `bypass_usage` never covers it:
+  an operator bypass forces the stage's own pick, not a second subscription.
+- Usage needs no bookkeeping of its own. The `codex exec` calls draw on
+  OpenAI's real windows, and the next usage fetch sees them.
+- A Codex-picked review session already has Codex. Its correctness pass then
+  runs on Codex too, with no second model. Fixing that in review-diff (reach
+  for `claude -p` when the session is Codex) is out of scope here.
+- The decision is a pure function beside `resolve`:
+  `second_model(policy, stage, entry, admitted) -> Entry | None`.
+  `_spawn_stage` passes the result to `Sessions.spawn_stage` / `resume`, and
+  `session_cmd` adds the Codex runtime's mounts. `main.py` still never
+  branches on a provider name.
 
 ### Usage adapter — `dispatcher/usage_providers.py`
 
@@ -183,8 +221,10 @@ itself.
 1. Read `auth.json`. If there is no refresh token, exit non-zero and let
    `OnFailure` raise the alert ("run `codex login --device-auth` on the box").
 2. If the access token is not close to expiry, exit 0.
-3. If any Codex session container is running, exit 0; that session will
-   refresh.
+3. If any session container that has codex-home mounted is running (a
+   Codex session, or a Claude review granted a second model), exit 0: Codex
+   running there will refresh. The simplest correct test is "no session
+   container running at all".
 4. Otherwise run
    `CODEX_HOME=<state>/codex-home codex exec "Reply with exactly: ok."`,
    and Codex refreshes through its own code.
@@ -211,8 +251,15 @@ codex-home.
 
 ### Session image — agent-ops-infra
 
-- The Codex CLI is installed at a pinned exact version, bumped by hand like
-  `claude`.
+- No CLI is baked into the image. Since 26d928c the session runs the
+  **host's** `claude`, mounted read-only and resolved at spawn, so the box has
+  one binary at one version. Codex follows the same pattern:
+  `containers._host_claude` becomes the runtime's `binary` mount, and the
+  host's `codex` (native binary) is mounted at `/usr/local/bin/codex`.
+- The infra repo installs `codex` on the host at a pinned exact version,
+  bumped by hand (Codex has no auto-updater to defer to). The
+  codex-keepalive uses the same host binary, so keepalive and sessions never
+  disagree about the auth format.
 - A **git shim** comes first on `PATH` (`/usr/local/bin/git`). It carries
   the checks from `claude-home/hooks/block-dangerous-git.sh`, including the
   `--force-with-lease origin $AGENT_OPS_TASK_BRANCH` exception and failing
@@ -320,6 +367,11 @@ not the first deploy.
   Ticket 1 verifies it.
 - **Review avoids implement's provider**: unchanged. With Codex live, the
   preference now actually takes effect.
+- **Second model denied mid-review**: the grant was made at spawn. If the
+  OpenAI window runs out during the review, `codex exec` fails. review-diff
+  must then fall back as it does when Codex is absent. Verify that it does;
+  if its fallback only covers "not on PATH", fix the skill (in
+  jesdi/general-skills).
 - **A parked pr-open task** resumes as a fresh address-review round, which
   is a fresh spawn. The override rule applies against the `implement` pick,
   since address-review maps to it.
@@ -340,6 +392,11 @@ not the first deploy.
   parked. Web: 422 on both routes.
 - `OpenAIUsage`: fixture payload to two windows; missing `auth.json`, 401, and
   an empty body each give `unavailable`. It never opens `auth.json` for writing.
+- `second_model`: review + anthropic entry + key set + admitted → the entry;
+  denied, key unset, a non-review stage, or a Codex entry → None. Bypass does
+  not grant it. `session_cmd` with a grant mounts the codex binary and
+  codex-home and sets `CODEX_HOME`, and without one is byte-identical to a
+  plain Claude session.
 - Session-image git shim: agent-ops-infra `tests/test_box_git_hook.py`
   retargeted from the hook to the shim, same cases.
 
@@ -354,6 +411,7 @@ not the first deploy.
 3. Per-provider effort, and the triage-provider validation.
 4. Override rule: helper, web, dispatcher, console picker.
 5. `OpenAIUsage` adapter.
+5b. Gated second model for Claude review sessions (`models.review_second`).
 6. `plan.md` wording and CONTEXT.md.
 7. infra: codex-home seed and sync, vendor-skills to both homes,
    codex-keepalive unit.
