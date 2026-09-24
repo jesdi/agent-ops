@@ -103,23 +103,33 @@ decides the verdict and is what the stall note and the console name.
 
 **Claude-home**:
 The box-side persistent Claude config directory (`~/agent-ops-state/claude-home`),
-mounted at `/root/.claude` inside every session. It is the box's "global"
-Claude configuration and transcript store.
+mounted at `/root/.claude` inside every Claude session. It is the box's
+"global" Claude configuration and transcript store. Its Codex sibling is
+**Codex-home**.
 _Avoid_: dotclaude, global config (ambiguous with the mac's)
 
 **Runtime**:
 The CLI a session runs for a provider — `claude` for `anthropic`, `codex`
 for `openai`. One record per provider in `dispatcher/runtimes.py` owns the
-home mount, env, herdr agent name, effort vocabulary and the launch/resume
-commands; nothing else branches on provider.
+CLI name, home mount, env, herdr agent name and the launch/resume
+commands; nothing else branches on provider. The effort vocabulary stays in
+`PROVIDER_EFFORTS` (`dispatcher/models.py`), which config validation reads.
 _Avoid_: backend, driver, adapter (that is the usage adapter)
 
 **Codex-home**:
 Claude-home's sibling for Codex sessions (`~/agent-ops-state/codex-home`,
-mounted at `/root/.codex`), converged from the **codex-home seed**
-(`provision/codex-home/` in agent-ops-infra). Holds the Codex login
-(`auth.json`), which only Codex itself refreshes — sessions, or the
-codex-keepalive unit when none is live.
+mounted at `/root/.codex`), converged from the **Codex-home seed**. Holds the
+Codex login (`auth.json`), which only Codex itself refreshes — sessions, or
+the codex-keepalive unit when none is live.
+_Avoid_: dotcodex, Codex config (the seed is the config's source; this is
+the live directory)
+
+**Codex-home seed**:
+The versioned, declarative source of codex-home's config (`config.toml`,
+`AGENTS.md`, skills), authored in agent-ops-infra (`provision/codex-home/`)
+and converged onto the box by the updater. Credentials and transcripts are
+never part of the seed.
+_Avoid_: codex export, config copy (as for the Claude-home seed)
 
 **Claude-home seed**:
 The versioned, declarative source of claude-home's config, authored in the
