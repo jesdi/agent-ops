@@ -111,4 +111,4 @@ targets:
     boost_field_id: REPLACE_WITH_PROJECT_ID
     # Optional per-target cap on active tasks, even when box capacity is
     # free. Must be between 1 and capacity; omit for no target-specific cap.
-    max_active: 1
+    # max_active: 1

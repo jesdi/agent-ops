@@ -545,6 +545,23 @@ def test_example_yaml_loads_cleanly_and_documents_new_fields():
     assert _documented("verify_cmd", "optional")
 
 
+@pytest.mark.parametrize("bad_value", ["2", True, False, 2.5])
+def test_max_active_wrong_type_fails_naming_target_and_field(tmp_path, monkeypatch, bad_value):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    p = tmp_path / "t.yaml"
+    p.write_text(GATED_YAML + f"    max_active: {bad_value!r}\n")
+    with pytest.raises(ValueError, match=r"alpha.*max_active"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("bad_value", ["15", True, False, 1.5])
+def test_spec_review_grace_minutes_wrong_type_fails(tmp_path, bad_value):
+    p = tmp_path / "targets.yaml"
+    p.write_text(f"state_dir: /tmp/s\nspec_review_grace_minutes: {bad_value!r}\ntargets: []\n")
+    with pytest.raises(ValueError, match="spec_review_grace_minutes"):
+        load_config(p)
+
+
 def test_referenced_providers_includes_target_policies(tmp_path):
     target_models = """\
     models:

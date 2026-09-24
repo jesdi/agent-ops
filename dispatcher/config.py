@@ -110,9 +110,12 @@ def _target(raw: dict, capacity: int) -> Target:
         raise ValueError(f"target {name!r}: gate_cmd is required "
                          "(the session runs it after every ticket)")
     max_active = fields.get("max_active")
-    if max_active is not None and not 1 <= max_active <= capacity:
-        raise ValueError(f"target {name!r}: max_active must be between 1 and "
-                         f"capacity ({capacity}), got {max_active}")
+    if max_active is not None and (
+        isinstance(max_active, bool) or not isinstance(max_active, int)
+        or not 1 <= max_active <= capacity
+    ):
+        raise ValueError(f"target {name!r}: max_active must be an integer between "
+                         f"1 and capacity ({capacity}), got {max_active!r}")
     return Target(**fields, models=parse_policy(models) if has_models else None)
 
 
@@ -122,7 +125,8 @@ def _grace_minutes(raw: dict) -> int | None:
     value = raw["spec_review_grace_minutes"]
     if value is None:
         return None
-    value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"spec_review_grace_minutes: must be an integer or null, got {value!r}")
     if value < 0:
         raise ValueError(f"spec_review_grace_minutes: must be >= 0 or null, got {value}")
     return value
@@ -133,12 +137,13 @@ def load_config(path: str | Path) -> Config:
     if "triage_model" in raw:
         raise ValueError("triage_model: is gone; write models.triage: (a list of "
                          "entries, see targets.example.yaml)")
+    capacity = raw.get("capacity", 3)
     return Config(
         state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
-        capacity=raw.get("capacity", 3),
+        capacity=capacity,
         session_memory=str(raw.get("session_memory", "2g")),
         session_cpus=str(raw.get("session_cpus", "2")),
-        targets=[_target(t, raw.get("capacity", 3)) for t in raw.get("targets", [])],
+        targets=[_target(t, capacity) for t in raw.get("targets", [])],
         infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
