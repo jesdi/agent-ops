@@ -20,7 +20,9 @@ targets.yaml
 .claude/skills/deep-quality-review
 .claude/skills/file-bug-issue
 .claude/skills/implement-spec
+.claude/skills/red-team-data-model
 .claude/skills/review-diff
+.claude/skills/to-openspec
 .claude/skills/to-spec
 .claude/skills/to-tickets
 frontend/dist/
@@ -34,3 +36,4 @@ frontend/coverage/
 .worktrees/
 .pnpm-store/
 .scratch/
+.agent/
