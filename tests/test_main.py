@@ -45,8 +45,13 @@ DENY_ALL = lambda m: main.Verdict(admitted=False, provider="anthropic", binding=
 
 class FakeGitHub:
     def __init__(self, cands=(), run_conclusion="", run_status_raises=False,
-                 issue_states=None, issue_state_raises=False, rows=()):
+                 issue_states=None, issue_state_raises=False, rows=(),
+                 cands_by_target=None):
         self.cands = list(cands)
+        # Per-target override: real candidates() is target-scoped (rank_cmd
+        # differs per target). Tests with one target never set this and
+        # candidates() falls back to self.cands as before.
+        self.cands_by_target = dict(cands_by_target or {})
         self.claimed, self.released, self.canceled = [], [], []
         self.run_conclusion = run_conclusion  # "" = still running
         self.run_status_raises = run_status_raises
@@ -86,7 +91,7 @@ class FakeGitHub:
         self.statused.append((issue, option_id))
 
     def candidates(self, target):
-        return self.cands
+        return self.cands_by_target.get(target.name, self.cands)
 
     def claim(self, target, cand):
         self.claimed.append(cand.number)
@@ -154,6 +159,11 @@ class FakeSessions:
         self.sent_text = []
         self.end_calls = []  # (target, issue) — the target end() actually got
         self.call_log = []  # ("capture_tail"|"end", target, issue) — ordered
+        # Parallel (target, issue) records for spawn_stage/resume, so
+        # multi-target tests can assert which target a spawn/resume was for
+        # without disturbing the existing spawned/resumed tuple shapes.
+        self.spawn_calls = []
+        self.resume_calls = []
         # Issues whose launch explodes the way a vanished worktree does:
         # containers.clone_root reads <worktree>/.git to find the clone to
         # mount, so a swept or half-removed checkout raises here.
@@ -179,12 +189,14 @@ class FakeSessions:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.spawned.append((issue, stage_name, model, prompt, effort))
+        self.spawn_calls.append((target, issue))
 
     def resume(self, target, issue, worktree, message, model, effort=""):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.resumed.append((issue, message, model, effort))
+        self.resume_calls.append((target, issue))
 
     def capture_tail(self, target, issue, lines=25):
         self.call_log.append(("capture_tail", target, issue))
@@ -202,11 +214,16 @@ class FakeNotifier:
         self.sent = []
         self.contexts = []
         self.calls = []  # (template, ctx) — parallel record; sent stays template-only
+        # Target of each send, taken from ctx["target"] when the caller
+        # passes one (None otherwise) — lets multi-target tests assert which
+        # project's notification fired without touching `sent`/`contexts`.
+        self.targets = []
 
     def send(self, template, **ctx):
         self.sent.append(template)
         self.contexts.append((template, ctx))
         self.calls.append((template, ctx))
+        self.targets.append(ctx.get("target"))
         return self.msg_id
 
 
