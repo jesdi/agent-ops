@@ -1492,8 +1492,9 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
         title=f"provisioning failed: {cand.title}",
         error=traceback.format_exc(),
         log_tail=failures.setup_log_tail(wt),
-        repro=f"podman run --rm -v {wt}:{wt} -w {wt} agent-ops-session "
-              f"{target.setup_cmd}",
+        repro=(f"podman run --rm -v {wt}:{wt} -w {wt} agent-ops-session "
+               f"{target.setup_cmd}" if target.setup_cmd
+               else "no setup_cmd; the worktree step failed (see error)"),
         worktree=wt)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
     # Quarantine only once the report exists (marker written) — a gh outage
