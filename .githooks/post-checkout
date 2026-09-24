@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-ops post-checkout hook, installed by scripts/setup.sh.
+# agent-ops post-checkout hook, enabled by scripts/setup.sh (core.hooksPath).
 # Git runs it on `git worktree add` too, so every new worktree gets the
 # general-skills, however it was created. A no-op when they are installed.
 # Never fails the checkout.
