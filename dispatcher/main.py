@@ -39,8 +39,9 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoO
                                 ParkForCI, ParkForInput, ParkForReview, PublishSpec,
                                 RetryStage, SetTaskStage, StartTicket,
                                 SpawnStage, next_actions)
-from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates, parse_entry,
-                               policy_stage, resolve, track_from_labels, tracks_text)
+from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates,
+                               override_refusal, parse_entry, policy_stage,
+                               resolve, track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
@@ -49,7 +50,8 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               Stage, TaskState, active, allocate_slot,
                               clear_waiting, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
-                              read_stage_signal, resumable_crash, save, task_key)
+                              next_stage, read_stage_signal, resumable_crash,
+                              save, task_key)
 from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
@@ -165,7 +167,7 @@ def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
     """The entry a task runs or would run next, for status lines: its pick for
     the current stage, else the first candidate, else ''."""
     policy = _policy(cfg, target)
-    stage = "address-review" if task.stage is Stage.PR_OPEN else task.stage.value
+    stage = next_stage(task)
     pick = task.picks.get(policy_stage(stage))
     if pick:
         return pick
@@ -1821,11 +1823,29 @@ def _apply_retry_intent(cfg: Config, issue: int) -> None:
         qp.unlink(missing_ok=True)
 
 
-def _resume_model_is_configured(cfg: Config, by_name: dict,
-                                task: TaskState, model: str) -> bool:
+class IntentDropped(Exception):
+    """An intent the dispatcher refuses: dropped with an event naming why."""
+
+    def __init__(self, detail: str, model: str = ""):
+        super().__init__(detail)
+        self.model = model
+
+
+def _require_resume_model(cfg: Config, by_name: dict,
+                          task: TaskState, model: str) -> None:
+    """The authoritative check of a resume intent's model (an intent file can
+    bypass the console's 422): configured for the target, and of the stage
+    pick's provider. Raises IntentDropped."""
+    if not model:
+        return
     target = by_name.get(task.target)
     policy = policy_for(cfg, target) if target else cfg.models
-    return not model or model in policy.model_ids()
+    if model not in policy.model_ids():
+        raise IntentDropped(f"model {model!r} is not configured for target "
+                            f"{task.target!r}", model)
+    refusal = override_refusal(task.picks, next_stage(task), model)
+    if refusal:
+        raise IntentDropped(refusal, model)
 
 
 def _save_queued_resume(cfg: Config, task: TaskState, model: str,
@@ -1852,11 +1872,7 @@ def _apply_resume_intent(cfg: Config, by_name: dict,
         return
     assert task is not None
     requested_model = str(intent.payload.get("model") or "")
-    if not _resume_model_is_configured(cfg, by_name, task, requested_model):
-        print(f"[warn] resume intent for #{issue}: model "
-              f"{requested_model!r} is not configured — skipped",
-              file=sys.stderr)
-        return
+    _require_resume_model(cfg, by_name, task, requested_model)
     bypass_usage = intent.payload.get("bypass_usage") is True
     if task.park == PARK_WAKE:
         _save_queued_resume(cfg, task, requested_model, bypass_usage)
@@ -1890,6 +1906,15 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
               file=sys.stderr)
 
 
+def _intent_target(cfg: Config, intent: intents.Intent) -> str:
+    """The target an intent's event names. A legacy intent (target == "")
+    carries no target of its own; if it resolves unambiguously to one task,
+    use THAT task's target so the console's /task/{target}/{issue} link is
+    never blank. Same fallback idiom as the "kill" action's kill_target."""
+    resolved = _task_for_intent(cfg, intent)
+    return intent.target or (resolved.target if resolved is not None else "")
+
+
 def _apply_intents(cfg: Config, deps: Deps) -> None:
     """Drain operator intents (web console writes) at the top of the pass.
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
@@ -1898,16 +1923,17 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
     for intent in intents.list_intents(cfg.state_dir):
         try:
             _apply_one_intent(cfg, deps, by_name, intent)
-            # A legacy intent (target == "") carries no target of its own;
-            # if it resolved unambiguously to one task, use THAT task's
-            # target so the console's /task/{target}/{issue} link is never
-            # blank. Same fallback idiom as the "kill" action's kill_target.
-            resolved = _task_for_intent(cfg, intent)
-            target = intent.target or (
-                resolved.target if resolved is not None else "")
             eventlog.append_event(cfg.state_dir, "intent-applied",
-                                  target=target, issue=intent.issue,
-                                  actor=intent.actor, detail=intent.action)
+                                  target=_intent_target(cfg, intent),
+                                  issue=intent.issue, actor=intent.actor,
+                                  detail=intent.action)
+        except IntentDropped as dropped:
+            print(f"[warn] intent {intent.path.name}: {dropped}",
+                  file=sys.stderr)
+            eventlog.append_event(cfg.state_dir, "intent-dropped",
+                                  target=_intent_target(cfg, intent),
+                                  issue=intent.issue, model=dropped.model,
+                                  actor=intent.actor, detail=str(dropped))
         except Exception as exc:
             print(f"[warn] intent {intent.path.name} failed: {exc}",
                   file=sys.stderr)

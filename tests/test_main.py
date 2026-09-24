@@ -2489,6 +2489,25 @@ def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
     assert "ship it" in sess.resumed[0][1]
 
 
+def test_resume_intent_with_an_unconfigured_model_is_dropped_with_an_event(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    # A legacy intent (no target): the event still names the task's target.
+    intents_mod.write_intent(c.state_dir, "resume", "", 42,
+                             {"model": "openai/gpt-nope"}, "op", 1)
+    main._apply_intents(c, deps())
+
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
+    [event] = [e for e in eventlog.read_tail(c.state_dir) if e["issue"] == 42]
+    assert (event["event"], event["target"], event["model"]) == (
+        "intent-dropped", "portfolio_eval", "openai/gpt-nope")
+    assert event["detail"] == (
+        "model 'openai/gpt-nope' is not configured for target 'portfolio_eval'")
+
+
 def test_resume_intent_can_override_a_wake_without_duplicate_message(
         tmp_path, monkeypatch):
     patch_usage(monkeypatch, util=0.95)

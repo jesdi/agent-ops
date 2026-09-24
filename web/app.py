@@ -13,11 +13,11 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
-from dispatcher.models import (candidates, parse_entry, policy_stage,
-                               resolve, track_from_labels)
+from dispatcher.models import (candidates, override_refusal, parse_entry,
+                               policy_stage, resolve, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
-                              SpecApprovalRequest, Stage, resumable_crash)
+                              SpecApprovalRequest, next_stage, resumable_crash)
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
@@ -103,8 +103,14 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         target = targets_by_name.get(target_name)
         return policy_for(cfg, target) if target else cfg.models
 
-    def _stage(t):
-        return "address-review" if t.stage is Stage.PR_OPEN else t.stage.value
+    def _require_same_provider(t, model):
+        """422 unless `model` may override t's next launch: once the stage
+        has a pick, only a model of the pick's provider may. A crashed task
+        resumes the stage it crashed in."""
+        stage = t.crashed_stage if resumable_crash(t) else next_stage(t)
+        refusal = override_refusal(t.picks, stage, model) if model else ""
+        if refusal:
+            raise HTTPException(422, refusal)
 
     def _avoid(t):
         pick = t.picks.get("implement")
@@ -115,12 +121,12 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         policy = _policy(t.target)
         if t.track not in policy.tracks:
             return ()
-        return candidates(policy, t.track, _stage(t), _avoid(t))
+        return candidates(policy, t.track, next_stage(t), _avoid(t))
 
     def _model_for(t, usages=None, now=None):
         if t.park == PARK_WAKE and t.resume_model_override:
             return t.resume_model_override
-        pick = t.picks.get(policy_stage(_stage(t)))
+        pick = t.picks.get(policy_stage(next_stage(t)))
         if pick:
             return parse_entry(pick, "pick").model_id
         choices = _choices(t, usages, now)
@@ -524,6 +530,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if req.model and req.model not in configured:
             raise HTTPException(422, f"model {req.model!r} is not configured "
                                 f"for target {target!r}")
+        _require_same_provider(task, req.model)
         payload = {"text": req.text} if req.text else {}
         if req.model:
             payload["model"] = req.model
@@ -558,10 +565,12 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 and req.model not in {str(e) for e in policy.entries()}):
             raise HTTPException(422, f"model {req.model!r} is not configured "
                                 f"for target {target!r}")
+        if task is not None:
+            _require_same_provider(task, req.model)
         if req.model:
             return req.model
         if task is not None:
-            return task.picks.get(policy_stage(_stage(task))) or _model_for(task)
+            return task.picks.get(policy_stage(next_stage(task))) or _model_for(task)
         return _candidate_model(configured_target, row)
 
     def _arm_run(target: str, issue: int, req: RunReq, task, model: str,
