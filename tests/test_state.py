@@ -676,3 +676,9 @@ def test_read_stage_signal_carries_track(tmp_path: Path):
     assert read_stage_signal(tmp_path).track == "standard"
     (agent / "stage.json").write_text(json.dumps({"stage": "spec", "status": "done"}))
     assert read_stage_signal(tmp_path).track == ""
+
+
+def test_next_stage_wakes_a_pr_open_task_into_address_review():
+    from dispatcher.state import next_stage
+    assert next_stage(_task(stage=Stage.PR_OPEN)) == "address-review"
+    assert next_stage(_task(stage=Stage.IMPLEMENT)) == "implement"

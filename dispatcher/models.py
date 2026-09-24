@@ -49,6 +49,31 @@ def policy_stage(stage: str) -> str:
     return _POLICY_STAGES.get(stage, stage)
 
 
+def pick_provider(picks: Mapping[str, str], stage: str) -> str:
+    """The provider that ran `stage` (runtime vocabulary), or "" when the
+    stage has no pick yet."""
+    pick = picks.get(policy_stage(stage))
+    return parse_entry(pick, "pick").provider if pick else ""
+
+
+def override_allowed(picks: Mapping[str, str], stage: str, model_id: str) -> bool:
+    """A stage's provider is fixed once it has a pick: another provider would
+    rebuild the context from scratch and `--continue` the wrong session. A
+    stage with no pick takes any model."""
+    fixed = pick_provider(picks, stage)
+    return not fixed or split_model_id(model_id)[0] == fixed
+
+
+def override_refusal(picks: Mapping[str, str], stage: str, model_id: str) -> str:
+    """Why `model_id` may not override `stage`, or "" when it may: the one
+    message the console's 422 and the dispatcher's drop event both carry."""
+    if override_allowed(picks, stage, model_id):
+        return ""
+    provider = pick_provider(picks, stage)
+    return (f"stage {policy_stage(stage)} runs on {provider}; "
+            f"pick a model from {provider}")
+
+
 @dataclass(frozen=True)
 class Entry:
     """One element of a track's stage list: provider, bare model, effort

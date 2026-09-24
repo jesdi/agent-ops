@@ -47,6 +47,12 @@ def resumable_crash(t: "TaskState") -> bool:
     return t.stage is Stage.FAILED and bool(t.crashed_stage)
 
 
+def next_stage(t: "TaskState") -> str:
+    """The runtime stage a task's next launch runs: a parked pr-open task
+    wakes into an address-review round."""
+    return Stage.ADDRESS_REVIEW.value if t.stage is Stage.PR_OPEN else t.stage.value
+
+
 @dataclass(frozen=True)
 class LoopCaps:
     """Rounds each bounded loop may run before the task parks. Defaults are
