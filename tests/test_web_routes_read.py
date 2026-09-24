@@ -589,3 +589,14 @@ def test_board_snapshot_never_waits_for_live_sources(tmp_path, monkeypatch):
     assert response.json() == {key: full[key] for key in (
         "columns", "capacity", "median_cycle_seconds")}
     assert client.get("/api/board/snapshot").status_code == 401
+
+
+def test_crashed_task_view_shows_the_crashed_stage_pick(tmp_path):
+    # A crashed Codex implement task: the console keys the Remote Control
+    # link off the model, so the view must name the openai pick, not "".
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, stage=Stage.FAILED,
+                                 crashed_stage="implement",
+                                 picks={"implement": "openai/gpt-5-codex@high"})]
+    body = client.get("/api/task/alpha/7", headers=HEADERS).json()
+    assert body["card"]["model"] == "openai/gpt-5-codex"

@@ -106,10 +106,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     def _require_same_provider(t, model):
         """422 unless `model` may override t's next launch: once the stage
-        has a pick, only a model of the pick's provider may. A crashed task
-        resumes the stage it crashed in."""
-        stage = t.crashed_stage if resumable_crash(t) else next_stage(t)
-        refusal = override_refusal(t.picks, stage, model) if model else ""
+        has a pick, only a model of the pick's provider may."""
+        refusal = override_refusal(t.picks, next_stage(t), model) if model else ""
         if refusal:
             raise HTTPException(422, refusal)
 
