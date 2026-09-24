@@ -175,11 +175,8 @@ class Sources:
         root = self.state_dir / "quarantine"
         entries = []
         for p in sorted(root.glob("*.json")) if root.exists() else []:
-            target, _, raw = p.stem.rpartition("-")
-            try:
-                keyed_issue: int | None = int(raw)
-            except ValueError:
-                keyed_issue = None
+            parsed = msgq.parse_key(p.stem)
+            target, keyed_issue = parsed if parsed else ("", None)
             try:
                 d = json.loads(p.read_text())
             except (OSError, ValueError):
