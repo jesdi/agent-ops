@@ -1424,6 +1424,24 @@ def test_attach_command_sets_hold(tmp_path, monkeypatch):
     assert t.park == PARK_WAKE and t.hold_for_attach is True
 
 
+def test_attach_with_an_ambiguous_issue_number_wakes_nothing(tmp_path, monkeypatch):
+    from tests.test_mpb_t03_messages_and_markers import (make_task_for,
+                                                          two_target_cfg)
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = two_target_cfg(tmp_path)
+    make_task_for(c, "portfolio_eval", 7, park=PARK_HUMAN, park_msg_id=55)
+    make_task_for(c, "factorial", 7, park=PARK_HUMAN, park_msg_id=56)
+    patch_events(monkeypatch, [Command(name="attach", issue=7)])
+    d = deps()
+    main.run_pass(c, d)
+    assert load(c.state_dir, "portfolio_eval", 7).park == PARK_HUMAN
+    assert load(c.state_dir, "factorial", 7).park == PARK_HUMAN
+    lines = [ctx["lines"] for tmpl, ctx in d.notifier.calls
+             if tmpl == "status" and "ambiguous" in ctx["lines"][0]][0]
+    assert sorted(lines[1:]) == ["factorial#7", "portfolio_eval#7"]
+
+
 def test_attach_command_queues_no_message(tmp_path, monkeypatch):
     """/attach is a wake, not a message. The empty text it hands _wake must
     not land in the queue: a zero-length message shows a phantom ✉ badge on

@@ -54,6 +54,7 @@ from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
+from telegram.templates import task_ref
 
 Admit = Callable[[str], Verdict]
 
@@ -258,7 +259,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     if relogin.classify_login(
             deps.sessions.capture_tail(task.target, task.issue)) is None:
         deps.notifier.send("status", lines=[
-            f"#{task.issue} is no longer at a login prompt — code NOT typed "
+            f"{_ref(cfg, task)} is no longer at a login prompt — code NOT typed "
             f"(the pane would have run it as a shell command). Still parked; "
             f"attach to the session to sort it out."])
         return
@@ -286,7 +287,7 @@ def _status_lines(cfg: Config) -> list[str]:
     for t in tasks:
         model = _display_entry(cfg, by_name.get(t.target), t)
         slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
-        lines.append(f"#{t.issue} {t.title} — {t.stage.value} [{model}]"
+        lines.append(f"{_ref(cfg, t)} {t.title} — {t.stage.value} [{model}]"
                      + (f" [{t.park}]" if t.park else "") + f" {slot}")
     lines = lines or ["(nothing in flight)"]
     # The sweep holds a real capacity unit that active() cannot see (its work
@@ -298,6 +299,10 @@ def _status_lines(cfg: Config) -> list[str]:
         lines.append("triage sweep running (holds 1 slot)")
     lines.append(f"capacity {len(active(tasks)) + held}/{cfg.capacity}")
     return lines
+
+
+def _ref(cfg: Config, task: TaskState) -> str:
+    return task_ref(task.target, task.issue, len(cfg.targets) > 1)
 
 
 def _find_rows(cfg: Config, deps: Deps, issue: int) -> list[tuple]:
@@ -386,8 +391,12 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
             deps.notifier.send("status", lines=_status_lines(cfg))
         elif isinstance(ev, Command) and ev.name == "attach":
             match = [t for t in tasks if t.issue == ev.issue and t.park]
-            if match:
+            if len(match) == 1:
                 _wake(cfg, match[0], "", hold=True)
+            elif match:
+                deps.notifier.send("status", lines=(
+                    [f"#{ev.issue} is ambiguous; parked tasks with that number:"]
+                    + [_ref(cfg, t) for t in match]))
             else:
                 deps.notifier.send("status",
                                    lines=[f"#{ev.issue} is not parked"])
@@ -429,7 +438,7 @@ def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
             else:
                 deps.notifier.send("status", lines=(
                     ["Which task? Reply directly to its parked message:"]
-                    + [f"#{t.issue} {t.title}" for t in reply_parked]))
+                    + [f"{_ref(cfg, t)} {t.title}" for t in reply_parked]))
 
 
 def _notify(deps: Deps, target: Target, task: TaskState, template: str,
