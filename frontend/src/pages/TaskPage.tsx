@@ -14,7 +14,7 @@ import { queryKeys } from '../hooks/queryKeys'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useIssueDescription, usePendingIntents, useTaskDetail } from '../hooks/useResources'
 import { api, ApiError } from '../lib/api'
-import { formatDuration, relativeTime, stageLabel } from '../lib/format'
+import { formatDuration, providerOf, relativeTime, stageLabel } from '../lib/format'
 import { banner, chip } from '../lib/tone'
 
 export function TaskPage() {
@@ -311,19 +311,22 @@ function TaskControls({ target, issue, card, deliveryContract, actions, showHist
       >
         {showHistory ? 'Live view' : 'Show history'}
       </button>
-      {/* Sessions are launched with --remote-control task-<N>, so they are
-          reachable from claude.ai/code and the Claude mobile app by name.
+      {/* Claude sessions are launched with --remote-control task-<N>, so they
+          are reachable from claude.ai/code and the Claude mobile app by name.
           This is the mobile interaction path — `herdr --remote box` is the
           desktop escape hatch. Not gated on session_alive: the conversation
-          stays readable there after the session dies. */}
-      <a
-        href="https://claude.ai/code"
-        target="_blank"
-        rel="noreferrer"
-        className="rounded border px-3 py-1.5 text-sm"
-      >
-        Open in Claude ↗
-      </a>
+          stays readable there after the session dies. Codex has no Remote
+          Control, so the link-out is Claude-only. */}
+      {providerOf(card.model) === 'anthropic' && (
+        <a
+          href="https://claude.ai/code"
+          target="_blank"
+          rel="noreferrer"
+          className="rounded border px-3 py-1.5 text-sm"
+        >
+          Open in Claude ↗
+        </a>
+      )}
       <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
         disabled={busy}
         onClick={() => runIntent(() => api.park(target, issue))}>Park now</button>
