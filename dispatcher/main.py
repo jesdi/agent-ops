@@ -43,6 +43,7 @@ from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates,
                                override_refusal, parse_entry, policy_stage,
                                resolve, track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
+from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
@@ -1518,13 +1519,18 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 def _report_session_crash(cfg: Config, deps: Deps, target: Target,
                           task: TaskState, dry_run: bool) -> None:
+    # The stage's pick names its runtime; a pre-picks task ran on Claude,
+    # which is what a bare (here: empty) id resolves to.
+    pick = task.picks.get(policy_stage(task.stage.value))
+    runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
+    resume = f"{Path(runtime.binary).name} {runtime.resume('')}".rstrip()
     rep = failures.FailureReport(
         klass="session-crash", target=target.name, issue=task.issue,
         title=f"session crashed during {task.stage.value}: {task.title}",
         error=(f"session task-{task.target}-{task.issue} died during stage "
                f"{task.stage.value}"),
         log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
-        repro=f"cd {task.worktree} && claude --continue  # inside session image",
+        repro=f"cd {task.worktree} && {resume}  # inside session image",
         worktree=task.worktree)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
     if blocker:

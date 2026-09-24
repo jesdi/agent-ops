@@ -16,7 +16,7 @@ class Runtime:
     home: str               # state-dir subdirectory mounted as the CLI's home
     mount: str              # where that home lands inside the container
     home_var: str           # env var that points the CLI at `mount`
-    env: tuple[str, ...]    # pass-through -e flags, valued from the host
+    env: tuple[str, ...]    # extra -e flags: NAME passes the host's value, NAME=v sets it
     herdr_agent: str        # herdr's hint for the agent behind the podman wrapper
     binary: str             # host install under $HOME, mounted :ro at /usr/local/bin/<name>
     efforts: tuple[str, ...]
@@ -32,7 +32,9 @@ CLAUDE = Runtime(
     # container boots as a fresh install and stalls on the first-run wizard
     # with nobody attached. It moves all of it inside the mounted claude-home.
     home_var="CLAUDE_CONFIG_DIR",
-    env=("CLAUDE_CODE_OAUTH_TOKEN",),
+    # The binary is the host's to update (see containers._host_binary), so
+    # the in-container auto-updater stays off.
+    env=("CLAUDE_CODE_OAUTH_TOKEN", "DISABLE_AUTOUPDATER=1"),
     herdr_agent="claude",
     binary=".local/bin/claude",
     efforts=PROVIDER_EFFORTS["anthropic"],
@@ -53,7 +55,33 @@ CLAUDE = Runtime(
     resume=lambda message: f"--continue {message}",
 )
 
-RUNTIMES = {"anthropic": CLAUDE}
+CODEX = Runtime(
+    home="codex-home",
+    mount="/root/.codex",
+    home_var="CODEX_HOME",
+    env=(),
+    herdr_agent="codex",
+    binary=".local/bin/codex",
+    efforts=PROVIDER_EFFORTS["openai"],
+    # No approval prompts and no sandbox: the container is the isolation
+    # layer and nobody is attached to answer. `notify` fires on
+    # agent-turn-complete — Codex's Stop hook — running the worktree's own
+    # stop-hook.sh (it ignores Codex's JSON argument). The trust override
+    # pre-empts the first-run trust prompt that would stall an unattended
+    # pane. Both are per launch because the worktree path is per task.
+    # No --remote-control: Codex has no equivalent.
+    launch=lambda name, worktree, model, effort: (
+        f"codex --model {model}"
+        f"{' -c model_reasoning_effort=' + effort if effort else ''}"
+        " --dangerously-bypass-approvals-and-sandbox"
+        f" -c 'notify=[\"{worktree}/.agent/stop-hook.sh\"]'"
+        f" -c 'projects.\"{worktree}\".trust_level=\"trusted\"'"),
+    # The newest Codex session for the cwd; a stage never changes provider,
+    # so that is the stage's.
+    resume=lambda message: f"resume --last {message}",
+)
+
+RUNTIMES = {"anthropic": CLAUDE, "openai": CODEX}
 
 
 def runtime_for(model_id: str) -> Runtime:

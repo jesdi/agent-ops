@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from dispatcher import containers
 
 
@@ -217,27 +219,33 @@ def test_model_prefix_never_reaches_the_cli(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-5.4-codex", "P")
-    assert "--model gpt-5.4-codex" in cmd
-    assert "openai/" not in cmd
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "anthropic/claude-fable-5", "P")
+    assert "--model claude-fable-5" in cmd
+    assert "anthropic/" not in cmd
 
 
 def test_triage_cmd_model_prefix_never_reaches_the_cli(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-        "openai/gpt-5", "/triage/p.md")
+        "anthropic/claude-opus-5", "/triage/p.md")
     shell_line = cmd[-1]
-    assert "--model gpt-5" in shell_line
-    assert "openai/" not in shell_line
+    assert "--model claude-opus-5" in shell_line
+    assert "anthropic/" not in shell_line
+
+
+def test_triage_cmd_refuses_a_non_anthropic_model():
+    with pytest.raises(ValueError, match="triage runs on Claude only"):
+        containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+                              "openai/gpt-5", "/triage/p.md")
 
 
 def test_session_cmd_passes_effort_after_the_model(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     wt, _clone = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-luna",
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "anthropic/claude-luna",
                                  "--continue 'hi'", effort="xhigh")
-    assert cmd.endswith("--model gpt-luna --effort xhigh --continue 'hi'")
+    assert cmd.endswith("--model claude-luna --effort xhigh --continue 'hi'")
 
 
 def test_session_cmd_omits_effort_when_unset(tmp_path: Path, monkeypatch):

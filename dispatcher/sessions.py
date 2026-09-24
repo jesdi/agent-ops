@@ -1,11 +1,12 @@
 """Session layer: one session per task (task-<target>-<issue>), each stage
-a fresh `podman run … claude` inside it. The session is a herdr tab —
+a fresh `podman run … <cli>` inside it, the CLI being the stage model's
+runtime (claude or codex; see runtimes.py). The session is a herdr tab —
 `Tab(session_name(target, issue))` in the workspace labelled `<target>` —
-whose root pane hosts the `podman run … claude`; the container is the
-isolation layer. Tab and container die together at park and are recreated
-together at resume (claude --continue reads transcripts from the mounted
-claude-home, keyed by the worktree cwd, which is mounted at the same path
-inside the container).
+whose root pane hosts the `podman run`; the container is the isolation
+layer. Tab and container die together at park and are recreated together
+at resume (`claude --continue` / `codex resume --last` read transcripts from
+the mounted runtime home, keyed by the worktree cwd, which is mounted at the
+same path inside the container).
 
 Tabs are resolved by label on every call and never persisted, so a herdr
 restart or renumbering cannot strand a task. Every herdr failure degrades
@@ -32,7 +33,7 @@ def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                runtime: Runtime | None = None) -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  runtime=runtime or runtime_for(model))
+                                  runtime=runtime)
 
 
 class Sessions:
@@ -51,7 +52,7 @@ class Sessions:
         return herdr.Tab.find(session_name(target, issue))
 
     def is_alive(self, target: str, issue: int) -> bool:
-        """Alive means the tab exists AND its shell is busy — a claude that
+        """Alive means the tab exists AND its shell is busy — a CLI that
         has exited back to the host shell reads dead (the crash path owns
         it), and a tab restored by a herdr server restart reads dead.
         `main._inject_login_code` still re-verifies the prompt with
@@ -121,7 +122,7 @@ class Sessions:
     def capture_history(self, target: str, issue: int, lines: int = 2000) -> str:
         """Console-owned pane history (true scrollback, unlike capture_tail —
         the dispatcher's stall/login classification input). recent-unwrapped
-        joins soft wraps, so the console renders the lines claude drew.
+        joins soft wraps, so the console renders the lines the CLI drew.
         Degrades to '' so a wedged server never 500s the history view."""
         if self.dry_run:
             return ""
@@ -135,7 +136,7 @@ class Sessions:
         the agent lifecycle, not screen activity: `working` is never idle,
         however long it lasts; any other status (idle / blocked / done /
         unknown, or no agent at all — a busy shell that has not reached
-        claude yet, podman still starting or the wrapper still running)
+        the CLI yet, podman still starting or the wrapper still running)
         accumulates from the moment herdr last changed its mind. herdr
         exposes the transition counter but no timestamp, so the moment is
         remembered in a sidecar keyed by (seq, status)."""

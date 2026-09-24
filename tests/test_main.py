@@ -1091,6 +1091,21 @@ def test_dead_session_files_diagnosis_issue_and_blocks(tmp_path, monkeypatch):
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
 
 
+@pytest.mark.parametrize("pick, cli", [
+    ("anthropic/claude-opus-5", "claude --continue"),
+    ("openai/gpt-5-codex@high", "codex resume --last"),
+])
+def test_crash_repro_resumes_on_the_stages_runtime(tmp_path, monkeypatch, pick, cli):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, picks={"implement": pick})
+    gh = FakeGitHub()
+    main.run_pass(c, deps(gh, FakeSessions(alive=set())))
+    body = gh.created_issues[0][2]
+    assert f"- repro: `cd {wt} && {cli}  # inside session image`" in body
+
+
 def test_crash_path_ends_the_session_after_reporting(tmp_path, monkeypatch):
     """HandleCrash must call end() after _report_session_crash so the pane
     tail is captured first (for the web console) and the dead tab is closed."""

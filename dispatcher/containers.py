@@ -9,8 +9,8 @@ import os
 import shlex
 from pathlib import Path
 
-from dispatcher.models import bare_model_id
-from dispatcher.runtimes import CLAUDE, Runtime
+from dispatcher.models import bare_model_id, split_model_id
+from dispatcher.runtimes import CLAUDE, Runtime, runtime_for
 
 
 def clone_root(worktree: str) -> str:
@@ -43,11 +43,9 @@ def _host_binary(runtime: Runtime) -> list[str]:
     box has one CLI at one version (the image used to npm-install its
     own, which drifted behind the auto-updating host install). Resolved at
     spawn: a running container keeps its version even after the host
-    updater moves on. The auto-updater is off inside, since the binary is the
-    host's to update."""
+    updater moves on."""
     binary = os.path.realpath(Path.home() / runtime.binary)
-    return ["-v", f"{binary}:/usr/local/bin/{Path(runtime.binary).name}:ro",
-            "-e", "DISABLE_AUTOUPDATER=1"]
+    return ["-v", f"{binary}:/usr/local/bin/{Path(runtime.binary).name}:ro"]
 
 
 def _wrapper() -> list[str]:
@@ -57,10 +55,11 @@ def _wrapper() -> list[str]:
 
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
-                args: str, effort: str = "", runtime: Runtime = CLAUDE) -> str:
-    """The session's shell command. `runtime` is the model's — the caller
-    resolves it (Sessions, through runtimes.runtime_for), so an unknown
-    provider fails there, before anything is launched."""
+                args: str, effort: str = "", runtime: Runtime | None = None) -> str:
+    """The session's shell command, on the model's runtime. A caller that
+    already resolved it (Sessions._launch) passes it; otherwise it is
+    resolved here, and an unknown provider raises before anything runs."""
+    runtime = runtime or runtime_for(model)
     clone = clone_root(worktree)
     branch = task_branch(worktree)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
@@ -116,7 +115,13 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     dispatcher's own execve small; the container's own execve is kept under the
     same 128 KiB ceiling by triage_prefetch's context budget, which is measured
     on exactly the serialization that lands in the file. Only the shell line is
-    composed; the podman argv stays a list so its shape stays assertable."""
+    composed; the podman argv stays a list so its shape stays assertable.
+
+    Triage is Claude-only (parse_policy rejects other providers in `triage:`);
+    a non-anthropic model here is a caller bug, refused before anything runs."""
+    provider = split_model_id(model)[0]
+    if provider != "anthropic":
+        raise ValueError(f"triage runs on Claude only; got {provider!r} model {model!r}")
     home = str(Path.home())
     claude = (f"claude -p \"$(cat {shlex.quote(prompt_path)})\" "
               f"--permission-mode auto --model {shlex.quote(bare_model_id(model))}"

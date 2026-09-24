@@ -8,9 +8,13 @@ def test_bare_and_anthropic_ids_run_on_claude():
     assert runtimes.runtime_for("anthropic/claude-opus-5") is runtimes.CLAUDE
 
 
+def test_openai_ids_run_on_codex():
+    assert runtimes.runtime_for("openai/gpt-5-codex") is runtimes.CODEX
+
+
 def test_a_provider_with_no_runtime_is_a_clear_error():
-    with pytest.raises(ValueError, match="no runtime for provider 'openai'"):
-        runtimes.runtime_for("openai/gpt-5")
+    with pytest.raises(ValueError, match="no runtime for provider 'mistral'"):
+        runtimes.runtime_for("mistral/large")
 
 
 def test_claude_builds_its_launch_and_resume_args():
@@ -25,6 +29,6 @@ def test_a_session_on_a_provider_with_no_runtime_fails_before_any_tab(tmp_path, 
     (tmp_path / ".git").write_text(f"gitdir: {tmp_path}/clone/.git/worktrees/t\n")
     tabs = []
     monkeypatch.setattr(herdr.Tab, "ensure", lambda *a, **k: tabs.append(a))
-    with pytest.raises(ValueError, match="no runtime for provider 'openai'"):
-        sessions.Sessions().resume("acme", 42, str(tmp_path), "go", "openai/gpt-5")
+    with pytest.raises(ValueError, match="no runtime for provider 'mistral'"):
+        sessions.Sessions().resume("acme", 42, str(tmp_path), "go", "mistral/large")
     assert tabs == []
