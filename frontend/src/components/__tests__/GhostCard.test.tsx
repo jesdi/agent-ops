@@ -101,6 +101,7 @@ test('a capacity-blocked queued card can force its first claim', async () => {
           note: 'Fable weekly capacity is low',
         },
         alternatives: [],
+        any_provider: true,
       },
     }} isNext busy={false} onBoost={() => {}} onNext={() => {}} onReady={() => {}} />,
   )

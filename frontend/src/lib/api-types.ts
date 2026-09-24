@@ -829,8 +829,11 @@ export interface components {
         TaskAdmissionView: {
             /** Alternatives */
             alternatives: components["schemas"]["ModelAdmissionView"][];
-            /** Any Provider */
-            any_provider?: boolean | null;
+            /**
+             * Any Provider
+             * @default false
+             */
+            any_provider: boolean;
             requested: components["schemas"]["ModelAdmissionView"];
         };
         /** TaskCard */

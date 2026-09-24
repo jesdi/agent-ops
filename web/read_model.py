@@ -137,11 +137,8 @@ class TaskAdmissionView(BaseModel):
     requested: ModelAdmissionView
     alternatives: list[ModelAdmissionView]
     # False once the stage has a pick: only the requested (picked) model's
-    # provider may then be chosen. True when nothing is picked yet. Every
-    # producer sets it; the None default only keeps the generated TS field
-    # optional (FastAPI marks a bool default required), and a client reads a
-    # missing value as the safe False.
-    any_provider: bool | None = None
+    # provider may then be chosen. True when nothing is picked yet.
+    any_provider: bool = False
 
 
 class TaskCard(BaseModel):
