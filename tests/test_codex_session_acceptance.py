@@ -67,7 +67,9 @@ def test_codex_spawn_command_shape(tmp_path, monkeypatch):
     assert "-c model_reasoning_effort=high" in cmd
     assert "--dangerously-bypass-approvals-and-sandbox" in cmd
     assert f"-c 'notify=[\"{wt}/.agent/stop-hook.sh\"]'" in cmd
-    assert f"-c 'projects.\"{wt}\".trust_level=\"trusted\"'" in cmd
+    # Dotted -c keys keep their quote characters in Codex 0.155.1, so the
+    # trust override must be an inline table, not a dotted path.
+    assert f"-c 'projects={{\"{wt}\"={{trust_level=\"trusted\"}}}}'" in cmd
     assert "--remote-control" not in cmd
 
 
@@ -124,8 +126,9 @@ def test_claude_session_never_mounts_codex_home(tmp_path, monkeypatch):
 
 def test_plan_prompt_has_a_fallback_for_runtimes_without_subagents():
     out = render_stage_prompt(Stage.PLAN, CTX)
-    assert ("Dispatch four reviewer subagents if your runtime supports them; "
+    normalised = " ".join(out.split())  # tolerate a line wrap in plan.md
+    assert ("Dispatch four reviewer subagents if you can dispatch subagents; "
             "otherwise run the four reviews yourself, one after another, "
-            "each a fresh pass over the spec and the tickets.") in out
+            "each a fresh pass over the spec and the tickets.") in normalised
     # the old, no-fallback sentence must be gone
     assert "Dispatch four reviewer subagents over the spec and the ticket set" not in out
