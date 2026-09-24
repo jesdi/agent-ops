@@ -158,12 +158,15 @@ def _review_second(raw: object) -> str:
     unset. Must name a non-anthropic provider with a configured effort
     vocabulary (a runtime); no @effort suffix, since codex exec's effort
     comes from the codex-home config, not this policy."""
-    if raw in (None, ""):
+    if not raw:
         return ""
     if not isinstance(raw, str) or "@" in raw or any(c.isspace() for c in raw):
         raise ValueError(f"models: review_second: must be 'provider/model' "
                          f"with no effort or whitespace, got {raw!r}")
-    provider, _ = split_model_id(raw)
+    try:
+        provider, _ = split_model_id(raw)
+    except ValueError as e:
+        raise ValueError(f"models: review_second: {e}") from e
     if provider == DEFAULT_PROVIDER or provider not in PROVIDER_EFFORTS:
         raise ValueError(f"models: review_second: provider must be a "
                          f"non-anthropic provider with configured efforts "

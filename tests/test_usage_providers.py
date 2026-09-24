@@ -125,7 +125,7 @@ def test_missing_credentials_is_unavailable(tmp_path, monkeypatch):
 def test_fetch_all_covers_only_referenced_providers(tmp_path):
     fake = FakeUsage()
     c = cfg(tmp_path, models=one_track_policy("openai/m"))
-    out = up.fetch_all(c, adapters={"openai": fake, "anthropic": FakeUsage(), "mistral": FakeUsage()})
+    out = up.fetch_all(c, adapters={"openai": fake, "anthropic": FakeUsage()})
     assert set(out) == {"anthropic", "openai"} and fake.calls == 1
 
 

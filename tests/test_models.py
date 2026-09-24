@@ -275,3 +275,8 @@ def test_triage_entry_is_the_first_admitted_triage_entry():
     assert str(triage_entry(p, ALL)) == "anthropic/a@low"
     assert str(triage_entry(p, lambda m: m == "anthropic/b")) == "anthropic/b@high"
     assert triage_entry(p, NONE) is None
+
+
+def test_review_second_malformed_model_id_error_is_prefixed():
+    with pytest.raises(ValueError, match=r"^models: review_second:.*provider/model"):
+        parse_policy({**RAW, "review_second": "openai/x/y"})
