@@ -26,7 +26,7 @@ from dispatcher.convergence import pass_lock
 from dispatcher.config import Config, Target, load_config, policy_for, referenced_providers
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
-from dispatcher import (eventlog, execution_overrides, failures, intents, loops,
+from dispatcher import (claims, eventlog, execution_overrides, failures, intents, loops,
                         messages, pr_poll, queue_ops, relogin, tmux_migration,
                         triage)
 from dispatcher.github import Candidate, GitHubClient
@@ -1565,21 +1565,9 @@ def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
             yield cand, launch
 
 
-def _pick_target(targets: list[Target], active_counts: dict[str, int],
-                 last_claimed: dict[str, str]) -> Target | None:
-    """The target the next free unit goes to: fewest active among those under
-    `max_active`, ties to the least recent claim ("" = never = oldest), then
-    list order (min is stable). None when every target is capped."""
-    open_ = [t for t in targets
-             if t.max_active is None or active_counts[t.name] < t.max_active]
-    return min(open_, key=lambda t: (active_counts[t.name],
-                                     last_claimed.get(t.name, "")),
-               default=None)
-
-
 def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
                admit: Admit, dry_run: bool, pass_started: str = "") -> None:
-    """Claim free units one at a time, each via _pick_target. A target leaves
+    """Claim free units one at a time, each via claims.pick_target. A target leaves
     the round when its candidates run out or provisioning fails for it."""
     all_tasks = load_all(cfg.state_dir)
     free = _box_free(cfg, all_tasks)
@@ -1589,24 +1577,23 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
     for t in active(all_tasks):
         if t.target in counts:
             counts[t.target] += 1
-    last = {}
-    for e in eventlog.read_tail(cfg.state_dir, limit=sys.maxsize):
-        if e.get("event") == "claimed":
-            last[e.get("target")] = max(last.get(e.get("target"), ""), e.get("ts", ""))
+    last = claims.last_claims(cfg.state_dir)
+    caps = {t.name: t.max_active for t in targets}
     # Generator bodies run on first next(), so a target's rank_cmd runs only
     # when it gets a turn.
     gens = {t.name: _claimable(cfg, deps, t,
                                [x for x in all_tasks if x.target == t.name],
                                admit, pass_started)
             for t in targets}
-    in_round = list(targets)
+    in_round = {t.name: t for t in targets}  # insertion order = list order
     while free > 0:
-        target = _pick_target(in_round, counts, last)
-        if target is None:
+        name = claims.pick_target(list(in_round), counts, last, caps)
+        if name is None:
             return
+        target = in_round[name]
         picked = next(gens[target.name], None)
         if picked is None:
-            in_round.remove(target)
+            del in_round[name]
             continue
         cand, launch = picked
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
@@ -1624,7 +1611,7 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
             # candidate, filing an issue + ping + quarantine record per
             # candidate. The target leaves this pass's round; the next pass
             # retries its remaining candidates, and other targets keep claiming.
-            in_round.remove(target)
+            del in_round[name]
             continue
         task = TaskState(issue=cand.number, target=target.name,
                          stage=Stage.QUEUED, slot=slot, worktree=wt,
