@@ -565,17 +565,17 @@ def test_spec_review_grace_minutes_wrong_type_fails(tmp_path, bad_value):
 def test_referenced_providers_includes_target_policies(tmp_path):
     target_models = """\
     models:
-      triage: [fake/m]
+      triage: [anthropic/m]
       untracked: t
       tracks:
         t:
           when: w
-          spec: [fake/m]
-          plan: [fake/m]
-          implement: [fake/m]
-          review: [fake/m]
+          spec: [openai/m]
+          plan: [openai/m]
+          implement: [openai/m]
+          review: [openai/m]
 """
     p = tmp_path / "targets.yaml"
     p.write_text(SAMPLE.replace("    status_in_progress_option_id: def456\n",
                                 "    status_in_progress_option_id: def456\n" + target_models))
-    assert referenced_providers(load_config(p)) == frozenset({"anthropic", "fake"})
+    assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})

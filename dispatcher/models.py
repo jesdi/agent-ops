@@ -11,14 +11,18 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
 
 STAGES = ("spec", "plan", "implement", "review")
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # anthropic's own vocabulary
+PROVIDER_EFFORTS: Mapping[str, tuple[str, ...]] = {
+    "anthropic": EFFORTS,
+    "openai": ("minimal", "low", "medium", "high", "xhigh"),
+}
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-opus-5"
 TRACK_LABEL_PREFIX = "track:"
 _POLICY_STAGES = {"queued": "spec", "awaiting-spec-review": "spec",
                   "address-review": "implement"}
 _OLD_KEYS = ("default", "rules")
-_TOP_KEYS = frozenset({"triage", "untracked", "tracks"})
+_TOP_KEYS = frozenset({"triage", "untracked", "tracks", "review_second"})
 
 
 def split_model_id(model_id: str) -> tuple[str, str]:
@@ -64,18 +68,23 @@ class Entry:
 def parse_entry(value: object, context: str) -> Entry:
     """`provider/model[@effort]` -> Entry. Whitespace is rejected because the
     value lands unquoted in a shell command; a bad effort is rejected because
-    the CLI would."""
+    the CLI would, against that entry's OWN provider's vocabulary — a
+    provider absent from PROVIDER_EFFORTS is a config error too."""
     if not isinstance(value, str) or value == "" or any(c.isspace() for c in value):
         raise ValueError(f"models: {context} must be a non-empty entry "
                          f"'provider/model[@effort]' with no whitespace, got {value!r}")
     model_id, at, effort = value.partition("@")
-    if at and effort not in EFFORTS:
-        raise ValueError(f"models: {context} effort must be one of "
-                         f"{list(EFFORTS)}, got {effort!r}")
     try:
         provider, model = split_model_id(model_id)
     except ValueError as e:
         raise ValueError(f"models: {context} {e}") from e
+    efforts = PROVIDER_EFFORTS.get(provider)
+    if efforts is None:
+        raise ValueError(f"models: {context} provider {provider!r} has no "
+                         f"configured efforts; expected one of {sorted(PROVIDER_EFFORTS)}")
+    if at and effort not in efforts:
+        raise ValueError(f"models: {context} {provider} effort must be one of "
+                         f"{list(efforts)}, got {effort!r}")
     return Entry(provider, model, effort)
 
 
@@ -98,6 +107,7 @@ class ModelPolicy:
     triage: tuple[Entry, ...]
     untracked: str          # the track a candidate with no track: label specs on
     tracks: Mapping[str, Track]
+    review_second: str = ""  # provider/model a Claude review session's codex exec runs on, "" = unset
 
     def entries(self) -> list[Entry]:
         out = list(self.triage)
@@ -143,6 +153,25 @@ def _track(name: str, raw: object) -> Track:
                  {s: _entries(raw[s], f"track {name!r} {s}:") for s in STAGES})
 
 
+def _review_second(raw: object) -> str:
+    """`models.review_second:` -> a plain 'provider/model' string, "" when
+    unset. Must name a non-anthropic provider with a configured effort
+    vocabulary (a runtime); no @effort suffix, since codex exec's effort
+    comes from the codex-home config, not this policy."""
+    if raw in (None, ""):
+        return ""
+    if not isinstance(raw, str) or "@" in raw or any(c.isspace() for c in raw):
+        raise ValueError(f"models: review_second: must be 'provider/model' "
+                         f"with no effort or whitespace, got {raw!r}")
+    provider, _ = split_model_id(raw)
+    if provider == DEFAULT_PROVIDER or provider not in PROVIDER_EFFORTS:
+        raise ValueError(f"models: review_second: provider must be a "
+                         f"non-anthropic provider with configured efforts "
+                         f"{sorted(p for p in PROVIDER_EFFORTS if p != DEFAULT_PROVIDER)}, "
+                         f"got {raw!r}")
+    return raw
+
+
 def parse_policy(raw: dict | None) -> ModelPolicy:
     """Validate the `models:` block. Raises ValueError so a typo kills the
     pass loudly at config load instead of silently mis-routing."""
@@ -169,8 +198,13 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
                          f"{sorted(tracks)}, got {untracked!r}")
     if "triage" not in raw:
         raise ValueError("models: triage: list is required")
-    return ModelPolicy(triage=_entries(raw["triage"], "triage:"),
-                       untracked=untracked, tracks=tracks)
+    triage = _entries(raw["triage"], "triage:")
+    non_anthropic = [e for e in triage if e.provider != DEFAULT_PROVIDER]
+    if non_anthropic:
+        raise ValueError(f"models: triage: must be {DEFAULT_PROVIDER} only, "
+                         f"got {non_anthropic[0].model_id}")
+    return ModelPolicy(triage=triage, untracked=untracked, tracks=tracks,
+                       review_second=_review_second(raw.get("review_second")))
 
 
 def tracks_text(policy: ModelPolicy) -> str:

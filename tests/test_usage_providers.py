@@ -35,7 +35,7 @@ def cfg(tmp_path, models=None):
 def one_track_policy(*entries: str):
     from dispatcher.models import parse_policy
     stage = list(entries)
-    return parse_policy({"triage": stage, "untracked": "t", "tracks": {
+    return parse_policy({"triage": ["anthropic/claude-sonnet-4-6"], "untracked": "t", "tracks": {
         "t": {"when": "w", "spec": stage, "plan": stage,
               "implement": stage, "review": stage}}})
 
@@ -124,16 +124,16 @@ def test_missing_credentials_is_unavailable(tmp_path, monkeypatch):
 
 def test_fetch_all_covers_only_referenced_providers(tmp_path):
     fake = FakeUsage()
-    c = cfg(tmp_path, models=one_track_policy("fake/m"))
-    out = up.fetch_all(c, adapters={"fake": fake, "anthropic": FakeUsage()})
-    assert set(out) == {"fake"} and fake.calls == 1
+    c = cfg(tmp_path, models=one_track_policy("openai/m"))
+    out = up.fetch_all(c, adapters={"openai": fake, "anthropic": FakeUsage(), "mistral": FakeUsage()})
+    assert set(out) == {"anthropic", "openai"} and fake.calls == 1
 
 
 def test_fetch_all_reports_missing_adapter_as_unavailable(tmp_path):
     c = cfg(tmp_path, models=one_track_policy(
-        "nvidia/claude-sonnet-4-6", "anthropic/claude-sonnet-4-6"))
+        "openai/gpt-sol", "anthropic/claude-sonnet-4-6"))
     out = up.fetch_all(c, adapters={"anthropic": FakeUsage()})
-    assert out["nvidia"].source == "unavailable"
+    assert out["openai"].source == "unavailable"
     assert out["anthropic"].source == "oauth"
 
 

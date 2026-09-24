@@ -54,8 +54,9 @@ loop_caps:
 # list. A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
 # A target may carry its own `models:` block, which REPLACES this one.
 models:
-  triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted
+  triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted; anthropic only
   untracked: standard                    # spec-stage track when no track: label
+  # review_second: openai/gpt-sol   # model a Claude review session's codex exec runs on; unset = no Codex second pass
   tracks:
     trivial:
       when: Rote rename, typo, formatting, dependency bump, doc edit with no product decision.

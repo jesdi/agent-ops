@@ -241,10 +241,10 @@ def test_candidates_for_a_non_policy_stage_are_empty():
 def test_avoid_provider_moves_its_entries_to_the_back_stably():
     p = parse_policy({**RAW, "tracks": {"t": {
         "when": "w", "spec": ["m"], "plan": ["m"], "implement": ["m"],
-        "review": ["anthropic/a1", "openai/o1", "anthropic/a2", "nvidia/n1"]}},
+        "review": ["anthropic/a1", "openai/o1", "anthropic/a2", "openai/o2"]}},
         "untracked": "t"})
     assert [e.model_id for e in candidates(p, "t", "review", avoid_provider="anthropic")] == [
-        "openai/o1", "nvidia/n1", "anthropic/a1", "anthropic/a2"]
+        "openai/o1", "openai/o2", "anthropic/a1", "anthropic/a2"]
 
 
 def test_avoid_provider_is_a_no_op_when_every_entry_shares_it():
@@ -271,7 +271,7 @@ def test_resolve_honours_avoid_provider():
 
 
 def test_triage_entry_is_the_first_admitted_triage_entry():
-    p = parse_policy({**RAW, "triage": ["anthropic/a@low", "openai/b@high"]})
+    p = parse_policy({**RAW, "triage": ["anthropic/a@low", "anthropic/b@high"]})
     assert str(triage_entry(p, ALL)) == "anthropic/a@low"
-    assert str(triage_entry(p, lambda m: m.startswith("openai/"))) == "openai/b@high"
+    assert str(triage_entry(p, lambda m: m == "anthropic/b")) == "anthropic/b@high"
     assert triage_entry(p, NONE) is None
