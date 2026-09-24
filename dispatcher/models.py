@@ -75,6 +75,7 @@ def override_refusal(picks: Mapping[str, str], stage: str, model_id: str) -> str
 
 
 def override_allowed(picks: Mapping[str, str], stage: str, model_id: str) -> bool:
+    """True when `model_id` may override `stage` (see override_refusal)."""
     return not override_refusal(picks, stage, model_id)
 
 
