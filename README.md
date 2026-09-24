@@ -186,22 +186,22 @@ are never forceable).
 Requires Python ≥ 3.11.
 
 ```bash
-pip install -e '.[dev]'
+./scripts/setup.sh    # .venv, Python and frontend deps, agent skills
 pytest
 ```
+
+Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills. Setup also enables the committed git hooks (`core.hooksPath .githooks`). Their `post-checkout` hook installs the skills in any new worktree, including a plain `git worktree add` or one Claude Code creates.
 
 ### Agent skills
 
 Two kinds of agent skills live in this repo:
 
 - **Committed:** the [mattpocock/skills](https://github.com/mattpocock/skills) set in `.agents/skills/`, pinned by `skills-lock.json`.
-- **Not committed:** the skills from [jesdi/general-skills](https://github.com/jesdi/general-skills) (backlog, crap-gate, implement-spec, to-spec, to-tickets, …). Only their list, `.my-skills.json`, is committed. The skills are gitignored and installed into `.my-skills/`, with symlinks in `.claude/skills/`.
+- **Not committed:** the skills from [jesdi/general-skills](https://github.com/jesdi/general-skills) (backlog, crap-gate, implement-spec, review-diff, to-spec, to-tickets, …). Only their list, `.my-skills.json`, is committed. The skills are gitignored and installed into `.my-skills/`, with symlinks in `.claude/skills/`.
 
-After a checkout, install them (needs Node and pnpm):
+Global Claude Code config (rules, hooks, and plugins like engram, ponytail and codex, which lets Claude hand work to Codex) lives in the private [jesdi/claude-config](https://github.com/jesdi/claude-config). Run its `install.sh` once per machine.
 
-```bash
-./scripts/install-skills.sh
-```
+`scripts/setup.sh` installs the project skills. To install only them (needs Node and pnpm), run `./scripts/install-skills.sh`.
 
 To add a new one, run `pnpm dlx @jesdi/skills-cli install <skill> --agent claude` and add its `.claude/skills/<skill>` line to `.gitignore`.
 
