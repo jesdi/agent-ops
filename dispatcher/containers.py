@@ -10,6 +10,7 @@ import shlex
 from pathlib import Path
 
 from dispatcher.models import bare_model_id
+from dispatcher.runtimes import CLAUDE, Runtime
 
 
 def clone_root(worktree: str) -> str:
@@ -37,15 +38,15 @@ def _state_dir() -> str:
                           str(Path.home() / "agent-ops-state"))
 
 
-def _host_claude() -> list[str]:
-    """Run the host's native claude inside the container, read-only, so the
-    box has one claude at one version (the image used to npm-install its
+def _host_binary(runtime: Runtime) -> list[str]:
+    """Run the host's native CLI inside the container, read-only, so the
+    box has one CLI at one version (the image used to npm-install its
     own, which drifted behind the auto-updating host install). Resolved at
     spawn: a running container keeps its version even after the host
     updater moves on. The auto-updater is off inside, since the binary is the
     host's to update."""
-    binary = os.path.realpath(Path.home() / ".local" / "bin" / "claude")
-    return ["-v", f"{binary}:/usr/local/bin/claude:ro",
+    binary = os.path.realpath(Path.home() / runtime.binary)
+    return ["-v", f"{binary}:/usr/local/bin/{Path(runtime.binary).name}:ro",
             "-e", "DISABLE_AUTOUPDATER=1"]
 
 
@@ -56,7 +57,11 @@ def _wrapper() -> list[str]:
 
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
-                claude_args: str, effort: str = "") -> str:
+                claude_args: str, effort: str = "", rt: Runtime = CLAUDE) -> str:
+    """The session's shell command. `rt` is the model's runtime — the caller
+    resolves it (Sessions, through runtimes.runtime_for), so an unknown
+    provider fails there, before anything is launched."""
+    config_env, *auth_env = rt.env
     clone = clone_root(worktree)
     branch = task_branch(worktree)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
@@ -77,7 +82,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         # container boots as a fresh install and stalls on the first-run
         # wizard with nobody attached. CLAUDE_CONFIG_DIR moves all of it
         # inside the mounted claude-home.
-        f"-e CLAUDE_CONFIG_DIR=/root/.claude "
+        f"-e {config_env} "
         # The Stop hook fires inside the container and resolves waitd's
         # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its
         # curl dies against a nonexistent path and the `|| true` swallows
@@ -88,26 +93,13 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         f"-v {_state_dir()}/wait:{_state_dir()}/wait "
         f"-v {worktree}:{worktree} -w {worktree} "
         f"-v {clone}:{clone} "
-        f"-v {_state_dir()}/claude-home:/root/.claude "
-        f"-e CLAUDE_CODE_OAUTH_TOKEN "
-        f"{shlex.join(_host_claude())} "
+        f"-v {_state_dir()}/{rt.home}:{rt.mount} "
+        f"{''.join(f'-e {e} ' for e in auth_env)}"
+        f"{shlex.join(_host_binary(rt))} "
         f"-v {home}/.config/gh:/root/.config/gh:ro "
         f"-v {home}/.gitconfig:/root/.gitconfig:ro "
-        # auto: the classifier approves routine actions and stops only for
-        # genuinely risky ones — the stop then flows into the park/resume
-        # path (Stop hook → waitd → Telegram). acceptEdits still asked for
-        # every non-edit action, which no one is attached to answer.
-        #
-        # --remote-control <name>: every box session is reachable from
-        # claude.ai / the Claude app, named after its task
-        # (task-<target>-<issue>) so it is identifiable there. Remote Control
-        # is interactive-only (the headless -p keepalive cannot and need not
-        # use it) and needs the claude-home OAuth login, which the mounted
-        # store provides. It is a session-config flag, orthogonal to
-        # --continue on the resume path.
-        f"{image()} claude --remote-control {name} "
-        f"--permission-mode auto --model {bare_model_id(model)}"
-        f"{' --effort ' + effort if effort else ''} {claude_args}"
+        f"{image()} {rt.launch(name, worktree, bare_model_id(model), effort)}"
+        f" {claude_args}"
     )
 
 
@@ -139,11 +131,10 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         *_wrapper(),
         "podman", "run", "--rm", "--name", name,
         "--memory", memory, "--cpus", cpus,
-        "-e", "CLAUDE_CONFIG_DIR=/root/.claude",
-        "-e", "CLAUDE_CODE_OAUTH_TOKEN",
+        *(a for e in CLAUDE.env for a in ("-e", e)),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
-        "-v", f"{_state_dir()}/claude-home:/root/.claude",
-        *_host_claude(),
+        "-v", f"{_state_dir()}/{CLAUDE.home}:{CLAUDE.mount}",
+        *_host_binary(CLAUDE),
         "-v", f"{home}/.config/gh:/root/.config/gh:ro",
         "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
         "-v", f"{triage_dir}:/triage",

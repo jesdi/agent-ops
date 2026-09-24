@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from dispatcher import containers, herdr
+from dispatcher.runtimes import runtime_for
 
 
 def session_name(target: str, issue: int) -> str:
@@ -29,7 +30,8 @@ def session_name(target: str, issue: int) -> str:
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, claude_args: str, effort: str = "") -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
-                                  cpus, model, claude_args, effort=effort)
+                                  cpus, model, claude_args, effort=effort,
+                                  rt=runtime_for(model))
 
 
 class Sessions:
@@ -73,7 +75,7 @@ class Sessions:
             # it lives here and never in containers.session_cmd — the
             # headless triage container shares that module and must NOT read
             # as an agent.
-            env={"HERDR_AGENT": "claude"})
+            env={"HERDR_AGENT": runtime_for(model).herdr_agent})
         # Raise, never return quietly: the caller would record a stage that
         # never started, and the next pass would report a phantom crash with
         # nothing to show (#363). A raise fails the task with this reason.
@@ -103,7 +105,7 @@ class Sessions:
                   f"at {worktree}")
             return
         self._launch(target, issue, worktree, model,
-                     f"--continue {shlex.quote(message)}", effort=effort)
+                     runtime_for(model).resume(shlex.quote(message)), effort=effort)
 
     def capture_tail(self, target: str, issue: int, lines: int = 25) -> str:
         if self.dry_run:
