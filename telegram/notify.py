@@ -26,12 +26,7 @@ class Notifier:
 
     def send(self, template: str, **ctx) -> int:
         ctx.setdefault("console", self.console_url)
-        if "issue" in ctx:
-            if self.multi_target and ctx.get("target"):
-                ctx["ref"] = f"{ctx['target']}#{ctx['issue']}"
-            else:
-                ctx["ref"] = f"#{ctx['issue']}"
-        text = render(template, **ctx)
+        text = render(template, multi_target=self.multi_target, **ctx)
         if self.dry_run:
             print(f"[dry-run] telegram {template}: {text}")
             return 0

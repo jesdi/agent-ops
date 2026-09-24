@@ -74,7 +74,13 @@ _TEMPLATES = {
 }
 
 
-def render(template: str, **ctx) -> str:
+def task_ref(target: str, issue: int, multi_target: bool) -> str:
+    """How a message names a task: `target#issue` once the box runs more
+    than one project, a bare `#issue` otherwise."""
+    return f"{target}#{issue}" if multi_target and target else f"#{issue}"
+
+
+def render(template: str, multi_target: bool = False, **ctx) -> str:
     if template == "daily_digest":
         return "📋 agent-ops daily digest\n" + "\n".join(ctx["lines"])
     if template == "status":
@@ -84,8 +90,9 @@ def render(template: str, **ctx) -> str:
     if template == "triage_report":
         return _triage_report(list(ctx["lines"]),
                               ctx.get("triage_dir") or "<state_dir>/triage/")
-    if "issue" in ctx and "ref" not in ctx:
-        ctx = {**ctx, "ref": f"#{ctx['issue']}"}
+    if "issue" in ctx:
+        ctx = {**ctx, "ref": task_ref(ctx.get("target", ""), ctx["issue"],
+                                      multi_target)}
     text = _TEMPLATES[template].format(**ctx)
     if template in ("awaiting_spec_review", "spec_parked", "parked_question") and ctx.get("console"):
         text += (f"\nread & approve: {ctx['console']}/task/"
