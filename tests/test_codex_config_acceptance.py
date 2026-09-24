@@ -79,12 +79,12 @@ def test_review_second_valid_openai_model_is_accepted():
 
 
 def test_review_second_anthropic_provider_is_rejected():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="non-anthropic"):
         parse_policy(_raw(review_second="anthropic/claude-opus-5"))
 
 
 def test_review_second_unknown_provider_is_rejected():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="configured efforts"):
         parse_policy(_raw(review_second="mistral/some-model"))
 
 
