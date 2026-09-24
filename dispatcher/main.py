@@ -245,13 +245,13 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
                        code: str) -> None:
     """Reply to a login park = the OAuth authorization code. Raw keystrokes
     into the still-alive pane — NOT the wake/resume path, which would spawn
-    `claude --continue` over the live login prompt. Park cleared; stage
+    a resumed session over the live login prompt. Park cleared; stage
     signals, the Stop hook, and the stall timer take over. A wrong code
     leaves the screen static and the stall detector simply re-fires.
 
     The reply may arrive hours later, so the prompt is re-verified first: the
     session's pane is a HOST shell (is_alive means the tab's shell is busy,
-    not that claude is at a prompt), and once claude has exited the pane is
+    not that the CLI is at a prompt), and once the CLI has exited the pane is
     back at the host shell, where send_text would execute the operator's text
     as a shell command outside the sandbox.
 
@@ -712,9 +712,10 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
 def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 launch: Launch, reason: str) -> None:
     """Resume the plan session with the format-check failure, in place, rather
-    than failing the task. --continue reads the transcript from claude-home, so
-    context survives ending the (zombie) session first — which we must do, or
-    _launch would type `claude --continue` INTO the stopped claude's input box
+    than failing the task. The resume reads the transcript from the runtime's
+    mounted home, so context survives ending the (zombie) session first —
+    which we must do, or _launch would type the resume command INTO the
+    stopped session's input box
     (same failure mode as spawning over a live session)."""
     entry = launch.entry
     agent_dir = Path(task.worktree) / ".agent"
@@ -1109,7 +1110,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # End first, unconditionally. Most parks already stopped the session,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
-    # running claude (the failure _retry_plan and SpawnStage guard).
+    # running session (the failure _retry_plan and SpawnStage guard).
     deps.sessions.end(task.target, task.issue)
     if task.crashed_stage:
         _respawn_crashed(cfg, deps, target, task, launch)
@@ -1170,9 +1171,10 @@ def _respawn_crashed(cfg: Config, deps: Deps, target: Target,
                      task: TaskState, launch: Launch) -> None:
     """Resume of a crashed task: the stage it died in starts afresh in the
     same worktree — the same ticket for implement. A fresh stage prompt, not
-    `claude --continue`: the newest transcript may belong to the previous
-    stage or ticket, or the crashed launch may never have started one. The
-    queued messages ride in the stage prompt."""
+    a resume (`claude --continue` / `codex resume --last`): the newest
+    transcript may belong to the previous stage or ticket, or the crashed
+    launch may never have started one. The queued messages ride in the
+    stage prompt."""
     deps.github.set_status(target, task.issue,
                            target.status_in_progress_option_id)
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
@@ -1260,7 +1262,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit) -> None:
                        feedback_cursor=_cursor_now())
         # The implement session is still alive at pr-open (the pr-open
         # transition never ends it). End first so _launch doesn't type
-        # the podman command into the live claude's input box.
+        # the podman command into the live session's input box.
         deps.sessions.end(task.target, task.issue)
         _spawn_stage(cfg, deps, target, task, launch)
         _consume_execution_choice(cfg, task.target, task.issue)
@@ -1415,7 +1417,7 @@ def _on_notify(turn: _Turn, task: TaskState, act: Notify,
 def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
                     launch: Launch) -> TaskState:
     clear_waiting(turn.cfg.state_dir, task.target, task.issue)
-    # The previous stage's claude is usually still alive here — an
+    # The previous stage's session is usually still alive here — an
     # interactive session cannot exit itself. _launch would type
     # the next stage's podman command INTO it (and the container
     # name would collide). End it first; no-op when already dead.

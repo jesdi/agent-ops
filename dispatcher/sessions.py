@@ -61,13 +61,12 @@ class Sessions:
         return tab is not None and tab.alive
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
-                args: str, effort: str = "") -> None:
+                runtime: Runtime, args: str, effort: str = "") -> None:
         # Build the command FIRST: containers.clone_root reads
         # <worktree>/.git and raises on a vanished worktree (the case
         # _fail_task_crash exists for). Doing it before Tab.ensure means
         # that raise leaves no workspace and no empty tab behind for a task
         # that will never launch.
-        runtime = runtime_for(model)
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
                          model, args, effort=effort, runtime=runtime)
         tab = herdr.Tab.ensure(
@@ -98,7 +97,7 @@ class Sessions:
         agent_dir = Path(worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)
-        self._launch(target, issue, worktree, model,
+        self._launch(target, issue, worktree, model, runtime_for(model),
                      f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
@@ -107,8 +106,9 @@ class Sessions:
             print(f"[dry-run] resume {session_name(target, issue)} on {model} "
                   f"at {worktree}")
             return
-        self._launch(target, issue, worktree, model,
-                     runtime_for(model).resume(shlex.quote(message)), effort=effort)
+        runtime = runtime_for(model)
+        self._launch(target, issue, worktree, model, runtime,
+                     runtime.resume(shlex.quote(message)), effort=effort)
 
     def capture_tail(self, target: str, issue: int, lines: int = 25) -> str:
         if self.dry_run:

@@ -215,13 +215,15 @@ def test_wrapper_path_is_one_executable_even_with_spaces(monkeypatch, tmp_path):
     assert argv[:2] == ["/opt/my infra/token-wrapper", "podman"]
 
 
-def test_model_prefix_never_reaches_the_cli(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("model_id", ["anthropic/claude-fable-5", "openai/gpt-5-codex"])
+def test_model_prefix_never_reaches_the_cli(tmp_path: Path, monkeypatch, model_id):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "anthropic/claude-fable-5", "P")
-    assert "--model claude-fable-5" in cmd
-    assert "anthropic/" not in cmd
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", model_id, "P")
+    provider, bare = model_id.split("/")
+    assert f"--model {bare}" in cmd
+    assert f"{provider}/" not in cmd
 
 
 def test_triage_cmd_model_prefix_never_reaches_the_cli(monkeypatch, tmp_path):

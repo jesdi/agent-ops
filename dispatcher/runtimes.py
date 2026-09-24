@@ -68,14 +68,16 @@ CODEX = Runtime(
     # agent-turn-complete — Codex's Stop hook — running the worktree's own
     # stop-hook.sh (it ignores Codex's JSON argument). The trust override
     # pre-empts the first-run trust prompt that would stall an unattended
-    # pane. Both are per launch because the worktree path is per task.
+    # pane; it is an inline table because -c keeps the quotes of a dotted
+    # key segment (projects."<wt>".trust_level never matches). Both are
+    # per launch because the worktree path is per task.
     # No --remote-control: Codex has no equivalent.
     launch=lambda name, worktree, model, effort: (
         f"codex --model {model}"
         f"{' -c model_reasoning_effort=' + effort if effort else ''}"
         " --dangerously-bypass-approvals-and-sandbox"
         f" -c 'notify=[\"{worktree}/.agent/stop-hook.sh\"]'"
-        f" -c 'projects.\"{worktree}\".trust_level=\"trusted\"'"),
+        f" -c 'projects={{\"{worktree}\"={{trust_level=\"trusted\"}}}}'"),
     # The newest Codex session for the cwd; a stage never changes provider,
     # so that is the stage's.
     resume=lambda message: f"resume --last {message}",
