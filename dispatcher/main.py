@@ -1022,7 +1022,7 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit,
             continue  # this model's provider has no headroom; others may
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
-            return
+            continue
         if task.slot == NO_SLOT:
             # Gate-parked tasks gave their slot back. Take any free one —
             # worktrees are per-issue and the spec stage never bound the
@@ -1200,11 +1200,11 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit) -> None:
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
-            return
+            continue
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
             _mark_wake_blocked(cfg, target, task, "no free slot")
-            return
+            continue
         _clear_wake_blocked(cfg, task.target, task.issue)
         # Cursor := spawn time: everything the session can read live is
         # now "seen"; anything arriving after this moment re-triggers a
