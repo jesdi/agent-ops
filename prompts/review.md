@@ -18,9 +18,10 @@ them. Nobody is watching this chat.
 ticket; the full diff; `CONTEXT.md` and `docs/adr/`.
 
 ## 2. Review and fix, bounded
-Run the `code-review` skill against the spec and this repository's
-standards, and the `deep-quality-review` skill for maintainability. Check
-every acceptance criterion in every ticket against the diff. Fix what you
+Run the `review-diff` skill on `origin/main...HEAD` with the spec at
+`$spec_path`; its gate is `$gate_cmd`. It reports spec, correctness and
+structure findings separately; act on all three. Check every acceptance
+criterion in every ticket against the diff too. Fix what you
 find on this branch, test-first, in small commits. Each fix-then-re-review
 pass is one round: signal `"round": 1` before the first fixes, `"round": 2`
 before the second. The dispatcher parks the task past the cap; never start

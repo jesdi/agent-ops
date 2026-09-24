@@ -115,9 +115,11 @@ synced by `@jesdi/skills-cli`. Distinct from process skills.
 
 **Process skills**:
 Repo-agnostic workflow skills (to-spec, to-questionnaire, to-tickets,
-prototype, wizard, tdd, code-review, deep-quality-review…) that stage
-prompts invoke. Vendored as files into the claude-home seed from the skills
-repo (`make vendor-skills`); never a plugin, never carried by target repos.
+prototype, wizard, tdd, review-diff, deep-quality-review…) that stage
+prompts invoke. They live in the claude-home seed (agent-ops-infra, ADR
+0003): the jesdi ones pinned in its `.my-skills.json` and installed with
+`@jesdi/skills-cli`, the mattpocock ones vendored as files
+(`make vendor-skills`); never a plugin, never carried by target repos.
 
 ## Loop-policy ownership
 
