@@ -28,6 +28,20 @@
       "agents": [
         "claude"
       ]
+    },
+    "to-spec": {
+      "version": "0.1.0",
+      "package": "0.0.16",
+      "agents": [
+        "claude"
+      ]
+    },
+    "to-tickets": {
+      "version": "0.1.0",
+      "package": "0.0.16",
+      "agents": [
+        "claude"
+      ]
     }
   }
 }

@@ -17,6 +17,9 @@ targets.yaml
 .claude/skills/branch-audit
 .claude/skills/ceo-review
 .claude/skills/file-bug-issue
+.claude/skills/implement-spec
+.claude/skills/to-spec
+.claude/skills/to-tickets
 frontend/dist/
 
 # Quality reports
