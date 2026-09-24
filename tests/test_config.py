@@ -466,6 +466,85 @@ def test_bad_pace_knobs_fail_config_load(tmp_path, extra, msg):
         load_config(p)
 
 
+# --- ticket 01: config accepts the multi-project shape ---
+
+TARGET_NO_OPTIONAL_CMDS = """
+state_dir: /tmp/s
+targets:
+  - name: alpha
+    repo: jesdi/alpha
+    clone_path: /tmp/c
+    worktrees_path: /tmp/w
+    rank_cmd: rank
+    gate_cmd: "make gate"
+    project_number: 1
+    project_owner: jesdi
+    status_field_id: F
+    status_ready_option_id: R
+    status_in_progress_option_id: P
+"""
+
+
+def test_target_with_no_setup_or_verify_cmd_loads_with_empty_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    p = tmp_path / "t.yaml"
+    p.write_text(TARGET_NO_OPTIONAL_CMDS)
+    t = load_config(p).targets[0]
+    assert t.setup_cmd == ""
+    assert t.verify_cmd == ""
+
+
+def test_max_active_within_capacity_loads(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    p = tmp_path / "t.yaml"
+    p.write_text(GATED_YAML + "    max_active: 2\n")
+    assert load_config(p).targets[0].max_active == 2
+
+
+@pytest.mark.parametrize("bad_value", [0, 4])  # capacity defaults to 3
+def test_max_active_out_of_bounds_fails_naming_target_and_field(tmp_path, monkeypatch, bad_value):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    p = tmp_path / "t.yaml"
+    p.write_text(GATED_YAML + f"    max_active: {bad_value}\n")
+    with pytest.raises(ValueError, match=r"alpha.*max_active"):
+        load_config(p)
+
+
+def test_spec_review_grace_minutes_null_means_never(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\nspec_review_grace_minutes: null\ntargets: []\n")
+    assert load_config(p).spec_review_grace_minutes is None
+
+
+def test_missing_gate_cmd_error_names_target_and_field(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
+    p = tmp_path / "t.yaml"
+    p.write_text(GATED_YAML.replace('    gate_cmd: "make gate SLOT={slot}"\n', ""))
+    with pytest.raises(ValueError, match=r"alpha.*gate_cmd"):
+        load_config(p)
+
+
+def test_example_yaml_loads_cleanly_and_documents_new_fields():
+    path = Path(__file__).resolve().parent.parent / "targets.example.yaml"
+    cfg = load_config(path)
+    assert cfg.targets  # loads cleanly end to end
+
+    text = path.read_text()
+    lines = text.splitlines()
+
+    def _documented(field: str, keyword: str) -> bool:
+        for i, line in enumerate(lines):
+            if line.strip().startswith(f"{field}:"):
+                window = "\n".join(lines[max(0, i - 3):i + 1]).lower()
+                return keyword in window
+        return False
+
+    assert "max_active" in text
+    assert _documented("spec_review_grace_minutes", "null")
+    assert _documented("setup_cmd", "optional")
+    assert _documented("verify_cmd", "optional")
+
+
 def test_referenced_providers_includes_target_policies(tmp_path):
     target_models = """\
     models:
