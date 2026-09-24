@@ -17,7 +17,7 @@ from dispatcher.models import (candidates, parse_entry, policy_stage,
                                resolve, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
-                              SpecApprovalRequest, Stage)
+                              SpecApprovalRequest, Stage, resumable_crash)
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
@@ -517,6 +517,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def intent_resume(target: str, issue: int, req: ResumeReq,
                       op: Operator = Depends(current_operator)):
         task = _find_task(target, issue)
+        if task.stage in TERMINAL_STAGES and not resumable_crash(task):
+            # The dispatcher would drop it; say so instead of queueing it.
+            raise HTTPException(409, f"task {target}/{issue} is {task.stage.value} "
+                                "and cannot be resumed")
         configured_target = targets_by_name.get(task.target)
         policy = (policy_for(cfg, configured_target)
                   if configured_target else cfg.models)

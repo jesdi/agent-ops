@@ -790,6 +790,12 @@ def test_delivery_contract_finished_task(stage):
         "will deliver if this task restarts")
 
 
+def test_delivery_contract_crashed_task_waits_for_resume():
+    t = make_task(stage=Stage.FAILED, crashed_stage="implement")
+    assert delivery_contract(t, wake_blocked=False) == (
+        "will deliver when you resume this task")
+
+
 def test_delivery_contract_parked_and_starved():
     t = make_task(park=PARK_HUMAN)
     assert delivery_contract(t, wake_blocked=True) == (

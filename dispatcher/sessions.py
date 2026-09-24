@@ -10,7 +10,7 @@ inside the container).
 Tabs are resolved by label on every call and never persisted, so a herdr
 restart or renumbering cannot strand a task. Every herdr failure degrades
 instead of raising: is_alive → False, captures → "", idle_seconds → None,
-mutations best-effort."""
+mutations best-effort — except a launch, which raises (see _launch)."""
 from __future__ import annotations
 
 import json
@@ -74,9 +74,15 @@ class Sessions:
             # headless triage container shares that module and must NOT read
             # as an agent.
             env={"HERDR_AGENT": "claude"})
+        # Raise, never return quietly: the caller would record a stage that
+        # never started, and the next pass would report a phantom crash with
+        # nothing to show (#363). A raise fails the task with this reason.
         if tab is None:
-            return  # server down: the task reads dead, the crash path owns it
-        tab.run(cmd)
+            raise RuntimeError(f"herdr gave no tab for {session_name(target, issue)}"
+                               " — server down or out of step with the CLI?")
+        if not tab.run(cmd):
+            raise RuntimeError(f"herdr refused the launch command for "
+                               f"{session_name(target, issue)}")
 
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "") -> None:

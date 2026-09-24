@@ -1,6 +1,7 @@
 """Session-backed actions: intent files, 202 accepted, never optimistic."""
 from fastapi.testclient import TestClient
 
+from dispatcher.state import Stage
 from tests.webfakes import FakeSources, HEADERS, make_config, make_task
 from web.app import create_app
 
@@ -212,3 +213,20 @@ def test_intent_roundtrip_through_real_sources(tmp_path):
     assert d["action"] == "reply" and d["issue"] == 7
     assert d["payload"] == {"text": "hi"}
     assert d["actor"] == "jesdi@github"
+
+
+def test_resume_of_a_crashed_task_is_accepted(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, stage=Stage.FAILED,
+                                 crashed_stage="implement")]
+    assert client.post("/api/task/alpha/7/resume", headers=HEADERS,
+                       json={}).status_code == 202
+
+
+def test_resume_of_an_unresumable_terminal_task_is_refused(tmp_path):
+    # The dispatcher would drop it; the console must not look like it took it.
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, stage=Stage.FAILED)]
+    r = client.post("/api/task/alpha/7/resume", headers=HEADERS, json={})
+    assert r.status_code == 409
+    assert fake.intents == []

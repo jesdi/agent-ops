@@ -45,11 +45,11 @@ from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
-                              AnswersRequest, SpecApprovalRequest,
+                              RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
                               Stage, TaskState, active, allocate_slot,
                               clear_waiting, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
-                              read_stage_signal, save)
+                              read_stage_signal, resumable_crash, save)
 from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
@@ -1060,6 +1060,9 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # LIVE, and _launch would then type the podman command INTO the
     # running claude (the failure _retry_plan and SpawnStage guard).
     deps.sessions.end(task.target, task.issue)
+    if task.crashed_stage:
+        _respawn_crashed(cfg, deps, target, task, launch)
+        return
     if task.stage is Stage.PR_OPEN:
         # No session to continue at pr-open: an operator wake on a parked
         # pr-open task is a fresh address-review round carrying their message.
@@ -1104,6 +1107,34 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                           model=str(entry))
 
 
+def _crash_failed(task: TaskState) -> TaskState:
+    """FAILED by a crash, remembering the stage so Resume can respawn it."""
+    crashed = task.stage.value if task.stage in RESPAWNABLE_STAGES else ""
+    return replace(task, stage=Stage.FAILED, crashed_stage=crashed, park="",
+                   hold_for_attach=False, operator_request=None,
+                   updated_at=_now())
+
+
+def _respawn_crashed(cfg: Config, deps: Deps, target: Target,
+                     task: TaskState, launch: Launch) -> None:
+    """Resume of a crashed task: the stage it died in starts afresh in the
+    same worktree — the same ticket for implement. A fresh stage prompt, not
+    `claude --continue`: the newest transcript may belong to the previous
+    stage or ticket, or the crashed launch may never have started one. The
+    queued messages ride in the stage prompt."""
+    deps.github.set_status(target, task.issue,
+                           target.status_in_progress_option_id)
+    task = replace(task, crashed_stage="", park="", park_msg_id=0,
+                   park_note="", hold_for_attach=False,
+                   resume_model_override="", resume_bypass_usage=False)
+    _clear_wake_blocked(cfg, task.issue)
+    ticket = task.ticket_cursor if task.stage is Stage.IMPLEMENT else 0
+    task = _spawn_stage(cfg, deps, target, task, launch, ticket=ticket)
+    eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          model=str(launch.entry), detail="after crash")
+
+
 def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
                      task: TaskState, dry_run: bool = False) -> None:
     """One task's turn blew up. Fail THAT task; let the pass carry on.
@@ -1127,9 +1158,7 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
         log_tail = deps.sessions.capture_tail(task.target, task.issue, lines=30)
     except Exception:
         log_tail = ""
-    save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
-                                hold_for_attach=False, operator_request=None,
-                                updated_at=_now()))
+    save(cfg.state_dir, _crash_failed(task))
     eventlog.append_event(cfg.state_dir, "failed", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="task crashed mid-pass")
@@ -1351,8 +1380,7 @@ def _on_handle_crash(turn: _Turn, task: TaskState, act: HandleCrash,
     cfg, deps, target = turn.cfg, turn.deps, turn.target
     _notify(deps, target, task, "session_crashed")
     deps.github.release(target, task.issue, "session crashed mid-stage")
-    save(cfg.state_dir, replace(task, stage=Stage.FAILED,
-                                operator_request=None, updated_at=_now()))
+    save(cfg.state_dir, _crash_failed(task))
     eventlog.append_event(cfg.state_dir, "failed", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="session crashed mid-stage")
@@ -1709,7 +1737,12 @@ def _is_parked(task: TaskState | None) -> bool:
 def _apply_resume_intent(cfg: Config, by_name: dict,
                          task: TaskState | None, intent: intents.Intent) -> None:
     issue = intent.issue
-    if not _is_parked(task):
+    if task is not None and resumable_crash(task):
+        # Back to the stage it crashed in, queued like any wake so capacity,
+        # slots and admission still decide when; crashed_stage stays set so
+        # _resume_one respawns the stage instead of continuing a transcript.
+        task = replace(task, stage=Stage(task.crashed_stage), terminal_at="")
+    elif not _is_parked(task):
         print(f"[warn] resume intent for #{issue}: task not parked — skipped",
               file=sys.stderr)
         return

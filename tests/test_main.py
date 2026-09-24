@@ -5000,3 +5000,64 @@ def test_parked_pr_does_not_poll_or_spend_ci_rounds(tmp_path):
     main._poll_prs(c, deps(gh), c.targets[0])
     assert gh.ci_calls == []
     assert load(c.state_dir, "portfolio_eval", 42).ci_rounds == 2
+
+
+# --- Resume after a crash (#363): respawn the stage it died in -------------
+
+def _crash_ticket_2(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, ticket_cursor=2,
+                   ticket_count=2)
+    (wt / ".agent" / "tickets").mkdir()
+    for name in ("01-seams.md", "02-logout.md"):
+        (wt / ".agent" / "tickets" / name).write_text(f"# {name}\n")
+    main.run_pass(c, deps(sess=FakeSessions(alive=set())))
+    return c
+
+
+def test_a_crash_remembers_the_stage_it_failed_in(tmp_path, monkeypatch):
+    c = _crash_ticket_2(tmp_path, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED and t.crashed_stage == "implement"
+
+
+def test_resume_respawns_the_crashed_ticket_fresh(tmp_path, monkeypatch):
+    c = _crash_ticket_2(tmp_path, monkeypatch)
+    main._queue_message(c, 42, "Now what?", "op")
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
+    gh, sess = FakeGitHub(), FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+
+    assert sess.resumed == [], "no --continue: the transcript may be ticket 1's"
+    (issue, stage, _model, prompt, _effort) = sess.spawned[0]
+    assert (issue, stage) == (42, "implement")
+    assert "02-logout.md" in prompt
+    assert "Now what?" in prompt and "The operator resumed this task" in prompt
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.park, t.crashed_stage, t.ticket_cursor) == (
+        Stage.IMPLEMENT, "", "", 2)
+    assert t.slot != NO_SLOT
+    assert (42, "I") in [(i, o) for (i, o) in gh.statused]
+    from dispatcher import messages
+    assert messages.undelivered(c.state_dir, 42) == []
+
+
+def test_resume_of_a_killed_task_is_still_skipped(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.FAILED, slot=NO_SLOT)
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.spawned == [] and sess.resumed == []
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+
+
+def test_a_launch_that_raises_on_resume_fails_resumable_again(tmp_path, monkeypatch):
+    c = _crash_ticket_2(tmp_path, monkeypatch)
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
+    main.run_pass(c, deps(sess=FakeSessions(spawn_raises={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.crashed_stage) == (Stage.FAILED, "implement")
