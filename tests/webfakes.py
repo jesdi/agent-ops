@@ -126,6 +126,9 @@ class FakeSources:
     def events_tail(self, limit):
         return self.events[-limit:]
 
+    def last_claims(self):
+        return {}
+
     def pane_tail(self, target, issue):
         return self.pane_tails.get(issue, "")
 

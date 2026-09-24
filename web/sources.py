@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal
 
-from dispatcher import (eventlog, execution_overrides, messages as msgq,
+from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
                         queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import fetch_all
@@ -260,6 +260,14 @@ class Sources:
             return eventlog.read_tail(self._cfg.state_dir, limit=limit)
         except (OSError, ValueError):
             return []
+
+    def last_claims(self) -> dict[str, str]:
+        # Same degrade as events_tail: an unreadable log only loses the
+        # forecast's tie-break, never /api/board.
+        try:
+            return claims.last_claims(self._cfg.state_dir)
+        except (OSError, ValueError):
+            return {}
 
     def pane_tail(self, target: str, issue: int) -> str:
         try:

@@ -527,15 +527,14 @@ def test_next_claim_unknown_on_bad_interval():
                       capacity=2, gate=GATE_OK, queues=[]).verdict == "unknown"
 
 
-def test_next_claim_per_target_capacity_filter():
-    # alpha is capacity-full (2 active tasks, capacity=2) but has a candidate;
-    # beta has one active task and one slot free with a candidate.
-    # Collapsing `mine = tasks` would wrongly count 3 active units for beta and
-    # produce capacity-full instead of will-claim.
+def test_next_claim_counts_active_per_target_for_the_pick():
+    # Capacity is box-wide (3 of 4 used), but the pick counts each target's
+    # own active tasks: beta at 1 beats alpha at 2. Counting every task as
+    # "mine" would tie them and pick alpha by list order.
     alpha_tasks = [make_task(issue=1, target="alpha"),
                    make_task(issue=2, target="alpha")]
     beta_tasks = [make_task(issue=3, target="beta")]
-    v = next_claim(HB, now=NOW, tasks=alpha_tasks + beta_tasks, capacity=2,
+    v = next_claim(HB, now=NOW, tasks=alpha_tasks + beta_tasks, capacity=4,
                    gate=GATE_OK,
                    queues=[("alpha", [row(10)]), ("beta", [row(20)])])
     assert v.verdict == "will-claim"
@@ -743,6 +742,43 @@ def test_next_claim_same_target_still_skipped():
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
                    queues=queues, claims_paused=False, triage_running=False)
     assert v.verdict == "will-claim" and v.next_issue == 74
+
+
+def test_next_claim_capacity_full_when_another_target_fills_the_box():
+    """Capacity is box-wide: alpha holding both units leaves beta nothing."""
+    tasks = [make_task(issue=n, target="alpha", stage=Stage.IMPLEMENT)
+             for n in (1, 2)]
+    v = next_claim(HB, now=NOW, tasks=tasks, capacity=2, gate=GATE_OK,
+                   queues=[("alpha", []), ("beta", [row(9)])])
+    assert v.verdict == "capacity-full"
+
+
+def test_next_claim_names_the_target_with_fewest_active():
+    tasks = [make_task(issue=1, target="alpha", stage=Stage.IMPLEMENT)]
+    v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
+                   queues=[("alpha", [row(5)]), ("beta", [row(9)])])
+    assert (v.verdict, v.next_target, v.next_issue) == ("will-claim", "beta", 9)
+
+
+def test_next_claim_tie_goes_to_least_recently_claimed():
+    v = next_claim(HB, now=NOW, tasks=[], capacity=4, gate=GATE_OK,
+                   queues=[("alpha", [row(5)]), ("beta", [row(9)])],
+                   last_claimed={"alpha": "2026-08-01T09:00:00+00:00",
+                                 "beta": "2026-08-01T08:00:00+00:00"})
+    assert v.next_target == "beta"
+
+
+def test_next_claim_skips_a_target_at_max_active():
+    tasks = [make_task(issue=1, target="alpha", stage=Stage.IMPLEMENT)]
+    queues = [("alpha", [row(5)]), ("beta", [row(9)])]
+    beta_busy = tasks + [make_task(issue=n, target="beta", stage=Stage.IMPLEMENT)
+                         for n in (2, 3)]
+    v = next_claim(HB, now=NOW, tasks=beta_busy, capacity=4, gate=GATE_OK,
+                   queues=queues, max_active={"alpha": 1})
+    assert (v.verdict, v.next_target) == ("will-claim", "beta")
+    v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
+                   queues=[("alpha", [row(5)])], max_active={"alpha": 1})
+    assert v.verdict == "capacity-full"
 
 
 # ---------------------------------------------------------------------------

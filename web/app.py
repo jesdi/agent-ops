@@ -243,7 +243,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                         for t in tasks
                         if (admission := _task_admission(t, usages, now))},
             candidate_admissions=_candidate_admissions(
-                queue_targets, usages, now))
+                queue_targets, usages, now),
+            max_active={t.name: t.max_active for t in cfg.targets},
+            last_claimed=sources.last_claims())
 
     @app.get("/api/task/{target}/{issue}",
              response_model=read_model.TaskDetail)
