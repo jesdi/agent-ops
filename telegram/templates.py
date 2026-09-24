@@ -65,9 +65,10 @@ _TEMPLATES = {
     "pr_updated": "🔁 {ref} {title} — feedback addressed, PR updated: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "task_done": "🎉 {ref} {title} — PR merged; task done. {note}\n{url}",
     "pr_closed": "🚫 {ref} {title} — PR closed without merge: {note}\n{url}",
-    "unit_failed": ("🚨 {unit} FAILED on {host}. If this is the keepalive, "
-                    "the Claude OAuth token is dying — re-login now:\n"
-                    + _RELOGIN),
+    "unit_failed": ("🚨 {unit} FAILED on {host}. Logs:\n"
+                    "ssh agent@{host} journalctl --user -u {unit} -n 50"),
+    "keepalive_failed": ("🚨 {unit} FAILED on {host}: the Claude OAuth token "
+                         "is dying — re-login now:\n" + _RELOGIN),
     "auth_dark": ("🕳 usage unknowable for {minutes}m — dispatcher is "
                   "failing safe and spawning NOTHING. Claude auth on the "
                   "box is likely dead. Fix:\n" + _RELOGIN),
