@@ -107,6 +107,20 @@ mounted at `/root/.claude` inside every session. It is the box's "global"
 Claude configuration and transcript store.
 _Avoid_: dotclaude, global config (ambiguous with the mac's)
 
+**Runtime**:
+The CLI a session runs for a provider — `claude` for `anthropic`, `codex`
+for `openai`. One record per provider in `dispatcher/runtimes.py` owns the
+home mount, env, herdr agent name, effort vocabulary and the launch/resume
+commands; nothing else branches on provider.
+_Avoid_: backend, driver, adapter (that is the usage adapter)
+
+**Codex-home**:
+Claude-home's sibling for Codex sessions (`~/agent-ops-state/codex-home`,
+mounted at `/root/.codex`), converged from the **codex-home seed**
+(`provision/codex-home/` in agent-ops-infra). Holds the Codex login
+(`auth.json`), which only Codex itself refreshes — sessions, or the
+codex-keepalive unit when none is live.
+
 **Claude-home seed**:
 The versioned, declarative source of claude-home's config, authored in the
 private agent-ops-infra repo (`provision/claude-home/`) and converged onto the box by the
@@ -160,8 +174,9 @@ launches. Usage collectors are `usage_providers.py`
 adapters, one per provider, fetched only for providers the model policy
 references. Loop policy stays independent of all of it: waiting for
 headroom does not spend a fix round, and a denial for one provider never
-prevents considering another. The router is `dispatcher/models.py::resolve`: first admitted entry of the task's track for the stage; labels and board effort are not routing inputs. Still deferred: runtime adapters (running a
-session on a non-Anthropic provider), cross-runtime session continuation.
+prevents considering another. The router is `dispatcher/models.py::resolve`: first admitted entry of the task's track for the stage; labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
+changes provider, so cross-runtime session continuation is excluded by rule,
+not pending. See docs/specs/2026-09-24-codex-runtime-design.md.
 
 A model-limited queue candidate or claimed task may carry a durable, one-shot
 execution override. Queue claims and active stage transitions store it under
