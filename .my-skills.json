@@ -70,6 +70,13 @@
       "agents": [
         "claude"
       ]
+    },
+    "to-openspec": {
+      "version": "0.1.0",
+      "package": "0.0.20",
+      "agents": [
+        "claude"
+      ]
     }
   }
 }
