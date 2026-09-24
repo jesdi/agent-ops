@@ -1525,14 +1525,13 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
     # which is what a bare (here: empty) id resolves to.
     pick = task.picks.get(policy_stage(task.stage.value))
     runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
-    resume = f"{Path(runtime.binary).name} {runtime.resume('')}".rstrip()
     rep = failures.FailureReport(
         klass="session-crash", target=target.name, issue=task.issue,
         title=f"session crashed during {task.stage.value}: {task.title}",
         error=(f"session task-{task.target}-{task.issue} died during stage "
                f"{task.stage.value}"),
         log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
-        repro=f"cd {task.worktree} && {resume}  # inside session image",
+        repro=f"cd {task.worktree} && {runtime.resume_cmd()}  # inside session image",
         worktree=task.worktree)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
     if blocker:

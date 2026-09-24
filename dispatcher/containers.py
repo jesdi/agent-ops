@@ -45,7 +45,7 @@ def _host_binary(runtime: Runtime) -> list[str]:
     spawn: a running container keeps its version even after the host
     updater moves on."""
     binary = os.path.realpath(Path.home() / runtime.binary)
-    return ["-v", f"{binary}:/usr/local/bin/{Path(runtime.binary).name}:ro"]
+    return ["-v", f"{binary}:{runtime.binary_mount}:ro"]
 
 
 def _wrapper() -> list[str]:

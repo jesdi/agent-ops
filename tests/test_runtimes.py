@@ -32,3 +32,18 @@ def test_a_session_on_a_provider_with_no_runtime_fails_before_any_tab(tmp_path, 
     with pytest.raises(ValueError, match="no runtime for provider 'mistral'"):
         sessions.Sessions().resume("acme", 42, str(tmp_path), "go", "mistral/large")
     assert tabs == []
+
+
+def test_every_configurable_provider_has_a_runtime_and_vice_versa():
+    from dispatcher.models import PROVIDER_EFFORTS
+    assert runtimes.RUNTIMES.keys() == PROVIDER_EFFORTS.keys()
+    with pytest.raises(RuntimeError, match="providers differ"):
+        runtimes.check_providers(runtimes.RUNTIMES,
+                                 {**PROVIDER_EFFORTS, "mistral": ("low",)})
+
+
+def test_the_cli_name_derives_the_binary_its_mount_and_the_resume_line():
+    assert runtimes.CODEX.binary == ".local/bin/codex"
+    assert runtimes.CODEX.binary_mount == "/usr/local/bin/codex"
+    assert runtimes.CLAUDE.resume_cmd() == "claude --continue"
+    assert runtimes.CODEX.resume_cmd("'hi'") == "codex resume --last 'hi'"
