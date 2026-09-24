@@ -97,10 +97,17 @@ Codex:
 codex --model <m> [-c model_reasoning_effort=<e>]
       --dangerously-bypass-approvals-and-sandbox
       -c 'notify=["<worktree>/.agent/stop-hook.sh"]'
-      -c 'projects."<worktree>".trust_level="trusted"'
+      -c 'projects={"<worktree>"={trust_level="trusted"}}'
       <args>
 resume: resume --last <message>
 ```
+
+The trust override is an inline table, not a dotted key. Codex's `-c` splits
+the key on `.` and keeps quote characters in the segments, so
+`projects."<wt>".trust_level` sets a key that never matches the cwd (and a
+path with a dot is split apart). Reproduced with codex 0.155.1: the dotted
+form still shows the trust prompt, and the inline table skips it. The inline
+table replaces any `projects` table in codex-home; the seed has none.
 
 - `notify` fires on `agent-turn-complete`, Codex's equivalent of the Stop
   hook, and runs the same `.agent/stop-hook.sh` the worktree already carries.
@@ -321,7 +328,7 @@ Consequence: every `sessions.resume` call site (`_resume_one`, `_retry_plan`,
 
 Provider-neutral, single source. The one Claude-ism, `plan.md` §3
 "Dispatch four reviewer subagents", becomes: "Dispatch four reviewer
-subagents if your runtime supports them; otherwise run the four reviews
+subagents if you can dispatch subagents; otherwise run the four reviews
 yourself, one after another, each a fresh pass over the spec and the
 tickets."
 
