@@ -13,8 +13,9 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
-from dispatcher.models import (candidates, override_refusal, parse_entry,
-                               policy_stage, resolve, track_from_labels)
+from dispatcher.models import (candidates, override_allowed, override_refusal,
+                               parse_entry, pick_provider, policy_stage,
+                               resolve, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
                               SpecApprovalRequest, next_stage, resumable_crash)
@@ -144,11 +145,14 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             return None
         if sources.execution_override(t.target, t.issue) is not None:
             return None
-        return _admission_for_model(_model_for(t, usages, now),
-                                    [e.model_id for e in _choices(t, usages, now)],
-                                    usages, now)
+        stage = next_stage(t)
+        return _admission_for_model(
+            _model_for(t, usages, now),
+            [e.model_id for e in _choices(t, usages, now)
+             if override_allowed(t.picks, stage, e.model_id)],
+            usages, now, any_provider=not pick_provider(t.picks, stage))
 
-    def _admission_for_model(model, choices, usages, now):
+    def _admission_for_model(model, choices, usages, now, *, any_provider):
         if not model:
             return None
         requested = read_model.model_admission_view(
@@ -159,7 +163,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             usages, now=now, pace=cfg.pace, model=m)
             for m in dict.fromkeys(choices) if m != requested.model]
         return read_model.TaskAdmissionView(
-            requested=requested, alternatives=alternatives)
+            requested=requested, alternatives=alternatives,
+            any_provider=any_provider)
 
     def _candidate_choices(target, row):
         policy = policy_for(cfg, target)
@@ -176,7 +181,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 and sources.execution_override(target.name, row["number"]) is None
                 and (admission := _admission_for_model(
                     _candidate_model(target, row), _candidate_choices(target, row),
-                    usages, now))}
+                    usages, now, any_provider=True))}
 
     def _known_target(target: str, tasks: list) -> bool:
         """A target is servable if it is still in the live config OR any

@@ -112,3 +112,25 @@ test('a capacity-blocked queued card can force its first claim', async () => {
     model: 'claude-fable-5', bypass_usage: true,
   }))
 })
+
+test('a queued card has no pick yet, so it offers another provider too', async () => {
+  renderWithProviders(
+    <GhostCardView ghost={{
+      ...ghost,
+      admission: {
+        requested: {
+          model: 'anthropic/claude-fable-5', provider: 'anthropic', admitted: false,
+          note: 'Fable weekly capacity is low',
+        },
+        alternatives: [{
+          model: 'openai/gpt-5-codex', provider: 'openai', admitted: true,
+          note: 'capacity available',
+        }],
+        any_provider: true,
+      },
+    }} isNext busy={false} onBoost={() => {}} onNext={() => {}} onReady={() => {}} />,
+  )
+  await expand()
+  await userEvent.click(screen.getByRole('button', { name: /fable-5 capacity limited/i }))
+  expect(screen.getByRole('button', { name: /run with gpt-5-codex/i })).toBeInTheDocument()
+})
