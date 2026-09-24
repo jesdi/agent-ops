@@ -2036,7 +2036,8 @@ def main() -> None:
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory, cpus=cfg.session_cpus, state_dir=cfg.state_dir),
                 notifier=Notifier(dry_run=args.dry_run,
-                                  console_url=cfg.console_url))
+                                  console_url=cfg.console_url,
+                                  multi_target=len(cfg.targets) > 1))
     if args.digest:
         send_digest(cfg, deps)
     elif args.triage:

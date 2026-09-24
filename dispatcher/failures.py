@@ -114,7 +114,8 @@ def report_failure(cfg: Config, deps, report: FailureReport,
             print(f"[warn] no repo to file {report.klass} failure on "
                   f"(infra_repo unset?): {report.title}", file=sys.stderr)
         deps.notifier.send("task_failed", issue=report.issue,
-                           title=report.title, url=url, note=report.klass)
+                           title=report.title, url=url, note=report.klass,
+                           target=report.target)
         # Marker is written LAST: a create_issue outage above leaves no
         # marker, so the next pass retries the report.
         marker.parent.mkdir(parents=True, exist_ok=True)
