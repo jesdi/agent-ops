@@ -178,6 +178,12 @@ def _track(name: str, raw: object) -> Track:
                  {s: _entries(raw[s], f"track {name!r} {s}:") for s in STAGES})
 
 
+def _plain_model_id(raw: object) -> bool:
+    """True when raw is a bare 'provider/model' string: no '@' effort suffix
+    and no whitespace (the value lands unquoted in a shell command)."""
+    return isinstance(raw, str) and "@" not in raw and not any(c.isspace() for c in raw)
+
+
 def _review_second(raw: object) -> str:
     """`models.review_second:` -> a plain 'provider/model' string, "" when
     unset. Must name a non-anthropic provider with a configured effort
@@ -185,7 +191,7 @@ def _review_second(raw: object) -> str:
     comes from the codex-home config, not this policy."""
     if not raw:
         return ""
-    if not isinstance(raw, str) or "@" in raw or any(c.isspace() for c in raw):
+    if not _plain_model_id(raw):
         raise ValueError(f"models: review_second: must be 'provider/model' "
                          f"with no effort or whitespace, got {raw!r}")
     try:
@@ -198,6 +204,19 @@ def _review_second(raw: object) -> str:
                          f"{sorted(p for p in PROVIDER_EFFORTS if p != DEFAULT_PROVIDER)}, "
                          f"got {raw!r}")
     return raw
+
+
+def _triage(raw: dict) -> tuple[Entry, ...]:
+    """`models.triage:` -> its entries. Anthropic only: triage never spends a
+    non-anthropic runtime's usage window."""
+    if "triage" not in raw:
+        raise ValueError("models: triage: list is required")
+    triage = _entries(raw["triage"], "triage:")
+    non_anthropic = [e for e in triage if e.provider != DEFAULT_PROVIDER]
+    if non_anthropic:
+        raise ValueError(f"models: triage: must be {DEFAULT_PROVIDER} only, "
+                         f"got {non_anthropic[0].model_id}")
+    return triage
 
 
 def parse_policy(raw: dict | None) -> ModelPolicy:
@@ -224,14 +243,7 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
     if untracked not in tracks:
         raise ValueError(f"models: untracked: must name a defined track "
                          f"{sorted(tracks)}, got {untracked!r}")
-    if "triage" not in raw:
-        raise ValueError("models: triage: list is required")
-    triage = _entries(raw["triage"], "triage:")
-    non_anthropic = [e for e in triage if e.provider != DEFAULT_PROVIDER]
-    if non_anthropic:
-        raise ValueError(f"models: triage: must be {DEFAULT_PROVIDER} only, "
-                         f"got {non_anthropic[0].model_id}")
-    return ModelPolicy(triage=triage, untracked=untracked, tracks=tracks,
+    return ModelPolicy(triage=_triage(raw), untracked=untracked, tracks=tracks,
                        review_second=_review_second(raw.get("review_second")))
 
 

@@ -309,3 +309,21 @@ def test_triage_entry_is_the_first_admitted_triage_entry():
 def test_review_second_malformed_model_id_error_is_prefixed():
     with pytest.raises(ValueError, match=r"^models: review_second:.*provider/model"):
         parse_policy({**RAW, "review_second": "openai/x/y"})
+
+
+@pytest.mark.parametrize("bad", [42, "openai/gpt sol"])
+def test_review_second_rejects_non_string_or_whitespace(bad):
+    with pytest.raises(ValueError, match="review_second: must be 'provider/model'"):
+        parse_policy({**RAW, "review_second": bad})
+
+
+def test_parse_rejects_non_mapping():
+    with pytest.raises(ValueError, match="models: must be a mapping"):
+        parse_policy("nope")
+
+
+def test_parse_rejects_tracks_not_a_mapping_or_empty():
+    with pytest.raises(ValueError, match="tracks: must be a non-empty mapping"):
+        parse_policy({**RAW, "tracks": []})
+    with pytest.raises(ValueError, match="tracks: must be a non-empty mapping"):
+        parse_policy({**RAW, "tracks": {}})
