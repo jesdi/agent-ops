@@ -1532,10 +1532,9 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
 
 
 def _box_free(cfg: Config, tasks: list[TaskState]) -> int:
-    """Free capacity across the whole box: `tasks` must be every task, not
-    one target's — capacity is shared, so a spawn site checks the box, never
-    a single target's occupancy."""
-    return cfg.capacity - len(active(tasks))
+    """claims.box_free for this pass. `cfg` is the pass's effective config,
+    whose capacity already has a running triage sweep's unit taken off."""
+    return claims.box_free(cfg.capacity, tasks, triage_running=False)
 
 
 def _reopened(stale: TaskState, pass_started: str) -> bool:

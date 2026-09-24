@@ -10,7 +10,7 @@ from typing import Annotated, Literal, Mapping
 from pydantic import BaseModel, Field
 
 from dispatcher import messages as msgq
-from dispatcher.claims import pick_target
+from dispatcher.claims import box_free, pick_target
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
                               verdict_note)
@@ -332,8 +332,8 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 wake_blocked: set[tuple[str, int]] | None = None,
                 admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
                 candidate_admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
-                max_active: Mapping[str, int | None] | None = None,
-                last_claimed: Mapping[str, str] | None = None
+                max_active: Mapping[str, int | None],
+                last_claimed: Mapping[str, str],
                 ) -> BoardView:
     # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
@@ -710,32 +710,14 @@ def _queue_heads(queues: list[tuple[str, list[dict]]],
     return heads
 
 
-def _forecast_pick(queues: list[tuple[str, list[dict]]],
-                   tasks: list[TaskState], eff_capacity: int,
-                   max_active: Mapping[str, int | None] | None,
-                   last_claimed: Mapping[str, str] | None
-                   ) -> tuple[str, int] | None:
-    """(target, issue) the claim round would take next, or None when the box
-    has no free capacity for one. Assumes the queues have a candidate at
-    all — callers check `_queue_heads` first for the no-candidates verdict."""
-    heads = _queue_heads(queues, tasks)
-    if not heads:
-        return None
-    running = active(tasks)
-    counts = {n: sum(t.target == n for t in running) for n in heads}
-    name = (pick_target(list(heads), counts, last_claimed or {}, max_active or {})
-            if eff_capacity - len(running) > 0 else None)
-    return (name, heads[name]) if name is not None else None
-
-
 def next_claim(heartbeat: dict | None, *, now: datetime,
                tasks: list[TaskState], capacity: int,
                gate: GateView,
                queues: list[tuple[str, list[dict]]],
                claims_paused: bool = False,
                triage_running: bool = False,
-               max_active: Mapping[str, int | None] | None = None,
-               last_claimed: Mapping[str, str] | None = None) -> NextClaimView:
+               max_active: Mapping[str, int | None],
+               last_claimed: Mapping[str, str]) -> NextClaimView:
     """A forecast of what the claim round (dispatcher main._claim_new)
     consumes next, from data already on the board request. The target comes
     from the same claims.pick_target the dispatcher uses, over box-wide free
@@ -769,17 +751,17 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
         return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
                              minutes_to_reset=gate.minutes_to_reset,
                              blocked_by=gate.note)
-    # Mirror the dispatcher pass: capacity is reduced by 1 while triage runs,
-    # floored at 0 so a capacity=1 system does not claim during a triage sweep.
-    eff_capacity = max(0, capacity - 1) if triage_running else capacity
-    if not _queue_heads(queues, tasks):
+    heads = _queue_heads(queues, tasks)
+    if not heads:
         return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
-    pick = _forecast_pick(queues, tasks, eff_capacity, max_active, last_claimed)
-    if pick is None:
+    running = active(tasks)
+    counts = {n: sum(t.target == n for t in running) for n in heads}
+    name = (pick_target(list(heads), counts, last_claimed, max_active)
+            if box_free(capacity, tasks, triage_running) > 0 else None)
+    if name is None:
         return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
-    name, issue = pick
     return NextClaimView(verdict="will-claim", next_pass_eta=eta,
-                         next_issue=issue, next_target=name)
+                         next_issue=heads[name], next_target=name)
 
 
 def stage_timeline(events: list[dict], target: str, issue: int, *,

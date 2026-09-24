@@ -8,6 +8,15 @@ from pathlib import Path
 from typing import Mapping
 
 from dispatcher.eventlog import EVENTS_FILE
+from dispatcher.state import TaskState, active
+
+
+def box_free(capacity: int, tasks: list[TaskState], triage_running: bool) -> int:
+    """Free capacity across the whole box. `tasks` must be every task, not
+    one target's: capacity is one number shared by all targets. A running
+    triage sweep holds a unit that active() cannot see (a herdr tab, not a
+    TaskState)."""
+    return capacity - len(active(tasks)) - int(triage_running)
 
 
 def pick_target(names: list[str], active_counts: Mapping[str, int],

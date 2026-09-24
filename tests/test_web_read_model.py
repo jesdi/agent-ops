@@ -75,7 +75,8 @@ def test_login_park_counts_towards_active_capacity():
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
-                        claims_paused=False, triage_running=False)
+                        claims_paused=False, triage_running=False,
+                        max_active={}, last_claimed={})
     assert board.capacity.active == 1   # matches dispatcher.state.active()
     # #1 keeps its slot (a login park keeps its pane); #2 gave its back, and
     # slots_used counts held slots, not state files that still record one.
@@ -94,7 +95,7 @@ def test_build_board_groups_and_counts():
         models={("alpha", 1): "a", ("alpha", 2): "b", ("alpha", 3): "c"},
         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
         queues=[], queue_stale=False,
-        claims_paused=False, triage_running=False)
+        claims_paused=False, triage_running=False, max_active={}, last_claimed={})
     by_key = {c.key: c for c in board.columns}
     assert [c.issue for c in by_key["in-progress"].cards] == [1]
     assert [c.issue for c in by_key["parked"].cards] == [2]
@@ -125,7 +126,7 @@ def test_task_cards_carry_their_backlog_score():
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=_scored_queue(("alpha", 1, 4.2)),
                         queue_stale=False, claims_paused=False,
-                        triage_running=False)
+                        triage_running=False, max_active={}, last_claimed={})
     card = {c.key: c for c in board.columns}["in-progress"].cards[0]
     assert card.score == 4.2
 
@@ -136,7 +137,8 @@ def test_task_card_score_is_none_when_not_in_ranking():
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
-                        claims_paused=False, triage_running=False)
+                        claims_paused=False, triage_running=False,
+                        max_active={}, last_claimed={})
     assert {c.key: c for c in board.columns}["done"].cards[0].score is None
 
 
@@ -151,7 +153,8 @@ def test_cards_sort_by_score_descending_nulls_last_within_a_column():
         tasks, capacity=9, models={}, events=[],
         heartbeat=None, now=NOW, gate=GATE_OK,
         queues=_scored_queue(("alpha", 1, 2.0), ("alpha", 3, 9.0)),
-        queue_stale=False, claims_paused=False, triage_running=False)
+        queue_stale=False, claims_paused=False, triage_running=False,
+        max_active={}, last_claimed={})
     cards = {c.key: c for c in board.columns}["in-progress"].cards
     # 3 (9.0) then 1 (2.0), then the two null-score cards in issue order.
     assert [c.issue for c in cards] == [3, 1, 2, 4]
@@ -173,7 +176,8 @@ def test_board_reuses_snapshot_zones():
     board = build_board([], capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
-                        claims_paused=False, triage_running=False)
+                        claims_paused=False, triage_running=False,
+                        max_active={}, last_claimed={})
     assert [(c.key, c.zone) for c in board.columns] == [
         (key, zone) for key, _, zone in COLUMNS]
 
@@ -211,7 +215,8 @@ def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
-                        claims_paused=False, triage_running=False)
+                        claims_paused=False, triage_running=False,
+                        max_active={}, last_claimed={})
     assert board.capacity.active == 1
     assert board.capacity.slots_used == 1   # not 2 — #2 gave its slot back
 
@@ -256,7 +261,8 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
     board = build_board(tasks, capacity=3, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
-                        claims_paused=False, triage_running=False)
+                        claims_paused=False, triage_running=False,
+                        max_active={}, last_claimed={})
     flagged = [c for col in board.columns for c in col.cards
                if c.consuming_capacity]
     assert len(flagged) == board.capacity.active
@@ -470,17 +476,19 @@ def row(number, status="Ready", blocked=False, labels=("auto",)):
 
 def test_next_claim_unknown_when_heartbeat_missing_or_stale():
     v = next_claim(None, now=NOW, tasks=[], capacity=2, gate=GATE_OK,
-                   queues=[("alpha", [row(1)])])
+                   queues=[("alpha", [row(1)])], max_active={}, last_claimed={})
     assert (v.verdict, v.next_pass_eta) == ("unknown", "")
     stale = dict(HB, finished_at="2026-08-01T12:09:59+00:00")  # >2x10m before NOW
     assert next_claim(stale, now=NOW, tasks=[], capacity=2, gate=GATE_OK,
-                      queues=[]).verdict == "unknown"
+                      queues=[], max_active={}, last_claimed={}).verdict == "unknown"
     # exactly at the boundary (20m old) is still fresh
     edge = dict(HB, finished_at="2026-08-01T12:10:00+00:00")
     assert next_claim(edge, now=NOW, tasks=[], capacity=2, gate=GATE_OK,
-                      queues=[]).verdict == "no-candidates"
+                      queues=[],
+                      max_active={}, last_claimed={}).verdict == "no-candidates"
     assert next_claim({"garbage": True}, now=NOW, tasks=[], capacity=2,
-                      gate=GATE_OK, queues=[]).verdict == "unknown"
+                      gate=GATE_OK, queues=[],
+                      max_active={}, last_claimed={}).verdict == "unknown"
 
 
 def test_next_claim_will_claim_head_of_queue():
@@ -488,7 +496,7 @@ def test_next_claim_will_claim_head_of_queue():
                    queues=[("alpha", [row(70, status="In progress"),
                                       row(71, blocked=True),
                                       row(72, labels=()),
-                                      row(73)])])
+                                      row(73)])], max_active={}, last_claimed={})
     assert v.verdict == "will-claim"
     assert (v.next_issue, v.next_target) == (73, "alpha")
     assert v.next_pass_eta == "2026-08-01T12:36:00+00:00"  # finished + 10m
@@ -496,13 +504,14 @@ def test_next_claim_will_claim_head_of_queue():
 
 def test_next_claim_skips_already_claimed_issues():
     v = next_claim(HB, now=NOW, tasks=[make_task(issue=73)], capacity=2,
-                   gate=GATE_OK, queues=[("alpha", [row(73), row(74)])])
+                   gate=GATE_OK, queues=[("alpha", [row(73), row(74)])],
+                   max_active={}, last_claimed={})
     assert (v.verdict, v.next_issue) == ("will-claim", 74)
 
 
 def test_next_claim_budget_blocked_beats_everything_else():
     v = next_claim(HB, now=NOW, tasks=[], capacity=2, gate=GATE_NO,
-                   queues=[("alpha", [row(73)])])
+                   queues=[("alpha", [row(73)])], max_active={}, last_claimed={})
     assert (v.verdict, v.minutes_to_reset) == ("budget-blocked", 130)
     assert v.next_pass_eta == "2026-08-01T12:36:00+00:00"  # ETA set on non-unknown verdicts
     assert v.blocked_by.startswith("anthropic session: 95% used")
@@ -511,20 +520,25 @@ def test_next_claim_budget_blocked_beats_everything_else():
 def test_next_claim_capacity_full_and_no_candidates():
     busy = [make_task(issue=i) for i in (1, 2)]  # IMPLEMENT: active, unparked
     assert next_claim(HB, now=NOW, tasks=busy, capacity=2, gate=GATE_OK,
-                      queues=[("alpha", [row(73)])]).verdict == "capacity-full"
+                      queues=[("alpha", [row(73)])],
+                      max_active={}, last_claimed={}).verdict == "capacity-full"
     assert next_claim(HB, now=NOW, tasks=busy, capacity=2, gate=GATE_OK,
-                      queues=[("alpha", [])]).verdict == "no-candidates"
+                      queues=[("alpha", [])],
+                      max_active={}, last_claimed={}).verdict == "no-candidates"
 
 
 def test_next_claim_unknown_on_bad_interval():
     assert next_claim(dict(HB, interval_minutes="ten"), now=NOW, tasks=[],
-                      capacity=2, gate=GATE_OK, queues=[]).verdict == "unknown"
+                      capacity=2, gate=GATE_OK, queues=[],
+                      max_active={}, last_claimed={}).verdict == "unknown"
     assert next_claim(dict(HB, interval_minutes=[]), now=NOW, tasks=[],
-                      capacity=2, gate=GATE_OK, queues=[]).verdict == "unknown"
+                      capacity=2, gate=GATE_OK, queues=[],
+                      max_active={}, last_claimed={}).verdict == "unknown"
     # naive finished_at with aware now raises TypeError on subtraction
     naive_hb = dict(HB, finished_at="2026-08-01T12:26:00")
     assert next_claim(naive_hb, now=NOW, tasks=[],
-                      capacity=2, gate=GATE_OK, queues=[]).verdict == "unknown"
+                      capacity=2, gate=GATE_OK, queues=[],
+                      max_active={}, last_claimed={}).verdict == "unknown"
 
 
 def test_next_claim_counts_active_per_target_for_the_pick():
@@ -536,7 +550,8 @@ def test_next_claim_counts_active_per_target_for_the_pick():
     beta_tasks = [make_task(issue=3, target="beta")]
     v = next_claim(HB, now=NOW, tasks=alpha_tasks + beta_tasks, capacity=4,
                    gate=GATE_OK,
-                   queues=[("alpha", [row(10)]), ("beta", [row(20)])])
+                   queues=[("alpha", [row(10)]), ("beta", [row(20)])],
+                   max_active={}, last_claimed={})
     assert v.verdict == "will-claim"
     assert v.next_target == "beta"
     assert v.next_issue == 20
@@ -545,27 +560,32 @@ def test_next_claim_counts_active_per_target_for_the_pick():
 def test_next_claim_claims_paused():
     # claims-paused fires even when the queue has a will-claim candidate
     v = next_claim(HB, now=NOW, tasks=[], capacity=2, gate=GATE_OK,
-                   queues=[("alpha", [row(73)])], claims_paused=True)
+                   queues=[("alpha", [row(73)])], claims_paused=True,
+                   max_active={}, last_claimed={})
     assert v.verdict == "claims-paused"
     assert v.next_pass_eta != ""
     # claims-paused wins over budget-blocked: both conditions skip claiming,
     # but triage pause is the more actionable operator signal
     v2 = next_claim(HB, now=NOW, tasks=[], capacity=2, gate=GATE_NO,
-                    queues=[("alpha", [row(73)])], claims_paused=True)
+                    queues=[("alpha", [row(73)])], claims_paused=True,
+                    max_active={}, last_claimed={})
     assert v2.verdict == "claims-paused"
 
 
 def test_next_claim_triage_running_reduces_effective_capacity():
     # Without triage: capacity=1, no active tasks → will-claim normally
     assert next_claim(HB, now=NOW, tasks=[], capacity=1, gate=GATE_OK,
-                      queues=[("alpha", [row(10)])]).verdict == "will-claim"
+                      queues=[("alpha", [row(10)])],
+                      max_active={}, last_claimed={}).verdict == "will-claim"
     # With triage: capacity=1, no active tasks → effective=0 → capacity-full
     v = next_claim(HB, now=NOW, tasks=[], capacity=1, gate=GATE_OK,
-                   queues=[("alpha", [row(10)])], triage_running=True)
+                   queues=[("alpha", [row(10)])], triage_running=True,
+                   max_active={}, last_claimed={})
     assert v.verdict == "capacity-full"
     # With triage: capacity=2, no active tasks → effective=1 > 0 → still claims
     v2 = next_claim(HB, now=NOW, tasks=[], capacity=2, gate=GATE_OK,
-                    queues=[("alpha", [row(10)])], triage_running=True)
+                    queues=[("alpha", [row(10)])], triage_running=True,
+                    max_active={}, last_claimed={})
     assert v2.verdict == "will-claim"
 
 
@@ -573,12 +593,14 @@ def test_next_claim_unknown_wins_over_new_gates():
     # unknown (missing heartbeat) overrides both new gates
     assert next_claim(None, now=NOW, tasks=[], capacity=2, gate=GATE_OK,
                       queues=[("alpha", [row(1)])],
-                      claims_paused=True, triage_running=True).verdict == "unknown"
+                      claims_paused=True, triage_running=True,
+                      max_active={}, last_claimed={}).verdict == "unknown"
     # unknown (stale heartbeat) also overrides
     stale = dict(HB, finished_at="2026-08-01T12:09:59+00:00")
     assert next_claim(stale, now=NOW, tasks=[], capacity=2, gate=GATE_OK,
                       queues=[("alpha", [row(1)])],
-                      claims_paused=True, triage_running=True).verdict == "unknown"
+                      claims_paused=True, triage_running=True,
+                      max_active={}, last_claimed={}).verdict == "unknown"
 
 
 def test_usage_view_severities_and_gate_binding():
@@ -634,12 +656,12 @@ def test_next_claim_follows_the_default_models_gate():
     combined = {"anthropic": session_usage(0.95, 130, now=NOW),
                 "fake": session_usage(0.1, provider="fake", now=NOW)}
     v = next_claim(HB, now=NOW, tasks=[], capacity=2, gate=gate_for(combined),
-                   queues=[("alpha", [row(1)])])
+                   queues=[("alpha", [row(1)])], max_active={}, last_claimed={})
     assert v.verdict == "budget-blocked"
     # the same usage with the default pointing at fake → will-claim
     v2 = next_claim(HB, now=NOW, tasks=[], capacity=2,
                     gate=gate_for(combined, "fake/m"),
-                    queues=[("alpha", [row(1)])])
+                    queues=[("alpha", [row(1)])], max_active={}, last_claimed={})
     assert v2.verdict == "will-claim"
 
 
@@ -658,7 +680,8 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
         models={("alpha", 7): "opus", ("alpha", 9): "opus"},
         events=events, heartbeat=HB, now=NOW, gate=GATE_OK,
         queues=[("alpha", [row(7), row(73), row(74, blocked=True)])],
-        queue_stale=False, claims_paused=False, triage_running=False)
+        queue_stale=False, claims_paused=False, triage_running=False,
+        max_active={}, last_claimed={})
     # ghosts: candidates only, minus in-flight; rank order preserved
     assert [g.number for g in queued(board).ghosts] == [73]
     assert queued(board).ghosts[0].target == "alpha"
@@ -677,7 +700,7 @@ def test_build_board_degrades_without_events_or_heartbeat():
         [make_task(issue=7)], capacity=2, models={},
         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
         queues=[("alpha", [])], queue_stale=True,
-        claims_paused=False, triage_running=False)
+        claims_paused=False, triage_running=False, max_active={}, last_claimed={})
     assert board.next_claim.verdict == "unknown"
     assert board.median_cycle_seconds is None
     assert queued(board).ghosts == [] and board.queue_stale is True
@@ -700,7 +723,7 @@ def test_build_board_cross_target_ghost_not_suppressed():
         tasks, capacity=4, models={},
         events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
         queues=queues, queue_stale=False,
-        claims_paused=False, triage_running=False)
+        claims_paused=False, triage_running=False, max_active={}, last_claimed={})
     ghost_targets = [(g.number, g.target) for g in queued(board).ghosts]
     assert (73, "beta") in ghost_targets, \
         "beta#73 ghost missing — known set wrongly keyed on bare issue number"
@@ -716,7 +739,7 @@ def test_build_board_same_target_still_excluded():
         tasks, capacity=4, models={},
         events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
         queues=[("alpha", [row(73), row(74)])], queue_stale=False,
-        claims_paused=False, triage_running=False)
+        claims_paused=False, triage_running=False, max_active={}, last_claimed={})
     assert [g.number for g in queued(board).ghosts] == [74]
 
 
@@ -730,7 +753,8 @@ def test_next_claim_cross_target_not_suppressed():
         ("beta",  [row(73)]), # beta#73 should be claimable
     ]
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
-                   queues=queues, claims_paused=False, triage_running=False)
+                   queues=queues, claims_paused=False, triage_running=False,
+                   max_active={}, last_claimed={})
     assert v.verdict == "will-claim"
     assert v.next_target == "beta" and v.next_issue == 73
 
@@ -740,7 +764,8 @@ def test_next_claim_same_target_still_skipped():
     tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
     queues = [("alpha", [row(73), row(74)])]
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
-                   queues=queues, claims_paused=False, triage_running=False)
+                   queues=queues, claims_paused=False, triage_running=False,
+                   max_active={}, last_claimed={})
     assert v.verdict == "will-claim" and v.next_issue == 74
 
 
@@ -749,14 +774,16 @@ def test_next_claim_capacity_full_when_another_target_fills_the_box():
     tasks = [make_task(issue=n, target="alpha", stage=Stage.IMPLEMENT)
              for n in (1, 2)]
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=2, gate=GATE_OK,
-                   queues=[("alpha", []), ("beta", [row(9)])])
+                   queues=[("alpha", []), ("beta", [row(9)])],
+                   max_active={}, last_claimed={})
     assert v.verdict == "capacity-full"
 
 
 def test_next_claim_names_the_target_with_fewest_active():
     tasks = [make_task(issue=1, target="alpha", stage=Stage.IMPLEMENT)]
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
-                   queues=[("alpha", [row(5)]), ("beta", [row(9)])])
+                   queues=[("alpha", [row(5)]), ("beta", [row(9)])],
+                   max_active={}, last_claimed={})
     assert (v.verdict, v.next_target, v.next_issue) == ("will-claim", "beta", 9)
 
 
@@ -764,7 +791,7 @@ def test_next_claim_tie_goes_to_least_recently_claimed():
     v = next_claim(HB, now=NOW, tasks=[], capacity=4, gate=GATE_OK,
                    queues=[("alpha", [row(5)]), ("beta", [row(9)])],
                    last_claimed={"alpha": "2026-08-01T09:00:00+00:00",
-                                 "beta": "2026-08-01T08:00:00+00:00"})
+                                 "beta": "2026-08-01T08:00:00+00:00"}, max_active={})
     assert v.next_target == "beta"
 
 
@@ -774,10 +801,10 @@ def test_next_claim_skips_a_target_at_max_active():
     beta_busy = tasks + [make_task(issue=n, target="beta", stage=Stage.IMPLEMENT)
                          for n in (2, 3)]
     v = next_claim(HB, now=NOW, tasks=beta_busy, capacity=4, gate=GATE_OK,
-                   queues=queues, max_active={"alpha": 1})
+                   queues=queues, max_active={"alpha": 1}, last_claimed={})
     assert (v.verdict, v.next_target) == ("will-claim", "beta")
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
-                   queues=[("alpha", [row(5)])], max_active={"alpha": 1})
+                   queues=[("alpha", [row(5)])], max_active={"alpha": 1}, last_claimed={})
     assert v.verdict == "capacity-full"
 
 
@@ -891,7 +918,7 @@ def test_card_carries_undelivered_count_and_blocked_flag():
                         gate=GATE_OK, queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
                         undelivered={("alpha", 7): 3},
-                        wake_blocked={("alpha", 7)})
+                        wake_blocked={("alpha", 7)}, max_active={}, last_claimed={})
     card = [c for col in board.columns for c in col.cards][0]
     assert card.undelivered_messages == 3
     assert card.wake_blocked is True
@@ -903,7 +930,8 @@ def test_capacity_view_reports_held_slots_and_derived_max():
                         events=[], heartbeat=None,
                         now=NOW,
                         gate=GATE_OK, queues=[], queue_stale=False,
-                        claims_paused=False, triage_running=False)
+                        claims_paused=False, triage_running=False,
+                        max_active={}, last_claimed={})
     assert board.capacity.slots_held == [0, 2]
     assert board.capacity.max_slots == 5
 
@@ -931,7 +959,8 @@ def test_slots_used_never_disagrees_with_the_lit_segments():
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
-                        claims_paused=False, triage_running=False)
+                        claims_paused=False, triage_running=False,
+                        max_active={}, last_claimed={})
     assert board.capacity.slots_held == [0]
     assert board.capacity.slots_used == len(board.capacity.slots_held)
 
