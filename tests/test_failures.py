@@ -30,6 +30,13 @@ def test_fingerprint_distinct_per_class_and_issue():
     assert failures.fingerprint(base) != failures.fingerprint(report(issue=7))
 
 
+def test_same_issue_number_on_two_targets_files_two_issues(tmp_path):
+    c, d = cfg(tmp_path), FakeDeps()
+    failures.report_failure(c, d, report(target="alpha", issue=7))
+    failures.report_failure(c, d, report(target="beta", issue=7))
+    assert len(d.github.created) == 2
+
+
 def test_issue_body_format():
     body = failures.issue_body(
         report(), "https://github.com/jesdi/portfolio_eval/issues/192",

@@ -39,6 +39,8 @@ def _error_signature(error: str) -> str:
 
 def fingerprint(report: FailureReport) -> str:
     key = f"{report.klass}|{report.issue}|{_error_signature(report.error)}"
+    if report.target:   # box-level failures (no target) keep their old hash
+        key = f"{report.target}|{key}"
     return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
