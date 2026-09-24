@@ -694,6 +694,40 @@ def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
     return (finished + timedelta(minutes=interval)).isoformat() if fresh else None
 
 
+def _queue_heads(queues: list[tuple[str, list[dict]]],
+                 tasks: list[TaskState]) -> dict[str, int]:
+    """target -> its front-of-queue candidate issue, over rows not already
+    known as tasks. Key on (target, issue) — same rationale as build_board:
+    issue numbers are per-repo so alpha#73 must not shadow beta#73 in the
+    claim forecast."""
+    known = {(t.target, t.issue) for t in tasks}
+    heads = {}
+    for name, rows in queues:
+        mine = [r["number"] for r in rows
+                if _is_candidate(r) and (name, r["number"]) not in known]
+        if mine:
+            heads[name] = mine[0]
+    return heads
+
+
+def _forecast_pick(queues: list[tuple[str, list[dict]]],
+                   tasks: list[TaskState], eff_capacity: int,
+                   max_active: Mapping[str, int | None] | None,
+                   last_claimed: Mapping[str, str] | None
+                   ) -> tuple[str, int] | None:
+    """(target, issue) the claim round would take next, or None when the box
+    has no free capacity for one. Assumes the queues have a candidate at
+    all — callers check `_queue_heads` first for the no-candidates verdict."""
+    heads = _queue_heads(queues, tasks)
+    if not heads:
+        return None
+    running = active(tasks)
+    counts = {n: sum(t.target == n for t in running) for n in heads}
+    name = (pick_target(list(heads), counts, last_claimed or {}, max_active or {})
+            if eff_capacity - len(running) > 0 else None)
+    return (name, heads[name]) if name is not None else None
+
+
 def next_claim(heartbeat: dict | None, *, now: datetime,
                tasks: list[TaskState], capacity: int,
                gate: GateView,
@@ -738,25 +772,14 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     # Mirror the dispatcher pass: capacity is reduced by 1 while triage runs,
     # floored at 0 so a capacity=1 system does not claim during a triage sweep.
     eff_capacity = max(0, capacity - 1) if triage_running else capacity
-    # Key on (target, issue) — same rationale as build_board: issue numbers
-    # are per-repo so alpha#73 must not shadow beta#73 in the claim forecast.
-    known = {(t.target, t.issue) for t in tasks}
-    heads = {}
-    for name, rows in queues:
-        mine = [r["number"] for r in rows
-                if _is_candidate(r) and (name, r["number"]) not in known]
-        if mine:
-            heads[name] = mine[0]
-    if not heads:
+    if not _queue_heads(queues, tasks):
         return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
-    running = active(tasks)
-    counts = {n: sum(t.target == n for t in running) for n in heads}
-    name = (pick_target(list(heads), counts, last_claimed or {}, max_active or {})
-            if eff_capacity - len(running) > 0 else None)
-    if name is None:
+    pick = _forecast_pick(queues, tasks, eff_capacity, max_active, last_claimed)
+    if pick is None:
         return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
+    name, issue = pick
     return NextClaimView(verdict="will-claim", next_pass_eta=eta,
-                         next_issue=heads[name], next_target=name)
+                         next_issue=issue, next_target=name)
 
 
 def stage_timeline(events: list[dict], target: str, issue: int, *,
