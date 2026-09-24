@@ -41,7 +41,7 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoO
                                 SpawnStage, next_actions)
 from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates,
                                override_refusal, parse_entry, pick_provider,
-                               policy_stage, resolve, stage_pick,
+                               policy_stage, resolve, second_model, stage_pick,
                                track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
@@ -100,9 +100,12 @@ def _policy(cfg: Config, target: Target | None) -> ModelPolicy:
 class Launch:
     """The stage a spawn site is about to start and the entry it runs on,
     chosen once: the usage gate asks about exactly the model the spawner
-    then launches, and the spawner records the entry as the stage's pick."""
+    then launches, and the spawner records the entry as the stage's pick.
+    `second` is the gated second model (models.second_model), decided with
+    the launch and never stored, so every spawn and resume re-asks."""
     stage: Stage
     entry: Entry
+    second: Entry | None = None
 
     @property
     def model(self) -> str:
@@ -130,6 +133,14 @@ def _admitted(admit: Admit, bypass: bool) -> Admitted:
     return (lambda m: True) if bypass else (lambda m: admit(m).admitted)
 
 
+def _with_second(cfg: Config, target: Target | None, launch: Launch,
+                 admit: Admit) -> Launch:
+    """Grant the second model on the gate itself: a bypass never covers it."""
+    second = second_model(_policy(cfg, target), launch.stage.value,
+                          launch.entry, _admitted(admit, False))
+    return replace(launch, second=second)
+
+
 def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
                    stage: Stage, admit: Admit) -> tuple[Launch | None, bool]:
     """What a spawn site launches and whether usage is bypassed. A one-shot
@@ -141,12 +152,12 @@ def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
     if override is not None and override.model:
         launch = Launch(stage, parse_entry(override.model, "override"))
         if bypass or admit(launch.model).admitted:
-            return launch, bypass
+            return _with_second(cfg, target, launch, admit), bypass
         return None, bypass
     launch = _launch_for(cfg, target, task, stage, _admitted(admit, bypass))
     if launch is None or (not bypass and not admit(launch.model).admitted):
         return None, bypass
-    return launch, bypass
+    return _with_second(cfg, target, launch, admit), bypass
 
 
 def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
@@ -513,7 +524,8 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
          "effort": entry.effort}))
     _log_model(task.worktree, stage, str(entry))
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
-                              stage.value, model, entry.effort)
+                              stage.value, model, entry.effort,
+                              second=launch.second)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     # A fresh stage is a fresh budget for the loops it runs; ci_rounds belongs
     # to the PR, not the stage, and is reset by _poll_prs/_resume_one.
@@ -1090,9 +1102,11 @@ def _resume_launch(cfg: Config, target: Target, task: TaskState,
     fresh address-review round, on that stage's model."""
     stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
     if task.resume_model_override:
-        return Launch(stage, parse_entry(task.resume_model_override, "override"))
-    return _launch_for(cfg, target, task, stage,
-                       _admitted(admit, task.resume_bypass_usage))
+        launch = Launch(stage, parse_entry(task.resume_model_override, "override"))
+    else:
+        launch = _launch_for(cfg, target, task, stage,
+                             _admitted(admit, task.resume_bypass_usage))
+    return _with_second(cfg, target, launch, admit) if launch else None
 
 
 def _resume_one(cfg: Config, deps: Deps, target: Target,
@@ -1137,13 +1151,14 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
         if block:
             text = f"{text}\n\n{block}"
         deps.sessions.resume(task.target, task.issue, task.worktree, text,
-                             model, entry.effort)
+                             model, entry.effort, second=launch.second)
         deps.notifier.send("resumed_for_attach", issue=task.issue,
                            title=task.title, url=_url(target, task.issue),
                            target=target.name, note="")
     else:
         deps.sessions.resume(task.target, task.issue, task.worktree,
-                             block or "Continue.", model, entry.effort)
+                             block or "Continue.", model, entry.effort,
+                             second=launch.second)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     _clear_wake_blocked(cfg, task.target, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,

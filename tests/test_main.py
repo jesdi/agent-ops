@@ -184,14 +184,14 @@ class FakeSessions:
     def send_text(self, target, issue, text):
         self.sent_text.append((issue, text))
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort=""):
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.spawned.append((issue, stage_name, model, prompt, effort))
         self.spawn_calls.append((target, issue))
 
-    def resume(self, target, issue, worktree, message, model, effort=""):
+    def resume(self, target, issue, worktree, message, model, effort="", second=None):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
@@ -1042,7 +1042,7 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
             self.ops.append(("end", issue))
             super().end(target, issue)
 
-        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort=""):
+        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
             self.ops.append(("spawn", stage_name))
             super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
 
@@ -3192,11 +3192,11 @@ class LiveUntilEnded(FakeSessions):
     frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
     express across a dozen passes."""
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort=""):
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
         super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
         self.alive_set.add(issue)
 
-    def resume(self, target, issue, worktree, message, model, effort=""):
+    def resume(self, target, issue, worktree, message, model, effort="", second=None):
         super().resume(target, issue, worktree, message, model, effort)
         self.alive_set.add(issue)
 
