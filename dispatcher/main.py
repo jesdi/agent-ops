@@ -1012,8 +1012,7 @@ def _resume_woken(cfg: Config, deps: Deps, target: Target,
         if launch is None or (not task.resume_bypass_usage
                               and not admit(launch.model).admitted):
             continue  # this model's provider has no headroom; others may
-        tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
-        if len(active(tasks)) >= cfg.capacity:
+        if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
             return
         if task.slot == NO_SLOT:
@@ -1189,9 +1188,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
                                               Stage.ADDRESS_REVIEW, admit)
         if launch is None:
             continue
-        tasks = [t for t in load_all(cfg.state_dir)
-                 if t.target == target.name]
-        if len(active(tasks)) >= cfg.capacity:
+        if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
             return
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
@@ -1507,6 +1504,13 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
                                   fp=failures.fingerprint(rep))
 
 
+def _box_free(cfg: Config, tasks: list[TaskState]) -> int:
+    """Free capacity across the whole box: `tasks` must be every task, not
+    one target's — capacity is shared, so a spawn site checks the box, never
+    a single target's occupancy."""
+    return cfg.capacity - len(active(tasks))
+
+
 def _reopened(stale: TaskState, pass_started: str) -> bool:
     """Reopened won't-do: rank drops CLOSED issues, so a candidate row for a
     canceled task proves the operator reopened the issue and moved the card
@@ -1545,11 +1549,12 @@ def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
 
 def _claim_new(cfg: Config, deps: Deps, target: Target,
                admit: Admit, dry_run: bool, pass_started: str = "") -> None:
-    tasks = [t for t in load_all(cfg.state_dir) if t.target == target.name]
-    free = cfg.capacity - len(active(tasks))
+    all_tasks = load_all(cfg.state_dir)
+    target_tasks = [t for t in all_tasks if t.target == target.name]
+    free = _box_free(cfg, all_tasks)
     if free <= 0:
         return
-    for cand, launch in _claimable(cfg, deps, target, tasks, admit, pass_started):
+    for cand, launch in _claimable(cfg, deps, target, target_tasks, admit, pass_started):
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
             break
