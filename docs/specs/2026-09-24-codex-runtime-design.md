@@ -136,7 +136,7 @@ the literal `"claude"`. `spawn_stage` and `resume` keep their signatures; the
 
 ### Effort — `dispatcher/models.py`
 
-`EFFORTS` becomes per provider and `parse_entry` validates against the
+`PROVIDER_EFFORTS` holds each provider's efforts and `parse_entry` validates against the
 entry's own provider:
 
 | provider | efforts |
@@ -307,7 +307,7 @@ Enforced at both places that accept an override:
 
 - `web/app.py` `intent_resume` and `_run_model`: 422 with
   "stage <s> runs on <provider>; pick a model from <provider>".
-- `main._resume_model_is_configured`, the dispatcher's authoritative check
+- `main._require_resume_model`, the dispatcher's authoritative check
   when it applies a resume intent. A rejected intent is dropped with an
   event, as an unconfigured model is today.
 
