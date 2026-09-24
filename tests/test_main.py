@@ -397,6 +397,42 @@ def test_forced_queue_candidate_keeps_choice_when_no_slot(tmp_path, monkeypatch)
         c.state_dir, "portfolio_eval", 42) == choice
 
 
+def test_slot_exhaustion_stops_the_claim_round(tmp_path, monkeypatch):
+    """Box-wide capacity is free (free > 0), but allocate_slot has nothing to
+    hand out — the round must stop rather than claim a candidate it cannot
+    give a slot to."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
+    gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
+
+    main._claim_new(c, deps(gh), c.targets, ADMIT_ALL, False)
+
+    assert gh.claimed == []
+
+
+def test_active_task_for_an_unconfigured_target_does_not_break_the_round(
+        tmp_path, monkeypatch):
+    """A target that has since left targets.yaml can still have an
+    in-flight task on disk. _round_counts must not crash looking it up, and
+    the round must still claim normally for the targets still configured."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    orphan_wt = Path(c.targets[0].worktrees_path) / "task-orphan-1"
+    (orphan_wt / ".agent").mkdir(parents=True, exist_ok=True)
+    save(c.state_dir, TaskState(
+        issue=1, target="retired_target", stage=Stage.IMPLEMENT, slot=0,
+        worktree=str(orphan_wt), branch="agent/task-1", title="t",
+        updated_at="2026-07-21T00:00:00+00:00", track="standard"))
+    gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
+
+    main._claim_new(c, deps(gh), c.targets, ADMIT_ALL, False)
+
+    assert gh.claimed == [42]
+
+
 def test_budget_resume_pings_once(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     patch_workspace(monkeypatch, tmp_path)

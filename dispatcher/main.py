@@ -1565,6 +1565,42 @@ def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
             yield cand, launch
 
 
+def _round_counts(targets: list[Target],
+                  all_tasks: list[TaskState]) -> dict[str, int]:
+    """Each target's current active-task count, seeded at 0 so every target
+    in the round has an entry even with nothing running yet."""
+    counts = {t.name: 0 for t in targets}
+    for t in active(all_tasks):
+        if t.target in counts:
+            counts[t.target] += 1
+    return counts
+
+
+def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
+                  slot: int, wt: str, launch: Launch) -> TaskState:
+    """Board mutation is last and irreversible: state is saved and the
+    `claimed` event appended first, so a crash before the claim leaves a
+    recoverable partial claim rather than a silently lost slot. A failure
+    from here on releases the board claim back to Ready."""
+    task = TaskState(issue=cand.number, target=target.name,
+                     stage=Stage.QUEUED, slot=slot, worktree=wt,
+                     branch=f"agent/task-{cand.number}",
+                     title=cand.title, updated_at=_now(),
+                     effort=cand.effort, labels=cand.labels,
+                     track=track_from_labels(cand.labels, policy_for(cfg, target)))
+    save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
+    eventlog.append_event(cfg.state_dir, "claimed", target=target.name,
+                          issue=cand.number, stage=Stage.QUEUED.value)
+    try:
+        deps.github.claim(target, cand)  # irreversible board mutation — last
+        task = _spawn_stage(cfg, deps, target, task, launch)
+        _consume_execution_choice(cfg, target.name, cand.number)
+    except Exception:
+        deps.github.release(target, cand.number, "claim/spawn failed after provisioning")
+        raise
+    return task
+
+
 def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
                admit: Admit, dry_run: bool, pass_started: str = "") -> None:
     """Claim free units one at a time, each via claims.pick_target. A target leaves
@@ -1573,10 +1609,7 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
     free = _box_free(cfg, all_tasks)
     if free <= 0:
         return
-    counts = {t.name: 0 for t in targets}
-    for t in active(all_tasks):
-        if t.target in counts:
-            counts[t.target] += 1
+    counts = _round_counts(targets, all_tasks)
     last = claims.last_claims(cfg.state_dir)
     caps = {t.name: t.max_active for t in targets}
     # Generator bodies run on first next(), so a target's rank_cmd runs only
@@ -1613,22 +1646,7 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
             # retries its remaining candidates, and other targets keep claiming.
             del in_round[name]
             continue
-        task = TaskState(issue=cand.number, target=target.name,
-                         stage=Stage.QUEUED, slot=slot, worktree=wt,
-                         branch=f"agent/task-{cand.number}",
-                         title=cand.title, updated_at=_now(),
-                         effort=cand.effort, labels=cand.labels,
-                         track=track_from_labels(cand.labels, policy_for(cfg, target)))
-        save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
-        eventlog.append_event(cfg.state_dir, "claimed", target=target.name,
-                              issue=cand.number, stage=Stage.QUEUED.value)
-        try:
-            deps.github.claim(target, cand)  # irreversible board mutation — last
-            _spawn_stage(cfg, deps, target, task, launch)
-            _consume_execution_choice(cfg, target.name, cand.number)
-        except Exception:
-            deps.github.release(target, cand.number, "claim/spawn failed after provisioning")
-            raise
+        _commit_claim(cfg, deps, target, cand, slot, wt, launch)
         counts[target.name] += 1
         last[target.name] = _now()
         free -= 1  # checked before the next pull, so no candidate is vetted (or swept) that cannot be claimed
