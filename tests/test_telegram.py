@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import telegram.notify as notify
 from telegram.templates import render
@@ -201,8 +203,8 @@ def test_triage_report_names_the_state_dir_when_not_given():
 RECOVERY = "CLAUDE_CONFIG_DIR=$HOME/agent-ops-state/claude-home"
 
 
-def test_unit_failed_template_names_unit_and_recovery():
-    msg = render("unit_failed", unit="agent-ops-keepalive.service",
+def test_keepalive_failed_template_names_unit_and_recovery():
+    msg = render("keepalive_failed", unit="agent-ops-keepalive.service",
                  host="box1")
     assert "agent-ops-keepalive.service" in msg
     assert "box1" in msg
@@ -217,7 +219,8 @@ def test_auth_dark_template_carries_age_and_recovery():
     assert "/login" in msg
 
 
-def test_alert_main_sends_unit_failed(monkeypatch):
+@pytest.fixture
+def alert_env(monkeypatch, tmp_path):
     import telegram.alert as alert
     sent = []
 
@@ -228,23 +231,48 @@ def test_alert_main_sends_unit_failed(monkeypatch):
 
     monkeypatch.setattr(alert, "Notifier", FakeNotifier)
     monkeypatch.setattr(alert.socket, "gethostname", lambda: "box1")
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path))
+    return alert, sent, tmp_path
+
+
+def test_alert_keepalive_failure_asks_for_relogin(alert_env):
+    alert, sent, _ = alert_env
     assert alert.main(["agent-ops-keepalive.service"]) == 0
-    assert sent == [("unit_failed", {"unit": "agent-ops-keepalive.service",
+    assert sent == [("keepalive_failed", {"unit": "agent-ops-keepalive.service",
+                                          "host": "box1"})]
+    assert "/login" in render("keepalive_failed", unit="k", host="box1")
+
+
+def test_alert_other_unit_points_at_its_journal_not_relogin(alert_env):
+    alert, sent, _ = alert_env
+    assert alert.main(["agent-ops-update.service"]) == 0
+    assert sent == [("unit_failed", {"unit": "agent-ops-update.service",
                                      "host": "box1"})]
+    text = render("unit_failed", unit="agent-ops-update.service", host="box1")
+    assert "journalctl --user -u agent-ops-update.service" in text
+    assert "login" not in text and "OAuth" not in text
 
 
-def test_alert_main_without_args_still_sends(monkeypatch):
-    import telegram.alert as alert
-    sent = []
+def test_alert_repeats_for_a_unit_at_most_once_an_hour(alert_env):
+    # The updater runs every two minutes; a stuck checkout must not page
+    # the operator every two minutes.
+    alert, sent, state = alert_env
+    alert.main(["agent-ops-update.service"])
+    alert.main(["agent-ops-update.service"])
+    alert.main(["agent-ops-keepalive.service"])  # another unit is not muted
+    assert [ctx["unit"] for _, ctx in sent] == ["agent-ops-update.service",
+                                                "agent-ops-keepalive.service"]
+    marker = next(state.joinpath("alerts").glob("agent-ops-update.service*"))
+    old = marker.stat().st_mtime - 3601
+    os.utime(marker, (old, old))
+    alert.main(["agent-ops-update.service"])
+    assert len(sent) == 3
 
-    class FakeNotifier:
-        def send(self, template, **ctx):
-            sent.append(template)
-            return 1
 
-    monkeypatch.setattr(alert, "Notifier", FakeNotifier)
+def test_alert_main_without_args_still_sends(alert_env):
+    alert, sent, _ = alert_env
     assert alert.main([]) == 0
-    assert sent == ["unit_failed"]
+    assert [t for t, _ in sent] == ["unit_failed"]
 
 
 def test_loop_and_review_templates_render():
