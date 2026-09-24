@@ -16,7 +16,7 @@ from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, consumes_capacity,
-                              holds_slot, max_slots)
+                              holds_slot, max_slots, resumable_crash)
 
 FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
 
@@ -112,6 +112,8 @@ def delivery_contract(t: TaskState | None, *, wake_blocked: bool) -> str:
     actually do with the message."""
     if t is None:
         return "will deliver when this task is claimed"
+    if resumable_crash(t):
+        return "will deliver when you resume this task"
     if t.stage in FINISHED_STAGES:
         return "will deliver if this task restarts"
     if t.park:

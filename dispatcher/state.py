@@ -36,6 +36,16 @@ IN_FLIGHT_STAGES = frozenset({
     Stage.STALLED_ON_BUDGET,
 })
 
+# Stages a session runs from its own stage prompt, so a crashed one can be
+# retried by spawning the stage afresh from the worktree's artifacts.
+RESPAWNABLE_STAGES = frozenset({
+    Stage.SPEC, Stage.PLAN, Stage.IMPLEMENT, Stage.REVIEW, Stage.ADDRESS_REVIEW,
+})
+
+
+def resumable_crash(t: "TaskState") -> bool:
+    return t.stage is Stage.FAILED and bool(t.crashed_stage)
+
 
 @dataclass(frozen=True)
 class LoopCaps:
@@ -125,6 +135,9 @@ class TaskState:
     # Cleared after the session successfully resumes.
     resume_model_override: str = ""
     resume_bypass_usage: bool = False
+    # The stage a crash failed this task out of; Resume respawns it fresh in
+    # the same worktree. "" = not resumable (kill, closed PR, pre-field crash).
+    crashed_stage: str = ""
     # None=no request; SpecApprovalRequest while at gate; AnswersRequest written
     # ONLY by _park_for_input in dispatcher/main.py, and only when a
     # worktree-contained path resolves — so an answers request never exists

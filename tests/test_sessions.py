@@ -282,12 +282,23 @@ def test_spawn_stage_on_a_vanished_worktree_creates_no_tab(tmp_path, monkeypatch
     assert calls == []
 
 
-def test_spawn_stage_when_the_server_is_down_runs_nothing(tmp_path, monkeypatch):
+def test_spawn_stage_when_the_server_is_down_raises_and_runs_nothing(tmp_path, monkeypatch):
+    # A silent return let the dispatcher record a stage that never started
+    # and report a phantom crash a pass later (#363).
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake(monkeypatch, [], calls)
-    Sessions().spawn_stage("acme", 42, wt, "P", "spec", "m")  # no raise
+    with pytest.raises(RuntimeError, match="no tab for task-acme-42"):
+        Sessions().spawn_stage("acme", 42, wt, "P", "spec", "m")
     assert not any(c[:2] == ["pane", "run"] for c in calls)
+
+
+def test_a_refused_launch_command_raises(tmp_path, monkeypatch):
+    wt = _worktree(tmp_path)
+    calls = []
+    herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 1, "")], calls)
+    with pytest.raises(RuntimeError, match="refused the launch"):
+        Sessions().spawn_stage("acme", 42, wt, "P", "spec", "m")
 
 
 def test_resume_passes_the_quoted_message_and_the_model(tmp_path, monkeypatch):
