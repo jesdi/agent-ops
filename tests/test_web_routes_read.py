@@ -67,7 +67,7 @@ def test_task_detail_and_404(tmp_path):
                                  labels=("auto",))]
     fake.pane_tails[7] = "$ pytest -q\n3 passed"
     fake.alive.add(7)
-    fake.messages_by_issue[7] = [
+    fake.messages_by_key[("alpha", 7)] = [
         _msg("m1", "use oauth", delivered="2026-08-12T10:05:00+00:00"),
         _msg("m2", "and rebase")]
     fake.pending = [

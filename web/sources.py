@@ -359,34 +359,25 @@ class Sources:
                            "usage": usage, "failures": failures,
                            "history": history}, sort_keys=True)
 
-    def messages(self, issue: int) -> list:
-        return msgq.all_messages(self._cfg.state_dir, issue)
+    def messages(self, target: str, issue: int) -> list:
+        return msgq.all_messages(self._cfg.state_dir, target, issue)
 
-    def undelivered_counts(self) -> dict[int, int]:
+    def undelivered_counts(self) -> dict[tuple[str, int], int]:
         return msgq.undelivered_counts(self._cfg.state_dir)
 
     def wake_blocked_issues(self) -> set[tuple[str, int]]:
         """(target, issue) pairs currently denied a wake for want of a free
-        slot/capacity.
-
-        The on-disk marker (wake-blocked-<issue>) predates the (target,
-        issue) rekey and is still bare-issue-keyed (dispatcher/main.py) — a
-        known, tracked gap (deferred rekey of this one marker format). A
-        marker therefore cannot say WHICH target it belongs to, so it is
-        read here as blocking that issue number on every configured target,
-        matching the marker's pre-existing any-target semantics rather than
-        inventing a new file layout for it.
-        """
-        issues: set[int] = set()
+        slot/capacity, parsed from wake-blocked-<target>-<issue> markers
+        (rpartition: target names may contain '-'). A legacy issue-only
+        marker names no target and is skipped; the dispatcher migrates or
+        drops those at pass start."""
+        out: set[tuple[str, int]] = set()
         for p in self.state_dir.glob("wake-blocked-*"):
-            try:
-                issues.add(int(p.name.removeprefix("wake-blocked-")))
-            except ValueError:
-                continue
-        if not issues:
-            return set()
-        return {(target.name, issue)
-                for target in self._cfg.targets for issue in issues}
+            target, _, issue = p.name.removeprefix(
+                "wake-blocked-").rpartition("-")
+            if target and issue.isdigit():
+                out.add((target, int(issue)))
+        return out
 
     # -- writes ----------------------------------------------------------
 

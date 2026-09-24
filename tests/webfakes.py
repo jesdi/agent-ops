@@ -70,8 +70,8 @@ class FakeSources:
         self.heartbeat = None     # dict | None returned by pass_heartbeat()
         self._claims_paused = False
         self._triage_running = False
-        self.messages_by_issue = {}   # issue -> list[msgq.Message]
-        self.undelivered = {}         # issue -> int
+        self.messages_by_key = {}     # (target, issue) -> list[msgq.Message]
+        self.undelivered = {}         # (target, issue) -> int
         self.blocked_wakes = set()    # (target, issue) with a wake-blocked marker
         self.execution_overrides = {}  # (target, issue) -> model/bypass tuple
 
@@ -159,8 +159,8 @@ class FakeSources:
             {"title": "", "body": "", "url": "", "fetched_at": "",
              "error": "not seeded"})
 
-    def messages(self, issue):
-        return self.messages_by_issue.get(issue, [])
+    def messages(self, target, issue):
+        return self.messages_by_key.get((target, issue), [])
 
     def undelivered_counts(self):
         return dict(self.undelivered)

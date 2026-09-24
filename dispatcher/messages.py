@@ -1,7 +1,9 @@
 """Durable per-issue operator message queue
-(~/agent-ops-state/messages/<issue>.jsonl).
+(~/agent-ops-state/messages/<target>-<issue>.jsonl).
 
-Keyed by ISSUE, not task: an unclaimed backlog issue has no task-<N>.json,
+Keyed by (TARGET, ISSUE), not task — two projects can share an issue
+number, and a reply must never cross into the other one's prompt. Not keyed
+by task because an unclaimed backlog issue has no task-<N>.json,
 and the queue must survive done/failed/retry cycles that delete or rewrite
 one. Appended by the dispatcher only (the web writes intents; the dispatcher
 stays the single writer of state) and drained at session boundaries.
@@ -40,8 +42,8 @@ def _dir(state_dir: str | Path) -> Path:
     return Path(state_dir) / MESSAGES_DIR
 
 
-def _path(state_dir: str | Path, issue: int) -> Path:
-    return _dir(state_dir) / f"{issue}.jsonl"
+def _path(state_dir: str | Path, target: str, issue: int) -> Path:
+    return _dir(state_dir) / f"{target}-{issue}.jsonl"
 
 
 def _parse(raw: str, where: Path) -> Message | None:
@@ -63,34 +65,34 @@ def _dump(m: Message) -> str:
                        "delivered_at": m.delivered_at or None})
 
 
-def append(state_dir: str | Path, issue: int, text: str,
+def append(state_dir: str | Path, target: str, issue: int, text: str,
            actor: str) -> Message:
     m = Message(id=str(uuid.uuid4()), text=text, actor=actor,
                 created_at=_now())
-    p = _path(state_dir, issue)
+    p = _path(state_dir, target, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a") as fh:
         fh.write(_dump(m) + "\n")
     return m
 
 
-def all_messages(state_dir: str | Path, issue: int) -> list[Message]:
-    p = _path(state_dir, issue)
+def all_messages(state_dir: str | Path, target: str, issue: int) -> list[Message]:
+    p = _path(state_dir, target, issue)
     if not p.exists():
         return []
     out = [_parse(raw, p) for raw in p.read_text().splitlines() if raw.strip()]
     return [m for m in out if m is not None]
 
 
-def undelivered(state_dir: str | Path, issue: int) -> list[Message]:
-    return [m for m in all_messages(state_dir, issue) if not m.delivered_at]
+def undelivered(state_dir: str | Path, target: str, issue: int) -> list[Message]:
+    return [m for m in all_messages(state_dir, target, issue) if not m.delivered_at]
 
 
-def mark_delivered(state_dir: str | Path, issue: int,
+def mark_delivered(state_dir: str | Path, target: str, issue: int,
                    ids: Sequence[str]) -> None:
     """Stamp delivered_at on the named ids. Already-stamped messages keep
     their original timestamp, so a re-drain never rewrites history."""
-    p = _path(state_dir, issue)
+    p = _path(state_dir, target, issue)
     if not p.exists():
         return
     wanted = set(ids)
@@ -98,25 +100,64 @@ def mark_delivered(state_dir: str | Path, issue: int,
     kept = [m if (m.id not in wanted or m.delivered_at)
             else Message(id=m.id, text=m.text, actor=m.actor,
                          created_at=m.created_at, delivered_at=stamp)
-            for m in all_messages(state_dir, issue)]
+            for m in all_messages(state_dir, target, issue)]
     tmp = p.with_suffix(".tmp")
     tmp.write_text("".join(_dump(m) + "\n" for m in kept))
     tmp.replace(p)
 
 
-def undelivered_counts(state_dir: str | Path) -> dict[int, int]:
-    """issue -> number of queued (undelivered) messages. Used by the board
-    badge; files whose stem is not an issue number are ignored."""
+def _key(p: Path) -> tuple[str, int] | None:
+    """(target, issue) from a `<target>-<issue>.jsonl` name, else None.
+    rpartition, since target names may themselves contain '-'."""
+    target, _, issue = p.stem.rpartition("-")
+    return (target, int(issue)) if target and issue.isdigit() else None
+
+
+def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
+    """(target, issue) -> number of queued (undelivered) messages. Used by
+    the board badge; files not named `<target>-<issue>.jsonl` (including
+    legacy issue-only ones) are ignored."""
     d = _dir(state_dir)
     if not d.exists():
         return {}
-    out: dict[int, int] = {}
+    out: dict[tuple[str, int], int] = {}
     for p in sorted(d.glob("*.jsonl")):
-        try:
-            issue = int(p.stem)
-        except ValueError:
+        key = _key(p)
+        if key is None:
             continue
-        n = len(undelivered(state_dir, issue))
+        n = len(undelivered(state_dir, *key))
         if n:
-            out[issue] = n
+            out[key] = n
     return out
+
+
+def migrate_legacy(state_dir: str | Path, targets: Sequence[str]) -> None:
+    """Take over pre-multi-project `<issue>.jsonl` files. With exactly one
+    target they are renamed to that target's key — appended onto an
+    existing target-keyed file rather than clobbering it. With several they
+    cannot be attributed, so they are left in place with a warning."""
+    d = _dir(state_dir)
+    if not d.exists():
+        return
+    for p in sorted(d.glob("*.jsonl")):
+        if not p.stem.isdigit():
+            continue
+        if len(targets) != 1:
+            print(f"[warn] legacy message file {p} not delivered: several "
+                  f"targets are configured, so its project is unknown",
+                  file=sys.stderr)
+            continue
+        issue = int(p.stem)
+        dest = _path(state_dir, targets[0], issue)
+        if not dest.exists():
+            p.replace(dest)
+            continue
+        # Skip ids already present, so a crash between append and unlink
+        # never delivers a message twice on the re-run.
+        seen = {m.id for m in all_messages(state_dir, targets[0], issue)}
+        legacy = [m for m in (_parse(raw, p) for raw in
+                              p.read_text().splitlines() if raw.strip())
+                  if m is not None and m.id not in seen]
+        with dest.open("a") as fh:
+            fh.write("".join(_dump(m) + "\n" for m in legacy))
+        p.unlink()

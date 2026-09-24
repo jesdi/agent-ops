@@ -188,7 +188,8 @@ def _url(target: Target, issue: int) -> str:
     return f"https://github.com/{target.repo}/issues/{issue}"
 
 
-def _queue_message(cfg: Config, issue: int, text: str, actor: str) -> None:
+def _queue_message(cfg: Config, target: str, issue: int, text: str,
+                   actor: str) -> None:
     """Every message the agent should eventually read goes here — operator
     replies AND dispatcher-authored ones (CI conclusions, "the operator
     resumed this"). Appending instead of overwriting one field is the whole
@@ -201,7 +202,7 @@ def _queue_message(cfg: Config, issue: int, text: str, actor: str) -> None:
     messages" in the next resume prompt."""
     if not text.strip():
         return
-    messages.append(cfg.state_dir, issue, text, actor)
+    messages.append(cfg.state_dir, target, issue, text, actor)
 
 
 def _message_block(msgs: list[messages.Message]) -> str:
@@ -215,20 +216,20 @@ def _message_block(msgs: list[messages.Message]) -> str:
     return "\n".join(lines)
 
 
-def _drain(cfg: Config, issue: int) -> tuple[str, list[str]]:
+def _drain(cfg: Config, target: str, issue: int) -> tuple[str, list[str]]:
     """(block, ids) for everything queued on this issue. The caller stamps
     the ids only AFTER the session actually took the prompt, so a spawn that
     raises leaves the mail queued for the next attempt. Ids are captured
     here, not re-derived later, so a message that arrives during the spawn is
     not stamped as delivered without ever being shown."""
-    msgs = messages.undelivered(cfg.state_dir, issue)
+    msgs = messages.undelivered(cfg.state_dir, target, issue)
     return _message_block(msgs), [m.id for m in msgs]
 
 
 def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
           actor: str = "dispatcher", *, model_override: str = "",
           bypass_usage: bool = False) -> None:
-    _queue_message(cfg, task.issue, text, actor)
+    _queue_message(cfg, task.target, task.issue, text, actor)
     task = loops.reset(task, ResetCause.OPERATOR_WAKE)
     save(cfg.state_dir, replace(task, park=PARK_WAKE, hold_for_attach=hold,
                                 resume_model_override=model_override,
@@ -465,7 +466,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         tracks=tracks_text(_policy(cfg, target)),
     )
     prompt = render_stage_prompt(stage, ctx)
-    block, drained = _drain(cfg, task.issue)
+    block, drained = _drain(cfg, task.target, task.issue)
     if block:
         prompt = f"{prompt}\n\n{block}\n"
     agent_dir = Path(task.worktree) / ".agent"
@@ -476,7 +477,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     _log_model(task.worktree, stage, str(entry))
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort)
-    messages.mark_delivered(cfg.state_dir, task.issue, drained)
+    messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     # A fresh stage is a fresh budget for the loops it runs; ci_rounds belongs
     # to the PR, not the stage, and is reset by _poll_prs/_resume_one.
     task = loops.reset(task, ResetCause.STAGE_STARTED)
@@ -689,7 +690,7 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     _log_model(task.worktree, Stage.PLAN, str(entry))
     clear_waiting(cfg.state_dir, task.target, task.issue)
     deps.sessions.end(task.target, task.issue)
-    block, drained = _drain(cfg, task.issue)
+    block, drained = _drain(cfg, task.target, task.issue)
     retry_text = (
         f"Your ticket set under .agent/tickets/ failed the pipeline's mechanical "
         f"check: {reason}. Fix it in place — files named NN-slug.md numbered "
@@ -701,7 +702,7 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
         retry_text = f"{retry_text}\n\n{block}"
     deps.sessions.resume(task.target, task.issue, task.worktree, retry_text,
                          entry.model_id, entry.effort)
-    messages.mark_delivered(cfg.state_dir, task.issue, drained)
+    messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     save(cfg.state_dir, replace(task, plan_retries=task.plan_retries + 1,
                                 updated_at=_now()))
     _notify(deps, target, task, "plan_retry", reason)
@@ -721,7 +722,7 @@ def _retry_spec(cfg: Config, deps: Deps, target: Target, task: TaskState,
     _log_model(task.worktree, Stage.SPEC, str(entry))
     clear_waiting(cfg.state_dir, task.target, task.issue)
     deps.sessions.end(task.target, task.issue)
-    block, drained = _drain(cfg, task.issue)
+    block, drained = _drain(cfg, task.target, task.issue)
     text = (f"Your .agent/stage.json was rejected: {reason}. Re-write the same "
             f"signal with a \"track\" field naming one of those tracks (the "
             f"list with each track's meaning is in your stage prompt).")
@@ -729,7 +730,7 @@ def _retry_spec(cfg: Config, deps: Deps, target: Target, task: TaskState,
         text = f"{text}\n\n{block}"
     deps.sessions.resume(task.target, task.issue, task.worktree, text,
                          entry.model_id, entry.effort)
-    messages.mark_delivered(cfg.state_dir, task.issue, drained)
+    messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     save(cfg.state_dir, replace(task, spec_retries=task.spec_retries + 1,
                                 updated_at=_now()))
 
@@ -831,7 +832,7 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
                 continue
         reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
                  f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
-        _queue_message(cfg, task.issue, reply, "dispatcher")
+        _queue_message(cfg, task.target, task.issue, reply, "dispatcher")
         save(cfg.state_dir, replace(task, park=PARK_WAKE, ci_run_id=0,
                                     updated_at=_now()))
 
@@ -960,8 +961,11 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
             f"https://github.com/{target.repo}/pull/{task.pr_number}")
 
 
-def _wake_blocked_path(cfg: Config, issue: int) -> Path:
-    return Path(cfg.state_dir) / f"wake-blocked-{issue}"
+WAKE_BLOCKED_PREFIX = "wake-blocked-"
+
+
+def _wake_blocked_path(cfg: Config, target: str, issue: int) -> Path:
+    return Path(cfg.state_dir) / f"{WAKE_BLOCKED_PREFIX}{target}-{issue}"
 
 
 def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
@@ -969,7 +973,7 @@ def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
     """Edge-triggered: the event fires the pass a wake FIRST goes hungry, not
     every pass thereafter — a resume that waits overnight must not write 144
     identical lines into events.jsonl. The marker is the edge."""
-    p = _wake_blocked_path(cfg, task.issue)
+    p = _wake_blocked_path(cfg, task.target, task.issue)
     if p.exists():
         return
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -979,8 +983,8 @@ def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
                           detail=reason)
 
 
-def _clear_wake_blocked(cfg: Config, issue: int) -> None:
-    _wake_blocked_path(cfg, issue).unlink(missing_ok=True)
+def _clear_wake_blocked(cfg: Config, target: str, issue: int) -> None:
+    _wake_blocked_path(cfg, target, issue).unlink(missing_ok=True)
 
 
 def _flush_done(cfg: Config) -> None:
@@ -995,7 +999,7 @@ def _flush_done(cfg: Config) -> None:
         if since.tzinfo is None:
             since = since.replace(tzinfo=timezone.utc)
         if (datetime.now(timezone.utc) - since).total_seconds() >= cutoff:
-            _clear_wake_blocked(cfg, task.issue)
+            _clear_wake_blocked(cfg, task.target, task.issue)
             delete(cfg.state_dir, task.target, task.issue)
             eventlog.append_event(cfg.state_dir, "flushed",
                                   target=task.target, issue=task.issue,
@@ -1073,13 +1077,13 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                        attention="operator", feedback_cursor=_cursor_now(),
                        resume_model_override="", resume_bypass_usage=False,
                        operator_request=None)
-        _clear_wake_blocked(cfg, task.issue)
+        _clear_wake_blocked(cfg, task.target, task.issue)
         _spawn_stage(cfg, deps, target, task, launch)
         eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
                               model=str(entry))
         return
-    block, drained = _drain(cfg, task.issue)
+    block, drained = _drain(cfg, task.target, task.issue)
     if task.hold_for_attach:
         text = ("The operator is attaching to talk to you directly. "
                 "Wait for their input.")
@@ -1093,8 +1097,8 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     else:
         deps.sessions.resume(task.target, task.issue, task.worktree,
                              block or "Continue.", model, entry.effort)
-    messages.mark_delivered(cfg.state_dir, task.issue, drained)
-    _clear_wake_blocked(cfg, task.issue)
+    messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
+    _clear_wake_blocked(cfg, task.target, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                 park_msg_id=0, park_note="",
                                 resume_model_override="",
@@ -1128,7 +1132,7 @@ def _respawn_crashed(cfg: Config, deps: Deps, target: Target,
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
                    park_note="", hold_for_attach=False,
                    resume_model_override="", resume_bypass_usage=False)
-    _clear_wake_blocked(cfg, task.issue)
+    _clear_wake_blocked(cfg, task.target, task.issue)
     ticket = task.ticket_cursor if task.stage is Stage.IMPLEMENT else 0
     task = _spawn_stage(cfg, deps, target, task, launch, ticket=ticket)
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
@@ -1197,7 +1201,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, target: Target,
         if slot is None:
             _mark_wake_blocked(cfg, target, task, "no free slot")
             return
-        _clear_wake_blocked(cfg, task.issue)
+        _clear_wake_blocked(cfg, task.target, task.issue)
         # Cursor := spawn time: everything the session can read live is
         # now "seen"; anything arriving after this moment re-triggers a
         # round (conservative — a redundant round beats a lost comment).
@@ -1616,7 +1620,15 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
     if task is not None and task.park == PARK_LOGIN:
         _inject_login_code(cfg, deps, task, intent.payload.get("text", ""))
         return
-    _queue_message(cfg, intent.issue, intent.payload.get("text", ""),
+    # A legacy intent (target "") names its project only through its task,
+    # or through the sole configured target; otherwise it is not guessed at.
+    target = (intent.target or (task.target if task is not None else "")
+              or (cfg.targets[0].name if len(cfg.targets) == 1 else ""))
+    if not target:
+        print(f"[warn] reply for #{intent.issue} dropped: legacy intent "
+              f"names no target", file=sys.stderr)
+        return
+    _queue_message(cfg, target, intent.issue, intent.payload.get("text", ""),
                    intent.actor or "operator")
     if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
@@ -1905,6 +1917,23 @@ def _starving(task: TaskState) -> bool:
     return task.park == PARK_WAKE or task.feedback_pending
 
 
+def _migrate_legacy_keys(cfg: Config) -> None:
+    """Take over pre-multi-project issue-only keys. Messages: see
+    messages.migrate_legacy. Wake-blocked markers are transient (re-marked
+    next pass if still true), so with several targets a legacy one is just
+    dropped; with one it is renamed to keep the edge-triggered event quiet."""
+    names = [t.name for t in cfg.targets]
+    messages.migrate_legacy(cfg.state_dir, names)
+    for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
+        issue = p.name.removeprefix(WAKE_BLOCKED_PREFIX)
+        if not issue.isdigit():
+            continue
+        if len(names) == 1:
+            p.replace(_wake_blocked_path(cfg, names[0], int(issue)))
+        else:
+            p.unlink(missing_ok=True)
+
+
 def _reconcile_slots(cfg: Config) -> None:
     """Re-establish two invariants from disk at the top of every pass, so no
     terminal path has to remember them and no manual state surgery is ever
@@ -1923,9 +1952,9 @@ def _reconcile_slots(cfg: Config) -> None:
     FAILED tombstone, a crash, a closed PR, a done task inside its retention
     window — left a dead card claiming forever that it was waiting for a
     slot, and a re-claim of the same issue inherited the stale badge."""
-    known: set[int] = set()
+    known: set[str] = set()
     for task in load_all(cfg.state_dir):
-        known.add(task.issue)
+        known.add(_wake_blocked_path(cfg, task.target, task.issue).name)
         if not holds_slot(task) and task.slot != NO_SLOT:
             eventlog.append_event(cfg.state_dir, "slot-reclaimed",
                                   target=task.target, issue=task.issue,
@@ -1937,13 +1966,9 @@ def _reconcile_slots(cfg: Config) -> None:
             task = replace(task, slot=NO_SLOT)
             save(cfg.state_dir, task)
         if not _starving(task):
-            _clear_wake_blocked(cfg, task.issue)
-    for p in Path(cfg.state_dir).glob("wake-blocked-*"):
-        try:
-            issue = int(p.name.removeprefix("wake-blocked-"))
-        except ValueError:
-            continue
-        if issue not in known:  # state file flushed/deleted under the marker
+            _clear_wake_blocked(cfg, task.target, task.issue)
+    for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
+        if p.name not in known:  # state file flushed/deleted under the marker
             p.unlink(missing_ok=True)
 
 
@@ -1970,6 +1995,7 @@ def _sync_artifacts(cfg: Config, *, dry_run: bool = False) -> None:
 def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
               config_path: str = "targets.yaml") -> None:
     pass_started = _now()
+    _migrate_legacy_keys(cfg)
     _reconcile_slots(cfg)
     if not dry_run:
         _apply_intents(cfg, deps)

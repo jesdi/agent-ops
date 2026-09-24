@@ -1271,7 +1271,7 @@ def test_ci_completion_marks_unpark_requested(tmp_path, monkeypatch):
     from dispatcher import messages
     # Message may be delivered already if resumed same pass; all_messages captures both.
     assert "run 4242 concluded: failure" in messages.all_messages(
-        c.state_dir, 42)[0].text
+        c.state_dir, "portfolio_eval", 42)[0].text
 
 
 def test_woken_task_resumes_before_new_claims(tmp_path, monkeypatch):
@@ -1335,7 +1335,7 @@ def test_reply_wakes_matching_parked_task(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42)[0].text == "use oauth"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
 
 
 def test_reply_to_unknown_message_is_reported(tmp_path, monkeypatch):
@@ -1402,16 +1402,16 @@ def test_attach_command_queues_no_message(tmp_path, monkeypatch):
     from dispatcher import messages
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE and t.hold_for_attach is True
-    assert messages.all_messages(c.state_dir, 42) == []
+    assert messages.all_messages(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_queue_message_drops_blank_text_only(tmp_path):
     c = cfg(tmp_path)
     from dispatcher import messages
-    main._queue_message(c, 42, "", "dispatcher")
-    main._queue_message(c, 42, "   \n ", "dispatcher")
-    main._queue_message(c, 42, "use the staging URL", "jesdi@github")
-    assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
+    main._queue_message(c, "portfolio_eval", 42, "", "dispatcher")
+    main._queue_message(c, "portfolio_eval", 42, "   \n ", "dispatcher")
+    main._queue_message(c, "portfolio_eval", 42, "use the staging URL", "jesdi@github")
+    assert [m.text for m in messages.all_messages(c.state_dir, "portfolio_eval", 42)] == [
         "use the staging URL"]
 
 
@@ -2096,7 +2096,7 @@ def test_reply_intent_wakes_parked_task_and_is_deleted(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42)[0].text == "use oauth"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
     assert intents_mod.list_intents(c.state_dir) == []
     applied = [e for e in eventlog.read_tail(c.state_dir)
                if e["event"] == "intent-applied"]
@@ -2132,7 +2132,7 @@ def test_reply_intent_for_running_task_is_queued_but_task_stays_running(tmp_path
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     # message is queued — not dropped — and the task stays unparked
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42)[0].text == "hi"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "hi"
     assert load(c.state_dir, "portfolio_eval", 42).park == ""  # no wake flip for a live session
     assert intents_mod.list_intents(c.state_dir) == []  # intent deleted
 
@@ -2154,7 +2154,7 @@ def test_reply_intent_on_gate_parked_task_wakes_it(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42)[0].text == "Approved — proceed."
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "Approved — proceed."
     assert intents_mod.list_intents(c.state_dir) == []
 
 
@@ -2383,7 +2383,7 @@ def test_resume_intent_wakes_with_default_text(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess))
     from dispatcher import messages
     # Task 3: _resume_woken delivers the queued message into the resume prompt.
-    msgs = messages.all_messages(c.state_dir, 42)
+    msgs = messages.all_messages(c.state_dir, "portfolio_eval", 42)
     assert msgs[0].text == "The operator resumed this task. Continue."
     assert msgs[0].delivered_at != ""
     assert "The operator resumed this task. Continue." in sess.resumed[0][1]
@@ -2400,7 +2400,7 @@ def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess))
     from dispatcher import messages
     # Task 3: _resume_woken delivers the queued message into the resume prompt.
-    msgs = messages.all_messages(c.state_dir, 42)
+    msgs = messages.all_messages(c.state_dir, "portfolio_eval", 42)
     assert msgs[0].text == "ship it"
     assert msgs[0].delivered_at != ""
     assert "ship it" in sess.resumed[0][1]
@@ -2413,7 +2413,7 @@ def test_resume_intent_can_override_a_wake_without_duplicate_message(
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE)
     from dispatcher import messages
-    messages.append(c.state_dir, 42, "original wake", "op")
+    messages.append(c.state_dir, "portfolio_eval", 42, "original wake", "op")
     intents_mod.write_intent(
         c.state_dir, "resume", "portfolio_eval", 42,
         {"model": "anthropic/claude-sonnet-5", "bypass_usage": True}, "op", 1)
@@ -2424,7 +2424,7 @@ def test_resume_intent_can_override_a_wake_without_duplicate_message(
     assert [(issue, model) for issue, _text, model, _effort in sess.resumed] == [
         (42, "anthropic/claude-sonnet-5")]
     assert "original wake" in sess.resumed[0][1]
-    assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
+    assert [m.text for m in messages.all_messages(c.state_dir, "portfolio_eval", 42)] == [
         "original wake"]
 
 
@@ -2641,8 +2641,8 @@ def test_reply_to_human_park_still_wakes(tmp_path, monkeypatch):
     assert sess.sent_text == []
     # _wake marks PARK_WAKE and queues the text; _resume_woken delivers it into the prompt.
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42) == []
-    assert messages.all_messages(c.state_dir, 42)[0].text == "hi"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert messages.all_messages(c.state_dir, "portfolio_eval", 42)[0].text == "hi"
     assert sess.resumed and "hi" in sess.resumed[0][1]
 
 
@@ -2984,7 +2984,7 @@ def test_reply_to_the_spec_parked_message_wakes_the_task(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42)[0].text == "drop the caching section"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "drop the caching section"
 
 
 def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
@@ -2999,7 +2999,7 @@ def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42)[0].text == "ok"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "ok"
 
 
 def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
@@ -3800,7 +3800,7 @@ def test_reply_to_a_running_task_is_queued_not_dropped(tmp_path):
                               "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
-    queued = messages.undelivered(c.state_dir, 42)
+    queued = messages.undelivered(c.state_dir, "portfolio_eval", 42)
     assert [m.text for m in queued] == ["use oauth"]
     assert [m.actor for m in queued] == ["jesdi@github"]
     # a running task is NOT woken — mail waits for the next boundary
@@ -3815,7 +3815,7 @@ def test_reply_to_a_wake_pending_task_is_queued_and_not_clobbered(tmp_path):
                                   "jesdi@github", i)
     main._apply_intents(c, deps())
     from dispatcher import messages
-    assert [m.text for m in messages.undelivered(c.state_dir, 42)] == [
+    assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
         "first", "second"]
 
 
@@ -3826,7 +3826,7 @@ def test_reply_to_an_unclaimed_issue_is_held(tmp_path):
                               "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
-    assert [m.text for m in messages.undelivered(c.state_dir, 777)] == [
+    assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 777)] == [
         "pre-brief: use the v2 API"]
 
 
@@ -3837,7 +3837,7 @@ def test_reply_to_a_done_task_is_held(tmp_path):
                               "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
-    assert len(messages.undelivered(c.state_dir, 42)) == 1
+    assert len(messages.undelivered(c.state_dir, "portfolio_eval", 42)) == 1
 
 
 def test_reply_to_a_parked_task_queues_and_requests_a_wake(tmp_path):
@@ -3847,7 +3847,7 @@ def test_reply_to_a_parked_task_queues_and_requests_a_wake(tmp_path):
                               "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
-    assert [m.text for m in messages.undelivered(c.state_dir, 42)] == [
+    assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
         "use oauth"]
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
 
@@ -3858,7 +3858,7 @@ def test_resume_intent_queues_its_text_as_a_message(tmp_path):
     main.intents.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
-    texts = [m.text for m in messages.undelivered(c.state_dir, 42)]
+    texts = [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)]
     assert texts == ["The operator resumed this task. Continue."]
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
 
@@ -3869,7 +3869,7 @@ def test_ci_conclusion_becomes_a_dispatcher_message(tmp_path):
     main._wake_ci(c, deps(gh=FakeGitHub(run_conclusion="failure")),
                   c.targets[0])
     from dispatcher import messages
-    queued = messages.undelivered(c.state_dir, 42)
+    queued = messages.undelivered(c.state_dir, "portfolio_eval", 42)
     assert len(queued) == 1
     assert "4242 concluded: failure" in queued[0].text
     assert queued[0].actor == "dispatcher"
@@ -3881,7 +3881,7 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.QUEUED)
     from dispatcher import messages
-    messages.append(c.state_dir, 42, "pre-brief: use the v2 API", "jesdi@github")
+    messages.append(c.state_dir, "portfolio_eval", 42, "pre-brief: use the v2 API", "jesdi@github")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task,
@@ -3889,8 +3889,8 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
-    assert messages.undelivered(c.state_dir, 42) == []
-    assert messages.all_messages(c.state_dir, 42)[0].delivered_at != ""
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert messages.all_messages(c.state_dir, "portfolio_eval", 42)[0].delivered_at != ""
 
 
 def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
@@ -3907,13 +3907,13 @@ def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
     from dispatcher import messages
-    messages.append(c.state_dir, 42, "first", "jesdi@github")
-    messages.append(c.state_dir, 42, "second", "jesdi@github")
+    messages.append(c.state_dir, "portfolio_eval", 42, "first", "jesdi@github")
+    messages.append(c.state_dir, "portfolio_eval", 42, "second", "jesdi@github")
     d = deps()
     main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
     text = d.sessions.resumed[-1][1]
     assert text.index("first") < text.index("second")
-    assert messages.undelivered(c.state_dir, 42) == []
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
@@ -3928,7 +3928,7 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.PLAN)
     from dispatcher import messages
-    messages.append(c.state_dir, 42, "keep the scope small", "jesdi@github")
+    messages.append(c.state_dir, "portfolio_eval", 42, "keep the scope small", "jesdi@github")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._retry_plan(c, d, c.targets[0], task,
@@ -3936,7 +3936,7 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
                                       lambda m: True),
                      "missing Goal line")
     assert "keep the scope small" in d.sessions.resumed[-1][1]
-    assert messages.undelivered(c.state_dir, 42) == []
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
@@ -3944,11 +3944,11 @@ def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
     from dispatcher import messages
-    messages.append(c.state_dir, 42, "delivered now", "jesdi@github")
+    messages.append(c.state_dir, "portfolio_eval", 42, "delivered now", "jesdi@github")
     d = deps()
     main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
-    messages.append(c.state_dir, 42, "arrived later", "jesdi@github")
-    assert [m.text for m in messages.undelivered(c.state_dir, 42)] == [
+    messages.append(c.state_dir, "portfolio_eval", 42, "arrived later", "jesdi@github")
+    assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
         "arrived later"]
 
 
@@ -4026,7 +4026,7 @@ def test_blocked_wake_emits_one_event_not_one_per_pass(tmp_path):
     assert len(blocked) == 1
     assert blocked[0]["issue"] == 42
     assert blocked[0]["detail"] == "capacity full"
-    assert main._wake_blocked_path(c, 42).exists()
+    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
 def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
@@ -4048,10 +4048,10 @@ def test_marker_clears_once_the_wake_succeeds(tmp_path):
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps()
     main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
-    assert main._wake_blocked_path(c, 42).exists()
+    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
     main.delete(c.state_dir, "portfolio_eval", 41)                     # capacity frees up
     main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
-    assert not main._wake_blocked_path(c, 42).exists()
+    assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
@@ -4080,7 +4080,7 @@ def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps(sess=FakeSessions(alive={41}))
     main._resume_woken(c, d, c.targets[0], admit=ADMIT_ALL)
-    assert main._wake_blocked_path(c, 42).exists()
+    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
     main.run_pass(c, d)
@@ -4088,7 +4088,7 @@ def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
     assert t.stage is Stage.FAILED
     assert t.park == ""                          # no longer waiting for a wake
     main.run_pass(c, d)                          # the sweep heals it from disk
-    assert not main._wake_blocked_path(c, 42).exists()
+    assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
 def test_reconcile_keeps_the_marker_of_a_task_that_is_still_starving(tmp_path):
@@ -4097,19 +4097,41 @@ def test_reconcile_keeps_the_marker_of_a_task_that_is_still_starving(tmp_path):
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     make_task(c, issue=43, slot=NO_SLOT, stage=Stage.PR_OPEN,
               feedback_pending=True)
-    main._wake_blocked_path(c, 42).touch()
-    main._wake_blocked_path(c, 43).touch()
+    main._wake_blocked_path(c, "portfolio_eval", 42).touch()
+    main._wake_blocked_path(c, "portfolio_eval", 43).touch()
     main._reconcile_slots(c)
-    assert main._wake_blocked_path(c, 42).exists()   # wake still denied
-    assert main._wake_blocked_path(c, 43).exists()   # feedback spawn still denied
+    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()   # wake still denied
+    assert main._wake_blocked_path(c, "portfolio_eval", 43).exists()   # feedback spawn still denied
 
 
 def test_reconcile_drops_a_marker_left_by_a_vanished_task(tmp_path):
     c = cfg(tmp_path)
-    main._wake_blocked_path(c, 42).parent.mkdir(parents=True, exist_ok=True)
-    main._wake_blocked_path(c, 42).touch()      # state file already flushed
+    main._wake_blocked_path(c, "portfolio_eval", 42).parent.mkdir(parents=True, exist_ok=True)
+    main._wake_blocked_path(c, "portfolio_eval", 42).touch()      # state file already flushed
     main._reconcile_slots(c)
-    assert not main._wake_blocked_path(c, 42).exists()
+    assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+
+
+def test_legacy_wake_blocked_marker_is_rekeyed_with_one_target(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
+    legacy = Path(c.state_dir) / "wake-blocked-42"
+    legacy.touch()
+    main._migrate_legacy_keys(c)
+    assert not legacy.exists()
+    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+
+
+def test_legacy_wake_blocked_marker_is_dropped_with_several_targets(tmp_path):
+    c = cfg(tmp_path)
+    c = dc_replace(c, targets=[c.targets[0],
+                               dc_replace(c.targets[0], name="factorial")])
+    legacy = Path(c.state_dir) / "wake-blocked-42"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.touch()
+    main._migrate_legacy_keys(c)
+    assert not legacy.exists()
+    assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
 def test_console_reply_to_a_login_park_types_the_code(tmp_path, monkeypatch):
@@ -4128,7 +4150,7 @@ def test_console_reply_to_a_login_park_types_the_code(tmp_path, monkeypatch):
     from dispatcher import messages
     assert sess.sent_text == [(42, "oauth-code-abc#123")]
     assert sess.resumed == []                   # never through the wake path
-    assert messages.all_messages(c.state_dir, 42) == []  # not persisted at rest
+    assert messages.all_messages(c.state_dir, "portfolio_eval", 42) == []  # not persisted at rest
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
@@ -4144,7 +4166,7 @@ def test_console_reply_to_a_human_park_still_queues(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess))
     from dispatcher import messages
     assert sess.sent_text == []
-    assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
+    assert [m.text for m in messages.all_messages(c.state_dir, "portfolio_eval", 42)] == [
         "use oauth"]
 
 
@@ -4190,7 +4212,7 @@ def test_migrate_tmux_flag_migrates_and_its_callback_really_wakes(
     # resume and queue the text the resumed claude will be handed.
     seen["wake"](load(c.state_dir, "portfolio_eval", 42), "moved to herdr")
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
-    assert [m.text for m in messages.all_messages(c.state_dir, 42)] == [
+    assert [m.text for m in messages.all_messages(c.state_dir, "portfolio_eval", 42)] == [
         "moved to herdr"]
 
 
@@ -4479,7 +4501,7 @@ def test_operator_wake_on_a_parked_pr_open_task_is_a_fresh_address_review_round(
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     pr_open_task(c, park=PARK_WAKE, ci_rounds=4, park_note="ci loop exceeded")
-    main._queue_message(c, 42, "the flaky test is known — skip it", "operator")
+    main._queue_message(c, "portfolio_eval", 42, "the flaky test is known — skip it", "operator")
     sess = FakeSessions(); main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.park, t.ci_rounds, t.attention) == (Stage.ADDRESS_REVIEW, "", 0, "operator")
@@ -5042,7 +5064,7 @@ def test_a_crash_remembers_the_stage_it_failed_in(tmp_path, monkeypatch):
 
 def test_resume_respawns_the_crashed_ticket_fresh(tmp_path, monkeypatch):
     c = _crash_ticket_2(tmp_path, monkeypatch)
-    main._queue_message(c, 42, "Now what?", "op")
+    main._queue_message(c, "portfolio_eval", 42, "Now what?", "op")
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     gh, sess = FakeGitHub(), FakeSessions()
     main.run_pass(c, deps(gh, sess))
@@ -5058,7 +5080,7 @@ def test_resume_respawns_the_crashed_ticket_fresh(tmp_path, monkeypatch):
     assert t.slot != NO_SLOT
     assert (42, "I") in [(i, o) for (i, o) in gh.statused]
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, 42) == []
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_resume_of_a_killed_task_is_still_skipped(tmp_path, monkeypatch):
