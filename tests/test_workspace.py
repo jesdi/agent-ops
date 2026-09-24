@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import dispatcher.workspace as workspace
@@ -64,6 +65,32 @@ def test_create_workspace(tmp_path: Path, monkeypatch):
     # the "waiting" ping never fires, and the task hangs unparked. Anchor it
     # to $CLAUDE_PROJECT_DIR so it resolves from anywhere.
     assert stop["command"].startswith("$CLAUDE_PROJECT_DIR/"), stop["command"]
+
+
+def test_create_workspace_skips_setup_when_no_setup_cmd(tmp_path: Path, monkeypatch):
+    """Requirement 5 / ticket 06: an empty setup_cmd means no provisioning
+    container runs at all — not a podman invocation with an empty command
+    tail. create_workspace must still create the worktree and return its
+    path."""
+    calls = []
+
+    def fake_sh(args, cwd, timeout=300, log=None):
+        calls.append(args)
+        if "worktree" in args:  # simulate git creating the dir
+            wt = Path(args[-2])
+            wt.mkdir(parents=True, exist_ok=True)
+            (wt / ".git").write_text(
+                f"gitdir: {tmp_path / 'repo'}/.git/worktrees/task-42\n")
+
+    monkeypatch.setattr(workspace, "_sh", fake_sh)
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    t = replace(target(tmp_path), setup_cmd="")
+
+    wt = workspace.create_workspace(t, 42)
+
+    assert wt == str(tmp_path / "repo.worktrees" / "task-42")
+    assert not any(a[0] == "podman" for a in calls), \
+        "no setup container may run when setup_cmd is empty"
 
 
 def _make_healthy_worktree(wt_path: Path, branch: str) -> None:
