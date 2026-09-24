@@ -55,7 +55,9 @@ _Avoid_: PR stage, verify stage
 **Gate**:
 The target repository's own green check (`gate_cmd` in targets.yaml —
 tests, lint, CRAP), run by the session after every ticket and in review.
-End to end (`verify_cmd`) is separate and runs once, off-box.
+End to end (`verify_cmd`) is separate and runs once, off-box. A target with
+no `verify_cmd` has no pre-PR e2e run; the PR's GitHub checks are the only
+e2e signal.
 _Avoid_: verification ladder
 
 **Loop cap**:

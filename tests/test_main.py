@@ -237,6 +237,7 @@ def cfg(tmp_path: Path) -> Config:
             worktrees_path=str(tmp_path / "repo.worktrees"),
             rank_cmd="rank", setup_cmd="setup",
             verify_cmd="make e2e-slot SLOT={slot}",
+            gate_cmd="make gate-slot SLOT={slot}",
             project_number=1, project_owner="jesdi",
             status_field_id="F", status_ready_option_id="R",
             status_in_progress_option_id="I",
