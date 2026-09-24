@@ -3101,6 +3101,23 @@ def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
     assert "status" in d.notifier.sent  # the "Which task?" prompt lists both
 
 
+def test_which_task_prompt_names_the_project_when_multi_target(
+        tmp_path, monkeypatch):
+    from tests.test_multi_project_capacity import two_target_cfg
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = two_target_cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    make_task(c, issue=43, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+              park=PARK_REVIEW, park_msg_id=56)
+    patch_events(monkeypatch, [Plain(text="yes")])
+    d = deps()
+    main.run_pass(c, d)
+    prompt = "\n".join(line for t, ctx in d.notifier.calls if t == "status"
+                       for line in ctx["lines"])
+    assert "portfolio_eval#42" in prompt and "portfolio_eval#43" in prompt
+
+
 def test_two_slot_less_woken_tasks_get_distinct_slots(tmp_path, monkeypatch):
     # Regression: two PARK_WAKE tasks with slot=NO_SLOT must not collide —
     # _resume_woken re-reads load_all per iteration and saves each new slot
