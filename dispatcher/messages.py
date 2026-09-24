@@ -137,6 +137,23 @@ def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
     return out
 
 
+def _merge_legacy(state_dir: str | Path, target: str, issue: int,
+                  p: Path, dest: Path) -> None:
+    """Fold legacy file `p` into an existing target-keyed `dest`. Atomic
+    tmp+replace like mark_delivered; ids already present are skipped, so a
+    crash before the unlink never duplicates on re-run."""
+    existing = all_messages(state_dir, target, issue)
+    seen = {m.id for m in existing}
+    legacy = [m for m in (_parse(raw, p) for raw in
+                          p.read_text().splitlines() if raw.strip())
+              if m is not None and m.id not in seen]
+    merged = sorted(existing + legacy, key=lambda m: m.created_at)
+    tmp = dest.with_suffix(".tmp")
+    tmp.write_text("".join(_dump(m) + "\n" for m in merged))
+    tmp.replace(dest)
+    p.unlink()
+
+
 def migrate_legacy(state_dir: str | Path, targets: Sequence[str]) -> None:
     """Take over pre-multi-project `<issue>.jsonl` files. With exactly one
     target they are renamed to that target's key — merged with an existing
@@ -158,15 +175,4 @@ def migrate_legacy(state_dir: str | Path, targets: Sequence[str]) -> None:
         if not dest.exists():
             p.replace(dest)
             continue
-        # Atomic tmp+replace like mark_delivered; ids already present are
-        # skipped, so a crash before the unlink never duplicates on re-run.
-        existing = all_messages(state_dir, targets[0], issue)
-        seen = {m.id for m in existing}
-        legacy = [m for m in (_parse(raw, p) for raw in
-                              p.read_text().splitlines() if raw.strip())
-                  if m is not None and m.id not in seen]
-        merged = sorted(existing + legacy, key=lambda m: m.created_at)
-        tmp = dest.with_suffix(".tmp")
-        tmp.write_text("".join(_dump(m) + "\n" for m in merged))
-        tmp.replace(dest)
-        p.unlink()
+        _merge_legacy(state_dir, targets[0], issue, p, dest)
