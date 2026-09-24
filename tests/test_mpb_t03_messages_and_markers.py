@@ -32,10 +32,6 @@ or deliberately diverge:
   wake-blocked-{issue} to the target-keyed name; 2+ targets: drop the legacy
   wake-blocked marker, leave the legacy message file in place with a stderr
   warning naming it) runs once at the top of dispatcher.main.run_pass.
-
-Capacity is still per-target on this branch (ticket 02 not yet landed here),
-so the "box full" test fills the woken task's OWN target to capacity rather
-than relying on box-wide accounting.
 """
 import json
 from dataclasses import replace as dc_replace
@@ -89,9 +85,6 @@ def _legacy_message_file(state_dir, issue, text):
 def test_reply_reaches_only_its_own_project(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = two_target_cfg(tmp_path)
-    # target list order is [portfolio_eval, factorial]: run_pass drains and
-    # resumes each target fully before moving to the next, so resumed[0] is
-    # always portfolio_eval#7 and resumed[1] is always factorial#7 here.
     make_task_for(c, "portfolio_eval", issue=7, park=PARK_WAKE)
     make_task_for(c, "factorial", issue=7, park=PARK_WAKE)
 
@@ -102,11 +95,14 @@ def test_reply_reaches_only_its_own_project(tmp_path, monkeypatch):
     main.run_pass(c, d)
 
     assert len(d.sessions.resumed) == 2
-    pe_issue, pe_message, *_ = d.sessions.resumed[0]
-    fa_issue, fa_message, *_ = d.sessions.resumed[1]
-    assert pe_issue == 7 and fa_issue == 7
-    assert "use the v2 endpoint" not in pe_message
-    assert "use the v2 endpoint" in fa_message
+    prompts = {target: message for (target, issue), (_, message, *_)
+               in zip(d.sessions.resume_calls, d.sessions.resumed)
+               if issue == 7}
+    assert "use the v2 endpoint" not in prompts["portfolio_eval"]
+    assert "use the v2 endpoint" in prompts["factorial"]
+    assert [bool(m.delivered_at) for m in
+            messages.all_messages(c.state_dir, "factorial", 7)] == [True]
+    assert messages.all_messages(c.state_dir, "portfolio_eval", 7) == []
 
 
 # -- checkbox 2: console thread + unread count via web.sources.Sources ------
@@ -183,9 +179,16 @@ def test_legacy_message_file_migrates_with_a_single_target(tmp_path, monkeypatch
 def test_legacy_message_file_is_not_migrated_with_two_targets(tmp_path, monkeypatch, capsys):
     patch_usage(monkeypatch)
     c = two_target_cfg(tmp_path)
+    make_task_for(c, "portfolio_eval", issue=3, park=PARK_WAKE)
+    make_task_for(c, "factorial", issue=3, park=PARK_WAKE)
     legacy = _legacy_message_file(c.state_dir, 3, "ambiguous reply")
 
-    main.run_pass(c, main_deps())
+    d = main_deps()
+    main.run_pass(c, d)
+
+    assert len(d.sessions.resumed) == 2
+    assert not any("ambiguous reply" in message
+                   for _, message, *_ in d.sessions.resumed)
 
     assert legacy.exists(), "an unattributable legacy file must be left in place"
     assert not (Path(c.state_dir) / "messages" / "portfolio_eval-3.jsonl").exists()
