@@ -369,6 +369,13 @@ not the first deploy.
 - **Concurrent Codex sessions refresh together** (capacity 2): unverified;
   ticket 1 tests it. If Codex rotates destructively, cap live Codex sessions
   at 1 as an admission rule. That changes a cap, not this design.
+- **Codex's bundled ripgrep isn't mounted** (verified on the box, ticket 02):
+  sessions mount only the host `codex` executable, so its release folder's
+  `codex-path/rg` is absent and `codex doctor` in a session container warns
+  "search command could not be verified". That's the only warning. Fix: the
+  session image installs `ripgrep` (agent-ops-infra), which Codex falls back
+  to on PATH. It's a tool, not an agent CLI, so the "no CLI in the image"
+  rule holds.
 - **herdr does not recognise `codex`**: `idle_seconds` returns None ("unknown"),
   stall detection is off for Codex panes, and the fix belongs in herdr.
   Ticket 1 verifies it.
