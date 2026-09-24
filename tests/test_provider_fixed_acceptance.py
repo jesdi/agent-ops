@@ -65,7 +65,7 @@ def test_resume_rejects_a_cross_provider_override_when_the_stage_has_a_pick(
                     json={"model": "openai/gpt-5-codex"})
     assert r.status_code == 422
     assert r.json()["detail"] == (
-        "stage implement runs on anthropic; pick a anthropic model")
+        "stage implement runs on anthropic; pick a model from anthropic")
     assert fake.intents == []
 
 
@@ -76,7 +76,7 @@ def test_run_rejects_a_cross_provider_override_when_the_stage_has_a_pick(
                     json={"model": "openai/gpt-5-codex"})
     assert r.status_code == 422
     assert r.json()["detail"] == (
-        "stage implement runs on anthropic; pick a anthropic model")
+        "stage implement runs on anthropic; pick a model from anthropic")
     assert fake.execution_overrides == {}
     assert fake.intents == []
 
@@ -114,7 +114,7 @@ def test_resume_on_a_parked_pr_open_task_is_checked_against_the_implement_pick(
                     json={"model": "openai/gpt-5-codex"})
     assert r.status_code == 422
     assert r.json()["detail"] == (
-        "stage implement runs on anthropic; pick a anthropic model")
+        "stage implement runs on anthropic; pick a model from anthropic")
     assert fake.intents == []
 
 
