@@ -48,6 +48,15 @@ def _host_binary(runtime: Runtime) -> list[str]:
     return ["-v", f"{binary}:{runtime.binary_mount}:ro"]
 
 
+def _runtime_args(runtime: Runtime) -> list[str]:
+    """The runtime's container flags: its home (mounted and pointed at), its
+    env, and its host binary. Every container that runs a CLI takes these."""
+    return ["-e", f"{runtime.home_var}={runtime.mount}",
+            "-v", f"{_state_dir()}/{runtime.home}:{runtime.mount}",
+            *(a for e in runtime.env for a in ("-e", e)),
+            *_host_binary(runtime)]
+
+
 def _wrapper() -> list[str]:
     """Optional deployment-owned executable that prepares the session environment."""
     path = os.environ.get("AGENT_OPS_COMMAND_WRAPPER", "")
@@ -75,7 +84,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     return (
         f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
-        f"-e {runtime.home_var}={runtime.mount} "
+        f"{shlex.join(_runtime_args(runtime))} "
         # The Stop hook fires inside the container and resolves waitd's
         # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its
         # curl dies against a nonexistent path and the `|| true` swallows
@@ -86,9 +95,6 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         f"-v {_state_dir()}/wait:{_state_dir()}/wait "
         f"-v {worktree}:{worktree} -w {worktree} "
         f"-v {clone}:{clone} "
-        f"-v {_state_dir()}/{runtime.home}:{runtime.mount} "
-        f"{''.join(f'-e {e} ' for e in runtime.env)}"
-        f"{shlex.join(_host_binary(runtime))} "
         f"-v {home}/.config/gh:/root/.config/gh:ro "
         f"-v {home}/.gitconfig:/root/.gitconfig:ro "
         f"{image()} {runtime.launch(name, worktree, bare_model_id(model), effort)}"
@@ -130,11 +136,8 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         *_wrapper(),
         "podman", "run", "--rm", "--name", name,
         "--memory", memory, "--cpus", cpus,
-        "-e", f"{CLAUDE.home_var}={CLAUDE.mount}",
-        *(a for e in CLAUDE.env for a in ("-e", e)),
+        *_runtime_args(CLAUDE),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
-        "-v", f"{_state_dir()}/{CLAUDE.home}:{CLAUDE.mount}",
-        *_host_binary(CLAUDE),
         "-v", f"{home}/.config/gh:/root/.config/gh:ro",
         "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
         "-v", f"{triage_dir}:/triage",
