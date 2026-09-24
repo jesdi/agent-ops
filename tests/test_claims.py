@@ -61,3 +61,16 @@ def test_last_claims_skips_rows_with_malformed_fields(tmp_path):
         '{"event": "claimed", "target": 7, "ts": "2026-09-24T09:00:00+00:00"}\n'
         '{"event": "claimed", "target": "a", "ts": "2026-09-24T08:00:00+00:00"}\n')
     assert last_claims(tmp_path) == {"a": "2026-09-24T08:00:00+00:00"}
+
+
+def test_last_claims_skips_non_row_lines_that_mention_claimed(tmp_path):
+    """Every line here contains the substring "claimed" (the cheap
+    pre-filter) but none is a real claimed row: a truncated line, valid JSON
+    that is not an object, and an object whose event is NOT claimed even
+    though another field's value says "claimed"."""
+    (tmp_path / eventlog.EVENTS_FILE).write_text(
+        '{"event": "claimed", "target": "a"\n'
+        '["claimed"]\n'
+        '{"event": "unclaimed", "note": "claimed"}\n'
+        '{"event": "claimed", "target": "a", "ts": "2026-09-24T08:00:00+00:00"}\n')
+    assert last_claims(tmp_path) == {"a": "2026-09-24T08:00:00+00:00"}
