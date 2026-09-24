@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Sequence
 
 MESSAGES_DIR = "messages"
+# The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
+# state_dir. Written by dispatcher.main, read by web.sources; it shares the
+# (target, issue) key shape with the queue files, so the prefix and
+# parse_key live here with them.
+WAKE_BLOCKED_PREFIX = "wake-blocked-"
 
 
 @dataclass(frozen=True)
@@ -106,10 +111,11 @@ def mark_delivered(state_dir: str | Path, target: str, issue: int,
     tmp.replace(p)
 
 
-def _key(p: Path) -> tuple[str, int] | None:
-    """(target, issue) from a `<target>-<issue>.jsonl` name, else None.
-    rpartition, since target names may themselves contain '-'."""
-    target, _, issue = p.stem.rpartition("-")
+def parse_key(name: str) -> tuple[str, int] | None:
+    """(target, issue) from a `<target>-<issue>` key, else None (including
+    a legacy bare `<issue>`). rpartition, since target names may themselves
+    contain '-'."""
+    target, _, issue = name.rpartition("-")
     return (target, int(issue)) if target and issue.isdigit() else None
 
 
@@ -122,7 +128,7 @@ def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
         return {}
     out: dict[tuple[str, int], int] = {}
     for p in sorted(d.glob("*.jsonl")):
-        key = _key(p)
+        key = parse_key(p.stem)
         if key is None:
             continue
         n = len(undelivered(state_dir, *key))
@@ -133,8 +139,8 @@ def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
 
 def migrate_legacy(state_dir: str | Path, targets: Sequence[str]) -> None:
     """Take over pre-multi-project `<issue>.jsonl` files. With exactly one
-    target they are renamed to that target's key — appended onto an
-    existing target-keyed file rather than clobbering it. With several they
+    target they are renamed to that target's key — merged with an existing
+    target-keyed file rather than clobbering it. With several they
     cannot be attributed, so they are left in place with a warning."""
     d = _dir(state_dir)
     if not d.exists():
@@ -152,12 +158,15 @@ def migrate_legacy(state_dir: str | Path, targets: Sequence[str]) -> None:
         if not dest.exists():
             p.replace(dest)
             continue
-        # Skip ids already present, so a crash between append and unlink
-        # never delivers a message twice on the re-run.
-        seen = {m.id for m in all_messages(state_dir, targets[0], issue)}
+        # Atomic tmp+replace like mark_delivered; ids already present are
+        # skipped, so a crash before the unlink never duplicates on re-run.
+        existing = all_messages(state_dir, targets[0], issue)
+        seen = {m.id for m in existing}
         legacy = [m for m in (_parse(raw, p) for raw in
                               p.read_text().splitlines() if raw.strip())
                   if m is not None and m.id not in seen]
-        with dest.open("a") as fh:
-            fh.write("".join(_dump(m) + "\n" for m in legacy))
+        merged = sorted(existing + legacy, key=lambda m: m.created_at)
+        tmp = dest.with_suffix(".tmp")
+        tmp.write_text("".join(_dump(m) + "\n" for m in merged))
+        tmp.replace(dest)
         p.unlink()

@@ -961,11 +961,9 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
             f"https://github.com/{target.repo}/pull/{task.pr_number}")
 
 
-WAKE_BLOCKED_PREFIX = "wake-blocked-"
-
-
 def _wake_blocked_path(cfg: Config, target: str, issue: int) -> Path:
-    return Path(cfg.state_dir) / f"{WAKE_BLOCKED_PREFIX}{target}-{issue}"
+    return (Path(cfg.state_dir)
+            / f"{messages.WAKE_BLOCKED_PREFIX}{target}-{issue}")
 
 
 def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
@@ -1924,8 +1922,8 @@ def _migrate_legacy_keys(cfg: Config) -> None:
     dropped; with one it is renamed to keep the edge-triggered event quiet."""
     names = [t.name for t in cfg.targets]
     messages.migrate_legacy(cfg.state_dir, names)
-    for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
-        issue = p.name.removeprefix(WAKE_BLOCKED_PREFIX)
+    for p in Path(cfg.state_dir).glob(f"{messages.WAKE_BLOCKED_PREFIX}*"):
+        issue = p.name.removeprefix(messages.WAKE_BLOCKED_PREFIX)
         if not issue.isdigit():
             continue
         if len(names) == 1:
@@ -1967,7 +1965,7 @@ def _reconcile_slots(cfg: Config) -> None:
             save(cfg.state_dir, task)
         if not _starving(task):
             _clear_wake_blocked(cfg, task.target, task.issue)
-    for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
+    for p in Path(cfg.state_dir).glob(f"{messages.WAKE_BLOCKED_PREFIX}*"):
         if p.name not in known:  # state file flushed/deleted under the marker
             p.unlink(missing_ok=True)
 

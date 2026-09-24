@@ -2123,6 +2123,23 @@ def test_intent_applied_event_carries_target_resolved_from_legacy_intent(tmp_pat
     assert applied[0]["target"] == "portfolio_eval"
 
 
+def test_legacy_reply_intent_with_no_task_and_several_targets_is_dropped(
+        tmp_path, monkeypatch, capsys):
+    """A target-less reply for an issue with no task cannot be attributed
+    when several targets are configured: it is dropped with a warning, never
+    queued under a guessed project."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    c = dc_replace(c, targets=[c.targets[0],
+                               dc_replace(c.targets[0], name="factorial")])
+    intents_mod.write_intent(c.state_dir, "reply", "", 42, {"text": "hi"},
+                             "op", 1)
+    main._apply_intents(c, deps())
+    mdir = Path(c.state_dir) / "messages"
+    assert not mdir.exists() or list(mdir.iterdir()) == []
+    assert "#42" in capsys.readouterr().err
+
+
 def test_reply_intent_for_running_task_is_queued_but_task_stays_running(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)

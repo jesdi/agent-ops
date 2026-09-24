@@ -112,8 +112,10 @@ def test_migrate_legacy_merges_into_an_existing_target_file(tmp_path):
     _legacy(tmp_path, 42, "old-1", "from before")
     messages.migrate_legacy(tmp_path, ["t"])
     assert not legacy.exists()
+    # merged oldest first, the re-run duplicate collapsed by id
     assert [m.text for m in messages.undelivered(tmp_path, "t", 42)] == [
-        "already here", "from before"]
+        "from before", "already here"]
+    assert not list((Path(tmp_path) / messages.MESSAGES_DIR).glob("*.tmp"))
 
 
 def test_migrate_legacy_leaves_files_alone_with_several_targets(tmp_path, capsys):

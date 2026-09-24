@@ -336,7 +336,7 @@ class Sources:
 
         board = digest(
             list(root.glob("task-*.json")) + list(root.glob("waiting-*"))
-            + list(root.glob("wake-blocked-*"))
+            + list(root.glob(f"{msgq.WAKE_BLOCKED_PREFIX}*"))
             + list((root / execution_overrides.DIR).glob("*.json"))
             + list((root / "messages").glob("*.jsonl"))
             + list((root / "artifacts").glob("*/index.json"))
@@ -367,16 +367,14 @@ class Sources:
 
     def wake_blocked_issues(self) -> set[tuple[str, int]]:
         """(target, issue) pairs currently denied a wake for want of a free
-        slot/capacity, parsed from wake-blocked-<target>-<issue> markers
-        (rpartition: target names may contain '-'). A legacy issue-only
-        marker names no target and is skipped; the dispatcher migrates or
-        drops those at pass start."""
+        slot/capacity, parsed from wake-blocked-<target>-<issue> markers.
+        A legacy issue-only marker names no target and is skipped; the
+        dispatcher migrates or drops those at pass start."""
         out: set[tuple[str, int]] = set()
-        for p in self.state_dir.glob("wake-blocked-*"):
-            target, _, issue = p.name.removeprefix(
-                "wake-blocked-").rpartition("-")
-            if target and issue.isdigit():
-                out.add((target, int(issue)))
+        for p in self.state_dir.glob(f"{msgq.WAKE_BLOCKED_PREFIX}*"):
+            key = msgq.parse_key(p.name.removeprefix(msgq.WAKE_BLOCKED_PREFIX))
+            if key is not None:
+                out.add(key)
         return out
 
     # -- writes ----------------------------------------------------------
