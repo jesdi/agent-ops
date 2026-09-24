@@ -57,11 +57,10 @@ def _wrapper() -> list[str]:
 
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
-                claude_args: str, effort: str = "", rt: Runtime = CLAUDE) -> str:
-    """The session's shell command. `rt` is the model's runtime — the caller
+                args: str, effort: str = "", runtime: Runtime = CLAUDE) -> str:
+    """The session's shell command. `runtime` is the model's — the caller
     resolves it (Sessions, through runtimes.runtime_for), so an unknown
     provider fails there, before anything is launched."""
-    config_env, *auth_env = rt.env
     clone = clone_root(worktree)
     branch = task_branch(worktree)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
@@ -77,12 +76,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     return (
         f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
-        # Without this, Claude Code keeps onboarding/trust state in
-        # /root/.claude.json — a SIBLING of the claude-home mount — so every
-        # container boots as a fresh install and stalls on the first-run
-        # wizard with nobody attached. CLAUDE_CONFIG_DIR moves all of it
-        # inside the mounted claude-home.
-        f"-e {config_env} "
+        f"-e {runtime.home_var}={runtime.mount} "
         # The Stop hook fires inside the container and resolves waitd's
         # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its
         # curl dies against a nonexistent path and the `|| true` swallows
@@ -93,13 +87,13 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         f"-v {_state_dir()}/wait:{_state_dir()}/wait "
         f"-v {worktree}:{worktree} -w {worktree} "
         f"-v {clone}:{clone} "
-        f"-v {_state_dir()}/{rt.home}:{rt.mount} "
-        f"{''.join(f'-e {e} ' for e in auth_env)}"
-        f"{shlex.join(_host_binary(rt))} "
+        f"-v {_state_dir()}/{runtime.home}:{runtime.mount} "
+        f"{''.join(f'-e {e} ' for e in runtime.env)}"
+        f"{shlex.join(_host_binary(runtime))} "
         f"-v {home}/.config/gh:/root/.config/gh:ro "
         f"-v {home}/.gitconfig:/root/.gitconfig:ro "
-        f"{image()} {rt.launch(name, worktree, bare_model_id(model), effort)}"
-        f" {claude_args}"
+        f"{image()} {runtime.launch(name, worktree, bare_model_id(model), effort)}"
+        f" {args}"
     )
 
 
@@ -131,6 +125,7 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         *_wrapper(),
         "podman", "run", "--rm", "--name", name,
         "--memory", memory, "--cpus", cpus,
+        "-e", f"{CLAUDE.home_var}={CLAUDE.mount}",
         *(a for e in CLAUDE.env for a in ("-e", e)),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
         "-v", f"{_state_dir()}/{CLAUDE.home}:{CLAUDE.mount}",

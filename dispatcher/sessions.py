@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from dispatcher import containers, herdr
-from dispatcher.runtimes import runtime_for
+from dispatcher.runtimes import Runtime, runtime_for
 
 
 def session_name(target: str, issue: int) -> str:
@@ -28,10 +28,11 @@ def session_name(target: str, issue: int) -> str:
 
 
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
-               model: str, claude_args: str, effort: str = "") -> str:
+               model: str, args: str, effort: str = "",
+               runtime: Runtime | None = None) -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
-                                  cpus, model, claude_args, effort=effort,
-                                  rt=runtime_for(model))
+                                  cpus, model, args, effort=effort,
+                                  runtime=runtime or runtime_for(model))
 
 
 class Sessions:
@@ -59,14 +60,15 @@ class Sessions:
         return tab is not None and tab.alive
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
-                claude_args: str, effort: str = "") -> None:
+                args: str, effort: str = "") -> None:
         # Build the command FIRST: containers.clone_root reads
         # <worktree>/.git and raises on a vanished worktree (the case
         # _fail_task_crash exists for). Doing it before Tab.ensure means
         # that raise leaves no workspace and no empty tab behind for a task
         # that will never launch.
+        runtime = runtime_for(model)
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
-                         model, claude_args, effort=effort)
+                         model, args, effort=effort, runtime=runtime)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,
             # herdr's hint for detecting an agent behind a wrapper (podman
@@ -75,7 +77,7 @@ class Sessions:
             # it lives here and never in containers.session_cmd — the
             # headless triage container shares that module and must NOT read
             # as an agent.
-            env={"HERDR_AGENT": runtime_for(model).herdr_agent})
+            env={"HERDR_AGENT": runtime.herdr_agent})
         # Raise, never return quietly: the caller would record a stage that
         # never started, and the next pass would report a phantom crash with
         # nothing to show (#363). A raise fails the task with this reason.

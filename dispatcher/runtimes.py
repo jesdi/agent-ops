@@ -15,7 +15,8 @@ from dispatcher.models import EFFORTS, split_model_id
 class Runtime:
     home: str               # state-dir subdirectory mounted as the CLI's home
     mount: str              # where that home lands inside the container
-    env: tuple[str, ...]    # -e flags; env[0] points the CLI at `mount`
+    home_var: str           # env var that points the CLI at `mount`
+    env: tuple[str, ...]    # pass-through -e flags, valued from the host
     herdr_agent: str        # herdr's hint for the agent behind the podman wrapper
     binary: str             # host install under $HOME, mounted :ro at /usr/local/bin/<name>
     efforts: tuple[str, ...]
@@ -26,7 +27,12 @@ class Runtime:
 CLAUDE = Runtime(
     home="claude-home",
     mount="/root/.claude",
-    env=("CLAUDE_CONFIG_DIR=/root/.claude", "CLAUDE_CODE_OAUTH_TOKEN"),
+    # Without CLAUDE_CONFIG_DIR, Claude Code keeps onboarding/trust state in
+    # /root/.claude.json — a SIBLING of the claude-home mount — so every
+    # container boots as a fresh install and stalls on the first-run wizard
+    # with nobody attached. It moves all of it inside the mounted claude-home.
+    home_var="CLAUDE_CONFIG_DIR",
+    env=("CLAUDE_CODE_OAUTH_TOKEN",),
     herdr_agent="claude",
     binary=".local/bin/claude",
     efforts=EFFORTS,
