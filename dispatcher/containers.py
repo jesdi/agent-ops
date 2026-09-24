@@ -9,7 +9,7 @@ import os
 import shlex
 from pathlib import Path
 
-from dispatcher.models import bare_model_id, split_model_id
+from dispatcher.models import Entry, bare_model_id, split_model_id
 from dispatcher.runtimes import CLAUDE, Runtime, runtime_for
 
 
@@ -64,11 +64,15 @@ def _wrapper() -> list[str]:
 
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
-                args: str, effort: str = "", runtime: Runtime | None = None) -> str:
+                args: str, effort: str = "", runtime: Runtime | None = None,
+                second: Entry | None = None) -> str:
     """The session's shell command, on the model's runtime. A caller that
     already resolved it (Sessions._launch) passes it; otherwise it is
-    resolved here, and an unknown provider raises before anything runs."""
+    resolved here, and an unknown provider raises before anything runs.
+    A granted `second` model (models.second_model) also gets its runtime's
+    home, env and host binary: the mount is the permission."""
     runtime = runtime or runtime_for(model)
+    extra = _runtime_args(runtime_for(second.model_id)) if second else []
     clone = clone_root(worktree)
     branch = task_branch(worktree)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
@@ -84,7 +88,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     return (
         f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
-        f"{shlex.join(_runtime_args(runtime))} "
+        f"{shlex.join(_runtime_args(runtime) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's
         # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its
         # curl dies against a nonexistent path and the `|| true` swallows

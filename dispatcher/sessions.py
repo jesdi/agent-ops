@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from dispatcher import containers, herdr
+from dispatcher.models import Entry
 from dispatcher.runtimes import Runtime, runtime_for
 
 
@@ -30,10 +31,10 @@ def session_name(target: str, issue: int) -> str:
 
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
-               runtime: Runtime | None = None) -> str:
+               runtime: Runtime | None = None, second: Entry | None = None) -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  runtime=runtime)
+                                  runtime=runtime, second=second)
 
 
 class Sessions:
@@ -61,14 +62,16 @@ class Sessions:
         return tab is not None and tab.alive
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
-                runtime: Runtime, args: str, effort: str = "") -> None:
+                runtime: Runtime, args: str, effort: str = "",
+                second: Entry | None = None) -> None:
         # Build the command FIRST: containers.clone_root reads
         # <worktree>/.git and raises on a vanished worktree (the case
         # _fail_task_crash exists for). Doing it before Tab.ensure means
         # that raise leaves no workspace and no empty tab behind for a task
         # that will never launch.
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
-                         model, args, effort=effort, runtime=runtime)
+                         model, args, effort=effort, runtime=runtime,
+                         second=second)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,
             # herdr's hint for detecting an agent behind a wrapper (podman
@@ -89,7 +92,8 @@ class Sessions:
                                f"{session_name(target, issue)}")
 
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
-                    stage_name: str, model: str, effort: str = "") -> None:
+                    stage_name: str, model: str, effort: str = "",
+                    second: Entry | None = None) -> None:
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
                   f"{session_name(target, issue)} at {worktree}")
@@ -98,17 +102,19 @@ class Sessions:
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)
         self._launch(target, issue, worktree, model, runtime_for(model),
-                     f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort)
+                     f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort,
+                     second=second)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
-               model: str, effort: str = "") -> None:
+               model: str, effort: str = "", second: Entry | None = None) -> None:
         if self.dry_run:
             print(f"[dry-run] resume {session_name(target, issue)} on {model} "
                   f"at {worktree}")
             return
         runtime = runtime_for(model)
         self._launch(target, issue, worktree, model, runtime,
-                     runtime.resume(shlex.quote(message)), effort=effort)
+                     runtime.resume(shlex.quote(message)), effort=effort,
+                     second=second)
 
     def capture_tail(self, target: str, issue: int, lines: int = 25) -> str:
         if self.dry_run:
