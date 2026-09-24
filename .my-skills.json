@@ -42,6 +42,27 @@
       "agents": [
         "claude"
       ]
+    },
+    "crap-gate": {
+      "version": "0.1.3",
+      "package": "0.0.18",
+      "agents": [
+        "claude"
+      ]
+    },
+    "deep-quality-review": {
+      "version": "0.1.2",
+      "package": "0.0.18",
+      "agents": [
+        "claude"
+      ]
+    },
+    "implement-spec": {
+      "version": "0.1.0",
+      "package": "0.0.18",
+      "agents": [
+        "claude"
+      ]
     }
   }
 }

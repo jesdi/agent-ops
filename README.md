@@ -190,6 +190,21 @@ pip install -e '.[dev]'
 pytest
 ```
 
+### Agent skills
+
+Two kinds of agent skills live in this repo:
+
+- **Committed:** the [mattpocock/skills](https://github.com/mattpocock/skills) set in `.agents/skills/`, pinned by `skills-lock.json`.
+- **Not committed:** the skills from [jesdi/general-skills](https://github.com/jesdi/general-skills) (backlog, crap-gate, implement-spec, to-spec, to-tickets, …). Only their list, `.my-skills.json`, is committed. The skills are gitignored and installed into `.my-skills/`, with symlinks in `.claude/skills/`.
+
+After a checkout, install them (needs Node and pnpm):
+
+```bash
+./scripts/install-skills.sh
+```
+
+To add a new one, run `pnpm dlx @jesdi/skills-cli install <skill> --agent claude` and add its `.claude/skills/<skill>` line to `.gitignore`.
+
 ## Deployment
 
 Use `targets.example.yaml` as a schema example for your own configuration.
