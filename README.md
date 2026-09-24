@@ -101,7 +101,9 @@ flowchart LR
 
 - **Dispatcher** (`dispatcher/`) — polls the backlog, ranks it, selects the
   next task within usage headroom and capacity limits, provisions a git worktree, and
-  launches a Claude Code session for it.
+  launches a Claude Code session for it. Capacity is box-wide: work already in
+  flight runs first, then each free unit goes to the target with the fewest
+  active tasks.
 - **Staged pipeline** — each task moves through **spec → plan → implement (one fresh session per ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
   artifact. Specs pause at a human review gate before implementation spends

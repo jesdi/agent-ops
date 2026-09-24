@@ -1,4 +1,4 @@
-capacity: 2
+capacity: 2   # box-wide: shared by every target, in-flight work first, then claims fewest-active-first
 state_dir: /home/agent/agent-ops-state
 # pass_interval_minutes: 10   # must match OnUnitActiveSec in the systemd timer
 # Optional: repo where provisioning/pass-crash failure issues are filed.
@@ -110,5 +110,6 @@ targets:
     status_done_option_id: ghi789   # single-select option id of the board's Done status
     boost_field_id: REPLACE_WITH_PROJECT_ID
     # Optional per-target cap on active tasks, even when box capacity is
-    # free. Must be between 1 and capacity; omit for no target-specific cap.
+    # free. It limits new claims only; woken work and PR feedback still run.
+    # Must be between 1 and capacity; omit for no target-specific cap.
     # max_active: 1
