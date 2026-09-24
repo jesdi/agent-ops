@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from dispatcher.models import EFFORTS, split_model_id
+from dispatcher.models import PROVIDER_EFFORTS, split_model_id
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ CLAUDE = Runtime(
     env=("CLAUDE_CODE_OAUTH_TOKEN",),
     herdr_agent="claude",
     binary=".local/bin/claude",
-    efforts=EFFORTS,
+    efforts=PROVIDER_EFFORTS["anthropic"],
     # auto: the classifier approves routine actions and stops only for
     # genuinely risky ones — the stop then flows into the park/resume path
     # (Stop hook → waitd → Telegram). acceptEdits still asked for every
