@@ -40,8 +40,9 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoO
                                 RetryStage, SetTaskStage, StartTicket,
                                 SpawnStage, next_actions)
 from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates,
-                               override_refusal, parse_entry, policy_stage,
-                               resolve, track_from_labels, tracks_text)
+                               override_refusal, parse_entry, pick_provider,
+                               policy_stage, resolve, stage_pick,
+                               track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
@@ -114,14 +115,13 @@ def _launch_for(cfg: Config, target: Target | None, task: TaskState,
     track. None: the track is not configured, or nothing is admitted — wait.
     Review avoids the provider that ran implement."""
     policy = _policy(cfg, target)
-    pstage = policy_stage(stage.value)
-    if pstage in task.picks:
-        return Launch(stage, parse_entry(task.picks[pstage], "pick"))
+    pick = stage_pick(task.picks, stage.value)
+    if pick:
+        return Launch(stage, parse_entry(pick, "pick"))
     if task.track not in policy.tracks:
         return None
-    avoid = ""
-    if pstage == "review" and "implement" in task.picks:
-        avoid = parse_entry(task.picks["implement"], "pick").provider
+    avoid = (pick_provider(task.picks, "implement")
+             if policy_stage(stage.value) == "review" else "")
     entry = resolve(policy, task.track, stage.value, admitted, avoid)
     return Launch(stage, entry) if entry else None
 
@@ -169,7 +169,7 @@ def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
     the current stage, else the first candidate, else ''."""
     policy = _policy(cfg, target)
     stage = next_stage(task)
-    pick = task.picks.get(policy_stage(stage))
+    pick = stage_pick(task.picks, stage)
     if pick:
         return pick
     if task.track in policy.tracks:
@@ -1523,7 +1523,7 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
                           task: TaskState, dry_run: bool) -> None:
     # The stage's pick names its runtime; a pre-picks task ran on Claude,
     # which is what a bare (here: empty) id resolves to.
-    pick = task.picks.get(policy_stage(task.stage.value))
+    pick = stage_pick(task.picks, task.stage.value)
     runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
     rep = failures.FailureReport(
         klass="session-crash", target=target.name, issue=task.issue,

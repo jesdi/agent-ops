@@ -14,8 +14,8 @@ from starlette.staticfiles import StaticFiles
 from dispatcher import queue_ops
 from dispatcher.config import Config, policy_for
 from dispatcher.models import (candidates, override_allowed, override_refusal,
-                               parse_entry, pick_provider, policy_stage,
-                               resolve, track_from_labels)
+                               parse_entry, pick_provider, resolve,
+                               stage_pick, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
                               SpecApprovalRequest, next_stage, resumable_crash)
@@ -112,8 +112,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             raise HTTPException(422, refusal)
 
     def _avoid(t):
-        pick = t.picks.get("implement")
-        return parse_entry(pick, "pick").provider if pick else ""
+        return pick_provider(t.picks, "implement")
 
     def _choices(t, usages, now):
         """The ordered entries the dispatcher would walk for t's next launch."""
@@ -125,7 +124,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def _model_for(t, usages=None, now=None):
         if t.park == PARK_WAKE and t.resume_model_override:
             return t.resume_model_override
-        pick = t.picks.get(policy_stage(next_stage(t)))
+        pick = stage_pick(t.picks, next_stage(t))
         if pick:
             return parse_entry(pick, "pick").model_id
         choices = _choices(t, usages, now)
@@ -573,7 +572,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if req.model:
             return req.model
         if task is not None:
-            return task.picks.get(policy_stage(next_stage(task))) or _model_for(task)
+            return stage_pick(task.picks, next_stage(task)) or _model_for(task)
         return _candidate_model(configured_target, row)
 
     def _arm_run(target: str, issue: int, req: RunReq, task, model: str,
