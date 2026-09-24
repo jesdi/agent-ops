@@ -38,5 +38,6 @@ def last_claims(state_dir: str | Path) -> dict[str, str]:
             continue
         if isinstance(e, dict) and e.get("event") == "claimed":
             target, ts = e.get("target", ""), e.get("ts", "")
-            last[target] = max(last.get(target, ""), ts)
+            if isinstance(target, str) and isinstance(ts, str):
+                last[target] = max(last.get(target, ""), ts)
     return last

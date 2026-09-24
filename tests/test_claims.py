@@ -53,3 +53,11 @@ def test_last_claims_empty_without_log(tmp_path):
 def test_last_claims_reads_what_append_event_writes(tmp_path):
     eventlog.append_event(tmp_path, "claimed", target="a", issue=1)
     assert set(last_claims(tmp_path)) == {"a"}
+
+
+def test_last_claims_skips_rows_with_malformed_fields(tmp_path):
+    (tmp_path / eventlog.EVENTS_FILE).write_text(
+        '{"event": "claimed", "target": "a", "ts": null}\n'
+        '{"event": "claimed", "target": 7, "ts": "2026-09-24T09:00:00+00:00"}\n'
+        '{"event": "claimed", "target": "a", "ts": "2026-09-24T08:00:00+00:00"}\n')
+    assert last_claims(tmp_path) == {"a": "2026-09-24T08:00:00+00:00"}
