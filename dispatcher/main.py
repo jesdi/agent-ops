@@ -44,12 +44,12 @@ from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates, parse_e
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
-                              PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
+                              PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
                               Stage, TaskState, active, allocate_slot,
                               clear_waiting, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
-                              read_stage_signal, resumable_crash, save)
+                              read_stage_signal, resumable_crash, save, task_key)
 from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
@@ -972,7 +972,7 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
 
 def _wake_blocked_path(cfg: Config, target: str, issue: int) -> Path:
     return (Path(cfg.state_dir)
-            / f"{messages.WAKE_BLOCKED_PREFIX}{target}-{issue}")
+            / f"{WAKE_BLOCKED_PREFIX}{task_key(target, issue)}")
 
 
 def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
@@ -1984,8 +1984,8 @@ def _migrate_legacy_keys(cfg: Config) -> None:
     dropped; with one it is renamed to keep the edge-triggered event quiet."""
     names = [t.name for t in cfg.targets]
     messages.migrate_legacy(cfg.state_dir, names)
-    for p in Path(cfg.state_dir).glob(f"{messages.WAKE_BLOCKED_PREFIX}*"):
-        issue = p.name.removeprefix(messages.WAKE_BLOCKED_PREFIX)
+    for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
+        issue = p.name.removeprefix(WAKE_BLOCKED_PREFIX)
         if not issue.isdigit():
             continue
         if len(names) == 1:
@@ -2027,7 +2027,7 @@ def _reconcile_slots(cfg: Config) -> None:
             save(cfg.state_dir, task)
         if not _starving(task):
             _clear_wake_blocked(cfg, task.target, task.issue)
-    for p in Path(cfg.state_dir).glob(f"{messages.WAKE_BLOCKED_PREFIX}*"):
+    for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
         if p.name not in known:  # state file flushed/deleted under the marker
             p.unlink(missing_ok=True)
 

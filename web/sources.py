@@ -175,7 +175,7 @@ class Sources:
         root = self.state_dir / "quarantine"
         entries = []
         for p in sorted(root.glob("*.json")) if root.exists() else []:
-            parsed = msgq.parse_key(p.stem)
+            parsed = state.parse_task_key(p.stem)
             target, keyed_issue = parsed if parsed else ("", None)
             try:
                 d = json.loads(p.read_text())
@@ -341,7 +341,7 @@ class Sources:
 
         board = digest(
             list(root.glob("task-*.json")) + list(root.glob("waiting-*"))
-            + list(root.glob(f"{msgq.WAKE_BLOCKED_PREFIX}*"))
+            + list(root.glob(f"{state.WAKE_BLOCKED_PREFIX}*"))
             + list((root / execution_overrides.DIR).glob("*.json"))
             + list((root / "messages").glob("*.jsonl"))
             + list((root / "artifacts").glob("*/index.json"))
@@ -376,8 +376,8 @@ class Sources:
         A legacy issue-only marker names no target and is skipped; the
         dispatcher migrates or drops those at pass start."""
         out: set[tuple[str, int]] = set()
-        for p in self.state_dir.glob(f"{msgq.WAKE_BLOCKED_PREFIX}*"):
-            key = msgq.parse_key(p.name.removeprefix(msgq.WAKE_BLOCKED_PREFIX))
+        for p in self.state_dir.glob(f"{state.WAKE_BLOCKED_PREFIX}*"):
+            key = state.parse_task_key(p.name.removeprefix(state.WAKE_BLOCKED_PREFIX))
             if key is not None:
                 out.add(key)
         return out

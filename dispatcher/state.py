@@ -157,8 +157,27 @@ class StageSignal:
     track: str = ""   # spec stage only: the track for plan/implement/review
 
 
+# The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
+# state_dir. Written by dispatcher.main, read by web.sources.
+WAKE_BLOCKED_PREFIX = "wake-blocked-"
+
+
+def task_key(target: str, issue: int) -> str:
+    """`<target>-<issue>`: the (target, issue) key every per-task file in
+    state_dir is named by."""
+    return f"{target}-{issue}"
+
+
+def parse_task_key(name: str) -> tuple[str, int] | None:
+    """(target, issue) from a `<target>-<issue>` key, else None (including
+    a legacy bare `<issue>`). rpartition, since target names may themselves
+    contain '-'."""
+    target, _, issue = name.rpartition("-")
+    return (target, int(issue)) if target and issue.isdigit() else None
+
+
 def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"task-{target}-{issue}.json"
+    return Path(state_dir) / f"task-{task_key(target, issue)}.json"
 
 
 def _legacy_path(state_dir: str | Path, issue: int) -> Path:
@@ -333,7 +352,7 @@ def parked(tasks: list[TaskState]) -> list[TaskState]:
 
 
 def _waiting_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"waiting-{target}-{issue}"
+    return Path(state_dir) / f"waiting-{task_key(target, issue)}"
 
 
 def _legacy_waiting_path(state_dir: str | Path, issue: int) -> Path:

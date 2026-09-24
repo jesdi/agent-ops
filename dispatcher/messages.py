@@ -22,13 +22,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-MESSAGES_DIR = "messages"
-# The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
-# state_dir. Written by dispatcher.main, read by web.sources; it shares the
-# (target, issue) key shape with the queue files, so the prefix and
-# parse_key live here with them.
-WAKE_BLOCKED_PREFIX = "wake-blocked-"
+from dispatcher.state import parse_task_key, task_key
 
+MESSAGES_DIR = "messages"
 
 @dataclass(frozen=True)
 class Message:
@@ -48,7 +44,7 @@ def _dir(state_dir: str | Path) -> Path:
 
 
 def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return _dir(state_dir) / f"{target}-{issue}.jsonl"
+    return _dir(state_dir) / f"{task_key(target, issue)}.jsonl"
 
 
 def _parse(raw: str, where: Path) -> Message | None:
@@ -111,14 +107,6 @@ def mark_delivered(state_dir: str | Path, target: str, issue: int,
     tmp.replace(p)
 
 
-def parse_key(name: str) -> tuple[str, int] | None:
-    """(target, issue) from a `<target>-<issue>` key, else None (including
-    a legacy bare `<issue>`). rpartition, since target names may themselves
-    contain '-'."""
-    target, _, issue = name.rpartition("-")
-    return (target, int(issue)) if target and issue.isdigit() else None
-
-
 def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
     """(target, issue) -> number of queued (undelivered) messages. Used by
     the board badge; files not named `<target>-<issue>.jsonl` (including
@@ -128,7 +116,7 @@ def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
         return {}
     out: dict[tuple[str, int], int] = {}
     for p in sorted(d.glob("*.jsonl")):
-        key = parse_key(p.stem)
+        key = parse_task_key(p.stem)
         if key is None:
             continue
         n = len(undelivered(state_dir, *key))
