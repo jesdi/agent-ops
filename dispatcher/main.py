@@ -1004,6 +1004,13 @@ def _flush_done(cfg: Config) -> None:
                                   stage=Stage.DONE.value)
 
 
+def _oldest_first(cfg: Config):
+    """Sort key for box-wide queues: oldest `updated_at` first, ties in
+    target-list order so a pass is deterministic."""
+    rank = {t.name: i for i, t in enumerate(cfg.targets)}
+    return lambda t: (t.updated_at, rank[t.target])
+
+
 def _resume_woken(cfg: Config, deps: Deps, admit: Admit,
                   dry_run: bool = False) -> None:
     """Box-wide, oldest wake first across every target: capacity is shared,
@@ -1012,7 +1019,7 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit,
     woken = sorted(
         [t for t in load_all(cfg.state_dir)
          if t.target in targets and t.park == PARK_WAKE],
-        key=lambda t: t.updated_at,
+        key=_oldest_first(cfg),
     )
     for task in woken:
         target = targets[task.target]
@@ -1191,7 +1198,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit) -> None:
         [t for t in load_all(cfg.state_dir)
          if t.target in targets and t.stage is Stage.PR_OPEN
          and t.feedback_pending],
-        key=lambda t: t.updated_at)
+        key=_oldest_first(cfg))
     for task in pending:
         target = targets[task.target]
         launch, bypass_usage = _choose_launch(cfg, target, task,
