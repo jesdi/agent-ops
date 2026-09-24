@@ -204,9 +204,14 @@ is the permission**:
   `tokens.account_id`.
 - `GET https://chatgpt.com/backend-api/wham/usage` with
   `Authorization: Bearer <access_token>` and `ChatGPT-Account-Id`.
-- Maps `rate_limit.primary_window` to `WindowKind.SESSION` and
-  `rate_limit.secondary_window` to `WindowKind.WEEKLY`, both unscoped, from
-  `used_percent` and the reported reset time.
+- Reads `rate_limit.primary_window` and `rate_limit.secondary_window`,
+  both unscoped, from `used_percent` and `reset_at` (epoch seconds). The
+  kind comes from each window's `limit_window_seconds`, not its slot: a day
+  or longer is `WindowKind.WEEKLY`, shorter is `WindowKind.SESSION`. A
+  `null` slot is skipped. `limit_reached` (or `allowed: false`) counts every
+  window as fully used. Verified on the box 2026-09-24 (ticket 02,
+  `tests/fixtures/openai-usage.json`): the `prolite` plan reports only a
+  7-day `primary_window` and a `null` `secondary_window`.
 - Any failure — missing or unreadable `auth.json`, HTTP error, unparseable
   body, zero windows — returns `unavailable`, and `admits` denies every
   `openai/…` entry. The cache, fan-out and 180 s spacing are the existing
