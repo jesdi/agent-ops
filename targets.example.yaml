@@ -56,7 +56,7 @@ loop_caps:
 models:
   triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted; anthropic only
   untracked: standard                    # spec-stage track when no track: label
-  # review_second: openai/gpt-sol   # model a Claude review session's codex exec runs on; unset = no Codex second pass
+  # review_second: openai/gpt-sol   # the gated second model (ticket 10, not yet built): validated, not yet consumed
   tracks:
     trivial:
       when: Rote rename, typo, formatting, dependency bump, doc edit with no product decision.

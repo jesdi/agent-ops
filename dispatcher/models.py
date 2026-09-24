@@ -178,32 +178,23 @@ def _track(name: str, raw: object) -> Track:
                  {s: _entries(raw[s], f"track {name!r} {s}:") for s in STAGES})
 
 
-def _plain_model_id(raw: object) -> bool:
-    """True when raw is a bare 'provider/model' string: no '@' effort suffix
-    and no whitespace (the value lands unquoted in a shell command)."""
-    return isinstance(raw, str) and "@" not in raw and not any(c.isspace() for c in raw)
-
-
 def _review_second(raw: object) -> str:
     """`models.review_second:` -> a plain 'provider/model' string, "" when
-    unset. Must name a non-anthropic provider with a configured effort
-    vocabulary (a runtime); no @effort suffix, since codex exec's effort
-    comes from the codex-home config, not this policy."""
-    if not raw:
+    absent or null. Must name a non-anthropic provider with a configured
+    effort vocabulary (a runtime); no @effort suffix, since codex exec's
+    effort comes from the codex-home config, not this policy."""
+    if raw is None:
         return ""
-    if not _plain_model_id(raw):
+    entry = parse_entry(raw, "review_second:")
+    if entry.effort:
         raise ValueError(f"models: review_second: must be 'provider/model' "
-                         f"with no effort or whitespace, got {raw!r}")
-    try:
-        provider, _ = split_model_id(raw)
-    except ValueError as e:
-        raise ValueError(f"models: review_second: {e}") from e
-    if provider == DEFAULT_PROVIDER or provider not in PROVIDER_EFFORTS:
+                         f"with no @effort, got {raw!r}")
+    if entry.provider == DEFAULT_PROVIDER:
         raise ValueError(f"models: review_second: provider must be a "
                          f"non-anthropic provider with configured efforts "
                          f"{sorted(p for p in PROVIDER_EFFORTS if p != DEFAULT_PROVIDER)}, "
                          f"got {raw!r}")
-    return raw
+    return entry.model_id
 
 
 def _triage(raw: dict) -> tuple[Entry, ...]:

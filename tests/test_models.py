@@ -311,10 +311,20 @@ def test_review_second_malformed_model_id_error_is_prefixed():
         parse_policy({**RAW, "review_second": "openai/x/y"})
 
 
-@pytest.mark.parametrize("bad", [42, "openai/gpt sol"])
-def test_review_second_rejects_non_string_or_whitespace(bad):
-    with pytest.raises(ValueError, match="review_second: must be 'provider/model'"):
+@pytest.mark.parametrize("bad", [42, "openai/gpt sol", False, 0, [], ""])
+def test_review_second_rejects_anything_but_a_model_id(bad):
+    # Only an absent or null key is unset; any other falsy value is a typo.
+    with pytest.raises(ValueError, match="^models: review_second: must be"):
         parse_policy({**RAW, "review_second": bad})
+
+
+def test_review_second_null_is_unset():
+    assert parse_policy({**RAW, "review_second": None}).review_second == ""
+
+
+def test_review_second_rejects_an_effort_suffix():
+    with pytest.raises(ValueError, match="^models: review_second: .*no @effort"):
+        parse_policy({**RAW, "review_second": "openai/gpt-sol@high"})
 
 
 def test_parse_rejects_non_mapping():
