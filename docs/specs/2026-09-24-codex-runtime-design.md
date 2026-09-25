@@ -392,9 +392,11 @@ not the first deploy.
   `codex exec -s read-only` runs every command through bubblewrap, which
   fails with "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
   because Ubuntu's AppArmor restricts unprivileged user namespaces
-  (`kernel.apparmor_restrict_unprivileged_userns = 1`). Codex's docs fix it
-  with the system `bubblewrap` package plus the `bwrap-userns-restrict`
-  AppArmor profile. Stage sessions are unaffected: they run with
+  (`kernel.apparmor_restrict_unprivileged_userns = 1`) for Codex's bundled
+  bwrap. Fixed by the system `bubblewrap` package, which Codex prefers on
+  PATH: Ubuntu 26.04 already ships the `bwrap-userns-restrict` profile in
+  /etc/apparmor.d for `/usr/bin/bwrap` (Codex's docs' extra-profiles step is
+  for 24.04). Verified on the box 2026-09-25. Stage sessions are unaffected: they run with
   `--dangerously-bypass-approvals-and-sandbox` inside the container.
   Review-diff's read-only `codex exec` inside a rootless container is
   unverified (ticket 02's rootless-sandbox check).
