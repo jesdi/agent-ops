@@ -74,7 +74,8 @@ class Runtime:
     mount: str              # "/root/.claude" | "/root/.codex"
     env: tuple[str, ...]    # -e flags: CLAUDE_CONFIG_DIR=…, CLAUDE_CODE_OAUTH_TOKEN | CODEX_HOME=…
     herdr_agent: str        # "claude" | "codex"
-    binary: str             # host install mounted :ro at /usr/local/bin/<cli>: ~/.local/bin/claude | ~/.local/bin/codex
+    binary: str             # host install: ~/.local/bin/claude (mounted :ro at /usr/local/bin/claude) | ~/.local/bin/codex
+    package: str            # "" | "/opt/codex": where a packaged CLI's whole package is mounted :ro
     efforts: tuple[str, ...]
     launch: Callable[[str, str, str, str], str]   # (name, worktree, model, effort) -> shell prefix
     resume: Callable[[str], str]                  # (quoted message) -> trailing args
@@ -266,10 +267,18 @@ codex-home.
 - No CLI is baked into the image. Since 26d928c the session runs the
   **host's** `claude`, mounted read-only and resolved at spawn, so the box has
   one binary at one version. Codex follows the same pattern:
-  `containers._host_claude` becomes the runtime's `binary` mount, and the
-  host's `codex` (native binary) is mounted at `/usr/local/bin/codex`.
-- The infra repo installs `codex` on the host at a pinned exact version,
-  bumped by hand (Codex has no auto-updater to defer to). The
+  `containers._host_claude` becomes the runtime's `binary` mount. Codex is
+  a **package**, not one executable: since 0.156 it spawns helpers it finds
+  next to its real path (`bin/codex-code-mode-host`, `codex-path/rg`,
+  `codex-resources/bwrap`), and without them fails with "failed to spawn
+  code-mode host" (verified on the box, 2026-09-25). So the host package
+  (the `bin/` parent of `~/.local/bin/codex`'s real path, which must hold
+  `codex-package.json`) is mounted read-only at `/opt/codex`, and the image
+  links `/usr/local/bin/codex` to `/opt/codex/bin/codex`. The link dangles
+  in a session without Codex, so `command -v codex` finds nothing there.
+- The infra repo installs the Codex **package** on the host at a pinned
+  exact version under `~/.local/lib/codex/<version>`, linked from
+  `~/.local/bin/codex`, bumped by hand (Codex has no auto-updater to defer to). The
   codex-keepalive uses the same host binary, so keepalive and sessions never
   disagree about the auth format.
 - A **git shim** comes first on `PATH` (`/usr/local/bin/git`). It carries
@@ -374,13 +383,21 @@ not the first deploy.
 - **Concurrent Codex sessions refresh together** (capacity 2): unverified;
   ticket 1 tests it. If Codex rotates destructively, cap live Codex sessions
   at 1 as an admission rule. That changes a cap, not this design.
-- **Codex's bundled ripgrep isn't mounted** (verified on the box, ticket 02):
-  sessions mount only the host `codex` executable, so its release folder's
-  `codex-path/rg` is absent and `codex doctor` in a session container warns
-  "search command could not be verified". That's the only warning. Fix: the
-  session image installs `ripgrep` (agent-ops-infra), which Codex falls back
-  to on PATH. It's a tool, not an agent CLI, so the "no CLI in the image"
-  rule holds.
+- **Codex's bundled ripgrep** (verified on the box, ticket 02): mounting
+  only the `codex` executable left `codex-path/rg` absent, and `codex
+  doctor` warned "search command could not be verified". Mounting the whole
+  package (see Session image) brings the bundled `rg`, so the image needs
+  no `ripgrep`.
+- **Codex's own sandbox can't start on the host** (verified 2026-09-25):
+  `codex exec -s read-only` runs every command through bubblewrap, which
+  fails with "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted"
+  because Ubuntu's AppArmor restricts unprivileged user namespaces
+  (`kernel.apparmor_restrict_unprivileged_userns = 1`). Codex's docs fix it
+  with the system `bubblewrap` package plus the `bwrap-userns-restrict`
+  AppArmor profile. Stage sessions are unaffected: they run with
+  `--dangerously-bypass-approvals-and-sandbox` inside the container.
+  Review-diff's read-only `codex exec` inside a rootless container is
+  unverified (ticket 02's rootless-sandbox check).
 - **herdr does not recognise `codex`**: `idle_seconds` returns None ("unknown"),
   stall detection is off for Codex panes, and the fix belongs in herdr.
   Ticket 1 verifies it.
