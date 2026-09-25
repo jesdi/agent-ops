@@ -294,3 +294,17 @@ def test_containers_run_the_hosts_claude_read_only(tmp_path: Path, monkeypatch):
                                    "4g", "2", "opus", str(tmp_path / "p"))
     assert mount in triage
     assert "DISABLE_AUTOUPDATER=1" in triage
+
+
+def test_a_lone_codex_executable_is_refused_not_mounted_by_guess(tmp_path: Path, monkeypatch):
+    # Codex runs only from its whole package (it spawns helpers next to its
+    # real path). A lone executable, as the first installer left it, must
+    # fail the spawn, not mount whatever directory sits above it.
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    (home / ".local" / "bin" / "codex").write_text("")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    wt, _ = make_worktree(tmp_path)
+    with pytest.raises(RuntimeError, match="not a Codex package"):
+        containers.session_cmd("task-x", wt, "4g", "2", "openai/gpt-6-astra", "")

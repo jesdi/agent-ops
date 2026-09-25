@@ -21,6 +21,7 @@ class Runtime:
     herdr_agent: str        # herdr's hint for the agent behind the podman wrapper
     launch_args: Callable[[str, str, str, str], str]  # (name, worktree, bare model, effort)
     resume_args: str        # what continues the stage's own session
+    package: str = ""       # where the host package lands, "" = the lone binary at binary_mount
 
     @property
     def binary(self) -> str:
@@ -98,6 +99,10 @@ CODEX = Runtime(
     # The newest Codex session for the cwd; a stage never changes provider,
     # so that is the stage's.
     resume_args="resume --last",
+    # The whole package, not the executable: Codex spawns helpers from next
+    # to its real path (code-mode host, rg, bwrap). The session image links
+    # /usr/local/bin/codex to /opt/codex/bin/codex.
+    package="/opt/codex",
 )
 
 RUNTIMES = {"anthropic": CLAUDE, "openai": CODEX}

@@ -44,6 +44,7 @@ def test_every_configurable_provider_has_a_runtime_and_vice_versa():
 
 def test_the_cli_name_derives_the_binary_its_mount_and_the_resume_line():
     assert runtimes.CODEX.binary == ".local/bin/codex"
-    assert runtimes.CODEX.binary_mount == "/usr/local/bin/codex"
+    assert runtimes.CODEX.package == "/opt/codex"
+    assert runtimes.CLAUDE.package == ""
     assert runtimes.CLAUDE.resume_cmd() == "claude --continue"
     assert runtimes.CODEX.resume_cmd("'hi'") == "codex resume --last 'hi'"

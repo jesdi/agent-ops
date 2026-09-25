@@ -43,9 +43,18 @@ def _host_binary(runtime: Runtime) -> list[str]:
     box has one CLI at one version (the image used to npm-install its
     own, which drifted behind the auto-updating host install). Resolved at
     spawn: a running container keeps its version even after the host
-    updater moves on."""
-    binary = os.path.realpath(Path.home() / runtime.binary)
-    return ["-v", f"{binary}:{runtime.binary_mount}:ro"]
+    updater moves on. A packaged CLI mounts its whole package: the
+    binary's bin/ parent, which must carry the package manifest, so a lone
+    executable never mounts whatever directory happens to sit above it."""
+    binary = Path(os.path.realpath(Path.home() / runtime.binary))
+    if not runtime.package:
+        return ["-v", f"{binary}:{runtime.binary_mount}:ro"]
+    root = binary.parents[1]
+    if not (root / f"{runtime.cli}-package.json").is_file():
+        raise RuntimeError(f"{binary} is not a {runtime.cli.capitalize()} package "
+                           f"(no {runtime.cli}-package.json in {root}); "
+                           f"agent-ops-infra's {runtime.cli}-install.sh installs one")
+    return ["-v", f"{root}:{runtime.package}:ro"]
 
 
 def _runtime_args(runtime: Runtime) -> list[str]:

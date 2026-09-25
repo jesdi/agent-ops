@@ -27,14 +27,16 @@ def _openai_runtime():
 
 def test_codex_spawn_mounts_host_binary_and_codex_home(tmp_path, monkeypatch):
     # Mirrors tests/test_containers.py::test_containers_run_the_hosts_claude_read_only
-    # — the host's native codex binary, resolved through ~/.local/bin the
-    # same way the host's claude binary is.
+    # — the host's Codex package, resolved through the ~/.local/bin link the
+    # same way the host's claude binary is, and mounted whole: Codex spawns
+    # helpers from next to its real path.
     home = tmp_path / "home"
     (home / ".local" / "bin").mkdir(parents=True)
-    real_codex = home / "opt" / "codex-1.2.3"
-    real_codex.parent.mkdir(parents=True)
-    real_codex.write_text("")
-    (home / ".local" / "bin" / "codex").symlink_to(real_codex)
+    package = home / ".local" / "lib" / "codex" / "1.2.3"
+    (package / "bin").mkdir(parents=True)
+    (package / "bin" / "codex").write_text("")
+    (package / "codex-package.json").write_text("{}")
+    (home / ".local" / "bin" / "codex").symlink_to(package / "bin" / "codex")
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
@@ -44,7 +46,7 @@ def test_codex_spawn_mounts_host_binary_and_codex_home(tmp_path, monkeypatch):
                                  effort="high", runtime=runtime)
 
     import os as _os
-    mount = f"{_os.path.realpath(real_codex)}:/usr/local/bin/codex:ro"
+    mount = f"{_os.path.realpath(package)}:/opt/codex:ro"
     assert f"-v {mount}" in cmd
 
     # codex-home mount + CODEX_HOME, no claude-home, no CLAUDE_*.
@@ -119,7 +121,7 @@ def test_claude_session_never_mounts_codex_home(tmp_path, monkeypatch):
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
     assert "codex-home" not in cmd
     assert "CODEX_HOME" not in cmd
-    assert "/usr/local/bin/codex" not in cmd
+    assert "/opt/codex" not in cmd
 
 
 # --- 4. plan prompt's reviewer step reads correctly without subagents ------

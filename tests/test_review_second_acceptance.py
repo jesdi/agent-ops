@@ -186,14 +186,15 @@ def test_bypassed_review_resume_gets_second_only_if_gate_admits_it(tmp_path):
 def _fake_codex_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".local" / "bin").mkdir(parents=True)
-    real_codex = home / "opt" / "codex-1.2.3"
-    real_codex.parent.mkdir(parents=True)
-    real_codex.write_text("")
-    (home / ".local" / "bin" / "codex").symlink_to(real_codex)
+    package = home / ".local" / "lib" / "codex" / "1.2.3"
+    (package / "bin").mkdir(parents=True)
+    (package / "bin" / "codex").write_text("")
+    (package / "codex-package.json").write_text("{}")
+    (home / ".local" / "bin" / "codex").symlink_to(package / "bin" / "codex")
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    return f"{os.path.realpath(real_codex)}:/usr/local/bin/codex:ro"
+    return f"{os.path.realpath(package)}:/opt/codex:ro"
 
 
 def _assert_granted(cmd, tmp_path, codex_mount):
