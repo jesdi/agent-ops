@@ -31,9 +31,11 @@ gaps, no duplicates, every file carrying those three parts. No file paths
 or code in tickets. Do not copy the spec's testing decisions into tickets —
 implement sessions read them from the spec.
 
-## 3. Review with four subagents
-Dispatch four reviewer subagents over the spec and the ticket set, one
-brief each, and fold their findings back into the tickets:
+## 3. Review four ways
+Dispatch four reviewer subagents if you can dispatch subagents; otherwise
+run the four reviews yourself, one after another, each a fresh pass over
+the spec and the tickets. Give each review one brief below, and fold the
+findings back into the tickets:
 1. Coverage — every requirement and user story in the spec maps to a
    ticket, and nothing in the tickets lies outside the spec.
 2. Slice shape — each ticket is a complete vertical slice, demoable on its

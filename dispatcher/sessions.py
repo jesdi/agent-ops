@@ -1,11 +1,12 @@
 """Session layer: one session per task (task-<target>-<issue>), each stage
-a fresh `podman run … claude` inside it. The session is a herdr tab —
+a fresh `podman run … <cli>` inside it, the CLI being the stage model's
+runtime (claude or codex; see runtimes.py). The session is a herdr tab —
 `Tab(session_name(target, issue))` in the workspace labelled `<target>` —
-whose root pane hosts the `podman run … claude`; the container is the
-isolation layer. Tab and container die together at park and are recreated
-together at resume (claude --continue reads transcripts from the mounted
-claude-home, keyed by the worktree cwd, which is mounted at the same path
-inside the container).
+whose root pane hosts the `podman run`; the container is the isolation
+layer. Tab and container die together at park and are recreated together
+at resume (`claude --continue` / `codex resume --last` read transcripts from
+the mounted runtime home, keyed by the worktree cwd, which is mounted at the
+same path inside the container).
 
 Tabs are resolved by label on every call and never persisted, so a herdr
 restart or renumbering cannot strand a task. Every herdr failure degrades
@@ -20,6 +21,8 @@ import time
 from pathlib import Path
 
 from dispatcher import containers, herdr
+from dispatcher.models import Entry
+from dispatcher.runtimes import Runtime, runtime_for
 
 
 def session_name(target: str, issue: int) -> str:
@@ -27,9 +30,11 @@ def session_name(target: str, issue: int) -> str:
 
 
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
-               model: str, claude_args: str, effort: str = "") -> str:
+               model: str, args: str, effort: str = "",
+               runtime: Runtime | None = None, second: Entry | None = None) -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
-                                  cpus, model, claude_args, effort=effort)
+                                  cpus, model, args, effort=effort,
+                                  runtime=runtime, second=second)
 
 
 class Sessions:
@@ -48,7 +53,7 @@ class Sessions:
         return herdr.Tab.find(session_name(target, issue))
 
     def is_alive(self, target: str, issue: int) -> bool:
-        """Alive means the tab exists AND its shell is busy — a claude that
+        """Alive means the tab exists AND its shell is busy — a CLI that
         has exited back to the host shell reads dead (the crash path owns
         it), and a tab restored by a herdr server restart reads dead.
         `main._inject_login_code` still re-verifies the prompt with
@@ -57,14 +62,16 @@ class Sessions:
         return tab is not None and tab.alive
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
-                claude_args: str, effort: str = "") -> None:
+                runtime: Runtime, args: str, effort: str = "",
+                second: Entry | None = None) -> None:
         # Build the command FIRST: containers.clone_root reads
         # <worktree>/.git and raises on a vanished worktree (the case
         # _fail_task_crash exists for). Doing it before Tab.ensure means
         # that raise leaves no workspace and no empty tab behind for a task
         # that will never launch.
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
-                         model, claude_args, effort=effort)
+                         model, args, effort=effort, runtime=runtime,
+                         second=second)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,
             # herdr's hint for detecting an agent behind a wrapper (podman
@@ -73,7 +80,7 @@ class Sessions:
             # it lives here and never in containers.session_cmd — the
             # headless triage container shares that module and must NOT read
             # as an agent.
-            env={"HERDR_AGENT": "claude"})
+            env={"HERDR_AGENT": runtime.herdr_agent})
         # Raise, never return quietly: the caller would record a stage that
         # never started, and the next pass would report a phantom crash with
         # nothing to show (#363). A raise fails the task with this reason.
@@ -85,7 +92,8 @@ class Sessions:
                                f"{session_name(target, issue)}")
 
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
-                    stage_name: str, model: str, effort: str = "") -> None:
+                    stage_name: str, model: str, effort: str = "",
+                    second: Entry | None = None) -> None:
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
                   f"{session_name(target, issue)} at {worktree}")
@@ -93,17 +101,20 @@ class Sessions:
         agent_dir = Path(worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)
-        self._launch(target, issue, worktree, model,
-                     f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort)
+        self._launch(target, issue, worktree, model, runtime_for(model),
+                     f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort,
+                     second=second)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
-               model: str, effort: str = "") -> None:
+               model: str, effort: str = "", second: Entry | None = None) -> None:
         if self.dry_run:
             print(f"[dry-run] resume {session_name(target, issue)} on {model} "
                   f"at {worktree}")
             return
-        self._launch(target, issue, worktree, model,
-                     f"--continue {shlex.quote(message)}", effort=effort)
+        runtime = runtime_for(model)
+        self._launch(target, issue, worktree, model, runtime,
+                     runtime.resume(shlex.quote(message)), effort=effort,
+                     second=second)
 
     def capture_tail(self, target: str, issue: int, lines: int = 25) -> str:
         if self.dry_run:
@@ -117,7 +128,7 @@ class Sessions:
     def capture_history(self, target: str, issue: int, lines: int = 2000) -> str:
         """Console-owned pane history (true scrollback, unlike capture_tail —
         the dispatcher's stall/login classification input). recent-unwrapped
-        joins soft wraps, so the console renders the lines claude drew.
+        joins soft wraps, so the console renders the lines the CLI drew.
         Degrades to '' so a wedged server never 500s the history view."""
         if self.dry_run:
             return ""
@@ -131,7 +142,7 @@ class Sessions:
         the agent lifecycle, not screen activity: `working` is never idle,
         however long it lasts; any other status (idle / blocked / done /
         unknown, or no agent at all — a busy shell that has not reached
-        claude yet, podman still starting or the wrapper still running)
+        the CLI yet, podman still starting or the wrapper still running)
         accumulates from the moment herdr last changed its mind. herdr
         exposes the transition counter but no timestamp, so the moment is
         remembered in a sidecar keyed by (seq, status)."""

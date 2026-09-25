@@ -31,7 +31,12 @@ export function AdmissionWarning({ target, issue, admission }: {
     },
     onError: (err) => setError(err instanceof ApiError ? err.detail : String(err)),
   })
-  const choices = [admission.requested, ...admission.alternatives]
+  // Once the stage has a pick its provider is fixed (the server 422s any
+  // other); only a stage with no pick yet may switch provider.
+  const alternatives = admission.any_provider
+    ? admission.alternatives
+    : admission.alternatives.filter((a) => a.provider === admission.requested.provider)
+  const choices = [admission.requested, ...alternatives]
 
   return (
     <div className="relative mt-2">

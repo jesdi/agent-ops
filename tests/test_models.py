@@ -2,7 +2,8 @@ import pytest
 
 from dispatcher.models import (DEFAULT_MODEL, DEFAULT_POLICY, EFFORTS, STAGES,
                                Entry, ModelPolicy, bare_model_id, parse_entry,
-                               parse_policy, policy_stage, split_model_id,
+                               override_allowed, override_refusal, parse_policy,
+                               pick_provider, policy_stage, split_model_id,
                                track_from_labels, tracks_text)
 
 RAW = {
@@ -183,6 +184,34 @@ def test_policy_stage_maps_runtime_stages():
     assert policy_stage("blocked") == "blocked"
 
 
+PICKS = {"implement": "anthropic/claude-opus-5@high"}
+
+
+def test_pick_provider_is_the_provider_of_the_stages_pick_or_empty():
+    assert pick_provider(PICKS, "implement") == "anthropic"
+    assert pick_provider(PICKS, "address-review") == "anthropic"
+    assert pick_provider(PICKS, "review") == ""
+
+
+def test_override_must_match_the_picks_provider_once_the_stage_has_a_pick():
+    assert override_allowed(PICKS, "implement", "anthropic/claude-sonnet-5")
+    assert override_allowed(PICKS, "implement", "claude-sonnet-5")
+    assert not override_allowed(PICKS, "implement", "openai/gpt-5-codex")
+    assert not override_allowed(PICKS, "address-review", "openai/gpt-5-codex")
+
+
+def test_override_refusal_names_the_policy_stage_and_its_provider():
+    assert override_refusal(PICKS, "address-review", "openai/gpt-5-codex") == (
+        "stage implement runs on anthropic; pick a model from anthropic")
+    assert override_refusal(PICKS, "implement", "anthropic/claude-sonnet-5") == ""
+    assert override_refusal(PICKS, "review", "openai/gpt-5-codex") == ""
+
+
+def test_a_stage_with_no_pick_takes_any_model():
+    assert override_allowed(PICKS, "review", "openai/gpt-5-codex")
+    assert override_allowed({}, "queued", "openai/gpt-5-codex")
+
+
 def test_tracks_text_lists_name_and_when_per_line():
     text = tracks_text(policy())
     assert text.splitlines()[0] == "- `trivial`: Rote rename, typo, formatting, dependency bump."
@@ -241,10 +270,10 @@ def test_candidates_for_a_non_policy_stage_are_empty():
 def test_avoid_provider_moves_its_entries_to_the_back_stably():
     p = parse_policy({**RAW, "tracks": {"t": {
         "when": "w", "spec": ["m"], "plan": ["m"], "implement": ["m"],
-        "review": ["anthropic/a1", "openai/o1", "anthropic/a2", "nvidia/n1"]}},
+        "review": ["anthropic/a1", "openai/o1", "anthropic/a2", "openai/o2"]}},
         "untracked": "t"})
     assert [e.model_id for e in candidates(p, "t", "review", avoid_provider="anthropic")] == [
-        "openai/o1", "nvidia/n1", "anthropic/a1", "anthropic/a2"]
+        "openai/o1", "openai/o2", "anthropic/a1", "anthropic/a2"]
 
 
 def test_avoid_provider_is_a_no_op_when_every_entry_shares_it():
@@ -271,7 +300,40 @@ def test_resolve_honours_avoid_provider():
 
 
 def test_triage_entry_is_the_first_admitted_triage_entry():
-    p = parse_policy({**RAW, "triage": ["anthropic/a@low", "openai/b@high"]})
+    p = parse_policy({**RAW, "triage": ["anthropic/a@low", "anthropic/b@high"]})
     assert str(triage_entry(p, ALL)) == "anthropic/a@low"
-    assert str(triage_entry(p, lambda m: m.startswith("openai/"))) == "openai/b@high"
+    assert str(triage_entry(p, lambda m: m == "anthropic/b")) == "anthropic/b@high"
     assert triage_entry(p, NONE) is None
+
+
+def test_review_second_malformed_model_id_error_is_prefixed():
+    with pytest.raises(ValueError, match=r"^models: review_second:.*provider/model"):
+        parse_policy({**RAW, "review_second": "openai/x/y"})
+
+
+@pytest.mark.parametrize("bad", [42, "openai/gpt sol", False, 0, [], ""])
+def test_review_second_rejects_anything_but_a_model_id(bad):
+    # Only an absent or null key is unset; any other falsy value is a typo.
+    with pytest.raises(ValueError, match="^models: review_second: must be"):
+        parse_policy({**RAW, "review_second": bad})
+
+
+def test_review_second_null_is_unset():
+    assert parse_policy({**RAW, "review_second": None}).review_second == ""
+
+
+def test_review_second_rejects_an_effort_suffix():
+    with pytest.raises(ValueError, match="^models: review_second: .*no @effort"):
+        parse_policy({**RAW, "review_second": "openai/gpt-sol@high"})
+
+
+def test_parse_rejects_non_mapping():
+    with pytest.raises(ValueError, match="models: must be a mapping"):
+        parse_policy("nope")
+
+
+def test_parse_rejects_tracks_not_a_mapping_or_empty():
+    with pytest.raises(ValueError, match="tracks: must be a non-empty mapping"):
+        parse_policy({**RAW, "tracks": []})
+    with pytest.raises(ValueError, match="tracks: must be a non-empty mapping"):
+        parse_policy({**RAW, "tracks": {}})

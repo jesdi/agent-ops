@@ -11,14 +11,18 @@ from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
 
 STAGES = ("spec", "plan", "implement", "review")
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # anthropic's own vocabulary
+PROVIDER_EFFORTS: Mapping[str, tuple[str, ...]] = {
+    "anthropic": EFFORTS,
+    "openai": ("minimal", "low", "medium", "high", "xhigh"),
+}
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-opus-5"
 TRACK_LABEL_PREFIX = "track:"
 _POLICY_STAGES = {"queued": "spec", "awaiting-spec-review": "spec",
                   "address-review": "implement"}
 _OLD_KEYS = ("default", "rules")
-_TOP_KEYS = frozenset({"triage", "untracked", "tracks"})
+_TOP_KEYS = frozenset({"triage", "untracked", "tracks", "review_second"})
 
 
 def split_model_id(model_id: str) -> tuple[str, str]:
@@ -45,6 +49,36 @@ def policy_stage(stage: str) -> str:
     return _POLICY_STAGES.get(stage, stage)
 
 
+def stage_pick(picks: Mapping[str, str], stage: str) -> str:
+    """The entry that ran `stage` (runtime vocabulary), or "" when the stage
+    has no pick yet."""
+    return picks.get(policy_stage(stage), "")
+
+
+def pick_provider(picks: Mapping[str, str], stage: str) -> str:
+    """The provider that ran `stage`, or "" when the stage has no pick yet."""
+    pick = stage_pick(picks, stage)
+    return parse_entry(pick, "pick").provider if pick else ""
+
+
+def override_refusal(picks: Mapping[str, str], stage: str, model_id: str) -> str:
+    """Why `model_id` may not override `stage`, or "" when it may: the one
+    message the console's 422 and the dispatcher's drop event both carry. A
+    stage's provider is fixed once it has a pick: another provider would
+    rebuild the context from scratch and `--continue` the wrong session. A
+    stage with no pick takes any model."""
+    fixed = pick_provider(picks, stage)
+    if not fixed or split_model_id(model_id)[0] == fixed:
+        return ""
+    return (f"stage {policy_stage(stage)} runs on {fixed}; "
+            f"pick a model from {fixed}")
+
+
+def override_allowed(picks: Mapping[str, str], stage: str, model_id: str) -> bool:
+    """True when `model_id` may override `stage` (see override_refusal)."""
+    return not override_refusal(picks, stage, model_id)
+
+
 @dataclass(frozen=True)
 class Entry:
     """One element of a track's stage list: provider, bare model, effort
@@ -64,18 +98,23 @@ class Entry:
 def parse_entry(value: object, context: str) -> Entry:
     """`provider/model[@effort]` -> Entry. Whitespace is rejected because the
     value lands unquoted in a shell command; a bad effort is rejected because
-    the CLI would."""
+    the CLI would, against that entry's OWN provider's vocabulary — a
+    provider absent from PROVIDER_EFFORTS is a config error too."""
     if not isinstance(value, str) or value == "" or any(c.isspace() for c in value):
         raise ValueError(f"models: {context} must be a non-empty entry "
                          f"'provider/model[@effort]' with no whitespace, got {value!r}")
     model_id, at, effort = value.partition("@")
-    if at and effort not in EFFORTS:
-        raise ValueError(f"models: {context} effort must be one of "
-                         f"{list(EFFORTS)}, got {effort!r}")
     try:
         provider, model = split_model_id(model_id)
     except ValueError as e:
         raise ValueError(f"models: {context} {e}") from e
+    efforts = PROVIDER_EFFORTS.get(provider)
+    if efforts is None:
+        raise ValueError(f"models: {context} provider {provider!r} has no "
+                         f"configured efforts; expected one of {sorted(PROVIDER_EFFORTS)}")
+    if at and effort not in efforts:
+        raise ValueError(f"models: {context} {provider} effort must be one of "
+                         f"{list(efforts)}, got {effort!r}")
     return Entry(provider, model, effort)
 
 
@@ -98,6 +137,7 @@ class ModelPolicy:
     triage: tuple[Entry, ...]
     untracked: str          # the track a candidate with no track: label specs on
     tracks: Mapping[str, Track]
+    review_second: str = ""  # provider/model a Claude review session's codex exec runs on, "" = unset
 
     def entries(self) -> list[Entry]:
         out = list(self.triage)
@@ -143,6 +183,38 @@ def _track(name: str, raw: object) -> Track:
                  {s: _entries(raw[s], f"track {name!r} {s}:") for s in STAGES})
 
 
+def _review_second(raw: object) -> str:
+    """`models.review_second:` -> a plain 'provider/model' string, "" when
+    absent or null. Must name a non-anthropic provider with a configured
+    effort vocabulary (a runtime); no @effort suffix, since codex exec's
+    effort comes from the codex-home config, not this policy."""
+    if raw is None:
+        return ""
+    entry = parse_entry(raw, "review_second:")
+    if entry.effort:
+        raise ValueError(f"models: review_second: must be 'provider/model' "
+                         f"with no @effort, got {raw!r}")
+    if entry.provider == DEFAULT_PROVIDER:
+        raise ValueError(f"models: review_second: provider must be a "
+                         f"non-anthropic provider with configured efforts "
+                         f"{sorted(p for p in PROVIDER_EFFORTS if p != DEFAULT_PROVIDER)}, "
+                         f"got {raw!r}")
+    return entry.model_id
+
+
+def _triage(raw: dict) -> tuple[Entry, ...]:
+    """`models.triage:` -> its entries. Anthropic only: triage never spends a
+    non-anthropic runtime's usage window."""
+    if "triage" not in raw:
+        raise ValueError("models: triage: list is required")
+    triage = _entries(raw["triage"], "triage:")
+    non_anthropic = [e for e in triage if e.provider != DEFAULT_PROVIDER]
+    if non_anthropic:
+        raise ValueError(f"models: triage: must be {DEFAULT_PROVIDER} only, "
+                         f"got {non_anthropic[0].model_id}")
+    return triage
+
+
 def parse_policy(raw: dict | None) -> ModelPolicy:
     """Validate the `models:` block. Raises ValueError so a typo kills the
     pass loudly at config load instead of silently mis-routing."""
@@ -167,10 +239,8 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
     if untracked not in tracks:
         raise ValueError(f"models: untracked: must name a defined track "
                          f"{sorted(tracks)}, got {untracked!r}")
-    if "triage" not in raw:
-        raise ValueError("models: triage: list is required")
-    return ModelPolicy(triage=_entries(raw["triage"], "triage:"),
-                       untracked=untracked, tracks=tracks)
+    return ModelPolicy(triage=_triage(raw), untracked=untracked, tracks=tracks,
+                       review_second=_review_second(raw.get("review_second")))
 
 
 def tracks_text(policy: ModelPolicy) -> str:
@@ -215,3 +285,16 @@ def resolve(policy: ModelPolicy, track: str, stage: str, admitted: Admitted,
 
 def triage_entry(policy: ModelPolicy, admitted: Admitted) -> Entry | None:
     return next((e for e in policy.triage if admitted(e.model_id)), None)
+
+
+def second_model(policy: ModelPolicy, stage: str, entry: Entry,
+                 admitted: Admitted) -> Entry | None:
+    """The `review_second` entry a Claude review session may also run
+    (`codex exec` in review-diff), or None: set, a review stage on an
+    anthropic entry, and admitted by the gate itself. The caller passes the
+    real gate, never a bypass: an operator bypass forces the stage's own
+    pick, not a second subscription."""
+    if (stage != "review" or entry.provider != DEFAULT_PROVIDER
+            or not policy.review_second or not admitted(policy.review_second)):
+        return None
+    return parse_entry(policy.review_second, "review_second:")

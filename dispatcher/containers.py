@@ -9,7 +9,8 @@ import os
 import shlex
 from pathlib import Path
 
-from dispatcher.models import bare_model_id
+from dispatcher.models import Entry, bare_model_id, split_model_id
+from dispatcher.runtimes import CLAUDE, Runtime, runtime_for
 
 
 def clone_root(worktree: str) -> str:
@@ -37,16 +38,32 @@ def _state_dir() -> str:
                           str(Path.home() / "agent-ops-state"))
 
 
-def _host_claude() -> list[str]:
-    """Run the host's native claude inside the container, read-only, so the
-    box has one claude at one version (the image used to npm-install its
+def _host_binary(runtime: Runtime) -> list[str]:
+    """Run the host's native CLI inside the container, read-only, so the
+    box has one CLI at one version (the image used to npm-install its
     own, which drifted behind the auto-updating host install). Resolved at
     spawn: a running container keeps its version even after the host
-    updater moves on. The auto-updater is off inside, since the binary is the
-    host's to update."""
-    binary = os.path.realpath(Path.home() / ".local" / "bin" / "claude")
-    return ["-v", f"{binary}:/usr/local/bin/claude:ro",
-            "-e", "DISABLE_AUTOUPDATER=1"]
+    updater moves on. A packaged CLI mounts its whole package: the
+    binary's bin/ parent, which must carry the package manifest, so a lone
+    executable never mounts whatever directory happens to sit above it."""
+    binary = Path(os.path.realpath(Path.home() / runtime.binary))
+    if not runtime.package:
+        return ["-v", f"{binary}:{runtime.binary_mount}:ro"]
+    root = binary.parents[1]
+    if not (root / f"{runtime.cli}-package.json").is_file():
+        raise RuntimeError(f"{binary} is not a {runtime.cli.capitalize()} package "
+                           f"(no {runtime.cli}-package.json in {root}); "
+                           f"agent-ops-infra's {runtime.cli}-install.sh installs one")
+    return ["-v", f"{root}:{runtime.package}:ro"]
+
+
+def _runtime_args(runtime: Runtime) -> list[str]:
+    """The runtime's container flags: its home (mounted and pointed at), its
+    env, and its host binary. Every container that runs a CLI takes these."""
+    return ["-e", f"{runtime.home_var}={runtime.mount}",
+            "-v", f"{_state_dir()}/{runtime.home}:{runtime.mount}",
+            *(a for e in runtime.env for a in ("-e", e)),
+            *_host_binary(runtime)]
 
 
 def _wrapper() -> list[str]:
@@ -56,7 +73,15 @@ def _wrapper() -> list[str]:
 
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
-                claude_args: str, effort: str = "") -> str:
+                args: str, effort: str = "", runtime: Runtime | None = None,
+                second: Entry | None = None) -> str:
+    """The session's shell command, on the model's runtime. A caller that
+    already resolved it (Sessions._launch) passes it; otherwise it is
+    resolved here, and an unknown provider raises before anything runs.
+    A granted `second` model (models.second_model) also gets its runtime's
+    home, env and host binary: the mount is the permission."""
+    runtime = runtime or runtime_for(model)
+    extra = _runtime_args(runtime_for(second.model_id)) if second else []
     clone = clone_root(worktree)
     branch = task_branch(worktree)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
@@ -72,12 +97,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     return (
         f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
-        # Without this, Claude Code keeps onboarding/trust state in
-        # /root/.claude.json — a SIBLING of the claude-home mount — so every
-        # container boots as a fresh install and stalls on the first-run
-        # wizard with nobody attached. CLAUDE_CONFIG_DIR moves all of it
-        # inside the mounted claude-home.
-        f"-e CLAUDE_CONFIG_DIR=/root/.claude "
+        f"{shlex.join(_runtime_args(runtime) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's
         # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its
         # curl dies against a nonexistent path and the `|| true` swallows
@@ -88,26 +108,10 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         f"-v {_state_dir()}/wait:{_state_dir()}/wait "
         f"-v {worktree}:{worktree} -w {worktree} "
         f"-v {clone}:{clone} "
-        f"-v {_state_dir()}/claude-home:/root/.claude "
-        f"-e CLAUDE_CODE_OAUTH_TOKEN "
-        f"{shlex.join(_host_claude())} "
         f"-v {home}/.config/gh:/root/.config/gh:ro "
         f"-v {home}/.gitconfig:/root/.gitconfig:ro "
-        # auto: the classifier approves routine actions and stops only for
-        # genuinely risky ones — the stop then flows into the park/resume
-        # path (Stop hook → waitd → Telegram). acceptEdits still asked for
-        # every non-edit action, which no one is attached to answer.
-        #
-        # --remote-control <name>: every box session is reachable from
-        # claude.ai / the Claude app, named after its task
-        # (task-<target>-<issue>) so it is identifiable there. Remote Control
-        # is interactive-only (the headless -p keepalive cannot and need not
-        # use it) and needs the claude-home OAuth login, which the mounted
-        # store provides. It is a session-config flag, orthogonal to
-        # --continue on the resume path.
-        f"{image()} claude --remote-control {name} "
-        f"--permission-mode auto --model {bare_model_id(model)}"
-        f"{' --effort ' + effort if effort else ''} {claude_args}"
+        f"{image()} {runtime.launch(name, worktree, bare_model_id(model), effort)}"
+        f" {args}"
     )
 
 
@@ -130,7 +134,13 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     dispatcher's own execve small; the container's own execve is kept under the
     same 128 KiB ceiling by triage_prefetch's context budget, which is measured
     on exactly the serialization that lands in the file. Only the shell line is
-    composed; the podman argv stays a list so its shape stays assertable."""
+    composed; the podman argv stays a list so its shape stays assertable.
+
+    Triage is Claude-only (parse_policy rejects other providers in `triage:`);
+    a non-anthropic model here is a caller bug, refused before anything runs."""
+    provider = split_model_id(model)[0]
+    if provider != "anthropic":
+        raise ValueError(f"triage runs on Claude only; got {provider!r} model {model!r}")
     home = str(Path.home())
     claude = (f"claude -p \"$(cat {shlex.quote(prompt_path)})\" "
               f"--permission-mode auto --model {shlex.quote(bare_model_id(model))}"
@@ -139,11 +149,8 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         *_wrapper(),
         "podman", "run", "--rm", "--name", name,
         "--memory", memory, "--cpus", cpus,
-        "-e", "CLAUDE_CONFIG_DIR=/root/.claude",
-        "-e", "CLAUDE_CODE_OAUTH_TOKEN",
+        *_runtime_args(CLAUDE),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
-        "-v", f"{_state_dir()}/claude-home:/root/.claude",
-        *_host_claude(),
         "-v", f"{home}/.config/gh:/root/.config/gh:ro",
         "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
         "-v", f"{triage_dir}:/triage",
