@@ -12,6 +12,7 @@ const EVENT_TONE: Partial<Record<string, Tone>> = {
   'pr-opened': 'running',
   failed: 'failed',
   'intent-applied': 'waiting',
+  'intent-dropped': 'failed',
 }
 
 export function TimelineList({ events }: { events: EventEntry[] }) {

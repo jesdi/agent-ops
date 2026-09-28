@@ -184,14 +184,14 @@ class FakeSessions:
     def send_text(self, target, issue, text):
         self.sent_text.append((issue, text))
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort=""):
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.spawned.append((issue, stage_name, model, prompt, effort))
         self.spawn_calls.append((target, issue))
 
-    def resume(self, target, issue, worktree, message, model, effort=""):
+    def resume(self, target, issue, worktree, message, model, effort="", second=None):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
@@ -1042,7 +1042,7 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
             self.ops.append(("end", issue))
             super().end(target, issue)
 
-        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort=""):
+        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
             self.ops.append(("spawn", stage_name))
             super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
 
@@ -1089,6 +1089,21 @@ def test_dead_session_files_diagnosis_issue_and_blocks(tmp_path, monkeypatch):
     # existing crash handling still intact
     assert gh.released == [(42, "session crashed mid-stage")]
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+
+
+@pytest.mark.parametrize("pick, cli", [
+    ("anthropic/claude-opus-5", "claude --continue"),
+    ("openai/gpt-5-codex@high", "codex resume --last"),
+])
+def test_crash_repro_resumes_on_the_stages_runtime(tmp_path, monkeypatch, pick, cli):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, picks={"implement": pick})
+    gh = FakeGitHub()
+    main.run_pass(c, deps(gh, FakeSessions(alive=set())))
+    body = gh.created_issues[0][2]
+    assert f"- repro: `cd {wt} && {cli}  # inside session image`" in body
 
 
 def test_crash_path_ends_the_session_after_reporting(tmp_path, monkeypatch):
@@ -2489,6 +2504,25 @@ def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
     assert "ship it" in sess.resumed[0][1]
 
 
+def test_resume_intent_with_an_unconfigured_model_is_dropped_with_an_event(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
+    # A legacy intent (no target): the event still names the task's target.
+    intents_mod.write_intent(c.state_dir, "resume", "", 42,
+                             {"model": "openai/gpt-nope"}, "op", 1)
+    main._apply_intents(c, deps())
+
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
+    [event] = [e for e in eventlog.read_tail(c.state_dir) if e["issue"] == 42]
+    assert (event["event"], event["target"], event["model"]) == (
+        "intent-dropped", "portfolio_eval", "openai/gpt-nope")
+    assert event["detail"] == (
+        "model 'openai/gpt-nope' is not configured for target 'portfolio_eval'")
+
+
 def test_resume_intent_can_override_a_wake_without_duplicate_message(
         tmp_path, monkeypatch):
     patch_usage(monkeypatch, util=0.95)
@@ -3158,11 +3192,11 @@ class LiveUntilEnded(FakeSessions):
     frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
     express across a dozen passes."""
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort=""):
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
         super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
         self.alive_set.add(issue)
 
-    def resume(self, target, issue, worktree, message, model, effort=""):
+    def resume(self, target, issue, worktree, message, model, effort="", second=None):
         super().resume(target, issue, worktree, message, model, effort)
         self.alive_set.add(issue)
 

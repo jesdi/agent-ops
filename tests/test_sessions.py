@@ -311,6 +311,39 @@ def test_resume_passes_the_quoted_message_and_the_model(tmp_path, monkeypatch):
     assert """--continue 'run said: "failure"'""" in run[3]
 
 
+def test_spawn_stage_on_an_openai_model_launches_codex(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/state")
+    wt = _worktree(tmp_path)
+    calls = []
+    herdr_fake_creating(monkeypatch, calls)
+    Sessions().spawn_stage("acme", 42, wt, "P", "implement",
+                           "openai/gpt-5-codex", effort="high")
+    assert ["tab", "create", "--workspace", "w1", "--label", "task-acme-42",
+            "--cwd", wt, "--env", "HERDR_AGENT=codex", "--no-focus"] in calls
+    cmd = next(c for c in calls if c[:2] == ["pane", "run"])[3]
+    assert "-e CODEX_HOME=/root/.codex " in cmd
+    assert "-v /state/codex-home:/root/.codex " in cmd
+    assert "/root/.claude" not in cmd
+    assert (" codex --model gpt-5-codex -c model_reasoning_effort=high "
+            "--dangerously-bypass-approvals-and-sandbox ") in cmd
+    assert cmd.endswith(' "$(cat .agent/prompt-implement.md)"')
+
+
+def test_resume_on_an_openai_model_resumes_the_last_codex_session(tmp_path,
+                                                                  monkeypatch):
+    wt = _worktree(tmp_path)
+    calls = []
+    herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
+    Sessions().resume("acme", 42, wt, "it's done", "openai/gpt-5-codex")
+    cmd = next(c for c in calls if c[:2] == ["pane", "run"])[3]
+    assert cmd.endswith(
+        " agent-ops-session codex --model gpt-5-codex"
+        " --dangerously-bypass-approvals-and-sandbox"
+        f""" -c 'notify=["{wt}/.agent/stop-hook.sh"]'"""
+        f""" -c 'projects={{"{wt}"={{trust_level="trusted"}}}}'"""
+        """ resume --last 'it'"'"'s done'""")
+
+
 def test_resume_dry_run_announces_the_session(capsys):
     Sessions(dry_run=True).resume("acme", 42, "/tmp/wt", 'run said: "failure"',
                                   "claude-opus-4-8")

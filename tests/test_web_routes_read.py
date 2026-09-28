@@ -154,12 +154,31 @@ def test_wake_blocked_by_model_exposes_reason_and_alternatives(tmp_path):
     assert "week·Fable" in admission["requested"]["note"]
     assert [(x["model"], x["admitted"]) for x in admission["alternatives"]] == [
         ("anthropic/claude-opus-5", True)]
+    assert admission["any_provider"] is False, "the spec pick fixes the provider"
     assert body["card"]["model"] == "anthropic/claude-fable-5-1"
     assert body["card"]["track"] == "standard"
     assert body["track_when"] == "Everything."
     board = client.get("/api/board", headers=HEADERS).json()
     card = next(c for column in board["columns"] for c in column["cards"])
     assert card["admission"] == admission
+
+
+def test_a_picked_stage_offers_no_cross_provider_alternative(tmp_path):
+    from tests.webfakes import tracks_policy
+    from tests.usagefakes import session_usage
+    fake = FakeSources()
+    cfg = replace(make_config(tmp_path), models=tracks_policy(implement=[
+        "claude-fable-5-1", "openai/gpt-5-codex", "claude-opus-5"]))
+    client = TestClient(create_app(cfg, fake))
+    fake.tasks_list = [make_task(issue=7, park=PARK_WAKE,
+                                 picks={"implement": "anthropic/claude-fable-5-1"})]
+    fake.usages = {"anthropic": session_usage(0.2, fable=0.9),
+                   "openai": session_usage(0.2)}
+    admission = client.get("/api/task/alpha/7", headers=HEADERS).json()[
+        "card"]["admission"]
+    assert [x["model"] for x in admission["alternatives"]] == [
+        "anthropic/claude-opus-5"]
+    assert admission["any_provider"] is False
 
 
 def test_card_model_is_the_first_admitted_entry_when_no_pick_yet(tmp_path):
@@ -342,6 +361,7 @@ def test_capacity_blocked_queue_candidate_exposes_force_choices(tmp_path):
     assert [(x["model"], x["admitted"])
             for x in admission["alternatives"]] == [
                 ("anthropic/claude-opus-5", True)]
+    assert admission["any_provider"] is True, "a candidate has no pick yet"
 
 
 def test_board_next_claim_claims_paused(tmp_path):
@@ -569,3 +589,14 @@ def test_board_snapshot_never_waits_for_live_sources(tmp_path, monkeypatch):
     assert response.json() == {key: full[key] for key in (
         "columns", "capacity", "median_cycle_seconds")}
     assert client.get("/api/board/snapshot").status_code == 401
+
+
+def test_crashed_task_view_shows_the_crashed_stage_pick(tmp_path):
+    # A crashed Codex implement task: the console keys the Remote Control
+    # link off the model, so the view must name the openai pick, not "".
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, stage=Stage.FAILED,
+                                 crashed_stage="implement",
+                                 picks={"implement": "openai/gpt-5-codex@high"})]
+    body = client.get("/api/task/alpha/7", headers=HEADERS).json()
+    assert body["card"]["model"] == "openai/gpt-5-codex"

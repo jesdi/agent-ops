@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from dispatcher import containers
 
 
@@ -213,31 +215,39 @@ def test_wrapper_path_is_one_executable_even_with_spaces(monkeypatch, tmp_path):
     assert argv[:2] == ["/opt/my infra/token-wrapper", "podman"]
 
 
-def test_model_prefix_never_reaches_the_cli(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("model_id", ["anthropic/claude-fable-5", "openai/gpt-5-codex"])
+def test_model_prefix_never_reaches_the_cli(tmp_path: Path, monkeypatch, model_id):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-5.4-codex", "P")
-    assert "--model gpt-5.4-codex" in cmd
-    assert "openai/" not in cmd
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", model_id, "P")
+    provider, bare = model_id.split("/")
+    assert f"--model {bare}" in cmd
+    assert f"{provider}/" not in cmd
 
 
 def test_triage_cmd_model_prefix_never_reaches_the_cli(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-        "openai/gpt-5", "/triage/p.md")
+        "anthropic/claude-opus-5", "/triage/p.md")
     shell_line = cmd[-1]
-    assert "--model gpt-5" in shell_line
-    assert "openai/" not in shell_line
+    assert "--model claude-opus-5" in shell_line
+    assert "anthropic/" not in shell_line
+
+
+def test_triage_cmd_refuses_a_non_anthropic_model():
+    with pytest.raises(ValueError, match="triage runs on Claude only"):
+        containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+                              "openai/gpt-5", "/triage/p.md")
 
 
 def test_session_cmd_passes_effort_after_the_model(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     wt, _clone = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-luna",
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "anthropic/claude-luna",
                                  "--continue 'hi'", effort="xhigh")
-    assert cmd.endswith("--model gpt-luna --effort xhigh --continue 'hi'")
+    assert cmd.endswith("--model claude-luna --effort xhigh --continue 'hi'")
 
 
 def test_session_cmd_omits_effort_when_unset(tmp_path: Path, monkeypatch):
@@ -284,3 +294,17 @@ def test_containers_run_the_hosts_claude_read_only(tmp_path: Path, monkeypatch):
                                    "4g", "2", "opus", str(tmp_path / "p"))
     assert mount in triage
     assert "DISABLE_AUTOUPDATER=1" in triage
+
+
+def test_a_lone_codex_executable_is_refused_not_mounted_by_guess(tmp_path: Path, monkeypatch):
+    # Codex runs only from its whole package (it spawns helpers next to its
+    # real path). A lone executable, as the first installer left it, must
+    # fail the spawn, not mount whatever directory sits above it.
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    (home / ".local" / "bin" / "codex").write_text("")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    wt, _ = make_worktree(tmp_path)
+    with pytest.raises(RuntimeError, match="not a Codex package"):
+        containers.session_cmd("task-x", wt, "4g", "2", "openai/gpt-6-astra", "")

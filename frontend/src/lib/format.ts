@@ -40,3 +40,10 @@ const STAGE_LABELS: Record<string, string> = {
 export function stageLabel(stage: string): string {
   return STAGE_LABELS[stage] ?? stage
 }
+
+/** `provider/model` -> provider; a bare id is anthropic's. Mirrors
+ *  dispatcher/models.py split_model_id. */
+export function providerOf(modelId: string): string {
+  const slash = modelId.indexOf('/')
+  return slash < 0 ? 'anthropic' : modelId.slice(0, slash)
+}

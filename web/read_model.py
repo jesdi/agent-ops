@@ -136,6 +136,9 @@ class ModelAdmissionView(BaseModel):
 class TaskAdmissionView(BaseModel):
     requested: ModelAdmissionView
     alternatives: list[ModelAdmissionView]
+    # False once the stage has a pick: only the requested (picked) model's
+    # provider may then be chosen. True when nothing is picked yet.
+    any_provider: bool = False
 
 
 class TaskCard(BaseModel):

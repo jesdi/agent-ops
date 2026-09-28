@@ -213,7 +213,64 @@ class AnthropicUsage:
         return unavailable(self.name, at)
 
 
-ADAPTERS: dict[str, UsageAdapter] = {"anthropic": AnthropicUsage()}
+# ---- OpenAI (Codex) adapter -------------------------------------------------
+
+OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+# A window this long or longer is weekly. The slot says nothing: the prolite
+# plan reports its 7-day window as primary_window (tests/fixtures, 2026-09-24).
+_WEEKLY_MIN_SECONDS = 24 * 3600
+
+
+def _openai_window(w: object, reached: bool) -> Window | None:
+    if not isinstance(w, dict):
+        return None
+    used = _used(w.get("used_percent"), reached)
+    if used is None or w.get("limit_window_seconds") is None or w.get("reset_at") is None:
+        return None
+    kind = (WindowKind.WEEKLY if w["limit_window_seconds"] >= _WEEKLY_MIN_SECONDS
+            else WindowKind.SESSION)
+    return Window(kind, None, used, datetime.fromtimestamp(w["reset_at"], timezone.utc))
+
+
+def parse_openai(payload: dict) -> tuple[Window, ...]:
+    rl = payload.get("rate_limit")
+    if not isinstance(rl, dict):
+        return ()
+    reached = bool(rl.get("limit_reached")) or rl.get("allowed") is False
+    windows = (_openai_window(rl.get(k), reached) for k in ("primary_window", "secondary_window"))
+    return tuple(w for w in windows if w is not None)
+
+
+def _codex_tokens(state_dir: Path) -> tuple[str, str] | None:
+    try:
+        t = json.loads((state_dir / "codex-home" / "auth.json").read_text())["tokens"]
+        return t["access_token"], t["account_id"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+class OpenAIUsage:
+    """Reads codex-home's login and never writes it: refreshing is Codex's
+    job (the keepalive runs Codex), since refresh tokens are single use."""
+    name = "openai"
+
+    def fetch(self, state_dir: Path, *, now: Callable[[], float] = time.time) -> ProviderUsage:
+        at = now()
+        tokens = _codex_tokens(Path(state_dir))
+        if tokens is None:
+            return unavailable(self.name, at)
+        access, account = tokens
+        try:
+            windows = parse_openai(_http_get_json(OPENAI_USAGE_URL, {
+                "Authorization": f"Bearer {access}", "ChatGPT-Account-Id": account,
+                "User-Agent": "codex-cli"}))
+        except (UsageFetchError, KeyError, ValueError, TypeError, OverflowError, OSError):
+            return unavailable(self.name, at)
+        # No windows would admit every openai model: fail closed.
+        return ProviderUsage(self.name, "oauth", at, windows) if windows else unavailable(self.name, at)
+
+
+ADAPTERS: dict[str, UsageAdapter] = {"anthropic": AnthropicUsage(), "openai": OpenAIUsage()}
 
 
 # ---- cache + fan-out -------------------------------------------------------

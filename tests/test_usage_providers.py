@@ -35,7 +35,7 @@ def cfg(tmp_path, models=None):
 def one_track_policy(*entries: str):
     from dispatcher.models import parse_policy
     stage = list(entries)
-    return parse_policy({"triage": stage, "untracked": "t", "tracks": {
+    return parse_policy({"triage": ["anthropic/claude-sonnet-4-6"], "untracked": "t", "tracks": {
         "t": {"when": "w", "spec": stage, "plan": stage,
               "implement": stage, "review": stage}}})
 
@@ -124,16 +124,16 @@ def test_missing_credentials_is_unavailable(tmp_path, monkeypatch):
 
 def test_fetch_all_covers_only_referenced_providers(tmp_path):
     fake = FakeUsage()
-    c = cfg(tmp_path, models=one_track_policy("fake/m"))
-    out = up.fetch_all(c, adapters={"fake": fake, "anthropic": FakeUsage()})
-    assert set(out) == {"fake"} and fake.calls == 1
+    c = cfg(tmp_path, models=one_track_policy("openai/m"))
+    out = up.fetch_all(c, adapters={"openai": fake, "anthropic": FakeUsage()})
+    assert set(out) == {"anthropic", "openai"} and fake.calls == 1
 
 
 def test_fetch_all_reports_missing_adapter_as_unavailable(tmp_path):
     c = cfg(tmp_path, models=one_track_policy(
-        "nvidia/claude-sonnet-4-6", "anthropic/claude-sonnet-4-6"))
+        "openai/gpt-sol", "anthropic/claude-sonnet-4-6"))
     out = up.fetch_all(c, adapters={"anthropic": FakeUsage()})
-    assert out["nvidia"].source == "unavailable"
+    assert out["openai"].source == "unavailable"
     assert out["anthropic"].source == "oauth"
 
 
@@ -507,3 +507,90 @@ def test_an_empty_cached_reading_is_a_miss(tmp_path):
         json.dumps({"fetched_at": 1000.0, "usage": up.usage_to_json(empty)}))
     u = up.fetch_provider("fake", tmp_path, now=lambda: 1010.0, adapters={"fake": fake})
     assert fake.calls == 1 and u == fake.result
+
+
+# ---- OpenAI (Codex) -------------------------------------------------------
+
+OPENAI_FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "openai-usage.json").read_text())
+
+
+def codex_auth(tmp_path: Path) -> Path:
+    home = tmp_path / "codex-home"
+    home.mkdir()
+    (home / "auth.json").write_text(json.dumps(
+        {"tokens": {"access_token": "cx-tok", "account_id": "acct-1"}}))
+    return home / "auth.json"
+
+
+def openai_window(seconds, used=10, reset_at=1790719147):
+    return {"used_percent": used, "limit_window_seconds": seconds, "reset_at": reset_at}
+
+
+def test_openai_reads_the_captured_payload(tmp_path, monkeypatch):
+    codex_auth(tmp_path)
+    seen = {}
+
+    def fake_get(url, headers):
+        seen["url"], seen["headers"] = url, headers
+        return OPENAI_FIXTURE
+
+    monkeypatch.setattr(up, "_http_get_json", fake_get)
+    u = up.OpenAIUsage().fetch(tmp_path)
+    assert u.provider == "openai" and u.source == "oauth"
+    assert seen["url"] == "https://chatgpt.com/backend-api/wham/usage"
+    assert seen["headers"]["Authorization"] == "Bearer cx-tok"
+    assert seen["headers"]["ChatGPT-Account-Id"] == "acct-1"
+    [w] = u.windows
+    assert (w.kind, w.scope, w.used) == (WindowKind.WEEKLY, None, 0.02)
+    assert w.resets_at == datetime.fromtimestamp(1790719147, timezone.utc)
+
+
+def test_openai_kind_comes_from_window_length_not_slot():
+    windows = up.parse_openai({"rate_limit": {
+        "primary_window": openai_window(5 * 3600, used=40),
+        "secondary_window": openai_window(604800, used=7)}})
+    assert [(w.kind, w.used) for w in windows] == [
+        (WindowKind.SESSION, 0.4), (WindowKind.WEEKLY, 0.07)]
+
+
+@pytest.mark.parametrize("flags", [{"limit_reached": True}, {"allowed": False}])
+def test_openai_limit_reached_counts_as_fully_used(flags):
+    windows = up.parse_openai({"rate_limit": {
+        **flags, "primary_window": openai_window(604800, used=30), "secondary_window": None}})
+    assert [w.used for w in windows] == [1.0]
+
+
+@pytest.mark.parametrize("payload", [
+    {}, {"rate_limit": None}, {"rate_limit": {"primary_window": None, "secondary_window": None}},
+    {"rate_limit": {"primary_window": {"used_percent": 5}}}, {"rate_limit": "x"}])
+def test_openai_unreadable_payload_is_unavailable(tmp_path, monkeypatch, payload):
+    codex_auth(tmp_path)
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: payload)
+    assert up.OpenAIUsage().fetch(tmp_path).source == "unavailable"
+
+
+def test_openai_http_error_is_unavailable(tmp_path, monkeypatch):
+    codex_auth(tmp_path)
+    monkeypatch.setattr(up, "_http_get_json", boom)
+    assert up.OpenAIUsage().fetch(tmp_path).source == "unavailable"
+
+
+@pytest.mark.parametrize("auth", [None, "not json", '{"tokens": {}}', '{"tokens": null}'])
+def test_openai_missing_or_broken_auth_is_unavailable_without_a_request(tmp_path, monkeypatch, auth):
+    if auth is not None:
+        (tmp_path / "codex-home").mkdir()
+        (tmp_path / "codex-home" / "auth.json").write_text(auth)
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: pytest.fail("requested"))
+    assert up.OpenAIUsage().fetch(tmp_path).source == "unavailable"
+
+
+def test_openai_never_writes_auth_json(tmp_path, monkeypatch):
+    auth = codex_auth(tmp_path)
+    before = (auth.read_bytes(), auth.stat().st_mtime_ns)
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: OPENAI_FIXTURE)
+    up.OpenAIUsage().fetch(tmp_path)
+    assert (auth.read_bytes(), auth.stat().st_mtime_ns) == before
+
+
+def test_openai_adapter_is_registered():
+    assert isinstance(up.ADAPTERS["openai"], up.OpenAIUsage)

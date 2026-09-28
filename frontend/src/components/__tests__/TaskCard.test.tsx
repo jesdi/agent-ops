@@ -206,6 +206,7 @@ test('model-capacity warning explains the block and can choose another model', a
         model: 'claude-opus-4-8', provider: 'anthropic', admitted: true,
         note: 'anthropic week: capacity available',
       }],
+      any_provider: false,
     },
   })
 

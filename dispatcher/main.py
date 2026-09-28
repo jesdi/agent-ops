@@ -39,9 +39,12 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoO
                                 ParkForCI, ParkForInput, ParkForReview, PublishSpec,
                                 RetryStage, SetTaskStage, StartTicket,
                                 SpawnStage, next_actions)
-from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates, parse_entry,
-                               policy_stage, resolve, track_from_labels, tracks_text)
+from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates,
+                               override_refusal, parse_entry, pick_provider,
+                               policy_stage, resolve, second_model, stage_pick,
+                               track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
+from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
@@ -49,7 +52,8 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               Stage, TaskState, active, allocate_slot,
                               clear_waiting, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
-                              read_stage_signal, resumable_crash, save, task_key)
+                              next_stage, read_stage_signal, resumable_crash,
+                              save, task_key)
 from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
@@ -96,9 +100,12 @@ def _policy(cfg: Config, target: Target | None) -> ModelPolicy:
 class Launch:
     """The stage a spawn site is about to start and the entry it runs on,
     chosen once: the usage gate asks about exactly the model the spawner
-    then launches, and the spawner records the entry as the stage's pick."""
+    then launches, and the spawner records the entry as the stage's pick.
+    `second` is the gated second model (models.second_model), decided with
+    the launch and never stored, so every spawn and resume re-asks."""
     stage: Stage
     entry: Entry
+    second: Entry | None = None
 
     @property
     def model(self) -> str:
@@ -111,20 +118,27 @@ def _launch_for(cfg: Config, target: Target | None, task: TaskState,
     track. None: the track is not configured, or nothing is admitted — wait.
     Review avoids the provider that ran implement."""
     policy = _policy(cfg, target)
-    pstage = policy_stage(stage.value)
-    if pstage in task.picks:
-        return Launch(stage, parse_entry(task.picks[pstage], "pick"))
+    pick = stage_pick(task.picks, stage.value)
+    if pick:
+        return Launch(stage, parse_entry(pick, "pick"))
     if task.track not in policy.tracks:
         return None
-    avoid = ""
-    if pstage == "review" and "implement" in task.picks:
-        avoid = parse_entry(task.picks["implement"], "pick").provider
+    avoid = (pick_provider(task.picks, "implement")
+             if policy_stage(stage.value) == "review" else "")
     entry = resolve(policy, task.track, stage.value, admitted, avoid)
     return Launch(stage, entry) if entry else None
 
 
 def _admitted(admit: Admit, bypass: bool) -> Admitted:
     return (lambda m: True) if bypass else (lambda m: admit(m).admitted)
+
+
+def _with_second(cfg: Config, target: Target | None, launch: Launch,
+                 admit: Admit) -> Launch:
+    """Grant the second model on the gate itself: a bypass never covers it."""
+    second = second_model(_policy(cfg, target), launch.stage.value,
+                          launch.entry, _admitted(admit, False))
+    return replace(launch, second=second)
 
 
 def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
@@ -138,12 +152,12 @@ def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
     if override is not None and override.model:
         launch = Launch(stage, parse_entry(override.model, "override"))
         if bypass or admit(launch.model).admitted:
-            return launch, bypass
+            return _with_second(cfg, target, launch, admit), bypass
         return None, bypass
     launch = _launch_for(cfg, target, task, stage, _admitted(admit, bypass))
     if launch is None or (not bypass and not admit(launch.model).admitted):
         return None, bypass
-    return launch, bypass
+    return _with_second(cfg, target, launch, admit), bypass
 
 
 def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
@@ -165,8 +179,8 @@ def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
     """The entry a task runs or would run next, for status lines: its pick for
     the current stage, else the first candidate, else ''."""
     policy = _policy(cfg, target)
-    stage = "address-review" if task.stage is Stage.PR_OPEN else task.stage.value
-    pick = task.picks.get(policy_stage(stage))
+    stage = next_stage(task)
+    pick = stage_pick(task.picks, stage)
     if pick:
         return pick
     if task.track in policy.tracks:
@@ -242,13 +256,13 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
                        code: str) -> None:
     """Reply to a login park = the OAuth authorization code. Raw keystrokes
     into the still-alive pane — NOT the wake/resume path, which would spawn
-    `claude --continue` over the live login prompt. Park cleared; stage
+    a resumed session over the live login prompt. Park cleared; stage
     signals, the Stop hook, and the stall timer take over. A wrong code
     leaves the screen static and the stall detector simply re-fires.
 
     The reply may arrive hours later, so the prompt is re-verified first: the
     session's pane is a HOST shell (is_alive means the tab's shell is busy,
-    not that claude is at a prompt), and once claude has exited the pane is
+    not that the CLI is at a prompt), and once the CLI has exited the pane is
     back at the host shell, where send_text would execute the operator's text
     as a shell command outside the sandbox.
 
@@ -510,7 +524,8 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
          "effort": entry.effort}))
     _log_model(task.worktree, stage, str(entry))
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
-                              stage.value, model, entry.effort)
+                              stage.value, model, entry.effort,
+                              second=launch.second)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     # A fresh stage is a fresh budget for the loops it runs; ci_rounds belongs
     # to the PR, not the stage, and is reset by _poll_prs/_resume_one.
@@ -709,10 +724,11 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
 def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 launch: Launch, reason: str) -> None:
     """Resume the plan session with the format-check failure, in place, rather
-    than failing the task. --continue reads the transcript from claude-home, so
-    context survives ending the (zombie) session first — which we must do, or
-    _launch would type `claude --continue` INTO the stopped claude's input box
-    (same failure mode as spawning over a live session)."""
+    than failing the task. The resume reads the transcript from the runtime's
+    mounted home, so context survives ending the (zombie) session first —
+    which we must do, or _launch would type the resume command INTO the
+    stopped session's input box (same failure mode as spawning over a live
+    session)."""
     entry = launch.entry
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -1086,9 +1102,11 @@ def _resume_launch(cfg: Config, target: Target, task: TaskState,
     fresh address-review round, on that stage's model."""
     stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
     if task.resume_model_override:
-        return Launch(stage, parse_entry(task.resume_model_override, "override"))
-    return _launch_for(cfg, target, task, stage,
-                       _admitted(admit, task.resume_bypass_usage))
+        launch = Launch(stage, parse_entry(task.resume_model_override, "override"))
+    else:
+        launch = _launch_for(cfg, target, task, stage,
+                             _admitted(admit, task.resume_bypass_usage))
+    return _with_second(cfg, target, launch, admit) if launch else None
 
 
 def _resume_one(cfg: Config, deps: Deps, target: Target,
@@ -1106,7 +1124,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # End first, unconditionally. Most parks already stopped the session,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
-    # running claude (the failure _retry_plan and SpawnStage guard).
+    # running session (the failure _retry_plan and SpawnStage guard).
     deps.sessions.end(task.target, task.issue)
     if task.crashed_stage:
         _respawn_crashed(cfg, deps, target, task, launch)
@@ -1133,13 +1151,14 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
         if block:
             text = f"{text}\n\n{block}"
         deps.sessions.resume(task.target, task.issue, task.worktree, text,
-                             model, entry.effort)
+                             model, entry.effort, second=launch.second)
         deps.notifier.send("resumed_for_attach", issue=task.issue,
                            title=task.title, url=_url(target, task.issue),
                            target=target.name, note="")
     else:
         deps.sessions.resume(task.target, task.issue, task.worktree,
-                             block or "Continue.", model, entry.effort)
+                             block or "Continue.", model, entry.effort,
+                             second=launch.second)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     _clear_wake_blocked(cfg, task.target, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
@@ -1167,9 +1186,10 @@ def _respawn_crashed(cfg: Config, deps: Deps, target: Target,
                      task: TaskState, launch: Launch) -> None:
     """Resume of a crashed task: the stage it died in starts afresh in the
     same worktree — the same ticket for implement. A fresh stage prompt, not
-    `claude --continue`: the newest transcript may belong to the previous
-    stage or ticket, or the crashed launch may never have started one. The
-    queued messages ride in the stage prompt."""
+    a resume (`claude --continue` / `codex resume --last`): the newest
+    transcript may belong to the previous stage or ticket, or the crashed
+    launch may never have started one. The queued messages ride in the
+    stage prompt."""
     deps.github.set_status(target, task.issue,
                            target.status_in_progress_option_id)
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
@@ -1257,7 +1277,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit) -> None:
                        feedback_cursor=_cursor_now())
         # The implement session is still alive at pr-open (the pr-open
         # transition never ends it). End first so _launch doesn't type
-        # the podman command into the live claude's input box.
+        # the podman command into the live session's input box.
         deps.sessions.end(task.target, task.issue)
         _spawn_stage(cfg, deps, target, task, launch)
         _consume_execution_choice(cfg, task.target, task.issue)
@@ -1412,7 +1432,7 @@ def _on_notify(turn: _Turn, task: TaskState, act: Notify,
 def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
                     launch: Launch) -> TaskState:
     clear_waiting(turn.cfg.state_dir, task.target, task.issue)
-    # The previous stage's claude is usually still alive here — an
+    # The previous stage's session is usually still alive here — an
     # interactive session cannot exit itself. _launch would type
     # the next stage's podman command INTO it (and the container
     # name would collide). End it first; no-op when already dead.
@@ -1516,13 +1536,17 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 def _report_session_crash(cfg: Config, deps: Deps, target: Target,
                           task: TaskState, dry_run: bool) -> None:
+    # The stage's pick names its runtime; a pre-picks task ran on Claude,
+    # which is what a bare (here: empty) id resolves to.
+    pick = stage_pick(task.picks, task.stage.value)
+    runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
     rep = failures.FailureReport(
         klass="session-crash", target=target.name, issue=task.issue,
         title=f"session crashed during {task.stage.value}: {task.title}",
         error=(f"session task-{task.target}-{task.issue} died during stage "
                f"{task.stage.value}"),
         log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
-        repro=f"cd {task.worktree} && claude --continue  # inside session image",
+        repro=f"cd {task.worktree} && {runtime.resume_cmd()}  # inside session image",
         worktree=task.worktree)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
     if blocker:
@@ -1821,11 +1845,29 @@ def _apply_retry_intent(cfg: Config, issue: int) -> None:
         qp.unlink(missing_ok=True)
 
 
-def _resume_model_is_configured(cfg: Config, by_name: dict,
-                                task: TaskState, model: str) -> bool:
+class IntentDropped(Exception):
+    """An intent the dispatcher refuses: dropped with an event naming why."""
+
+    def __init__(self, detail: str, model: str = ""):
+        super().__init__(detail)
+        self.model = model
+
+
+def _require_resume_model(cfg: Config, by_name: dict,
+                          task: TaskState, model: str) -> None:
+    """The authoritative check of a resume intent's model (an intent file can
+    bypass the console's 422): configured for the target, and of the stage
+    pick's provider. Raises IntentDropped."""
+    if not model:
+        return
     target = by_name.get(task.target)
     policy = policy_for(cfg, target) if target else cfg.models
-    return not model or model in policy.model_ids()
+    if model not in policy.model_ids():
+        raise IntentDropped(f"model {model!r} is not configured for target "
+                            f"{task.target!r}", model)
+    refusal = override_refusal(task.picks, next_stage(task), model)
+    if refusal:
+        raise IntentDropped(refusal, model)
 
 
 def _save_queued_resume(cfg: Config, task: TaskState, model: str,
@@ -1852,11 +1894,7 @@ def _apply_resume_intent(cfg: Config, by_name: dict,
         return
     assert task is not None
     requested_model = str(intent.payload.get("model") or "")
-    if not _resume_model_is_configured(cfg, by_name, task, requested_model):
-        print(f"[warn] resume intent for #{issue}: model "
-              f"{requested_model!r} is not configured — skipped",
-              file=sys.stderr)
-        return
+    _require_resume_model(cfg, by_name, task, requested_model)
     bypass_usage = intent.payload.get("bypass_usage") is True
     if task.park == PARK_WAKE:
         _save_queued_resume(cfg, task, requested_model, bypass_usage)
@@ -1890,6 +1928,15 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
               file=sys.stderr)
 
 
+def _intent_target(cfg: Config, intent: intents.Intent) -> str:
+    """The target an intent's event names. A legacy intent (target == "")
+    carries no target of its own; if it resolves unambiguously to one task,
+    use THAT task's target so the console's /task/{target}/{issue} link is
+    never blank. Same fallback idiom as the "kill" action's kill_target."""
+    resolved = _task_for_intent(cfg, intent)
+    return intent.target or (resolved.target if resolved is not None else "")
+
+
 def _apply_intents(cfg: Config, deps: Deps) -> None:
     """Drain operator intents (web console writes) at the top of the pass.
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
@@ -1898,16 +1945,17 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
     for intent in intents.list_intents(cfg.state_dir):
         try:
             _apply_one_intent(cfg, deps, by_name, intent)
-            # A legacy intent (target == "") carries no target of its own;
-            # if it resolved unambiguously to one task, use THAT task's
-            # target so the console's /task/{target}/{issue} link is never
-            # blank. Same fallback idiom as the "kill" action's kill_target.
-            resolved = _task_for_intent(cfg, intent)
-            target = intent.target or (
-                resolved.target if resolved is not None else "")
             eventlog.append_event(cfg.state_dir, "intent-applied",
-                                  target=target, issue=intent.issue,
-                                  actor=intent.actor, detail=intent.action)
+                                  target=_intent_target(cfg, intent),
+                                  issue=intent.issue, actor=intent.actor,
+                                  detail=intent.action)
+        except IntentDropped as dropped:
+            print(f"[warn] intent {intent.path.name}: {dropped}",
+                  file=sys.stderr)
+            eventlog.append_event(cfg.state_dir, "intent-dropped",
+                                  target=_intent_target(cfg, intent),
+                                  issue=intent.issue, model=dropped.model,
+                                  actor=intent.actor, detail=str(dropped))
         except Exception as exc:
             print(f"[warn] intent {intent.path.name} failed: {exc}",
                   file=sys.stderr)

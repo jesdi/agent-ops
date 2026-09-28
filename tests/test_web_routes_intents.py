@@ -2,7 +2,9 @@
 from fastapi.testclient import TestClient
 
 from dispatcher.state import Stage
-from tests.webfakes import FakeSources, HEADERS, make_config, make_task
+from dispatcher.config import Config
+from tests.webfakes import (FakeSources, HEADERS, make_config, make_target,
+                           make_task, tracks_policy)
 from web.app import create_app
 
 
@@ -221,6 +223,24 @@ def test_resume_of_a_crashed_task_is_accepted(tmp_path):
                                  crashed_stage="implement")]
     assert client.post("/api/task/alpha/7/resume", headers=HEADERS,
                        json={}).status_code == 202
+
+
+def test_resume_of_a_crashed_task_is_checked_against_the_crashed_stage_pick(
+        tmp_path):
+    cfg = Config(state_dir=str(tmp_path), capacity=2, session_memory="2g",
+                 session_cpus="2", targets=[make_target()],
+                 models=tracks_policy(implement=["claude-opus-5",
+                                                 "openai/gpt-5-codex"]))
+    fake = FakeSources()
+    fake.tasks_list = [make_task(issue=7, stage=Stage.FAILED,
+                                 crashed_stage="implement",
+                                 picks={"implement": "anthropic/claude-opus-5"})]
+    r = TestClient(create_app(cfg, fake)).post(
+        "/api/task/alpha/7/resume", headers=HEADERS,
+        json={"model": "openai/gpt-5-codex"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == (
+        "stage implement runs on anthropic; pick a model from anthropic")
 
 
 def test_resume_of_an_unresumable_terminal_task_is_refused(tmp_path):
