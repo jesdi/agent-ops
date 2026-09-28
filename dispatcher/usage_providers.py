@@ -349,14 +349,7 @@ def fetch_provider(name: str, state_dir: str | Path, *,
     return u
 
 
-def logged_in_providers(state_dir: str | Path) -> frozenset[str]:
-    """Providers the box holds a login for, routed to or not: the console
-    shows their usage even while no track lists them (Codex run by hand)."""
-    return frozenset({"openai"} if _codex_tokens(Path(state_dir)) else ())
-
-
 def fetch_all(cfg: Config, *, now: Callable[[], float] = time.time,
-              adapters: dict[str, UsageAdapter] = ADAPTERS,
-              also: frozenset[str] = frozenset()) -> dict[str, ProviderUsage]:
+              adapters: dict[str, UsageAdapter] = ADAPTERS) -> dict[str, ProviderUsage]:
     return {p: fetch_provider(p, cfg.state_dir, now=now, adapters=adapters)
-            for p in sorted(referenced_providers(cfg) | also)}
+            for p in sorted(referenced_providers(cfg))}

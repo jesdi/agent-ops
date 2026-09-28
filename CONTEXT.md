@@ -181,8 +181,9 @@ fix-loop allowance.
 from `dispatcher/usage.py::admits`: a verdict per `provider/model` from the
 provider's windows, asked at every spawn site about the model that spawn
 launches. Usage collectors are `usage_providers.py`
-adapters, one per provider, fetched only for providers the model policy
-references. Loop policy stays independent of all of it: waiting for
+adapters, one per provider. The dispatcher fetches only the providers the
+model policy references; the console also shows any other provider whose
+adapter reads (Codex run by hand), and nothing admits on that reading. Loop policy stays independent of all of it: waiting for
 headroom does not spend a fix round, and a denial for one provider never
 prevents considering another. The router is `dispatcher/models.py::resolve`: first admitted entry of the task's track for the stage; labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
 changes provider, so cross-runtime session continuation is excluded by rule,

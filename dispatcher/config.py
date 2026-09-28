@@ -163,10 +163,11 @@ def policy_for(cfg: Config, target: Target) -> ModelPolicy:
 
 
 def referenced_providers(cfg: Config) -> frozenset[str]:
-    """Every provider some configured entry names — the set the usage fetch
-    covers. A provider you hold credentials for but never route to is not
-    polled; one you route to without an adapter shows as unavailable (and
-    main() warns once at startup). A policy's review_second counts too: the
+    """Every provider some configured entry names — the set the dispatcher's
+    usage fetch covers. A provider you hold credentials for but never route
+    to is not polled for admission (the console still shows it while its
+    adapter reads); one you route to without an adapter shows as
+    unavailable (and main() warns once at startup). A policy's review_second counts too: the
     gate that grants it needs its provider's usage."""
     policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
     ids = [m for p in policies for m in (*p.model_ids(), p.review_second) if m]

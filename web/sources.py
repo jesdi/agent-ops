@@ -15,8 +15,8 @@ from typing import Callable, Literal
 from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
                         queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
-from dispatcher.usage_providers import fetch_all, logged_in_providers
-from dispatcher.config import Config, Target
+from dispatcher.usage_providers import ADAPTERS, fetch_provider
+from dispatcher.config import Config, Target, referenced_providers
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
 from dispatcher.sessions import session_name
@@ -148,8 +148,15 @@ class Sources:
         return data
 
     def usage(self) -> dict[str, ProviderUsage]:
-        return fetch_all(self._cfg, now=self._clock,
-                         also=logged_in_providers(self._cfg.state_dir))
+        """Every routed provider, plus any other provider whose adapter reads
+        (Codex run by hand while no track lists openai). The dispatcher
+        admits on the routed set alone; an unrouted provider that reads
+        unavailable (no login) is noise here, so it is left out."""
+        routed = referenced_providers(self._cfg)
+        usages = {p: fetch_provider(p, self._cfg.state_dir, now=self._clock)
+                  for p in sorted(routed | ADAPTERS.keys())}
+        return {p: u for p, u in usages.items()
+                if p in routed or u.source != "unavailable"}
 
     def quarantine_entries(self) -> list[dict]:
         """Every readable quarantine record, for /api/failures and the retry

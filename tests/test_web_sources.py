@@ -146,20 +146,56 @@ def test_usage_reads_fresh_cache_only(tmp_path):
 
 
 
-def test_usage_shows_codex_when_logged_in_though_no_track_routes_to_it(tmp_path):
-    from dispatcher.usage_providers import usage_to_json
+def _usage_route(tmp_path, monkeypatch, openai_reply):
+    """GET /api/usage through the real Sources and the real OpenAI adapter;
+    openai_reply stands in for wham/usage (a dict, or an exception to raise).
+    No track routes to openai, and Anthropic reads a fixed session."""
+    from fastapi.testclient import TestClient
+    from dispatcher import usage_providers
     from tests.usagefakes import session_usage
-    clock = FakeClock()
-    (tmp_path / "usage").mkdir(parents=True, exist_ok=True)
-    for p, used in (("anthropic", 0.42), ("openai", 0.17)):
-        (tmp_path / "usage" / f"{p}.json").write_text(json.dumps(
-            {"fetched_at": clock.t, "usage": usage_to_json(session_usage(used, provider=p))}))
-    _, src = make_sources(tmp_path, clock=clock)
-    assert set(src.usage()) == {"anthropic"}
+    from tests.webfakes import HEADERS
+    from web.app import create_app
+
+    class Anthropic:
+        def fetch(self, state_dir, *, now):
+            return session_usage(0.42)
+
+    def http(url, headers):
+        if isinstance(openai_reply, Exception):
+            raise openai_reply
+        return openai_reply
+
+    monkeypatch.setitem(usage_providers.ADAPTERS, "anthropic", Anthropic())
+    monkeypatch.setattr(usage_providers, "_http_get_json", http)
+    cfg, src = make_sources(tmp_path)
+    with TestClient(create_app(cfg, src)) as client:
+        body = client.get("/api/usage", headers=HEADERS).json()
+    return {p["provider"]: p for p in body["providers"]}
+
+
+def _codex_login(tmp_path):
     (tmp_path / "codex-home").mkdir()
     (tmp_path / "codex-home" / "auth.json").write_text(json.dumps(
         {"tokens": {"access_token": "a", "account_id": "b"}}))
-    assert src.usage()["openai"].windows[0].used == pytest.approx(0.17, abs=1e-3)
+
+
+def test_console_shows_codex_usage_while_logged_in_though_no_track_routes_to_it(
+        tmp_path, monkeypatch):
+    from pathlib import Path
+    reply = json.loads((Path(__file__).parent / "fixtures" / "openai-usage.json").read_text())
+    _codex_login(tmp_path)
+    providers = _usage_route(tmp_path, monkeypatch, reply)
+    assert set(providers) == {"anthropic", "openai"}
+    assert providers["openai"]["source"] == "oauth"
+    assert [w["kind"] for w in providers["openai"]["windows"]] == ["weekly"]
+
+
+def test_console_hides_codex_without_a_readable_login(tmp_path, monkeypatch):
+    from dispatcher.usage_providers import UsageFetchError
+    assert set(_usage_route(tmp_path, monkeypatch, {})) == {"anthropic"}
+    _codex_login(tmp_path)
+    assert set(_usage_route(tmp_path, monkeypatch, UsageFetchError("401"))) == {"anthropic"}
+
 
 def test_failure_and_quarantine_entries(tmp_path):
     (tmp_path / "failures").mkdir()
