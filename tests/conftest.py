@@ -54,3 +54,19 @@ def _no_herdr_server(monkeypatch):
     which takes precedence because it is applied after this fixture."""
     from dispatcher import herdr
     monkeypatch.setattr(herdr, "_run", lambda args: None)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path, monkeypatch):
+    """Point Path.home() at a tmp home carrying a stub Codex package, so
+    containers resolve the host CLIs the same way on CI (no codex) and on
+    a dev machine (a real ~/.local/bin/codex). Tests that care set their
+    own home, which wins because it is applied after this fixture."""
+    home = tmp_path / "isolated-home"
+    package = home / ".local" / "lib" / "codex" / "0.0.0"
+    (package / "bin").mkdir(parents=True)
+    (package / "bin" / "codex").write_text("")
+    (package / "codex-package.json").write_text("{}")
+    (home / ".local" / "bin").mkdir(parents=True)
+    (home / ".local" / "bin" / "codex").symlink_to(package / "bin" / "codex")
+    monkeypatch.setattr(Path, "home", lambda: home)
