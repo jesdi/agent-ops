@@ -15,7 +15,7 @@ from typing import Callable, Literal
 from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
                         queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
-from dispatcher.usage_providers import fetch_all
+from dispatcher.usage_providers import fetch_all, logged_in_providers
 from dispatcher.config import Config, Target
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
@@ -148,7 +148,8 @@ class Sources:
         return data
 
     def usage(self) -> dict[str, ProviderUsage]:
-        return fetch_all(self._cfg, now=self._clock)
+        return fetch_all(self._cfg, now=self._clock,
+                         also=logged_in_providers(self._cfg.state_dir))
 
     def quarantine_entries(self) -> list[dict]:
         """Every readable quarantine record, for /api/failures and the retry

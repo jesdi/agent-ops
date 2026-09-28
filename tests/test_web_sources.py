@@ -145,6 +145,22 @@ def test_usage_reads_fresh_cache_only(tmp_path):
     assert usages["anthropic"].windows[0].used == pytest.approx(0.42, abs=1e-3)
 
 
+
+def test_usage_shows_codex_when_logged_in_though_no_track_routes_to_it(tmp_path):
+    from dispatcher.usage_providers import usage_to_json
+    from tests.usagefakes import session_usage
+    clock = FakeClock()
+    (tmp_path / "usage").mkdir(parents=True, exist_ok=True)
+    for p, used in (("anthropic", 0.42), ("openai", 0.17)):
+        (tmp_path / "usage" / f"{p}.json").write_text(json.dumps(
+            {"fetched_at": clock.t, "usage": usage_to_json(session_usage(used, provider=p))}))
+    _, src = make_sources(tmp_path, clock=clock)
+    assert set(src.usage()) == {"anthropic"}
+    (tmp_path / "codex-home").mkdir()
+    (tmp_path / "codex-home" / "auth.json").write_text(json.dumps(
+        {"tokens": {"access_token": "a", "account_id": "b"}}))
+    assert src.usage()["openai"].windows[0].used == pytest.approx(0.17, abs=1e-3)
+
 def test_failure_and_quarantine_entries(tmp_path):
     (tmp_path / "failures").mkdir()
     (tmp_path / "failures" / "abc123def456").write_text(json.dumps(
