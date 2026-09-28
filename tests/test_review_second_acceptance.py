@@ -183,15 +183,8 @@ def test_bypassed_review_resume_gets_second_only_if_gate_admits_it(tmp_path):
 
 # --- 7. session_cmd with a grant mounts codex binary + codex-home ----------
 
-def _fake_codex_home(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    (home / ".local" / "bin").mkdir(parents=True)
-    package = home / ".local" / "lib" / "codex" / "1.2.3"
-    (package / "bin").mkdir(parents=True)
-    (package / "bin" / "codex").write_text("")
-    (package / "codex-package.json").write_text("{}")
-    (home / ".local" / "bin" / "codex").symlink_to(package / "bin" / "codex")
-    monkeypatch.setattr(Path, "home", lambda: home)
+def _codex_session_env(tmp_path, monkeypatch, package):
+    """Session env for a spawn; returns the mount of conftest's Codex package."""
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     return f"{os.path.realpath(package)}:/opt/codex:ro"
@@ -206,8 +199,9 @@ def _assert_granted(cmd, tmp_path, codex_mount):
     assert "--model claude-opus-5" in cmd
 
 
-def test_session_cmd_with_grant_mounts_codex_and_codex_home(tmp_path, monkeypatch):
-    codex_mount = _fake_codex_home(tmp_path, monkeypatch)
+def test_session_cmd_with_grant_mounts_codex_and_codex_home(tmp_path, monkeypatch,
+        codex_package):
+    codex_mount = _codex_session_env(tmp_path, monkeypatch, codex_package)
     wt, _ = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-opus-5", "P",
                                  second=SECOND)
@@ -225,8 +219,9 @@ class _Tab:
         return True
 
 
-def test_sessions_spawn_and_resume_carry_the_grant_to_the_command(tmp_path, monkeypatch):
-    codex_mount = _fake_codex_home(tmp_path, monkeypatch)
+def test_sessions_spawn_and_resume_carry_the_grant_to_the_command(tmp_path, monkeypatch,
+        codex_package):
+    codex_mount = _codex_session_env(tmp_path, monkeypatch, codex_package)
     wt, _ = make_worktree(tmp_path)
     cmds = []
     monkeypatch.setattr(herdr.Tab, "ensure", lambda *a, **k: _Tab(cmds))
@@ -243,8 +238,9 @@ def test_sessions_spawn_and_resume_carry_the_grant_to_the_command(tmp_path, monk
 
 # --- 8. without a grant: byte-identical to a plain Claude session today ----
 
-def test_session_cmd_without_grant_is_byte_identical(tmp_path, monkeypatch):
-    _fake_codex_home(tmp_path, monkeypatch)
+def test_session_cmd_without_grant_is_byte_identical(tmp_path, monkeypatch,
+        codex_package):
+    _codex_session_env(tmp_path, monkeypatch, codex_package)
     wt, _ = make_worktree(tmp_path)
     args = ("task-42", wt, "2g", "2", "claude-opus-5", "P")
     today = containers.session_cmd(*args, effort="high")
