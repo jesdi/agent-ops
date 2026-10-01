@@ -227,7 +227,8 @@ def test_old_task_state_file_loads_without_background_fields(tmp_path):
     make_task(c, issue=N)
     p = next(Path(c.state_dir).glob("*42*"))
     data = json.loads(p.read_text())
-    assert "background_seq" not in data  # a pre-change file
+    data.pop("background_reported", None)
+    data.pop("background_seq", None)
     p.write_text(json.dumps(data))
     t = load(c.state_dir, T, N)
     assert (t.background_reported, t.background_seq) == (0.0, 0)
