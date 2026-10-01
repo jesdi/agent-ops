@@ -148,6 +148,11 @@ class TaskState:
     # The stage a crash failed this task out of; Resume respawns it fresh in
     # the same worktree. "" = not resumable (kill, closed PR, pre-field crash).
     crashed_stage: str = ""
+    # The background wait the dispatcher has seen (see machine.pass_actions):
+    # the marker's `reported` it last recorded, and herdr's state-change
+    # counter at that moment. A different counter later means a new turn.
+    background_reported: float = 0.0
+    background_seq: int = 0
     # None=no request; SpecApprovalRequest while at gate; AnswersRequest written
     # ONLY by _park_for_input in dispatcher/main.py, and only when a
     # worktree-contained path resolves — so an answers request never exists
@@ -415,6 +420,20 @@ def mark_background(state_dir: str | Path, target: str, issue: int,
     tmp.replace(p)
 
 
+def clear_background(state_dir: str | Path, target: str, issue: int,
+                     reported: float | None = None) -> None:
+    """Delete the background marker; with `reported`, only while it is still
+    the report the caller saw, so a newer one waitd just wrote survives."""
+    if reported is not None:
+        seen = read_background(state_dir, target, issue)
+        if seen is None or seen.reported != reported:
+            return
+    # ponytail: read-then-unlink is not atomic; a report landing in between
+    # is lost (that turn end falls back to the stall timer). A lock with
+    # waitd would close it.
+    _background_path(state_dir, target, issue).unlink(missing_ok=True)
+
+
 def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
     return (_waiting_path(state_dir, target, issue).exists()
             or _legacy_waiting_path(state_dir, issue).exists())
@@ -423,9 +442,7 @@ def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
 def clear_waiting(state_dir: str | Path, target: str, issue: int) -> None:
     _waiting_path(state_dir, target, issue).unlink(missing_ok=True)
     _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
-    _background_path(state_dir, target, issue).unlink(missing_ok=True)
-
-
+    clear_background(state_dir, target, issue)
 
 
 def archive_root(state_dir: str | Path, target: str, issue: int) -> Path:

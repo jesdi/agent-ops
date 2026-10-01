@@ -147,16 +147,21 @@ class Sessions:
         accumulates from the moment herdr last changed its mind. herdr
         exposes the transition counter but no timestamp, so the moment is
         remembered in a sidecar keyed by (seq, status)."""
-        if self.dry_run:
-            return None
-        tab = self._tab(target, issue)
-        state = tab.agent_state() if tab else None
+        state = self.agent_state(target, issue)
         if state is None:
             return None
         status, seq = state
         if status == "working":
             return 0.0
         return self._since_change(target, issue, status, seq)
+
+    def agent_state(self, target: str, issue: int) -> tuple[str, int] | None:
+        """herdr's (agent status, state-change counter) for the task's tab;
+        None when herdr cannot be asked (dry-run, no tab, server error)."""
+        if self.dry_run:
+            return None
+        tab = self._tab(target, issue)
+        return tab.agent_state() if tab else None
 
     def _sidecar(self, target: str, issue: int) -> Path | None:
         if self.state_dir is None:
