@@ -20,7 +20,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from dispatcher import containers, herdr
+from dispatcher import containers, herdr, workspace
 from dispatcher.models import Entry
 from dispatcher.runtimes import Runtime, runtime_for
 
@@ -72,6 +72,7 @@ class Sessions:
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
                          model, args, effort=effort, runtime=runtime,
                          second=second)
+        workspace.install_stop_hook(worktree)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,
             # herdr's hint for detecting an agent behind a wrapper (podman
