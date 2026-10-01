@@ -172,7 +172,7 @@ def test_same_work_does_not_restart_the_cap_clock(tmp_path, monkeypatch):
 
 # --- the wait ends -----------------------------------------------------------
 
-def test_counter_change_deletes_marker_and_never_cap_parks(tmp_path, monkeypatch):
+def test_counter_change_ends_wait_and_never_cap_parks(tmp_path, monkeypatch):
     c, sess = _setup(tmp_path, monkeypatch, 3 * HOUR + 30 * MIN, idle=0)
     d = _passes(c, sess)                      # records counter 5
     sess.state[N] = ("working", 6)            # the session started a new turn

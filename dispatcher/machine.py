@@ -319,6 +319,6 @@ def pass_actions(
     if acts is not None:
         return (_loop_actions(task, signal, caps) + acts) or [NoOp()]
     return next_actions(task, signal, session_alive, waiting=waiting,
-                               idle_seconds=idle_seconds, stall_after=stall_after,
-                               grace_elapsed=grace_elapsed, caps=caps,
-                               tracks=tracks)
+                        idle_seconds=idle_seconds, stall_after=stall_after,
+                        grace_elapsed=grace_elapsed, caps=caps,
+                        tracks=tracks)
