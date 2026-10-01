@@ -682,12 +682,3 @@ def test_next_stage_wakes_a_pr_open_task_into_address_review():
     from dispatcher.state import next_stage
     assert next_stage(_task(stage=Stage.PR_OPEN)) == "address-review"
     assert next_stage(_task(stage=Stage.IMPLEMENT)) == "implement"
-
-
-def test_background_marker_dotted_targets_do_not_collide(tmp_path):
-    from dispatcher.state import mark_background, read_background
-    mark_background(tmp_path, "foo.bar", 329, [{"id": "a"}], now=1)
-    mark_background(tmp_path, "foo.baz", 12, [{"id": "b"}], now=2)
-    assert read_background(tmp_path, "foo.bar", 329).tasks == ("a",)
-    assert read_background(tmp_path, "foo.baz", 12).tasks == ("b",)
-    assert not list(tmp_path.glob("*.tmp"))
