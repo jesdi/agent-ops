@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import UnixStreamServer
 
-from dispatcher.state import mark_waiting
+from dispatcher.state import mark_background, mark_waiting
 
 
 def handle_ping(body: bytes, state_dir) -> None:
@@ -21,7 +21,10 @@ def handle_ping(body: bytes, state_dir) -> None:
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         print(f"waitd: dropping corrupt ping: {body!r}", file=sys.stderr)
         return
-    if target:
+    bg = rec.get("background_tasks")
+    if target and isinstance(bg, list) and bg:
+        mark_background(state_dir, target, issue, bg)
+    elif target:
         mark_waiting(state_dir, target, issue)
     else:  # ping from a pre-rename worktree — legacy marker, read via fallback
         p = Path(state_dir) / f"waiting-{issue}"

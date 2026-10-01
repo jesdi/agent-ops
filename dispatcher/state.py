@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -372,6 +373,46 @@ def mark_waiting(state_dir: str | Path, target: str, issue: int) -> None:
     p = _waiting_path(state_dir, target, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.touch()
+    _background_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins
+
+
+@dataclass(frozen=True)
+class BackgroundWait:
+    tasks: tuple[str, ...]   # identities the latest report named
+    since: float             # cap clock: restarts when a report names new work
+    reported: float          # time of the latest report
+
+
+def _background_path(state_dir: str | Path, target: str, issue: int) -> Path:
+    return Path(state_dir) / f"background-{task_key(target, issue)}"
+
+
+def _identity(entry) -> str:
+    if isinstance(entry, dict) and entry.get("id") is not None:
+        return str(entry["id"])
+    return json.dumps(entry, sort_keys=True)
+
+
+def read_background(state_dir: str | Path, target: str, issue: int) -> BackgroundWait | None:
+    try:
+        d = json.loads(_background_path(state_dir, target, issue).read_text())
+        return BackgroundWait(tuple(d["tasks"]), float(d["since"]), float(d["reported"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def mark_background(state_dir: str | Path, target: str, issue: int,
+                    tasks: list, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    ids = tuple(_identity(t) for t in tasks)
+    old = read_background(state_dir, target, issue)
+    since = old.since if old and set(ids) <= set(old.tasks) else now
+    p = _background_path(state_dir, target, issue)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
+    tmp = p.with_name(p.name + ".tmp")  # with_suffix would truncate a dotted target
+    tmp.write_text(json.dumps({"tasks": list(ids), "since": since, "reported": now}))
+    tmp.replace(p)
 
 
 def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
@@ -382,6 +423,7 @@ def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
 def clear_waiting(state_dir: str | Path, target: str, issue: int) -> None:
     _waiting_path(state_dir, target, issue).unlink(missing_ok=True)
     _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
+    _background_path(state_dir, target, issue).unlink(missing_ok=True)
 
 
 
