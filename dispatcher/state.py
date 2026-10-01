@@ -223,8 +223,6 @@ def _retire_legacy(state_dir: str | Path, target: str, issue: int) -> None:
 def _write_task(p: Path, ts: TaskState) -> None:
     d = asdict(ts)
     d["stage"] = ts.stage.value
-    if not ts.background_reported:   # no wait recorded: keep the file as before
-        del d["background_reported"], d["background_seq"]
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, indent=2))
