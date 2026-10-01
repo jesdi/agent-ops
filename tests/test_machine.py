@@ -583,7 +583,7 @@ def test_recorded_wait_inside_cap_holds_and_past_cap_parks():
 
 def test_counter_change_ends_the_wait_and_today_rules_apply():
     acts = _bg(_waited(seq=4), _view(4 * HOUR))
-    assert acts[0] == EndBackgroundWait()
+    assert acts[0] == EndBackgroundWait(100.0)
     assert acts[1].note.startswith("(no session output for 10m")
 
 
@@ -592,3 +592,9 @@ def test_waiting_marker_or_non_working_signal_takes_precedence():
         ParkForInput("(session stopped mid-stage waiting for input)")]
     blocked = StageSignal(stage="review", status="blocked", note="q")
     assert _bg(_waited(), _view(4 * HOUR), signal=blocked) == [ParkForInput("q")]
+
+
+def test_a_wait_still_applies_loop_round_bookkeeping():
+    signal = StageSignal(stage="review", status="working", loop="review", round=1)
+    acts = _bg(_waited(), _view(60), signal=signal)
+    assert isinstance(acts[0], ApplyDecision) and acts[1:] == []

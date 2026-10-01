@@ -117,7 +117,9 @@ class RecordBackgroundWait:
 
 @dataclass(frozen=True)
 class EndBackgroundWait:
-    """The session started a new turn: delete the background marker."""
+    """The session started a new turn: delete the background marker, if it
+    is still the report (`reported`) this pass saw."""
+    reported: float
 
 
 class BackgroundView(NamedTuple):
@@ -278,11 +280,12 @@ def next_actions(
     return [NoOp()]
 
 
-def _in_wait(task: TaskState, signal: StageSignal | None, session_alive: bool,
-             waiting: bool, view: BackgroundView | None) -> bool:
-    """A background marker decides this pass only for a live, unparked
-    session whose stage signal says `working`; a waiting marker wins."""
-    return (view is not None and session_alive and not waiting and not task.park
+def _in_wait(signal: StageSignal | None, session_alive: bool, waiting: bool,
+             view: BackgroundView | None) -> bool:
+    """A background marker decides this pass only for a live session whose
+    stage signal says `working`; a waiting marker wins. (Parked tasks are
+    never driven, so park needs no check here.)"""
+    return (view is not None and session_alive and not waiting
             and signal is not None and signal.status == "working")
 
 
@@ -302,16 +305,27 @@ def _wait_actions(task: TaskState, view: BackgroundView) -> list[object] | None:
     return []
 
 
-def pass_actions(task: TaskState, signal: StageSignal | None, session_alive: bool,
-                 waiting: bool, view: BackgroundView | None,
-                 caps: LoopCaps = LoopCaps(), **today) -> list[object]:
+def pass_actions(
+    task: TaskState,
+    signal: StageSignal | None,
+    session_alive: bool,
+    waiting: bool,
+    view: BackgroundView | None,
+    idle_seconds: float | None = None,
+    stall_after: float = 600.0,
+    grace_elapsed: bool = False,
+    caps: LoopCaps = LoopCaps(),
+    tracks: frozenset[str] | None = None,
+) -> list[object]:
     """next_actions, deferring to a background wait (design "Data model"):
     while the wait holds, neither the stall timer nor a park applies, bar
     the cap; once it is over the marker goes and today's rules decide."""
-    in_wait = _in_wait(task, signal, session_alive, waiting, view)
+    in_wait = _in_wait(signal, session_alive, waiting, view)
     acts = _wait_actions(task, view) if in_wait else None
     if acts is not None:
         return (_loop_actions(task, signal, caps) + acts) or [NoOp()]
-    lead: list[object] = [EndBackgroundWait()] if in_wait else []
+    lead: list[object] = [EndBackgroundWait(view.wait.reported)] if in_wait else []
     return lead + next_actions(task, signal, session_alive, waiting=waiting,
-                               caps=caps, **today)
+                               idle_seconds=idle_seconds, stall_after=stall_after,
+                               grace_elapsed=grace_elapsed, caps=caps,
+                               tracks=tracks)

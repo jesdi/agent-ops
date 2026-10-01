@@ -611,6 +611,13 @@ def _auth_dark_edge(cfg: Config, deps: Deps, usages: dict[str, ProviderUsage]) -
         marker.write_text(json.dumps({"since": st["since"], "alerted": True}))
 
 
+def _end_session(cfg: Config, deps: Deps, target: str, issue: int) -> None:
+    """End the task's session and drop its turn-end markers (waiting and
+    background): the next session must never inherit the old one's."""
+    deps.sessions.end(target, issue)
+    clear_waiting(cfg.state_dir, target, issue)
+
+
 def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     note: str, artifact: str = "",
                     is_answers: bool = False) -> None:
@@ -638,8 +645,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         "parked_question", issue=task.issue, title=task.title,
         url=_url(target, task.issue), target=target.name,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
-    deps.sessions.end(task.target, task.issue)
-    clear_waiting(cfg.state_dir, task.target, task.issue)
+    _end_session(cfg, deps, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT,
                                 operator_request=answers_request,
@@ -743,8 +749,7 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
         {"stage": "plan", "status": "working", "model": entry.model_id,
          "effort": entry.effort}))
     _log_model(task.worktree, Stage.PLAN, str(entry))
-    clear_waiting(cfg.state_dir, task.target, task.issue)
-    deps.sessions.end(task.target, task.issue)
+    _end_session(cfg, deps, task.target, task.issue)
     block, drained = _drain(cfg, task.target, task.issue)
     retry_text = (
         f"Your ticket set under .agent/tickets/ failed the pipeline's mechanical "
@@ -775,8 +780,7 @@ def _retry_spec(cfg: Config, deps: Deps, target: Target, task: TaskState,
         {"stage": "spec", "status": "working", "model": entry.model_id,
          "effort": entry.effort}))
     _log_model(task.worktree, Stage.SPEC, str(entry))
-    clear_waiting(cfg.state_dir, task.target, task.issue)
-    deps.sessions.end(task.target, task.issue)
+    _end_session(cfg, deps, task.target, task.issue)
     block, drained = _drain(cfg, task.target, task.issue)
     text = (f"Your .agent/stage.json was rejected: {reason}. Re-write the same "
             f"signal with a \"track\" field naming one of those tracks (the "
@@ -792,8 +796,7 @@ def _retry_spec(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  run_id: int) -> None:
-    deps.sessions.end(task.target, task.issue)
-    clear_waiting(cfg.state_dir, task.target, task.issue)
+    _end_session(cfg, deps, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_CI, ci_run_id=run_id,
                                 slot=NO_SLOT, operator_request=None,
                                 updated_at=_now()))
@@ -855,8 +858,7 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     msg_id = deps.notifier.send(
         "spec_parked", issue=task.issue, title=task.title,
         url=_url(target, task.issue), note=note, target=target.name)
-    deps.sessions.end(task.target, task.issue)
-    clear_waiting(cfg.state_dir, task.target, task.issue)
+    _end_session(cfg, deps, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,
                                 park_note="spec ready for review",
                                 slot=NO_SLOT, updated_at=_now()))
@@ -939,7 +941,7 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
             # isn't in IN_FLIGHT_STAGES), so its session and container
             # would otherwise hold their memory/cpu reservation until the box
             # reboots. The worktree stays for autopsy.
-            deps.sessions.end(task.target, task.issue)
+            _end_session(cfg, deps, task.target, task.issue)
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
                                         operator_request=None,
                                         updated_at=_now()))
@@ -1000,7 +1002,7 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
     else:
         print(f"[warn] {target.name}: status_done_option_id unset — board "
               f"not updated for #{task.issue}", file=sys.stderr)
-    deps.sessions.end(task.target, task.issue)
+    _end_session(cfg, deps, task.target, task.issue)
     if not dry_run:
         task_artifacts.collect(cfg.state_dir, task, target.repo)
         task_artifacts.pin_published(cfg.state_dir, task, target.repo)
@@ -1130,7 +1132,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
     # running session (the failure _retry_plan and SpawnStage guard).
-    deps.sessions.end(task.target, task.issue)
+    _end_session(cfg, deps, task.target, task.issue)
     if task.crashed_stage:
         _respawn_crashed(cfg, deps, target, task, launch)
         return
@@ -1283,7 +1285,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit) -> None:
         # The implement session is still alive at pr-open (the pr-open
         # transition never ends it). End first so _launch doesn't type
         # the podman command into the live session's input box.
-        deps.sessions.end(task.target, task.issue)
+        _end_session(cfg, deps, task.target, task.issue)
         _spawn_stage(cfg, deps, target, task, launch)
         _consume_execution_choice(cfg, task.target, task.issue)
 
@@ -1327,8 +1329,7 @@ def _on_start_ticket(turn: _Turn, task: TaskState, act: StartTicket,
         raise RuntimeError(
             f"ticket {act.cursor} of {act.count} missing "
             f"under {task.worktree}/{TICKETS_DIR}")
-    clear_waiting(cfg.state_dir, task.target, task.issue)
-    deps.sessions.end(task.target, task.issue)
+    _end_session(cfg, deps, task.target, task.issue)
     task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count)
     task = _spawn_stage(cfg, deps, target, task, launch, ticket=act.cursor)
     eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
@@ -1436,12 +1437,11 @@ def _on_notify(turn: _Turn, task: TaskState, act: Notify,
 
 def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
                     launch: Launch) -> TaskState:
-    clear_waiting(turn.cfg.state_dir, task.target, task.issue)
     # The previous stage's session is usually still alive here — an
     # interactive session cannot exit itself. _launch would type
     # the next stage's podman command INTO it (and the container
     # name would collide). End it first; no-op when already dead.
-    turn.deps.sessions.end(task.target, task.issue)
+    _end_session(turn.cfg, turn.deps, task.target, task.issue)
     spec_path = turn.signal.artifact if act.stage is Stage.PLAN else ""
     if act.stage is Stage.PLAN:
         task = replace(task, track=turn.signal.track)
@@ -1462,7 +1462,7 @@ def _on_handle_crash(turn: _Turn, task: TaskState, act: HandleCrash,
     # snapshots the crash output for the console and closes the
     # dead tab — the one session-ending transition that otherwise
     # left both behind.
-    deps.sessions.end(task.target, task.issue)
+    _end_session(cfg, deps, task.target, task.issue)
     return task
 
 
@@ -1478,7 +1478,8 @@ def _on_record_background_wait(turn: _Turn, task: TaskState,
 def _on_end_background_wait(turn: _Turn, task: TaskState,
                             act: EndBackgroundWait,
                             launch: Launch | None) -> TaskState:
-    clear_background(turn.cfg.state_dir, task.target, task.issue)
+    clear_background(turn.cfg.state_dir, task.target, task.issue,
+                     reported=act.reported)
     return task
 
 
@@ -1559,13 +1560,17 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                         f"{sorted(policy.tracks)}); restore it in targets.yaml or "
                         f"run the task with a model override")
         return
+    # herdr's view of a background wait BEFORE the idle reading: a session
+    # waking between the two reads must look still-waiting (held), never
+    # woken-with-a-stale-idle (stall-parked mid-turn).
+    view = _background_view(cfg, deps, task, alive)
     # Query idle only when it can matter: detection enabled and the
     # session alive (the crash path owns dead sessions).
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and cfg.stall_after_seconds > 0 else None)
     turn = _Turn(cfg, deps, target, signal, dry_run)
     for act in pass_actions(task, signal, alive, waiting,
-                            _background_view(cfg, deps, task, alive),
+                            view,
                             caps=cfg.loop_caps,
                             idle_seconds=idle,
                             stall_after=cfg.stall_after_seconds,
@@ -1837,10 +1842,9 @@ def _apply_kill_intent(cfg: Config, deps: Deps, by_name: dict,
         print(f"[warn] kill intent for #{issue}: no unique matching task "
               f"— skipped", file=sys.stderr)
         return
-    deps.sessions.end(kill_target, issue)
+    _end_session(cfg, deps, kill_target, issue)
     if task is not None:
         _release_killed_task(cfg, deps, by_name, task, issue)
-    clear_waiting(cfg.state_dir, kill_target, issue)
     eventlog.append_event(cfg.state_dir, "failed", target=kill_target,
                           issue=issue,
                           stage=task.stage.value if task is not None else "",
@@ -1869,13 +1873,12 @@ def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
         log.warning("cancel intent for #%d: no unique matching task — skipped",
                     issue)
         return
-    deps.sessions.end(cancel_target, issue)
+    _end_session(cfg, deps, cancel_target, issue)
     _cancel_board_issue(deps, by_name, cancel_target, issue)
     if task is not None:
         save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
                                     hold_for_attach=False, slot=NO_SLOT,
                                     operator_request=None, updated_at=_now()))
-    clear_waiting(cfg.state_dir, cancel_target, issue)
     eventlog.append_event(cfg.state_dir, "canceled", target=cancel_target,
                           issue=issue, stage=task.stage.value if task else "",
                           actor=intent.actor, detail="canceled by operator")
