@@ -409,10 +409,10 @@ def mark_background(state_dir: str | Path, target: str, issue: int,
     since = old.since if old and set(ids) <= set(old.tasks) else now
     p = _background_path(state_dir, target, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
+    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
+    tmp = p.with_name(p.name + ".tmp")  # with_suffix would truncate a dotted target
     tmp.write_text(json.dumps({"tasks": list(ids), "since": since, "reported": now}))
     tmp.replace(p)
-    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins
 
 
 def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
