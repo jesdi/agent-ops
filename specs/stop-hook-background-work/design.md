@@ -25,8 +25,10 @@
   calls it, so a new session never inherits an old clock — the name now undersells what it does.
 - **The wait ends when herdr's state-change counter moves.** The dispatcher records the counter
   on the first pass that sees a report with the agent not `working`; a different counter on a
-  later pass means the session started a new turn, the marker is deleted and the stall timer
-  applies again — a wake that happens before that first pass is not seen, and that session is
+  later pass means the session started a new turn and the wait is over: today's rules, stall
+  timer included, apply on every pass while the counter differs from the recorded one. The
+  marker is kept — only a waiting ping or a session end (`clear_waiting`) removes it — so the
+  next report of the same work keeps its `since` and the cap clock does not restart — a wake that happens before that first pass is not seen, and that session is
   held until the cap instead of the stall timer (ceiling: one pass interval of exposure).
 - **The cap parks only a session that is still in the wait.** A woken session working in the
   foreground is never parked by the cap — a session herdr reports as `working` throughout is
@@ -70,7 +72,7 @@ Background wait, as the dispatcher sees one unparked task with a live session:
 | reported, agent `working` or unknown | as above but herdr says `working` or cannot be asked | nothing this pass |
 | waiting | `reported` recorded, counter unchanged, `now - since` ≤ cap | no park, no stall |
 | capped | `reported` recorded, counter unchanged, `now - since` > cap | park for input with the cap note |
-| over | `reported` recorded, counter changed | delete the marker; today's rules, stall timer included |
+| over | `reported` recorded, counter differs from `background_seq` | today's rules, stall timer included; the marker is kept |
 
 A waiting marker or a non-`working` stage signal takes precedence over all of these, as today.
 

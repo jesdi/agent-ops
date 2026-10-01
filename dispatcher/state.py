@@ -420,17 +420,7 @@ def mark_background(state_dir: str | Path, target: str, issue: int,
     tmp.replace(p)
 
 
-def clear_background(state_dir: str | Path, target: str, issue: int,
-                     reported: float | None = None) -> None:
-    """Delete the background marker; with `reported`, only while it is still
-    the report the caller saw, so a newer one waitd just wrote survives."""
-    if reported is not None:
-        seen = read_background(state_dir, target, issue)
-        if seen is None or seen.reported != reported:
-            return
-    # ponytail: read-then-unlink is not atomic; a report landing in between
-    # is lost (that turn end falls back to the stall timer). A lock with
-    # waitd would close it.
+def clear_background(state_dir: str | Path, target: str, issue: int) -> None:
     _background_path(state_dir, target, issue).unlink(missing_ok=True)
 
 

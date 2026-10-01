@@ -36,8 +36,8 @@ from dispatcher import spec_publish, task_artifacts
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
-                                EndBackgroundWait, HandleCrash, NoOp, Notify,
-                                ParkForCI, ParkForInput, ParkForReview, PublishSpec,
+                                HandleCrash, NoOp, Notify, ParkForCI,
+                                ParkForInput, ParkForReview, PublishSpec,
                                 RecordBackgroundWait, RetryStage, SetTaskStage,
                                 StartTicket, SpawnStage, pass_actions)
 from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates,
@@ -51,7 +51,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
-                              clear_background, clear_waiting, delete, has_waiting,
+                              clear_waiting, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
                               next_stage, read_background, read_stage_signal,
                               resumable_crash,
@@ -1486,18 +1486,9 @@ def _on_record_background_wait(turn: _Turn, task: TaskState,
     return task
 
 
-def _on_end_background_wait(turn: _Turn, task: TaskState,
-                            act: EndBackgroundWait,
-                            launch: Launch | None) -> TaskState:
-    clear_background(turn.cfg.state_dir, task.target, task.issue,
-                     reported=act.reported)
-    return task
-
-
 _DRIVE: dict[type, Callable[..., TaskState | None]] = {
     NoOp: _on_noop,
     RecordBackgroundWait: _on_record_background_wait,
-    EndBackgroundWait: _on_end_background_wait,
     StartTicket: _on_start_ticket,
     ApplyDecision: _on_apply_decision,
     ParkForInput: _on_park_for_input,
@@ -1580,8 +1571,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and cfg.stall_after_seconds > 0 else None)
     turn = _Turn(cfg, deps, target, signal, dry_run)
-    for act in pass_actions(task, signal, alive, waiting,
-                            view,
+    for act in pass_actions(task, signal, alive, waiting, view,
                             caps=cfg.loop_caps,
                             idle_seconds=idle,
                             stall_after=cfg.stall_after_seconds,

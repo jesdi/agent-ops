@@ -1,12 +1,12 @@
 """Background wait edges the acceptance suite leaves open: a crashed
-session's marker, a wake between two herdr reads, and a report landing
-after the pass read the marker."""
+session's marker, a wake between two herdr reads, and the same work
+reported again after a woken turn."""
 import json
 import time
 
 import dispatcher.main as main
 from dispatcher import intents as intents_mod
-from dispatcher.state import (PARK_HUMAN, Stage, clear_background, load,
+from dispatcher.state import (PARK_HUMAN, Stage, load,
                               mark_background, read_background)
 from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
                              patch_workspace)
@@ -80,10 +80,23 @@ def test_a_wake_between_herdr_reads_never_stall_parks(tmp_path, monkeypatch):
     assert load(c.state_dir, T, N).park == ""
 
 
-def test_clear_background_keeps_a_report_newer_than_the_one_seen(tmp_path):
-    mark_background(tmp_path, T, N, WORK, now=100.0)
-    mark_background(tmp_path, T, N, WORK, now=200.0)   # waitd, after the read
-    clear_background(tmp_path, T, N, reported=100.0)
-    assert read_background(tmp_path, T, N).reported == 200.0
-    clear_background(tmp_path, T, N, reported=200.0)
-    assert read_background(tmp_path, T, N) is None
+CAP = "(background work still running after 180m — cap reached)"
+
+
+def test_same_work_reported_after_a_woken_turn_keeps_the_cap_clock(tmp_path, monkeypatch):
+    c = _review_task(tmp_path, monkeypatch)
+    mark_background(c.state_dir, T, N, WORK, now=time.time() - 3 * 3600 - MIN)
+    since = read_background(c.state_dir, T, N).since
+    sess = Herdr(("idle", 5), alive=[N], idle={N: 0.0})
+    d = deps(sess=sess)
+    main.run_pass(c, d)                        # records counter 5
+    sess.state = ("working", 6)                # woken into a new turn
+    main.run_pass(c, d)                        # the wait is over: today's rules
+    assert load(c.state_dir, T, N).park == ""
+    mark_background(c.state_dir, T, N, WORK)   # the next turn end: same work
+    assert read_background(c.state_dir, T, N).since == since
+    sess.state = ("idle", 6)
+    main.run_pass(c, d)                        # records the new report
+    main.run_pass(c, d)
+    t = load(c.state_dir, T, N)
+    assert t.park == PARK_HUMAN and t.park_note == CAP

@@ -160,6 +160,10 @@ def test_new_work_restarts_the_cap_clock(tmp_path, monkeypatch):
 
 def test_same_work_does_not_restart_the_cap_clock(tmp_path, monkeypatch):
     c, sess = _setup(tmp_path, monkeypatch, 3 * HOUR + 10 * MIN)
+    d = _passes(c, sess)                      # records counter 5
+    sess.state[N], sess.idle[N] = ("working", 6), 0.0   # a woken turn
+    main.run_pass(c, d)
+    sess.state[N], sess.idle[N] = ("idle", 6), 11 * MIN
     mark_background(c.state_dir, T, N, [WORK], now=time.time() - 5 * MIN)
     _passes(c, sess, 2)
     t = _task(c)
@@ -173,7 +177,7 @@ def test_counter_change_deletes_marker_and_never_cap_parks(tmp_path, monkeypatch
     d = _passes(c, sess)                      # records counter 5
     sess.state[N] = ("working", 6)            # the session started a new turn
     main.run_pass(c, d)
-    assert read_background(c.state_dir, T, N) is None
+    assert read_background(c.state_dir, T, N) is not None   # kept: the wait is over, not gone
     t = _task(c)
     assert t.park == "" and t.park_note != CAP_NOTE
     assert sess.ended == []

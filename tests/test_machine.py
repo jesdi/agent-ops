@@ -545,8 +545,8 @@ def test_tracks_none_skips_validation(tmp_path):
 
 # --- background wait (pass_actions) -------------------------------------------
 
-from dispatcher.machine import (BackgroundView, EndBackgroundWait,  # noqa: E402
-                                RecordBackgroundWait, pass_actions)
+from dispatcher.machine import (BackgroundView, RecordBackgroundWait,  # noqa: E402
+                                pass_actions)
 from dispatcher.state import BackgroundWait  # noqa: E402
 
 WORKING = StageSignal(stage="review", status="working")
@@ -583,8 +583,10 @@ def test_recorded_wait_inside_cap_holds_and_past_cap_parks():
 
 def test_counter_change_ends_the_wait_and_today_rules_apply():
     acts = _bg(_waited(seq=4), _view(4 * HOUR))
-    assert acts[0] == EndBackgroundWait(100.0)
-    assert acts[1].note.startswith("(no session output for 10m")
+    assert len(acts) == 1 and acts[0].note.startswith("(no session output for 10m")
+    fresh = pass_actions(_waited(seq=4), WORKING, True, False, _view(4 * HOUR),
+                         idle_seconds=0.0)
+    assert fresh == [NoOp()]
 
 
 def test_waiting_marker_or_non_working_signal_takes_precedence():
