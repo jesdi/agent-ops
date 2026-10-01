@@ -894,6 +894,34 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
                                     updated_at=_now()))
 
 
+def _poll_pr(cfg: Config, deps: Deps, target: Target, task: TaskState
+             ) -> "tuple[TaskState, pr_poll.PollResult] | None":
+    """One pr-open task's PR, classified; None when it has no PR yet.
+    Resolves and saves the PR number on first sight."""
+    if not task.pr_number:
+        n = deps.github.pr_number_for_branch(target, task.branch)
+        if not n:
+            print(f"[warn] #{task.issue}: no PR found for branch "
+                  f"{task.branch}", file=sys.stderr)
+            return None
+        task = replace(task, pr_number=n, updated_at=_now())
+        save(cfg.state_dir, task)
+    payload = deps.github.pr_view(target, task.pr_number)
+    login = deps.github.viewer_login()
+    res = pr_poll.classify(payload, task.feedback_cursor, login,
+                           check_cursor=task.check_cursor,
+                           conflict_cursor=task.conflict_cursor)
+    if res.kind in ("quiet", "conflict") and not task.park and not task.feedback_pending:
+        statuses = deps.github.ci_statuses(
+            target, payload.get("headRefOid") or "",
+            payload.get("headRefName") or "")
+        res = pr_poll.classify(payload, task.feedback_cursor, login,
+                               check_cursor=task.check_cursor,
+                               conflict_cursor=task.conflict_cursor,
+                               ci_statuses=statuses)
+    return task, res
+
+
 def _poll_prs(cfg: Config, deps: Deps, target: Target,
               dry_run: bool = False) -> None:
     """Watch every pr-open task's PR independently of CI access and capacity.
@@ -903,27 +931,10 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
         if task.target != target.name or task.stage is not Stage.PR_OPEN:
             continue
         try:
-            if not task.pr_number:
-                n = deps.github.pr_number_for_branch(target, task.branch)
-                if not n:
-                    print(f"[warn] #{task.issue}: no PR found for branch "
-                          f"{task.branch}", file=sys.stderr)
-                    continue
-                task = replace(task, pr_number=n, updated_at=_now())
-                save(cfg.state_dir, task)
-            payload = deps.github.pr_view(target, task.pr_number)
-            login = deps.github.viewer_login()
-            res = pr_poll.classify(payload, task.feedback_cursor, login,
-                                   check_cursor=task.check_cursor,
-                                   conflict_cursor=task.conflict_cursor)
-            if res.kind in ("quiet", "conflict") and not task.park and not task.feedback_pending:
-                statuses = deps.github.ci_statuses(
-                    target, payload.get("headRefOid") or "",
-                    payload.get("headRefName") or "")
-                res = pr_poll.classify(payload, task.feedback_cursor, login,
-                                       check_cursor=task.check_cursor,
-                                       conflict_cursor=task.conflict_cursor,
-                                       ci_statuses=statuses)
+            polled = _poll_pr(cfg, deps, target, task)
+            if polled is None:
+                continue
+            task, res = polled
         except (subprocess.CalledProcessError, OSError) as exc:
             print(f"[warn] PR poll failed for #{task.issue}: {exc}",
                   file=sys.stderr)
