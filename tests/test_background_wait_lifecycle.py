@@ -6,8 +6,8 @@ import time
 
 import dispatcher.main as main
 from dispatcher import intents as intents_mod
-from dispatcher.state import (PARK_HUMAN, Stage, load,
-                              mark_background, read_background)
+from dispatcher.state import (PARK_HUMAN, Stage, has_waiting, load,
+                              mark_background, mark_waiting, read_background)
 from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
                              patch_workspace)
 
@@ -43,6 +43,7 @@ def test_crash_then_resume_does_not_inherit_the_old_wait(tmp_path, monkeypatch):
     d = deps(sess=sess)
     main.run_pass(c, d)                        # the session crashed
     assert load(c.state_dir, T, N).stage is Stage.FAILED
+    assert read_background(c.state_dir, T, N) is None   # the crash drops it
     intents_mod.write_intent(c.state_dir, "resume", T, N, {}, "op", 1)
     main.run_pass(c, d)                        # respawned
     sess.alive_set.add(N)                      # ...and hangs at a prompt
@@ -100,3 +101,21 @@ def test_same_work_reported_after_a_woken_turn_keeps_the_cap_clock(tmp_path, mon
     main.run_pass(c, d)
     t = load(c.state_dir, T, N)
     assert t.park == PARK_HUMAN and t.park_note == CAP
+
+
+def test_a_waiting_ping_after_a_woken_wait_parks_mid_stage(tmp_path, monkeypatch):
+    c = _review_task(tmp_path, monkeypatch)
+    mark_background(c.state_dir, T, N, WORK, now=time.time() - MIN)
+    sess = Herdr(("idle", 5), alive=[N], idle={N: 0.0})
+    d = deps(sess=sess)
+    main.run_pass(c, d)                        # records counter 5
+    sess.state = ("working", 6)                # woken into a new turn...
+    main.run_pass(c, d)
+    mark_waiting(c.state_dir, T, N)            # ...which stops for input
+    main.run_pass(c, d)
+    t = load(c.state_dir, T, N)
+    assert t.park == PARK_HUMAN
+    assert t.park_note == "(session stopped mid-stage waiting for input)"
+    assert sess.ended == [N]
+    assert read_background(c.state_dir, T, N) is None
+    assert not has_waiting(c.state_dir, T, N)
