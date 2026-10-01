@@ -50,7 +50,7 @@ from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
-                              Stage, TaskState, active, allocate_slot,
+                              Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_background, clear_waiting, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
                               next_stage, read_background, read_stage_signal,
@@ -1501,21 +1501,10 @@ _DRIVE: dict[type, Callable[..., TaskState | None]] = {
 }
 
 
-def _background_view(cfg: Config, deps: Deps, task: TaskState,
-                     alive: bool) -> BackgroundView | None:
-    """The task's background wait as this pass sees it; herdr is asked only
-    when a live session has a background marker."""
-    wait = read_background(cfg.state_dir, task.target, task.issue) if alive else None
-    if wait is None:
-        return None
-    return BackgroundView(wait, deps.sessions.agent_state(task.target, task.issue),
-                          time.time(), cfg.background_wait_seconds)
-
-
-def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                admit: Admit, dry_run: bool = False) -> None:
-    signal = read_stage_signal(task.worktree)
-    policy = policy_for(cfg, target)
+def _adopt_track(cfg: Config, policy: ModelPolicy, task: TaskState,
+                 signal: StageSignal | None,
+                 dry_run: bool) -> tuple[TaskState, StageSignal | None]:
+    """The task's track for this turn, settled before anything reads it."""
     if not task.track:
         # Claimed before tracks existed (#121): no triage label was read and
         # its spec signal names none. Run it as untracked work, the same as
@@ -1536,6 +1525,25 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if (signal is not None and signal.track and signal.track != task.track
             and signal.track in policy.tracks):
         task = replace(task, track=signal.track)
+    return task, signal
+
+
+def _background_view(cfg: Config, deps: Deps, task: TaskState,
+                     alive: bool) -> BackgroundView | None:
+    """The task's background wait as this pass sees it; herdr is asked only
+    when a live session has a background marker."""
+    wait = read_background(cfg.state_dir, task.target, task.issue) if alive else None
+    if wait is None:
+        return None
+    return BackgroundView(wait, deps.sessions.agent_state(task.target, task.issue),
+                          time.time(), cfg.background_wait_seconds)
+
+
+def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                admit: Admit, dry_run: bool = False) -> None:
+    signal = read_stage_signal(task.worktree)
+    policy = policy_for(cfg, target)
+    task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
     if task.track not in policy.tracks:
