@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from dispatcher.artifacts import TICKETS_DIR, CheckResult, check_spec, check_tickets
 from dispatcher.loops import Decision, Loop, Outcome, ReportedRound, evaluate
-from dispatcher.state import IN_FLIGHT_STAGES, LoopCaps, Stage, StageSignal, TaskState
+from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
+                              StageSignal, TaskState)
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,28 @@ class ParkForReview:
     """Grace expired at the spec-review gate. Unlike every other park this
     one releases the E2E slot too, so the dispatcher can spend it on the next
     Ready task instead of holding it for a human who is asleep."""
+
+
+@dataclass(frozen=True)
+class RecordBackgroundWait:
+    """Note on the task that this background report was seen with herdr's
+    state-change counter at `seq`; the wait is in force from now on."""
+    reported: float
+    seq: int
+
+
+@dataclass(frozen=True)
+class EndBackgroundWait:
+    """The session started a new turn: delete the background marker."""
+
+
+class BackgroundView(NamedTuple):
+    """What a pass knows about a task's background wait (an input, not an
+    action — hence no dataclass)."""
+    wait: BackgroundWait
+    agent: tuple[str, int] | None   # herdr (status, state-change counter); None = unknown
+    now: float
+    cap: int                        # background_wait_seconds
 
 
 # A ticket set that fails the mechanical check is usually a numbering or
@@ -252,3 +276,42 @@ def next_actions(
         return [NoOp()]   # done signal for a terminal/unknown stage — ignore
 
     return [NoOp()]
+
+
+def _in_wait(task: TaskState, signal: StageSignal | None, session_alive: bool,
+             waiting: bool, view: BackgroundView | None) -> bool:
+    """A background marker decides this pass only for a live, unparked
+    session whose stage signal says `working`; a waiting marker wins."""
+    return (view is not None and session_alive and not waiting and not task.park
+            and signal is not None and signal.status == "working")
+
+
+def _wait_actions(task: TaskState, view: BackgroundView) -> list[object] | None:
+    """The background wait's actions this pass; None once herdr's counter
+    shows the session started a new turn (the wait is over)."""
+    if view.agent is None:
+        return []   # herdr cannot be asked: hold
+    status, seq = view.agent
+    if view.wait.reported != task.background_reported:
+        return [] if status == "working" else [RecordBackgroundWait(view.wait.reported, seq)]
+    if seq != task.background_seq:
+        return None
+    if view.now - view.wait.since > view.cap:
+        return [ParkForInput(f"(background work still running after "
+                             f"{view.cap // 60}m — cap reached)")]
+    return []
+
+
+def pass_actions(task: TaskState, signal: StageSignal | None, session_alive: bool,
+                 waiting: bool, view: BackgroundView | None,
+                 caps: LoopCaps = LoopCaps(), **today) -> list[object]:
+    """next_actions, deferring to a background wait (design "Data model"):
+    while the wait holds, neither the stall timer nor a park applies, bar
+    the cap; once it is over the marker goes and today's rules decide."""
+    in_wait = _in_wait(task, signal, session_alive, waiting, view)
+    acts = _wait_actions(task, view) if in_wait else None
+    if acts is not None:
+        return (_loop_actions(task, signal, caps) + acts) or [NoOp()]
+    lead: list[object] = [EndBackgroundWait()] if in_wait else []
+    return lead + next_actions(task, signal, session_alive, waiting=waiting,
+                               caps=caps, **today)

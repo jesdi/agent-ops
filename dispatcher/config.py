@@ -46,6 +46,9 @@ class Config:
     models: ModelPolicy = DEFAULT_POLICY
     console_url: str = ""  # web console base URL for Telegram deep links; "" = no link line
     stall_after_seconds: int = 600  # 0 disables stall detection entirely
+    # Cap on a background wait: a session stopped on background work is
+    # parked for the operator once the work has run this long.
+    background_wait_seconds: int = 10800
     # Minutes a finished spec waits at the review gate before the task parks:
     # session ended, capacity AND slot freed, so the dispatcher can keep
     # speccing the rest of the Ready queue overnight. 0 parks on the next
@@ -132,6 +135,13 @@ def _grace_minutes(raw: dict) -> int | None:
     return value
 
 
+def _background_wait_seconds(raw: dict) -> int:
+    v = raw.get("background_wait_seconds", 10800)
+    if type(v) is not int or v < 1:  # bool is an int subclass: reject it too
+        raise ValueError(f"background_wait_seconds: must be an integer >= 1, got {v!r}")
+    return v
+
+
 def load_config(path: str | Path) -> Config:
     raw = yaml.safe_load(Path(path).read_text())
     if "triage_model" in raw:
@@ -148,6 +158,7 @@ def load_config(path: str | Path) -> Config:
         models=parse_policy(raw.get("models")),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
+        background_wait_seconds=_background_wait_seconds(raw),
         spec_review_grace_minutes=_grace_minutes(raw),
         done_retention_days=int(raw.get("done_retention_days", 7)),
         pass_interval_minutes=int(raw.get("pass_interval_minutes", 10)),

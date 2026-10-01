@@ -148,6 +148,11 @@ class TaskState:
     # The stage a crash failed this task out of; Resume respawns it fresh in
     # the same worktree. "" = not resumable (kill, closed PR, pre-field crash).
     crashed_stage: str = ""
+    # The background wait the dispatcher has seen (see machine.pass_actions):
+    # the marker's `reported` it last recorded, and herdr's state-change
+    # counter at that moment. A different counter later means a new turn.
+    background_reported: float = 0.0
+    background_seq: int = 0
     # None=no request; SpecApprovalRequest while at gate; AnswersRequest written
     # ONLY by _park_for_input in dispatcher/main.py, and only when a
     # worktree-contained path resolves — so an answers request never exists
@@ -218,6 +223,8 @@ def _retire_legacy(state_dir: str | Path, target: str, issue: int) -> None:
 def _write_task(p: Path, ts: TaskState) -> None:
     d = asdict(ts)
     d["stage"] = ts.stage.value
+    if not ts.background_reported:   # no wait recorded: keep the file as before
+        del d["background_reported"], d["background_seq"]
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, indent=2))
@@ -415,6 +422,10 @@ def mark_background(state_dir: str | Path, target: str, issue: int,
     tmp.replace(p)
 
 
+def clear_background(state_dir: str | Path, target: str, issue: int) -> None:
+    _background_path(state_dir, target, issue).unlink(missing_ok=True)
+
+
 def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
     return (_waiting_path(state_dir, target, issue).exists()
             or _legacy_waiting_path(state_dir, issue).exists())
@@ -423,9 +434,7 @@ def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
 def clear_waiting(state_dir: str | Path, target: str, issue: int) -> None:
     _waiting_path(state_dir, target, issue).unlink(missing_ok=True)
     _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
-    _background_path(state_dir, target, issue).unlink(missing_ok=True)
-
-
+    clear_background(state_dir, target, issue)
 
 
 def archive_root(state_dir: str | Path, target: str, issue: int) -> Path:

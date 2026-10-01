@@ -181,6 +181,9 @@ class FakeSessions:
         self.idle_queried.append(issue)
         return self.idle.get(issue)
 
+    def agent_state(self, target, issue):
+        return None  # herdr cannot be asked: a background wait holds
+
     def send_text(self, target, issue, text):
         self.sent_text.append((issue, text))
 

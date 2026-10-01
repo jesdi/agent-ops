@@ -35,10 +35,11 @@ log = logging.getLogger(__name__)
 from dispatcher import spec_publish, task_artifacts
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
-from dispatcher.machine import (ApplyDecision, ArmSpecApproval, HandleCrash, NoOp, Notify,
+from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
+                                EndBackgroundWait, HandleCrash, NoOp, Notify,
                                 ParkForCI, ParkForInput, ParkForReview, PublishSpec,
-                                RetryStage, SetTaskStage, StartTicket,
-                                SpawnStage, next_actions)
+                                RecordBackgroundWait, RetryStage, SetTaskStage,
+                                StartTicket, SpawnStage, pass_actions)
 from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates,
                                override_refusal, parse_entry, pick_provider,
                                policy_stage, resolve, second_model, stage_pick,
@@ -50,9 +51,10 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
                               Stage, TaskState, active, allocate_slot,
-                              clear_waiting, delete, has_waiting,
+                              clear_background, clear_waiting, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
-                              next_stage, read_stage_signal, resumable_crash,
+                              next_stage, read_background, read_stage_signal,
+                              resumable_crash,
                               save, task_key)
 from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
@@ -1464,8 +1466,26 @@ def _on_handle_crash(turn: _Turn, task: TaskState, act: HandleCrash,
     return task
 
 
+def _on_record_background_wait(turn: _Turn, task: TaskState,
+                               act: RecordBackgroundWait,
+                               launch: Launch | None) -> TaskState:
+    task = replace(task, background_reported=act.reported,
+                   background_seq=act.seq)
+    save(turn.cfg.state_dir, task)
+    return task
+
+
+def _on_end_background_wait(turn: _Turn, task: TaskState,
+                            act: EndBackgroundWait,
+                            launch: Launch | None) -> TaskState:
+    clear_background(turn.cfg.state_dir, task.target, task.issue)
+    return task
+
+
 _DRIVE: dict[type, Callable[..., TaskState | None]] = {
     NoOp: _on_noop,
+    RecordBackgroundWait: _on_record_background_wait,
+    EndBackgroundWait: _on_end_background_wait,
     StartTicket: _on_start_ticket,
     ApplyDecision: _on_apply_decision,
     ParkForInput: _on_park_for_input,
@@ -1479,6 +1499,17 @@ _DRIVE: dict[type, Callable[..., TaskState | None]] = {
     SpawnStage: _on_spawn_stage,
     HandleCrash: _on_handle_crash,
 }
+
+
+def _background_view(cfg: Config, deps: Deps, task: TaskState,
+                     alive: bool) -> BackgroundView | None:
+    """The task's background wait as this pass sees it; herdr is asked only
+    when a live session has a background marker."""
+    wait = read_background(cfg.state_dir, task.target, task.issue) if alive else None
+    if wait is None:
+        return None
+    return BackgroundView(wait, deps.sessions.agent_state(task.target, task.issue),
+                          time.time(), cfg.background_wait_seconds)
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -1518,11 +1549,12 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and cfg.stall_after_seconds > 0 else None)
     turn = _Turn(cfg, deps, target, signal, dry_run)
-    for act in next_actions(task, signal, alive, waiting=waiting,
+    for act in pass_actions(task, signal, alive, waiting,
+                            _background_view(cfg, deps, task, alive),
+                            caps=cfg.loop_caps,
                             idle_seconds=idle,
                             stall_after=cfg.stall_after_seconds,
                             grace_elapsed=_grace_elapsed(cfg, task),
-                            caps=cfg.loop_caps,
                             tracks=frozenset(policy.tracks)):
         stage = _action_stage(act)
         launch, bypass_usage = ((None, False) if stage is None

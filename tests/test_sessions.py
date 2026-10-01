@@ -620,3 +620,16 @@ def test_end_snapshot_write_failure_still_closes_the_tab(tmp_path, monkeypatch):
     (tmp_path / "snapshots").write_text("not a dir")  # mkdir/write -> OSError
     Sessions(state_dir=tmp_path).end("acme", 42)
     assert ["tab", "close", "w1:t2"] in calls
+
+
+# --- agent_state -------------------------------------------------------------
+
+def test_agent_state_is_herdr_status_and_counter_for_the_task_tab(monkeypatch):
+    herdr_fake(monkeypatch, LIVE + [_agent("idle", 7)])
+    assert Sessions().agent_state("acme", 42) == ("idle", 7)
+
+
+def test_agent_state_unknown_without_a_tab_or_in_dry_run(monkeypatch):
+    herdr_fake(monkeypatch, [(("tab", "list"), 0, NO_TABS)])
+    assert Sessions().agent_state("acme", 42) is None
+    assert Sessions(dry_run=True).agent_state("acme", 42) is None
