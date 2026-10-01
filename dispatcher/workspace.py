@@ -185,7 +185,7 @@ def install_stop_hook(wt: str) -> None:
     agent_dir.mkdir(parents=True, exist_ok=True)
     hook_dst = agent_dir / "stop-hook.sh"
     shutil.copy(HOOKS_DIR / "stop-hook.sh", hook_dst)
-    hook_dst.chmod(0o755)
+    hook_dst.chmod(0o755)   # copy keeps the source mode; the box's checkout may lack +x
 
     claude_dir = Path(wt) / ".claude"
     claude_dir.mkdir(exist_ok=True)
@@ -205,7 +205,9 @@ def install_stop_hook(wt: str) -> None:
     hooks["Stop"] = [{"hooks": [{
         "type": "command",
         "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]}]
-    path.write_text(json.dumps(settings, indent=2))
+    tmp = path.with_name(path.name + ".tmp")   # a live session may read it mid-resume
+    tmp.write_text(json.dumps(settings, indent=2))
+    tmp.replace(path)
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
