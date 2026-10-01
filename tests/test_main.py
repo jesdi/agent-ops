@@ -2731,6 +2731,17 @@ def test_resume_woken_ends_session_before_resuming(tmp_path, monkeypatch):
     assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
 
 
+def test_woken_pre_router_task_resumes_on_the_untracked_track(tmp_path, monkeypatch):
+    # A task parked since before tracks existed never passes _drive_task's
+    # backfill: its wake must still launch, not wait forever in silence.
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT, park=PARK_WAKE, track="")
+    sess = FakeSessions(alive=[42])
+    main.run_pass(c, deps(sess=sess))
+    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
+
+
 def test_reply_to_login_park_injects_code(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)

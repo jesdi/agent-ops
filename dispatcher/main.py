@@ -121,11 +121,14 @@ def _launch_for(cfg: Config, target: Target | None, task: TaskState,
     pick = stage_pick(task.picks, stage.value)
     if pick:
         return Launch(stage, parse_entry(pick, "pick"))
-    if task.track not in policy.tracks:
+    # No track: claimed before tracks existed and parked ever since, so
+    # _drive_task never backfilled it. Untracked work, as it does there.
+    track = task.track or policy.untracked
+    if track not in policy.tracks:
         return None
     avoid = (pick_provider(task.picks, "implement")
              if policy_stage(stage.value) == "review" else "")
-    entry = resolve(policy, task.track, stage.value, admitted, avoid)
+    entry = resolve(policy, track, stage.value, admitted, avoid)
     return Launch(stage, entry) if entry else None
 
 
