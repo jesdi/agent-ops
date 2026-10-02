@@ -60,7 +60,7 @@ loop_caps:
 # list. A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
 # A target may carry its own `models:` block, which REPLACES this one.
 models:
-  triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted; anthropic only
+  triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted
   untracked: standard                    # spec-stage track when no track: label
   # review_second: openai/gpt-sol   # the gated second model (ticket 10, not yet built): validated, not yet consumed
   tracks:

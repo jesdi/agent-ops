@@ -9,8 +9,8 @@ import os
 import shlex
 from pathlib import Path
 
-from dispatcher.models import Entry, bare_model_id, split_model_id
-from dispatcher.runtimes import CLAUDE, Runtime, runtime_for
+from dispatcher.models import Entry, bare_model_id
+from dispatcher.runtimes import Runtime, runtime_for
 
 
 def clone_root(worktree: str) -> str:
@@ -129,32 +129,29 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     raise E2BIG (not SweepError), so the repo reported FAILED, its cursor never
     advanced, and the same oversized window retried every morning forever.
 
-    So the container runs `claude -p "$(cat …)"` under a shell — the same file
+    So the container runs `<cli> … "$(cat …)"` under a shell — the same file
     + command-substitution idiom as Sessions.spawn_stage. That keeps the
     dispatcher's own execve small; the container's own execve is kept under the
     same 128 KiB ceiling by triage_prefetch's context budget, which is measured
     on exactly the serialization that lands in the file. Only the shell line is
     composed; the podman argv stays a list so its shape stays assertable.
 
-    Triage is Claude-only (parse_policy rejects other providers in `triage:`);
-    a non-anthropic model here is a caller bug, refused before anything runs."""
-    provider = split_model_id(model)[0]
-    if provider != "anthropic":
-        raise ValueError(f"triage runs on Claude only; got {provider!r} model {model!r}")
+    The CLI is the model's runtime run headless (`claude -p`, `codex
+    exec`); an unknown provider raises before anything runs."""
+    runtime = runtime_for(model)
     home = str(Path.home())
-    claude = (f"claude -p \"$(cat {shlex.quote(prompt_path)})\" "
-              f"--permission-mode auto --model {shlex.quote(bare_model_id(model))}"
-              + (f" --effort {shlex.quote(effort)}" if effort else ""))
+    line = runtime.headless(f"\"$(cat {shlex.quote(prompt_path)})\"",
+                            bare_model_id(model), effort)
     return [
         *_wrapper(),
         "podman", "run", "--rm", "--name", name,
         "--memory", memory, "--cpus", cpus,
-        *_runtime_args(CLAUDE),
+        *_runtime_args(runtime),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
         "-v", f"{home}/.config/gh:/root/.config/gh:ro",
         "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
         "-v", f"{triage_dir}:/triage",
-        image(), "bash", "-c", claude,
+        image(), "bash", "-c", line,
     ]
 
 
