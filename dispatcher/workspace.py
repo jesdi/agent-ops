@@ -152,6 +152,13 @@ def _worktree_health_issue(wt: str, branch: str) -> str | None:
     return None
 
 
+def _write_json_atomic(p: Path, data) -> None:
+    """Write JSON so a reader never sees half a file: temp file, then rename."""
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(p)
+
+
 def _seed_claude_state(wt: str) -> None:
     """Merge-write claude-home/.claude.json so stage containers never stall
     on an interactive dialog nobody is attached to answer: complete
@@ -170,9 +177,7 @@ def _seed_claude_state(wt: str) -> None:
     data["hasCompletedOnboarding"] = True
     data.setdefault("projects", {}).setdefault(wt, {})[
         "hasTrustDialogAccepted"] = True
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    tmp.replace(p)
+    _write_json_atomic(p, data)
 
 
 def install_stop_hook(wt: str) -> None:
@@ -205,9 +210,7 @@ def install_stop_hook(wt: str) -> None:
     hooks["Stop"] = [{"hooks": [{
         "type": "command",
         "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]}]
-    tmp = path.with_name(path.name + ".tmp")   # a live session may read it mid-resume
-    tmp.write_text(json.dumps(settings, indent=2))
-    tmp.replace(path)
+    _write_json_atomic(path, settings)   # a live session may read it mid-resume
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
