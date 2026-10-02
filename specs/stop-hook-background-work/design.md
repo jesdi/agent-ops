@@ -21,15 +21,18 @@
   does not restart the clock on a Claude Code version that sends no ids.
 - **The latest turn end wins.** A background report deletes the waiting marker and a waiting
   ping deletes the background marker — a task can never be in both states.
-- **`clear_waiting` clears both markers.** Every site that ends or replaces a session already
-  calls it, so a new session never inherits an old clock — the name now undersells what it does.
+- **`clear_turn_markers` clears every turn-end marker.** Waiting, legacy waiting and
+  background. Every site that ends or replaces a session calls it, so a new session never
+  inherits an old clock. Besides a waiting ping, it is the only thing that removes a background
+  marker.
 - **The wait ends when herdr's state-change counter moves.** The dispatcher records the counter
-  on the first pass that sees a report with the agent not `working`; a different counter on a
-  later pass means the session started a new turn and the wait is over: today's rules, stall
-  timer included, apply on every pass while the counter differs from the recorded one. The
-  marker is kept — only a waiting ping or a session end (`clear_waiting`) removes it — so the
-  next report of the same work keeps its `since` and the cap clock does not restart — a wake that happens before that first pass is not seen, and that session is
-  held until the cap instead of the stall timer (ceiling: one pass interval of exposure).
+  on the first pass that sees a report with the agent not `working`. A different counter on a
+  later pass means the session started a new turn: the wait is over, and today's rules, stall
+  timer included, apply on every pass while the counter differs from the recorded one.
+- **The marker outlives the wait.** Only a waiting ping or a session end removes it, so the next
+  report of the same work keeps its `since` and the cap clock does not restart.
+- **A wake before the dispatcher's first pass after a report is not seen.** That session is held
+  until the cap instead of the stall timer (ceiling: one pass interval of exposure).
 - **The cap parks only a session that is still in the wait.** A woken session working in the
   foreground is never parked by the cap — a session herdr reports as `working` throughout is
   therefore never capped, exactly as a working session is never stalled today.
@@ -91,7 +94,7 @@ None.
 - `dispatcher.state.mark_background(state_dir, target, issue, tasks: list, now: float | None =
   None) -> None` — new; `tasks` are raw `background_tasks` entries, `now` lets a test place a
   report in the past.
-- `dispatcher.state.has_waiting` / `clear_waiting` — existing.
+- `dispatcher.state.has_waiting` / `clear_turn_markers` — existing.
 - `dispatcher.main.run_pass(cfg, deps)` — existing. The sessions fake gains
   `agent_state(target, issue) -> tuple[str, int] | None` (herdr status and state-change counter),
   the new method on `dispatcher.sessions.Sessions`.

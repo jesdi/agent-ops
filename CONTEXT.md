@@ -80,8 +80,9 @@ A live session that ended its turn mid-stage while background work it started
 by waitd as a background marker. The dispatcher neither parks it nor lets the
 stall timer catch it. The wait is over once the session starts a new turn
 (today's rules apply again), but the marker stays until a waiting ping or the
-session's end, so the same work reported again keeps its clock; the task parks
-for the operator once that work outlasts `background_wait_seconds` (the cap).
+session's end, so the same work reported again keeps its clock. The cap clock
+starts at the first report and restarts when a report names new work; past
+`background_wait_seconds` (the cap) the task parks for the operator.
 _Avoid_: stall (a stall is a session with no output and no reason to be quiet)
 
 **Provider**:

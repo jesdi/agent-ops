@@ -28,8 +28,9 @@ session_cpus: "2"
 stall_after_seconds: 600
 # A session that ends its turn on background work (a long build, a gate run)
 # is in a background wait: neither parked nor caught by the stall timer above.
-# Once no new background work has been reported for this many seconds the
-# task parks for the operator and the session is ended. Integer >= 1; default 10800 (3 hours).
+# The cap clock starts at the first report and restarts when a report names
+# new work; past this many seconds the task parks for the operator and the
+# session is ended. Integer >= 1; default 10800 (3 hours).
 background_wait_seconds: 10800
 # How long a finished spec waits at the review gate for the operator. Once it
 # expires the task parks: the spec session ends and BOTH its capacity unit and

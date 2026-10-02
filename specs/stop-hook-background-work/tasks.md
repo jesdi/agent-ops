@@ -12,7 +12,7 @@ task.
   background marker. The clock starts on a new marker, restarts when a report names an identity
   the stored marker lacks, and is kept when the report names only stored identities. Identity is
   the entry's `id`, or the whole entry when it has none. The marker is written atomically; an
-  unreadable marker reads as absent. `clear_waiting` removes both markers. _Goal: the box knows
+  unreadable marker reads as absent. `clear_turn_markers` removes both markers. _Goal: the box knows
   a session is waiting on background work and since when._
   Seam: `dispatcher.waitd.handle_ping(body, state_dir)`, read back with
   `dispatcher.state.read_background` / `has_waiting`; clock cases through
@@ -33,7 +33,8 @@ task.
   background marker, a live session and a `working` stage signal is not parked and not stalled;
   past the cap it parks for input with the note `(background work still running after 180m — cap
   reached)`, logs `parked` and ends the session. The wait is over once herdr's state-change
-  counter moves: the marker is deleted and the stall timer applies again. A session `working` in
+  counter moves, and the stall timer applies again; the marker is kept until a waiting ping or
+  the session's end, so the same work reported again keeps its clock. A session `working` in
   the foreground is never parked by the cap. A resume after a cap park starts a fresh clock. Add
   **Background wait** to `CONTEXT.md`. Covers "a background wait outlives the stall timer", the
   cap boundary and violation, "new background work restarts the clock", "the same background
