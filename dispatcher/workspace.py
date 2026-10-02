@@ -152,6 +152,13 @@ def _worktree_health_issue(wt: str, branch: str) -> str | None:
     return None
 
 
+def _write_json_atomic(p: Path, data) -> None:
+    """Write JSON so a reader never sees half a file: temp file, then rename."""
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(p)
+
+
 def _seed_claude_state(wt: str) -> None:
     """Merge-write claude-home/.claude.json so stage containers never stall
     on an interactive dialog nobody is attached to answer: complete
@@ -170,9 +177,40 @@ def _seed_claude_state(wt: str) -> None:
     data["hasCompletedOnboarding"] = True
     data.setdefault("projects", {}).setdefault(wt, {})[
         "hasTrustDialogAccepted"] = True
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    tmp.replace(p)
+    _write_json_atomic(p, data)
+
+
+def install_stop_hook(wt: str) -> None:
+    """Copy the Stop hook script into the worktree and point
+    .claude/settings.local.json's hooks.Stop at it. Runs at provisioning and
+    on every launch/resume, so a stale or deleted hook heals. Only hooks.Stop
+    is asserted; other settings keys survive, and a missing, unparseable or
+    non-object file is replaced."""
+    agent_dir = Path(wt) / ".agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    hook_dst = agent_dir / "stop-hook.sh"
+    shutil.copy(HOOKS_DIR / "stop-hook.sh", hook_dst)
+    hook_dst.chmod(0o755)   # copy keeps the source mode; the box's checkout may lack +x
+
+    claude_dir = Path(wt) / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    path = claude_dir / "settings.local.json"
+    try:
+        settings = json.loads(path.read_text())
+    except (OSError, ValueError):
+        settings = None
+    if not isinstance(settings, dict):
+        settings = {}
+    hooks = settings.get("hooks")
+    settings["hooks"] = hooks = hooks if isinstance(hooks, dict) else {}
+    # Anchor to $CLAUDE_PROJECT_DIR, not a bare relative path: Claude fires
+    # the Stop hook with the session's current cwd, which need not be the
+    # worktree root. A relative command 404s from any subdir, the waiting
+    # ping never fires, and the task hangs unparked forever.
+    hooks["Stop"] = [{"hooks": [{
+        "type": "command",
+        "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]}]
+    _write_json_atomic(path, settings)   # a live session may read it mid-resume
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
@@ -238,27 +276,7 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     exclude.mkdir(parents=True, exist_ok=True)
     (exclude / "exclude").write_text(".agent/\n.claude/settings.local.json\n")
 
-    hook_dst = agent_dir / "stop-hook.sh"
-    shutil.copy(HOOKS_DIR / "stop-hook.sh", hook_dst)
-    hook_dst.chmod(0o755)
-
-    claude_dir = Path(wt) / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    (claude_dir / "settings.local.json").write_text(json.dumps({
-        "hooks": {
-            "Stop": [{
-                # Anchor to $CLAUDE_PROJECT_DIR, not a bare relative path:
-                # Claude fires the Stop hook with the session's current cwd,
-                # which need not be the worktree root. A relative command
-                # 404s from any subdir ("/bin/sh: .agent/stop-hook.sh: not
-                # found"), the waiting ping never fires, and the task hangs
-                # unparked forever. Claude exports CLAUDE_PROJECT_DIR (the
-                # worktree root) into every hook's env for exactly this.
-                "hooks": [{"type": "command",
-                           "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]
-            }]
-        }
-    }, indent=2))
+    install_stop_hook(wt)
 
     _seed_claude_state(wt)
     return wt

@@ -74,6 +74,17 @@ e2e fixes, CI fixes on an open PR) may run before the task parks for the
 operator. Parks, never fails.
 _Avoid_: retry limit (that is the plan-format retry)
 
+**Background wait**:
+A live session that ended its turn mid-stage while background work it started
+(a build, a gate run) is still running, reported by the Stop hook and recorded
+by waitd as a background marker. The dispatcher neither parks it nor lets the
+stall timer catch it. The wait is over once the session starts a new turn
+(today's rules apply again), but the marker stays until a waiting ping or the
+session's end, so the same work reported again keeps its clock. The cap clock
+starts at the first report and restarts when a report names new work; past
+`background_wait_seconds` (the cap) the task parks for the operator.
+_Avoid_: stall (a stall is a session with no output and no reason to be quiet)
+
 **Provider**:
 A subscription whose usage windows the box spends (`anthropic`; later
 `openai`, `nvidia`). Named by the `provider/` prefix of a model id; a bare

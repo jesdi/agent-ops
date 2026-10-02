@@ -2,9 +2,11 @@
 # Session-stop hook, installed into task worktrees by workspace.py. It is
 # both Claude Code's Stop hook and Codex's `notify` program (fired on
 # agent-turn-complete, run directly with a JSON argument, which it ignores;
-# it reads no stdin). Fires whenever the session stops for input → pings
-# waitd → waiting marker → dispatcher parks on next pass. Mechanical:
-# session stops ⇒ ping.
+# with an argument it never reads stdin). Every stop pings waitd. Claude (no
+# argument) passes its hook input as JSON on stdin; when the stage signal says
+# `working` and it lists background_tasks, the ping forwards them and waitd
+# records a background wait; otherwise waitd writes a waiting marker and the
+# dispatcher parks the task on its next pass.
 # Must never fail the session, so: always exit 0.
 #
 # Self-locating: the CLI fires the hook with the session's current cwd,
@@ -19,9 +21,29 @@ ISSUE=$(python3 -c "import json;print(json.load(open('$HERE/task.json'))['issue'
 # Old worktrees' task.json predates the target field — default to empty so
 # they still ping (waitd reads an absent/empty target as a legacy ping).
 TARGET=$(python3 -c "import json;print(json.load(open('$HERE/task.json')).get('target', ''))" 2>/dev/null) || TARGET=""
+BG=""
+if [ $# -eq 0 ]; then
+  # Any unusable input (empty, garbage, non-list, missing stage.json) → BG stays empty.
+  # python reads stdin itself: an env var or argument would hit the OS size
+  # limit on a long hook input and silently fall back to a waiting ping.
+  BG=$(python3 -c "
+import json, sys
+try:
+    hook_in = sys.stdin.read()   # drain first, so the CLI never writes into a closed pipe
+    if json.load(open('$HERE/stage.json')).get('status') != 'working':
+        raise ValueError
+    bg = json.loads(hook_in).get('background_tasks')
+    if isinstance(bg, list) and bg:
+        print(json.dumps(bg))
+except Exception:
+    pass
+" 2>/dev/null) || BG=""
+fi
+EXTRA=""
+[ -n "$BG" ] && EXTRA=", \"background_tasks\": $BG"
 SOCK="${AGENT_OPS_STATE_DIR:-$HOME/agent-ops-state}/wait/wait.sock"
 curl --silent --max-time 5 --unix-socket "$SOCK" \
   -X POST "http://localhost/waiting" \
   -H 'Content-Type: application/json' \
-  -d "{\"issue\": $ISSUE, \"target\": \"$TARGET\"}" >/dev/null 2>&1 || true
+  -d "{\"issue\": $ISSUE, \"target\": \"$TARGET\"$EXTRA}" >/dev/null 2>&1 || true
 exit 0

@@ -110,7 +110,7 @@ def test_read_stage_signal_missing_or_corrupt(tmp_path: Path):
     assert read_stage_signal(tmp_path) is None
 
 
-from dispatcher.state import (clear_waiting, has_waiting, mark_waiting,
+from dispatcher.state import (clear_turn_markers, has_waiting, mark_waiting,
                               parked)
 
 
@@ -178,9 +178,9 @@ def test_waiting_marker_lifecycle(tmp_path):
     assert not has_waiting(tmp_path, "t", 9)
     mark_waiting(tmp_path, "t", 9)
     assert has_waiting(tmp_path, "t", 9)
-    clear_waiting(tmp_path, "t", 9)
+    clear_turn_markers(tmp_path, "t", 9)
     assert not has_waiting(tmp_path, "t", 9)
-    clear_waiting(tmp_path, "t", 9)  # idempotent
+    clear_turn_markers(tmp_path, "t", 9)  # idempotent
 
 
 def test_effort_and_labels_roundtrip(tmp_path: Path):
@@ -492,7 +492,7 @@ def test_waiting_marker_target_scoped_with_legacy_fallback(tmp_path):
     assert not state.has_waiting(tmp_path, "portfolio_eval", 5)
     (tmp_path / "waiting-6").touch()          # legacy marker
     assert state.has_waiting(tmp_path, "portfolio_eval", 6)
-    state.clear_waiting(tmp_path, "portfolio_eval", 6)
+    state.clear_turn_markers(tmp_path, "portfolio_eval", 6)
     assert not (tmp_path / "waiting-6").exists()
 
 

@@ -541,3 +541,62 @@ def test_tracks_none_skips_validation(tmp_path):
     sig = StageSignal(stage="spec", status="done", artifact="s.md")
     acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)), sig, True)
     assert acts == [SpawnStage(Stage.PLAN)]
+
+
+# --- background wait (pass_actions) -------------------------------------------
+
+from dispatcher.machine import (BackgroundView, RecordBackgroundWait,  # noqa: E402
+                                pass_actions)
+from dispatcher.state import BackgroundWait  # noqa: E402
+
+WORKING = StageSignal(stage="review", status="working")
+HOUR = 3600.0
+
+
+def _view(since_ago, agent=("idle", 5), reported=100.0, now=10 * HOUR, cap=10800):
+    return BackgroundView(BackgroundWait(("b1",), now - since_ago, reported),
+                          agent, now, cap)
+
+
+def _waited(seq=5, reported=100.0):
+    return replace(task(Stage.REVIEW), background_reported=reported, background_seq=seq)
+
+
+def _bg(t, view, signal=WORKING, waiting=False):
+    return pass_actions(t, signal, True, waiting, view, idle_seconds=11 * 60)
+
+
+def test_new_report_with_agent_not_working_is_recorded():
+    assert _bg(task(Stage.REVIEW), _view(60)) == [RecordBackgroundWait(100.0, 5)]
+
+
+@pytest.mark.parametrize("agent", [("working", 5), None])
+def test_new_report_with_agent_working_or_unknown_does_nothing(agent):
+    assert _bg(task(Stage.REVIEW), _view(60, agent)) == [NoOp()]
+
+
+def test_recorded_wait_inside_cap_holds_and_past_cap_parks():
+    assert _bg(_waited(), _view(2 * HOUR)) == [NoOp()]
+    assert _bg(_waited(), _view(3 * HOUR + 60)) == [ParkForInput(
+        "(background work still running after 180m — cap reached)")]
+
+
+def test_counter_change_ends_the_wait_and_today_rules_apply():
+    acts = _bg(_waited(seq=4), _view(4 * HOUR))
+    assert len(acts) == 1 and acts[0].note.startswith("(no session output for 10m")
+    fresh = pass_actions(_waited(seq=4), WORKING, True, False, _view(4 * HOUR),
+                         idle_seconds=0.0)
+    assert fresh == [NoOp()]
+
+
+def test_waiting_marker_or_non_working_signal_takes_precedence():
+    assert _bg(_waited(), _view(4 * HOUR), waiting=True) == [
+        ParkForInput("(session stopped mid-stage waiting for input)")]
+    blocked = StageSignal(stage="review", status="blocked", note="q")
+    assert _bg(_waited(), _view(4 * HOUR), signal=blocked) == [ParkForInput("q")]
+
+
+def test_a_wait_still_applies_loop_round_bookkeeping():
+    signal = StageSignal(stage="review", status="working", loop="review", round=1)
+    acts = _bg(_waited(), _view(60), signal=signal)
+    assert isinstance(acts[0], ApplyDecision) and acts[1:] == []

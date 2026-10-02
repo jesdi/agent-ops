@@ -463,3 +463,18 @@ def test_remove_workspace_survives_already_gone(tmp_path: Path):
     # clone_path doesn't exist; nope/ doesn't exist; branch never created —
     # remove_workspace must swallow all errors and return normally.
     workspace.remove_workspace(t, str(tmp_path / "nope"), "agent/task-56")
+
+
+def test_install_stop_hook_never_leaves_half_written_settings(tmp_path, monkeypatch):
+    """A live session may read settings.local.json while a resume rewrites
+    it: the write lands whole (temp file, then rename) or not at all."""
+    settings = tmp_path / ".claude" / "settings.local.json"
+    settings.parent.mkdir()
+    settings.write_text('{"keep": 1}')
+
+    def no_rename(self, target):
+        raise OSError("interrupted")
+    monkeypatch.setattr(Path, "replace", no_rename)
+    with pytest.raises(OSError):
+        workspace.install_stop_hook(str(tmp_path))
+    assert settings.read_text() == '{"keep": 1}'

@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from dispatcher.state import has_waiting
+from dispatcher.state import has_waiting, read_background
 from dispatcher.waitd import handle_ping, serve, sock_path
+from tests.test_stop_hook_background_acceptance import SHELL, N, T, env, run_hook  # noqa: F401
 
 
 def test_ping_marks_waiting(tmp_path):
@@ -157,3 +158,13 @@ def test_serve_end_to_end():
         assert has_waiting(state_dir, "portfolio_eval", 7)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_stop_hook_reports_background_work_from_a_huge_hook_input(env):
+    """A long last_assistant_message must not push the hook input past an
+    env/arg size limit (Linux: 128KB per string; macOS: 1MB in all)."""
+    hook_in = json.dumps({"last_assistant_message": "x" * 2_000_000,
+                          "background_tasks": [SHELL]})
+    assert run_hook(env, stdin=hook_in).returncode == 0
+    assert read_background(env, T, N).tasks == ("b1",)
+    assert not has_waiting(env, T, N)
