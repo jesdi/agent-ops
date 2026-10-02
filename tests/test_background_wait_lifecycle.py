@@ -1,6 +1,6 @@
 """Background wait edges the acceptance suite leaves open: a crashed
-session's marker, a wake between two herdr reads, and the same work
-reported again after a woken turn."""
+session's marker, a wake between two herdr reads, and the same or new
+work reported after a woken turn."""
 import json
 import time
 
@@ -101,6 +101,24 @@ def test_same_work_reported_after_a_woken_turn_keeps_the_cap_clock(tmp_path, mon
     main.run_pass(c, d)
     t = load(c.state_dir, T, N)
     assert t.park == PARK_HUMAN and t.park_note == CAP
+
+
+def test_new_work_reported_after_a_woken_turn_restarts_the_cap_clock(tmp_path, monkeypatch):
+    c = _review_task(tmp_path, monkeypatch)
+    mark_background(c.state_dir, T, N, WORK, now=time.time() - 3 * 3600 - MIN)
+    since = read_background(c.state_dir, T, N).since
+    sess = Herdr(("idle", 5), alive=[N], idle={N: 0.0})
+    d = deps(sess=sess)
+    main.run_pass(c, d)                        # records counter 5
+    sess.state = ("working", 6)                # woken into a new turn
+    main.run_pass(c, d)                        # the wait is over: today's rules
+    mark_background(c.state_dir, T, N, WORK + [{"id": "b2"}])   # new work
+    assert read_background(c.state_dir, T, N).since > since
+    sess.state = ("idle", 6)
+    main.run_pass(c, d)                        # records the new report
+    main.run_pass(c, d)                        # the old clock would cap-park here
+    t = load(c.state_dir, T, N)
+    assert t.park == "" and t.background_seq == 6
 
 
 def test_a_waiting_ping_after_a_woken_wait_parks_mid_stage(tmp_path, monkeypatch):
