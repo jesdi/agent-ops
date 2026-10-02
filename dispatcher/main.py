@@ -51,7 +51,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
-                              clear_waiting, delete, has_waiting,
+                              clear_turn_markers, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
                               next_stage, read_background, read_stage_signal,
                               resumable_crash,
@@ -283,7 +283,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
             f"attach to the session to sort it out."])
         return
     deps.sessions.send_text(task.target, task.issue, code.strip())
-    clear_waiting(cfg.state_dir, task.target, task.issue)
+    clear_turn_markers(cfg.state_dir, task.target, task.issue)
     signal = read_stage_signal(task.worktree)
     if signal is not None and signal.status != "working":
         by_name = {t.name: t for t in cfg.targets}
@@ -615,7 +615,7 @@ def _end_session(cfg: Config, deps: Deps, target: str, issue: int) -> None:
     """End the task's session and drop its turn-end markers (waiting and
     background): the next session must never inherit the old one's."""
     deps.sessions.end(target, issue)
-    clear_waiting(cfg.state_dir, target, issue)
+    clear_turn_markers(cfg.state_dir, target, issue)
 
 
 def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -722,7 +722,7 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     if msg_id == 0:
         return False
-    clear_waiting(cfg.state_dir, task.target, task.issue)
+    clear_turn_markers(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
                                 park_note=note, operator_request=None,
                                 updated_at=_now()))
@@ -1411,7 +1411,7 @@ def _stage_extra(act: SetTaskStage, signal) -> dict:
 def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
                        launch: Launch | None) -> TaskState:
     cfg = turn.cfg
-    clear_waiting(cfg.state_dir, task.target, task.issue)
+    clear_turn_markers(cfg.state_dir, task.target, task.issue)
     task = replace(task, stage=act.stage, updated_at=_now(),
                    **_stage_extra(act, turn.signal))
     save(cfg.state_dir, task)

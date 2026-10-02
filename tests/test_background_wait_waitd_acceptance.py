@@ -32,13 +32,13 @@ def test_background_report_leaves_background_marker_no_waiting(tmp_path):
 
 
 def test_non_report_pings_leave_waiting_and_no_background(tmp_path):
-    from dispatcher.state import clear_waiting, has_waiting
+    from dispatcher.state import clear_turn_markers, has_waiting
     for extra in ({}, {"background_tasks": []}, {"background_tasks": "x"},
                   {"background_tasks": {"id": "b1"}}):
         _ping(tmp_path, **extra)
         assert has_waiting(tmp_path, T, N), extra
         assert _bg(tmp_path) is None, extra
-        clear_waiting(tmp_path, T, N)
+        clear_turn_markers(tmp_path, T, N)
 
 
 def test_report_removes_waiting_and_waiting_removes_background(tmp_path):
@@ -93,11 +93,11 @@ def test_invalid_json_marker_reads_absent(tmp_path):
     assert _bg(tmp_path) is None
 
 
-def test_clear_waiting_removes_both_markers(tmp_path):
-    from dispatcher.state import clear_waiting, has_waiting, mark_waiting
+def test_clear_turn_markers_removes_both_markers(tmp_path):
+    from dispatcher.state import clear_turn_markers, has_waiting, mark_waiting
     mark_waiting(tmp_path, T, N)
     _place(tmp_path, [TASK], 1000)
-    clear_waiting(tmp_path, T, N)
+    clear_turn_markers(tmp_path, T, N)
     assert not has_waiting(tmp_path, T, N)
     assert _bg(tmp_path) is None
 

@@ -420,19 +420,19 @@ def mark_background(state_dir: str | Path, target: str, issue: int,
     tmp.replace(p)
 
 
-def clear_background(state_dir: str | Path, target: str, issue: int) -> None:
-    _background_path(state_dir, target, issue).unlink(missing_ok=True)
-
-
 def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
     return (_waiting_path(state_dir, target, issue).exists()
             or _legacy_waiting_path(state_dir, issue).exists())
 
 
-def clear_waiting(state_dir: str | Path, target: str, issue: int) -> None:
+def clear_turn_markers(state_dir: str | Path, target: str, issue: int) -> None:
+    """Remove every turn-end marker (waiting, legacy waiting, background).
+    The only way a background marker goes besides a waiting ping: every
+    session end or replacement calls it, so a new session never inherits an
+    old clock."""
     _waiting_path(state_dir, target, issue).unlink(missing_ok=True)
     _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
-    clear_background(state_dir, target, issue)
+    _background_path(state_dir, target, issue).unlink(missing_ok=True)
 
 
 def archive_root(state_dir: str | Path, target: str, issue: int) -> Path:

@@ -118,8 +118,8 @@ def test_codex_never_reads_stdin_and_never_reports_background(env):
     # stdin stays open and unwritten: a hook that reads it hangs -> timeout.
     agent = env / "wt" / ".agent"
     run_hook(env, stdin="")  # lay out .agent, then re-run with an open pipe
-    from dispatcher.state import clear_waiting
-    clear_waiting(env, T, N)
+    from dispatcher.state import clear_turn_markers
+    clear_turn_markers(env, T, N)
     p = subprocess.Popen(
         ["bash", str(agent / "stop-hook.sh"), '{"type": "agent-turn-complete"}'],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,

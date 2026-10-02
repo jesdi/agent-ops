@@ -17,7 +17,7 @@ from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                PARK_REVIEW, PARK_WAKE, AnswersRequest,
                                LoopCaps, SpecApprovalRequest, Stage,
-                               TaskState, clear_waiting, has_waiting, load,
+                               TaskState, clear_turn_markers, has_waiting, load,
                                load_all, mark_waiting, save)
 from tests.usagefakes import session_usage
 
