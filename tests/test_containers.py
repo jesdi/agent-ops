@@ -236,10 +236,23 @@ def test_triage_cmd_model_prefix_never_reaches_the_cli(monkeypatch, tmp_path):
     assert "anthropic/" not in shell_line
 
 
-def test_triage_cmd_refuses_a_non_anthropic_model():
-    with pytest.raises(ValueError, match="triage runs on Claude only"):
+def test_triage_cmd_runs_codex_headless_for_an_openai_model(monkeypatch, tmp_path,
+                                                          codex_package):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    cmd = containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+                                "openai/gpt-6-sol", "/triage/p.md", effort="high")
+    assert f"{tmp_path / 'state'}/codex-home:/root/.codex" in cmd
+    assert f"{codex_package}:/opt/codex:ro" in cmd
+    assert "/repos/r:/repos/r:ro" in cmd
+    assert "claude-home" not in " ".join(cmd)
+    assert cmd[-1] == ('codex exec --model gpt-6-sol -c model_reasoning_effort=high '
+                       '--dangerously-bypass-approvals-and-sandbox "$(cat /triage/p.md)"')
+
+
+def test_triage_cmd_refuses_a_provider_without_a_runtime():
+    with pytest.raises(ValueError, match="no runtime for provider"):
         containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-                              "openai/gpt-5", "/triage/p.md")
+                              "mistral/m", "/triage/p.md")
 
 
 def test_session_cmd_passes_effort_after_the_model(tmp_path: Path, monkeypatch):

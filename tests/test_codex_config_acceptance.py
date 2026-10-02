@@ -58,12 +58,13 @@ def test_entry_for_unknown_provider_is_rejected():
         parse_entry("mistral/some-model@medium", "t:")
 
 
-# -- criterion 3: triage stays anthropic-only -------------------------------
+# -- criterion 3: triage may fall back to openai ----------------------------
 
-def test_triage_containing_openai_entry_is_rejected():
-    with pytest.raises(ValueError):
-        parse_policy(_raw(triage=["anthropic/claude-sonnet-5@medium",
-                                  "openai/gpt-sol@medium"]))
+def test_triage_containing_openai_entry_is_accepted():
+    policy = parse_policy(_raw(triage=["anthropic/claude-sonnet-5@medium",
+                                       "openai/gpt-sol@medium"]))
+    assert [str(e) for e in policy.triage] == ["anthropic/claude-sonnet-5@medium",
+                                               "openai/gpt-sol@medium"]
 
 
 # -- criterion 4: models.review_second is optional and validated -----------

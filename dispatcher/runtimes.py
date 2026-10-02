@@ -5,6 +5,7 @@ launcher (containers, sessions) reaches every provider-specific bit through
 `runtime_for(model_id)`. See docs/specs/2026-09-24-codex-runtime-design.md."""
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
@@ -21,6 +22,9 @@ class Runtime:
     herdr_agent: str        # herdr's hint for the agent behind the podman wrapper
     launch_args: Callable[[str, str, str, str], str]  # (name, worktree, bare model, effort)
     resume_args: str        # what continues the stage's own session
+    # (prompt, bare model, effort) -> one-shot non-interactive args; the
+    # prompt is a shell word the caller already quoted or substitutes.
+    headless_args: Callable[[str, str, str], str]
     package: str = ""       # where the host package lands, "" = the lone binary at binary_mount
 
     @property
@@ -34,6 +38,10 @@ class Runtime:
 
     def launch(self, name: str, worktree: str, model: str, effort: str) -> str:
         return f"{self.cli} {self.launch_args(name, worktree, model, effort)}"
+
+    def headless(self, prompt: str, model: str, effort: str) -> str:
+        """One-shot shell line; model and effort are shell-quoted here."""
+        return f"{self.cli} {self.headless_args(prompt, shlex.quote(model), shlex.quote(effort) if effort else '')}"
 
     def resume(self, message: str) -> str:
         """The args a launch takes to continue with the (quoted) message."""
@@ -72,6 +80,9 @@ CLAUDE = Runtime(
         f"--remote-control {name} --permission-mode auto --model {model}"
         f"{' --effort ' + effort if effort else ''}"),
     resume_args="--continue",
+    headless_args=lambda prompt, model, effort: (
+        f"-p {prompt} --permission-mode auto --model {model}"
+        f"{' --effort ' + effort if effort else ''}"),
 )
 
 CODEX = Runtime(
@@ -99,6 +110,13 @@ CODEX = Runtime(
     # The newest Codex session for the cwd; a stage never changes provider,
     # so that is the stage's.
     resume_args="resume --last",
+    # `codex exec`: one turn, no TTY. Same bypass as launch_args (the
+    # container is the isolation); exec's default read-only sandbox could
+    # not write the caller's output file or reach `gh`.
+    headless_args=lambda prompt, model, effort: (
+        f"exec --model {model}"
+        f"{' -c model_reasoning_effort=' + effort if effort else ''}"
+        f" --dangerously-bypass-approvals-and-sandbox {prompt}"),
     # The whole package, not the executable: Codex spawns helpers from next
     # to its real path (code-mode host, rg, bwrap). The session image links
     # /usr/local/bin/codex to /opt/codex/bin/codex.

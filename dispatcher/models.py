@@ -203,16 +203,10 @@ def _review_second(raw: object) -> str:
 
 
 def _triage(raw: dict) -> tuple[Entry, ...]:
-    """`models.triage:` -> its entries. Anthropic only: triage never spends a
-    non-anthropic runtime's usage window."""
+    """`models.triage:` -> its entries, on any provider with a runtime."""
     if "triage" not in raw:
         raise ValueError("models: triage: list is required")
-    triage = _entries(raw["triage"], "triage:")
-    non_anthropic = [e for e in triage if e.provider != DEFAULT_PROVIDER]
-    if non_anthropic:
-        raise ValueError(f"models: triage: must be {DEFAULT_PROVIDER} only, "
-                         f"got {non_anthropic[0].model_id}")
-    return triage
+    return _entries(raw["triage"], "triage:")
 
 
 def parse_policy(raw: dict | None) -> ModelPolicy:
