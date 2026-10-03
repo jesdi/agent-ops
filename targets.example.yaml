@@ -53,11 +53,13 @@ loop_caps:
 # you name; its `when:` sentence is shown to the triage sweep (which picks the
 # track for the spec stage, as the label track:<name>) and to the spec
 # session (which picks the track for plan/implement/review once the scope is
-# known). Each stage lists entries `provider/model[@effort]` in order of
-# preference; the dispatcher launches the FIRST entry the usage gate admits,
-# keeps that pick for every session of the stage, and waits when none is
-# admitted. Review moves the provider that ran implement to the back of its
-# list. A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
+# known). Each stage lists entries `provider/model[@effort]`. The dispatcher
+# tries them by REQUIRED PACE, highest first: the entry whose weekly quota
+# most needs spending before its reset (quota left / time left). The written
+# order breaks ties and ranks entries with no weekly reading, which go last.
+# It launches the first entry in that order the usage gate admits, keeps that
+# pick for every session of the stage, and waits when none is admitted.
+# Review moves the provider that ran implement to the back of its list. A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
 # A target may carry its own `models:` block, which REPLACES this one.
 models:
   triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted

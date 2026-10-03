@@ -254,15 +254,18 @@ def track_from_labels(labels: Sequence[str], policy: ModelPolicy) -> str:
 
 
 Admitted = Callable[[str], bool]   # model id -> does the usage gate admit it
+# A stage list -> the order its entries are tried in (dispatcher.priority.order).
+Order = Callable[[Sequence[Entry]], tuple[Entry, ...]]
 
 
 def candidates(policy: ModelPolicy, track: str, stage: str,
-               avoid_provider: str = "") -> tuple[Entry, ...]:
-    """The ordered entries a stage may launch. Review prefers a provider
-    other than the one that ran implement: its entries move to the back,
-    order otherwise kept, so a track whose every entry shares one provider
-    is unchanged (preference, not a rule)."""
-    entries = policy.tracks[track].stages.get(policy_stage(stage), ())
+               avoid_provider: str = "", order: Order = tuple) -> tuple[Entry, ...]:
+    """The ordered entries a stage may launch: the written list as `order`
+    arranges it (default: as written). Review prefers a provider other than
+    the one that ran implement: its entries move to the back, order otherwise
+    kept, so a track whose every entry shares one provider is unchanged
+    (preference, not a rule)."""
+    entries = order(policy.tracks[track].stages.get(policy_stage(stage), ()))
     if not avoid_provider:
         return entries
     return (tuple(e for e in entries if e.provider != avoid_provider)
@@ -270,10 +273,10 @@ def candidates(policy: ModelPolicy, track: str, stage: str,
 
 
 def resolve(policy: ModelPolicy, track: str, stage: str, admitted: Admitted,
-            avoid_provider: str = "") -> Entry | None:
+            avoid_provider: str = "", order: Order = tuple) -> Entry | None:
     """First admitted entry, or None: the caller waits, never falls through
     to a model outside the list."""
-    return next((e for e in candidates(policy, track, stage, avoid_provider)
+    return next((e for e in candidates(policy, track, stage, avoid_provider, order)
                  if admitted(e.model_id)), None)
 
 

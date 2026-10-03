@@ -100,6 +100,23 @@ def allowance(w: Window, now: datetime, cfg: PaceConfig) -> float:
     return min(1.0, elapsed + cfg.pace_margin)
 
 
+def required_pace(w: Window, now: datetime, cfg: PaceConfig) -> float | None:
+    """How fast a weekly window's remaining quota has to be spent to be used
+    up by its reset: remaining quota over remaining time, the share of the
+    window still ahead on the allowance's weekend-weighted clock, with no
+    floor. 1.0 = spending the rest evenly lands on the reset. None for a
+    session window and for a window with no weighted time left (reset passed,
+    or the rest is weekend at weight 0). Ranks entries; the gate never reads it."""
+    if w.kind is not WindowKind.WEEKLY:
+        return None
+    start = w.resets_at - w.length
+    left = weighted_hours(max(now, start), w.resets_at, cfg.timezone, cfg.weekend_weight)
+    if left <= 0:
+        return None
+    whole = weighted_hours(start, w.resets_at, cfg.timezone, cfg.weekend_weight)
+    return (1.0 - w.used) / (left / whole)
+
+
 @dataclass(frozen=True)
 class Reading:
     """One window judged at a moment: what the box may have spent by then,
