@@ -1,6 +1,6 @@
 import type { KeyboardEvent } from 'react'
 import { useSetPriority } from '../hooks/useSetPriority'
-import type { GateView, PriorityView, ProviderUsageView, Severity, UsageView, WindowKind, WindowView } from '../lib/api'
+import type { GateView, ProviderUsageView, Severity, UsageView, WindowKind, WindowView } from '../lib/api'
 import { formatDuration } from '../lib/format'
 import { banner, chip } from '../lib/tone'
 
@@ -91,7 +91,9 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
           </span>
         </div>
       </div>
-      <span className="whitespace-nowrap text-right font-semibold text-ink">
+      {/* self-start: the figure sits on the bar's line in every row, whether
+          or not a pace hangs under it. */}
+      <span className="self-start whitespace-nowrap text-right font-semibold text-ink">
         {remaining}% left
         {/* On the headroom's line, in its own column: under the track the two
             together outgrow a narrow track and run into their neighbours. */}
@@ -157,7 +159,7 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
 }
 
 /** Which provider the box tries first: `auto`, or one routed provider pinned. */
-function PrioritySelector({ priority }: { priority: PriorityView }) {
+function PrioritySelector({ priority }: { priority: UsageView['priority'] }) {
   const { setPriority, pending, error } = useSetPriority()
   const selected = pending ?? priority.mode
   return (
@@ -175,7 +177,8 @@ function PrioritySelector({ priority }: { priority: PriorityView }) {
           return (
             <label
               key={option}
-              className="relative rounded-sm px-2.5 py-0.5 text-xs font-medium text-ink-muted hover:text-ink has-checked:bg-ink has-checked:text-surface-raised"
+              // A 44px tap target on a phone; from md up, the header's own density.
+              className="relative flex min-h-11 min-w-11 items-center justify-center rounded-sm px-3 text-sm font-medium text-ink-muted hover:text-ink has-checked:bg-ink has-checked:text-surface-raised md:min-h-0 md:min-w-0 md:px-2.5 md:py-0.5 md:text-xs"
             >
               <input
                 type="radio"
@@ -194,7 +197,7 @@ function PrioritySelector({ priority }: { priority: PriorityView }) {
           )
         })}
       </div>
-      {error && <p role="alert" className="w-full text-xs text-failed-fg">{error}</p>}
+      {error && <p role="alert" className="w-full min-w-0 break-words text-xs text-failed-fg">{error}</p>}
     </div>
   )
 }

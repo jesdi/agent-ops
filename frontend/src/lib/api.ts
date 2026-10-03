@@ -9,7 +9,6 @@ export type Zone = Column['zone']
 export type CapacityView = components['schemas']['CapacityView']
 export type TaskDetail = components['schemas']['TaskDetail']
 export type UsageView = components['schemas']['UsageView']
-export type PriorityView = components['schemas']['PriorityView']
 export type GateView = components['schemas']['GateView']
 export type ProviderUsageView = components['schemas']['ProviderUsageView']
 export type WindowView = components['schemas']['WindowView']
@@ -39,6 +38,7 @@ export interface PendingIntent {
 }
 export interface PendingIntentsView { intents: PendingIntent[] }
 export interface QueueActionResult { ok: true; reason: string }
+export interface PrioritySet { ok: true; mode: string }
 export interface IntentAccepted { status: 'pending'; intent: string }
 export interface ResumeOptions { text?: string; model?: string; bypassUsage?: boolean }
 
@@ -113,7 +113,7 @@ export const api = {
     post<QueueActionResult>('/queue/next', { issue, force }),
   queueReady: (issue: number) => post<QueueActionResult>('/queue/ready', { issue }),
   // Priority mode — applied immediately, 200 or 422 with the reason.
-  setPriority: (mode: string) => post<PriorityView>('/priority', { mode }),
+  setPriority: (mode: string) => post<PrioritySet>('/priority', { mode }),
   // Intent actions — 202 accepted, applied by the next dispatcher pass.
   reply: (target: string, issue: number, text: string) =>
     post<IntentAccepted>(`/task/${target}/${issue}/reply`, { text }),
