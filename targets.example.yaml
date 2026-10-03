@@ -17,6 +17,13 @@ racing_threshold: 0.95
 pace_margin: 0.10
 weekend_weight: 0.5
 timezone: Europe/Madrid
+# Session week share, per provider: how much of the weekly quota one 5-hour
+# session spends when used up to budget_threshold (above 0, at most 1). With
+# it, a provider that can no longer spend the rest of its week through the
+# sessions left before its weekly reset is session-bound and is tried first.
+# Absent: no provider is ever session-bound.
+# session_week_share:
+#   anthropic: 0.05
 # Sized for capacity 2 on the 4 GB box: 2 active sessions x 1500m + ~1 GB
 # system baseline fits 3.8 GB RAM with the zram cushion absorbing spikes.
 # A session that overruns the cap OOMs inside its own container only.

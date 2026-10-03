@@ -83,6 +83,20 @@ def _loop_caps(raw: object) -> LoopCaps:
     return LoopCaps(**raw)
 
 
+def _session_week_share(raw: object) -> dict[str, float]:
+    """provider -> share of the week one session spends; each above 0 and at
+    most 1."""
+    if not isinstance(raw, dict):
+        raise ValueError("session_week_share: must map provider to share, "
+                         f"got {raw!r}")
+    for provider, share in raw.items():
+        if (isinstance(share, bool) or not isinstance(share, (int, float))
+                or not 0.0 < share <= 1.0):
+            raise ValueError(f"session_week_share: {provider} must be above 0 "
+                             f"and at most 1, got {share!r}")
+    return {str(provider): share for provider, share in raw.items()}
+
+
 def _pace(raw: dict) -> PaceConfig:
     """The usage-gate knobs, read from their top-level targets.yaml keys."""
     d = PaceConfig()
@@ -92,7 +106,8 @@ def _pace(raw: dict) -> PaceConfig:
         racing_threshold=raw.get("racing_threshold", d.racing_threshold),
         pace_margin=float(raw.get("pace_margin", d.pace_margin)),
         weekend_weight=float(raw.get("weekend_weight", d.weekend_weight)),
-        timezone=str(raw.get("timezone", d.timezone)))
+        timezone=str(raw.get("timezone", d.timezone)),
+        session_week_share=_session_week_share(raw.get("session_week_share", {})))
     try:
         ZoneInfo(pace.timezone)
     except (ZoneInfoNotFoundError, ValueError) as e:

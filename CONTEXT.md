@@ -117,6 +117,17 @@ windows its model draws on. It orders the entries of a list (highest first,
 entries without one last, ties as written); the gate never reads it.
 _Avoid_: urgency, burn rate
 
+**Session-bound**:
+A provider whose unscoped weekly window has at least as much remaining quota
+as its spendable maximum: its session week share (`session_week_share` in
+`targets.yaml`, the share of the week one session spends when used up to the
+session threshold) times the sessions left before that window resets. The
+open session counts for the part of the threshold it has not used; after its
+reset, every started 5 hours of real time counts as one. Even using every
+session left it cannot spend its week, so its entries are tried first; the
+gate never reads it. A provider with no session week share, no unscoped
+weekly window or unavailable usage is never session-bound.
+
 **Binding window**:
 Of the windows a model draws on — unscoped ones plus any scoped window
 whose display name matches the model — the one with the least headroom. It
@@ -206,7 +217,7 @@ adapters, one per provider. The dispatcher fetches only the providers the
 model policy references; the console also shows any other provider whose
 adapter reads (Codex run by hand), and nothing admits on that reading. Loop policy stays independent of all of it: waiting for
 headroom does not spend a fix round, and a denial for one provider never
-prevents considering another. The router is `dispatcher/models.py::resolve`: first admitted entry of the task's track for the stage, tried in the order `dispatcher/priority.py::order` gives (highest required pace first); labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
+prevents considering another. The router is `dispatcher/models.py::resolve`: first admitted entry of the task's track for the stage, tried in the order `dispatcher/priority.py::order` gives (a session-bound provider's entries first, then highest required pace); labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
 changes provider, so cross-runtime session continuation is excluded by rule,
 not pending. See docs/specs/2026-09-24-codex-runtime-design.md.
 

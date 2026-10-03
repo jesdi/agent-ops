@@ -458,6 +458,9 @@ def test_pace_knobs_parse(tmp_path):
     ("weekend_weight: -0.1\n", "weekend_weight"),
     ("pace_margin: -0.05\n", "pace_margin"),
     ("pace_margin: 1.0\n", "pace_margin"),
+    ("session_week_share: 0.05\n", "session_week_share"),
+    ("session_week_share: {anthropic: true}\n", "session_week_share"),
+    ("session_week_share: {anthropic: lots}\n", "session_week_share"),
 ])
 def test_bad_pace_knobs_fail_config_load(tmp_path, extra, msg):
     p = tmp_path / "targets.yaml"
