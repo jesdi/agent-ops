@@ -96,11 +96,45 @@ def test_openai_entries_first_then_the_rest_each_group_in_written_order(
     assert launched(sess) == [expected]
 
 
-def test_mode_openai_with_no_openai_entry_launches_the_first_written(
+FABLE = "claude-fable-5-1"
+FABLE_ID = "anthropic/claude-fable-5-1"
+
+
+def routed_openai_policy(monkeypatch, implement):
+    """Openai stays routed (via the triage list) while the stage list under
+    test may hold no openai entry, so the stored mode really reads `openai`."""
+    import tests.test_priority_auto as auto
+    track = {"when": "x", "spec": implement, "plan": implement,
+             "implement": implement, "review": implement}
+    monkeypatch.setattr(auto, "policy", lambda impl, review=None: parse_policy({
+        "triage": [SONNET, "openai/gpt-6-luna"], "untracked": "standard",
+        "tracks": {"standard": track}}))
+
+
+def fable_lower_pace(openai_windows):
+    # unscoped anthropic 6.3x, Fable-scoped 1.0x: fable's pace is the lower
+    return both([wk(0.10, 24, now=NOW), wk(0.50, 84, "Fable", now=NOW)],
+                openai_windows)
+
+
+def test_mode_openai_leaves_a_list_with_no_openai_entry_unchanged(
         tmp_path, monkeypatch):
+    from dispatcher import priority
+    routed_openai_policy(monkeypatch, [FABLE, OPUS])
     save_mode(tmp_path)
-    sess, _ = go_hungry(tmp_path, monkeypatch, implement=[OPUS, SONNET])
-    assert launched(sess) == [OPUS_ID]
+    u = fable_lower_pace([wk(0.50, 84, now=NOW)])
+    sess, _ = run(tmp_path, monkeypatch, u, frozen=NOW)
+    assert priority.load(str(state_dir(tmp_path)), ROUTED) == "openai"
+    assert launched(sess) == [FABLE_ID]           # auto would rank opus first
+
+
+def test_mode_openai_keeps_written_order_inside_a_group_despite_required_pace(
+        tmp_path, monkeypatch):
+    routed_openai_policy(monkeypatch, [FABLE, OPUS, SOL])
+    save_mode(tmp_path)
+    u = fable_lower_pace([wk(0.50, 84, now=NOW), ses(0.95, 2, NOW)])
+    sess, _ = run(tmp_path, monkeypatch, u, frozen=NOW)
+    assert launched(sess) == [FABLE_ID]           # openai denied; not opus
 
 
 def test_mode_openai_gate_denies_luna_falls_to_sonnet_verdict_as_under_auto(
