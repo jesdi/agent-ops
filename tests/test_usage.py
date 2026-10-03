@@ -235,3 +235,10 @@ def test_session_bound_edges_never_bound_or_never_divide_by_zero():
     assert usage.session_bound(scoped, NOW, SHARE) is False
     zero = PaceConfig(budget_threshold=0.0, session_week_share={"anthropic": 0.05})
     assert _bound(0.75, 30, (0.0, 5), zero) is True      # 5 sessions, none open
+
+
+def test_required_pace_of_a_window_over_its_quota_is_zero_not_negative():
+    now = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+    cfg = PaceConfig(weekend_weight=1.0)
+    over = Window(WEEKLY, None, 1.2, now + timedelta(hours=24))
+    assert usage.required_pace(over, now, cfg) == 0.0

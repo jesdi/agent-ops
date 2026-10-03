@@ -605,3 +605,23 @@ def test_crashed_task_view_shows_the_crashed_stage_pick(tmp_path):
                                  picks={"implement": "openai/gpt-5-codex@high"})]
     body = client.get("/api/task/alpha/7", headers=HEADERS).json()
     assert body["card"]["model"] == "openai/gpt-5-codex"
+
+
+@pytest.mark.parametrize("path", [
+    "/api/board", "/api/board/snapshot", "/api/usage", "/api/task/alpha/7"])
+def test_a_read_route_reads_the_priority_mode_once(tmp_path, monkeypatch, path):
+    """One read per request: a mode change landing mid-request cannot give a
+    response whose mode, card models and admissions disagree."""
+    from dispatcher import priority
+    fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN),
+                       make_task(issue=8, stage=Stage.SPEC)]
+    fake.rank["alpha"] = ([{
+        "number": 73, "title": "t73", "url": "u", "status": "Ready",
+        "labels": ["auto"], "blocked": False, "score": 2.0, "boost": 0,
+    }], "now", False)
+    reads, real = [], priority.load
+    monkeypatch.setattr(priority, "load",
+                        lambda *a, **kw: reads.append(1) or real(*a, **kw))
+    assert client.get(path, headers=HEADERS).status_code == 200
+    assert len(reads) == 1

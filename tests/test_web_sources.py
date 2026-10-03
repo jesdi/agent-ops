@@ -604,3 +604,17 @@ def test_quarantine_key_comes_from_the_filename_not_the_body(tmp_path):
                 blocker_issue=1, fingerprint="f", created_at="c")
     entry, = src.quarantine_entries()
     assert (entry["target"], entry["task_issue"]) == ("alpha", 73)
+
+
+def test_state_fingerprint_board_and_usage_follow_the_priority_mode(tmp_path):
+    """A mode change must reach other open consoles over SSE: it moves the
+    mode, the "first" chip and the board's next-launch models."""
+    from datetime import datetime, timezone
+    from dispatcher import priority
+    _, src = make_sources(tmp_path)
+    f1 = json.loads(src.state_fingerprint())
+    priority.save(tmp_path, "anthropic", actor="jesdi",
+                  now=datetime.now(timezone.utc))
+    f2 = json.loads(src.state_fingerprint())
+    assert f2["board"] != f1["board"]
+    assert f2["usage"] != f1["usage"]

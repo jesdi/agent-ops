@@ -107,7 +107,8 @@ def required_pace(w: Window, now: datetime, cfg: PaceConfig) -> float | None:
     """How fast a weekly window's remaining quota has to be spent to be used
     up by its reset: remaining quota over remaining time, the share of the
     window still ahead on the allowance's weekend-weighted clock, with no
-    floor. 1.0 = spending the rest evenly lands on the reset. None for a
+    floor. The remaining quota is clamped at 0: over 100% used is pace 0.0.
+    1.0 = spending the rest evenly lands on the reset. None for a
     session window and for a window with no weighted time left (reset passed,
     or the rest is weekend at weight 0). Ranks entries; the gate never reads it."""
     if w.kind is not WindowKind.WEEKLY:
@@ -117,7 +118,7 @@ def required_pace(w: Window, now: datetime, cfg: PaceConfig) -> float | None:
     if left <= 0:
         return None
     whole = weighted_hours(start, w.resets_at, cfg.timezone, cfg.weekend_weight)
-    return (1.0 - w.used) / (left / whole)
+    return max(0.0, 1.0 - w.used) / (left / whole)
 
 
 def _unscoped(usage: ProviderUsage, kind: WindowKind) -> Window | None:
