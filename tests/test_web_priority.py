@@ -144,6 +144,18 @@ def test_unknown_mode_is_422_and_changes_nothing(tmp_path):
     assert r.status_code == 422
     assert stored(tmp_path) == "auto"
     assert get_usage(client)["priority"]["mode"] == "auto"
+    assert not (tmp_path / priority.FILE).exists()
+    assert fake.appended == []
+
+
+def test_refused_mode_leaves_a_stored_mode_alone(tmp_path):
+    priority.save(tmp_path, "openai", actor="jesdi", now=NOW)
+    before = (tmp_path / priority.FILE).read_bytes()
+    fake, _, client = rig(tmp_path)
+    r = client.post("/api/priority", headers=OP, json={"mode": "nvidia"})
+    assert r.status_code == 422
+    assert stored(tmp_path) == "openai"
+    assert (tmp_path / priority.FILE).read_bytes() == before
     assert fake.appended == []
 
 
