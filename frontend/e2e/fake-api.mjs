@@ -61,19 +61,28 @@ const state = {
   },
   queue: { targets: [] },
   usage: {
-    providers: [{
-      provider: 'anthropic', source: 'oauth',
-      windows: [
-        { kind: 'session', scope: null, used: 0.4, allowance: 0.8, headroom: 0.4, minutes_to_reset: 120, severity: 'ok' },
-        { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' },
-      ],
-    }],
+    providers: [
+      {
+        provider: 'anthropic', source: 'oauth',
+        windows: [
+          { kind: 'session', scope: null, used: 0.4, allowance: 0.8, headroom: 0.4, minutes_to_reset: 120, severity: 'ok', required_pace: null },
+          { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok', required_pace: 5.6 },
+        ],
+      },
+      {
+        provider: 'openai', source: 'oauth',
+        windows: [
+          { kind: 'weekly', scope: null, used: 0.2, allowance: 0.289, headroom: 0.089, minutes_to_reset: 7320, severity: 'ok', required_pace: 1.0 },
+        ],
+      },
+    ],
     gate: {
       model: 'claude-opus-4-8', provider: 'anthropic', admitted: true,
       note: 'anthropic week: 13% used, allowance 29%, headroom 16 pts, resets in 5d 2h',
       minutes_to_reset: 7320,
-      binding: { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' },
+      binding: { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok', required_pace: 5.6 },
     },
+    priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic' },
   },
   failures: { quarantined: [], fingerprints: [] },
   history: { events: [] },
@@ -252,6 +261,23 @@ const server = createServer(async (req, res) => {
     })
     return
   }
+  if (url.pathname === '/api/priority' && req.method === 'POST') {
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => {
+      let mode
+      try { mode = JSON.parse(body).mode } catch { /* falls through to 422 */ }
+      const p = state.usage.priority
+      if (!p.options.includes(mode)) {
+        json(422, { detail: `unknown priority mode: ${mode}` }); return
+      }
+      p.mode = mode
+      if (mode !== 'auto') p.first = mode
+      push(['usage'])
+      json(200, p)
+    })
+    return
+  }
   if (url.pathname === '/api/queue/next' && req.method === 'POST') {
     return json(200, { ok: true, reason: 'queued next' })
   }
@@ -265,6 +291,7 @@ const server = createServer(async (req, res) => {
   // spec is idempotent across Playwright retries (workers:1, no parallel runs).
   if (url.pathname === '/__control__/reset-queue' && req.method === 'POST') {
     queued().ghosts = seedGhosts()
+    state.usage.priority = { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic' }
     state.board.next_claim = {
       verdict: 'will-claim',
       next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),

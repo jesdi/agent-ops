@@ -156,3 +156,22 @@ export const pendingReplyIntent: PendingIntentsView = {
   intents: [{ action: 'reply', target: 'widget', issue: 42, actor: 'dev@localhost',
               created_at: '2026-07-25T11:58:00Z' }],
 }
+
+// Two routed providers and every priority option: the usage panel's priority
+// selector, the "first" chip and the required-pace text.
+const openaiWeek: WindowView = { kind: 'weekly', scope: null, used: 0.2, allowance: 0.289, headroom: 0.089, minutes_to_reset: 7320, severity: 'ok', required_pace: 1.0 }
+export const usageRouted: UsageView = {
+  providers: [
+    {
+      provider: 'anthropic', source: 'oauth',
+      windows: [
+        { kind: 'session', scope: null, used: 0.05, allowance: 0.8, headroom: 0.75, minutes_to_reset: 89, severity: 'ok', required_pace: null },
+        { ...weekAll, required_pace: 5.6 },
+        { kind: 'weekly', scope: 'Fable', used: 0.23, allowance: 0.289, headroom: 0.059, minutes_to_reset: 7320, severity: 'close', required_pace: null },
+      ],
+    },
+    { provider: 'openai', source: 'oauth', windows: [openaiWeek] },
+  ],
+  gate: usage.gate,
+  priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic' },
+}
