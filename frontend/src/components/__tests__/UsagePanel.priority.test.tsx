@@ -28,7 +28,7 @@ function serve(initial: UsageView = usageRouted, refuse?: string) {
       posts.push(body)
       if (refuse) return HttpResponse.json({ detail: refuse }, { status: 422 })
       view = { ...view, priority: { ...view.priority, mode: body.mode, first: body.mode === 'auto' ? view.priority.first : body.mode } }
-      return HttpResponse.json(view.priority)
+      return HttpResponse.json({ ok: true, mode: body.mode }) // what the real backend answers
     }),
   )
   return posts
@@ -133,4 +133,75 @@ it('the control is keyboard operable and exposes its selection', async () => {
   await userEvent.keyboard(' ')
   await waitFor(() => expect(posts).toEqual([{ mode: 'openai' }]))
   await waitFor(() => expect(radio(screen.getByRole('radiogroup', { name: /priority/i }), 'OpenAI')).toBeChecked())
+})
+
+const withOptions = (options: string[], m = 'auto'): UsageView => ({ ...usageRouted, priority: { ...usageRouted.priority, mode: m, options } })
+const names = (g: HTMLElement) => within(g).getAllByRole('radio').map((r) => r.getAttribute('aria-label') ?? r.textContent)
+
+it('the radios come from priority.options, not a fixed list', async () => {
+  serve(withOptions(['auto', 'anthropic']))
+  const { unmount } = renderWithProviders(<Live />)
+  expect(names(await group())).toEqual(['Auto', 'Anthropic'])
+  unmount()
+  serve(withOptions(['auto', 'anthropic', 'google', 'openai']))
+  renderWithProviders(<Live />)
+  expect(names(await group())).toEqual(['Auto', 'Anthropic', 'Google', 'OpenAI'])
+})
+
+it('the selected radio is the tab stop even when it is not the first', async () => {
+  serve(mode('openai'))
+  renderWithProviders(<Live />)
+  const g = await group()
+  await userEvent.tab()
+  expect(document.activeElement).toBe(radio(g, 'OpenAI'))
+})
+
+it('a refused change is announced as an alert', async () => {
+  serve(usageRouted, 'openai is not routable here')
+  renderWithProviders(<Live />)
+  await userEvent.click(radio(await group(), 'OpenAI'))
+  expect(within(await screen.findByRole('alert')).getByText(/openai is not routable here/)).toBeInTheDocument()
+})
+
+it('the control does not stay stuck when the usage refetch hangs', async () => {
+  const posts: unknown[] = []
+  let gets = 0
+  server.use(
+    http.get('/api/usage', () => (++gets === 1 ? HttpResponse.json(usageRouted) : new Promise<Response>(() => {}))),
+    http.post('/api/priority', async ({ request }) => {
+      const body = (await request.json()) as { mode: string }
+      posts.push(body)
+      return HttpResponse.json({ ok: true, mode: body.mode })
+    }),
+  )
+  renderWithProviders(<Live />)
+  await userEvent.click(radio(await group(), 'OpenAI'))
+  await waitFor(() => expect(radio(screen.getByRole('radiogroup', { name: /priority/i }), 'OpenAI')).toBeChecked())
+  await waitFor(() => expect(screen.getByRole('radiogroup', { name: /priority/i })).not.toHaveAttribute('aria-busy', 'true'))
+  await userEvent.click(radio(screen.getByRole('radiogroup', { name: /priority/i }), 'Anthropic'))
+  await waitFor(() => expect(posts).toEqual([{ mode: 'openai' }, { mode: 'anthropic' }]))
+})
+
+it('a second choice while a POST is in flight sends no second POST', async () => {
+  const posts: unknown[] = []
+  let release!: () => void
+  const held = new Promise<void>((r) => { release = r })
+  server.use(
+    http.get('/api/usage', () => HttpResponse.json(usageRouted)),
+    http.post('/api/priority', async ({ request }) => {
+      const body = (await request.json()) as { mode: string }
+      posts.push(body)
+      await held
+      return HttpResponse.json({ ok: true, mode: body.mode })
+    }),
+  )
+  renderWithProviders(<Live />)
+  const g = await group()
+  await userEvent.click(radio(g, 'OpenAI'))
+  await waitFor(() => expect(posts).toHaveLength(1))
+  await userEvent.click(radio(screen.getByRole('radiogroup', { name: /priority/i }), 'Anthropic'))
+  expect(posts).toEqual([{ mode: 'openai' }])
+  release()
+  await waitFor(() => expect(screen.getByRole('radiogroup', { name: /priority/i })).not.toHaveAttribute('aria-busy', 'true'))
+  expect(posts).toHaveLength(1)
 })

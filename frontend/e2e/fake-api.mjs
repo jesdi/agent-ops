@@ -274,7 +274,7 @@ const server = createServer(async (req, res) => {
       p.mode = mode
       if (mode !== 'auto') p.first = mode
       push(['usage'])
-      json(200, p)
+      json(200, { ok: true, mode }) // what the real backend answers
     })
     return
   }
