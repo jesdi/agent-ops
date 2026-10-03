@@ -9,6 +9,7 @@ export type Zone = Column['zone']
 export type CapacityView = components['schemas']['CapacityView']
 export type TaskDetail = components['schemas']['TaskDetail']
 export type UsageView = components['schemas']['UsageView']
+export type PriorityView = components['schemas']['PriorityView']
 export type GateView = components['schemas']['GateView']
 export type ProviderUsageView = components['schemas']['ProviderUsageView']
 export type WindowView = components['schemas']['WindowView']
@@ -111,6 +112,8 @@ export const api = {
   queueNext: (issue: number, force: boolean) =>
     post<QueueActionResult>('/queue/next', { issue, force }),
   queueReady: (issue: number) => post<QueueActionResult>('/queue/ready', { issue }),
+  // Priority mode — applied immediately, 200 or 422 with the reason.
+  setPriority: (mode: string) => post<PriorityView>('/priority', { mode }),
   // Intent actions — 202 accepted, applied by the next dispatcher pass.
   reply: (target: string, issue: number, text: string) =>
     post<IntentAccepted>(`/task/${target}/${issue}/reply`, { text }),

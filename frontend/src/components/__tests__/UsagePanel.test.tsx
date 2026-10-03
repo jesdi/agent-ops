@@ -1,7 +1,8 @@
-import { render, screen, within } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import { UsagePanel } from '../UsagePanel'
 import type { UsageView } from '../../lib/api'
 import { usage, usageCcusage, usageUnavailable } from '../../test/fixtures'
+import { renderWithProviders as render } from '../../test/render'
 
 it('renders one bullet per window with used, allowance and remaining in the accessible text', () => {
   render(<UsagePanel usage={usage} />)
