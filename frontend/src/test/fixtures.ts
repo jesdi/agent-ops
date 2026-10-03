@@ -74,8 +74,8 @@ export const board: BoardView = {
   next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0, blocked_by: '' },
 }
 
-const weekAll: WindowView = { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok' }
-const ccusageSession: WindowView = { kind: 'session', scope: null, used: 0.62, allowance: 0.8, headroom: 0.18, minutes_to_reset: 45, severity: 'ok' }
+const weekAll: WindowView = { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok', required_pace: 1.1 }
+const ccusageSession: WindowView = { kind: 'session', scope: null, used: 0.62, allowance: 0.8, headroom: 0.18, minutes_to_reset: 45, severity: 'ok', required_pace: null }
 
 // The default model (Opus) draws on the unscoped windows only, so the weekly
 // window binds its gate, not Fable's.
@@ -83,9 +83,9 @@ export const usage: UsageView = {
   providers: [{
     provider: 'anthropic', source: 'oauth',
     windows: [
-      { kind: 'session', scope: null, used: 0.05, allowance: 0.8, headroom: 0.75, minutes_to_reset: 89, severity: 'ok' },
+      { kind: 'session', scope: null, used: 0.05, allowance: 0.8, headroom: 0.75, minutes_to_reset: 89, severity: 'ok', required_pace: null },
       weekAll,
-      { kind: 'weekly', scope: 'Fable', used: 0.23, allowance: 0.289, headroom: 0.059, minutes_to_reset: 7320, severity: 'close' },
+      { kind: 'weekly', scope: 'Fable', used: 0.23, allowance: 0.289, headroom: 0.059, minutes_to_reset: 7320, severity: 'close', required_pace: 0.9 },
     ],
   }],
   gate: {
@@ -93,6 +93,7 @@ export const usage: UsageView = {
     note: 'anthropic week: 13% used, allowance 29%, headroom 16 pts, resets in 5d 2h',
     minutes_to_reset: 7320, binding: weekAll,
   },
+  priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic' },
 }
 
 export const usageUnavailable: UsageView = {
@@ -101,6 +102,7 @@ export const usageUnavailable: UsageView = {
     model: 'claude-opus-4-8', provider: 'anthropic', admitted: false,
     note: 'anthropic: usage unavailable', minutes_to_reset: 0, binding: null,
   },
+  priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic' },
 }
 
 export const usageCcusage: UsageView = {
@@ -110,6 +112,7 @@ export const usageCcusage: UsageView = {
     note: 'anthropic session: 62% used, allowance 80%, headroom 18 pts, resets in 45m',
     minutes_to_reset: 45, binding: ccusageSession,
   },
+  priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic' },
 }
 
 export const taskDetail: TaskDetail = {

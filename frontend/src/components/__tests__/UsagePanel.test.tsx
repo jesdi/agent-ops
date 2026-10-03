@@ -36,6 +36,7 @@ it('a ccusage reading says the weekly windows are unknown', () => {
 
 it('a blocked window names itself', () => {
   const blocked: UsageView = {
+    ...usage,
     providers: [{ ...usage.providers[0]!,
       windows: [{ ...usage.providers[0]!.windows[1]!, used: 0.4, headroom: -0.111, severity: 'blocked' }] }],
     gate: { ...usage.gate, admitted: false },
@@ -56,6 +57,7 @@ it('a headroom of exactly one point reads singular', () => {
 
 it('with two providers the chip shows once, on the gate provider only', () => {
   const twoProviders: UsageView = {
+    ...usage,
     providers: [
       ...usage.providers,
       { provider: 'nvidia', source: 'oauth', windows: [usage.providers[0]!.windows[0]!] },

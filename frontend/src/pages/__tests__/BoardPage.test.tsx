@@ -222,18 +222,20 @@ it('a failing /api/usage states the gap instead of silently dropping the gauge',
 
 it('two provider groups render side by side; the spawn chip shows once, on the gate provider', async () => {
   const twoProviders: UsageView = {
+    priority: { mode: 'auto', options: ['auto', 'anthropic', 'nvidia'], first: 'anthropic' },
     providers: [
       {
         provider: 'anthropic', source: 'oauth',
         windows: [
           { kind: 'weekly', scope: 'Fable', used: 0.35, allowance: 0.289,
-            headroom: -0.061, minutes_to_reset: 7320, severity: 'blocked' },
+            headroom: -0.061, minutes_to_reset: 7320, severity: 'blocked',
+            required_pace: 0.8 },
         ],
       },
       {
         provider: 'nvidia', source: 'ccusage',
         windows: [{ kind: 'session', scope: null, used: 0.4, allowance: 0.8,
-          headroom: 0.4, minutes_to_reset: 45, severity: 'ok' }],
+          headroom: 0.4, minutes_to_reset: 45, severity: 'ok', required_pace: null }],
       },
     ],
     // Sonnet draws on no Fable window, so the gate is open despite it
