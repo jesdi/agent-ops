@@ -30,7 +30,9 @@ for (const colorScheme of ['light', 'dark'] as const) {
     await page.emulateMedia({ colorScheme })
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/')
-    await showHeader(page)
+    // 390px folds the header on every project, so showHeader's project check
+    // does not apply here.
+    await page.getByRole('button', { name: /active/, expanded: false }).click()
     const box = (await control(page).boundingBox())!
     expect(box.x).toBeGreaterThanOrEqual(0)
     expect(box.x + box.width).toBeLessThanOrEqual(390)
