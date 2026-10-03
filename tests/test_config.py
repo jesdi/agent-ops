@@ -614,3 +614,35 @@ def test_referenced_providers_includes_review_second(tmp_path, where):
                       for line in CLAUDE_TRACKS_WITH_SECOND.splitlines()))
     p.write_text(text)
     assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})
+
+
+def test_routed_providers_are_the_lists_the_box_routes_not_review_second(tmp_path):
+    """The set a priority mode may name: review_second is not a routed list,
+    so naming its provider alone would order nothing."""
+    from dispatcher.config import routed_providers
+    p = tmp_path / "targets.yaml"
+    p.write_text(CLAUDE_TRACKS_WITH_SECOND + SAMPLE)
+    assert routed_providers(load_config(p)) == frozenset({"anthropic"})
+
+
+@pytest.mark.parametrize("old,new", [
+    ("triage: [anthropic/m]", "triage: [openai/m]"),
+    ("review: [anthropic/m]", "review: [anthropic/m, openai/m]"),
+], ids=["triage-list", "stage-list"])
+@pytest.mark.parametrize("where", ["global", "target"])
+def test_routed_providers_cover_triage_and_stage_lists_of_every_policy(
+        tmp_path, where, old, new):
+    from dispatcher.config import routed_providers
+    models = CLAUDE_TRACKS_WITH_SECOND.replace(
+        "  review_second: openai/gpt-5-codex\n", "").replace(old, new)
+    assert "openai" in models
+    if where == "global":
+        text = models + SAMPLE
+    else:
+        text = SAMPLE.replace(
+            "    status_in_progress_option_id: def456\n",
+            "    status_in_progress_option_id: def456\n"
+            + "".join("    " + line + "\n" for line in models.splitlines()))
+    p = tmp_path / "targets.yaml"
+    p.write_text(text)
+    assert routed_providers(load_config(p)) == frozenset({"anthropic", "openai"})

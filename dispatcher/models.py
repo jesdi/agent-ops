@@ -280,8 +280,9 @@ def resolve(policy: ModelPolicy, track: str, stage: str, admitted: Admitted,
                  if admitted(e.model_id)), None)
 
 
-def triage_entry(policy: ModelPolicy, admitted: Admitted) -> Entry | None:
-    return next((e for e in policy.triage if admitted(e.model_id)), None)
+def triage_entry(policy: ModelPolicy, admitted: Admitted,
+                 order: Order = tuple) -> Entry | None:
+    return next((e for e in order(policy.triage) if admitted(e.model_id)), None)
 
 
 def second_model(policy: ModelPolicy, stage: str, entry: Entry,

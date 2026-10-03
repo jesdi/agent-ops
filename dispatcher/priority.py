@@ -2,14 +2,36 @@
 (dispatcher.usage.admits) still decides which of them may run."""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Mapping
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Collection, Mapping
 
 from dispatcher.models import Entry, Order
 from dispatcher.usage import (PaceConfig, ProviderUsage, _applies, readings,
                               required_pace, session_bound)
+from dispatcher.workspace import _write_json_atomic
 
 AUTO = "auto"
+FILE = "provider-priority.json"
+
+
+def load(state_dir: str | Path, routed: Collection[str]) -> str:
+    """The stored priority mode. Never fails and never rewrites: a missing or
+    unreadable file, a `mode` that is not a string, or a provider `routed`
+    does not hold all read as auto, so a provider routed again later brings
+    its stored mode back."""
+    try:
+        mode = json.loads((Path(state_dir) / FILE).read_text())["mode"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return AUTO
+    return mode if isinstance(mode, str) and mode in routed else AUTO
+
+
+def save(state_dir: str | Path, mode: str, *, actor: str, now: datetime) -> None:
+    _write_json_atomic(Path(state_dir) / FILE, {
+        "mode": mode, "set_by": actor,
+        "set_at": now.astimezone(timezone.utc).isoformat()})
 
 
 def _entry_pace(usages: Mapping[str, ProviderUsage], entry: Entry,
@@ -27,9 +49,13 @@ def _entry_pace(usages: Mapping[str, ProviderUsage], entry: Entry,
 
 def order(mode: str, usages: Mapping[str, ProviderUsage], now: datetime,
           pace: PaceConfig) -> Order:
-    """Auto, the only mode yet: entries of a session-bound provider first;
-    in that group and in the rest, highest required pace first, entries
-    without one last, exact ties in written order."""
+    """A provider's name: its entries first, the rest after, each group in
+    written order; the session-bound rule is not applied. Auto: entries of a
+    session-bound provider first; in that group and in the rest, highest
+    required pace first, entries without one last, exact ties in written
+    order."""
+    if mode != AUTO:
+        return lambda entries: tuple(sorted(entries, key=lambda e: e.provider != mode))
     bound = {name for name, u in usages.items() if session_bound(u, now, pace)}
 
     def rank(e: Entry) -> tuple[bool, bool, float]:

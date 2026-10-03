@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Callable
 
 from dispatcher.convergence import pass_lock
-from dispatcher.config import Config, Target, load_config, policy_for, referenced_providers
+from dispatcher.config import (Config, Target, load_config, policy_for,
+                               referenced_providers, routed_providers)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
 from dispatcher import (claims, eventlog, execution_overrides, failures, intents, loops,
@@ -185,7 +186,8 @@ def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
 def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
     """The entry a task runs or would run next, for status lines: its pick for
     the current stage, else the first candidate, else ''. No usage reading
-    here, so the order is built from an empty one: in auto, as written."""
+    here, so the order is built from an empty one: a fixed mode applies, and
+    in auto every entry is unrated, which is the written order."""
     policy = _policy(cfg, target)
     stage = next_stage(task)
     pick = stage_pick(task.picks, stage)
@@ -193,7 +195,8 @@ def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
         return pick
     if task.track in policy.tracks:
         cands = candidates(policy, task.track, stage, order=priority.order(
-            priority.AUTO, {}, datetime.now(timezone.utc), cfg.pace))
+            priority.load(cfg.state_dir, routed_providers(cfg)), {},
+            datetime.now(timezone.utc), cfg.pace))
         if cands:
             return str(cands[0])
     return ""
@@ -2205,8 +2208,10 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     usages = fetch_all(cfg)
     now = datetime.now(timezone.utc)
     admit: Admit = lambda model: admits(usages, model, now, cfg.pace)
-    # Ranked on the reading the gate judges: no stored mode yet, so auto.
-    order = priority.order(priority.AUTO, usages, now, cfg.pace)
+    # Ranked on the reading the gate judges; the mode is read once per pass,
+    # so a change applies from the next one.
+    order = priority.order(priority.load(cfg.state_dir, routed_providers(cfg)),
+                           usages, now, cfg.pace)
     default_verdict = admit(cfg.models.gate_entry().model_id)
     _budget_edge(cfg, deps, default_verdict, now)
     _auth_dark_edge(cfg, deps, usages)

@@ -188,6 +188,14 @@ def policy_for(cfg: Config, target: Target) -> ModelPolicy:
     return target.models or cfg.models
 
 
+def routed_providers(cfg: Config) -> frozenset[str]:
+    """Every provider some routed list names: the stage lists of every track,
+    of every target's own policy, and the triage list. The priority mode may
+    name one of these; `review_second` is not a list the box routes."""
+    policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
+    return frozenset(e.provider for p in policies for e in p.entries())
+
+
 def referenced_providers(cfg: Config) -> frozenset[str]:
     """Every provider some configured entry names — the set the dispatcher's
     usage fetch covers. A provider you hold credentials for but never route

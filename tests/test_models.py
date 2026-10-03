@@ -306,6 +306,13 @@ def test_triage_entry_is_the_first_admitted_triage_entry():
     assert triage_entry(p, NONE) is None
 
 
+def test_triage_entry_tries_the_list_in_the_given_order():
+    p = parse_policy({**RAW, "triage": ["anthropic/a@low", "anthropic/b@high"]})
+    flipped = lambda es: tuple(reversed(es))  # noqa: E731
+    assert str(triage_entry(p, ALL, flipped)) == "anthropic/b@high"
+    assert str(triage_entry(p, lambda m: m == "anthropic/a", flipped)) == "anthropic/a@low"
+
+
 def test_review_second_malformed_model_id_error_is_prefixed():
     with pytest.raises(ValueError, match=r"^models: review_second:.*provider/model"):
         parse_policy({**RAW, "review_second": "openai/x/y"})
