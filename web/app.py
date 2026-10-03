@@ -11,8 +11,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
-from dispatcher import queue_ops
-from dispatcher.config import Config, policy_for
+from dispatcher import priority, queue_ops
+from dispatcher.config import Config, policy_for, routed_providers
 from dispatcher.models import (candidates, override_allowed, override_refusal,
                                parse_entry, pick_provider, resolve,
                                stage_pick, track_from_labels)
@@ -79,6 +79,10 @@ class RunReq(BaseModel):
     bypass_usage: bool = False
 
 
+class PriorityReq(BaseModel):
+    mode: str
+
+
 class NextReq(BaseModel):
     issue: int
     force: bool = False
@@ -99,6 +103,17 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return {"ok": True, "operator": op.login}
 
     targets_by_name = {t.name: t for t in cfg.targets}
+    routed = routed_providers(cfg)
+
+    def _mode() -> str:
+        return priority.load(cfg.state_dir, routed)
+
+    def _order(usages=None, now=None):
+        """The dispatcher's own ordering under the stored mode. Without
+        usage (the snapshot must not wait for it) a fixed mode still applies
+        and auto is the written order."""
+        return priority.order(_mode(), usages or {},
+                              now or datetime.now(timezone.utc), cfg.pace)
 
     def _policy(target_name):
         target = targets_by_name.get(target_name)
@@ -119,7 +134,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         policy = _policy(t.target)
         if t.track not in policy.tracks:
             return ()
-        return candidates(policy, t.track, next_stage(t), _avoid(t))
+        return candidates(policy, t.track, next_stage(t), _avoid(t),
+                          _order(usages, now))
 
     def _model_for(t, usages=None, now=None):
         if t.park == PARK_WAKE and t.resume_model_override:
@@ -163,13 +179,14 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             requested=requested, alternatives=alternatives,
             any_provider=any_provider)
 
-    def _candidate_choices(target, row):
+    def _candidate_choices(target, row, usages=None, now=None):
         policy = policy_for(cfg, target)
         track = track_from_labels(list(row.get("labels") or []), policy)
-        return [e.model_id for e in candidates(policy, track, "spec")]
+        return [e.model_id for e in candidates(
+            policy, track, "spec", order=_order(usages, now))]
 
-    def _candidate_model(target, row):
-        return _candidate_choices(target, row)[0]
+    def _candidate_model(target, row, usages=None, now=None):
+        return _candidate_choices(target, row, usages, now)[0]
 
     def _candidate_admissions(queues, usages, now):
         return {(target.name, row["number"]): admission
@@ -177,7 +194,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 if read_model._is_candidate(row)
                 and sources.execution_override(target.name, row["number"]) is None
                 and (admission := _admission_for_model(
-                    _candidate_model(target, row), _candidate_choices(target, row),
+                    _candidate_model(target, row, usages, now),
+                    _candidate_choices(target, row, usages, now),
                     usages, now, any_provider=True))}
 
     def _known_target(target: str, tasks: list) -> bool:
@@ -212,19 +230,18 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             wake_blocked=sources.wake_blocked_issues())
     app.include_router(artifacts_router(sources, _find_task))
 
-    def _usage_view() -> read_model.UsageView:
+    def _usage_view(usages, now) -> read_model.UsageView:
         return read_model.usage_view(
-            sources.usage(), now=datetime.now(timezone.utc),
-            pace=cfg.pace, default_model=cfg.models.gate_entry().model_id)
+            usages, now=now, pace=cfg.pace,
+            default_model=cfg.models.gate_entry().model_id,
+            mode=_mode(), routed=routed)
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         tasks = sources.tasks()
         now = datetime.now(timezone.utc)
         usages = sources.usage()
-        usage = read_model.usage_view(
-            usages, now=now, pace=cfg.pace,
-            default_model=cfg.models.gate_entry().model_id)
+        usage = _usage_view(usages, now)
         claims_paused, triage_running = sources.triage_state()
         queues, queue_targets, stale_any = [], [], False
         for target in cfg.targets:
@@ -369,7 +386,21 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     @app.get("/api/usage", response_model=read_model.UsageView)
     def usage_route(op: Operator = Depends(current_operator)):
-        return _usage_view()
+        return _usage_view(sources.usage(), datetime.now(timezone.utc))
+
+    @app.post("/api/priority")
+    def set_priority(req: PriorityReq,
+                     op: Operator = Depends(current_operator)):
+        if req.mode != priority.AUTO and req.mode not in routed:
+            raise HTTPException(
+                422, f"mode {req.mode!r} is neither {priority.AUTO!r} nor a "
+                     f"routed provider ({', '.join(sorted(routed))})")
+        priority.save(cfg.state_dir, req.mode, actor=op.login,
+                      now=datetime.now(timezone.utc))
+        # After the file: the event log is the history of what was stored.
+        sources.append_event("priority-mode-set", actor=op.login,
+                             detail=f"mode={req.mode}")
+        return {"ok": True, "mode": req.mode}
 
     @app.get("/api/failures", response_model=read_model.FailuresView)
     def failures(op: Operator = Depends(current_operator)):

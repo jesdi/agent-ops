@@ -352,6 +352,11 @@ def test_capacity_blocked_queue_candidate_exposes_force_choices(tmp_path):
     }], "now", False)
     from tests.usagefakes import session_usage
     fake.usages = {"anthropic": session_usage(0.2, fable=0.9)}
+    # A fixed mode keeps the written order; auto would rank opus first (the
+    # Fable window's required pace is the lower one) and launch it.
+    from datetime import datetime, timezone
+    from dispatcher import priority
+    priority.save(tmp_path, "anthropic", actor="t", now=datetime.now(timezone.utc))
     body = TestClient(create_app(cfg, fake)).get(
         "/api/board", headers=HEADERS).json()
     queued = next(c for c in body["columns"] if c["key"] == "queued")
