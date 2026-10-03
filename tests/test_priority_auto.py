@@ -21,8 +21,10 @@ from dispatcher.models import parse_policy
 from dispatcher.state import Stage, load
 from dispatcher.usage import (PaceConfig, ProviderUsage, Window, WindowKind,
                               admits, allowance, unavailable)
-from tests.test_main import (FakeSessions, cfg, deps, make_task,
-                             write_tickets)
+from dispatcher.github import Candidate
+from dispatcher.state import PARK_WAKE
+from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
+                             patch_workspace, write_tickets)
 
 SONNET = "claude-sonnet-5-5"
 LUNA = "openai/gpt-6-luna@high"
@@ -123,11 +125,21 @@ def test_openai_with_the_higher_required_pace_launches_first_3_0_vs_1_6(
                          ids=["sonnet-first", "luna-first"])
 def test_equal_required_pace_keeps_the_written_order(
         tmp_path, monkeypatch, stage_list):
-    u = both([wk(0.50, 84)], [wk(0.50, 84)])
+    now = now_utc()  # one shared clock: the two windows are bit-identical
+    u = both([wk(0.50, 84, now=now)], [wk(0.50, 84, now=now)])
     sess, _ = run(tmp_path, monkeypatch, u, implement=stage_list)
     assert launched(sess) == [
         "anthropic/claude-sonnet-5-5" if stage_list[0] == SONNET
         else "openai/gpt-6-luna"]
+
+
+@BOTH_ORDERS
+def test_a_small_real_difference_is_not_a_tie_1_00_vs_1_04(
+        tmp_path, monkeypatch, stage_list):
+    now = now_utc()
+    u = both([wk(0.50, 84, now=now)], [wk(0.50, 84 * 0.5 / 0.52, now=now)])
+    sess, _ = run(tmp_path, monkeypatch, u, implement=stage_list)
+    assert launched(sess) == ["openai/gpt-6-luna"]
 
 
 @BOTH_ORDERS
@@ -289,6 +301,47 @@ def test_a_one_shot_override_wins_although_openai_ranks_first(
     ov = execution_overrides.ExecutionOverride(model=OPUS, bypass_usage=False)
     sess, _ = run(tmp_path, monkeypatch, u, implement=FLIPPED, override=ov)
     assert launched(sess) == ["anthropic/claude-opus-5-5"]
+
+
+# --- every launch path ranks: claim, wake, feedback -----------------------
+
+def _openai_ranks_first(tmp_path, monkeypatch):
+    c = dc_replace(cfg(tmp_path), models=policy(WRITTEN), pace=PACE)
+    u = both([wk(0.10, 96)], [wk(0.20, 24)])
+    monkeypatch.setattr(main, "fetch_all", lambda cfg, **k: u)
+    return c
+
+
+def test_a_newly_claimed_issues_first_stage_launches_the_top_ranked_entry(
+        tmp_path, monkeypatch):
+    c = _openai_ranks_first(tmp_path, monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    gh = FakeGitHub([Candidate(42, "T", "u42", labels=("auto",))])
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    assert gh.claimed == [42]
+    assert launched(sess) == ["openai/gpt-6-luna"]
+
+
+def test_a_woken_task_with_no_pick_resumes_on_the_top_ranked_entry(
+        tmp_path, monkeypatch):
+    c = _openai_ranks_first(tmp_path, monkeypatch)
+    make_task(c, issue=42, stage=Stage.PR_OPEN, park=PARK_WAKE, pr_number=7)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert [s[1] for s in sess.spawned] == ["address-review"]
+    assert launched(sess) == ["openai/gpt-6-luna"]
+
+
+def test_a_feedback_spawn_with_no_pick_launches_the_top_ranked_entry(
+        tmp_path, monkeypatch):
+    c = _openai_ranks_first(tmp_path, monkeypatch)
+    make_task(c, issue=42, stage=Stage.PR_OPEN, pr_number=12,
+              feedback_pending=True)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert [s[1] for s in sess.spawned] == ["address-review"]
+    assert launched(sess) == ["openai/gpt-6-luna"]
 
 
 # --- criterion: the gate's verdict is unchanged ---------------------------
