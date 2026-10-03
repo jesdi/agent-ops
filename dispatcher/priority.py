@@ -28,9 +28,8 @@ def _entry_pace(usages: Mapping[str, ProviderUsage], entry: Entry,
 def order(mode: str, usages: Mapping[str, ProviderUsage], now: datetime,
           pace: PaceConfig) -> Order:
     """Auto, the only mode yet: highest required pace first, entries without
-    one last, ties in written order. Paces are compared at the one decimal
-    the console shows, so reset times a moment apart still tie."""
+    one last, exact ties in written order."""
     def rank(e: Entry) -> tuple[bool, float]:
         p = _entry_pace(usages, e, now, pace)
-        return (p is None, 0.0 if p is None else -round(p, 1))
+        return (p is None, 0.0 if p is None else -p)
     return lambda entries: tuple(sorted(entries, key=rank))

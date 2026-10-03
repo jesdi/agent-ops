@@ -36,9 +36,18 @@ def test_highest_required_pace_first_and_unrated_entries_last():
     assert order(u)([SONNET, LUNA]) == (LUNA, SONNET)
 
 
-def test_paces_equal_at_one_decimal_keep_the_written_order():
+def test_only_an_exact_tie_keeps_the_written_order():
+    tie = order(usages([week(0.50)], [week(0.50)]))           # 1.00x, 1.00x
+    assert tie([SONNET, LUNA]) == (SONNET, LUNA)
+    assert tie([LUNA, SONNET]) == (LUNA, SONNET)
     u = usages([week(0.50)], [week(0.48)])                    # 1.00x, 1.04x
-    assert order(u)([SONNET, LUNA]) == (SONNET, LUNA)
+    assert order(u)([SONNET, LUNA]) == (LUNA, SONNET)
+
+
+def test_a_window_without_a_pace_leaves_the_entry_ranked_on_the_one_that_has():
+    # Unscoped reset passed 5 minutes ago (no pace); Fable's window is 1.6x.
+    u = usages([week(0.5, hours=-5 / 60), week(0.2, scope="Fable")], [week(0.5)])
+    assert order(u)([LUNA, SONNET, FABLE]) == (FABLE, LUNA, SONNET)
 
 
 def test_an_entry_ranks_on_the_lowest_window_its_model_draws_on():

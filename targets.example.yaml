@@ -59,7 +59,8 @@ loop_caps:
 # order breaks ties and ranks entries with no weekly reading, which go last.
 # It launches the first entry in that order the usage gate admits, keeps that
 # pick for every session of the stage, and waits when none is admitted.
-# Review moves the provider that ran implement to the back of its list. A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
+# Review moves the provider that ran implement to the back of its list.
+# A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
 # A target may carry its own `models:` block, which REPLACES this one.
 models:
   triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted

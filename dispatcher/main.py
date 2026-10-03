@@ -116,7 +116,7 @@ class Launch:
 
 def _launch_for(cfg: Config, target: Target | None, task: TaskState,
                 stage: Stage, admitted: Admitted,
-                order: Order = tuple) -> Launch | None:
+                order: Order) -> Launch | None:
     """The stage's recorded pick, else the first admitted entry of the task's
     track, tried in `order`. None: the track is not configured, or nothing is admitted — wait.
     Review avoids the provider that ran implement."""
@@ -149,7 +149,7 @@ def _with_second(cfg: Config, target: Target | None, launch: Launch,
 
 def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
                    stage: Stage, admit: Admit,
-                   order: Order = tuple) -> tuple[Launch | None, bool]:
+                   order: Order) -> tuple[Launch | None, bool]:
     """What a spawn site launches and whether usage is bypassed. A one-shot
     operator override names the entry outright; otherwise the sticky pick or
     the track decides, and a denied launch is (None, bypass): nothing
@@ -168,7 +168,7 @@ def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
 
 
 def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
-                      admit: Admit, order: Order = tuple) -> tuple[Launch | None, bool]:
+                      admit: Admit, order: Order) -> tuple[Launch | None, bool]:
     """An unclaimed candidate has no picks: its spec entry comes from the
     track its labels name (else the untracked track)."""
     policy = policy_for(cfg, target)
@@ -1083,8 +1083,8 @@ def _oldest_first(cfg: Config):
     return lambda t: (t.updated_at, rank[t.target])
 
 
-def _resume_woken(cfg: Config, deps: Deps, admit: Admit,
-                  dry_run: bool = False, order: Order = tuple) -> None:
+def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
+                  dry_run: bool = False) -> None:
     """Box-wide, oldest wake first across every target: capacity is shared,
     so target listing order must not decide whose approved work waits."""
     targets = {t.name: t for t in cfg.targets}
@@ -1119,7 +1119,7 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit,
 
 
 def _resume_launch(cfg: Config, target: Target, task: TaskState,
-                   admit: Admit, order: Order = tuple) -> Launch | None:
+                   admit: Admit, order: Order) -> Launch | None:
     """A parked pr-open task has no session to continue: it resumes as a
     fresh address-review round, on that stage's model."""
     stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
@@ -1265,7 +1265,7 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
 
 
 def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
-                    order: Order = tuple) -> None:
+                    order: Order) -> None:
     """Spawn address-review for tasks whose PR got feedback, box-wide and
     oldest first — same gates as claiming new work (capacity, usage, slot);
     a denied spawn just stays pr-open+pending and retries next pass, badge
@@ -1555,8 +1555,7 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                admit: Admit, dry_run: bool = False,
-                order: Order = tuple) -> None:
+                admit: Admit, order: Order, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
     policy = policy_for(cfg, target)
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
@@ -1659,7 +1658,7 @@ def _reopened(stale: TaskState, pass_started: str) -> bool:
 
 
 def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
-               admit: Admit, pass_started: str, order: Order = tuple):
+               admit: Admit, order: Order, pass_started: str):
     """Ranked candidates this pass may claim, each with the spec launch it
     would start. Skips issues that already have a task, quarantined issues,
     and candidates whose spec model has no headroom — a denied candidate
@@ -1721,8 +1720,8 @@ def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
 
 
 def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
-               admit: Admit, dry_run: bool, pass_started: str = "",
-               order: Order = tuple) -> None:
+               admit: Admit, order: Order, dry_run: bool,
+               pass_started: str = "") -> None:
     """Claim free units one at a time, each via claims.pick_target. A target leaves
     the round when its candidates run out or provisioning fails for it."""
     all_tasks = load_all(cfg.state_dir)
@@ -1736,7 +1735,7 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
     # when it gets a turn.
     gens = {t.name: _claimable(cfg, deps, t,
                                [x for x in all_tasks if x.target == t.name],
-                               admit, pass_started, order)
+                               admit, order, pass_started)
             for t in targets}
     in_round = {t.name: t for t in targets}  # insertion order = list order
     while free > 0:
@@ -2218,16 +2217,16 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
             try:
-                _drive_task(eff, deps, target, task, admit, dry_run, order)
+                _drive_task(eff, deps, target, task, admit, order, dry_run)
             except Exception:
                 _fail_task_crash(eff, deps, target, task, dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
-    _resume_woken(eff, deps, admit, dry_run, order)
+    _resume_woken(eff, deps, admit, order, dry_run)
     _spawn_feedback(eff, deps, admit, order)
     # Phase 2: new claims, with whatever capacity phase 1 left.
     if not claims_paused:
-        _claim_new(eff, deps, eff.targets, admit, dry_run, pass_started, order)
+        _claim_new(eff, deps, eff.targets, admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
     _flush_done(cfg)
     _write_heartbeat(cfg, pass_started)
