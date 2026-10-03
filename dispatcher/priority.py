@@ -1,5 +1,7 @@
-"""The order a routed list's entries are tried in. Pure: the usage gate
-(dispatcher.usage.admits) still decides which of them may run."""
+"""The order a routed list's entries are tried in, and the stored priority
+mode that picks it (`<state_dir>/provider-priority.json`, read and written
+here). `order` itself is pure; the usage gate (dispatcher.usage.admits) still
+decides which of the entries may run."""
 from __future__ import annotations
 
 import json
@@ -10,7 +12,7 @@ from typing import Collection, Mapping
 from dispatcher.models import Entry, Order
 from dispatcher.usage import (PaceConfig, ProviderUsage, _applies, readings,
                               required_pace, session_bound)
-from dispatcher.workspace import _write_json_atomic
+from dispatcher.usage_providers import write_json_atomic
 
 AUTO = "auto"
 FILE = "provider-priority.json"
@@ -23,13 +25,14 @@ def load(state_dir: str | Path, routed: Collection[str]) -> str:
     its stored mode back."""
     try:
         mode = json.loads((Path(state_dir) / FILE).read_text())["mode"]
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         return AUTO
     return mode if isinstance(mode, str) and mode in routed else AUTO
 
 
 def save(state_dir: str | Path, mode: str, *, actor: str, now: datetime) -> None:
-    _write_json_atomic(Path(state_dir) / FILE, {
+    """The console's write; the dispatcher, maybe another user, reads it."""
+    write_json_atomic(Path(state_dir) / FILE, {
         "mode": mode, "set_by": actor,
         "set_at": now.astimezone(timezone.utc).isoformat()})
 

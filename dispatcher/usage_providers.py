@@ -295,17 +295,23 @@ def cache_path(state_dir: str | Path, provider: str) -> Path:
     return Path(state_dir) / "usage" / f"{provider}.json"
 
 
-def _write_atomic(path: Path, doc: dict) -> None:
-    """The web process and the dispatcher both write the cache: write a
-    sibling temp file and rename it over, so a reader never sees a torn one.
-    mkstemp creates 0600 and the two units may run as different users, so
-    the file is opened up to 0644 before the rename."""
+def write_json_atomic(path: Path, doc: dict) -> None:
+    """For a state file the web process and the dispatcher share (the usage
+    cache, the priority mode): write a sibling temp file of its own and rename
+    it over, so a reader never sees a torn one and two writers never share a
+    temp file. mkstemp creates 0600 and the two units may run as different
+    users, so the file is opened up to 0644 before the rename. A failed write
+    or rename leaves no temp file behind."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    with os.fdopen(fd, "w") as fh:
-        json.dump(doc, fh)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(doc, fh)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def _cached(cp: Path, at: float) -> ProviderUsage | None:
@@ -345,7 +351,7 @@ def fetch_provider(name: str, state_dir: str | Path, *,
         log.exception("usage adapter %r failed", name)
         return unavailable(name, at)
     if u.source != "unavailable":
-        _write_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
+        write_json_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
     return u
 
 

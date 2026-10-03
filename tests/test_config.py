@@ -625,16 +625,22 @@ def test_routed_providers_are_the_lists_the_box_routes_not_review_second(tmp_pat
     assert routed_providers(load_config(p)) == frozenset({"anthropic"})
 
 
-@pytest.mark.parametrize("old,new", [
-    ("triage: [anthropic/m]", "triage: [openai/m]"),
-    ("review: [anthropic/m]", "review: [anthropic/m, openai/m]"),
-], ids=["triage-list", "stage-list"])
-@pytest.mark.parametrize("where", ["global", "target"])
-def test_routed_providers_cover_triage_and_stage_lists_of_every_policy(
-        tmp_path, where, old, new):
+TRIAGE, STAGE = (("triage: [anthropic/m]", "triage: [openai/m]"),
+                 ("review: [anthropic/m]", "review: [anthropic/m, openai/m]"))
+
+
+@pytest.mark.parametrize("where,swap,routed", [
+    ("global", TRIAGE, {"anthropic", "openai"}),
+    ("global", STAGE, {"anthropic", "openai"}),
+    ("target", STAGE, {"anthropic", "openai"}),
+    # the sweep routes only the global triage list: a target's is never run
+    ("target", TRIAGE, {"anthropic"}),
+], ids=["global-triage", "global-stage", "target-stage", "target-triage"])
+def test_routed_providers_are_the_global_triage_and_every_policys_stage_lists(
+        tmp_path, where, swap, routed):
     from dispatcher.config import routed_providers
     models = CLAUDE_TRACKS_WITH_SECOND.replace(
-        "  review_second: openai/gpt-5-codex\n", "").replace(old, new)
+        "  review_second: openai/gpt-5-codex\n", "").replace(*swap)
     assert "openai" in models
     if where == "global":
         text = models + SAMPLE
@@ -645,4 +651,4 @@ def test_routed_providers_cover_triage_and_stage_lists_of_every_policy(
             + "".join("    " + line + "\n" for line in models.splitlines()))
     p = tmp_path / "targets.yaml"
     p.write_text(text)
-    assert routed_providers(load_config(p)) == frozenset({"anthropic", "openai"})
+    assert routed_providers(load_config(p)) == frozenset(routed)

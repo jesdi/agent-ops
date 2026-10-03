@@ -189,11 +189,14 @@ def policy_for(cfg: Config, target: Target) -> ModelPolicy:
 
 
 def routed_providers(cfg: Config) -> frozenset[str]:
-    """Every provider some routed list names: the stage lists of every track,
-    of every target's own policy, and the triage list. The priority mode may
-    name one of these; `review_second` is not a list the box routes."""
+    """Every provider some routed list names: the global triage list and the
+    stage lists of every track, of the global policy and of every target's
+    own. The priority mode may name one of these. Not routed: `review_second`,
+    and a target policy's own triage list (the sweep runs `cfg.models.triage`)."""
     policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
-    return frozenset(e.provider for p in policies for e in p.entries())
+    staged = (e for p in policies for t in p.tracks.values()
+              for entries in t.stages.values() for e in entries)
+    return frozenset(e.provider for e in (*cfg.models.triage, *staged))
 
 
 def referenced_providers(cfg: Config) -> frozenset[str]:
