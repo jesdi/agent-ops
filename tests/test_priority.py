@@ -61,4 +61,4 @@ def test_candidates_apply_the_order_before_the_review_reorder():
                               for st in ("spec", "plan", "implement", "review")}}}})
     first = order(usages([week(0.5)], [week(0.2)]))
     assert candidates(policy, "s", "review", order=first) == (LUNA, SONNET)
-    assert candidates(policy, "s", "review", "openai", first) == (SONNET, LUNA)
+    assert candidates(policy, "s", "review", "openai", order=first) == (SONNET, LUNA)

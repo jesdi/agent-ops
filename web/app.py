@@ -138,7 +138,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if t.track not in policy.tracks:
             return ()
         return candidates(policy, t.track, next_stage(t), _avoid(t),
-                          order)
+                          order=order)
 
     def _model_for(t, order, usages=None, now=None):
         if t.park == PARK_WAKE and t.resume_model_override:

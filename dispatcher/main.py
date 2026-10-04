@@ -132,7 +132,7 @@ def _launch_for(cfg: Config, target: Target | None, task: TaskState,
         return None
     avoid = (pick_provider(task.picks, "implement")
              if policy_stage(stage.value) == "review" else "")
-    entry = resolve(policy, track, stage.value, admitted, avoid, order)
+    entry = resolve(policy, track, stage.value, admitted, avoid, order=order)
     return Launch(stage, entry) if entry else None
 
 

@@ -259,9 +259,9 @@ Order = Callable[[Sequence[Entry]], tuple[Entry, ...]]
 
 
 def candidates(policy: ModelPolicy, track: str, stage: str,
-               avoid_provider: str = "", order: Order = tuple) -> tuple[Entry, ...]:
+               avoid_provider: str = "", *, order: Order) -> tuple[Entry, ...]:
     """The ordered entries a stage may launch: the written list as `order`
-    arranges it (default: as written). Review prefers a provider other than
+    arranges it (`tuple`: as written). Review prefers a provider other than
     the one that ran implement: its entries move to the back, order otherwise
     kept, so a track whose every entry shares one provider is unchanged
     (preference, not a rule)."""
@@ -273,15 +273,15 @@ def candidates(policy: ModelPolicy, track: str, stage: str,
 
 
 def resolve(policy: ModelPolicy, track: str, stage: str, admitted: Admitted,
-            avoid_provider: str = "", order: Order = tuple) -> Entry | None:
+            avoid_provider: str = "", *, order: Order) -> Entry | None:
     """First admitted entry, or None: the caller waits, never falls through
     to a model outside the list."""
-    return next((e for e in candidates(policy, track, stage, avoid_provider, order)
+    return next((e for e in candidates(policy, track, stage, avoid_provider, order=order)
                  if admitted(e.model_id)), None)
 
 
 def triage_entry(policy: ModelPolicy, admitted: Admitted,
-                 order: Order = tuple) -> Entry | None:
+                 order: Order) -> Entry | None:
     return next((e for e in order(policy.triage) if admitted(e.model_id)), None)
 
 
