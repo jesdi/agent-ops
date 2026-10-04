@@ -12,10 +12,10 @@ from pydantic import BaseModel, Field
 from dispatcher import messages as msgq
 from dispatcher import priority
 from dispatcher.claims import box_free, pick_target
+from dispatcher.models import Entry
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
-                              WindowKind, _unscoped, admits, minutes_to_reset,
-                              readings, required_pace, session_bound,
-                              verdict_note)
+                              WindowKind, admits, minutes_to_reset, readings,
+                              required_pace, verdict_note)
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, consumes_capacity,
@@ -519,55 +519,19 @@ def model_admission_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                               note=verdict_note(verdict, now))
 
 
-FALLBACK_FIRST = "anthropic"
-
-
-def _weekly_pace(usage: ProviderUsage | None, now: datetime,
-                 pace: PaceConfig) -> float | None:
-    """The required pace of the provider's unscoped weekly window; None when
-    its usage is missing or unavailable, or it has no such window."""
-    if usage is None or usage.source == "unavailable":
-        return None
-    weekly = _unscoped(usage, WindowKind.WEEKLY)
-    return required_pace(weekly, now, pace) if weekly else None
-
-
-def _leaders(pool: list[str], usages: Mapping[str, ProviderUsage],
-             now: datetime, pace: PaceConfig) -> list[str]:
-    """The providers of `pool` sharing its highest required pace; all of it
-    when none has one."""
-    paces = {p: _weekly_pace(usages.get(p), now, pace) for p in pool}
-    top = max((v for v in paces.values() if v is not None), default=None)
-    return [p for p in pool if paces[p] == top]
-
-
-def first_provider(mode: str, routed: Collection[str],
-                   usages: Mapping[str, ProviderUsage], now: datetime,
-                   pace: PaceConfig) -> str:
-    """The provider the mode puts first: a provider-level summary, so it can
-    differ from the entry a task gets when a model has its own weekly window.
-    A fixed mode: that provider. Auto: among the session-bound routed
-    providers, or among all routed ones when none is, the one with the highest
-    required pace on its unscoped weekly window; anthropic when the highest is
-    shared or nobody has one."""
-    if mode != priority.AUTO:
-        return mode
-    names = sorted(routed)
-    pool = [p for p in names
-            if p in usages and session_bound(usages[p], now, pace)] or names
-    leaders = _leaders(pool, usages, now, pace)
-    if len(leaders) == 1:
-        return leaders[0]
-    return FALLBACK_FIRST if FALLBACK_FIRST in pool else min(leaders, default="")
-
-
 def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                pace: PaceConfig, default_model: str, mode: str,
                routed: Collection[str]) -> UsageView:
     """Every provider's windows, sorted by provider name, one gate (the
     verdict for the policy default model), and what the priority `mode` is
-    doing over the `routed` providers. The mode changes no window's numbers."""
+    doing over the `routed` providers. The mode changes no window's numbers.
+    `first` is the dispatcher's own order over one model-less entry per routed
+    provider: a provider-level summary on unscoped windows only, so it can
+    differ from the entry a task gets when a model has its own weekly window.
+    anthropic is written first, so it wins a tie and the no-pace case."""
     verdict = admits(usages, default_model, now, pace)
+    ranked = priority.order(mode, usages, now, pace)(tuple(
+        Entry(p, "") for p in sorted(routed, key=lambda p: (p != "anthropic", p))))
     binding = _window_view(verdict.binding, now, pace) if verdict.binding else None
     return UsageView(
         providers=[ProviderUsageView(
@@ -581,7 +545,7 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                       binding=binding),
         priority=PriorityView(
             mode=mode, options=[priority.AUTO, *sorted(routed)],
-            first=first_provider(mode, routed, usages, now, pace)))
+            first=ranked[0].provider if ranked else ""))
 
 
 class QuarantineEntry(BaseModel):

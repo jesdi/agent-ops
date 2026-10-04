@@ -979,7 +979,6 @@ def test_review_stage_sits_in_the_in_progress_column():
 from dataclasses import replace
 from datetime import timedelta
 from dispatcher.usage import ProviderUsage, Window, WindowKind
-from web.read_model import first_provider
 
 def _weekly(provider, used, hours, source="oauth", scope=None):
     return ProviderUsage(provider, source, 0.0, (
@@ -987,7 +986,9 @@ def _weekly(provider, used, hours, source="oauth", scope=None):
 
 
 def _first(mode, usages, routed=("anthropic", "openai"), pace=PACE):
-    return first_provider(mode, routed, {u.provider: u for u in usages}, NOW, pace)
+    return usage_view({u.provider: u for u in usages}, now=NOW, pace=pace,
+                      default_model=DEFAULT, mode=mode,
+                      routed=frozenset(routed)).priority.first
 
 
 def test_first_is_the_fixed_provider_whatever_the_paces():
