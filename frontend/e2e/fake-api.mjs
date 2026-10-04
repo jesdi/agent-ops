@@ -272,7 +272,7 @@ const server = createServer(async (req, res) => {
         json(422, { detail: `unknown priority mode: ${mode}` }); return
       }
       p.mode = mode
-      if (mode !== 'auto') p.first = mode
+      p.first = mode === 'auto' ? 'anthropic' : mode
       push(['usage'])
       json(200, { ok: true, mode }) // what the real backend answers
     })

@@ -24,6 +24,14 @@ test('choosing OpenAI sticks across a reload and puts the first chip on openai',
   const column = page.locator('div').filter({ has: chip }).filter({ hasText: /openai/i })
     .filter({ hasNotText: /anthropic/i })
   await expect(column.last()).toBeVisible()
+
+  // Auto again: the chip is back on anthropic.
+  await control(page).getByRole('radio', { name: 'Auto' }).click()
+  await expect(control(page).getByRole('radio', { name: 'Auto' })).toBeChecked()
+  await expect(chip).toHaveCount(1)
+  const back = page.locator('div').filter({ has: chip }).filter({ hasText: /anthropic/i })
+    .filter({ hasNotText: /openai/i })
+  await expect(back.last()).toBeVisible()
 })
 
 for (const colorScheme of ['light', 'dark'] as const) {
