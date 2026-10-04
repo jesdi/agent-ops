@@ -410,3 +410,22 @@ def test_status_line_of_a_task_with_no_pick_names_the_openai_entry_in_mode_opena
     save_mode(tmp_path)
     line = main._status_lines(c)[0]
     assert "implement [openai/gpt-6-luna@high]" in line
+
+
+# --- console to dispatcher, end to end -------------------------------------
+
+def test_a_mode_posted_through_the_console_is_the_one_run_pass_launches_on(
+        tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from tests.webfakes import FakeSources, make_config, tracks_policy
+    from web.app import create_app
+    stages = {s: WRITTEN for s in ("spec", "plan", "implement", "review")}
+    console = dc_replace(make_config(state_dir(tmp_path)),
+                         models=tracks_policy(**stages))
+    r = TestClient(create_app(console, FakeSources())).post(
+        "/api/priority", json={"mode": "openai"},
+        headers={"Tailscale-User-Login": "jesdi"})
+    assert r.status_code == 200
+    sess, t = go_hungry(tmp_path, monkeypatch)   # auto would launch sonnet
+    assert launched(sess) == [LUNA_ID]
+    assert t.picks["implement"] == LUNA
