@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Collection, Mapping
 
 from dispatcher.models import Entry, Order
+from dispatcher.state import write_json_atomic
 from dispatcher.usage import (PaceConfig, ProviderUsage, _applies, readings,
                               required_pace, session_bound)
-from dispatcher.usage_providers import write_json_atomic
 
 AUTO = "auto"
 FILE = "provider-priority.json"
