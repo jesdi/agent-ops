@@ -469,6 +469,15 @@ def test_bad_pace_knobs_fail_config_load(tmp_path, extra, msg):
         load_config(p)
 
 
+def test_session_week_share_for_an_unreferenced_provider_fails_config_load(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE + "session_week_share: {anthropc: 0.05}\n")
+    with pytest.raises(ValueError, match="session_week_share.*anthropc"):
+        load_config(p)
+    p.write_text(SAMPLE + "session_week_share: {anthropic: 0.05}\n")
+    assert dict(load_config(p).pace.session_week_share) == {"anthropic": 0.05}
+
+
 # --- ticket 01: config accepts the multi-project shape ---
 
 TARGET_NO_OPTIONAL_CMDS = """

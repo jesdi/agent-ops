@@ -163,7 +163,7 @@ def load_config(path: str | Path) -> Config:
         raise ValueError("triage_model: is gone; write models.triage: (a list of "
                          "entries, see targets.example.yaml)")
     capacity = raw.get("capacity", 3)
-    return Config(
+    cfg = Config(
         state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
         capacity=capacity,
         session_memory=str(raw.get("session_memory", "2g")),
@@ -180,6 +180,13 @@ def load_config(path: str | Path) -> Config:
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),
     )
+    # A share for a provider nothing runs on is a typo that would silently
+    # turn the session-bound rule off.
+    unknown = sorted(set(cfg.pace.session_week_share) - referenced_providers(cfg))
+    if unknown:
+        raise ValueError(f"session_week_share: {unknown} named by no model entry; "
+                         f"expected any of {sorted(referenced_providers(cfg))}")
+    return cfg
 
 
 def policy_for(cfg: Config, target: Target) -> ModelPolicy:
