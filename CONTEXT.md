@@ -138,7 +138,8 @@ then required pace. It only orders: the usage gate still decides what may
 run, a stage's pick is kept, and a one-shot override wins. Stored in
 `<state_dir>/provider-priority.json` (`dispatcher/priority.py`), read once
 per dispatcher pass and once per triage sweep, so a change applies from the
-next pass; missing, unreadable, or naming a provider no routed list names,
+next pass; status lines and the console also read it whenever they build an
+order. Missing, unreadable, or naming a provider no routed list names,
 it reads as `auto` and the file is left as it is.
 _Avoid_: preferred provider, default provider
 

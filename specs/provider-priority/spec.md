@@ -5,7 +5,7 @@ Terms:
 - The **priority mode** is one box-wide value: `auto`, or the name of a provider (`anthropic`,
   `openai`), read as "that provider first".
 - A **routed provider** is a provider that some entry in the box's model policies names.
-- **Remaining quota** of a weekly window is 1 minus its used fraction.
+- **Remaining quota** of a weekly window is 1 minus its used fraction, clamped at 0.
 - **Remaining time** of a weekly window is the share of the window still ahead of now, measured
   on the usage gate's weekend-weighted clock (`weekend_weight`, `timezone`). There is no floor:
   the closer the reset, the smaller the remaining time.

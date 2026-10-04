@@ -64,6 +64,9 @@ loop_caps:
 # tries them by REQUIRED PACE, highest first: the entry whose weekly quota
 # most needs spending before its reset (quota left / time left). The written
 # order breaks ties and ranks entries with no weekly reading, which go last.
+# A session-bound provider's entries (session_week_share above) go first.
+# A priority mode set in the console (`auto` or a provider) replaces this
+# order: a provider's name puts its entries first (see CONTEXT.md).
 # It launches the first entry in that order the usage gate admits, keeps that
 # pick for every session of the stage, and waits when none is admitted.
 # Review moves the provider that ran implement to the back of its list.
