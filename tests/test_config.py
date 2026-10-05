@@ -458,12 +458,24 @@ def test_pace_knobs_parse(tmp_path):
     ("weekend_weight: -0.1\n", "weekend_weight"),
     ("pace_margin: -0.05\n", "pace_margin"),
     ("pace_margin: 1.0\n", "pace_margin"),
+    ("session_week_share: 0.05\n", "session_week_share"),
+    ("session_week_share: {anthropic: true}\n", "session_week_share"),
+    ("session_week_share: {anthropic: lots}\n", "session_week_share"),
 ])
 def test_bad_pace_knobs_fail_config_load(tmp_path, extra, msg):
     p = tmp_path / "targets.yaml"
     p.write_text(SAMPLE + extra)
     with pytest.raises(ValueError, match=msg):
         load_config(p)
+
+
+def test_session_week_share_for_an_unreferenced_provider_fails_config_load(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text(SAMPLE + "session_week_share: {anthropc: 0.05}\n")
+    with pytest.raises(ValueError, match="session_week_share.*anthropc"):
+        load_config(p)
+    p.write_text(SAMPLE + "session_week_share: {anthropic: 0.05}\n")
+    assert dict(load_config(p).pace.session_week_share) == {"anthropic": 0.05}
 
 
 # --- ticket 01: config accepts the multi-project shape ---
@@ -611,3 +623,41 @@ def test_referenced_providers_includes_review_second(tmp_path, where):
                       for line in CLAUDE_TRACKS_WITH_SECOND.splitlines()))
     p.write_text(text)
     assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})
+
+
+def test_routed_providers_are_the_lists_the_box_routes_not_review_second(tmp_path):
+    """The set a priority mode may name: review_second is not a routed list,
+    so naming its provider alone would order nothing."""
+    from dispatcher.config import routed_providers
+    p = tmp_path / "targets.yaml"
+    p.write_text(CLAUDE_TRACKS_WITH_SECOND + SAMPLE)
+    assert routed_providers(load_config(p)) == frozenset({"anthropic"})
+
+
+TRIAGE, STAGE = (("triage: [anthropic/m]", "triage: [openai/m]"),
+                 ("review: [anthropic/m]", "review: [anthropic/m, openai/m]"))
+
+
+@pytest.mark.parametrize("where,swap,routed", [
+    ("global", TRIAGE, {"anthropic", "openai"}),
+    ("global", STAGE, {"anthropic", "openai"}),
+    ("target", STAGE, {"anthropic", "openai"}),
+    # the sweep routes only the global triage list: a target's is never run
+    ("target", TRIAGE, {"anthropic"}),
+], ids=["global-triage", "global-stage", "target-stage", "target-triage"])
+def test_routed_providers_are_the_global_triage_and_every_policys_stage_lists(
+        tmp_path, where, swap, routed):
+    from dispatcher.config import routed_providers
+    models = CLAUDE_TRACKS_WITH_SECOND.replace(
+        "  review_second: openai/gpt-5-codex\n", "").replace(*swap)
+    assert "openai" in models
+    if where == "global":
+        text = models + SAMPLE
+    else:
+        text = SAMPLE.replace(
+            "    status_in_progress_option_id: def456\n",
+            "    status_in_progress_option_id: def456\n"
+            + "".join("    " + line + "\n" for line in models.splitlines()))
+    p = tmp_path / "targets.yaml"
+    p.write_text(text)
+    assert routed_providers(load_config(p)) == frozenset(routed)

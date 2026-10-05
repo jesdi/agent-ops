@@ -362,7 +362,7 @@ def test_forced_queue_candidate_claims_despite_usage_gate(tmp_path, monkeypatch)
     gh = FakeGitHub([Candidate(42, "Forced", "u42")])
     sess = FakeSessions()
 
-    main._claim_new(c, deps(gh, sess), [c.targets[0]], DENY_ALL, False)
+    main._claim_new(c, deps(gh, sess), [c.targets[0]], DENY_ALL, tuple, False)
 
     assert gh.claimed == [42]
     assert [spawn[:3] for spawn in sess.spawned] == [
@@ -381,7 +381,7 @@ def test_override_model_without_bypass_still_checked_by_usage_gate(tmp_path, mon
         execution_overrides.ExecutionOverride(
             model="claude-sonnet-4-6", bypass_usage=False))
 
-    launch, bypass = main._choose_launch(c, c.targets[0], task, Stage.IMPLEMENT, DENY_ALL)
+    launch, bypass = main._choose_launch(c, c.targets[0], task, Stage.IMPLEMENT, DENY_ALL, tuple)
 
     assert (launch, bypass) == (None, False)
 
@@ -394,7 +394,7 @@ def test_forced_queue_candidate_keeps_choice_when_no_slot(tmp_path, monkeypatch)
     execution_overrides.save(c.state_dir, "portfolio_eval", 42, choice)
 
     main._claim_new(c, deps(FakeGitHub([Candidate(42, "Forced", "u42")])),
-                    [c.targets[0]], DENY_ALL, False)
+                    [c.targets[0]], DENY_ALL, tuple, False)
 
     assert execution_overrides.load(
         c.state_dir, "portfolio_eval", 42) == choice
@@ -410,7 +410,7 @@ def test_slot_exhaustion_stops_the_claim_round(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
     gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
 
-    main._claim_new(c, deps(gh), c.targets, ADMIT_ALL, False)
+    main._claim_new(c, deps(gh), c.targets, ADMIT_ALL, tuple, False)
 
     assert gh.claimed == []
 
@@ -431,7 +431,7 @@ def test_active_task_for_an_unconfigured_target_does_not_break_the_round(
         updated_at="2026-07-21T00:00:00+00:00", track="standard"))
     gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
 
-    main._claim_new(c, deps(gh), c.targets, ADMIT_ALL, False)
+    main._claim_new(c, deps(gh), c.targets, ADMIT_ALL, tuple, False)
 
     assert gh.claimed == [42]
 
@@ -632,8 +632,8 @@ def test_review_prefers_a_provider_other_than_implements(tmp_path, monkeypatch):
     (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
-    # openai/gpt-sol is first but has no adapter (denied); anthropic entries were
-    # moved to the back and the first admitted one wins.
+    # openai/gpt-sol has no adapter: unrated, so it ranks last, and denied.
+    # The first admitted anthropic entry wins.
     assert [s[:3] for s in sess.spawned] == [(42, "review", "anthropic/claude-fable-5-1")]
 
 
@@ -754,10 +754,10 @@ def test_woken_pr_open_task_is_gated_on_the_model_it_spawns(tmp_path):
               track="deep")
     opus_over_pace = lambda m: DENY_ALL(m) if "opus" in m else ADMIT_ALL(m)  # noqa: E731
     d = deps()
-    main._resume_woken(c, d, admit=opus_over_pace)
+    main._resume_woken(c, d, admit=opus_over_pace, order=tuple)
     assert d.sessions.spawned == [] and d.sessions.resumed == []
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_WAKE
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     assert [s[:3] + (s[4],) for s in d.sessions.spawned] == [
         (42, Stage.ADDRESS_REVIEW.value, "anthropic/claude-opus-5", "medium")]
 
@@ -767,7 +767,7 @@ def test_operator_can_bypass_usage_gate_for_one_resume(tmp_path):
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
               park=PARK_WAKE, resume_bypass_usage=True)
     d = deps()
-    main._resume_woken(c, d, admit=DENY_ALL)
+    main._resume_woken(c, d, admit=DENY_ALL, order=tuple)
     assert d.sessions.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.park == ""
@@ -781,7 +781,7 @@ def test_operator_can_resume_with_another_configured_model(tmp_path):
               park=PARK_WAKE, resume_model_override="claude-sonnet-4-6")
     d = deps()
     admit_sonnet = lambda model: ADMIT_ALL(model) if "sonnet" in model else DENY_ALL(model)  # noqa: E731
-    main._resume_woken(c, d, admit=admit_sonnet)
+    main._resume_woken(c, d, admit=admit_sonnet, order=tuple)
     assert d.sessions.resumed == [
         (42, "Continue.", "anthropic/claude-sonnet-4-6", "")]
 
@@ -792,7 +792,7 @@ def test_resume_override_waits_for_capacity_without_losing_choice(tmp_path):
     make_task(c, issue=42, park=PARK_WAKE,
               resume_model_override="claude-sonnet-4-6",
               resume_bypass_usage=True)
-    main._resume_woken(c, deps(), admit=DENY_ALL)
+    main._resume_woken(c, deps(), admit=DENY_ALL, order=tuple)
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.park == PARK_WAKE
     assert saved.resume_model_override == "claude-sonnet-4-6"
@@ -1874,7 +1874,7 @@ def test_forced_active_task_uses_choice_at_next_stage(tmp_path):
     sess = FakeSessions(alive=(42,))
 
     main._drive_task(c, deps(sess=sess), c.targets[0],
-                     load(c.state_dir, "portfolio_eval", 42), DENY_ALL)
+                     load(c.state_dir, "portfolio_eval", 42), DENY_ALL, tuple)
 
     assert [spawn[:3] for spawn in sess.spawned] == [
         (42, Stage.PLAN.value, "anthropic/claude-sonnet-4-6")]
@@ -4033,7 +4033,7 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True))
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True, tuple))
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
@@ -4047,7 +4047,7 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True))
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True, tuple))
     assert "## Operator messages" not in d.sessions.spawned[-1][3]
 
 
@@ -4058,7 +4058,7 @@ def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
     messages.append(c.state_dir, "portfolio_eval", 42, "first", "jesdi@github")
     messages.append(c.state_dir, "portfolio_eval", 42, "second", "jesdi@github")
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     text = d.sessions.resumed[-1][1]
     assert text.index("first") < text.index("second")
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
@@ -4068,7 +4068,7 @@ def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     assert d.sessions.resumed[-1][1] == "Continue."
 
 
@@ -4081,7 +4081,7 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._retry_plan(c, d, c.targets[0], task,
                      main._launch_for(c, c.targets[0], task, Stage.PLAN,
-                                      lambda m: True),
+                                      lambda m: True, tuple),
                      "missing Goal line")
     assert "keep the scope small" in d.sessions.resumed[-1][1]
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
@@ -4094,7 +4094,7 @@ def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
     from dispatcher import messages
     messages.append(c.state_dir, "portfolio_eval", 42, "delivered now", "jesdi@github")
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     messages.append(c.state_dir, "portfolio_eval", 42, "arrived later", "jesdi@github")
     assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
         "arrived later"]
@@ -4157,7 +4157,7 @@ def test_two_human_parks_no_longer_deadlock_a_resume(tmp_path):
     make_task(c, issue=198, slot=NO_SLOT, park=PARK_WAKE)
     main._reconcile_slots(c)
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     t = load(c.state_dir, "portfolio_eval", 198)
     assert t.park == "" and t.slot != NO_SLOT
 
@@ -4167,8 +4167,8 @@ def test_blocked_wake_emits_one_event_not_one_per_pass(tmp_path):
     make_task(c, issue=41, slot=0, park="")          # holds the only capacity
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL)
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert len(blocked) == 1
@@ -4184,7 +4184,7 @@ def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
-    main._resume_woken(c, deps(), admit=ADMIT_ALL)
+    main._resume_woken(c, deps(), admit=ADMIT_ALL, order=tuple)
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["detail"] for e in blocked] == ["no free slot"]
@@ -4195,10 +4195,10 @@ def test_marker_clears_once_the_wake_succeeds(tmp_path):
     make_task(c, issue=41, slot=0, park="")
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
     main.delete(c.state_dir, "portfolio_eval", 41)                     # capacity frees up
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
@@ -4208,7 +4208,7 @@ def test_blocked_feedback_spawn_is_reported_too(tmp_path):
     make_task(c, issue=41, slot=0, park="")
     make_task(c, issue=42, slot=NO_SLOT, stage=Stage.PR_OPEN,
               feedback_pending=True)
-    main._spawn_feedback(c, deps(), admit=ADMIT_ALL)
+    main._spawn_feedback(c, deps(), admit=ADMIT_ALL, order=tuple)
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["issue"] for e in blocked] == [42]
@@ -4227,7 +4227,7 @@ def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
     make_task(c, issue=41, slot=0, park="")      # holds the only capacity unit
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     d = deps(sess=FakeSessions(alive={41}))
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
@@ -4691,7 +4691,7 @@ def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True))
+                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True, tuple))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
     assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
@@ -4751,7 +4751,7 @@ def test_admission_budget_denied_retains_operator_request(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._wake(c, task, "please answer")
     d = deps()
-    main._resume_woken(c, d, admit=DENY_ALL)
+    main._resume_woken(c, d, admit=DENY_ALL, order=tuple)
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.operator_request == req   # untouched
     assert saved.park == PARK_WAKE         # woken, not resumed
@@ -4773,7 +4773,7 @@ def test_admission_capacity_full_retains_operator_request(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._wake(c, task, "please answer")
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.operator_request == req   # untouched
     assert saved.park == PARK_WAKE         # still wake-queued, not resumed
@@ -4924,7 +4924,7 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.targets[0], task,
                       main._launch_for(c, c.targets[0], task, Stage.IMPLEMENT,
-                                       lambda m: True))
+                                       lambda m: True, tuple))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
         f"stage advance must clear operator_request, got {t.operator_request!r}")

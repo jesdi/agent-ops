@@ -23,11 +23,12 @@ from pathlib import Path
 from typing import Callable
 
 from dispatcher.convergence import pass_lock
-from dispatcher.config import Config, Target, load_config, policy_for, referenced_providers
+from dispatcher.config import (Config, Target, load_config, policy_for,
+                               referenced_providers, routed_providers)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
 from dispatcher import (claims, eventlog, execution_overrides, failures, intents, loops,
-                        messages, pr_poll, queue_ops, relogin, tmux_migration,
+                        messages, pr_poll, priority, queue_ops, relogin, tmux_migration,
                         triage)
 from dispatcher.github import Candidate, GitHubClient
 
@@ -40,7 +41,7 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
                                 ParkForInput, ParkForReview, PublishSpec,
                                 RecordBackgroundWait, RetryStage, SetTaskStage,
                                 StartTicket, SpawnStage, pass_actions)
-from dispatcher.models import (Admitted, Entry, ModelPolicy, candidates,
+from dispatcher.models import (Admitted, Entry, ModelPolicy, Order, candidates,
                                override_refusal, parse_entry, pick_provider,
                                policy_stage, resolve, second_model, stage_pick,
                                track_from_labels, tracks_text)
@@ -115,9 +116,10 @@ class Launch:
 
 
 def _launch_for(cfg: Config, target: Target | None, task: TaskState,
-                stage: Stage, admitted: Admitted) -> Launch | None:
+                stage: Stage, admitted: Admitted,
+                order: Order) -> Launch | None:
     """The stage's recorded pick, else the first admitted entry of the task's
-    track. None: the track is not configured, or nothing is admitted — wait.
+    track, tried in `order`. None: the track is not configured, or nothing is admitted — wait.
     Review avoids the provider that ran implement."""
     policy = _policy(cfg, target)
     pick = stage_pick(task.picks, stage.value)
@@ -130,7 +132,7 @@ def _launch_for(cfg: Config, target: Target | None, task: TaskState,
         return None
     avoid = (pick_provider(task.picks, "implement")
              if policy_stage(stage.value) == "review" else "")
-    entry = resolve(policy, track, stage.value, admitted, avoid)
+    entry = resolve(policy, track, stage.value, admitted, avoid, order=order)
     return Launch(stage, entry) if entry else None
 
 
@@ -147,7 +149,8 @@ def _with_second(cfg: Config, target: Target | None, launch: Launch,
 
 
 def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
-                   stage: Stage, admit: Admit) -> tuple[Launch | None, bool]:
+                   stage: Stage, admit: Admit,
+                   order: Order) -> tuple[Launch | None, bool]:
     """What a spawn site launches and whether usage is bypassed. A one-shot
     operator override names the entry outright; otherwise the sticky pick or
     the track decides, and a denied launch is (None, bypass): nothing
@@ -159,21 +162,21 @@ def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
         if bypass or admit(launch.model).admitted:
             return _with_second(cfg, target, launch, admit), bypass
         return None, bypass
-    launch = _launch_for(cfg, target, task, stage, _admitted(admit, bypass))
+    launch = _launch_for(cfg, target, task, stage, _admitted(admit, bypass), order)
     if launch is None or (not bypass and not admit(launch.model).admitted):
         return None, bypass
     return _with_second(cfg, target, launch, admit), bypass
 
 
 def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
-                      admit: Admit) -> tuple[Launch | None, bool]:
+                      admit: Admit, order: Order) -> tuple[Launch | None, bool]:
     """An unclaimed candidate has no picks: its spec entry comes from the
     track its labels name (else the untracked track)."""
     policy = policy_for(cfg, target)
     probe = TaskState(issue=cand.number, target=target.name, stage=Stage.QUEUED,
                       slot=NO_SLOT, worktree="", branch="", title=cand.title,
                       updated_at="", track=track_from_labels(cand.labels, policy))
-    return _choose_launch(cfg, target, probe, Stage.SPEC, admit)
+    return _choose_launch(cfg, target, probe, Stage.SPEC, admit, order)
 
 
 def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
@@ -182,14 +185,18 @@ def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
 
 def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
     """The entry a task runs or would run next, for status lines: its pick for
-    the current stage, else the first candidate, else ''."""
+    the current stage, else the first candidate, else ''. No usage reading
+    here, so the order is built from an empty one: a fixed mode applies, and
+    in auto every entry is unrated, which is the written order."""
     policy = _policy(cfg, target)
     stage = next_stage(task)
     pick = stage_pick(task.picks, stage)
     if pick:
         return pick
     if task.track in policy.tracks:
-        cands = candidates(policy, task.track, stage)
+        cands = candidates(policy, task.track, stage, order=priority.order(
+            priority.load(cfg.state_dir, routed_providers(cfg)), {},
+            datetime.now(timezone.utc), cfg.pace))
         if cands:
             return str(cands[0])
     return ""
@@ -1079,7 +1086,7 @@ def _oldest_first(cfg: Config):
     return lambda t: (t.updated_at, rank[t.target])
 
 
-def _resume_woken(cfg: Config, deps: Deps, admit: Admit,
+def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
                   dry_run: bool = False) -> None:
     """Box-wide, oldest wake first across every target: capacity is shared,
     so target listing order must not decide whose approved work waits."""
@@ -1091,7 +1098,7 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit,
     )
     for task in woken:
         target = targets[task.target]
-        launch = _resume_launch(cfg, target, task, admit)
+        launch = _resume_launch(cfg, target, task, admit, order)
         if launch is None or (not task.resume_bypass_usage
                               and not admit(launch.model).admitted):
             continue  # this model's provider has no headroom; others may
@@ -1115,7 +1122,7 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit,
 
 
 def _resume_launch(cfg: Config, target: Target, task: TaskState,
-                   admit: Admit) -> Launch | None:
+                   admit: Admit, order: Order) -> Launch | None:
     """A parked pr-open task has no session to continue: it resumes as a
     fresh address-review round, on that stage's model."""
     stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
@@ -1123,7 +1130,7 @@ def _resume_launch(cfg: Config, target: Target, task: TaskState,
         launch = Launch(stage, parse_entry(task.resume_model_override, "override"))
     else:
         launch = _launch_for(cfg, target, task, stage,
-                             _admitted(admit, task.resume_bypass_usage))
+                             _admitted(admit, task.resume_bypass_usage), order)
     return _with_second(cfg, target, launch, admit) if launch else None
 
 
@@ -1260,7 +1267,8 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
     failures.report_failure(cfg, deps, rep, dry_run=dry_run)
 
 
-def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit) -> None:
+def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
+                    order: Order) -> None:
     """Spawn address-review for tasks whose PR got feedback, box-wide and
     oldest first — same gates as claiming new work (capacity, usage, slot);
     a denied spawn just stays pr-open+pending and retries next pass, badge
@@ -1274,7 +1282,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit) -> None:
     for task in pending:
         target = targets[task.target]
         launch, bypass_usage = _choose_launch(cfg, target, task,
-                                              Stage.ADDRESS_REVIEW, admit)
+                                              Stage.ADDRESS_REVIEW, admit, order)
         if launch is None:
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
@@ -1550,7 +1558,7 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                admit: Admit, dry_run: bool = False) -> None:
+                admit: Admit, order: Order, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
     policy = policy_for(cfg, target)
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
@@ -1579,7 +1587,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             tracks=frozenset(policy.tracks)):
         stage = _action_stage(act)
         launch, bypass_usage = ((None, False) if stage is None
-                                else _choose_launch(cfg, target, task, stage, admit))
+                                else _choose_launch(cfg, target, task, stage, admit, order))
         if stage is not None and launch is None:
             return  # nothing mutated; the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
@@ -1653,7 +1661,7 @@ def _reopened(stale: TaskState, pass_started: str) -> bool:
 
 
 def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
-               admit: Admit, pass_started: str):
+               admit: Admit, order: Order, pass_started: str):
     """Ranked candidates this pass may claim, each with the spec launch it
     would start. Skips issues that already have a task, quarantined issues,
     and candidates whose spec model has no headroom — a denied candidate
@@ -1673,7 +1681,7 @@ def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
         if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
                                      cand.number):
             continue
-        launch, _bypass = _candidate_launch(cfg, target, cand, admit)
+        launch, _bypass = _candidate_launch(cfg, target, cand, admit, order)
         if launch is not None:
             yield cand, launch
 
@@ -1715,7 +1723,8 @@ def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
 
 
 def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
-               admit: Admit, dry_run: bool, pass_started: str = "") -> None:
+               admit: Admit, order: Order, dry_run: bool,
+               pass_started: str = "") -> None:
     """Claim free units one at a time, each via claims.pick_target. A target leaves
     the round when its candidates run out or provisioning fails for it."""
     all_tasks = load_all(cfg.state_dir)
@@ -1729,7 +1738,7 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
     # when it gets a turn.
     gens = {t.name: _claimable(cfg, deps, t,
                                [x for x in all_tasks if x.target == t.name],
-                               admit, pass_started)
+                               admit, order, pass_started)
             for t in targets}
     in_round = {t.name: t for t in targets}  # insertion order = list order
     while free > 0:
@@ -2199,6 +2208,10 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     usages = fetch_all(cfg)
     now = datetime.now(timezone.utc)
     admit: Admit = lambda model: admits(usages, model, now, cfg.pace)
+    # Ranked on the reading the gate judges; the mode is read once per pass,
+    # so a change applies from the next one.
+    order = priority.order(priority.load(cfg.state_dir, routed_providers(cfg)),
+                           usages, now, cfg.pace)
     default_verdict = admit(cfg.models.gate_entry().model_id)
     _budget_edge(cfg, deps, default_verdict, now)
     _auth_dark_edge(cfg, deps, usages)
@@ -2209,16 +2222,16 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
             try:
-                _drive_task(eff, deps, target, task, admit, dry_run)
+                _drive_task(eff, deps, target, task, admit, order, dry_run)
             except Exception:
                 _fail_task_crash(eff, deps, target, task, dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
-    _resume_woken(eff, deps, admit, dry_run)
-    _spawn_feedback(eff, deps, admit)
+    _resume_woken(eff, deps, admit, order, dry_run)
+    _spawn_feedback(eff, deps, admit, order)
     # Phase 2: new claims, with whatever capacity phase 1 left.
     if not claims_paused:
-        _claim_new(eff, deps, eff.targets, admit, dry_run, pass_started)
+        _claim_new(eff, deps, eff.targets, admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
     _flush_done(cfg)
     _write_heartbeat(cfg, pass_started)

@@ -4,7 +4,7 @@ the dispatcher and the web read model consume the Readings and Verdicts
 built here, so nothing outside this module computes allowance or headroom."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Literal, Mapping
@@ -64,6 +64,9 @@ class PaceConfig:
     pace_margin: float = 0.10       # how far ahead of the weighted schedule the box may run
     weekend_weight: float = 0.5     # a weekend hour counts this much of a weekday hour
     timezone: str = "UTC"           # IANA name; defines Saturday 00:00 – Monday 00:00
+    # provider -> share of the week one session spent to the threshold uses up;
+    # a provider not listed is never session-bound
+    session_week_share: Mapping[str, float] = field(default_factory=dict)
 
 
 def weighted_hours(start: datetime, end: datetime, tz: str,
@@ -98,6 +101,61 @@ def allowance(w: Window, now: datetime, cfg: PaceConfig) -> float:
     done = weighted_hours(start, min(now, w.resets_at), cfg.timezone, cfg.weekend_weight)
     elapsed = done / whole if whole > 0 else 1.0
     return min(1.0, elapsed + cfg.pace_margin)
+
+
+def required_pace(w: Window, now: datetime, cfg: PaceConfig) -> float | None:
+    """How fast a weekly window's remaining quota has to be spent to be used
+    up by its reset: remaining quota over remaining time, the share of the
+    window still ahead on the allowance's weekend-weighted clock, with no
+    floor. The remaining quota is clamped at 0: over 100% used is pace 0.0.
+    1.0 = spending the rest evenly lands on the reset. None for a
+    session window and for a window with no weighted time left (reset passed,
+    or the rest is weekend at weight 0). Ranks entries; the gate never reads it."""
+    if w.kind is not WindowKind.WEEKLY:
+        return None
+    start = w.resets_at - w.length
+    left = weighted_hours(max(now, start), w.resets_at, cfg.timezone, cfg.weekend_weight)
+    if left <= 0:
+        return None
+    whole = weighted_hours(start, w.resets_at, cfg.timezone, cfg.weekend_weight)
+    return max(0.0, 1.0 - w.used) / (left / whole)
+
+
+def _unscoped(usage: ProviderUsage, kind: WindowKind) -> Window | None:
+    return next((w for w in usage.windows
+                 if w.kind is kind and w.scope is None), None)
+
+
+def _sessions_left(session: Window | None, now: datetime, until: datetime,
+                   threshold: float) -> float:
+    """Sessions that can still be spent before `until`, in real hours: the
+    open session for the unused part of the threshold, then one per started
+    session length after its reset (from `now` when none is open)."""
+    start, part = now, 0.0
+    if session is not None and session.resets_at > now:
+        start = session.resets_at
+        part = max(0.0, 1.0 - session.used / threshold) if threshold > 0 else 0.0
+    length = WindowKind.SESSION.length
+    return part + max(0, -((start - until) // length))  # ceil, exact on timedeltas
+
+
+def session_bound(usage: ProviderUsage, now: datetime, cfg: PaceConfig) -> bool:
+    """Whether the provider cannot spend the rest of its week even using every
+    session left up to the threshold: the remaining quota of its unscoped
+    weekly window is at least its spendable maximum (session week share x
+    sessions left before that window resets). False without a session week
+    share, for unavailable usage, and with no unscoped weekly window still
+    ahead of its reset. Ranks entries; the gate never reads it."""
+    share = cfg.session_week_share.get(usage.provider)
+    if share is None or usage.source == "unavailable":
+        return False
+    weekly = _unscoped(usage, WindowKind.WEEKLY)
+    if weekly is None or weekly.resets_at <= now:
+        return False
+    maximum = share * _sessions_left(_unscoped(usage, WindowKind.SESSION), now,
+                                     weekly.resets_at, cfg.budget_threshold)
+    # 1 - 0.70 and 0.05 * 6 differ only by float noise: it must not decide.
+    return 1.0 - weekly.used >= maximum - 1e-9
 
 
 @dataclass(frozen=True)

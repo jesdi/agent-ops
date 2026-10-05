@@ -5,15 +5,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from typing import Annotated, Literal, Mapping
+from typing import Annotated, Collection, Literal, Mapping
 
 from pydantic import BaseModel, Field
 
 from dispatcher import messages as msgq
+from dispatcher import priority
 from dispatcher.claims import box_free, pick_target
+from dispatcher.models import Entry
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
-                              verdict_note)
+                              required_pace, verdict_note)
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, consumes_capacity,
@@ -457,6 +459,9 @@ class WindowView(BaseModel):
     headroom: float
     minutes_to_reset: float
     severity: Severity     # "close" once headroom <= CLOSE_HEADROOM
+    # What auto ranks on, to one decimal. None for a session window and for a
+    # weekly window with no weighted time left.
+    required_pace: float | None
 
 
 class ProviderUsageView(BaseModel):
@@ -477,9 +482,16 @@ class GateView(BaseModel):
     binding: WindowView | None
 
 
+class PriorityView(BaseModel):
+    mode: str            # "auto" or a routed provider
+    options: list[str]   # "auto", then the routed providers sorted by name
+    first: str           # the provider the mode puts first; "" when none is routed
+
+
 class UsageView(BaseModel):
     providers: list[ProviderUsageView]
     gate: GateView
+    priority: PriorityView
 
 
 CLOSE_HEADROOM = 0.08
@@ -489,12 +501,14 @@ def _severity(headroom: float) -> Severity:
     return "blocked" if headroom <= 0 else "close" if headroom <= CLOSE_HEADROOM else "ok"
 
 
-def _window_view(r: Reading, now: datetime) -> WindowView:
+def _window_view(r: Reading, now: datetime, pace: PaceConfig) -> WindowView:
+    required = required_pace(r.window, now, pace)
     return WindowView(kind=r.window.kind, scope=r.window.scope,
                       used=r.window.used, allowance=r.allowance,
                       headroom=r.headroom,
                       minutes_to_reset=minutes_to_reset(r.window, now),
-                      severity=_severity(r.headroom))
+                      severity=_severity(r.headroom),
+                      required_pace=None if required is None else round(required, 1))
 
 
 def model_admission_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
@@ -506,20 +520,32 @@ def model_admission_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
 
 
 def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
-               pace: PaceConfig, default_model: str) -> UsageView:
-    """Every provider's windows, sorted by provider name, and one gate: the
-    verdict for the policy default model."""
+               pace: PaceConfig, default_model: str, mode: str,
+               routed: Collection[str]) -> UsageView:
+    """Every provider's windows, sorted by provider name, one gate (the
+    verdict for the policy default model), and what the priority `mode` is
+    doing over the `routed` providers. The mode changes no window's numbers.
+    `first` is the dispatcher's own order over one model-less entry per routed
+    provider: a provider-level summary on unscoped windows only, so it can
+    differ from the entry a task gets when a model has its own weekly window.
+    anthropic is written first, so it wins a tie and the no-pace case."""
     verdict = admits(usages, default_model, now, pace)
-    binding = _window_view(verdict.binding, now) if verdict.binding else None
+    ranked = priority.order(mode, usages, now, pace)(tuple(
+        Entry(p, "") for p in sorted(routed, key=lambda p: (p != "anthropic", p))))
+    binding = _window_view(verdict.binding, now, pace) if verdict.binding else None
     return UsageView(
         providers=[ProviderUsageView(
             provider=name, source=usages[name].source,
-            windows=[_window_view(r, now) for r in readings(usages[name], now, pace)])
+            windows=[_window_view(r, now, pace)
+                     for r in readings(usages[name], now, pace)])
             for name in sorted(usages)],
         gate=GateView(model=default_model, provider=verdict.provider,
                       admitted=verdict.admitted, note=verdict_note(verdict, now),
                       minutes_to_reset=binding.minutes_to_reset if binding else 0.0,
-                      binding=binding))
+                      binding=binding),
+        priority=PriorityView(
+            mode=mode, options=[priority.AUTO, *sorted(routed)],
+            first=ranked[0].provider if ranked else ""))
 
 
 class QuarantineEntry(BaseModel):

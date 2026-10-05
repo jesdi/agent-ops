@@ -1,3 +1,5 @@
+import type { KeyboardEvent } from 'react'
+import { useSetPriority } from '../hooks/useSetPriority'
 import type { GateView, ProviderUsageView, Severity, UsageView, WindowKind, WindowView } from '../lib/api'
 import { formatDuration } from '../lib/format'
 import { banner, chip } from '../lib/tone'
@@ -17,27 +19,38 @@ function points(x: number): string {
   return `${v < 0 ? '−' : ''}${digits} ${magnitude === 1 ? 'pt' : 'pts'}`
 }
 
-/** Per window kind: the row label, and the label under the head line — the
- *  session window shows its cap, a weekly window its headroom. */
-const KIND: Record<WindowKind, { label: (w: WindowView) => string; foot: (w: WindowView) => string }> = {
+type Kind = {
+  label: (w: WindowView) => string
+  foot: (w: WindowView) => string
+  pace: (w: WindowView) => string | null
+}
+
+/** Per window kind: the row label, the label under the head line — the
+ *  session window shows its cap, a weekly window its headroom — and the
+ *  required pace, which only a weekly window has. */
+const KIND: Record<WindowKind, Kind> = {
   session: {
     label: () => 'Session · 5h',
     foot: (w) => `cap ${Math.round(w.allowance * 100)}%`,
+    pace: () => null,
   },
   weekly: {
     label: (w) => (w.scope ? `Week · ${w.scope}` : 'Week · all'),
     foot: (w) => `headroom ${points(w.headroom)}`,
+    pace: (w) => (w.required_pace == null ? null : `${w.required_pace.toFixed(1)}× pace`),
   },
 }
 
 /** Headroom bullet: the hatched band is what the box may have spent by now
  *  (allowance), the fill is what was spent, the gap is headroom — the gate's
- *  actual input. Remaining is spelled out to the right. */
+ *  actual input. Remaining is spelled out to the right, over the pace the
+ *  window's remaining quota asks for. */
 function Bullet({ provider, w }: { provider: string; w: WindowView }) {
   const used = Math.round(w.used * 100)
   const allowed = Math.round(w.allowance * 100)
   const remaining = 100 - used
   const label = KIND[w.kind].label(w)
+  const pace = KIND[w.kind].pace(w)
 
   // The sub-track label's own anchor slides with the head line: left-aligned
   // at 0%, right-aligned at 100%, and in between that same fraction of the
@@ -78,7 +91,14 @@ function Bullet({ provider, w }: { provider: string; w: WindowView }) {
           </span>
         </div>
       </div>
-      <span className="whitespace-nowrap font-semibold text-ink">{remaining}% left</span>
+      {/* self-start: the figure sits on the bar's line in every row, whether
+          or not a pace hangs under it. */}
+      <span className="self-start whitespace-nowrap text-right font-semibold text-ink">
+        {remaining}% left
+        {/* On the headroom's line, in its own column: under the track the two
+            together outgrow a narrow track and run into their neighbours. */}
+        {pace && <small className="block text-[11px] font-normal text-ink-muted">{pace}</small>}
+      </span>
     </div>
   )
 }
@@ -98,11 +118,12 @@ function SpawnChip({ gate }: { gate: GateView }) {
   )
 }
 
-function ProviderGroup({ p, gate }: { p: ProviderUsageView; gate: GateView | null }) {
+function ProviderGroup({ p, gate, first }: { p: ProviderUsageView; gate: GateView | null; first: boolean }) {
   return (
     <div className="min-w-0 flex-1 basis-[300px] flex flex-col gap-2.5">
       <span className="flex min-w-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
         {p.provider}
+        {first && <span className={`normal-case tracking-normal ${chip.neutral}`}>first</span>}
         {gate && <SpawnChip gate={gate} />}
       </span>
       {p.source === 'unavailable' ? (
@@ -119,17 +140,88 @@ function ProviderGroup({ p, gate }: { p: ProviderUsageView; gate: GateView | nul
   )
 }
 
-/** Each provider occupies its own column in a wrapping row so basis means WIDTH.
- *  The panel itself is a flex item in the board header (min-w-0 flex-1 basis-[340px]). */
+/** A brand is not a capitalised word; anything unlisted gets its first letter raised. */
+const NAME: Record<string, string> = { openai: 'OpenAI' }
+const optionLabel = (option: string) => NAME[option] ?? option.charAt(0).toUpperCase() + option.slice(1)
+
+const STEP: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }
+
+/** Arrows move focus without selecting: a selection here is a write to the
+ *  box, so it takes an explicit Space or tap, never one POST per arrow. The
+ *  rest (tab stop, Space, checked state) is the native radio group's. */
+function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
+  const step = STEP[event.key]
+  if (!step) return
+  event.preventDefault()
+  const radios = [...event.currentTarget.querySelectorAll('input')]
+  const index = radios.indexOf(event.target as HTMLInputElement)
+  radios[(index + step + radios.length) % radios.length]?.focus()
+}
+
+/** Which provider the box tries first: `auto`, or one routed provider pinned. */
+function PrioritySelector({ priority }: { priority: UsageView['priority'] }) {
+  const { setPriority, pending, error } = useSetPriority()
+  const selected = pending ?? priority.mode
+  return (
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+      <span aria-hidden="true" className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted">Priority</span>
+      <div
+        role="radiogroup"
+        aria-label="Provider priority"
+        aria-busy={pending != null}
+        onKeyDown={moveFocus}
+        className={`flex gap-1 rounded border bg-surface-raised p-1 ${pending == null ? '' : 'opacity-50'}`}
+      >
+        {priority.options.map((option) => {
+          const label = optionLabel(option)
+          return (
+            <label
+              key={option}
+              // A 44px tap target on a phone; from md up, the header's own density.
+              className="relative flex min-h-11 min-w-11 items-center justify-center rounded-sm px-3 text-sm font-medium text-ink-muted hover:text-ink has-checked:bg-ink has-checked:text-surface-raised md:min-h-0 md:min-w-0 md:px-2.5 md:py-0.5 md:text-xs"
+            >
+              <input
+                type="radio"
+                name="priority-mode"
+                aria-label={label}
+                // The input is the segment's whole hit area, drawn by its label:
+                // taps, the focus ring and the checked state stay native. The
+                // ring sits inside the control's padding, clear of its neighbours.
+                className="absolute inset-0 cursor-pointer appearance-none rounded-sm outline-offset-1"
+                checked={option === selected}
+                // Not `disabled` while a change is in flight: that would drop keyboard focus.
+                onChange={() => { if (pending == null) setPriority(option) }}
+              />
+              {label}
+            </label>
+          )
+        })}
+      </div>
+      {error && <p role="alert" className="w-full min-w-0 break-words text-xs text-failed-fg">{error}</p>}
+    </div>
+  )
+}
+
+/** The priority selector heads the panel; under it each provider occupies its
+ *  own column in a wrapping row so basis means WIDTH. The panel itself is a
+ *  flex item in the board header (min-w-0 flex-1 basis-[340px]). */
 export function UsagePanel({ usage }: { usage: UsageView }) {
   return (
     // min-w-0 flex-1 basis-[340px] gives the panel a real width in the header's
     // flex-wrap row; flex-wrap inside lets provider groups sit side by side,
     // each in its own 300px column.
-    <div className="min-w-0 flex-1 basis-[340px] flex flex-wrap gap-3">
-      {usage.providers.map((p) => (
-        <ProviderGroup key={p.provider} p={p} gate={p.provider === usage.gate.provider ? usage.gate : null} />
-      ))}
+    <div className="min-w-0 flex-1 basis-[340px] flex flex-col gap-3">
+      <PrioritySelector priority={usage.priority} />
+      <div className="flex flex-wrap gap-3">
+        {usage.providers.map((p) => (
+          <ProviderGroup
+            key={p.provider}
+            p={p}
+            gate={p.provider === usage.gate.provider ? usage.gate : null}
+            first={p.provider === usage.priority.first}
+          />
+        ))}
+      </div>
     </div>
   )
 }

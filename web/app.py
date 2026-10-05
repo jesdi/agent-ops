@@ -1,4 +1,6 @@
-"""FastAPI app factory: route wiring only. All I/O is behind `sources`."""
+"""FastAPI app factory: route wiring only. All I/O is behind `sources`, with
+one exception: the priority mode is read and written with `dispatcher.priority`
+on the state dir, the one reader the dispatcher and triage also use."""
 from __future__ import annotations
 
 import asyncio
@@ -11,8 +13,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
-from dispatcher import queue_ops
-from dispatcher.config import Config, policy_for
+from dispatcher import priority, queue_ops
+from dispatcher.config import Config, policy_for, routed_providers
 from dispatcher.models import (candidates, override_allowed, override_refusal,
                                parse_entry, pick_provider, resolve,
                                stage_pick, track_from_labels)
@@ -79,6 +81,10 @@ class RunReq(BaseModel):
     bypass_usage: bool = False
 
 
+class PriorityReq(BaseModel):
+    mode: str
+
+
 class NextReq(BaseModel):
     issue: int
     force: bool = False
@@ -99,6 +105,18 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return {"ok": True, "operator": op.login}
 
     targets_by_name = {t.name: t for t in cfg.targets}
+    routed = routed_providers(cfg)
+
+    def _mode() -> str:
+        return priority.load(cfg.state_dir, routed)
+
+    def _order(mode, usages=None, now=None):
+        """The dispatcher's own ordering under `mode`. A route reads the mode
+        and builds this once, so one response never mixes two modes. Without
+        usage (the snapshot must not wait for it) a fixed mode still applies
+        and auto is the written order."""
+        return priority.order(mode, usages or {},
+                              now or datetime.now(timezone.utc), cfg.pace)
 
     def _policy(target_name):
         target = targets_by_name.get(target_name)
@@ -114,20 +132,21 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def _avoid(t):
         return pick_provider(t.picks, "implement")
 
-    def _choices(t, usages, now):
+    def _choices(t, order):
         """The ordered entries the dispatcher would walk for t's next launch."""
         policy = _policy(t.target)
         if t.track not in policy.tracks:
             return ()
-        return candidates(policy, t.track, next_stage(t), _avoid(t))
+        return candidates(policy, t.track, next_stage(t), _avoid(t),
+                          order=order)
 
-    def _model_for(t, usages=None, now=None):
+    def _model_for(t, order, usages=None, now=None):
         if t.park == PARK_WAKE and t.resume_model_override:
             return t.resume_model_override
         pick = stage_pick(t.picks, next_stage(t))
         if pick:
             return parse_entry(pick, "pick").model_id
-        choices = _choices(t, usages, now)
+        choices = _choices(t, order)
         if not choices:
             return ""
         if usages is not None:
@@ -137,15 +156,15 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 return admitted.model_id
         return choices[0].model_id
 
-    def _task_admission(t, usages, now):
+    def _task_admission(t, order, usages, now):
         if t.stage in TERMINAL_STAGES or t.resume_bypass_usage:
             return None
         if sources.execution_override(t.target, t.issue) is not None:
             return None
         stage = next_stage(t)
         return _admission_for_model(
-            _model_for(t, usages, now),
-            [e.model_id for e in _choices(t, usages, now)
+            _model_for(t, order, usages, now),
+            [e.model_id for e in _choices(t, order)
              if override_allowed(t.picks, stage, e.model_id)],
             usages, now, any_provider=not pick_provider(t.picks, stage))
 
@@ -163,21 +182,23 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             requested=requested, alternatives=alternatives,
             any_provider=any_provider)
 
-    def _candidate_choices(target, row):
+    def _candidate_choices(target, row, order):
         policy = policy_for(cfg, target)
         track = track_from_labels(list(row.get("labels") or []), policy)
-        return [e.model_id for e in candidates(policy, track, "spec")]
+        return [e.model_id for e in candidates(
+            policy, track, "spec", order=order)]
 
-    def _candidate_model(target, row):
-        return _candidate_choices(target, row)[0]
+    def _candidate_model(target, row, order):
+        return _candidate_choices(target, row, order)[0]
 
-    def _candidate_admissions(queues, usages, now):
+    def _candidate_admissions(queues, order, usages, now):
         return {(target.name, row["number"]): admission
                 for target, rows in queues for row in rows
                 if read_model._is_candidate(row)
                 and sources.execution_override(target.name, row["number"]) is None
                 and (admission := _admission_for_model(
-                    _candidate_model(target, row), _candidate_choices(target, row),
+                    _candidate_model(target, row, order),
+                    _candidate_choices(target, row, order),
                     usages, now, any_provider=True))}
 
     def _known_target(target: str, tasks: list) -> bool:
@@ -203,28 +224,30 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         # Local state only: cards must not wait for GitHub, usage or sessions.
         tasks = sources.tasks()
         mail = sources.undelivered_counts()
+        order = _order(_mode())
         return read_model.build_board_snapshot(
             tasks, capacity=cfg.capacity,
-            models={(t.target, t.issue): _model_for(t) for t in tasks},
+            models={(t.target, t.issue): _model_for(t, order) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT), queues=[],
             undelivered={(t.target, t.issue): mail.get((t.target, t.issue), 0)
                          for t in tasks},
             wake_blocked=sources.wake_blocked_issues())
     app.include_router(artifacts_router(sources, _find_task))
 
-    def _usage_view() -> read_model.UsageView:
+    def _usage_view(usages, now, mode) -> read_model.UsageView:
         return read_model.usage_view(
-            sources.usage(), now=datetime.now(timezone.utc),
-            pace=cfg.pace, default_model=cfg.models.gate_entry().model_id)
+            usages, now=now, pace=cfg.pace,
+            default_model=cfg.models.gate_entry().model_id,
+            mode=mode, routed=routed)
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         tasks = sources.tasks()
         now = datetime.now(timezone.utc)
         usages = sources.usage()
-        usage = read_model.usage_view(
-            usages, now=now, pace=cfg.pace,
-            default_model=cfg.models.gate_entry().model_id)
+        mode = _mode()
+        order = _order(mode, usages, now)
+        usage = _usage_view(usages, now, mode)
         claims_paused, triage_running = sources.triage_state()
         queues, queue_targets, stale_any = [], [], False
         for target in cfg.targets:
@@ -235,7 +258,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         mail = sources.undelivered_counts()
         return read_model.build_board(
             tasks, capacity=cfg.capacity,
-            models={(t.target, t.issue): _model_for(t, usages, now)
+            models={(t.target, t.issue): _model_for(t, order, usages, now)
                     for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=sources.pass_heartbeat(),
@@ -249,9 +272,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             wake_blocked=sources.wake_blocked_issues(),
             admissions={(t.target, t.issue): admission
                         for t in tasks
-                        if (admission := _task_admission(t, usages, now))},
+                        if (admission := _task_admission(t, order, usages, now))},
             candidate_admissions=_candidate_admissions(
-                queue_targets, usages, now),
+                queue_targets, order, usages, now),
             max_active={t.name: t.max_active for t in cfg.targets},
             last_claimed=sources.last_claims())
 
@@ -262,6 +285,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         t = _find_task(target, issue)
         now = datetime.now(timezone.utc)
         usages = sources.usage()
+        order = _order(_mode(), usages, now)
         # Legacy intent files predate the target field (Task 3); they carry
         # target="" and still belong to whichever task's issue they name —
         # i.get("target") in ("", target) keeps them showing up here instead
@@ -272,7 +296,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                    and i.get("action") in ("reply", "resume")]
         policy = _policy(t.target)
         return read_model.task_detail(
-            t, model=_model_for(t, usages, now),
+            t, model=_model_for(t, order, usages, now),
             pane_tail=sources.pane_tail(target, issue),
             session_alive=sources.session_alive(target, issue),
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
@@ -280,7 +304,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             messages=sources.messages(target, issue),
             pending_sends=pending,
             wake_blocked=(target, issue) in sources.wake_blocked_issues(),
-            admission=_task_admission(t, usages, now),
+            admission=_task_admission(t, order, usages, now),
             track_when=(policy.tracks[t.track].when
                        if t.track in policy.tracks else ""))
 
@@ -369,7 +393,21 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     @app.get("/api/usage", response_model=read_model.UsageView)
     def usage_route(op: Operator = Depends(current_operator)):
-        return _usage_view()
+        return _usage_view(sources.usage(), datetime.now(timezone.utc), _mode())
+
+    @app.post("/api/priority")
+    def set_priority(req: PriorityReq,
+                     op: Operator = Depends(current_operator)):
+        if req.mode != priority.AUTO and req.mode not in routed:
+            raise HTTPException(
+                422, f"mode {req.mode!r} is neither {priority.AUTO!r} nor a "
+                     f"routed provider ({', '.join(sorted(routed))})")
+        priority.save(cfg.state_dir, req.mode, actor=op.login,
+                      now=datetime.now(timezone.utc))
+        # After the file: the event log is the history of what was stored.
+        sources.append_event("priority-mode-set", actor=op.login,
+                             detail=f"mode={req.mode}")
+        return {"ok": True, "mode": req.mode}
 
     @app.get("/api/failures", response_model=read_model.FailuresView)
     def failures(op: Operator = Depends(current_operator)):
@@ -571,9 +609,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             _require_same_provider(task, req.model)
         if req.model:
             return req.model
+        order = _order(_mode())
         if task is not None:
-            return stage_pick(task.picks, next_stage(task)) or _model_for(task)
-        return _candidate_model(configured_target, row)
+            return stage_pick(task.picks, next_stage(task)) or _model_for(task, order)
+        return _candidate_model(configured_target, row, order)
 
     def _arm_run(target: str, issue: int, req: RunReq, task, model: str,
                  op: Operator):

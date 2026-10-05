@@ -141,7 +141,7 @@ def test_wake_blocked_marker_is_scoped_to_its_own_target(tmp_path):
     make_task_for(c, "factorial", issue=12, slot=NO_SLOT, park=PARK_WAKE)
     make_task_for(c, "portfolio_eval", issue=12, slot=0, park="")
 
-    main._resume_woken(c, main_deps(), admit=ADMIT_ALL)
+    main._resume_woken(c, main_deps(), admit=ADMIT_ALL, order=tuple)
 
     src = Sources(
         webfakes.make_config(

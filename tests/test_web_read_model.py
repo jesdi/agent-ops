@@ -461,7 +461,8 @@ DEFAULT = "claude-opus-4-8"
 
 
 def gate_for(usages, default_model=DEFAULT):
-    return usage_view(usages, now=NOW, pace=PACE, default_model=default_model).gate
+    return usage_view(usages, now=NOW, pace=PACE, default_model=default_model,
+                      mode="auto", routed={"anthropic"}).gate
 
 
 GATE_OK = gate_for({"anthropic": session_usage(0.5, now=NOW)})
@@ -606,7 +607,8 @@ def test_next_claim_unknown_wins_over_new_gates():
 def test_usage_view_severities_and_gate_binding():
     # Fable default: the Fable window binds the gate (headroom ~0.05, severity "close")
     view = usage_view({"anthropic": session_usage(0.5, fable=0.55, now=NOW)},
-                      now=NOW, pace=PACE, default_model="claude-fable-5-1")
+                      now=NOW, pace=PACE, default_model="claude-fable-5-1",
+                      mode="auto", routed={"anthropic"})
     (p,) = view.providers
     assert p.provider == "anthropic" and p.source == "oauth"
     assert [(w.kind, w.scope, w.severity) for w in p.windows] == [
@@ -631,7 +633,8 @@ def test_usage_view_blocked_window_closes_the_gate():
 
 def test_usage_view_unavailable_provider():
     view = usage_view({"anthropic": session_usage(source="unavailable", now=NOW)},
-                      now=NOW, pace=PACE, default_model=DEFAULT)
+                      now=NOW, pace=PACE, default_model=DEFAULT,
+                      mode="auto", routed={"anthropic"})
     (p,) = view.providers
     assert (p.source, p.windows) == ("unavailable", [])
     assert (view.gate.admitted, view.gate.binding, view.gate.minutes_to_reset) == (False, None, 0)
@@ -647,7 +650,8 @@ def test_usage_view_gate_for_an_unreported_provider_fails_closed():
 def test_usage_view_providers_sorted_by_name():
     view = usage_view({"zeta": session_usage(provider="zeta", now=NOW),
                        "anthropic": session_usage(now=NOW)},
-                      now=NOW, pace=PACE, default_model=DEFAULT)
+                      now=NOW, pace=PACE, default_model=DEFAULT,
+                      mode="auto", routed={"anthropic"})
     assert [p.provider for p in view.providers] == ["anthropic", "zeta"]
 
 
@@ -968,3 +972,73 @@ def test_slots_used_never_disagrees_with_the_lit_segments():
 def test_review_stage_sits_in_the_in_progress_column():
     from web.read_model import column_for
     assert column_for("review", "") == "in-progress"
+
+
+# --- which provider the priority mode puts first ---------------------------
+
+from dataclasses import replace
+from datetime import timedelta
+from dispatcher.usage import ProviderUsage, Window, WindowKind
+
+def _weekly(provider, used, hours, source="oauth", scope=None):
+    return ProviderUsage(provider, source, 0.0, (
+        Window(WindowKind.WEEKLY, scope, used, NOW + timedelta(hours=hours)),))
+
+
+def _first(mode, usages, routed=("anthropic", "openai"), pace=PACE):
+    return usage_view({u.provider: u for u in usages}, now=NOW, pace=pace,
+                      default_model=DEFAULT, mode=mode,
+                      routed=frozenset(routed)).priority.first
+
+
+def test_first_is_the_fixed_provider_whatever_the_paces():
+    assert _first("anthropic", [_weekly("anthropic", 0.9, 96),
+                                _weekly("openai", 0.1, 24)]) == "anthropic"
+
+
+def test_first_in_auto_is_the_highest_unscoped_weekly_pace():
+    assert _first("auto", [_weekly("anthropic", 0.1, 96),
+                           _weekly("openai", 0.2, 24)]) == "openai"
+
+
+def test_first_in_auto_ignores_a_models_own_weekly_window():
+    assert _first("auto", [_weekly("anthropic", 0.1, 96),
+                           _weekly("openai", 0.0, 1, scope="Luna")]) == "anthropic"
+
+
+def test_first_in_auto_ignores_an_unavailable_providers_windows():
+    assert _first("auto", [_weekly("anthropic", 0.1, 96),
+                           _weekly("openai", 0.2, 24, source="unavailable")]
+                  ) == "anthropic"
+
+
+def test_first_in_auto_is_the_only_provider_with_a_pace():
+    assert _first("auto", [_weekly("openai", 0.9, 96)]) == "openai"
+
+
+def test_first_in_auto_falls_back_to_anthropic_on_a_tie_or_no_pace():
+    tie = [_weekly("anthropic", 0.5, 84), _weekly("openai", 0.5, 84)]
+    assert _first("auto", tie) == "anthropic"
+    assert _first("auto", []) == "anthropic"
+
+
+def test_first_in_auto_without_anthropic_routed_is_the_first_by_name():
+    assert _first("auto", [], routed=("openai", "nvidia")) == "nvidia"
+    assert _first("auto", [], routed=()) == ""
+
+
+def test_first_in_auto_is_the_session_bound_provider_despite_a_lower_pace():
+    bound = replace(PACE, session_week_share={"anthropic": 0.05})
+    usages = [_weekly("anthropic", 0.70, 30), _weekly("openai", 0.2, 24)]
+    assert _first("auto", usages) == "openai"
+    assert _first("auto", usages, pace=bound) == "anthropic"
+
+
+def test_usage_view_reports_the_mode_options_and_one_decimal_pace():
+    view = usage_view({"anthropic": _weekly("anthropic", 0.1, 96)}, now=NOW,
+                      pace=PACE, default_model=DEFAULT, mode="openai",
+                      routed={"openai", "anthropic"})
+    assert view.priority.model_dump() == {
+        "mode": "openai", "options": ["auto", "anthropic", "openai"],
+        "first": "openai"}
+    assert view.providers[0].windows[0].required_pace == 1.6

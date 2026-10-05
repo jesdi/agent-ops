@@ -38,6 +38,7 @@ export interface PendingIntent {
 }
 export interface PendingIntentsView { intents: PendingIntent[] }
 export interface QueueActionResult { ok: true; reason: string }
+export interface PrioritySet { ok: true; mode: string }
 export interface IntentAccepted { status: 'pending'; intent: string }
 export interface ResumeOptions { text?: string; model?: string; bypassUsage?: boolean }
 
@@ -111,6 +112,8 @@ export const api = {
   queueNext: (issue: number, force: boolean) =>
     post<QueueActionResult>('/queue/next', { issue, force }),
   queueReady: (issue: number) => post<QueueActionResult>('/queue/ready', { issue }),
+  // Priority mode — applied immediately, 200 or 422 with the reason.
+  setPriority: (mode: string) => post<PrioritySet>('/priority', { mode }),
   // Intent actions — 202 accepted, applied by the next dispatcher pass.
   reply: (target: string, issue: number, text: string) =>
     post<IntentAccepted>(`/task/${target}/${issue}/reply`, { text }),

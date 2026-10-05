@@ -83,6 +83,20 @@ def _loop_caps(raw: object) -> LoopCaps:
     return LoopCaps(**raw)
 
 
+def _session_week_share(raw: object) -> dict[str, float]:
+    """provider -> share of the week one session spends; each above 0 and at
+    most 1."""
+    if not isinstance(raw, dict):
+        raise ValueError("session_week_share: must map provider to share, "
+                         f"got {raw!r}")
+    for provider, share in raw.items():
+        if (isinstance(share, bool) or not isinstance(share, (int, float))
+                or not 0.0 < share <= 1.0):
+            raise ValueError(f"session_week_share: {provider} must be above 0 "
+                             f"and at most 1, got {share!r}")
+    return {str(provider): share for provider, share in raw.items()}
+
+
 def _pace(raw: dict) -> PaceConfig:
     """The usage-gate knobs, read from their top-level targets.yaml keys."""
     d = PaceConfig()
@@ -92,7 +106,8 @@ def _pace(raw: dict) -> PaceConfig:
         racing_threshold=raw.get("racing_threshold", d.racing_threshold),
         pace_margin=float(raw.get("pace_margin", d.pace_margin)),
         weekend_weight=float(raw.get("weekend_weight", d.weekend_weight)),
-        timezone=str(raw.get("timezone", d.timezone)))
+        timezone=str(raw.get("timezone", d.timezone)),
+        session_week_share=_session_week_share(raw.get("session_week_share", {})))
     try:
         ZoneInfo(pace.timezone)
     except (ZoneInfoNotFoundError, ValueError) as e:
@@ -148,7 +163,7 @@ def load_config(path: str | Path) -> Config:
         raise ValueError("triage_model: is gone; write models.triage: (a list of "
                          "entries, see targets.example.yaml)")
     capacity = raw.get("capacity", 3)
-    return Config(
+    cfg = Config(
         state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
         capacity=capacity,
         session_memory=str(raw.get("session_memory", "2g")),
@@ -165,12 +180,30 @@ def load_config(path: str | Path) -> Config:
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),
     )
+    # A share for a provider nothing runs on is a typo that would silently
+    # turn the session-bound rule off.
+    unknown = sorted(set(cfg.pace.session_week_share) - referenced_providers(cfg))
+    if unknown:
+        raise ValueError(f"session_week_share: {unknown} named by no model entry; "
+                         f"expected any of {sorted(referenced_providers(cfg))}")
+    return cfg
 
 
 def policy_for(cfg: Config, target: Target) -> ModelPolicy:
     """A target's own policy replaces the global one wholesale — rule lists are
     never merged, because merge order would make first-match-wins ambiguous."""
     return target.models or cfg.models
+
+
+def routed_providers(cfg: Config) -> frozenset[str]:
+    """Every provider some routed list names: the global triage list and the
+    stage lists of every track, of the global policy and of every target's
+    own. The priority mode may name one of these. Not routed: `review_second`,
+    and a target policy's own triage list (the sweep runs `cfg.models.triage`)."""
+    policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
+    staged = (e for p in policies for t in p.tracks.values()
+              for entries in t.stages.values() for e in entries)
+    return frozenset(e.provider for e in (*cfg.models.triage, *staged))
 
 
 def referenced_providers(cfg: Config) -> frozenset[str]:

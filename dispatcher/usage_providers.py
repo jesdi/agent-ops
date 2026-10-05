@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from dispatcher.config import Config, referenced_providers
+from dispatcher.state import write_json_atomic
 from dispatcher.usage import ProviderUsage, Window, WindowKind, unavailable
 
 log = logging.getLogger(__name__)
@@ -295,19 +295,6 @@ def cache_path(state_dir: str | Path, provider: str) -> Path:
     return Path(state_dir) / "usage" / f"{provider}.json"
 
 
-def _write_atomic(path: Path, doc: dict) -> None:
-    """The web process and the dispatcher both write the cache: write a
-    sibling temp file and rename it over, so a reader never sees a torn one.
-    mkstemp creates 0600 and the two units may run as different users, so
-    the file is opened up to 0644 before the rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    with os.fdopen(fd, "w") as fh:
-        json.dump(doc, fh)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, path)
-
-
 def _cached(cp: Path, at: float) -> ProviderUsage | None:
     """The cached reading if it is fresh and usable; None is a miss. A file
     this unit cannot read, or cannot parse, is a miss, never a raise. So is
@@ -345,7 +332,7 @@ def fetch_provider(name: str, state_dir: str | Path, *,
         log.exception("usage adapter %r failed", name)
         return unavailable(name, at)
     if u.source != "unavailable":
-        _write_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
+        write_json_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
     return u
 
 

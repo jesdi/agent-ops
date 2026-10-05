@@ -123,6 +123,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/priority": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set Priority */
+        post: operations["set_priority_api_priority_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/queue": {
         parameters: {
             query?: never;
@@ -704,6 +721,20 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** PriorityReq */
+        PriorityReq: {
+            /** Mode */
+            mode: string;
+        };
+        /** PriorityView */
+        PriorityView: {
+            /** First */
+            first: string;
+            /** Mode */
+            mode: string;
+            /** Options */
+            options: string[];
+        };
         /** ProviderUsageView */
         ProviderUsageView: {
             /** Provider */
@@ -945,6 +976,7 @@ export interface components {
         /** UsageView */
         UsageView: {
             gate: components["schemas"]["GateView"];
+            priority: components["schemas"]["PriorityView"];
             /** Providers */
             providers: components["schemas"]["ProviderUsageView"][];
         };
@@ -975,6 +1007,8 @@ export interface components {
             kind: components["schemas"]["WindowKind"];
             /** Minutes To Reset */
             minutes_to_reset: number;
+            /** Required Pace */
+            required_pace: number | null;
             /** Scope */
             scope: string | null;
             /**
@@ -1141,6 +1175,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    set_priority_api_priority_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PriorityReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -193,3 +193,52 @@ def test_window_label_and_note():
 ])
 def test_points_use_a_true_minus_and_a_singular_point(fraction, text):
     assert usage.points(fraction) == text
+
+
+# --- session_bound: counting the sessions left -----------------------------
+
+SHARE = PaceConfig(session_week_share={"anthropic": 0.05})  # threshold 0.8
+
+
+def _bound(week_used, week_hours, session=None, cfg=SHARE):
+    windows = [Window(WEEKLY, None, week_used, NOW + timedelta(hours=week_hours))]
+    if session is not None:
+        used, hours = session
+        windows.append(Window(SESSION, None, used, NOW + timedelta(hours=hours)))
+    return usage.session_bound(
+        ProviderUsage("anthropic", "oauth", 0.0, tuple(windows)), NOW, cfg)
+
+
+@pytest.mark.parametrize("session, week_hours, sessions", [
+    (None, 25, 5),             # an exact multiple of 5 h starts no sixth period
+    (None, 25.5, 6),           # a started partial period counts as one
+    ((0.0, 5), 30, 6),         # the open session plus 5 after its reset
+    ((0.4, 5), 30, 5.5),       # half the threshold is left of the open session
+    ((0.8, 5), 30, 5),         # open session at the threshold counts for none
+    ((0.95, 5), 30, 5),        # ...and over it
+    ((0.0, 5), 3, 1),          # weekly reset before the open session's reset
+    ((0.4, 5), 3, 0.5),
+    ((0.0, -1), 10, 2),        # a session window past its reset is not open
+])
+def test_session_bound_counts_the_sessions_left(session, week_hours, sessions):
+    # bound exactly when the remaining quota reaches share x sessions
+    remaining = 0.05 * sessions
+    assert _bound(1 - remaining, week_hours, session) is True
+    assert _bound(1 - remaining + 0.01, week_hours, session) is False
+
+
+def test_session_bound_edges_never_bound_or_never_divide_by_zero():
+    assert _bound(0.0, -1) is False                      # weekly reset passed
+    assert _bound(0.0, 30, cfg=PaceConfig()) is False    # no session week share
+    scoped = ProviderUsage("anthropic", "oauth", 0.0, (
+        Window(WEEKLY, "Fable", 0.0, NOW + timedelta(hours=30)),))
+    assert usage.session_bound(scoped, NOW, SHARE) is False
+    zero = PaceConfig(budget_threshold=0.0, session_week_share={"anthropic": 0.05})
+    assert _bound(0.75, 30, (0.0, 5), zero) is True      # 5 sessions, none open
+
+
+def test_required_pace_of_a_window_over_its_quota_is_zero_not_negative():
+    now = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+    cfg = PaceConfig(weekend_weight=1.0)
+    over = Window(WEEKLY, None, 1.2, now + timedelta(hours=24))
+    assert usage.required_pace(over, now, cfg) == 0.0

@@ -12,8 +12,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher import claims, containers, herdr, triage_apply, triage_prefetch
-from dispatcher.config import Config, policy_for
+from dispatcher import claims, containers, herdr, priority, triage_apply, triage_prefetch
+from dispatcher.config import Config, policy_for, routed_providers
 from dispatcher.models import Entry, triage_entry, tracks_text
 from dispatcher.prompts import render_triage_prompt
 from dispatcher.state import load_all
@@ -234,9 +234,11 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
     usages = fetch_all(cfg)
     now = datetime.now(timezone.utc)
     admitted = lambda m: admits(usages, m, now, cfg.pace).admitted  # noqa: E731
-    entry = triage_entry(cfg.models, admitted)
+    order = priority.order(priority.load(cfg.state_dir, routed_providers(cfg)),
+                           usages, now, cfg.pace)
+    entry = triage_entry(cfg.models, admitted, order)
     if entry is None:
-        first = admits(usages, cfg.models.triage[0].model_id, now, cfg.pace)
+        first = admits(usages, order(cfg.models.triage)[0].model_id, now, cfg.pace)
         deps.notifier.send("triage_report", lines=[
             f"skipped — usage gate ({verdict_note(first, now)})"])
         return

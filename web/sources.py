@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
-                        queue_ops, state, task_artifacts, triage)
+                        priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
 from dispatcher.config import Config, Target, referenced_providers
@@ -336,6 +336,8 @@ class Sources:
 
     def state_fingerprint(self) -> str:
         root = self.state_dir
+        # The mode moves the board's next-launch models and the usage panel.
+        mode = root / priority.FILE
 
         def digest(paths) -> str:
             h = hashlib.sha256()
@@ -353,9 +355,9 @@ class Sources:
             + list((root / execution_overrides.DIR).glob("*.json"))
             + list((root / "messages").glob("*.jsonl"))
             + list((root / "artifacts").glob("*/index.json"))
-            + [root / "pass.json"])
+            + [root / "pass.json", mode])
         usage = digest(sorted((root / "usage").glob("*.json"))
-                       + [root / "budget-stalled"])
+                       + [root / "budget-stalled", mode])
         failures = digest(
             (list((root / "failures").iterdir())
              if (root / "failures").exists() else [])
