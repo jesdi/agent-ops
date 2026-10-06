@@ -108,8 +108,8 @@ flowchart LR
   active tasks.
 - **Staged pipeline** — each task moves through **spec → plan → implement (one session works every ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
-  artifact. Spec and plan pause together at one human review gate before
-  implementation spends real tokens on them. The dispatcher skips that gate
+  artifact. The plan stage pauses at one human review gate, where you read
+  the spec and the plan, before implementation spends real tokens on them. The dispatcher skips that gate
   only for a task on a track with `plan_review: false` whose spec and plan
   sessions asked no questionnaire and whose plan has no open question. An
   `untracked:` default that names such a track makes every unlabelled task

@@ -224,10 +224,11 @@ Repo-agnostic workflow skills that stage prompts invoke: `to-openspec`
 `implement-spec` (implement, which owns `tdd` per ticket and its own
 reviews), `review-diff` with `deep-quality-review` and
 `resolving-merge-conflicts` (review). `to-spec` is not a box skill: it is the
-Mac tool that writes the design into a `spec-ready` issue body. They live in the claude-home seed (agent-ops-infra, ADR
-0003): the jesdi ones pinned in its `.my-skills.json` and installed with
-`@jesdi/skills-cli`, the mattpocock ones vendored as files
-(`make vendor-skills`); never a plugin, never carried by target repos.
+Mac tool that writes the design into a `spec-ready` issue body. They live in
+the claude-home seed (agent-ops-infra, ADR 0003): the jesdi ones pinned in
+its `.my-skills.json` and installed with `@jesdi/skills-cli`, the mattpocock
+ones vendored as files (`make vendor-skills`); never a plugin, never carried
+by target repos.
 
 ## Loop-policy ownership
 
@@ -280,7 +281,8 @@ address-review. Worktree-relative path.
 
 **Operator request** = `TaskState.operator_request`: `None` (no request),
 `{"kind": "plan-approval", "path": "<worktree-relative path>"}` (the plan session's review summary,
-`.agent/plan-review.md`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns its lifecycle writes:
+`.agent/plan-review.md`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns
+its lifecycle writes:
 
 - Establish on entering AWAITING-PLAN-REVIEW (plan-approval).
 - Set answers kind when a valid answers artifact is signalled.
@@ -300,8 +302,9 @@ a track the ready report names does not count), `TaskState.asked` is false (neit
 nor the plan session parked for answers), and the report's `open_questions` is the integer 0, its
 `artifact` is `.agent/plan-review.md`, and that file confirms the count (its open-questions section says
 `None.`; `artifacts.count_open_questions`). A missing or malformed count or summary, a summary with other
-`## ` headings than the three prescribed, or one above 256 KB means "the gate applies". The ticket check and the spec folder publish run as at the gate, then implement starts in the
-same pass; no review notification, no request. `TaskState.gated` is set at gate entry, and when a dead
+`## ` headings than the three prescribed, or one above 256 KB means "the gate applies". The ticket check and
+the spec folder publish run as at the gate, then implement starts in the same pass;
+no review notification, no request. `TaskState.gated` is set at gate entry, and when a dead
 gate session is respawned, and never cleared: a task that waited once never skips, also after a respawn
 puts it back in the plan stage.
 
