@@ -227,6 +227,11 @@ The maintained VPS deployment has moved to the private
 It owns the host configuration, bootstrap/updater, systemd units, session image,
 Claude-home seed, and operational runbooks. Access requires repository permission.
 
+Before a deploy of the openspec pipeline, the Claude-home seed and the
+Codex-home seed there must carry the `implement-spec`, `to-openspec` and
+`red-team-data-model` skills: the stage prompts read them from
+`~/.claude/skills/` and `~/.codex/skills/`.
+
 Deployments may set `AGENT_OPS_COMMAND_WRAPPER` to an executable path that
 prepares credentials and then executes its arguments. Without it, sessions call
 Podman directly. Use `AGENT_OPS_SESSION_IMAGE` to select your session image.

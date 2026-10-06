@@ -48,8 +48,9 @@ def test_plan_prompt_names_the_tickets_dir_and_spec():
 
 def test_implement_prompt_carries_skill_tickets_gate_and_progress_note():
     out = render_stage_prompt(Stage.IMPLEMENT, CTX)
-    for token in ("implement-spec/SKILL.md", ".agent/tickets", CTX["spec_path"],
-                  "make gate SLOT=1", "agent/task-42", "of the\n5 tickets",
+    for token in ("~/.claude/skills/implement-spec/SKILL.md",
+                  "~/.codex/skills/implement-spec/SKILL.md", ".agent/tickets",
+                  CTX["spec_path"], "make gate SLOT=1", "agent/task-42", "of the\n5 tickets",
                   "N/M tickets merged"):
         assert token in out
     assert '"loop"' not in out          # the skill owns its gate loop

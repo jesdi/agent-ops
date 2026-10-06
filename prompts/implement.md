@@ -4,13 +4,15 @@ this one, works every ticket of the approved plan. The spec is `$spec_path`,
 with `proposal.md` and `design.md` beside it. You have no memory of earlier
 sessions and nobody is watching this chat.
 
-Read the skill file `.my-skills/implement-spec/SKILL.md` and follow it over
-the tickets directory `$tickets_dir`, on the existing task branch `$branch`:
-that branch is the skill's PR branch. If the file is not at that path in
-this worktree, read `.claude/skills/implement-spec/SKILL.md` here or in your
-home directory; if it is nowhere, report `blocked`. Read the file, do not
-invoke the skill. It carries the method; the rules below only bind it to
-this pipeline. The repository's check command is `$gate_cmd`.
+Read the skill file `~/.claude/skills/implement-spec/SKILL.md` (on Codex:
+`~/.codex/skills/implement-spec/SKILL.md`) and follow it over the tickets
+directory `$tickets_dir`, on the existing task branch `$branch`: that branch
+is the skill's PR branch. Only if neither home path exists, a repository
+that carries the skill itself has it at `.my-skills/implement-spec/SKILL.md`
+in this worktree; if it is nowhere, report `blocked` with "implement-spec
+skill file not found". Read the file, do not invoke the skill. It carries
+the method; the rules below only bind it to this pipeline. The repository's
+check command is `$gate_cmd`.
 
 Two overrides, and no others. First: do not create or open a pull request,
 not as a draft either, and no new branch in place of `$branch` (the ticket

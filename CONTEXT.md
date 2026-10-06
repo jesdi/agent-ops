@@ -196,8 +196,9 @@ Skills scoped to a target repo, declared in that repo's `.my-skills.json` and
 synced by `@jesdi/skills-cli`. Distinct from process skills.
 
 **Process skills**:
-Repo-agnostic workflow skills (to-spec, to-questionnaire, to-tickets,
-prototype, wizard, tdd, review-diff, deep-quality-review…) that stage
+Repo-agnostic workflow skills (to-spec, to-openspec, red-team-data-model,
+to-questionnaire, to-tickets, implement-spec, prototype, wizard, tdd,
+review-diff, deep-quality-review…) that stage
 prompts invoke. They live in the claude-home seed (agent-ops-infra, ADR
 0003): the jesdi ones pinned in its `.my-skills.json` and installed with
 `@jesdi/skills-cli`, the mattpocock ones vendored as files
