@@ -22,6 +22,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             {l.label}
           </NavLink>
         ))}
+        {/* A static page (public/task-states.html), outside the router: a
+            plain link, so the browser loads it. */}
+        <a href="/task-states.html" className="ml-auto text-sm text-ink-muted hover:text-ink">
+          Task states
+        </a>
       </nav>
       {children}
     </div>
