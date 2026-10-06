@@ -259,7 +259,9 @@ address-review. Worktree-relative path.
 - Set answers kind when a valid answers artifact is signalled.
 - Clear on: successful resume, stage transition, ordinary+exhaustion park, terminal stage, CI/login supersede.
 - Retain on admission denial (resources unavailable at wake time).
-- Re-arm on a resumed gate re-signal.
+- Clear when the session at the gate reports `working` (it reworks the plan on feedback).
+- Re-arm on a ready report at the gate with no request armed: a new review round (ticket check,
+  publish, notification, fresh grace clock). The grace park arms it too when none is armed.
 
 The web layer READS `operator_request`; it never infers a request from park state.
 
