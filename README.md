@@ -236,31 +236,85 @@ The maintained VPS deployment has moved to the private
 It owns the host configuration, bootstrap/updater, systemd units, session image,
 Claude-home seed, and operational runbooks. Access requires repository permission.
 
-The deploy of the openspec pipeline is done once, in this order:
+### Deploying the openspec pipeline
 
-1. Drain the box: let every task in plan, implement or review finish. Tasks
-   in the spec stage, at the spec review gate, or with an open pull request
-   can stay.
-2. Stop the dispatcher: the timer and the service.
-3. Make sure the Claude-home seed and the Codex-home seed there carry the
-   `implement-spec`, `to-openspec` and `red-team-data-model` skills: the
-   stage prompts read them from `~/.claude/skills/` and `~/.codex/skills/`.
-4. Deploy.
-5. Run `python -m dispatcher.openspec_migration <state_dir>` once, by hand,
-   and read its output: one line per task (`converted`, `untouched`,
-   `must-drain`) and a summary line. Each converted task starts a fresh spec
-   session on the next pass, and waits at the plan review gate whatever its
-   track.
-6. Start the dispatcher.
+Done once. `<state_dir>` is the `state_dir` of the box's `targets.yaml`. Run
+every command as the dispatcher's user, from the dispatcher's checkout, with
+its virtualenv python (`.venv/bin/python`).
 
-The command changes nothing and exits non-zero while a dispatcher pass or the
-updater holds `convergence.lock`, when a task of the old flow is still in
-plan, implement or review (the box was not drained), and when a task file is
-not readable or holds a stage, park or request it does not know. A second run
-changes nothing. Do not start the dispatcher
-before step 5: it cannot read a task at the old gate, and a task file it
-saves first is skipped by the command. `dispatcher/openspec_migration.py` and
-its tests are deleted after this deploy.
+1. **Seeds.** Make sure the Claude-home seed and the Codex-home seed in the
+   infra repository carry the `implement-spec`, `to-openspec` and
+   `red-team-data-model` skills: the stage prompts read them from
+   `~/.claude/skills/` and `~/.codex/skills/`.
+2. **Drain, before the deploy.** Let every task in plan, implement or review
+   finish. Tasks in the spec stage, at the spec review gate, or with an open
+   pull request can stay. This check needs no new code; it prints `[]` when
+   the box is drained:
+
+   ```
+   .venv/bin/python -c "import sys; from dispatcher.state import load_all; print([(t.target, t.issue, t.stage.value) for t in load_all(sys.argv[1]) if t.stage.value in ('plan', 'implement', 'review')])" <state_dir>
+   ```
+
+3. **Stop.** Stop the dispatcher and the updater, and keep them stopped
+   until step 8:
+   `systemctl stop agent-ops-dispatcher.timer agent-ops-dispatcher.service agent-ops-update.timer`.
+   `agent-ops-web.service` and `agent-ops-waitd.service` can stay up: they
+   write no task file. Stop `agent-ops-triage.timer` too if you want a quiet
+   box; a triage sweep writes no task file either. The unit names are those
+   of the infra repository and were not verified from this repository: check
+   them with `systemctl list-units 'agent-ops-*'`. Run the check of step 2
+   once more: a task can enter plan between the check and the stop.
+4. **Back up.** `cp -a <state_dir> <state_dir>.pre-openspec`
+5. **Deploy** the new code. Do not start anything.
+6. **Check.** `.venv/bin/python -m dispatcher.openspec_migration --check <state_dir>`
+   reads only: no lock, no write. It prints what step 7 would do and has the
+   same exit status.
+7. **Migrate.**
+   `.venv/bin/python -m dispatcher.openspec_migration <state_dir> | tee openspec-migration.log`
+   Keep the output: a second run prints every task as `untouched`.
+8. **Start** the units of step 3.
+
+Output, one line per task, then a summary line:
+
+| Label | Meaning |
+|---|---|
+| `converted` (`would-convert` with `--check`) | Was in the spec stage or at the old spec review gate. It starts a fresh spec session on the next pass. The operator's earlier messages for it are queued again and arrive with the new session's prompt. |
+| `untouched` | Not changed: an open pull request, a finished task, a task of the new flow. `(failed, not resumable)` is a failed task that Resume cannot start, for example one that failed at the old spec review gate: move its issue back to Ready to start it again. |
+| `do-not-resume` | An old task that failed in plan, implement or review. Do not use Resume on it: a new session would work on the old artifacts. Cancel it, or move its issue back to Ready. It is marked so that it can never skip the plan review gate. |
+| `must-drain` | An old task still in plan, implement or review. The run is refused. |
+| `not converted` | Would be converted, but the run is refused. |
+| `unreadable` | A task file or a message file that cannot be read. The run is refused. |
+| `unknown-value` | A task file with a stage, park or request that the command does not know; the line names the file, the field and the value. The run is refused. Do not delete the file. |
+| `stopped at <file>` | A write failed. The tasks printed before it are converted; run the command again. |
+
+Exit status: `0` done (or, with `--check`, would be done); `1` refused or
+stopped, read the last line; `2` not started: the lock
+`<state_dir>/convergence.lock` is held (a pass or the updater runs), the
+directory does not exist, or the arguments are wrong. A refused run changes
+nothing. A second run changes nothing.
+
+What to know:
+
+- **The trap.** If step 6 or 7 prints `must-drain`, do not start the new
+  dispatcher. It refuses to run anyway: while a task file of the old flow is
+  on disk, `python -m dispatcher.main` exits with status 1 and names this
+  command. Roll the deploy back, start the old dispatcher, let the named
+  tasks finish, and start again at step 3. Step 2 is there to avoid this.
+- Every migrated task waits at the plan review gate, also on a track that
+  has no plan review.
+- A spec session of the old flow that is still live keeps running, and is
+  not counted against capacity, until its task gets its turn; the dispatcher
+  ends it then. You can close such panes by hand while the dispatcher is
+  stopped.
+- The console does not show a task at the old gate between step 5 and
+  step 7.
+
+After the deploy, delete together: `dispatcher/openspec_migration.py`;
+`tests/test_openspec_migration.py` and
+`tests/test_openspec_migration_acceptance.py`; `_refuse_old_flow` and its two
+calls in `dispatcher/main.py`; the `blocking` parameter of `pass_lock` in
+`dispatcher/convergence.py`; the restart-inputs list in step 1 of
+`prompts/spec.md` with its tests in `tests/test_prompts.py`; this section.
 
 Deployments may set `AGENT_OPS_COMMAND_WRAPPER` to an executable path that
 prepares credentials and then executes its arguments. Without it, sessions call
