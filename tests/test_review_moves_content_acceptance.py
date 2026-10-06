@@ -150,7 +150,9 @@ def test_review_prompt_writes_the_description_file_from_both_documents(
     prompt = _prompt(tmp_path, monkeypatch, "review")
     for para in _rule(prompt, ".agent/pr-body.md", "proposal.md", "design.md",
                       "ledger"):
-        if (all(w in para for w in ("why", "goal", "non-goals", "decisions"))
+        if (all(re.search(r, para) for r in (
+                r"\bwhy\b", r"(?<!non-)\bgoal\b", r"\bnon-goals\b",
+                r"\bdecisions\b", r"open rulings?"))
                 and re.search(r"already exist|if it exists|if the file exists", para)
                 and "write" in para):
             return
