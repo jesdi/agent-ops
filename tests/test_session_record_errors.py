@@ -72,6 +72,27 @@ def test_bad_task_state_keeps_prior_session_and_updates_turn_markers(
 
 @pytest.mark.parametrize("background_tasks", [None, [BACKGROUND_TASK]],
                          ids=["waiting", "background"])
+def test_malformed_operator_request_keeps_session_and_updates_turn_markers(
+        tmp_path, capsys, background_tasks):
+    _task(tmp_path)
+    _ping(tmp_path, FIRST_ID)
+    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+    _prior_marker(tmp_path, background_tasks)
+    task_path = tmp_path / "task-portfolio_eval-370.json"
+    task_doc = json.loads(task_path.read_text())
+    task_doc["operator_request"] = []
+    task_path.write_text(json.dumps(task_doc))
+
+    _ping(tmp_path, SECOND_ID, background_tasks)
+
+    _assert_markers(tmp_path, background_tasks)
+    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+    error = capsys.readouterr().err
+    assert "waitd:" in error and TARGET in error and str(ISSUE) in error
+
+
+@pytest.mark.parametrize("background_tasks", [None, [BACKGROUND_TASK]],
+                         ids=["waiting", "background"])
 def test_unreadable_task_state_still_updates_turn_markers(
         tmp_path, capsys, background_tasks):
     (tmp_path / "task-portfolio_eval-370.json").mkdir()

@@ -20,7 +20,9 @@ def _record_session(rec: dict, state_dir, target: str, issue: int) -> None:
         return
     try:
         task = load(state_dir, target, issue)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        # TaskState's loader calls .get on operator_request; malformed nested
+        # data (for example, []) raises AttributeError instead of TypeError.
         print(f"waitd: cannot read task {target}#{issue} for session recording: {exc}",
               file=sys.stderr)
         return
