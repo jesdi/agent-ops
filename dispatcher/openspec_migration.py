@@ -277,6 +277,12 @@ def _apply(tasks: list[_Task], label: dict[str, str], write: bool) -> bool:
     return True
 
 
+def _summary(counts: Counter, will: str, write: bool) -> str:
+    return (f"{counts[CONVERT]} {will}, {counts[UNTOUCHED]} untouched, "
+            f"{counts[DRAIN]} must-drain, {counts[NO_RESUME]} do-not-resume."
+            + ("" if write else " Check only: nothing was changed."))
+
+
 def _run(state_dir: Path, write: bool) -> int:
     tasks, problems = _load(state_dir)
     counts = Counter(t.kind for t in tasks)
@@ -287,10 +293,8 @@ def _run(state_dir: Path, write: bool) -> int:
         return 1
     for line in problems:
         print(line)
-    print(_refusal(counts[DRAIN], problems) if refused else
-          f"{counts[CONVERT]} {will}, {counts[UNTOUCHED]} untouched, "
-          f"{counts[DRAIN]} must-drain, {counts[NO_RESUME]} do-not-resume."
-          + ("" if write else " Check only: nothing was changed."))
+    print(_refusal(counts[DRAIN], problems) if refused
+          else _summary(counts, will, write))
     return int(refused)
 
 
