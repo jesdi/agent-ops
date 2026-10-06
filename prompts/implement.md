@@ -14,12 +14,15 @@ skill file not found". Read the file, do not invoke the skill. It carries
 the method; the rules below only bind it to this pipeline. The repository's
 check command is `$gate_cmd`.
 
-Two overrides, and no others. First: do not create or open a pull request,
+Three overrides, and no others. First: do not create or open a pull request,
 not as a draft either, and no new branch in place of `$branch` (the ticket
 branches are the skill's own); the review stage alone opens it. When every
 ticket is merged and the final review has passed, push `$branch` with a
 plain push and stop there. Second: the ledger is `.agent/ledger.md` and the
 notes directory is `.agent/`, inside this worktree and never committed.
+Third: create every ticket worktree under `.agent/worktrees/` inside this
+worktree, nowhere else; only this worktree and the clone outlive your
+container.
 
 If you cannot dispatch an isolated subagent (one with its own context and
 its own worktree), report `blocked` with that reason and implement nothing
@@ -27,7 +30,8 @@ yourself: no ticket is ever worked by this main session.
 
 If `.agent/ledger.md` already exists, an earlier session stopped before the
 end: continue from the ledger, and do not redo the tickets it records as
-merged; they are on `$branch`.
+merged; they are on `$branch`. Run `git worktree prune` first, then reuse or
+recreate the ticket worktree the ledger names for a ticket still in work.
 
 ## Signals (write `.agent/stage.json`, then do what the line says)
 After each ticket is merged into `$branch`, report how many of the
@@ -35,7 +39,8 @@ $ticket_count tickets are merged:
 `{"stage": "implement", "status": "working", "note": "N/M tickets merged"}`.
 
 `{"stage": "implement", "status": "done", "note": "M/M tickets merged"}` then
-exit, once `$branch` is pushed. The dispatcher starts the review stage.
+exit, once `$branch` is pushed and the ticket worktrees are removed (the
+skill's last step). The dispatcher starts the review stage.
 
 `{"stage": "implement", "status": "blocked", "note": "<specific>"}` then
 stop: no isolated subagent, no skill file, one of the skill's stop

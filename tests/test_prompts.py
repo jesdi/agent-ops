@@ -116,3 +116,10 @@ def test_plan_prompt_signals_working_before_it_applies_feedback():
     assert '"status": "working"' in reply
     assert reply.index('"status": "working"') < reply.index("ready again")
     assert "before you change anything" in reply.lower()
+
+
+def test_implement_prompt_keeps_ticket_worktrees_inside_the_task_worktree():
+    out = render_stage_prompt(Stage.IMPLEMENT, CTX)
+    for token in (".agent/worktrees/", "git worktree prune",
+                  "ticket worktrees are removed"):
+        assert token in out
