@@ -11,7 +11,7 @@ from dispatcher.state import LoopCaps, Stage, TaskState
 def _task(**kw) -> TaskState:
     """Minimal TaskState for testing. Only override what a slice cares about."""
     defaults = dict(
-        issue=1, target="test", stage=Stage.IMPLEMENT, slot=0,
+        issue=1, target="test", stage=Stage.REVIEW, slot=0,
         worktree="/tmp/wt", branch="main", title="T", updated_at="2025-01-01T00:00:00Z",
     )
     defaults.update(kw)
@@ -24,7 +24,7 @@ def _task(**kw) -> TaskState:
 # ---------------------------------------------------------------------------
 
 def test_gate_last_round_and_apply_to():
-    task = _task(gate_rounds=1, ticket_cursor=7)
+    task = _task(gate_rounds=1, ticket_count=7)
     caps = LoopCaps(gate=2)
     obs = ReportedRound(loop=Loop.GATE, round=2)
     dec = evaluate(task, obs, caps)
@@ -36,7 +36,7 @@ def test_gate_last_round_and_apply_to():
     updated = dec.apply_to(task)
     assert updated.gate_rounds == 2
     # unrelated fields preserved
-    assert updated.ticket_cursor == 7
+    assert updated.ticket_count == 7
     assert updated.review_rounds == 0
     assert updated.e2e_rounds == 0
     assert updated.ci_rounds == 0
@@ -247,6 +247,18 @@ def test_pr_attention_increments_ci():
     assert updated.e2e_rounds == 0
 
 
+def test_gate_round_of_an_implement_session_is_never_counted():
+    # implement-spec owns its gate loop and that loop's limit.
+    task = _task(stage=Stage.IMPLEMENT)
+    for rnd in (1, 2, 3, 40):
+        dec = evaluate(task, ReportedRound(Loop.GATE, rnd), LoopCaps(gate=2))
+        assert dec.outcome == Outcome.UNCHANGED
+        assert dec.apply_to(task).gate_rounds == 0
+    # another loop named in that stage is still counted
+    assert evaluate(task, ReportedRound(Loop.REVIEW, 1), LoopCaps()).outcome \
+        == Outcome.WITHIN_LIMIT
+
+
 # ---------------------------------------------------------------------------
 # Slice 13: STAGE_STARTED reset clears review/gate/e2e, RETAINS ci + metadata
 # ---------------------------------------------------------------------------
@@ -254,7 +266,7 @@ def test_pr_attention_increments_ci():
 def test_reset_stage_started():
     task = _task(
         review_rounds=2, gate_rounds=1, e2e_rounds=3, ci_rounds=2,
-        ticket_cursor=5, check_cursor="2025-01-01T00:00:00Z",
+        ticket_count=5, check_cursor="2025-01-01T00:00:00Z",
     )
     result = reset(task, ResetCause.STAGE_STARTED)
 
@@ -262,7 +274,7 @@ def test_reset_stage_started():
     assert result.gate_rounds == 0
     assert result.e2e_rounds == 0
     assert result.ci_rounds == 2        # retained
-    assert result.ticket_cursor == 5    # metadata preserved
+    assert result.ticket_count == 5    # metadata preserved
     assert result.check_cursor == "2025-01-01T00:00:00Z"
 
 
@@ -273,7 +285,7 @@ def test_reset_stage_started():
 def test_reset_operator_wake():
     task = _task(
         review_rounds=2, gate_rounds=1, e2e_rounds=3, ci_rounds=2,
-        ticket_cursor=5,
+        ticket_count=5,
     )
     result = reset(task, ResetCause.OPERATOR_WAKE)
 
@@ -281,7 +293,7 @@ def test_reset_operator_wake():
     assert result.gate_rounds == 0
     assert result.e2e_rounds == 0
     assert result.ci_rounds == 0
-    assert result.ticket_cursor == 5   # preserved
+    assert result.ticket_count == 5   # preserved
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +303,7 @@ def test_reset_operator_wake():
 def test_reset_pr_cycle_started():
     task = _task(
         review_rounds=2, gate_rounds=1, e2e_rounds=3, ci_rounds=2,
-        ticket_cursor=5,
+        ticket_count=5,
     )
     result = reset(task, ResetCause.PR_CYCLE_STARTED)
 
@@ -299,4 +311,4 @@ def test_reset_pr_cycle_started():
     assert result.review_rounds == 2   # retained
     assert result.gate_rounds == 1     # retained
     assert result.e2e_rounds == 3      # retained
-    assert result.ticket_cursor == 5   # metadata preserved
+    assert result.ticket_count == 5   # metadata preserved

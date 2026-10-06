@@ -180,7 +180,7 @@ def test_mode_openai_review_avoids_an_openai_implement_pick(
         tmp_path, monkeypatch):
     save_mode(tmp_path)
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
-                        stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+                        stage=Stage.IMPLEMENT, ticket_count=1,
                         picks={"implement": LUNA})
     assert launched(sess) == [OPUS_ID]
 
@@ -189,7 +189,7 @@ def test_mode_openai_review_after_a_sonnet_implement_pick_goes_to_openai(
         tmp_path, monkeypatch):
     save_mode(tmp_path)
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
-                        stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+                        stage=Stage.IMPLEMENT, ticket_count=1,
                         picks={"implement": SONNET})
     assert launched(sess) == [SOL_ID]
 
@@ -235,11 +235,10 @@ def test_a_pick_made_before_the_mode_changed_is_kept_and_review_follows_the_mode
     assert launched(sess) == [SONNET_ID]
     assert t.picks["implement"] == SONNET_ID
     save_mode(tmp_path)
-    sess, _ = go_hungry(tmp_path, monkeypatch, stage=Stage.IMPLEMENT,
-                        ticket_cursor=1, ticket_count=2, picks=t.picks)
+    sess, _ = go_hungry(tmp_path, monkeypatch, picks=t.picks)
     assert launched(sess) == [SONNET_ID]          # the pick sticks
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
-                        stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+                        stage=Stage.IMPLEMENT, ticket_count=1,
                         picks=t.picks)
     assert launched(sess) == [SOL_ID]             # fresh stage follows the mode
 

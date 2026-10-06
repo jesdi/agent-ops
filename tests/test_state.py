@@ -526,10 +526,10 @@ def test_orchestration_fields_default_and_round_trip(tmp_path):
     ts = TaskState(issue=9, target="t", stage=Stage.IMPLEMENT, slot=0,
                    worktree="/wt", branch="agent/task-9", title="t",
                    updated_at="2026-09-07T00:00:00+00:00")
-    assert (ts.spec_path, ts.ticket_cursor, ts.ticket_count) == ("", 0, 0)
+    assert (ts.spec_path, ts.ticket_count) == ("", 0)
     assert (ts.review_rounds, ts.gate_rounds, ts.e2e_rounds, ts.ci_rounds) == (0, 0, 0, 0)
     assert (ts.check_cursor, ts.conflict_cursor, ts.attention) == ("", "", "")
-    full = replace(ts, spec_path="docs/specs/x.md", ticket_cursor=2,
+    full = replace(ts, spec_path="docs/specs/x.md",
                    ticket_count=5, gate_rounds=1, e2e_rounds=2, ci_rounds=3,
                    review_rounds=1, check_cursor="2026-09-07T01:00:00Z",
                    conflict_cursor="abc123", attention="conflict")

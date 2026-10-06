@@ -647,17 +647,14 @@ def test_spec_signal_with_a_misspelled_track_is_bounced_not_mis_parked(tmp_path,
     assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
 
 
-def test_pick_is_reused_for_every_ticket_of_the_stage(tmp_path, monkeypatch):
+def test_forced_pick_is_used_for_the_implement_session(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, track="deep",
-                   ticket_cursor=1, ticket_count=2,
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, track="deep",
                    picks={"implement": "anthropic/claude-sonnet-5@low"})  # a forced pick
-    (wt / ".agent" / "tickets").mkdir(parents=True)
-    for i in (1, 2):
-        (wt / ".agent" / "tickets" / f"0{i}-t.md").write_text("# t\n\n**What to build:** x\n\n**Blocked by:** None\n\n- [ ] ok\n")
-    (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
+    write_tickets(wt, 2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "plan", "status": "done"}))
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
     assert [s[:3] + (s[4],) for s in sess.spawned] == [
@@ -684,7 +681,7 @@ def test_review_prefers_a_provider_other_than_implements(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, track="deep",
-                   ticket_cursor=1, ticket_count=1,
+                   ticket_count=1,
                    picks={"implement": "anthropic/claude-opus-5@medium"})
     (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
     sess = FakeSessions(alive={42})
@@ -752,14 +749,14 @@ def test_drive_task_admits_per_spawned_stage_model(tmp_path, monkeypatch):
                                 worktree=str(wt_a), branch="agent/task-1",
                                 title="A", track="deep",
                                 updated_at="2026-07-14T00:00:00+00:00"))
-    # Task B: IMPLEMENT last-ticket done → SpawnStage(REVIEW) → trivial → Sonnet
+    # Task B: IMPLEMENT done → SpawnStage(REVIEW) → trivial → Sonnet
     wt_b = Path(c.targets[0].worktrees_path) / "task-2"
     (wt_b / ".agent").mkdir(parents=True)
     (wt_b / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "done", "note": ""}))
     save(c.state_dir, TaskState(issue=2, target="portfolio_eval",
                                 stage=Stage.IMPLEMENT, slot=1,
-                                ticket_cursor=1, ticket_count=1,
+                                ticket_count=1,
                                 worktree=str(wt_b), branch="agent/task-2",
                                 title="B", track="trivial",
                                 updated_at="2026-07-14T00:00:00+00:00"))
@@ -4461,7 +4458,7 @@ def events(c, name):
     return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == name]
 
 
-def test_approved_plan_starts_ticket_one_with_its_path_in_the_prompt(tmp_path, monkeypatch):
+def test_approved_plan_starts_one_implement_session_over_the_tickets(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path="docs/specs/x-design.md")
@@ -4472,12 +4469,14 @@ def test_approved_plan_starts_ticket_one_with_its_path_in_the_prompt(tmp_path, m
     d = deps(sess=sess)
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.ticket_cursor, t.ticket_count) == (Stage.IMPLEMENT, 1, 3)
+    assert (t.stage, t.ticket_count) == (Stage.IMPLEMENT, 3)
     issue, stage_name, model, prompt, effort = sess.spawned[-1]
     assert stage_name == "implement"
-    assert ".agent/tickets/01-t1.md" in prompt and "docs/specs/x-design.md" in prompt
+    assert "`.agent/tickets`" in prompt and "docs/specs/x-design.md" in prompt
+    assert ".agent/tickets/0" not in prompt      # no ticket of its own
     assert "implement_started" in d.notifier.sent
-    assert events(c, "ticket-started")[-1]["detail"].startswith("ticket 1/3")
+    assert events(c, "ticket-started") == []
+    assert [e["stage"] for e in events(c, "stage-started")] == ["implement"]
 
 
 def test_spec_approval_records_the_spec_path_for_later_stages(tmp_path, monkeypatch):
@@ -4492,30 +4491,17 @@ def test_spec_approval_records_the_spec_path_for_later_stages(tmp_path, monkeypa
     assert load(c.state_dir, "portfolio_eval", 42).spec_path == "spec.md"
 
 
-def test_ticket_done_spawns_the_next_ticket_on_the_same_branch(tmp_path, monkeypatch):
+def test_implement_done_spawns_review_and_review_done_opens_pr(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2, gate_rounds=2)
-    write_tickets(wt, 2)
-    (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "implement", "status": "done", "note": "ticket 1 green"}))
-    sess = FakeSessions(alive={42})
-    main.run_pass(c, deps(sess=sess))
-    t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.ticket_cursor, t.gate_rounds) == (Stage.IMPLEMENT, 2, 0)
-    assert 42 in sess.ended and sess.spawned[-1][1] == "implement"
-    assert "02-t2.md" in sess.spawned[-1][3]
-
-
-def test_last_ticket_done_spawns_review_and_review_done_opens_pr(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    c = cfg(tmp_path)
-    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=2, ticket_count=2)
+    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_count=2, gate_rounds=2)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "done", "note": ""}))
     sess = FakeSessions(alive={42}); d = deps(sess=sess)
     main.run_pass(c, d)
-    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.REVIEW
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.gate_rounds) == (Stage.REVIEW, 0)
+    assert 42 in sess.ended
     assert sess.spawned[-1][1] == "review" and "review_started" in d.notifier.sent
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "review", "status": "done", "note": "https://github.com/o/r/pull/9",
@@ -4527,15 +4513,15 @@ def test_last_ticket_done_spawns_review_and_review_done_opens_pr(tmp_path, monke
     assert "pr_opened" in d2.notifier.sent and len(events(c, "pr-opened")) == 1
 
 
-def test_blocked_ticket_parks_with_finished_tickets_intact(tmp_path, monkeypatch):
+def test_blocked_implement_session_parks_in_its_stage(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=3, ticket_count=5)
+    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_count=5)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "blocked", "note": "need API key"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.park, t.ticket_cursor) == (Stage.IMPLEMENT, PARK_HUMAN, 3)
+    assert (t.stage, t.park, t.ticket_count) == (Stage.IMPLEMENT, PARK_HUMAN, 5)
 
 
 def test_awaiting_answers_parks_and_records_the_artifact(tmp_path, monkeypatch):
@@ -4599,16 +4585,16 @@ def test_malformed_awaiting_answers_parks_with_diagnostic_no_request(
 def test_gate_round_is_counted_pinged_and_parked_past_the_cap(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1)
+    wt = make_task(c, stage=Stage.REVIEW)
     sig = wt / ".agent" / "stage.json"
-    sig.write_text(json.dumps({"stage": "implement", "status": "working", "loop": "gate", "round": 1}))
+    sig.write_text(json.dumps({"stage": "review", "status": "working", "loop": "gate", "round": 1}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).gate_rounds == 1
     assert events(c, "round")[-1]["detail"] == "gate round 1/2"
-    sig.write_text(json.dumps({"stage": "implement", "status": "working", "loop": "gate", "round": 2}))
+    sig.write_text(json.dumps({"stage": "review", "status": "working", "loop": "gate", "round": 2}))
     d = deps(sess=FakeSessions(alive={42})); main.run_pass(c, d)
     assert "last_round" in d.notifier.sent
-    sig.write_text(json.dumps({"stage": "implement", "status": "working", "loop": "gate", "round": 3}))
+    sig.write_text(json.dumps({"stage": "review", "status": "working", "loop": "gate", "round": 3}))
     d = deps(sess=FakeSessions(alive={42})); main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN and t.gate_rounds == 3 and "parked_question" in d.notifier.sent
@@ -4620,10 +4606,10 @@ def test_session_exhaustion_ends_session_and_clears_waiting(tmp_path, monkeypatc
     detail is plain note (no 'loop exhausted: ' prefix)."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    wt = make_task(c, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1, gate_rounds=2)
+    wt = make_task(c, stage=Stage.REVIEW, gate_rounds=2)
     mark_waiting(c.state_dir, "portfolio_eval", 42)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "implement", "status": "working", "loop": "gate", "round": 3}))
+        {"stage": "review", "status": "working", "loop": "gate", "round": 3}))
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
@@ -5268,12 +5254,11 @@ def test_parked_pr_does_not_poll_or_spend_ci_rounds(tmp_path):
 
 # --- Resume after a crash (#363): respawn the stage it died in -------------
 
-def _crash_ticket_2(tmp_path, monkeypatch):
+def _crash_implement(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, ticket_cursor=2,
-                   ticket_count=2)
+    wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, ticket_count=2)
     (wt / ".agent" / "tickets").mkdir()
     for name in ("01-seams.md", "02-logout.md"):
         (wt / ".agent" / "tickets" / name).write_text(f"# {name}\n")
@@ -5282,25 +5267,25 @@ def _crash_ticket_2(tmp_path, monkeypatch):
 
 
 def test_a_crash_remembers_the_stage_it_failed_in(tmp_path, monkeypatch):
-    c = _crash_ticket_2(tmp_path, monkeypatch)
+    c = _crash_implement(tmp_path, monkeypatch)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.FAILED and t.crashed_stage == "implement"
 
 
-def test_resume_respawns_the_crashed_ticket_fresh(tmp_path, monkeypatch):
-    c = _crash_ticket_2(tmp_path, monkeypatch)
+def test_resume_respawns_the_crashed_stage_fresh(tmp_path, monkeypatch):
+    c = _crash_implement(tmp_path, monkeypatch)
     main._queue_message(c, "portfolio_eval", 42, "Now what?", "op")
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     gh, sess = FakeGitHub(), FakeSessions()
     main.run_pass(c, deps(gh, sess))
 
-    assert sess.resumed == [], "no --continue: the transcript may be ticket 1's"
+    assert sess.resumed == [], "no --continue: the transcript may be another stage's"
     (issue, stage, _model, prompt, _effort) = sess.spawned[0]
     assert (issue, stage) == (42, "implement")
-    assert "02-logout.md" in prompt
+    assert "implement-spec/SKILL.md" in prompt and "02-logout.md" not in prompt
     assert "Now what?" in prompt and "The operator resumed this task" in prompt
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.park, t.crashed_stage, t.ticket_cursor) == (
+    assert (t.stage, t.park, t.crashed_stage, t.ticket_count) == (
         Stage.IMPLEMENT, "", "", 2)
     assert t.slot != NO_SLOT
     assert (42, "I") in [(i, o) for (i, o) in gh.statused]
@@ -5320,7 +5305,7 @@ def test_resume_of_a_killed_task_is_still_skipped(tmp_path, monkeypatch):
 
 
 def test_a_launch_that_raises_on_resume_fails_resumable_again(tmp_path, monkeypatch):
-    c = _crash_ticket_2(tmp_path, monkeypatch)
+    c = _crash_implement(tmp_path, monkeypatch)
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     main.run_pass(c, deps(sess=FakeSessions(spawn_raises={42})))
     t = load(c.state_dir, "portfolio_eval", 42)

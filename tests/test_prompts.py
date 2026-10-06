@@ -9,8 +9,7 @@ CTX = dict(
     backend_port=8101, frontend_port=5201,
     verify_cmd="make e2e-slot SLOT=1", gate_cmd="make gate SLOT=1",
     spec_path="docs/specs/2026-07-14-widget-design.md",
-    tickets_dir=".agent/tickets", ticket_number=2, ticket_count=5,
-    ticket_path=".agent/tickets/02-widget-api.md", pr_number=12,
+    tickets_dir=".agent/tickets", ticket_count=5, pr_number=12,
     reason="check-failed", labels="auto, frontend",
     tracks="- `trivial`: Rote edits.\n- `standard`: Else.",
 )
@@ -47,11 +46,13 @@ def test_plan_prompt_names_the_tickets_dir_and_spec():
     assert ".agent/questions.md" in out and "awaiting-answers" in out
 
 
-def test_implement_prompt_carries_ticket_gate_and_round_protocol():
+def test_implement_prompt_carries_skill_tickets_gate_and_progress_note():
     out = render_stage_prompt(Stage.IMPLEMENT, CTX)
-    for token in (CTX["ticket_path"], CTX["spec_path"], "make gate SLOT=1",
-                  '"loop": "gate"', "2 of 5"):
+    for token in ("implement-spec/SKILL.md", ".agent/tickets", CTX["spec_path"],
+                  "make gate SLOT=1", "agent/task-42", "of the\n5 tickets",
+                  "N/M tickets merged"):
         assert token in out
+    assert '"loop"' not in out          # the skill owns its gate loop
     assert "pytest" not in out and "vitest" not in out
 
 

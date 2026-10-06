@@ -19,7 +19,6 @@ from dispatcher.machine import (
     PublishSpec,
     RetryStage,
     SetTaskStage,
-    StartTicket,
     SpawnStage,
     next_actions,
 )
@@ -160,7 +159,7 @@ def test_approval_naming_a_track_is_validated_as_the_spec_track_is(tmp_path):
     for track in ("", "trivial"):
         acts = next_actions(gate, StageSignal("plan", "done", track=track), True,
                             tracks=TRACKS)
-        assert acts[0] == StartTicket(1, 1)
+        assert acts[0] == SpawnStage(Stage.IMPLEMENT, tickets=1)
 
 
 def test_spec_done_valid_spawns_plan(tmp_path):
@@ -178,11 +177,12 @@ def test_spec_done_invalid_fails(tmp_path):
     assert any(isinstance(a, Notify) and a.template == "artifact_failed" for a in acts)
 
 
-def test_plan_done_valid_tickets_starts_ticket_one(tmp_path):
+def test_plan_done_valid_tickets_starts_one_implement_session(tmp_path):
     tickets(tmp_path, n=3)
     acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
                         sig("plan", "done", ".agent/tickets"), True)
-    assert acts == [StartTicket(1, 3), Notify("implement_started", "3 ticket(s)")]
+    assert acts == [SpawnStage(Stage.IMPLEMENT, tickets=3),
+                    Notify("implement_started", "3 ticket(s)")]
 
 
 def test_plan_done_malformed_tickets_retries_then_fails(tmp_path):
@@ -204,23 +204,16 @@ def test_plan_done_with_a_numbering_gap_is_malformed(tmp_path):
     assert isinstance(acts[0], RetryStage) and "contiguous" in acts[0].reason
 
 
-def test_implement_done_advances_the_ticket_cursor():
-    t = replace(task(Stage.IMPLEMENT), ticket_cursor=1, ticket_count=3)
-    acts = next_actions(t, sig("implement", "done"), True)
-    assert acts == [StartTicket(2, 3)]
-
-
-def test_last_ticket_done_spawns_review():
-    t = replace(task(Stage.IMPLEMENT), ticket_cursor=3, ticket_count=3)
+def test_implement_done_spawns_review():
+    t = replace(task(Stage.IMPLEMENT), ticket_count=3)
     acts = next_actions(t, StageSignal("implement", "done", note="all green"), True)
     assert acts == [SpawnStage(Stage.REVIEW), Notify("review_started", "all green")]
 
 
-def test_blocked_ticket_parks_without_touching_the_cursor():
-    t = replace(task(Stage.IMPLEMENT), ticket_cursor=2, ticket_count=5)
+def test_blocked_implement_session_parks():
+    t = replace(task(Stage.IMPLEMENT), ticket_count=5)
     acts = next_actions(t, StageSignal("implement", "blocked", note="secret missing"), True)
     assert acts == [ParkForInput("secret missing")]
-    assert not any(isinstance(a, (StartTicket, SetTaskStage)) for a in acts)
 
 
 def test_review_done_is_pr_open():
@@ -245,26 +238,33 @@ def test_awaiting_answers_parks_with_the_artifact():
     assert acts == [ParkForInput("7 questions", artifact=".agent/questionnaire.md", is_answers=True)]
 
 
-def loop_sig(loop, n, stage="implement"):
+def loop_sig(loop, n, stage="review"):
     return StageSignal(stage, "working", loop=loop, round=n)
 
 
+def test_implement_session_gate_round_is_not_counted():
+    # implement-spec owns its gate loop: whatever the round, nothing applies.
+    for rnd in (1, 2, 3, 40):
+        acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", rnd, "implement"), True)
+        assert acts == [NoOp()]
+
+
 def test_new_gate_round_is_recorded():
-    acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True)
+    acts = next_actions(task(Stage.REVIEW), loop_sig("gate", 1), True)
     assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
     assert acts[0].decision.outcome is Outcome.WITHIN_LIMIT
     assert acts[0].decision.round == 1
 
 
 def test_last_gate_round_records_and_pings():
-    acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 2), True)
+    acts = next_actions(task(Stage.REVIEW), loop_sig("gate", 2), True)
     assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
     assert acts[0].decision.outcome is Outcome.LAST_ROUND
     assert acts[0].decision.round == 2
 
 
 def test_gate_round_past_the_cap_parks():
-    t = replace(task(Stage.IMPLEMENT), gate_rounds=2)
+    t = replace(task(Stage.REVIEW), gate_rounds=2)
     acts = next_actions(t, loop_sig("gate", 3), True)
     assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
     assert acts[0].decision.outcome is Outcome.EXHAUSTED
@@ -274,14 +274,14 @@ def test_gate_round_past_the_cap_parks():
 def test_counters_survive_a_resume():
     # The session re-reports a round the dispatcher already counted: nothing
     # is re-recorded and nothing resets — the budget is the task state's.
-    t = replace(task(Stage.IMPLEMENT), gate_rounds=2)
+    t = replace(task(Stage.REVIEW), gate_rounds=2)
     assert next_actions(t, loop_sig("gate", 2), True) == [NoOp()]
     assert next_actions(t, loop_sig("gate", 1), True) == [NoOp()]
 
 
 def test_review_loop_uses_its_own_cap():
     t = replace(task(Stage.REVIEW), review_rounds=1)
-    acts = next_actions(t, loop_sig("review", 2, stage="review"), True,
+    acts = next_actions(t, loop_sig("review", 2), True,
                         caps=LoopCaps(review=1))
     assert len(acts) == 1 and isinstance(acts[0], ApplyDecision)
     assert acts[0].decision.outcome is Outcome.EXHAUSTED
@@ -289,18 +289,18 @@ def test_review_loop_uses_its_own_cap():
 
 
 def test_unknown_loop_is_ignored():
-    assert next_actions(task(Stage.IMPLEMENT), loop_sig("dance", 9), True) == [NoOp()]
+    assert next_actions(task(Stage.REVIEW), loop_sig("dance", 9), True) == [NoOp()]
 
 
 def test_round_report_then_waiting_records_and_parks_for_input():
-    acts = next_actions(task(Stage.IMPLEMENT), loop_sig("gate", 1), True, waiting=True)
+    acts = next_actions(task(Stage.REVIEW), loop_sig("gate", 1), True, waiting=True)
     assert len(acts) == 2 and isinstance(acts[0], ApplyDecision)
     assert acts[0].decision.outcome is Outcome.WITHIN_LIMIT
     assert acts[1] == ParkForInput("(session stopped mid-stage waiting for input)")
 
 
 def test_round_on_a_done_signal_is_not_a_round():
-    t = replace(task(Stage.IMPLEMENT), ticket_cursor=1, ticket_count=1)
+    t = replace(task(Stage.IMPLEMENT), ticket_count=1)
     acts = next_actions(t, StageSignal("implement", "done", loop="gate", round=9), True)
     assert acts == [SpawnStage(Stage.REVIEW), Notify("review_started", "")]
 
@@ -481,7 +481,7 @@ def test_approved_plan_advances_instead_of_parking(tmp_path):
     acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
                         sig("plan", "done", ".agent/tickets"), session_alive=True,
                         grace_elapsed=True)
-    assert acts[0] == StartTicket(1, 2)
+    assert acts[0] == SpawnStage(Stage.IMPLEMENT, tickets=2)
 
 
 def test_address_review_done_returns_to_pr_open():

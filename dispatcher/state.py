@@ -64,7 +64,7 @@ class LoopCaps:
     """Rounds each bounded loop may run before the task parks. Defaults are
     the spec's; targets.yaml `loop_caps:` overrides any of them."""
     review: int = 2   # review-stage fix rounds
-    gate: int = 2     # gate_cmd failures per ticket
+    gate: int = 2     # rounds of a session-reported gate loop; never applied to implement
     e2e: int = 3      # failed end-to-end runs (implement/review)
     ci: int = 3       # fixes on an open PR (red check, conflict, failed run)
 
@@ -141,8 +141,7 @@ class TaskState:
     terminal_at: str = ""                # first terminal transition; cleared on reopening
     done_at: str = ""                    # merge-detection time; drives the flush
     spec_path: str = ""                  # approved spec, worktree-relative or absolute
-    ticket_cursor: int = 0               # 1-based ticket the implement session works; 0 = none yet
-    ticket_count: int = 0                # size of .agent/tickets/ at plan done
+    ticket_count: int = 0                # size of .agent/tickets/ when implement started
     # The task entered the plan review gate. Set only by _stage_extra in
     # dispatcher/main.py, never cleared: a task that waited for the operator
     # once never skips the gate, whatever stage a respawn puts it back in.
@@ -292,6 +291,7 @@ def _read(p: Path) -> TaskState | None:
         else:
             raise ValueError(f"unrecognized operator_request kind {kind!r}")
     d.pop("artifact", None)        # retired field (slice 24)
+    d.pop("ticket_cursor", None)   # retired field: one implement session, no cursor
     return TaskState(**d)
 
 

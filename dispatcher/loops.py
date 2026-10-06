@@ -4,7 +4,7 @@ Design notes (not implemented here):
 - Loop eligibility (is another fix attempt allowed?) and execution admission
   (which runtime has allowance / should it wait?) are SEPARATE decisions;
   a WITHIN_LIMIT outcome is eligibility to retry, NOT permission to launch.
-- Reset causes describe LOGICAL work (new stage/ticket, operator intervention,
+- Reset causes describe LOGICAL work (new stage, operator intervention,
   new PR cycle) — a model switch / subscription reset is NOT by itself a fresh
   fix-loop allowance.
 - This module must stay independent of model IDs, runtime/provider names,
@@ -129,7 +129,10 @@ def evaluate(task: TaskState, observation: object, caps: LoopCaps) -> Decision:
         field = _LOOP_FIELD[loop]
         stored = getattr(task, field)
         cap = getattr(caps, loop.value)
-        if observation.round <= stored:
+        # An implement session runs implement-spec, which owns its gate loop
+        # and that loop's limit: a gate round it names is never counted here.
+        own_loop = loop is Loop.GATE and task.stage == Stage.IMPLEMENT
+        if own_loop or observation.round <= stored:
             return Decision(
                 outcome=Outcome.UNCHANGED,
                 loop=loop,

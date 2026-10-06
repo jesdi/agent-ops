@@ -54,7 +54,7 @@ done_retention_days: 7
 # (never fails). Defaults shown; every key is optional.
 loop_caps:
   review: 2   # review-stage fix rounds
-  gate: 2     # gate_cmd failures per ticket
+  gate: 2     # rounds of a session-reported gate loop; never applied to implement (implement-spec has its own limit)
   e2e: 3      # failed end-to-end runs
   ci: 3       # fixes on an open PR (red check, conflict, failed run)
 # Which model, at which effort, runs which stage. A TRACK is a kind of work

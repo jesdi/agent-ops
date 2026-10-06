@@ -43,7 +43,7 @@ _TEMPLATES = {
     # regardless of multi_target: there is no single project to name.
     "budget_stall": "⏳ #{issue} {title} — usage gate closed; resumes when headroom returns. {note}\n{url}",
     "budget_resume": "▶️ #{issue} {title} — usage gate open again; resuming. {note}\n{url}",
-    "implement_started": "🛠 {ref} {title} — implement started. Plan: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "implement_started": "🛠 {ref} {title} — implement started, one session for {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "parked_question": "❓ {ref} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
     "plan_parked": ("🌙 {ref} {title} — spec and plan ready and parked for review. "
                     "Session ended; capacity and slot released.\n{note}\n{url}\n"

@@ -282,15 +282,14 @@ def test_review_avoids_the_implement_provider_although_openai_ranks_first(
     u = both([wk(0.10, 96)], [wk(0.20, 24)])
     sess, _ = run(tmp_path, monkeypatch, u, implement=WRITTEN,
                   review=[OPUS, SOL], stage=Stage.IMPLEMENT,
-                  ticket_cursor=1, ticket_count=1, picks={"implement": LUNA})
+                  ticket_count=1, picks={"implement": LUNA})
     assert launched(sess) == ["anthropic/claude-opus-5-5"]
 
 
-def test_a_sonnet_implement_pick_is_kept_for_the_next_ticket_although_openai_ranks_first(
+def test_a_sonnet_implement_pick_is_kept_for_the_session_although_openai_ranks_first(
         tmp_path, monkeypatch):
     u = both([wk(0.10, 96)], [wk(0.20, 24)])
     sess, _ = run(tmp_path, monkeypatch, u, implement=FLIPPED,
-                  stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2,
                   picks={"implement": SONNET})
     assert launched(sess) == ["anthropic/claude-sonnet-5-5"]
 
