@@ -33,7 +33,7 @@ from dispatcher import (claims, eventlog, execution_overrides, failures, intents
 from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
-from dispatcher import spec_publish, task_artifacts
+from dispatcher import openspec_migration, spec_publish, task_artifacts
 from dispatcher.artifacts import PLAN_SUMMARY, TICKETS_DIR
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
@@ -2521,6 +2521,19 @@ def send_digest(cfg: Config, deps: Deps) -> None:
     deps.notifier.send("daily_digest", lines=_status_lines(cfg))
 
 
+def _refuse_old_flow(cfg: Config) -> None:
+    """No pass while a task of the old flow is on disk: one pass would save
+    such a file as if the new flow had written it, and the migration would
+    then leave it alone. Deleted with dispatcher/openspec_migration.py."""
+    old = openspec_migration.unmigrated(cfg.state_dir)
+    if old:
+        print(f"refused: {len(old)} task file(s) of the old flow "
+              f"({', '.join(old)}). Run python -m dispatcher.openspec_migration "
+              f"{cfg.state_dir} first (README, \"Deploying the openspec "
+              f"pipeline\").", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="agent-ops-dispatcher")
     ap.add_argument("--config", default="targets.yaml")
@@ -2554,10 +2567,12 @@ def main() -> None:
         # (the same file pass_lock flocks — taking it here again would block
         # forever, flock being per open-file-description). Never run by hand
         # while the dispatcher timer is live.
+        _refuse_old_flow(cfg)   # it wakes tasks: a save, like a pass
         for line in tmux_migration.migrate(
                 cfg.state_dir, lambda task, text: _wake(cfg, task, text)):
             print(line)
     else:
+        _refuse_old_flow(cfg)
         with pass_lock(cfg.state_dir):
             guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)
 

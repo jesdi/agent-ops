@@ -36,6 +36,44 @@ Read the issue — body and full comment thread —
 issue already exists on $branch or in the worktree (a restarted session),
 resume from it instead of starting over.
 
+A task that an earlier session worked on can also hold inputs from before
+the spec folder existed. Look for them now; each one replaces a part of
+steps 2 and 3. Operator messages below this prompt can be older than this
+session: they are what the operator told the earlier one, and they count.
+- An unanswered `.agent/questionnaire.md` (no answers in the file, none in
+  an operator message below this prompt, and none in the review file named
+  after this list): ask those questions again as they are. Do not rewrite,
+  extend or re-order the file; signal `awaiting-answers` with it as the
+  artifact and stop.
+- An answered `.agent/questionnaire.md`: the answers are in the file, in an
+  operator message below this prompt, or in the review file named after
+  this list. Take the answers as settled decisions and raise no new
+  questionnaire. Continue at step 4.
+- Any file that this branch added under `docs/specs/`. The old flow kept
+  its design there, as `docs/specs/<date>-<topic>-design.md`. List these
+  files with
+  `git diff --name-only --diff-filter=A origin/main...HEAD -- docs/specs/`
+  (take the repository's default branch when it is not `main`). When the
+  list is empty there is nothing to do. A file that main already has is
+  never an input and is never touched. Handle what the
+  list shows as a `spec-ready` body (step 2), whatever the labels say and
+  whatever `.agent/questionnaire.md` holds, because the design already
+  carries the answers: its decisions go into stage 1 word for word, and
+  `spec.md` records the reconciliation with the code. An operator message
+  below this prompt that asks for a change to that design overrides the
+  design for that point: apply it and record it in `spec.md`. Then remove
+  every listed file from the branch (`git rm`)
+  in the commit that adds the spec folder.
+
+The review file: a session of the old flow can have left the questions with
+the operator's answers on $branch under `docs/review/`. List the files that
+this branch added or changed there with
+`git diff --name-only --diff-filter=AM origin/main...HEAD -- docs/review/`
+(take the repository's default branch when it is not `main`). A listed file
+is a source of answers for the two questionnaire rules above. A file under
+`docs/review/` that this branch did not add or change belongs to another
+task: it is never a source of answers. Do not edit these files.
+
 ## 2. Branch on the labels
 **`bug`** — run the `diagnosing-bugs` skill. Write a
 failing end-to-end test that reproduces the bug where this repo keeps such
