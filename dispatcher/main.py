@@ -1779,7 +1779,7 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
         error=(f"session task-{task.target}-{task.issue} died during stage "
                f"{task.stage.value}"),
         log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
-        repro=f"cd {task.worktree} && {runtime.resume_cmd()}  # inside session image",
+        repro=f"cd {task.worktree} && {runtime.resume_cmd('')}  # inside session image",
         worktree=task.worktree)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
     if blocker:

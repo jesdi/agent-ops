@@ -54,7 +54,7 @@ def spawn(wt, model="claude-fable-5"):
 
 
 def resume(wt, model="claude-fable-5"):
-    Sessions().resume("acme", 42, wt, "go", model)
+    Sessions().resume("acme", 42, wt, "go", model, session_id="recorded-session")
 
 
 def launches():
@@ -140,7 +140,7 @@ def test_dry_run_writes_nothing(tmp_path, wt_seen, op):
     if op == "spawn_stage":
         s.spawn_stage("acme", 42, wt, "P", "plan", "claude-fable-5")
     else:
-        s.resume("acme", 42, wt, "go", "claude-fable-5")
+        s.resume("acme", 42, wt, "go", "claude-fable-5", session_id="recorded-session")
     assert snapshot(wt) == before
     assert not (Path(wt) / ".claude").exists()
     assert not seen

@@ -47,11 +47,11 @@ class Runtime:
         """One-shot shell line; model and effort are shell-quoted here."""
         return f"{self.cli} {self.headless_args(prompt, shlex.quote(model), shlex.quote(effort) if effort else '')}"
 
-    def resume(self, message: str) -> str:
+    def resume(self, session_id: str, message: str) -> str:
         """The args a launch takes to continue with the (quoted) message."""
         return f"{self.resume_args} {message}"
 
-    def resume_cmd(self, message: str = "") -> str:
+    def resume_cmd(self, session_id: str, message: str = "") -> str:
         """The whole resume command line, e.g. for a crash repro."""
         return " ".join(filter(None, (self.cli, self.resume_args, message)))
 

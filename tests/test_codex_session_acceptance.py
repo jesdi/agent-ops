@@ -80,7 +80,7 @@ def test_codex_spawn_omits_effort_flag_when_unset(tmp_path, monkeypatch):
 
 def test_codex_resume_ends_with_resume_last_message():
     runtime = _openai_runtime()
-    assert runtime.resume("'hi'") == "resume --last 'hi'"
+    assert runtime.resume("recorded-session", "'hi'") == "resume --last 'hi'"
 
 
 def test_codex_session_resume_tab_gets_herdr_agent_codex(tmp_path, monkeypatch):
@@ -97,7 +97,8 @@ def test_codex_session_resume_tab_gets_herdr_agent_codex(tmp_path, monkeypatch):
 
     monkeypatch.setattr(herdr.Tab, "ensure", fake_ensure)
     with pytest.raises(RuntimeError):
-        sessions.Sessions().resume("acme", 42, wt, "go", "openai/gpt-5-codex")
+        sessions.Sessions().resume("acme", 42, wt, "go", "openai/gpt-5-codex",
+                                   session_id="recorded-session")
     assert calls, "Tab.ensure was never called"
     assert calls[0].get("env") == {"HERDR_AGENT": "codex"}
 
