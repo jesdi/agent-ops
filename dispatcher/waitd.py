@@ -18,11 +18,19 @@ def _record_session(rec: dict, state_dir, target: str, issue: int) -> None:
     session_id = rec.get("session_id")
     if not target or not isinstance(session_id, str) or not session_id:
         return
-    task = load(state_dir, target, issue)
+    try:
+        task = load(state_dir, target, issue)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"waitd: cannot read task {target}#{issue} for session recording: {exc}",
+              file=sys.stderr)
+        return
     if task is None:
         return
     stage = "spec" if task.stage is Stage.AWAITING_SPEC_REVIEW else task.stage.value
-    write_session(state_dir, target, issue, SessionRecord(session_id, stage))
+    try:
+        write_session(state_dir, target, issue, SessionRecord(session_id, stage))
+    except OSError as exc:
+        print(f"waitd: cannot record session for {target}#{issue}: {exc}", file=sys.stderr)
 
 
 def handle_ping(body: bytes, state_dir) -> None:
