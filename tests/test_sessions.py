@@ -309,7 +309,7 @@ def test_resume_passes_the_quoted_message_and_the_model(tmp_path, monkeypatch):
                       session_id="recorded-session")
     run = next(c for c in calls if c[:2] == ["pane", "run"])
     assert "--model claude-sonnet-4-6" in run[3]
-    assert """--continue 'run said: "failure"'""" in run[3]
+    assert """--resume recorded-session 'run said: "failure"'""" in run[3]
 
 
 def test_spawn_stage_on_an_openai_model_launches_codex(tmp_path, monkeypatch):
@@ -343,7 +343,7 @@ def test_resume_on_an_openai_model_resumes_the_last_codex_session(tmp_path,
         " --dangerously-bypass-approvals-and-sandbox"
         f""" -c 'notify=["{wt}/.agent/stop-hook.sh"]'"""
         f""" -c 'projects={{"{wt}"={{trust_level="trusted"}}}}'"""
-        """ resume --last 'it'"'"'s done'""")
+        """ resume recorded-session 'it'"'"'s done'""")
 
 
 def test_resume_dry_run_announces_the_session(capsys):

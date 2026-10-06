@@ -20,7 +20,7 @@ import pytest
 import dispatcher.main as main
 from dispatcher import containers, execution_overrides, herdr, sessions
 from dispatcher.models import Entry, parse_policy
-from dispatcher.state import PARK_WAKE, Stage, TaskState, load, save
+from dispatcher.state import PARK_WAKE, Stage, TaskState, load, save, SessionRecord, write_session
 from tests.test_containers import make_worktree
 from tests.test_main import FakeSessions, cfg, deps, make_task
 from tests.usagefakes import session_usage
@@ -168,6 +168,7 @@ def test_bypassed_review_spawn_gets_second_only_if_gate_admits_it(
 
 def test_bypassed_review_resume_gets_second_only_if_gate_admits_it(tmp_path):
     c = _cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("review-42", "review"))
     make_task(c, issue=42, stage=Stage.REVIEW, park=PARK_WAKE,
               resume_bypass_usage=True)
     sess = GrantSessions()
@@ -273,6 +274,7 @@ def test_review_resume_re_asks_the_gate_each_time(tmp_path, monkeypatch):
     assert _review_spawns(sess) == [("review", SECOND)]
     # ...resumed after OpenAI ran out: no stored grant carries over.
     task = load(c.state_dir, "portfolio_eval", 2)
+    write_session(c.state_dir, "portfolio_eval", 2, SessionRecord("review-2", "review"))
     save(c.state_dir, replace(task, park=PARK_WAKE))
     main._resume_woken(c, deps(sess=sess), admit=_verdict(openai_ok=False), order=tuple)
     # ...and resumed again once it is back: granted afresh.

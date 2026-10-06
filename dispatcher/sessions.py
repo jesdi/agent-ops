@@ -4,9 +4,9 @@ runtime (claude or codex; see runtimes.py). The session is a herdr tab —
 `Tab(session_name(target, issue))` in the workspace labelled `<target>` —
 whose root pane hosts the `podman run`; the container is the isolation
 layer. Tab and container die together at park and are recreated together
-at resume (`claude --continue` / `codex resume --last` read transcripts from
-the mounted runtime home, keyed by the worktree cwd, which is mounted at the
-same path inside the container).
+at resume (`claude --resume <id>` / `codex resume <id>` read the recorded
+conversation from the mounted runtime home). Fresh launches discard the
+task's state-dir session record before the tab starts.
 
 Tabs are resolved by label on every call and never persisted, so a herdr
 restart or renumbering cannot strand a task. Every herdr failure degrades
@@ -23,6 +23,7 @@ from pathlib import Path
 from dispatcher import containers, herdr, workspace
 from dispatcher.models import Entry
 from dispatcher.runtimes import Runtime, runtime_for
+from dispatcher.state import clear_session
 
 
 def session_name(target: str, issue: int) -> str:
@@ -99,6 +100,8 @@ class Sessions:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
                   f"{session_name(target, issue)} at {worktree}")
             return
+        if self.state_dir is not None:
+            clear_session(self.state_dir, target, issue)
         agent_dir = Path(worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)

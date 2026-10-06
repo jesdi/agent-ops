@@ -18,7 +18,7 @@ from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                PARK_REVIEW, PARK_WAKE, AnswersRequest,
                                LoopCaps, SpecApprovalRequest, Stage,
                                TaskState, clear_turn_markers, has_waiting, load,
-                               load_all, mark_waiting, save)
+                               load_all, mark_waiting, save, SessionRecord, write_session)
 from tests.usagefakes import session_usage
 
 POLICY = parse_policy({
@@ -542,6 +542,7 @@ def test_spec_signal_without_a_track_is_bounced_once_then_parks(tmp_path, monkey
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "spec"))
     wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard",
                    picks={"spec": "anthropic/claude-opus-5"})
     valid_spec(wt)
@@ -573,6 +574,7 @@ def test_spec_signal_with_a_misspelled_track_is_bounced_not_mis_parked(tmp_path,
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "spec"))
     wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard",
                    picks={"spec": "anthropic/claude-opus-5"})
     valid_spec(wt)
@@ -765,6 +767,7 @@ def test_woken_pr_open_task_is_gated_on_the_model_it_spawns(tmp_path):
 
 def test_operator_can_bypass_usage_gate_for_one_resume(tmp_path):
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "spec"))
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
               park=PARK_WAKE, resume_bypass_usage=True)
     d = deps()
@@ -778,6 +781,7 @@ def test_operator_can_bypass_usage_gate_for_one_resume(tmp_path):
 
 def test_operator_can_resume_with_another_configured_model(tmp_path):
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "spec"))
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
               park=PARK_WAKE, resume_model_override="claude-sonnet-4-6")
     d = deps()
@@ -982,6 +986,7 @@ def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
 def test_plan_format_failure_retries_in_session_then_fails(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "plan"))
     wt = Path(c.targets[0].worktrees_path) / "task-42"
     (wt / ".agent" / "tickets").mkdir(parents=True)
     # Malformed ticket set: too small and missing required patterns
@@ -1096,13 +1101,14 @@ def test_dead_session_files_diagnosis_issue_and_blocks(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("pick, cli", [
-    ("anthropic/claude-opus-5", "claude --continue"),
-    ("openai/gpt-5-codex@high", "codex resume --last"),
+    ("anthropic/claude-opus-5", "claude --resume recorded-session"),
+    ("openai/gpt-5-codex@high", "codex resume recorded-session"),
 ])
 def test_crash_repro_resumes_on_the_stages_runtime(tmp_path, monkeypatch, pick, cli):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, picks={"implement": pick})
     gh = FakeGitHub()
     main.run_pass(c, deps(gh, FakeSessions(alive=set())))
@@ -1334,6 +1340,7 @@ def test_woken_task_resumes_before_new_claims(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     c = replace_capacity(c, 1)
     wt = make_task(c, park=PARK_WAKE)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
@@ -1353,6 +1360,7 @@ def test_hold_for_attach_resumes_without_reply_injection(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, park=PARK_WAKE, hold_for_attach=True)
     sess = FakeSessions()
     d = deps(sess=sess)
@@ -1555,6 +1563,8 @@ def test_broken_worktree_fails_that_task_and_pass_survives(tmp_path, monkeypatch
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
+    write_session(c.state_dir, "portfolio_eval", 43, SessionRecord("other-session", "implement"))
     make_task(c, issue=42, park=PARK_WAKE, slot=0,
               updated_at="2026-07-21T00:00:00+00:00")
     make_task(c, issue=43, park=PARK_WAKE, slot=1,
@@ -1585,6 +1595,7 @@ def test_broken_worktree_task_crash_dedupes_to_one_issue(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, issue=42, park=PARK_WAKE, slot=0)
     gh = FakeGitHub()
     d = deps(gh, FakeSessions(resume_raises=[42]))
@@ -1887,6 +1898,7 @@ def test_resume_uses_the_model_for_the_parked_stage(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, issue=42, stage=Stage.IMPLEMENT, park=PARK_WAKE)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
@@ -1944,6 +1956,7 @@ def test_resume_at_spec_review_gate_uses_the_spec_model(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "spec"))
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_WAKE)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
@@ -2479,6 +2492,7 @@ def test_resume_intent_wakes_with_default_text(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     sess = FakeSessions()
@@ -2495,6 +2509,7 @@ def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {"text": "ship it"},
                              "op", 1)
@@ -2532,6 +2547,7 @@ def test_resume_intent_can_override_a_wake_without_duplicate_message(
     patch_usage(monkeypatch, util=0.95)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, issue=42, park=PARK_WAKE)
     from dispatcher import messages
     messages.append(c.state_dir, "portfolio_eval", 42, "original wake", "op")
@@ -2590,6 +2606,7 @@ def test_a_stale_attached_marker_no_longer_holds_anything(tmp_path, monkeypatch)
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, issue=42, park=PARK_WAKE)
     # Simulate a stale marker file left from old runs
     (Path(c.state_dir) / "attached-portfolio_eval-42").touch()
@@ -2728,6 +2745,7 @@ def test_resume_woken_ends_session_before_resuming(tmp_path, monkeypatch):
     # _launch would type the podman command into the running claude.
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, stage=Stage.IMPLEMENT, park=PARK_WAKE)
     sess = FakeSessions(alive=[42])
     main.run_pass(c, deps(sess=sess))
@@ -2740,6 +2758,7 @@ def test_woken_pre_router_task_resumes_on_the_untracked_track(tmp_path, monkeypa
     # backfill: its wake must still launch, not wait forever in silence.
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, stage=Stage.IMPLEMENT, park=PARK_WAKE, track="")
     sess = FakeSessions(alive=[42])
     main.run_pass(c, deps(sess=sess))
@@ -2764,6 +2783,7 @@ def test_reply_to_login_park_injects_code(tmp_path, monkeypatch):
 def test_reply_to_human_park_still_wakes(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, stage=Stage.IMPLEMENT, park=PARK_HUMAN, park_msg_id=88)
     monkeypatch.setattr(main.inbound, "fetch_events",
                         lambda sd: [main.Reply(reply_to_msg_id=88, text="hi")])
@@ -2988,6 +3008,7 @@ def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "spec"))
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
               park=PARK_WAKE)
     sess = FakeSessions()
@@ -3026,6 +3047,7 @@ def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, mon
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = dc_replace(cfg(tmp_path), capacity=9)
+    write_session(c.state_dir, "portfolio_eval", 43, SessionRecord("recorded-session", "implement"))
     for issue, slot in ((1, 0), (2, 1)):
         make_task(c, issue=issue, stage=Stage.IMPLEMENT, slot=slot)
     make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
@@ -4056,6 +4078,7 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
 
 def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
     from dispatcher import messages
     messages.append(c.state_dir, "portfolio_eval", 42, "first", "jesdi@github")
@@ -4069,6 +4092,7 @@ def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
 
 def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
     d = deps()
     main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
@@ -4077,6 +4101,7 @@ def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
 
 def test_retry_plan_delivers_queued_messages_too(tmp_path):
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "plan"))
     make_task(c, issue=42, stage=Stage.PLAN)
     from dispatcher import messages
     messages.append(c.state_dir, "portfolio_eval", 42, "keep the scope small", "jesdi@github")
@@ -4565,6 +4590,7 @@ def test_session_exhaustion_ends_session_and_clears_waiting(tmp_path, monkeypatc
 def test_failed_e2e_runs_count_and_park_past_the_cap(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(e2e=1))
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "review"))
     make_task(c, stage=Stage.REVIEW, park=PARK_CI, ci_run_id=7, slot=NO_SLOT)
     gh = FakeGitHub(run_conclusion="failure"); d = deps(gh)
     main.run_pass(c, d)
@@ -4587,6 +4613,7 @@ def test_failed_e2e_runs_count_and_park_past_the_cap(tmp_path, monkeypatch):
 def test_operator_wake_resets_the_round_budget(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, stage=Stage.IMPLEMENT, park=PARK_HUMAN, park_msg_id=77, slot=NO_SLOT,
               gate_rounds=3, e2e_rounds=1)
     d = deps(sess=FakeSessions())
@@ -4713,6 +4740,7 @@ def test_successful_ci_wake_preserves_all_counters(tmp_path):
 def test_resume_woken_does_not_reset_counters(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, stage=Stage.IMPLEMENT, park=PARK_WAKE,
               review_rounds=1, gate_rounds=1, e2e_rounds=2, ci_rounds=1)
     sess = FakeSessions()

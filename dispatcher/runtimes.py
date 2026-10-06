@@ -45,11 +45,11 @@ class Runtime:
 
     def resume(self, session_id: str, message: str) -> str:
         """The args a launch takes to continue with the (quoted) message."""
-        return f"{self.resume_args} {message}"
+        return " ".join(filter(None, (self.resume_args, shlex.quote(session_id), message)))
 
     def resume_cmd(self, session_id: str, message: str = "") -> str:
         """The whole resume command line, e.g. for a crash repro."""
-        return " ".join(filter(None, (self.cli, self.resume_args, message)))
+        return f"{self.cli} {self.resume(session_id, message)}"
 
 
 CLAUDE = Runtime(
@@ -75,11 +75,11 @@ CLAUDE = Runtime(
     # identifiable there. Remote Control is interactive-only (the headless -p
     # keepalive cannot and need not use it) and needs the claude-home OAuth
     # login, which the mounted store provides. It is a session-config flag,
-    # orthogonal to --continue on the resume path.
+    # orthogonal to --resume on the resume path.
     launch_args=lambda name, worktree, model, effort: (
         f"--remote-control {name} --permission-mode auto --model {model}"
         f"{' --effort ' + effort if effort else ''}"),
-    resume_args="--continue",
+    resume_args="--resume",
     headless_args=lambda prompt, model, effort: (
         f"-p {prompt} --permission-mode auto --model {model}"
         f"{' --effort ' + effort if effort else ''}"),
@@ -95,7 +95,7 @@ CODEX = Runtime(
     # No approval prompts and no sandbox: the container is the isolation
     # layer and nobody is attached to answer. `notify` fires on
     # agent-turn-complete — Codex's Stop hook — running the worktree's own
-    # stop-hook.sh (it ignores Codex's JSON argument). The trust override
+    # stop-hook.sh (it forwards Codex's thread ID). The trust override
     # pre-empts the first-run trust prompt that would stall an unattended
     # pane; it is an inline table because -c keeps the quotes of a dotted
     # key segment (projects."<wt>".trust_level never matches). Both are
@@ -107,9 +107,7 @@ CODEX = Runtime(
         " --dangerously-bypass-approvals-and-sandbox"
         f" -c 'notify=[\"{worktree}/.agent/stop-hook.sh\"]'"
         f" -c 'projects={{\"{worktree}\"={{trust_level=\"trusted\"}}}}'"),
-    # The newest Codex session for the cwd; a stage never changes provider,
-    # so that is the stage's.
-    resume_args="resume --last",
+    resume_args="resume",
     # `codex exec`: one turn, no TTY. Same bypass as launch_args (the
     # container is the isolation); exec's default read-only sandbox could
     # not write the caller's output file or reach `gh`.

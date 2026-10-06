@@ -83,7 +83,7 @@ def test_codex_spawn_omits_effort_flag_when_unset(tmp_path, monkeypatch):
 
 def test_codex_resume_ends_with_resume_last_message():
     runtime = _openai_runtime()
-    assert runtime.resume("recorded-session", "'hi'") == "resume --last 'hi'"
+    assert runtime.resume("recorded-session", "'hi'") == "resume recorded-session 'hi'"
 
 
 def test_codex_session_resume_tab_gets_herdr_agent_codex(tmp_path, monkeypatch):
