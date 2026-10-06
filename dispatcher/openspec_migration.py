@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from dispatcher.convergence import pass_lock
@@ -141,18 +142,20 @@ def _refusal(drains: int, unreadable: int) -> str:
 
 def _migrate(state_dir: Path) -> int:
     tasks, unreadable = _load(state_dir)
-    counts = {kind: sum(1 for _, _, k in tasks if k == kind)
-              for kind in (CONVERT, UNTOUCHED, DRAIN)}
+    counts = Counter(kind for _, _, kind in tasks)
     refused = bool(unreadable or counts[DRAIN])
     for path, doc, kind in tasks:
-        if kind == CONVERT and not refused:
+        if kind == CONVERT and refused:
+            kind = "not converted"
+        elif kind == CONVERT:
             write_json_atomic(path, _convert(doc))
-        print(_line("not converted" if kind == CONVERT and refused else kind, doc))
-    print("\n".join(unreadable + [_refusal(counts[DRAIN], len(unreadable))])
-          if refused else
+        print(_line(kind, doc))
+    for line in unreadable:
+        print(line)
+    print(_refusal(counts[DRAIN], len(unreadable)) if refused else
           f"{counts[CONVERT]} converted, {counts[UNTOUCHED]} untouched, "
           f"{counts[DRAIN]} must-drain.")
-    return 1 if refused else 0
+    return int(refused)
 
 
 def main(argv: list[str] | None = None) -> int:
