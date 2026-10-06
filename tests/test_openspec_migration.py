@@ -16,7 +16,7 @@ import dispatcher.main as main
 from dispatcher import intents, messages, openspec_migration, spec_publish
 from dispatcher.convergence import pass_lock
 from dispatcher.state import (PARK_REVIEW, PARK_WAKE, PlanApprovalRequest, Stage,
-                              load, read_stage_signal, save)
+                              load, read_stage_signal, resumable_crash, save)
 
 import tests.test_gate_skip_acceptance as gate
 from tests.test_main import FakeSessions, deps, make_task, write_tickets
@@ -486,9 +486,35 @@ def test_an_unreadable_message_file_refuses_the_whole_run(tmp_path, monkeypatch,
                for ln in text.splitlines()), text
 
 
+def test_a_run_that_stops_between_messages_and_task_file_loses_no_message(
+        tmp_path, monkeypatch, capsys):
+    """The messages are written first: the task file is still old when the
+    run stops, so the next run does the task again."""
+    c = cfg_(tmp_path, monkeypatch)
+    gated_spec(c)
+    _said(c, 384, "change section 2")
+    real, calls = os.replace, []
+
+    def second_fails(src, dst):
+        calls.append(dst)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        real(src, dst)
+    monkeypatch.setattr(os, "replace", second_fails)
+    assert migrate(c, capsys)[0] == 1
+    monkeypatch.setattr(os, "replace", real)             # undo() would drop cfg_'s patches
+
+    assert raw(c, 384)["stage"] == OLD_GATE
+    assert migrate(c, capsys)[0] == 0
+    sess = next_pass(c)
+
+    assert [s[:2] for s in sess.spawned] == [(384, "spec")]
+    assert "operator: change section 2" in sess.spawned[0][3]
+
+
 # An old task that failed in plan, implement or review.
 @pytest.mark.parametrize("crashed", ["plan", "implement", "review"])
-def test_old_task_failed_past_the_spec_is_labelled_and_only_gets_asked(
+def test_old_task_failed_past_the_spec_is_labelled_and_made_not_resumable(
         tmp_path, monkeypatch, capsys, crashed):
     c = cfg_(tmp_path, monkeypatch)
     old_task(c, 412, "failed", crashed_stage=crashed, spec_path=DESIGN, ticket_cursor=2)
@@ -497,7 +523,11 @@ def test_old_task_failed_past_the_spec_is_labelled_and_only_gets_asked(
     status, text = migrate(c, capsys)
 
     assert status == 0, text
-    assert raw(c, 412) == {**before, "asked": True}
+    assert raw(c, 412) == {
+        **before, "asked": True, "crashed_stage": "",
+        "park_note": f"failed in {crashed} in the old flow; not resumable"}
+    assert load(c.state_dir, TARGET, 412).stage is Stage.FAILED
+    assert not resumable_crash(load(c.state_dir, TARGET, 412))
     assert f"do-not-resume  {TARGET} #412  (failed, crashed in {crashed})" in text
     assert "1 do-not-resume" in text.splitlines()[-1]
     after_first = snapshot(c.state_dir)
@@ -505,24 +535,19 @@ def test_old_task_failed_past_the_spec_is_labelled_and_only_gets_asked(
     assert snapshot(c.state_dir) == after_first
 
 
-def test_a_resume_of_an_old_failed_plan_task_cannot_skip_the_gate(
+def test_a_resume_of_an_old_failed_plan_task_starts_nothing(
         tmp_path, monkeypatch, capsys):
     c = _gate_free_cfg(tmp_path, monkeypatch)
-    wt = old_task(c, 412, "failed", crashed_stage="plan", track="trivial",
-                  spec_path=gate.SPEC)
+    old_task(c, 412, "failed", crashed_stage="plan", track="trivial",
+             spec_path=gate.SPEC, park_note="an older note")
 
     assert migrate(c, capsys)[0] == 0
     intents.write_intent(c.state_dir, "resume", TARGET, 412, {}, "op", 1)
-    assert [s[:2] for s in next_pass(c).spawned] == [(412, "plan")]
-    (wt / gate.FOLDER).mkdir(parents=True)
-    write_tickets(wt, 1)
-    (wt / gate.SUMMARY).write_text(gate.NONE_SUMMARY)
-    gate._ready(wt)
-    sess = FakeSessions(alive={412})
-    main.run_pass(c, deps(sess=sess))
+    sess = next_pass(c)
 
-    assert load(c.state_dir, TARGET, 412).stage is Stage.AWAITING_PLAN_REVIEW
-    assert [s for s in sess.spawned if s[1] == "implement"] == []
+    assert sess.spawned == [] and sess.resumed == []
+    t = load(c.state_dir, TARGET, 412)
+    assert (t.stage, t.asked, t.park_note) == (Stage.FAILED, True, "an older note")
 
 
 def test_old_failed_task_with_no_crashed_stage_is_named_not_resumable(

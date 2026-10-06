@@ -22,9 +22,9 @@ run, and is left alone; that is what makes a second run change nothing.
 
 Nothing the migration writes is an approval. Every converted task gets
 `asked` true, so it waits at the plan review gate whatever its track: its
-history is unknown, or a human was already part of it. The same holds for an
-old task that failed in plan, implement or review (`do-not-resume`): `asked`
-is all it gets. The stage it writes is `spec` only, the request it writes is
+history is unknown, or a human was already part of it. An old task that
+failed in plan, implement or review (`do-not-resume`) gets `asked` too, and
+loses its `crashed_stage`: Resume can no longer start it. The stage it writes is `spec` only, the request it writes is
 none, and a stage, park or request kind it does not know is never coerced: the
 file is reported and the run refused.
 
@@ -44,8 +44,8 @@ Delete after the deploy, all of it together:
   its tests in tests/test_openspec_migration.py;
 - the `blocking` parameter of dispatcher/convergence.pass_lock;
 - the README section "Deploying the openspec pipeline";
-- the restart-inputs list in step 1 of prompts/spec.md, with its tests in
-  tests/test_prompts.py."""
+- the restart-inputs list in step 1 of prompts/spec.md and the review-file
+  paragraph after it, with their tests in tests/test_prompts.py."""
 from __future__ import annotations
 
 import json
@@ -154,6 +154,17 @@ def _convert(doc: dict) -> dict:
     return out
 
 
+def _not_resumable(doc: dict) -> dict:
+    """An old task that failed in plan, implement or review. `crashed_stage`
+    is cleared, so no Resume can start the new flow on its old artifacts
+    (state.resumable_crash is all that reads the field); the stage it failed
+    in stays readable in `park_note`, unless a note is already there. `asked`
+    as for a converted task."""
+    note = f"failed in {doc['crashed_stage']} in the old flow; not resumable"
+    return {**doc, "asked": True, "crashed_stage": "",
+            "park_note": doc.get("park_note") or note}
+
+
 def _queued_again(raw: str) -> str:
     """One line of a message file, with its delivery stamp removed unless
     the dispatcher wrote the message. A line that is no message is kept as
@@ -242,7 +253,7 @@ def _write(task: _Task) -> None:
             _replace_text(task.messages, task.queue)
         _replace_text(task.path, json.dumps(_convert(task.doc), indent=2))
     elif task.kind == NO_RESUME:
-        _replace_text(task.path, json.dumps({**task.doc, "asked": True}, indent=2))
+        _replace_text(task.path, json.dumps(_not_resumable(task.doc), indent=2))
 
 
 def _line(label: str, doc: dict) -> str:
