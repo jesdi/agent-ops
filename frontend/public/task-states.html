@@ -1,0 +1,274 @@
+<!doctype html>
+<!--
+  Task states reference. A static page: Vite copies frontend/public/ into the
+  build, so the console serves it at /task-states.html (the nav links to it).
+  It describes dispatcher/state.py, dispatcher/machine.py and
+  web/read_model.py — when those change, change this page in the same PR.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" />
+<title>Task states · agent-ops console</title>
+<style>
+  /* The console's tokens (frontend/src/index.css), copied: this page is not
+     part of the Tailwind build. */
+  :root {
+    color-scheme: light dark;
+    --surface: #f5f7fa; --surface-raised: #ffffff; --ink: #1e293b; --ink-muted: #5b6577; --border: #dce1e8;
+    --running-bg: #dcfce7; --running-fg: #166534; --waiting-bg: #fef3c7; --waiting-fg: #92400e;
+    --failed-bg: #fee2e2; --failed-fg: #991b1b; --parked-bg: #ede9fe; --parked-fg: #5b21b6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #0f141a; --surface-raised: #181e27; --ink: #e4e8ee; --ink-muted: #98a2b1; --border: #2b3340;
+      --running-bg: #10301e; --running-fg: #86efac; --waiting-bg: #372812; --waiting-fg: #fcd34d;
+      --failed-bg: #3a1619; --failed-fg: #fca5a5; --parked-bg: #291f45; --parked-fg: #c4b5fd;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface); color: var(--ink);
+         font: 16px/1.55 "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; }
+  nav { display: flex; gap: 16px; border-bottom: 1px solid var(--border); background: var(--surface-raised);
+        padding: 8px 16px; font-size: 14px; line-height: 20px; }
+  nav a { color: var(--ink-muted); text-decoration: none; }
+  nav a:hover { color: var(--ink); }
+  nav a[aria-current] { color: var(--ink); font-weight: 600; }
+  nav a:last-child { margin-left: auto; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 24px; font-weight: 600; margin: 0 0 4px; }
+  h2 { font-size: 18px; font-weight: 600; margin: 40px 0 8px; }
+  p, li { max-width: 72ch; }
+  ul { padding-left: 20px; }
+  .muted { color: var(--ink-muted); }
+  .toc { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 14px; padding: 0; list-style: none; }
+  a { color: inherit; }
+  .card { background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px;
+          padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .card pre { margin: 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--surface);
+         border: 1px solid var(--border); padding: 0 4px; border-radius: 4px; white-space: nowrap; }
+  .chip { display: inline-block; padding: 0 8px; border-radius: 999px; font-size: 13px; font-weight: 500; white-space: nowrap; }
+  .running { background: var(--running-bg); color: var(--running-fg); }
+  .waiting { background: var(--waiting-bg); color: var(--waiting-fg); }
+  .failed  { background: var(--failed-bg);  color: var(--failed-fg); }
+  .parked  { background: var(--parked-bg);  color: var(--parked-fg); }
+  .mermaid { display: flex; justify-content: center; min-width: 560px; }
+</style>
+</head>
+<body>
+<nav aria-label="Console">
+  <a href="/">Board</a>
+  <a href="/failures">Failures</a>
+  <a href="/history">History</a>
+  <a href="/task-states.html" aria-current="page">Task states</a>
+</nav>
+<main>
+<h1>Task states</h1>
+<p class="muted">The states a task can have, what moves it from one state to the next, and where it shows on the board.</p>
+<ul class="toc">
+  <li><a href="#model">Stage and park</a></li>
+  <li><a href="#stages">Stages</a></li>
+  <li><a href="#signal">Stage signal</a></li>
+  <li><a href="#parks">Parks</a></li>
+  <li><a href="#turn-end">Turn end</a></li>
+  <li><a href="#pass">Dispatcher pass</a></li>
+  <li><a href="#loops">Round caps</a></li>
+  <li><a href="#board">Board columns</a></li>
+  <li><a href="#limits">Known limits</a></li>
+</ul>
+
+<h2 id="model">Stage and park</h2>
+<p>A task has two independent properties.</p>
+<ul>
+  <li>The <b>stage</b> tells where the task is in the pipeline: <code>spec</code>, <code>plan</code>, <code>implement</code>, and so on.</li>
+  <li>The <b>park</b> tells whether the task waits for something. An empty park means the task is not parked.</li>
+</ul>
+<p>A parked task keeps its stage. A park ends the session and gives back the capacity and the E2E slot. The login park is the only exception: its session stays alive, because the operator types the login code into it.</p>
+<p>The dispatcher does not watch sessions all the time. A timer starts one <b>pass</b> each 10 minutes. Each pass reads the state of each task and does the next step. Thus a state change can show up to 10 minutes after its cause.</p>
+
+<h2 id="stages">Stages</h2>
+<div class="card"><pre class="mermaid">
+flowchart TD
+  Q([queued]) -->|session launched| SP[spec]
+  SP -->|signal awaiting-review| ASR[awaiting-spec-review]
+  ASR -->|operator approves| PL[plan]
+  SP -->|signal done| PL
+  PL -->|tickets valid| IM[implement]
+  PL -->|tickets invalid: one retry| PL
+  IM -->|next ticket| IM
+  IM -->|last ticket done| RV[review]
+  RV -->|signal done: PR opened| PR[pr-open]
+  PR -->|PR feedback, red check or conflict| AR[address-review]
+  AR -->|signal done| PR
+  PR -->|PR merged| D([done])
+  PR -->|PR closed, not merged| F([failed])
+  PL -->|tickets invalid again| F
+  SP -->|spec file invalid| F
+  X[any stage with a session] -->|session crashed| F
+  F -.->|operator resumes: the crashed stage starts again| X
+  Y[any stage] -->|operator cancels| C([canceled])
+  classDef ok fill:#dcfce7,stroke:#166534,color:#166534
+  classDef bad fill:#fee2e2,stroke:#991b1b,color:#991b1b
+  classDef you fill:#fef3c7,stroke:#92400e,color:#92400e
+  class D ok
+  class F,C bad
+  class ASR,PR you
+</pre></div>
+<ul>
+  <li><b>Amber</b> stages wait for you: a spec to approve, or a PR to review and merge.</li>
+  <li><code>done</code>, <code>failed</code> and <code>canceled</code> are final. A task that failed because its session crashed can be resumed.</li>
+  <li><code>blocked</code> is an old stage that current code does not set. <code>stalled-on-budget</code> exists as a stage value and a board column, but current code does not set it.</li>
+</ul>
+
+<h2 id="signal">Stage signal</h2>
+<p>A session tells the dispatcher its state through the file <code>.agent/stage.json</code> in the task's worktree. The dispatcher reads the <code>status</code> field on each pass.</p>
+<div class="card"><table>
+<tr><th>Status</th><th>Meaning</th><th>What the pass does</th></tr>
+<tr><td><code>working</code></td><td>The session is doing the stage.</td><td>Nothing, unless a turn-end marker or a timer applies. See <a href="#pass">Dispatcher pass</a>.</td></tr>
+<tr><td><code>done</code></td><td>The stage is complete.</td><td>Checks the stage's output, then starts the next stage or the next ticket.</td></tr>
+<tr><td><code>awaiting-review</code></td><td>The spec is ready for the operator.</td><td>Moves the task to <code>awaiting-spec-review</code> and publishes the spec. After 15 minutes with no approval, parks the task for review.</td></tr>
+<tr><td><code>blocked</code></td><td>The session cannot continue.</td><td>Parks the task for input with the session's note.</td></tr>
+<tr><td><code>awaiting-answers</code></td><td>The session has a questionnaire, a prototype or a wizard for the operator.</td><td>Parks the task for input and shows the file in the console.</td></tr>
+<tr><td><code>awaiting-ci</code></td><td>The session waits for a GitHub Actions run.</td><td>Parks the task until the run completes.</td></tr>
+</table></div>
+
+<h2 id="parks">Parks</h2>
+<div class="card"><table>
+<tr><th>Park</th><th>Value</th><th>Causes</th><th>Session</th><th>How it ends</th></tr>
+<tr><td><span class="chip parked">Input</span></td><td><code>parked</code></td>
+  <td>Signal <code>blocked</code> or <code>awaiting-answers</code>.<br>The session stopped in the middle of a stage.<br>No session activity for 10 minutes.<br>Background work ran longer than 3 hours.<br>A round cap was reached.<br>The task's track is no longer configured.</td>
+  <td>Ended</td><td>The operator replies or resumes.</td></tr>
+<tr><td><span class="chip waiting">Review</span></td><td><code>awaiting-review</code></td>
+  <td>The spec waited 15 minutes for approval.</td><td>Ended</td><td>The operator approves or replies.</td></tr>
+<tr><td><span class="chip running">CI</span></td><td><code>awaiting-ci</code></td>
+  <td>Signal <code>awaiting-ci</code>.</td><td>Ended</td><td>The GitHub Actions run completes.</td></tr>
+<tr><td><span class="chip parked">Login</span></td><td><code>parked-login</code></td>
+  <td>The session is at a login prompt.</td><td>Alive</td><td>The operator completes the login.</td></tr>
+<tr><td><span class="chip running">Resuming</span></td><td><code>unpark-requested</code></td>
+  <td>A park ended, and the task waits for free capacity.</td><td>Not started</td><td>A pass launches the session when capacity is free.</td></tr>
+</table></div>
+<p>The notes you see on an input park that the dispatcher wrote itself:</p>
+<div class="card"><table>
+<tr><th>Note</th><th>Cause</th></tr>
+<tr><td>(session stopped mid-stage waiting for input)</td><td>The session ended a turn with signal <code>working</code> and no background work.</td></tr>
+<tr><td>(no session output for 10m — likely login/trust prompt or hang)</td><td>The stall timer: the agent was not working for 10 minutes and did not end a turn.</td></tr>
+<tr><td>(background work still running after 180m — cap reached)</td><td>The session waited for the same background work for more than 3 hours.</td></tr>
+</table></div>
+<p>All other notes on an input park come from the session itself.</p>
+
+<h2 id="turn-end">Turn end</h2>
+<p>When a session ends a turn, a hook in the worktree (<code>.agent/stop-hook.sh</code>) sends one ping to the <code>waitd</code> service. <code>waitd</code> writes one marker for the task. The next pass reads the marker.</p>
+<div class="card"><pre class="mermaid">
+flowchart LR
+  T([Session ends a turn]) --> R{Runtime}
+  R -->|Codex| W[waiting marker:<br/>if the signal is working, the next pass parks the task]
+  R -->|Claude| S{Signal is working, and<br/>background work is running?}
+  S -->|no| W
+  S -->|yes| B[background marker:<br/>the task stays in progress]
+</pre></div>
+<ul>
+  <li><b>Background work</b> is a background shell or a background agent that the session started and that is still running at the turn end.</li>
+  <li>Only Claude sessions report background work. A Codex turn end always writes a waiting marker.</li>
+  <li>Both markers are removed when a session ends and when the task changes stage, so a new session never gets the markers of the old one.</li>
+</ul>
+
+<h2 id="pass">Dispatcher pass</h2>
+<p>This is what one pass does with a task that is not parked and whose signal is <code>working</code>.</p>
+<div class="card"><pre class="mermaid">
+flowchart TD
+  A([Signal is working]) --> AL{Session alive?}
+  AL -->|no| CR([failed: session crashed])
+  AL -->|yes| WM{Waiting marker?}
+  WM -->|yes| PK([Park: session stopped mid-stage])
+  WM -->|no| BM{Background marker?}
+  BM -->|no| ST{Agent not working<br/>for 10 minutes?}
+  ST -->|yes| PS([Park: no session output for 10m])
+  ST -->|no| OK([Task stays in progress])
+  BM -->|yes| SQ{Session started a new turn<br/>after the report?}
+  SQ -->|yes: the wait is over| ST
+  SQ -->|no| CAP{Same background work<br/>for more than 3 hours?}
+  CAP -->|no| OK
+  CAP -->|yes| PC([Park: background cap reached])
+  classDef ok fill:#dcfce7,stroke:#166534,color:#166534
+  classDef bad fill:#fee2e2,stroke:#991b1b,color:#991b1b
+  classDef park fill:#ede9fe,stroke:#5b21b6,color:#5b21b6
+  class OK ok
+  class CR bad
+  class PK,PS,PC park
+</pre></div>
+<ul>
+  <li>The pass asks herdr (the session layer) for the agent's status. <code>working</code> is never idle, however long the turn is.</li>
+  <li>During a background wait the stall timer does not apply. The 3-hour clock starts again only when a turn end reports background work that the turn end before it did not report.</li>
+  <li>When herdr cannot be asked, the pass does nothing and tries again on the next pass.</li>
+  <li>The two limits are settings: <code>stall_after_seconds</code> (600) and <code>background_wait_seconds</code> (10800).</li>
+</ul>
+
+<h2 id="loops">Round caps</h2>
+<p>Some loops can run only a fixed number of rounds. When a loop reaches its cap, the task parks for input. The <code>loop_caps</code> setting in <code>targets.yaml</code> changes the numbers.</p>
+<div class="card"><table>
+<tr><th>Loop</th><th>Cap</th><th>One round is</th></tr>
+<tr><td><code>review</code></td><td>2</td><td>One fix round in the review stage.</td></tr>
+<tr><td><code>gate</code></td><td>2</td><td>One failure of the gate command on a ticket.</td></tr>
+<tr><td><code>e2e</code></td><td>3</td><td>One failed end-to-end run in implement or review.</td></tr>
+<tr><td><code>ci</code></td><td>3</td><td>One fix on an open PR: a red check, a conflict or a failed run.</td></tr>
+</table></div>
+
+<h2 id="board">Board columns</h2>
+<p>The park decides the column when the task is parked. If the task is not parked, the stage decides.</p>
+<div class="card"><table>
+<tr><th>Column</th><th>Zone</th><th>Shows tasks with</th></tr>
+<tr><td>Needs review</td><td>Needs you</td><td>Stage <code>awaiting-spec-review</code>, or park <code>awaiting-review</code></td></tr>
+<tr><td>PR review</td><td>Needs you</td><td>Stage <code>pr-open</code></td></tr>
+<tr><td>Parked</td><td>Needs you</td><td>Park <code>parked</code> or <code>parked-login</code></td></tr>
+<tr><td>Failed</td><td>Needs you</td><td>Stage <code>failed</code> or <code>blocked</code></td></tr>
+<tr><td>Stalled on budget</td><td>Needs you</td><td>Stage <code>stalled-on-budget</code></td></tr>
+<tr><td>Queued</td><td>Pipeline</td><td>Stage <code>queued</code></td></tr>
+<tr><td>In progress</td><td>Pipeline</td><td>Stage <code>spec</code>, <code>plan</code>, <code>implement</code>, <code>review</code> or <code>address-review</code></td></tr>
+<tr><td>Awaiting CI</td><td>Pipeline</td><td>Park <code>awaiting-ci</code></td></tr>
+<tr><td>Resuming</td><td>Pipeline</td><td>Park <code>unpark-requested</code></td></tr>
+<tr><td>Done</td><td>Pipeline</td><td>Stage <code>done</code></td></tr>
+<tr><td>Wont do</td><td>Pipeline</td><td>Stage <code>canceled</code></td></tr>
+</table></div>
+
+<h2 id="limits">Known limits</h2>
+<ul>
+  <li>A waiting marker is not compared with the live session. If a session ends a turn and starts a new turn before the next pass, the pass can park a session that is working.</li>
+  <li>Codex sessions have no background wait. A Codex session that ends a turn while background work runs is parked.</li>
+  <li>A parked task does not start again by itself. Only an operator reply or resume, a completed CI run, or a spec approval ends a park.</li>
+</ul>
+
+<p class="muted">Sources: <code>dispatcher/state.py</code>, <code>dispatcher/machine.py</code>, <code>dispatcher/waitd.py</code>, <code>hooks/stop-hook.sh</code>, <code>web/read_model.py</code>.</p>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"
+        integrity="sha512-6a80OTZVmEJhqYJUmYd5z8yHUCDlYnj6q9XwB/gKOEyNQV/Q8u+XeSG59a2ZKFEHGTYzgfOQKYEBtrZV7vBr+Q=="
+        crossorigin="anonymous"></script>
+<script>
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches
+  if (dark) {
+    // The diagrams' class colours are the light tokens; swap in the dark ones.
+    const swap = {
+      '#dcfce7': '#10301e', '#166534': '#86efac', '#fef3c7': '#372812', '#92400e': '#fcd34d',
+      '#fee2e2': '#3a1619', '#991b1b': '#fca5a5', '#ede9fe': '#291f45', '#5b21b6': '#c4b5fd',
+    }
+    for (const el of document.querySelectorAll('.mermaid')) {
+      el.textContent = el.textContent.replace(/#[0-9a-f]{6}/g, (hex) => swap[hex] ?? hex)
+    }
+  }
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: dark ? 'dark' : 'neutral',
+    fontFamily: '"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif',
+  })
+</script>
+</body>
+</html>
