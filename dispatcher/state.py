@@ -217,8 +217,13 @@ class TaskState:
     # a state from before picks existed, marked when it is read. Cleared
     # when that ticket is done. See ticket_in_progress.
     ticket_without_pick: bool = False
-    # A spec-stage session parked for answers. Set only by _park_for_input in
-    # dispatcher/main.py, never cleared: it outlives the session that asked.
+    # The task entered the plan review gate. Set only by _stage_extra in
+    # dispatcher/main.py, never cleared: a task that waited for the operator
+    # once never skips the gate, whatever stage a respawn puts it back in.
+    gated: bool = False
+    # A spec- or plan-stage session parked for answers. Set only by
+    # _park_for_input in dispatcher/main.py, never cleared: it outlives the
+    # session that asked.
     asked: bool = False
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
@@ -289,6 +294,9 @@ class StageSignal:
     loop: str = ""    # bounded loop a working session is in: review | gate
     round: int = 0    # 1-based round of that loop
     track: str = ""   # spec done: the track for plan/implement/review; plan done may rename it
+    # Plan ready report: the open questions the session counted in its
+    # summary. None = missing or not a non-negative integer.
+    open_questions: int | None = None
 
 
 # The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
@@ -515,6 +523,12 @@ def allocate_slot(existing: list[TaskState], max_slots: int) -> int | None:
     return None
 
 
+def _open_questions(raw: object) -> int | None:
+    """Tolerant on purpose: a bad count must not make the signal unreadable.
+    `type() is int` keeps bool out (True is an int in Python)."""
+    return raw if type(raw) is int and raw >= 0 else None
+
+
 def read_stage_signal(worktree: str | Path) -> StageSignal | None:
     p = Path(worktree) / ".agent" / "stage.json"
     if not p.exists():
@@ -530,6 +544,7 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
             loop=str(d.get("loop", "") or ""),
             round=int(d.get("round", 0) or 0),
             track=str(d.get("track", "") or ""),
+            open_questions=_open_questions(d.get("open_questions")),
         )
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None

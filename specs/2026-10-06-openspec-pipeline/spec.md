@@ -57,7 +57,8 @@ folder `specs/2026-10-12-csv-export/`, on the `standard` track, and the tracks a
    tickets), commits, pushes and waits again. The task never returns to the spec stage. An
    approval may name a track, which then runs implement and review.
 9. **The gate is skipped only when three conditions hold together:** the task's track is
-   gate-free, the spec session raised no questionnaire, and stage 2 reported no open question.
+   gate-free, neither the spec session nor the plan session raised a questionnaire, and stage 2
+   reported no open question.
    Then implement starts with no action from the operator. If any one fails, requirement 7
    applies.
 10. **The gate waits as the spec gate waits today.** The session stays alive for
@@ -207,8 +208,9 @@ folder `specs/2026-10-12-csv-export/`, on the `standard` track, and the tracks a
 
 ### Scenario: a trivial task with nothing open skips the gate
 
-- **Given** issue #415 "Fix a typo in the export button label" on the `trivial` track, the spec
-  session raised no questionnaire, and stage 2 reported 0 open questions and 1 ticket
+- **Given** issue #415 "Fix a typo in the export button label" on the `trivial` track, neither
+  the spec session nor the plan session raised a questionnaire, and stage 2 reported 0 open
+  questions and 1 ticket
 - **When** the plan session reports that the plan is ready
 - **Then** the implement session starts with no reply from the operator, and the spec folder,
   `design.md` and the ticket exist as for any other task

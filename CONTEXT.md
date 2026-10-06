@@ -287,10 +287,23 @@ address-review. Worktree-relative path.
 - Clear on: successful resume, stage transition, ordinary+exhaustion park, terminal stage, CI/login supersede.
 - Retain on admission denial (resources unavailable at wake time).
 - Clear when the session at the gate reports `working` (it reworks the plan on feedback).
+- Clear when the plan signal is bounced (`_retry_plan`), and when a ready report at the gate fails
+  the ticket check with the request still armed: the check runs on every ready report, armed or not.
 - Re-arm on a ready report at the gate with no request armed: a new review round (ticket check,
   publish, notification, fresh grace clock). The grace clock runs for an armed request only.
 - A task at the gate gets 2 unattended rounds (`unattended_rounds`: respawns of a dead session plus
   new rounds since the operator last acted); the next one parks it for review, with the request armed.
+
+**Gate skip**: the dispatcher alone skips the plan review gate (`machine._skips_gate`), on the first
+ready report of a task, when all of these hold: the task's own track is gate-free (`plan_review: false`;
+a track the ready report names does not count), `TaskState.asked` is false (neither the spec session
+nor the plan session parked for answers), and the report's `open_questions` is the integer 0, its
+`artifact` is `.agent/plan-review.md`, and that file confirms the count (its open-questions section says
+`None.`; `artifacts.count_open_questions`). A missing or malformed count or summary, a summary with other
+`## ` headings than the three prescribed, or one above 256 KB means "the gate applies". The ticket check and the spec folder publish run as at the gate, then implement starts in the
+same pass; no review notification, no request. `TaskState.gated` is set at gate entry, and when a dead
+gate session is respawned, and never cleared: a task that waited once never skips, also after a respawn
+puts it back in the plan stage.
 
 The web layer READS `operator_request`; it never infers a request from park state.
 

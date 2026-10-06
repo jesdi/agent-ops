@@ -15,8 +15,8 @@ One line each: the decision and its tradeoff.
   entries in the summary's open-questions section, means "the gate applies". A miscount on a
   gate-free track costs one unnecessary review, never a skipped one. (Forced by red-team 1.)
 - **"A questionnaire was raised" is recorded by the dispatcher, not reported by the session.**
-  — The dispatcher sets a flag on the task when a spec-stage session parks for answers; the
-  flag survives a restart of the session. The session's own memory of it is not trusted.
+  — The dispatcher sets a flag on the task when a spec-stage or plan-stage session parks for
+  answers; the flag survives a restart of the session. The session's own memory of it is not trusted.
 - **An answer is never an approval.** — The plan prompt treats a reply that answers open
   questions or asks for changes as feedback: apply, push, wait again. Only an explicit approval
   ends the gate. One extra round trip when the operator meant both. (Forced by red-team 3.)
@@ -67,7 +67,7 @@ database. "Constraint" is what the loader or the state machine enforces.
 | Table | Field | Constraint | Why |
 |---|---|---|---|
 | Task | `stage` | one of the stage values; `awaiting-spec-review` removed, `awaiting-plan-review` added | the gate moved behind stage 2 |
-| Task | `asked` (new) | boolean, default false; set only by the dispatcher when a spec-stage session parks for answers; never cleared | condition 2 of the gate skip |
+| Task | `asked` (new) | boolean, default false; set only by the dispatcher when a spec-stage or plan-stage session parks for answers; never cleared | condition 2 of the gate skip |
 | Task | `ticket_cursor` | retired; dropped on load | no per-ticket sessions |
 | Task | `ticket_count` | integer ≥ 1 once the plan is valid | implement-start message and progress |
 | Task | `gate_rounds` | not advanced by an implement session | the skill owns that loop |

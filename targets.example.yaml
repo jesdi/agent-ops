@@ -93,8 +93,9 @@ models:
   tracks:
     trivial:
       # plan_review: false makes this track gate-free. The plan-review gate is skipped only
-      # when all three hold: the track is gate-free, the spec session raised no
-      # questionnaire, and stage 2 reported no open question. Otherwise the gate runs.
+      # when all three hold: the track is gate-free, neither the spec session nor the
+      # plan session raised a questionnaire, and stage 2 reported no open question.
+      # Otherwise the gate runs.
       plan_review: false
       when: Rote rename, typo, formatting, dependency bump, doc edit with no product decision.
       spec:      [claude-sonnet-5@low]

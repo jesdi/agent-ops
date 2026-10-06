@@ -108,7 +108,11 @@ flowchart LR
 - **Staged pipeline** — each task moves through **spec → plan → implement (one fresh session per ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
   artifact. Spec and plan pause together at one human review gate before
-  implementation spends real tokens on them.
+  implementation spends real tokens on them. The dispatcher skips that gate
+  only for a task on a track with `plan_review: false` whose spec and plan
+  sessions asked no questionnaire and whose plan has no open question. An
+  `untracked:` default that names such a track makes every unlabelled task
+  gate-free.
 - **Bounded loops** — review fixes, gate failures, end-to-end fixes and CI
   fixes on an open PR each have a configured cap; hitting it parks the task
   with the finished tickets intact and pings you, it never fails the task.

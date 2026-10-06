@@ -697,7 +697,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                 hold_for_attach=False,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
-                                asked=task.asked or (is_answers and task.stage is Stage.SPEC),
+                                                            asked=task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN)),
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
@@ -816,7 +816,9 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
                          entry.model_id, entry.effort)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     used = "plan_slips" if slip else "plan_retries"
-    save(cfg.state_dir, replace(task, updated_at=_now(),
+    # The rejected plan is no longer on offer: the session's next ready
+    # report is checked and armed again.
+    save(cfg.state_dir, replace(task, updated_at=_now(), operator_request=None,
                                 **{used: getattr(task, used) + 1}))
     _notify(deps, target, task, "plan_retry", reason)
 
@@ -1664,7 +1666,8 @@ def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
     plan arms. Any other transition drops a request: nothing is left to
     approve on a task that failed at the gate."""
     if act.stage is Stage.AWAITING_PLAN_REVIEW:
-        extra: dict = {"operator_request": _plan_approval(task, act.artifact)}
+        extra: dict = {"operator_request": _plan_approval(task, act.artifact),
+                       "gated": True}
         if task.stage is Stage.PLAN:
             # The gate phase has retries of its own.
             extra.update(plan_retries=0, plan_slips=0)
@@ -1700,7 +1703,7 @@ def _on_publish_spec(turn: _Turn, task: TaskState, act: PublishSpec,
         repo=turn.target.repo, issue=task.issue,
         artifact=task.spec_path, dry_run=turn.dry_run)
     turn.spec_line = _spec_note(pub)
-    if not pub.error:
+    if act.review and not pub.error:
         try:
             turn.deps.github.comment(
                 turn.target, task.issue, f"📝 Plan ready for review: {pub.url}")
@@ -1731,7 +1734,9 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
     elif task.stage is Stage.AWAITING_PLAN_REVIEW:
-        task = replace(task, unattended_rounds=task.unattended_rounds + 1)
+        # A task file from before `gated` existed left the gate here.
+        task = replace(task, unattended_rounds=task.unattended_rounds + 1,
+                       gated=True)
     return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
 
 
@@ -1868,7 +1873,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             stall_after=stall_after,
                             grace_elapsed=_grace_elapsed(cfg, task),
                             tracks=frozenset(policy.tracks),
-                            ticket_tracks=ticket_track_names(policy, task.track)):
+                            gate_free=frozenset(
+                                n for n, t in policy.tracks.items()
+                                if not t.plan_review)):
         task = _step_done(turn, task, act)
         stage = _action_stage(act)
         if (stage in (Stage.IMPLEMENT, Stage.REVIEW)
