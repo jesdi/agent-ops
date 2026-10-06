@@ -154,3 +154,25 @@ def test_queued_messages_delivered_only_after_successful_start(tmp_path, monkeyp
     assert messages.undelivered(config.state_dir, "portfolio_eval", 42) == []
     all_msgs = messages.all_messages(config.state_dir, "portfolio_eval", 42)
     assert len(all_msgs) == 1 and all_msgs[0].delivered_at != ""
+
+
+@pytest.mark.parametrize("loop,rnd", [("review", 3), ("e2e", 4), ("ci", 4)])
+def test_no_round_an_implement_session_reports_parks_it(tmp_path, monkeypatch, loop, rnd):
+    """implement-spec has its own review loop of four rounds: the dispatcher's
+    caps never apply to a round the implement session names."""
+    config = cfg(tmp_path)
+    wt = make_task(config, stage=Stage.IMPLEMENT, ticket_count=2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "implement", "status": "working", "loop": loop, "round": rnd,
+        "note": "1/2 tickets merged"}))
+    sessions = FakeSessions(alive={42})
+    dependencies = deps(sess=sessions)
+    patch_usage(monkeypatch, util=0.2)
+
+    main.run_pass(config, dependencies)
+
+    task = _task(config)
+    assert (task.stage, task.park) == (Stage.IMPLEMENT, "")
+    assert (task.review_rounds, task.e2e_rounds, task.ci_rounds) == (0, 0, 0)
+    assert sessions.ended == []
+    assert not {"parked_question", "last_round"} & set(dependencies.notifier.sent)

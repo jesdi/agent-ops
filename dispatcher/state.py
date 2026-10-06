@@ -64,7 +64,7 @@ class LoopCaps:
     """Rounds each bounded loop may run before the task parks. Defaults are
     the spec's; targets.yaml `loop_caps:` overrides any of them."""
     review: int = 2   # review-stage fix rounds
-    gate: int = 2     # rounds of a session-reported gate loop; never applied to implement
+    gate: int = 2     # rounds of a session-reported gate loop
     e2e: int = 3      # failed end-to-end runs (implement/review)
     ci: int = 3       # fixes on an open PR (red check, conflict, failed run)
 

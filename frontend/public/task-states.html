@@ -213,11 +213,11 @@ flowchart TD
 </ul>
 
 <h2 id="loops">Round caps</h2>
-<p>Some loops can run only a fixed number of rounds. When a loop reaches its cap, the task parks for input. The <code>loop_caps</code> setting in <code>targets.yaml</code> changes the numbers.</p>
+<p>Some loops can run only a fixed number of rounds. When a loop reaches its cap, the task parks for input. A round that an implement session reports is never counted: its skill has its own limits. The <code>loop_caps</code> setting in <code>targets.yaml</code> changes the numbers.</p>
 <div class="card"><table>
 <tr><th>Loop</th><th>Cap</th><th>One round is</th></tr>
 <tr><td><code>review</code></td><td>2</td><td>One fix round in the review stage.</td></tr>
-<tr><td><code>gate</code></td><td>2</td><td>One gate-loop round that a session reports. Never counted for an implement session: its skill has its own limit.</td></tr>
+<tr><td><code>gate</code></td><td>2</td><td>One gate-loop round that a session reports.</td></tr>
 <tr><td><code>e2e</code></td><td>3</td><td>One failed end-to-end run in implement or review.</td></tr>
 <tr><td><code>ci</code></td><td>3</td><td>One fix on an open PR: a red check, a conflict or a failed run.</td></tr>
 </table></div>

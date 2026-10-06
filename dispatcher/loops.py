@@ -129,9 +129,9 @@ def evaluate(task: TaskState, observation: object, caps: LoopCaps) -> Decision:
         field = _LOOP_FIELD[loop]
         stored = getattr(task, field)
         cap = getattr(caps, loop.value)
-        # An implement session runs implement-spec, which owns its gate loop
-        # and that loop's limit: a gate round it names is never counted here.
-        own_loop = loop is Loop.GATE and task.stage == Stage.IMPLEMENT
+        # An implement session runs implement-spec, which owns its loops and
+        # their limits: no round it names is counted here, whatever the loop.
+        own_loop = task.stage == Stage.IMPLEMENT
         if own_loop or observation.round <= stored:
             return Decision(
                 outcome=Outcome.UNCHANGED,

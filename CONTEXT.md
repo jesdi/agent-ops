@@ -71,8 +71,9 @@ _Avoid_: verification ladder
 **Loop cap**:
 The configured number of rounds a bounded loop (review fixes, gate fixes,
 e2e fixes, CI fixes on an open PR) may run before the task parks for the
-operator. Parks, never fails. A gate round an implement session names is
-never counted: the `implement-spec` skill owns that loop and its limit.
+operator. Parks, never fails. A round an implement session names is never
+counted, whatever the loop: the `implement-spec` skill owns its loops and
+their limits.
 _Avoid_: retry limit (that is the plan-format retry)
 
 **Background wait**:

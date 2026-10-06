@@ -51,10 +51,11 @@ spec_review_grace_minutes: 15
 # Days a merged task's Done card stays on the console before flush.
 done_retention_days: 7
 # Rounds each bounded loop may run before the task parks for the operator
-# (never fails). Defaults shown; every key is optional.
+# (never fails). Defaults shown; every key is optional. A round that an
+# implement session reports is never counted: implement-spec has its own limits.
 loop_caps:
   review: 2   # review-stage fix rounds
-  gate: 2     # rounds of a session-reported gate loop; never applied to implement (implement-spec has its own limit)
+  gate: 2     # rounds of a session-reported gate loop
   e2e: 3      # failed end-to-end runs
   ci: 3       # fixes on an open PR (red check, conflict, failed run)
 # Which model, at which effort, runs which stage. A TRACK is a kind of work

@@ -247,16 +247,14 @@ def test_pr_attention_increments_ci():
     assert updated.e2e_rounds == 0
 
 
-def test_gate_round_of_an_implement_session_is_never_counted():
-    # implement-spec owns its gate loop and that loop's limit.
+def test_round_reported_by_an_implement_session_is_never_counted():
+    # implement-spec owns its loops and their limits, whichever loop is named.
     task = _task(stage=Stage.IMPLEMENT)
-    for rnd in (1, 2, 3, 40):
-        dec = evaluate(task, ReportedRound(Loop.GATE, rnd), LoopCaps(gate=2))
-        assert dec.outcome == Outcome.UNCHANGED
-        assert dec.apply_to(task).gate_rounds == 0
-    # another loop named in that stage is still counted
-    assert evaluate(task, ReportedRound(Loop.REVIEW, 1), LoopCaps()).outcome \
-        == Outcome.WITHIN_LIMIT
+    for loop in Loop:
+        for rnd in (1, 2, 3, 40):
+            dec = evaluate(task, ReportedRound(loop, rnd), LoopCaps())
+            assert dec.outcome == Outcome.UNCHANGED, (loop, rnd)
+            assert dec.apply_to(task) == task
 
 
 # ---------------------------------------------------------------------------
