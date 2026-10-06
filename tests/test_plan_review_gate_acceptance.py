@@ -412,8 +412,10 @@ def _summary_bullets(p):
     return [b.replace("\n", " ") for b in part.split("\n- ")[1:]]
 
 
-def _bullet(p, *words):
-    hits = [b for b in _summary_bullets(p) if all(w in b for w in words)]
+def _bullet(p, lead, *words):
+    """A bullet that is ABOUT `lead` (its first words) and has `words`."""
+    hits = [b for b in _summary_bullets(p)
+            if lead in b[:25] and all(w in b for w in words)]
     assert hits, f"no summary bullet with {words}"
 
 
