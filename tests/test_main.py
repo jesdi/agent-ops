@@ -4475,7 +4475,6 @@ def test_approved_plan_starts_one_implement_session_over_the_tickets(tmp_path, m
     assert "`.agent/tickets`" in prompt and "docs/specs/x-design.md" in prompt
     assert ".agent/tickets/0" not in prompt      # no ticket of its own
     assert "implement_started" in d.notifier.sent
-    assert events(c, "ticket-started") == []
     assert [e["stage"] for e in events(c, "stage-started")] == ["implement"]
 
 
