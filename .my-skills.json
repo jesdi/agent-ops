@@ -23,8 +23,8 @@
       ]
     },
     "backlog": {
-      "version": "0.1.7",
-      "package": "0.0.22",
+      "version": "0.1.8",
+      "package": "0.0.27",
       "agents": [
         "claude"
       ]
