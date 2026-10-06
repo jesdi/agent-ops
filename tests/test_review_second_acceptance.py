@@ -139,7 +139,7 @@ def _implement_done(c, issue=2):
         {"stage": "implement", "status": "done", "note": ""}))
     save(c.state_dir, TaskState(issue=issue, target="portfolio_eval",
                                 stage=Stage.IMPLEMENT, slot=1,
-                                ticket_cursor=1, ticket_count=1,
+                                ticket_count=1,
                                 worktree=str(wt), branch=f"agent/task-{issue}",
                                 title="B", track="standard",
                                 updated_at="2026-07-14T00:00:00+00:00"))

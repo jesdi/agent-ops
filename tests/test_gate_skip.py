@@ -10,7 +10,7 @@ import dispatcher.main as main
 from dispatcher import intents as intents_mod
 from dispatcher import spec_publish
 from dispatcher.artifacts import SUMMARY_MAX_BYTES, count_open_questions
-from dispatcher.machine import SetTaskStage, StartTicket, next_actions
+from dispatcher.machine import SetTaskStage, SpawnStage, next_actions
 from dispatcher.state import Stage, StageSignal, TaskState, load, read_stage_signal, save
 
 from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
@@ -147,10 +147,10 @@ def test_task_file_at_the_gate_from_before_the_gated_flag_never_skips(tmp_path):
     ready = StageSignal("plan", "awaiting-review", artifact=SUMMARY, open_questions=0)
     acts = next_actions(t, ready, True, gate_free=frozenset({"trivial"}))
     assert SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=SUMMARY) in acts
-    assert not any(isinstance(a, StartTicket) for a in acts)
+    assert SpawnStage(Stage.IMPLEMENT, tickets=1) not in acts
     skipped = next_actions(dc_replace(t, stage=Stage.PLAN), ready, True,
                            gate_free=frozenset({"trivial"}))
-    assert any(isinstance(a, StartTicket) for a in skipped)
+    assert SpawnStage(Stage.IMPLEMENT, tickets=1) in skipped
 
 
 # --- fix round 1 --------------------------------------------------------------

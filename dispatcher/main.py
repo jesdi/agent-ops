@@ -34,17 +34,19 @@ from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish, task_artifacts
-from dispatcher.artifacts import PLAN_SUMMARY, TICKETS_DIR, ticket_files
+from dispatcher.artifacts import PLAN_SUMMARY, TICKETS_DIR
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
                                 RecordBackgroundWait, RetryStage, SetTaskStage,
-                                StartTicket, SpawnStage, pass_actions)
+                                SpawnStage, pass_actions)
 from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
-                               Order, override_refusal, parse_entry,
-                               pick_key, second_model, stage_pick,
-                               ticket_track_names, ticket_tracks_text,
+                               Order, candidates, override_refusal,
+                               parse_entry, pick_key, pick_provider,
+                               policy_stage, resolve, second_model,
+                               stage_pick, ticket_track_names,
+                               ticket_tracks_text,
                                track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
@@ -539,12 +541,9 @@ def _ticket_file(task: TaskState, number: int) -> Path:
 
 
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                 launch: Launch, spec_path: str = "", ticket: int = 0) -> TaskState:
+                 launch: Launch, spec_path: str = "") -> TaskState:
     stage, entry = launch.stage, launch.entry
     model = entry.model_id
-    ticket_path = ""
-    if ticket:
-        ticket_path = str(_ticket_file(task, ticket).relative_to(task.worktree))
     ctx = dict(
         issue_number=task.issue, issue_title=task.title,
         issue_url=_url(target, task.issue), repo=target.repo,
@@ -553,8 +552,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         verify_cmd=target.verify_cmd.format(slot=task.slot),
         gate_cmd=target.gate_cmd.format(slot=task.slot),
         spec_path=spec_path or task.spec_path,
-        tickets_dir=TICKETS_DIR, ticket_number=ticket,
-        ticket_count=task.ticket_count, ticket_path=ticket_path,
+        tickets_dir=TICKETS_DIR, ticket_count=task.ticket_count,
         pr_number=task.pr_number,
         reason=task.attention or "feedback",
         labels=", ".join(task.labels),
@@ -583,8 +581,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                    picks={**task.picks, pick_key(stage.value): str(entry)})
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
-                          issue=task.issue, stage=stage.value, model=str(entry),
-                          detail=f"ticket {ticket}/{task.ticket_count} {ticket_path}" if ticket else "")
+                          issue=task.issue, stage=stage.value, model=str(entry))
     return task
 
 
@@ -697,7 +694,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                 hold_for_attach=False,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
-                                                            asked=task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN)),
+                                asked=task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN)),
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
@@ -1250,7 +1247,7 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
     model = entry.model_id
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
-    if task.crashed_stage or _no_ticket_in_progress(task):
+    if task.crashed_stage:
         _respawn(cfg, deps, target, task, launch)
         return
     if task.stage is Stage.PR_OPEN:
@@ -1308,23 +1305,15 @@ def _crash_failed(task: TaskState) -> TaskState:
                    updated_at=_now())
 
 
-def _no_ticket_in_progress(task: TaskState) -> bool:
-    """In implement with no session to continue: the ticket set is accepted
-    or a ticket is done, and the next launch (the next ticket, or review)
-    has not started."""
-    return task.stage is Stage.IMPLEMENT and not ticket_in_progress(task)
-
-
 def _respawn(cfg: Config, deps: Deps, target: Target,
              task: TaskState, launch: Launch) -> None:
     """Resume of a task that has no session to continue; `launch` is its
     next launch. A crashed task: the stage it died in starts afresh in the
-    same worktree — the same ticket for implement. A fresh stage prompt, not
-    a resume (`claude --continue` / `codex resume --last`): the newest
-    transcript may belong to the previous stage or ticket, or the crashed
-    launch may never have started one. A task with no ticket in progress:
-    its next ticket starts, or review after the last one. The queued
-    messages ride in the stage prompt, an attach notice among them."""
+    same worktree; an implement session continues from its ledger there. A
+    fresh stage prompt, not a resume (`claude --continue` / `codex resume
+    --last`): the newest transcript may belong to the previous stage, or the
+    crashed launch may never have started one. The queued messages ride in
+    the stage prompt, an attach notice among them."""
     detail = "after crash" if task.crashed_stage else "next launch"
     deps.github.set_status(target, task.issue,
                            target.status_in_progress_option_id)
@@ -1332,11 +1321,7 @@ def _respawn(cfg: Config, deps: Deps, target: Target,
                    park_note="", hold_for_attach=False,
                    resume_model_override="", resume_bypass_usage=False)
     _clear_wake_blocked(cfg, task.target, task.issue)
-    ticket = launch_ticket(task)
-    if ticket and not ticket_in_progress(task):
-        task = _start_ticket(cfg, deps, target, task, ticket, launch)
-    else:
-        task = _spawn_stage(cfg, deps, target, task, launch, ticket=ticket)
+    task = _spawn_stage(cfg, deps, target, task, launch)
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           model=str(launch.entry), detail=detail)
@@ -1448,8 +1433,6 @@ class _Turn:
 
 def _action_stage(act: object) -> Stage | None:
     """The stage an action launches a session for; None when it launches none."""
-    if isinstance(act, StartTicket):
-        return Stage.IMPLEMENT
     if isinstance(act, RetryStage):
         return act.stage  # _retry_plan/_retry_spec resume the session in place
     return act.stage if isinstance(act, SpawnStage) else None
@@ -1571,37 +1554,6 @@ def _park_unpinned_ticket(
 def _on_noop(turn: _Turn, task: TaskState, act: NoOp,
              launch: Launch | None) -> TaskState:
     return task
-
-
-def _start_ticket(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                  number: int, launch: Launch) -> TaskState:
-    """Ticket `number`'s first session, on `launch`."""
-    # Validate the requested ticket exists before any destructive side
-    # effects (ending the previous session, advancing the cursor).
-    # Missing file → raise now so _run_pass routes to _fail_task_crash
-    # without having killed the old session or mutated state.
-    _ticket_file(task, number)
-    if task.ticket_cursor:
-        # The session of the ticket before. With no ticket started yet the
-        # plan session was ended when the set was accepted (_step_done).
-        _end_session(cfg, deps, task.target, task.issue)
-    # A ticket's first session records its provider; a session of a ticket
-    # in progress never gets here.
-    providers = task.implement_providers
-    if (provider := launch.entry.provider) not in providers:
-        providers = [*providers, provider]
-    task = replace(task, ticket_cursor=number, implement_providers=providers)
-    task = _spawn_stage(cfg, deps, target, task, launch, ticket=number)
-    eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
-                          issue=task.issue, stage=Stage.IMPLEMENT.value,
-                          detail=f"ticket {number}/{task.ticket_count}")
-    return task
-
-
-def _on_start_ticket(turn: _Turn, task: TaskState, act: StartTicket,
-                     launch: Launch) -> TaskState:
-    return _start_ticket(turn.cfg, turn.deps, turn.target, task, act.cursor,
-                         launch)
 
 
 def _on_apply_decision(turn: _Turn, task: TaskState, act: ApplyDecision,
@@ -1737,6 +1689,8 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         # A task file from before `gated` existed left the gate here.
         task = replace(task, unattended_rounds=task.unattended_rounds + 1,
                        gated=True)
+    if act.tickets:
+        task = replace(task, ticket_count=act.tickets)
     return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
 
 
@@ -1770,7 +1724,6 @@ def _on_record_background_wait(turn: _Turn, task: TaskState,
 _DRIVE: dict[type, Callable[..., TaskState | None]] = {
     NoOp: _on_noop,
     RecordBackgroundWait: _on_record_background_wait,
-    StartTicket: _on_start_ticket,
     ApplyDecision: _on_apply_decision,
     ParkForInput: _on_park_for_input,
     DisarmPlanApproval: _on_disarm_plan_approval,

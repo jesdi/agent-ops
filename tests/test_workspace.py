@@ -478,3 +478,57 @@ def test_install_stop_hook_never_leaves_half_written_settings(tmp_path, monkeypa
     with pytest.raises(OSError):
         workspace.install_stop_hook(str(tmp_path))
     assert settings.read_text() == '{"keep": 1}'
+
+
+# ---------------------------------------------------------------------------
+# .agent/ is local state: git must not offer it for a commit (real git)
+# ---------------------------------------------------------------------------
+
+def _clone_with_origin(tmp_path: Path, monkeypatch) -> Target:
+    """A real clone at target.clone_path whose origin has a `main`."""
+    import subprocess as sp
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    origin = tmp_path / "origin"
+    sp.run(["git", "init", "-q", "-b", "main", str(origin)], check=True)
+    (origin / "README.md").write_text("hi\n")
+    sp.run(["git", "-C", str(origin), "add", "README.md"], check=True)
+    sp.run(["git", "-C", str(origin), "-c", "user.email=t@example.com",
+            "-c", "user.name=test", "-c", "commit.gpgsign=false", "commit",
+            "-q", "-m", "init"], check=True)
+    t = replace(target(tmp_path), setup_cmd="")
+    sp.run(["git", "clone", "-q", str(origin), t.clone_path], check=True)
+    return t
+
+
+def _untracked(wt: str) -> str:
+    import subprocess as sp
+    return sp.run(["git", "-C", wt, "status", "--porcelain", "--untracked-files=all"],
+                  check=True, capture_output=True, text=True).stdout
+
+
+def test_agent_dir_is_ignored_by_git_in_a_task_worktree(tmp_path: Path, monkeypatch):
+    """A session's `git add -A` must never stage the ledger, the tickets or
+    the plan summary, even when the target's own .gitignore lacks `.agent/`."""
+    t = _clone_with_origin(tmp_path, monkeypatch)
+
+    wt = workspace.create_workspace(t, 42)
+    (Path(wt) / ".agent" / "ledger.md").write_text("01 merged\n")
+
+    assert _untracked(wt) == ""
+    assert (Path(wt) / ".claude" / "settings.local.json").exists()   # ignored too
+
+
+def test_exclude_lines_are_added_once_and_keep_the_operators_own(tmp_path: Path,
+                                                                 monkeypatch):
+    t = _clone_with_origin(tmp_path, monkeypatch)
+    exclude = Path(t.clone_path) / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(exist_ok=True)
+    exclude.write_text("# mine\n*.swp")          # no trailing newline
+
+    for issue in (42, 43):
+        workspace.create_workspace(t, issue)
+
+    lines = exclude.read_text().splitlines()
+    assert lines[:2] == ["# mine", "*.swp"]
+    assert sorted(lines[2:]) == [".agent/", ".claude/settings.local.json"]
+    assert exclude.read_text().endswith("\n")

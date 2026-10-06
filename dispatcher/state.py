@@ -123,7 +123,7 @@ class LoopCaps:
     """Rounds each bounded loop may run before the task parks. Defaults are
     the spec's; targets.yaml `loop_caps:` overrides any of them."""
     review: int = 2   # review-stage fix rounds
-    gate: int = 2     # gate_cmd failures per ticket
+    gate: int = 2     # rounds of a session-reported gate loop
     e2e: int = 3      # failed end-to-end runs (implement/review)
     ci: int = 3       # fixes on an open PR (red check, conflict, failed run)
 
@@ -205,7 +205,7 @@ class TaskState:
     done_at: str = ""                    # merge-detection time; drives the flush
     spec_path: str = ""                  # approved spec, worktree-relative or absolute
     ticket_cursor: int = 0               # 1-based ticket the implement session works; 0 = none yet
-    ticket_count: int = 0                # size of .agent/tickets/ at plan done
+    ticket_count: int = 0                # size of .agent/tickets/ when implement started
     # ticket number -> its ticket track, only tickets that name one: the copy
     # of the accepted ticket set that routing reads, never the ticket files
     ticket_tracks: dict[int, str] = field(default_factory=dict)
@@ -457,6 +457,7 @@ def _read(p: Path) -> TaskState | None:
         else:
             raise ValueError(f"unrecognized operator_request kind {kind!r}")
     d.pop("artifact", None)        # retired field (slice 24)
+    d.pop("ticket_cursor", None)   # retired field: one implement session, no cursor
     return TaskState(**d)
 
 

@@ -213,6 +213,24 @@ def install_stop_hook(wt: str) -> None:
     _write_json_atomic(path, settings)   # a live session may read it mid-resume
 
 
+LOCAL_STATE = (".agent/", ".claude/settings.local.json")
+
+
+def _exclude_local_state(clone_path: str) -> None:
+    """Keep the dispatcher's files in a task worktree out of `git status`,
+    so a session's `git add -A` never commits them. git reads info/exclude
+    from the common directory only, never from a worktree's own, so the
+    lines go in the clone's. Lines already there are kept, none is added twice."""
+    exclude = Path(clone_path) / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    text = exclude.read_text() if exclude.exists() else ""
+    missing = [line for line in LOCAL_STATE if line not in text.splitlines()]
+    if missing:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        exclude.write_text(text + "\n".join(missing) + "\n")
+
+
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     wt = str(Path(target.worktrees_path) / f"task-{issue}")
     branch = f"agent/task-{issue}"
@@ -272,9 +290,7 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     (agent_dir / "task.json").write_text(
         json.dumps({"issue": issue, "target": target.name, "branch": branch}))
 
-    exclude = Path(target.clone_path) / ".git" / "worktrees" / f"task-{issue}" / "info"
-    exclude.mkdir(parents=True, exist_ok=True)
-    (exclude / "exclude").write_text(".agent/\n.claude/settings.local.json\n")
+    _exclude_local_state(target.clone_path)
 
     install_stop_hook(wt)
 

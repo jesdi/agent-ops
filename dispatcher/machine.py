@@ -1,6 +1,6 @@
 """Pure per-task state machine: (state, stage signal, session liveness) → actions.
 
-queued → spec → plan → awaiting-plan-review → implement ×tickets → review → pr-open
+queued → spec → plan → awaiting-plan-review → implement → review → pr-open
                                     ↘ blocked/awaiting-answers (any stage) ↗   ⇅
                                     ↘ failed / stalled-on-budget
                        pr-open ⇄ address-review, pr-open → done|failed
@@ -21,16 +21,10 @@ from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
 
 @dataclass(frozen=True)
 class SpawnStage:
+    """`tickets` is set only on the implement start: the size of the checked
+    ticket set, which the executor records on the task."""
     stage: Stage
-
-
-@dataclass(frozen=True)
-class StartTicket:
-    """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
-    and session spawn happen together. The executor checks budget_ok first and
-    makes no state mutation when denied."""
-    cursor: int
-    count: int
+    tickets: int = 0
 
 
 @dataclass(frozen=True)
@@ -319,8 +313,8 @@ def _checked_tickets(task: TaskState) -> tuple[CheckResult, list[object]]:
 
 def _implement_actions(result: CheckResult) -> list[object]:
     """Implement starts on a checked ticket set: after the operator's
-    approval, or when the gate is skipped."""
-    return [StartTicket(1, result.count),
+    approval, or when the gate is skipped. One session works every ticket."""
+    return [SpawnStage(Stage.IMPLEMENT, tickets=result.count),
             Notify("implement_started", f"{result.count} ticket(s)")]
 
 
@@ -349,9 +343,6 @@ def _spec_done_actions(task: TaskState, signal: StageSignal,
 def _done_actions(task: TaskState, signal: StageSignal,
                   tracks: frozenset[str] | None) -> list[object]:
     if task.stage == Stage.IMPLEMENT:
-        if task.ticket_cursor < task.ticket_count:
-            nxt = task.ticket_cursor + 1
-            return [StartTicket(nxt, task.ticket_count)]
         return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
     if task.stage == Stage.REVIEW:
         return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]
