@@ -676,7 +676,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT,
                                 operator_request=answers_request,
-                                asked=task.asked or (is_answers and task.stage is Stage.SPEC),
+                                asked=task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN)),
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
@@ -1515,7 +1515,9 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
     elif task.stage is Stage.AWAITING_PLAN_REVIEW:
-        task = replace(task, unattended_rounds=task.unattended_rounds + 1)
+        # A task file from before `gated` existed left the gate here.
+        task = replace(task, unattended_rounds=task.unattended_rounds + 1,
+                       gated=True)
     return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
 
 

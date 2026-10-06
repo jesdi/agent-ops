@@ -272,15 +272,20 @@ def _review_actions(task: TaskState, signal: StageSignal, grace_elapsed: bool,
     return _gate_round_actions(task, signal, gate_free)
 
 
-def _skips_gate(task: TaskState, signal: StageSignal, gate_free: frozenset[str],
-                summary_questions: int | None) -> bool:
+def _skips_gate(task: TaskState, signal: StageSignal,
+                gate_free: frozenset[str]) -> bool:
     """The gate skip, decided by the dispatcher alone: a first ready report
     on a gate-free track, no questionnaire asked, and a count of 0 open
     questions that the summary confirms. The track is the task's own, never
-    one the ready report names. Anything else waits at the gate."""
+    one the ready report names. The summary is the prescribed file, and the
+    report must name that file: it is what the gate would show. It is read
+    last, only when everything else holds. Anything else waits at the gate."""
+    summary = Path(task.worktree) / PLAN_SUMMARY
     return (task.stage == Stage.PLAN and not task.gated
             and task.track in gate_free and not task.asked
-            and signal.open_questions == 0 and summary_questions == 0)
+            and signal.open_questions == 0
+            and _artifact_path(task, signal).resolve() == summary.resolve()
+            and count_open_questions(summary) == 0)
 
 
 def _gate_round_actions(task: TaskState, signal: StageSignal,
@@ -291,8 +296,7 @@ def _gate_round_actions(task: TaskState, signal: StageSignal,
     result, failed = _checked_tickets(task)
     if failed:
         return failed
-    if _skips_gate(task, signal, gate_free, count_open_questions(
-            Path(task.worktree) / PLAN_SUMMARY)):
+    if _skips_gate(task, signal, gate_free):
         return [PublishSpec(review=False)] + _implement_actions(result)
     if (task.stage == Stage.AWAITING_PLAN_REVIEW
             and task.unattended_rounds >= UNATTENDED_ROUND_LIMIT):

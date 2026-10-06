@@ -604,7 +604,7 @@ def test_asked_is_kept_when_the_spec_session_parks_again_without_a_questionnaire
     assert t.asked is True
 
 
-def test_a_plan_session_that_parks_for_answers_is_not_recorded_as_asking(
+def test_a_plan_session_that_parks_for_answers_is_recorded_as_asking(
         tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -616,7 +616,7 @@ def test_a_plan_session_that_parks_for_answers_is_not_recorded_as_asking(
          "artifact": ".agent/questions.md"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_HUMAN and t.asked is False
+    assert t.park == PARK_HUMAN and t.asked is True
 
 
 def test_spec_signal_with_a_misspelled_track_is_bounced_not_mis_parked(tmp_path, monkeypatch):
@@ -5766,3 +5766,22 @@ def test_ready_report_after_a_bounced_approval_is_checked_again(tmp_path, monkey
     assert d.notifier.sent == ["artifact_failed"]
     assert len(sess.resumed) == 1
     assert [s for s in sess.spawned if s[1] == "implement"] == []
+
+
+def test_denied_retry_does_not_leave_the_changed_tickets_armed(tmp_path, monkeypatch):
+    """The ticket set changed under an armed request and the usage gate denies
+    the resume this pass: the request is disarmed all the same, so the grace
+    park cannot offer the invalid set."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = FakeSessions(alive={42})
+    _gate_pass(c, sess, monkeypatch)                    # armed
+    tickets = wt / ".agent" / "tickets"
+    (tickets / "02-t2.md").rename(tickets / "03-t3.md")
+    _minutes_ago(c, 20)
+    patch_usage(monkeypatch, util=0.95)                 # no launch is admitted
+    _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert sess.resumed == [] and t.plan_retries == 0
+    assert t.park == "" and t.operator_request is None

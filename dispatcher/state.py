@@ -147,8 +147,9 @@ class TaskState:
     # dispatcher/main.py, never cleared: a task that waited for the operator
     # once never skips the gate, whatever stage a respawn puts it back in.
     gated: bool = False
-    # A spec-stage session parked for answers. Set only by _park_for_input in
-    # dispatcher/main.py, never cleared: it outlives the session that asked.
+    # A spec- or plan-stage session parked for answers. Set only by
+    # _park_for_input in dispatcher/main.py, never cleared: it outlives the
+    # session that asked.
     asked: bool = False
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
