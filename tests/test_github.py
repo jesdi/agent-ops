@@ -17,6 +17,17 @@ TARGET = Target(
     status_in_progress_option_id="INPROG",
 )
 
+
+def _board(*items):
+    """One board GraphQL page: (id, number) or (id, None, title) per item."""
+    return json.dumps({"data": {"node": {"items": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": [{"id": i[0],
+                   "content": {"number": i[1]} if i[1] is not None else None,
+                   "title": {"text": i[2] if len(i) > 2 else ""}}
+                  for i in items]}}}})
+
+
 RANKED = json.dumps([
     {"number": 7, "title": "A", "url": "u7", "labels": ["auto"], "status": "Ready",
      "blocked": False, "effort": 1},
@@ -69,11 +80,8 @@ def test_claim_sets_status_and_comments(monkeypatch):
         joined = " ".join(args)
         if "project view" in joined:
             return json.dumps({"id": "PROJ_NODE"})
-        if "item-list" in joined:
-            return json.dumps({"items": [
-                {"id": "ITEM7", "content": {"number": 7}},
-                {"id": "ITEM8", "content": {"number": 8}},
-            ]})
+        if "api graphql" in joined:
+            return _board(("ITEM7", 7), ("ITEM8", 8))
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
@@ -93,8 +101,8 @@ def test_release_comments_and_resets_board(monkeypatch):
         joined = " ".join(args)
         if "project view" in joined:
             return json.dumps({"id": "PROJ_NODE"})
-        if "item-list" in joined:
-            return json.dumps({"items": [{"id": "ITEM7", "content": {"number": 7}}]})
+        if "api graphql" in joined:
+            return _board(("ITEM7", 7))
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
@@ -113,8 +121,8 @@ def test_cancel_comments_moves_board_and_closes_issue(monkeypatch):
         joined = " ".join(args)
         if "project view" in joined:
             return json.dumps({"id": "PROJ_NODE"})
-        if "item-list" in joined:
-            return json.dumps({"items": [{"id": "ITEM7", "content": {"number": 7}}]})
+        if "api graphql" in joined:
+            return _board(("ITEM7", 7))
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
@@ -147,7 +155,7 @@ def test_cancel_without_board_option_still_closes_issue(monkeypatch, caplog):
 
 def test_item_id_title_join_when_content_redacted(monkeypatch):
     # A project-scope token cannot expand linked issues of a private repo:
-    # item-list returns items without "content". The issue title (fetched with
+    # the board read returns items without "content". The issue title (fetched with
     # the stored repo auth) is the join key — GitHub syncs linked-item titles.
     calls = []
 
@@ -156,11 +164,8 @@ def test_item_id_title_join_when_content_redacted(monkeypatch):
         joined = " ".join(args)
         if "project view" in joined:
             return json.dumps({"id": "PROJ_NODE"})
-        if "item-list" in joined:
-            return json.dumps({"items": [
-                {"id": "ITEM7", "title": "A", "repository": ""},
-                {"id": "ITEM8", "title": "B", "repository": ""},
-            ]})
+        if "api graphql" in joined:
+            return _board(("ITEM7", None, "A"), ("ITEM8", None, "B"))
         if "issue view" in joined:
             assert "7" in args and env is None  # repo-side read, stored auth
             return json.dumps({"title": "A"})
@@ -175,11 +180,10 @@ def test_item_id_title_join_when_content_redacted(monkeypatch):
 def test_item_id_title_join_ambiguous_duplicate_titles_raises(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         joined = " ".join(args)
-        if "item-list" in joined:
-            return json.dumps({"items": [
-                {"id": "ITEM7", "title": "Dup"},
-                {"id": "ITEM9", "title": "Dup"},
-            ]})
+        if "project view" in joined:
+            return json.dumps({"id": "PROJ_NODE"})
+        if "api graphql" in joined:
+            return _board(("ITEM7", None, "Dup"), ("ITEM9", None, "Dup"))
         if "issue view" in joined:
             return json.dumps({"title": "Dup"})
         return ""
@@ -226,14 +230,14 @@ def test_project_commands_use_project_token(monkeypatch):
         joined = " ".join(args)
         if "project view" in joined:
             return json.dumps({"id": "PROJ_NODE"})
-        if "item-list" in joined:
-            return json.dumps({"items": [{"id": "ITEM7", "content": {"number": 7}}]})
+        if "api graphql" in joined:
+            return _board(("ITEM7", 7))
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
     github.GitHubClient().claim(TARGET, github.Candidate(7, "A", "u7"))
     for args, env in calls:
-        if args[:2] == ["gh", "project"]:
+        if args[:2] in (["gh", "project"], ["gh", "api"]):
             assert env is not None and env["GH_TOKEN"] == "classic-tok"
         else:
             assert env is None
@@ -248,8 +252,8 @@ def test_project_commands_without_token_inherit_ambient_auth(monkeypatch):
         joined = " ".join(args)
         if "project view" in joined:
             return json.dumps({"id": "PROJ_NODE"})
-        if "item-list" in joined:
-            return json.dumps({"items": [{"id": "ITEM7", "content": {"number": 7}}]})
+        if "api graphql" in joined:
+            return _board(("ITEM7", 7))
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
@@ -323,8 +327,8 @@ def test_set_boost_edits_number_field_with_project_token(monkeypatch):
         joined = " ".join(args)
         if "project view" in joined:
             return json.dumps({"id": "PROJ_NODE"})
-        if "item-list" in joined:
-            return json.dumps({"items": [{"id": "ITEM7", "content": {"number": 7}}]})
+        if "api graphql" in joined:
+            return _board(("ITEM7", 7))
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
@@ -662,3 +666,24 @@ def test_actions_timeout_does_not_discard_commit_statuses(monkeypatch, caplog):
     assert github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7") == [
         CIStatus("failure", "2026-09-12T11:00:00Z")]
     assert "timed out" in caplog.text
+
+
+def test_item_lookup_never_lists_the_whole_board_with_item_list(monkeypatch):
+    """`gh project item-list` costs ~100 GraphQL points a call and every
+    status write used to make one; the lookup is one narrow query now."""
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        joined = " ".join(args)
+        if "project view" in joined:
+            return json.dumps({"id": "PROJ_NODE"})
+        if "api graphql" in joined:
+            return _board(("ITEM7", 7))
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    assert github.GitHubClient()._item_id(TARGET, 7) == "ITEM7"
+    assert not any("item-list" in a for a in calls)
+    query = next(a for a in calls if a[:3] == ["gh", "api", "graphql"])
+    assert "project=PROJ_NODE" in query

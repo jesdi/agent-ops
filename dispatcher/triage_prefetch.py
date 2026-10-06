@@ -188,38 +188,75 @@ def bound(blob: dict) -> dict:
     return out
 
 
-def prefetch(repo: str, cursor: str, run=subprocess.run) -> dict:
-    window = _json(run, [
-        "issue", "list", "--repo", repo, "--state", "open",
-        "--search", f"updated:>{cursor}",
-        "--json", "number,title,body,labels,author", "--limit", "100"])
-    issues = [{
+ISSUE_FIELDS = "number,title,body,labels,author"
+MAX_WINDOW = 100  # issues per session; `bound` budgets for this worst case
+
+
+def _issue(run, repo: str, i: dict) -> dict:
+    return {
         "number": i["number"],
         "title": i.get("title", ""),
         "body": i.get("body", ""),
         "author": (i.get("author") or {}).get("login", ""),
         "labels": [l["name"] for l in i.get("labels", [])],
         "comments": _comments(run, repo, i["number"]),
-    } for i in window]
-    blob = {"repo": repo, "cursor": cursor, "issues": issues,
-            "labels": [], "issue_types": [], "open_issues": []}
-    if not issues:
-        return blob  # skip inventory fetches: caller spawns no session
+    }
 
-    blob["labels"] = [
+
+def inventory(repo: str, run=subprocess.run) -> dict:
+    """What a session needs beyond the issues themselves: the label
+    inventory, best-effort issue types, and the open-issue list."""
+    labels = [
         {"name": l["name"], "description": l.get("description", "")}
         for l in _json(run, ["label", "list", "--repo", repo,
                              "--json", "name,description", "--limit", "100"])]
+    issue_types = []
     # Issue types exist only for org-owned repos; degrade silently.
     owner = repo.split("/")[0]
     out = run(["gh", "api", f"orgs/{owner}/issue-types"],
               capture_output=True, text=True, timeout=GH_TIMEOUT)
     if out.returncode == 0:
         try:
-            blob["issue_types"] = json.loads(out.stdout)
+            issue_types = json.loads(out.stdout)
         except json.JSONDecodeError:
             pass
-    blob["open_issues"] = _json(run, [
+    open_issues = _json(run, [
         "issue", "list", "--repo", repo, "--state", "open",
         "--limit", "500", "--json", "number,title"])
+    return {"labels": labels, "issue_types": issue_types,
+            "open_issues": open_issues}
+
+
+def prefetch(repo: str, cursor: str, run=subprocess.run) -> dict:
+    window = _json(run, [
+        "issue", "list", "--repo", repo, "--state", "open",
+        "--search", f"updated:>{cursor}",
+        "--json", ISSUE_FIELDS, "--limit", str(MAX_WINDOW)])
+    issues = [_issue(run, repo, i) for i in window]
+    blob = {"repo": repo, "cursor": cursor, "issues": issues,
+            "labels": [], "issue_types": [], "open_issues": []}
+    if issues:  # else skip the inventory fetches: caller spawns no session
+        blob.update(inventory(repo, run))
     return blob
+
+
+def add_board(blob: dict, brd, run=subprocess.run) -> None:
+    """Widen the window with the open issues nobody has scored yet (they may
+    not have been touched since the cursor, and would otherwise wait forever),
+    and tell the session what the board says about each issue: its current
+    `board` values, and `needs_score` on the ones it must score."""
+    repo = blob["repo"]
+    untriaged = brd.untriaged()
+    have = {i["number"] for i in blob["issues"]}
+    room = max(0, MAX_WINDOW - len(have))
+    extra = [n for n in untriaged if n not in have][:room]
+    if extra and not blob["issues"]:
+        blob.update(inventory(repo, run))
+    blob["issues"] += [
+        _issue(run, repo, _json(run, ["issue", "view", str(n), "--repo", repo,
+                                      "--json", ISSUE_FIELDS]))
+        for n in extra]
+    for i in blob["issues"]:
+        i["board"] = brd.view(i["number"])
+        i["needs_score"] = i["number"] in untriaged
+    blob["areas"] = sorted(brd.schema.areas)

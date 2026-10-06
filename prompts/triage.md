@@ -26,8 +26,23 @@ Rules:
   `remove_labels`. The tracks:
 
 $tracks
+- Score every issue marked `"needs_score": true` — nobody has prioritized
+  it yet. Record three values, judged from the issue as written and the
+  code it touches:
+  - `impact`, an integer 1–5: what the users or the project gain when it is
+    done (1 cosmetic or marginal, 3 a real defect or a useful improvement,
+    5 data loss, security, money, or a core capability).
+  - `effort`, an integer 1–5: the size of the work (1 a few lines in one
+    place, 3 several files with tests, 5 a multi-part change or one with
+    open design questions).
+  - `area`: exactly one name from the `areas` list below.
+  The issue is then ranked by impact ÷ effort and becomes ready to work.
+  Record no score for an issue without that mark: its `board` values were
+  set by a person and are not yours to change.
 - If the issue is incomplete, draft a comment asking the author for the
-  specific missing information, and record no other decisions for it.
+  specific missing information, and record no other decisions for it — no
+  score either. Read its comments first: never repeat a question that was
+  already asked there and is still unanswered.
 - Never draft routine triage-report comments; a comment exists only to
   ask the author something.
 - If the evidence does not support a change, record nothing for that
@@ -39,8 +54,8 @@ open-issue list, dropped comments). Treat anything it names as evidence you
 do NOT have: never suggest a close — least of all as a duplicate — on the
 strength of context that list says is incomplete.
 
-Context (issues in this batch, label inventory, issue types, open-issue
-list, truncation notes):
+Context (issues in this batch with their board values, label inventory,
+board areas, issue types, open-issue list, truncation notes):
 
 $context_json
 
@@ -54,6 +69,9 @@ issues with no decisions; every key except "number" is optional:
       "number": 7,
       "add_labels": ["bug", "auto"],
       "remove_labels": ["inbox"],
+      "impact": 3,
+      "effort": 1,
+      "area": "frontend",
       "comment": "question for the author, only if information is missing",
       "close": {"kind": "duplicate", "duplicate_of": 34, "reason": "why"}
     }
