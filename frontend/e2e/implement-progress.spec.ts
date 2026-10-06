@@ -85,3 +85,23 @@ for (const width of [390, 360]) {
     expect(shift - m.height).toBeLessThanOrEqual(24)         // ...plus its spacing only
   })
 }
+
+// One unbroken token: no break opportunity, so only overflow-wrap can keep it in.
+const TOKEN = 'x'.repeat(120)
+for (const width of [390, 360]) {
+  test(`an unbroken 120-character token wraps at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await serve(page, TOKEN)
+    await page.goto(URL)
+    const line = page.getByTestId('implement-progress')
+    await expect(line).toHaveText(TOKEN)
+    const m = await line.evaluate(el => ({
+      right: el.getBoundingClientRect().right,
+      scrollW: el.scrollWidth, clientW: el.clientWidth,
+    }))
+    expect(await page.evaluate(() =>
+      document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    expect(m.right).toBeLessThanOrEqual(width - 16)
+    expect(m.scrollW).toBeLessThanOrEqual(m.clientW)
+  })
+}
