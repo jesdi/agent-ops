@@ -173,3 +173,24 @@ test('markdown request renders headings and lists inside the markdown style', as
   expect(within(doc as HTMLElement).getAllByRole('listitem')).toHaveLength(2)
   expect(within(doc as HTMLElement).getByRole('heading', { name: 'Open questions', level: 2 })).toBeInTheDocument()
 })
+
+// The plan summary is the review document and flows with the page; other
+// requests keep their scroll box.
+test('only a plan-approval request loses the scroll box', async () => {
+  const request = (kind: string) => http.get('/api/task/widget/42/request', () =>
+    HttpResponse.json({
+      kind,
+      content: { kind: 'readable', media_type: 'text/markdown', path: 'x.md', text: '## Heading\n\ntext `a_b.c`' },
+    }))
+  server.use(request('plan-approval'))
+  const plan = renderPanel()
+  const flowing = (await screen.findByRole('heading', { name: 'Heading' })).closest('.markdown')
+  expect(flowing).not.toHaveClass('max-h-96')
+  // inline code may break after a separator
+  expect(flowing?.querySelectorAll('code wbr')).toHaveLength(2)
+  plan.unmount()
+  server.use(request('answers'))
+  renderPanel()
+  const boxed = (await screen.findByRole('heading', { name: 'Heading' })).closest('.markdown')
+  expect(boxed).toHaveClass('max-h-96')
+})

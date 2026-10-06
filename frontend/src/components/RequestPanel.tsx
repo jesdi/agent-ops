@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { OperatorRequest } from '../lib/api'
 import { useTaskArtifacts, useTaskRequest } from '../hooks/useResources'
@@ -55,12 +55,22 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
       {kind === 'plan-approval' && artifacts.isError && (
         <p className="mb-3 text-sm text-waiting-fg">Could not load the GitHub spec link. Local review is still available.</p>
       )}
-      <RequestContent content={content} />
+      {/* The plan summary is the review document: it flows with the page. */}
+      <RequestContent content={content} boxed={kind !== 'plan-approval'} />
     </section>
   )
 }
 
-function RequestContent({ content }: { content: OperatorRequest['content'] }) {
+/** Inline code may break after a separator, so a long name wraps at
+ *  `write_rows_` and not in the middle of a word. A fenced block (its text
+ *  ends with a newline) keeps its lines as written. */
+function Code({ children }: { children?: ReactNode }) {
+  if (typeof children !== 'string' || children.includes('\n')) return <code>{children}</code>
+  const parts = children.split(/(?<=[_./])/)
+  return <code>{parts.map((part, i) => <Fragment key={i}>{i > 0 && <wbr />}{part}</Fragment>)}</code>
+}
+
+function RequestContent({ content, boxed }: { content: OperatorRequest['content']; boxed: boolean }) {
   if (content.kind === 'unavailable') {
     return (
       <div data-testid="unavailable-recovery" className={banner.waiting}>
@@ -77,7 +87,11 @@ function RequestContent({ content }: { content: OperatorRequest['content'] }) {
   const name = content.path.split('/').pop() ?? content.path
   switch (content.media_type) {
     case 'text/markdown':
-      return <div className="markdown max-h-96 overflow-auto text-sm"><ReactMarkdown>{content.text}</ReactMarkdown></div>
+      return (
+        <div className={`markdown text-sm ${boxed ? 'max-h-96 overflow-auto' : ''}`}>
+          <ReactMarkdown components={{ code: Code }}>{content.text}</ReactMarkdown>
+        </div>
+      )
     case 'text/html':
       return <iframe title={name} sandbox="allow-scripts" srcDoc={content.text}
         className="h-96 w-full rounded border border-border" />
