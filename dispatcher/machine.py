@@ -128,9 +128,14 @@ class BackgroundView(NamedTuple):
 # heading slip — resume the session with the reason this many times before
 # giving up and failing the task.
 PLAN_RETRY_LIMIT = 1
-# A spec signal that names no configured track is a forgotten field, not a
-# judgment: resume the session once with the list, then park for the operator.
+# A spec signal that names no configured track, or asks for a review this
+# stage no longer has, is a protocol slip, not a judgment: resume the session
+# once with the reason, then park for the operator.
 SPEC_RETRY_LIMIT = 1
+SPEC_NO_REVIEW = ('the spec stage has no review gate and status '
+                  '"awaiting-review" is not valid in it; once stage 1 is '
+                  'committed and pushed, report status "done" with the '
+                  'spec.md path as "artifact" and a "track"')
 
 
 def _artifact_path(task: TaskState, signal: StageSignal) -> Path:
@@ -160,8 +165,11 @@ def _track_actions(task: TaskState, signal: StageSignal,
     """Empty when the spec signal's track is valid (or validation is off)."""
     if tracks is None or signal.track in tracks:
         return []
-    reason = (f"stage.json names track {signal.track!r}; it must be one of "
-              f"{sorted(tracks)}")
+    return _spec_bounce(task, f"stage.json names track {signal.track!r}; it "
+                              f"must be one of {sorted(tracks)}")
+
+
+def _spec_bounce(task: TaskState, reason: str) -> list[object]:
     if task.spec_retries < SPEC_RETRY_LIMIT:
         return [RetryStage(Stage.SPEC, reason)]
     return [ParkForInput(reason)]
@@ -235,11 +243,9 @@ def next_actions(
                 return [ArmSpecApproval(artifact=signal.artifact)]
             return [NoOp()]  # already notified on a previous pass
         if task.stage != Stage.SPEC:
-            return [NoOp()]  # only the SPEC stage emits awaiting-review
-        return _track_actions(task, signal, tracks) or [
-            SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact=signal.artifact),
-            PublishSpec(artifact=signal.artifact),
-            Notify("awaiting_spec_review", signal.note)]
+            return [NoOp()]
+        # The spec stage has no review gate: nobody would answer this.
+        return _spec_bounce(task, SPEC_NO_REVIEW)
 
     if done:
         if task.stage == Stage.IMPLEMENT:

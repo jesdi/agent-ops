@@ -134,6 +134,9 @@ class TaskState:
     spec_path: str = ""                  # approved spec, worktree-relative or absolute
     ticket_cursor: int = 0               # 1-based ticket the implement session works; 0 = none yet
     ticket_count: int = 0                # size of .agent/tickets/ at plan done
+    # A spec-stage session parked for answers. Set only by _park_for_input in
+    # dispatcher/main.py, never cleared: it outlives the session that asked.
+    asked: bool = False
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
     review_rounds: int = 0

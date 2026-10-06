@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from dispatcher.loops import Outcome
 from dispatcher.machine import (
+    SPEC_NO_REVIEW,
     ApplyDecision,
     ArmSpecApproval,
     HandleCrash,
@@ -74,29 +75,25 @@ def test_no_signal_yet_alive_is_noop():
     assert next_actions(task(Stage.SPEC), None, True) == [NoOp()]
 
 
-def test_awaiting_review_notifies_once():
-    acts = next_actions(task(Stage.SPEC), sig("spec", "awaiting-review"), True)
-    assert SetTaskStage(Stage.AWAITING_SPEC_REVIEW) in acts
-    assert PublishSpec() in acts
-    assert any(isinstance(a, Notify) and a.template == "awaiting_spec_review" for a in acts)
-    # second pass: stage updated + operator_request set (as the executor does) → no re-notify
+def test_spec_awaiting_review_is_bounced_once_then_parks():
+    # The spec stage has no review gate: the signal is a protocol slip, never
+    # a wait for the operator, whatever the grace clock says.
+    s = StageSignal(stage="spec", status="awaiting-review", artifact="s.md",
+                    track="standard")
+    (act,) = next_actions(task(Stage.SPEC), s, True, grace_elapsed=True,
+                          tracks=frozenset({"standard"}))
+    assert act == RetryStage(Stage.SPEC, SPEC_NO_REVIEW)
+    assert '"done"' in act.reason
+    (act,) = next_actions(replace(task(Stage.SPEC), spec_retries=1), s, True)
+    assert act == ParkForInput(SPEC_NO_REVIEW)
+
+
+def test_awaiting_review_at_the_gate_notifies_once():
+    # stage updated + operator_request set (as the executor does) → no re-notify
     again = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
                                  operator_request=SpecApprovalRequest()),
                          sig("spec", "awaiting-review"), True)
     assert again == [NoOp()]
-
-
-def test_spec_awaiting_review_publishes_between_stage_and_notify():
-    acts = next_actions(task(Stage.SPEC),
-                        sig("spec", "awaiting-review",
-                            artifact="docs/superpowers/specs/x-design.md"),
-                        session_alive=True)
-    assert acts == [
-        SetTaskStage(Stage.AWAITING_SPEC_REVIEW,
-                     artifact="docs/superpowers/specs/x-design.md"),
-        PublishSpec(artifact="docs/superpowers/specs/x-design.md"),
-        Notify("awaiting_spec_review", ""),
-    ]
 
 
 def test_gate_and_non_spec_stages_do_not_publish():
@@ -323,16 +320,6 @@ def test_parked_task_is_noop_even_with_dead_session():
     assert next_actions(t, sig("implement", "awaiting-ci", run_id=1), False) == [NoOp()]
 
 
-def test_awaiting_review_carries_spec_artifact():
-    acts = next_actions(
-        task(Stage.SPEC),
-        sig("spec", "awaiting-review",
-            artifact="/tmp/wt/docs/superpowers/specs/x-design.md"), True)
-    gate = [a for a in acts if isinstance(a, SetTaskStage)][0]
-    assert gate.stage is Stage.AWAITING_SPEC_REVIEW
-    assert gate.artifact == "/tmp/wt/docs/superpowers/specs/x-design.md"
-
-
 def test_stall_no_signal_parks():
     acts = next_actions(task(Stage.SPEC), None, True, idle_seconds=601.0)
     assert len(acts) == 1 and isinstance(acts[0], ParkForInput)
@@ -443,15 +430,6 @@ def test_approved_spec_advances_instead_of_parking(tmp_path):
     assert acts == [SpawnStage(Stage.PLAN)]
 
 
-def test_grace_does_not_park_a_task_still_in_the_spec_stage():
-    # Before the gate flip there is nothing to review — the first pass must
-    # flip the stage and notify, not park.
-    acts = next_actions(task(Stage.SPEC), sig("spec", "awaiting-review"),
-                        session_alive=True, grace_elapsed=True)
-    assert SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact="") in acts
-    assert not any(isinstance(a, ParkForReview) for a in acts)
-
-
 def test_address_review_done_returns_to_pr_open():
     acts = next_actions(task(Stage.ADDRESS_REVIEW), StageSignal("address-review", "done", note="fixed nits"), True)
     assert acts == [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", "fixed nits")]
@@ -494,30 +472,24 @@ def test_gate_does_not_rearm_when_operator_request_already_set():
 TRACKS = frozenset({"trivial", "standard"})
 
 
-def test_spec_awaiting_review_with_unknown_track_retries_in_place():
-    sig = StageSignal(stage="spec", status="awaiting-review", artifact="s.md", track="deep")
+def test_spec_done_with_unknown_track_retries_in_place():
+    sig = StageSignal(stage="spec", status="done", artifact="s.md", track="deep")
     acts = next_actions(task(Stage.SPEC), sig, True, tracks=TRACKS)
     assert acts == [RetryStage(Stage.SPEC, "stage.json names track 'deep'; it must be "
                                            "one of ['standard', 'trivial']")]
 
 
-def test_spec_awaiting_review_with_missing_track_retries_in_place():
-    sig = StageSignal(stage="spec", status="awaiting-review", artifact="s.md")
+def test_spec_done_with_missing_track_retries_in_place():
+    sig = StageSignal(stage="spec", status="done", artifact="s.md")
     (act,) = next_actions(task(Stage.SPEC), sig, True, tracks=TRACKS)
     assert isinstance(act, RetryStage) and act.stage is Stage.SPEC and "''" in act.reason
 
 
 def test_spec_track_retry_exhausted_parks_for_the_operator():
-    sig = StageSignal(stage="spec", status="awaiting-review", artifact="s.md")
+    sig = StageSignal(stage="spec", status="done", artifact="s.md")
     t = replace(task(Stage.SPEC), spec_retries=1)
     (act,) = next_actions(t, sig, True, tracks=TRACKS)
     assert isinstance(act, ParkForInput) and "must be one of" in act.note
-
-
-def test_spec_awaiting_review_with_known_track_transitions_as_before():
-    sig = StageSignal(stage="spec", status="awaiting-review", artifact="s.md", track="trivial")
-    acts = next_actions(task(Stage.SPEC), sig, True, tracks=TRACKS)
-    assert acts[0] == SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact="s.md")
 
 
 def test_spec_done_with_unknown_track_retries_before_the_format_check(tmp_path):

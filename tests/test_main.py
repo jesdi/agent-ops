@@ -21,6 +21,11 @@ from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                load_all, mark_waiting, save)
 from tests.usagefakes import session_usage
 
+# The spec stage no longer reaches the review gate (openspec pipeline, ticket
+# 02). These drive the gate's entry, which ticket 03 moves behind the plan
+# stage: re-point them there instead of deleting them.
+_GATE_MOVES = pytest.mark.skip(reason="gate entry moves to the plan stage (openspec ticket 03)")
+
 POLICY = parse_policy({
     "triage": ["claude-sonnet-5@low"],
     "untracked": "standard",
@@ -524,19 +529,6 @@ def test_pre_router_task_runs_on_the_untracked_track(tmp_path, monkeypatch):
     assert t.track == "standard" and not t.park
 
 
-def test_spec_awaiting_review_records_the_track_on_the_task(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    patch_workspace(monkeypatch, tmp_path)
-    c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard")
-    valid_spec(wt)
-    (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "awaiting-review", "artifact": "spec.md", "track": "deep"}))
-    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.stage is Stage.AWAITING_SPEC_REVIEW and t.track == "deep"
-
-
 def test_spec_signal_without_a_track_is_bounced_once_then_parks(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -545,7 +537,7 @@ def test_spec_signal_without_a_track_is_bounced_once_then_parks(tmp_path, monkey
                    picks={"spec": "anthropic/claude-opus-5"})
     valid_spec(wt)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "awaiting-review", "artifact": "spec.md"}))
+        {"stage": "spec", "status": "done", "artifact": "spec.md"}))
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
@@ -556,10 +548,49 @@ def test_spec_signal_without_a_track_is_bounced_once_then_parks(tmp_path, monkey
     assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
     # second time: park for the operator
     (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "awaiting-review", "artifact": "spec.md"}))
+        {"stage": "spec", "status": "done", "artifact": "spec.md"}))
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN and "must be one of" in t.park_note
+
+
+def test_spec_awaiting_review_is_bounced_to_done_and_never_waits_for_a_review(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
+    wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard",
+                   picks={"spec": "anthropic/claude-opus-5"})
+    valid_spec(wt)
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    gate_signal(wt)
+    main.run_pass(c, d)
+    (resume,) = sess.resumed
+    assert "no review gate" in resume[1] and '"done"' in resume[1]
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.SPEC and t.park == "" and t.operator_request is None
+    # second time: a question for the operator, not a review
+    gate_signal(wt)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.SPEC and t.park == PARK_HUMAN
+    assert d.notifier.sent == ["parked_question"]
+
+
+def test_a_plan_session_that_parks_for_answers_is_not_recorded_as_asking(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.PLAN, track="standard")
+    (wt / ".agent" / "questions.md").write_text("# Q\n")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "awaiting-answers",
+         "artifact": ".agent/questions.md"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN and t.asked is False
 
 
 def test_spec_signal_with_a_misspelled_track_is_bounced_not_mis_parked(tmp_path, monkeypatch):
@@ -576,7 +607,7 @@ def test_spec_signal_with_a_misspelled_track_is_bounced_not_mis_parked(tmp_path,
                    picks={"spec": "anthropic/claude-opus-5"})
     valid_spec(wt)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "awaiting-review", "artifact": "spec.md",
+        {"stage": "spec", "status": "done", "artifact": "spec.md",
          "track": "tivial"}))
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
@@ -810,21 +841,6 @@ def test_every_machine_action_has_a_drive_handler():
     assert actions and actions == set(main._DRIVE)
 
 
-def test_awaiting_review_persists_spec_artifact(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    c = cfg(tmp_path)
-    wt = make_task(c, stage=Stage.SPEC)
-    spec_path = str(wt / "docs" / "x-design.md")
-    (wt / ".agent" / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "awaiting-review", "note": "spec ready",
-         "artifact": spec_path,
-         "track": "standard"}))
-    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.stage is Stage.AWAITING_SPEC_REVIEW
-    assert t.spec_path == spec_path
-
-
 SPEC_URL = ("https://github.com/jesdi/portfolio_eval/blob/agent/task-42/"
             "docs/superpowers/specs/x-design.md")
 
@@ -836,6 +852,7 @@ def _awaiting_review_task(c, wt):
          "track": "standard"}))
 
 
+@_GATE_MOVES
 def test_awaiting_review_publishes_comments_and_links(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -861,6 +878,7 @@ def test_awaiting_review_publishes_comments_and_links(tmp_path, monkeypatch):
     assert ctx["note"].startswith("spec ready")
 
 
+@_GATE_MOVES
 def test_publish_failure_says_local_only_and_skips_comment(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -880,6 +898,7 @@ def test_publish_failure_says_local_only_and_skips_comment(tmp_path, monkeypatch
     assert "⚠️ spec is local only: git push failed: auth" in ctx["note"]
 
 
+@_GATE_MOVES
 def test_comment_failure_is_best_effort(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -897,6 +916,7 @@ def test_comment_failure_is_best_effort(tmp_path, monkeypatch):
     assert f"spec: {SPEC_URL}" in ctx["note"]
 
 
+@_GATE_MOVES
 def test_awaiting_review_sets_operator_request_and_spec_path(tmp_path, monkeypatch):
     """Slice 4: awaiting-review must set operator_request + spec_path on saved task."""
     patch_usage(monkeypatch)
@@ -916,6 +936,7 @@ def test_awaiting_review_sets_operator_request_and_spec_path(tmp_path, monkeypat
     assert t.spec_path == spec_artifact
 
 
+@_GATE_MOVES
 def test_repeated_awaiting_review_preserves_grace_and_request(tmp_path, monkeypatch):
     """Slice 8: a second awaiting-review signal while already at the gate must
     not restart the grace clock (updated_at unchanged) and must not overwrite
@@ -3077,6 +3098,7 @@ def test_spec_parked_note_says_local_only_when_publish_fails(
     assert "https://github.com" not in ctx["note"]
 
 
+@_GATE_MOVES
 def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
     """A tokenized remote URL in push stderr must not reach the Telegram note."""
     patch_usage(monkeypatch)
@@ -3219,6 +3241,7 @@ class LiveUntilEnded(FakeSessions):
         self.alive_set.discard(issue)
 
 
+@_GATE_MOVES
 def test_overnight_drain_parks_every_ready_spec_then_one_reply_advances_one(
         tmp_path, monkeypatch):
     patch_usage(monkeypatch)

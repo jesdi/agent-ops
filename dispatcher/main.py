@@ -676,6 +676,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT,
                                 operator_request=answers_request,
+                                asked=task.asked or (is_answers and task.stage is Stage.SPEC),
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
@@ -797,7 +798,7 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 def _retry_spec(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 launch: Launch, reason: str) -> None:
-    """Resume the spec session with the track list, in place. Same shape as
+    """Resume the spec session with the rejection reason, in place. Same shape as
     _retry_plan: rewrite the signal to working first, end the zombie, then
     --continue with the correction."""
     entry = launch.entry
@@ -809,9 +810,9 @@ def _retry_spec(cfg: Config, deps: Deps, target: Target, task: TaskState,
     _log_model(task.worktree, Stage.SPEC, str(entry))
     _end_session(cfg, deps, task.target, task.issue)
     block, drained = _drain(cfg, task.target, task.issue)
-    text = (f"Your .agent/stage.json was rejected: {reason}. Re-write the same "
-            f"signal with a \"track\" field naming one of those tracks (the "
-            f"list with each track's meaning is in your stage prompt).")
+    text = (f"Your .agent/stage.json was rejected: {reason}. Re-write the "
+            f"signal to fix that (the track list, with each track's meaning, "
+            f"is in your stage prompt).")
     if block:
         text = f"{text}\n\n{block}"
     deps.sessions.resume(task.target, task.issue, task.worktree, text,
