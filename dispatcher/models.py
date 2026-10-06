@@ -130,6 +130,7 @@ class Track:
     name: str
     when: str
     stages: Mapping[str, tuple[Entry, ...]]  # every STAGES key present
+    plan_review: bool = True  # False = gate-free track: the plan-review gate can be skipped
 
 
 @dataclass(frozen=True)
@@ -168,10 +169,10 @@ def _track(name: str, raw: object) -> Track:
                          f"whitespace or ':' (it becomes the label track:<name>)")
     if not isinstance(raw, dict):
         raise ValueError(f"models: track {name!r} must be a mapping, got {raw!r}")
-    unknown = set(raw) - set(STAGES) - {"when"}
+    unknown = set(raw) - set(STAGES) - {"when", "plan_review"}
     if unknown:
         raise ValueError(f"models: track {name!r} has unknown key(s) "
-                         f"{sorted(unknown)}; expected when: plus {list(STAGES)}")
+                         f"{sorted(unknown)}; expected when:, plan_review: plus {list(STAGES)}")
     missing = [s for s in STAGES if s not in raw]
     if missing:
         raise ValueError(f"models: track {name!r} names no {missing} list; "
@@ -179,8 +180,13 @@ def _track(name: str, raw: object) -> Track:
     when = raw.get("when")
     if not isinstance(when, str) or not when.strip():
         raise ValueError(f"models: track {name!r} needs a non-empty when: sentence")
+    plan_review = raw.get("plan_review", True)
+    if not isinstance(plan_review, bool):
+        raise ValueError(f"models: track {name!r} plan_review: must be true or "
+                         f"false, got {plan_review!r}")
     return Track(name, when.strip(),
-                 {s: _entries(raw[s], f"track {name!r} {s}:") for s in STAGES})
+                 {s: _entries(raw[s], f"track {name!r} {s}:") for s in STAGES},
+                 plan_review)
 
 
 def _review_second(raw: object) -> str:
