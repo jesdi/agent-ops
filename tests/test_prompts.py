@@ -8,7 +8,7 @@ CTX = dict(
     repo="jesdi/portfolio_eval", branch="agent/task-42", slot=1,
     backend_port=8101, frontend_port=5201,
     verify_cmd="make e2e-slot SLOT=1", gate_cmd="make gate SLOT=1",
-    spec_path="docs/specs/2026-07-14-widget-design.md",
+    spec_path="specs/2026-07-14-widget/spec.md",
     tickets_dir=".agent/tickets", ticket_count=5, pr_number=12,
     reason="check-failed", labels="auto, frontend",
     tracks="- `trivial`: Rote edits.\n- `standard`: Else.",
@@ -62,7 +62,9 @@ def test_review_prompt_carries_gates_lease_push_and_pr():
     for token in ("make gate SLOT=1", "make e2e-slot SLOT=1",
                   "--force-with-lease origin agent/task-42",
                   '"loop": "review"', "awaiting-ci", "Closes #42",
-                  ".agent/tickets", CTX["spec_path"]):
+                  ".agent/tickets", CTX["spec_path"],
+                  "--body-file .agent/pr-body.md",
+                  'git ls-files "$(dirname specs/2026-07-14-widget/spec.md)"'):
         assert token in out
 
 
@@ -71,6 +73,13 @@ def test_address_review_prompt_carries_reason_pr_and_gate():
     assert "#12" in out and "check-failed" in out and "make gate SLOT=1" in out
     assert "--force-with-lease origin agent/task-42" in out
     assert "awaiting-ci" in out and '"status": "done"' in out
+    assert CTX["spec_path"] in out
+
+
+def test_address_review_prompt_renders_for_a_task_without_a_spec_path():
+    """A pr-open task from before the spec folders has no spec path."""
+    out = render_stage_prompt(Stage.ADDRESS_REVIEW, {**CTX, "spec_path": ""})
+    assert "read it if it exists" in out and "$" not in out.replace("$(", "")
 
 
 def test_missing_key_raises():

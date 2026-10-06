@@ -7,6 +7,12 @@ merges into main), or `operator` (the operator woke a parked task; their
 message is appended below). You have no memory of earlier sessions and
 nobody is watching this chat.
 
+The spec of this task (read it if it exists; a task from before the spec
+folders can have none): `$spec_path`. It is the only file of its spec folder
+left on the branch. The why, the decisions and the open rulings of the
+change are in the pull request description:
+`gh pr view $pr_number --repo $repo --json body`.
+
 ## Signals (write `.agent/stage.json`, then do what the line says)
 ${e2e_signal}- `{"stage": "address-review", "status": "done", "note": "<one line>"}` then exit.
 - `{"stage": "address-review", "status": "blocked", "note": "<specific>"}` then stop.
@@ -35,7 +41,8 @@ ${e2e_signal}- `{"stage": "address-review", "status": "done", "note": "<one line
 Never open a second PR — one issue is one branch is one PR. Address every
 point test-first with small Conventional Commits. If you disagree with a
 review point, reply in that thread with your reasoning instead of changing
-the code.
+the code. A point that changes what the change must do changes the spec
+too, in the same commit.
 
 ## 3. Verify
 Run `$gate_cmd`; it must pass. After a rebase rerun it, then push with the

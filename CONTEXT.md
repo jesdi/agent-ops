@@ -26,7 +26,12 @@ _Avoid_: agent (that's the OS user), container (that's the isolation layer only)
 **Stage**:
 One step of a task's lifecycle (spec → plan → implement → review → pr-open →
 address-review), each executed by a fresh session whose
-only input is the previous stage's artifact.
+only input is the previous stage's artifact. Spec: stage 1 of `to-openspec`
+writes `proposal.md` and `spec.md`; no gate. Plan: checks that stage 1,
+runs stage 2 (`design.md`, tickets), then waits at the plan review gate
+unless the gate skip applies. Implement: one `implement-spec` session works
+every ticket. Review: an independent review, then the content move and the
+PR.
 _Avoid_: phase, step
 
 **Ticket**:
@@ -56,8 +61,15 @@ A candidate with no `track:` label; it specs on `models.untracked`.
 
 **Review stage**:
 The session that reads only the issue, the spec, the tickets and the diff —
-never a summary — fixes what it finds, rebases onto main, runs the gates
-and end to end, and opens the PR.
+never a summary — and fixes what it finds; reads the implement session's
+ledger only after that review. It then writes the PR description to
+`.agent/pr-body.md` (Why, Goal and Non-goals of `proposal.md`, Decisions of
+`design.md`, open rulings of the ledger), adds an ADR under `docs/adr/` for
+each decision that constrains later changes and each new term to this file,
+removes `proposal.md` and `design.md` from the branch, rebases onto main,
+runs the gates and end to end, and opens the PR from that file. The order
+is a safety property: a session that dies part way leaves a body file the
+next one uses.
 _Avoid_: PR stage, verify stage
 
 **Gate**:
@@ -188,19 +200,31 @@ _Avoid_: export, config copy (the seed is authored for the box, not exported
 from a workstation)
 
 **Spec**:
-The design artifact produced by the spec stage. Draft committed and pushed
-before human review; approved before planning. Other registered Markdown
-review artifacts are also committed to the task branch.
+`specs/<date>-<slug>/spec.md`: the requirements and scenarios of one change,
+written by the spec stage with `proposal.md` beside it; the plan stage adds
+`design.md`. The folder is on the task branch for the plan review gate. The
+review stage removes `proposal.md` and `design.md`, so main keeps only
+`spec.md` of a change. No copy of a questionnaire or its answers is
+committed; they stay under `.agent/`.
+
+**Change log**:
+What `specs/` is: one folder per past change, as decided then, never brought
+up to date. The code and this file are the present state; where a spec and
+the code disagree, the code wins. Every stage prompt says so.
+_Avoid_: living spec, source of truth (for `specs/`)
 
 **Repo skills**:
 Skills scoped to a target repo, declared in that repo's `.my-skills.json` and
 synced by `@jesdi/skills-cli`. Distinct from process skills.
 
 **Process skills**:
-Repo-agnostic workflow skills (to-spec, to-openspec, red-team-data-model,
-to-questionnaire, to-tickets, implement-spec, prototype, wizard, tdd,
-review-diff, deep-quality-review…) that stage
-prompts invoke. They live in the claude-home seed (agent-ops-infra, ADR
+Repo-agnostic workflow skills that stage prompts invoke: `to-openspec`
+(stage 1 in spec, stage 2 in plan, where it runs `red-team-data-model` and
+`to-tickets`), `to-questionnaire`, `prototype` and `diagnosing-bugs` (spec),
+`implement-spec` (implement, which owns `tdd` per ticket and its own
+reviews), `review-diff` with `deep-quality-review` and
+`resolving-merge-conflicts` (review). `to-spec` is not a box skill: it is the
+Mac tool that writes the design into a `spec-ready` issue body. They live in the claude-home seed (agent-ops-infra, ADR
 0003): the jesdi ones pinned in its `.my-skills.json` and installed with
 `@jesdi/skills-cli`, the mattpocock ones vendored as files
 (`make vendor-skills`); never a plugin, never carried by target repos.

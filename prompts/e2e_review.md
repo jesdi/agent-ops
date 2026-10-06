@@ -1,5 +1,5 @@
 ===SIGNAL===
-- `{"stage": "review", "status": "awaiting-ci", "run_id": <id>}` then STOP (step 4).
+- `{"stage": "review", "status": "awaiting-ci", "run_id": <id>}` then STOP (step 8).
 ===STEP===
 Run `$verify_cmd` — it dispatches the repository's e2e workflow for $branch
 and prints the run id. Signal `awaiting-ci` with that id and stop; you are
