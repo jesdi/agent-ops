@@ -10,9 +10,10 @@ import { TaskPage } from '../TaskPage'
 // `implement_progress` is not in the generated API types yet: cast, so only
 // these tests go red.
 function renderWith(progress: string | null) {
-  server.use(...defaultHandlers,
+  server.use(
     http.get('/api/task/:target/:issue', () =>
-      HttpResponse.json({ ...taskDetail, implement_progress: progress })))
+      HttpResponse.json({ ...taskDetail, implement_progress: progress })),
+    ...defaultHandlers)
   return renderWithProviders(
     <Routes><Route path="/task/:target/:issue" element={<TaskPage />} /></Routes>,
     { route: '/task/widget/42' })
