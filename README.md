@@ -157,6 +157,8 @@ including model-capacity warnings on queued and claimed tasks, with one-shot
 controls to run despite that usage limit or use another entry of the task's track —
 all from the same UI. Failures and history get their own pages, so nothing
 silently disappears.
+The **Task states** link in the console's nav opens a reference of every stage, park and
+board column ([`frontend/public/task-states.html`](frontend/public/task-states.html)).
 
 The board renders saved task cards and capacity from `/api/board/snapshot`
 while `/api/board` fetches live queue rankings (the ghost cards in Queued) and
