@@ -1042,3 +1042,4 @@ def test_usage_view_reports_the_mode_options_and_one_decimal_pace():
         "mode": "openai", "options": ["auto", "anthropic", "openai"],
         "first": "openai", "pinned": []}
     assert view.providers[0].windows[0].required_pace == 1.6
+
