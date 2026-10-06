@@ -1453,7 +1453,7 @@ def test_reply_wakes_matching_parked_task(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
 
 
 def test_reply_to_unknown_message_is_reported(tmp_path, monkeypatch):
@@ -2252,7 +2252,7 @@ def test_reply_intent_wakes_parked_task_and_is_deleted(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
     assert intents_mod.list_intents(c.state_dir) == []
     applied = [e for e in eventlog.read_tail(c.state_dir)
                if e["event"] == "intent-applied"]
@@ -2305,7 +2305,7 @@ def test_reply_intent_for_running_task_is_queued_but_task_stays_running(tmp_path
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     # message is queued — not dropped — and the task stays unparked
     from dispatcher import messages
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "hi"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "hi"
     assert load(c.state_dir, "portfolio_eval", 42).park == ""  # no wake flip for a live session
     assert intents_mod.list_intents(c.state_dir) == []  # intent deleted
 
@@ -2327,7 +2327,7 @@ def test_reply_intent_on_gate_parked_task_wakes_it(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "Approved — proceed."
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "Approved — proceed."
     assert intents_mod.list_intents(c.state_dir) == []
 
 
@@ -2844,7 +2844,7 @@ def test_reply_to_human_park_still_wakes(tmp_path, monkeypatch):
     assert sess.sent_text == []
     # _wake marks PARK_WAKE and queues the text; _resume_woken delivers it into the prompt.
     from dispatcher import messages
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
     assert messages.all_messages(c.state_dir, "portfolio_eval", 42)[0].text == "hi"
     assert sess.resumed and "hi" in sess.resumed[0][1]
 
@@ -2923,6 +2923,11 @@ def test_injection_logs_a_distinct_event(tmp_path, monkeypatch):
     assert "resumed" not in events
 
 
+# A task that waits at the gate has its request armed; only then does the
+# grace clock run.
+ARMED = PlanApprovalRequest(".agent/plan-review.md")
+
+
 def gate_signal(wt: Path, artifact: str = ".agent/plan-review.md") -> None:
     """The plan session's 'plan ready, review it' signal."""
     (wt / ".agent" / "stage.json").write_text(json.dumps(
@@ -2934,7 +2939,7 @@ def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatc
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, slot=1)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED, slot=1)
     gate_signal(wt)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
@@ -2952,7 +2957,7 @@ def test_gate_park_is_event_logged(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED)
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     parked = [e for e in eventlog.read_tail(c.state_dir)
@@ -2996,7 +3001,7 @@ def test_zero_grace_parks_on_the_next_pass(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED,
                    updated_at=datetime.now(timezone.utc).isoformat())
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
@@ -3107,7 +3112,7 @@ def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, mon
 def test_plan_parked_ping_links_spec(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
-    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW,
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED,
                    spec_path="docs/superpowers/specs/x-design.md")
     gate_signal(wt)
     monkeypatch.setattr(main.spec_publish, "ensure_published",
@@ -3125,7 +3130,7 @@ def test_plan_parked_note_says_local_only_when_publish_fails(
     embed a 404."""
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
-    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW,
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED,
                    spec_path="docs/superpowers/specs/x-design.md")
     gate_signal(wt)
     monkeypatch.setattr(
@@ -3143,7 +3148,7 @@ def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
     """A tokenized remote URL in push stderr must not reach the Telegram note."""
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
-    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW,
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED,
                    spec_path="docs/specs/x-design.md")
     gate_signal(wt)
     token_error = (
@@ -3174,7 +3179,7 @@ def test_reply_to_the_plan_parked_message_wakes_the_task(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "drop the caching section"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "drop the caching section"
 
 
 def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
@@ -3189,7 +3194,7 @@ def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "ok"
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "ok"
 
 
 def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
@@ -3344,7 +3349,7 @@ def test_park_for_review_saves_park_note(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, slot=1)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED, slot=1)
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).park_note == "plan ready for review"
@@ -4102,7 +4107,7 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
     assert messages.all_messages(c.state_dir, "portfolio_eval", 42)[0].delivered_at != ""
 
 
@@ -4126,7 +4131,7 @@ def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
     main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     text = d.sessions.resumed[-1][1]
     assert text.index("first") < text.index("second")
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
@@ -4149,7 +4154,7 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
                                       lambda m: True, tuple),
                      "missing Goal line")
     assert "keep the scope small" in d.sessions.resumed[-1][1]
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
@@ -5291,7 +5296,7 @@ def test_resume_respawns_the_crashed_ticket_fresh(tmp_path, monkeypatch):
     assert t.slot != NO_SLOT
     assert (42, "I") in [(i, o) for (i, o) in gh.statused]
     from dispatcher import messages
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_resume_of_a_killed_task_is_still_skipped(tmp_path, monkeypatch):
@@ -5466,6 +5471,7 @@ def test_task_failed_from_the_gate_drops_the_approval_request(tmp_path, monkeypa
 def test_approval_sent_to_a_live_gate_reaches_the_session(tmp_path, monkeypatch):
     """A console reply to a gate task that has not parked yet must reach the
     session, also when the grace time ends before the session reacts."""
+    from dispatcher import messages
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
@@ -5488,20 +5494,7 @@ def test_approval_sent_to_a_live_gate_reaches_the_session(tmp_path, monkeypatch)
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.IMPLEMENT
     got = [m for _i, m, *_ in sess.resumed if "Approved — proceed." in m]
     assert len(got) == 1, "the reply is delivered, and only once"
-    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
-
-
-def test_grace_park_arms_the_request_when_none_is_armed(tmp_path, monkeypatch):
-    """A rework longer than the grace time: the ready report parks at once,
-    and the parked task still offers the summary for approval."""
-    patch_usage(monkeypatch)
-    c = cfg(tmp_path)
-    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH)
-    gate_signal(wt)
-    _gate_pass(c, FakeSessions(alive={42}), monkeypatch)
-    t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_REVIEW
-    assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def _signals_until_stopped(c, sess, monkeypatch, wt, signals, passes=8):
@@ -5547,3 +5540,127 @@ def test_no_plan_signal_loop_is_resumed_more_than_once(
     else:
         assert t.park == PARK_HUMAN
     assert [s for s in sess.spawned if s[1] == "implement"] == []
+
+
+# --- plan review gate, fix round 2 ------------------------------------------
+
+def _minutes_ago(c, n):
+    t = load(c.state_dir, "portfolio_eval", 42)
+    save(c.state_dir, dc_replace(t, updated_at=(
+        datetime.now(timezone.utc) - timedelta(minutes=n)).isoformat()))
+
+
+def test_long_rework_with_a_ticket_gap_is_not_parked_for_review(tmp_path, monkeypatch):
+    """Gate → working → 20 minutes → ready with tickets 01, 03, 04: the ticket
+    check runs before anything reaches the operator, grace time or not."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = FakeSessions(alive={42})
+    _gate_pass(c, sess, monkeypatch)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(WORKING))
+    _gate_pass(c, sess, monkeypatch)
+    tickets = wt / ".agent" / "tickets"
+    (tickets / "02-t2.md").rename(tickets / "03-t3.md")
+    (tickets / "04-t4.md").write_text(GOOD_TICKET)
+    _minutes_ago(c, 20)
+    gate_signal(wt)
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == "" and t.operator_request is None
+    assert d.notifier.sent == ["plan_retry"]
+    assert len(sess.resumed) == 1 and "contiguous" in sess.resumed[0][1]
+
+
+def test_rework_longer_than_the_grace_time_starts_a_round_with_a_fresh_clock(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = FakeSessions(alive={42})
+    _gate_pass(c, sess, monkeypatch)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(WORKING))
+    _gate_pass(c, sess, monkeypatch)
+    _minutes_ago(c, 20)
+    gate_signal(wt)
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == "" and t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+    _minutes_ago(c, 16)                       # one grace time later it parks
+    _gate_pass(c, sess, monkeypatch)
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_REVIEW
+
+
+def test_a_session_that_dies_at_the_gate_each_life_is_respawned_twice_then_parks(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = FakeSessions(alive={42})
+    notifier = FakeNotifier()
+    for _life in range(5):
+        if load(c.state_dir, "portfolio_eval", 42).park:
+            break
+        gate_signal(wt)
+        sess.alive_set = {42}
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)   # reaches the gate
+        sess.alive_set = set()
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)   # found dead
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert [s[1] for s in sess.spawned] == ["plan", "plan"]
+    assert t.park == PARK_REVIEW and t.slot == NO_SLOT
+    assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
+    assert notifier.sent.count("plan_parked") == 1
+    assert notifier.sent.count("awaiting_plan_review") == 3
+    for _ in range(3):                         # parked: nothing more happens
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)
+    assert len(sess.spawned) == 2 and notifier.sent.count("plan_parked") == 1
+
+
+def test_flapping_at_the_gate_gets_two_new_rounds_then_parks(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = FakeSessions(alive={42})
+    notifier = FakeNotifier()
+    gh = FakeGitHub()
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **k: spec_publish.PublishResult(url=SPEC_URL))
+    d = main.Deps(github=gh, sessions=sess, notifier=notifier)
+    main.run_pass(c, d)
+    for _flap in range(10):
+        if load(c.state_dir, "portfolio_eval", 42).park:
+            break
+        (wt / ".agent" / "stage.json").write_text(json.dumps(WORKING))
+        main.run_pass(c, d)
+        gate_signal(wt)
+        main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert notifier.sent.count("awaiting_plan_review") == 1 + 2
+    assert len(gh.comments) == 1 + 2
+    assert t.park == PARK_REVIEW and t.slot == NO_SLOT
+    assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
+    assert notifier.sent.count("plan_parked") == 1
+
+
+def test_rounds_that_follow_an_operator_reply_are_never_capped(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = LiveUntilEnded(alive={42})
+    notifier = FakeNotifier()
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)
+    for n in range(1, 6):
+        intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+                                 {"text": f"feedback {n}"}, actor="op", epoch_ms=n)
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)   # delivered
+        gate_signal(wt)
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)   # ready again
+        t = load(c.state_dir, "portfolio_eval", 42)
+        assert t.park == "" and t.operator_request is not None, n
+        assert notifier.sent.count("awaiting_plan_review") == 1 + n
+    assert "plan_parked" not in notifier.sent
+    assert len(sess.resumed) == 5

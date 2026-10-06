@@ -437,8 +437,10 @@ def test_stall_dead_session_is_still_crash():
 
 
 def test_gate_parks_once_the_grace_period_elapses():
-    acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW),
-                        sig("spec", "awaiting-review"), session_alive=True,
+    # The clock runs for an armed request only.
+    armed = replace(task(Stage.AWAITING_PLAN_REVIEW),
+                    operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+    acts = next_actions(armed, sig("plan", "awaiting-review"), session_alive=True,
                         grace_elapsed=True)
     assert acts == [ParkForReview()]
 
@@ -515,9 +517,23 @@ def test_ready_at_the_gate_with_no_request_is_a_new_round(tmp_path):
     (tmp_path / ".agent" / "tickets" / "04-late.md").write_text(GOOD_TICKET)
     (act,) = next_actions(t, s, session_alive=True)
     assert isinstance(act, RetryStage) and not act.slip and "contiguous" in act.reason
-    # the grace park arms the summary when no request is armed
-    assert next_actions(t, s, True, grace_elapsed=True) == [
+    # an old clock does not park a round the operator was never told of,
+    # and never lets a bad ticket set past the check
+    assert next_actions(t, s, True, grace_elapsed=True) == [act]
+
+
+def test_unattended_rounds_at_the_gate_are_capped(tmp_path):
+    tickets(tmp_path, n=2)
+    used = replace(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
+                   unattended_rounds=2)
+    s = sig("plan", "awaiting-review", artifact=".agent/plan-review.md")
+    assert next_actions(used, s, True) == [
         ParkForReview(artifact=".agent/plan-review.md")]
+    assert next_actions(used, None, session_alive=False) == [ParkForReview()]
+    # gate entry from the plan stage is not a round of its own
+    entry = next_actions(replace(used, stage=Stage.PLAN), s, True)
+    assert entry[0] == SetTaskStage(Stage.AWAITING_PLAN_REVIEW,
+                                    artifact=".agent/plan-review.md")
 
 
 def test_working_at_the_gate_disarms_the_request_once():

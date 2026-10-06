@@ -104,8 +104,9 @@ class DisarmPlanApproval:
 class ParkForReview:
     """Grace expired at the plan-review gate. Unlike every other park this
     one releases the E2E slot too, so the dispatcher can spend it on the next
-    Ready task instead of holding it for a human who is asleep. `artifact`
-    is the summary the park arms when no request is armed."""
+    Ready task instead of holding it for a human who is asleep. Also where
+    a task ends that used up its unattended rounds; `artifact` is the summary
+    that park arms when no request is armed."""
     artifact: str = ""
 
 
@@ -132,6 +133,11 @@ class BackgroundView(NamedTuple):
 # no configured track is a protocol slip: it has a retry of its own
 # (TaskState.plan_slips), then parks. Gate entry resets both.
 PLAN_RETRY_LIMIT = 1
+# What a task at the gate may do with no operator action: respawn a dead
+# session, or start a new review round (each one a notification and a fresh
+# grace clock). Past this many the task parks for review instead, so neither
+# loop runs without a human; the operator's reply resets the count.
+UNATTENDED_ROUND_LIMIT = 2
 PLAN_NO_APPROVAL = ('status "done" is accepted only after the operator has '
                     'approved the plan at the review gate; write the review '
                     'summary and report status "awaiting-review" with the '
@@ -197,6 +203,8 @@ def _dead_session_actions(task: TaskState) -> list[object]:
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
         # Reboot recovery: gate-parked tasks don't expire — re-spawn a
         # fresh plan session; the spec folder is on disk in the worktree.
+        if task.unattended_rounds >= UNATTENDED_ROUND_LIMIT:
+            return [ParkForReview()]
         return [SpawnStage(Stage.PLAN)]
     if task.stage in IN_FLIGHT_STAGES:
         return [HandleCrash()]
@@ -239,22 +247,33 @@ def _working_actions(task: TaskState, signal: StageSignal, session_alive: bool,
 def _review_actions(task: TaskState, signal: StageSignal,
                     grace_elapsed: bool) -> list[object]:
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
-        if grace_elapsed:
-            return [ParkForReview(artifact=signal.artifact)]
         if task.operator_request:
-            return [NoOp()]  # already notified on a previous pass
+            # Already notified on a previous pass: only the clock runs.
+            return [ParkForReview()] if grace_elapsed else [NoOp()]
         # No request armed: a resume or a rework cleared it, so this ready
-        # report is a new review round. It enters the gate again.
+        # report is a new review round. It enters the gate again, with a
+        # fresh grace clock.
     elif task.stage == Stage.SPEC:
         # The spec stage has no review gate: nobody would answer this.
         return _spec_bounce(task, SPEC_NO_REVIEW)
     elif task.stage != Stage.PLAN:
         return [NoOp()]
+    return _gate_round_actions(task, signal)
+
+
+def _gate_round_actions(task: TaskState, signal: StageSignal) -> list[object]:
+    """A ready report that asks the operator: gate entry from the plan stage,
+    or a new round at the gate. Nothing reaches the operator before the
+    ticket check."""
     result, failed = _checked_tickets(task)
-    return failed or [
-        SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=signal.artifact),
-        PublishSpec(),
-        Notify("awaiting_plan_review", signal.note)]
+    if failed:
+        return failed
+    if (task.stage == Stage.AWAITING_PLAN_REVIEW
+            and task.unattended_rounds >= UNATTENDED_ROUND_LIMIT):
+        return [ParkForReview(artifact=signal.artifact)]
+    return [SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=signal.artifact),
+            PublishSpec(),
+            Notify("awaiting_plan_review", signal.note)]
 
 
 def _checked_tickets(task: TaskState) -> tuple[CheckResult, list[object]]:

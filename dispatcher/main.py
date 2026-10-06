@@ -1449,6 +1449,8 @@ def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
         if task.stage is Stage.PLAN:
             # The gate phase has retries of its own.
             extra.update(plan_retries=0, plan_slips=0)
+        else:
+            extra["unattended_rounds"] = task.unattended_rounds + 1
         return extra
     extra = {"operator_request": None}
     if act.stage is Stage.PR_OPEN and signal is not None:
@@ -1509,6 +1511,8 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
     if task.stage is Stage.SPEC and act.stage is Stage.PLAN:
         spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
+    elif task.stage is Stage.AWAITING_PLAN_REVIEW:
+        task = replace(task, unattended_rounds=task.unattended_rounds + 1)
     return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
 
 

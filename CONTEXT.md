@@ -261,7 +261,9 @@ address-review. Worktree-relative path.
 - Retain on admission denial (resources unavailable at wake time).
 - Clear when the session at the gate reports `working` (it reworks the plan on feedback).
 - Re-arm on a ready report at the gate with no request armed: a new review round (ticket check,
-  publish, notification, fresh grace clock). The grace park arms it too when none is armed.
+  publish, notification, fresh grace clock). The grace clock runs for an armed request only.
+- A task at the gate gets 2 unattended rounds (`unattended_rounds`: respawns of a dead session plus
+  new rounds since the operator last acted); the next one parks it for review, with the request armed.
 
 The web layer READS `operator_request`; it never infers a request from park state.
 

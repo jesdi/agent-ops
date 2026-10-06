@@ -98,7 +98,8 @@ class ResetCause(Enum):
 # Private: which counter fields each cause zeroes.
 _RESET_FIELDS: dict[ResetCause, tuple[str, ...]] = {
     ResetCause.STAGE_STARTED: ("review_rounds", "gate_rounds", "e2e_rounds"),
-    ResetCause.OPERATOR_WAKE: ("review_rounds", "gate_rounds", "e2e_rounds", "ci_rounds"),
+    ResetCause.OPERATOR_WAKE: ("review_rounds", "gate_rounds", "e2e_rounds", "ci_rounds",
+                               "unattended_rounds"),
     ResetCause.PR_CYCLE_STARTED: ("ci_rounds",),
 }
 
