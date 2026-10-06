@@ -106,8 +106,9 @@ class GrantSessions(FakeSessions):
         self.spawn_seconds.append((stage_name, second))
 
     def resume(self, target, issue, worktree, message, model, effort="",
-               second=None):
-        super().resume(target, issue, worktree, message, model, effort)
+               second=None, *, session_id=None):
+        super().resume(target, issue, worktree, message, model, effort,
+                       session_id=session_id)
         self.resume_seconds.append(second)
 
 
@@ -228,8 +229,10 @@ def test_sessions_spawn_and_resume_carry_the_grant_to_the_command(tmp_path, monk
     s = sessions.Sessions()
     s.spawn_stage("acme", 42, wt, "P", "review", "anthropic/claude-opus-5",
                   second=SECOND)
-    s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5", second=SECOND)
-    s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5")
+    s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5", second=SECOND,
+             session_id="recorded-session")
+    s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5",
+             session_id="recorded-session")
     assert len(cmds) == 3
     _assert_granted(cmds[0], tmp_path, codex_mount)
     _assert_granted(cmds[1], tmp_path, codex_mount)

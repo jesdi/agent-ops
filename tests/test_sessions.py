@@ -305,7 +305,8 @@ def test_resume_passes_the_quoted_message_and_the_model(tmp_path, monkeypatch):
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
-    Sessions().resume("acme", 42, wt, 'run said: "failure"', "claude-sonnet-4-6")
+    Sessions().resume("acme", 42, wt, 'run said: "failure"', "claude-sonnet-4-6",
+                      session_id="recorded-session")
     run = next(c for c in calls if c[:2] == ["pane", "run"])
     assert "--model claude-sonnet-4-6" in run[3]
     assert """--continue 'run said: "failure"'""" in run[3]
@@ -334,7 +335,8 @@ def test_resume_on_an_openai_model_resumes_the_last_codex_session(tmp_path,
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
-    Sessions().resume("acme", 42, wt, "it's done", "openai/gpt-5-codex")
+    Sessions().resume("acme", 42, wt, "it's done", "openai/gpt-5-codex",
+                      session_id="recorded-session")
     cmd = next(c for c in calls if c[:2] == ["pane", "run"])[3]
     assert cmd.endswith(
         " agent-ops-session codex --model gpt-5-codex"
@@ -346,7 +348,7 @@ def test_resume_on_an_openai_model_resumes_the_last_codex_session(tmp_path,
 
 def test_resume_dry_run_announces_the_session(capsys):
     Sessions(dry_run=True).resume("acme", 42, "/tmp/wt", 'run said: "failure"',
-                                  "claude-opus-4-8")
+                                  "claude-opus-4-8", session_id="recorded-session")
     assert "[dry-run] resume task-acme-42" in capsys.readouterr().out
 
 
@@ -367,7 +369,8 @@ def test_dry_run_touches_no_herdr_and_no_podman(tmp_path, monkeypatch, capsys):
     s = Sessions(dry_run=True, state_dir=tmp_path)
 
     s.spawn_stage("acme", 42, str(tmp_path), "P", "spec", "claude-opus-4-8")
-    s.resume("acme", 42, str(tmp_path), "carry on", "claude-opus-4-8")
+    s.resume("acme", 42, str(tmp_path), "carry on", "claude-opus-4-8",
+             session_id="recorded-session")
     assert s.capture_tail("acme", 42) == ""
     assert s.capture_history("acme", 42) == ""
     assert s.idle_seconds("acme", 42) is None

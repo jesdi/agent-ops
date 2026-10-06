@@ -107,14 +107,15 @@ class Sessions:
                      second=second)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
-               model: str, effort: str = "", second: Entry | None = None) -> None:
+               model: str, effort: str = "", second: Entry | None = None,
+               *, session_id: str) -> None:
         if self.dry_run:
             print(f"[dry-run] resume {session_name(target, issue)} on {model} "
                   f"at {worktree}")
             return
         runtime = runtime_for(model)
         self._launch(target, issue, worktree, model, runtime,
-                     runtime.resume(shlex.quote(message)), effort=effort,
+                     runtime.resume(session_id, shlex.quote(message)), effort=effort,
                      second=second)
 
     def capture_tail(self, target: str, issue: int, lines: int = 25) -> str:

@@ -21,7 +21,7 @@ def test_claude_builds_its_launch_and_resume_args():
     assert runtimes.CLAUDE.launch("task-42", "/wt", "claude-fable-5", "high") == (
         "claude --remote-control task-42 --permission-mode auto "
         "--model claude-fable-5 --effort high")
-    assert runtimes.CLAUDE.resume("'hi'") == "--continue 'hi'"
+    assert runtimes.CLAUDE.resume("recorded-session", "'hi'") == "--continue 'hi'"
 
 
 def test_a_session_on_a_provider_with_no_runtime_fails_before_any_tab(tmp_path, monkeypatch):
@@ -30,7 +30,8 @@ def test_a_session_on_a_provider_with_no_runtime_fails_before_any_tab(tmp_path, 
     tabs = []
     monkeypatch.setattr(herdr.Tab, "ensure", lambda *a, **k: tabs.append(a))
     with pytest.raises(ValueError, match="no runtime for provider 'mistral'"):
-        sessions.Sessions().resume("acme", 42, str(tmp_path), "go", "mistral/large")
+        sessions.Sessions().resume("acme", 42, str(tmp_path), "go", "mistral/large",
+                                   session_id="recorded-session")
     assert tabs == []
 
 
@@ -46,5 +47,5 @@ def test_the_cli_name_derives_the_binary_its_mount_and_the_resume_line():
     assert runtimes.CODEX.binary == ".local/bin/codex"
     assert runtimes.CODEX.package == "/opt/codex"
     assert runtimes.CLAUDE.package == ""
-    assert runtimes.CLAUDE.resume_cmd() == "claude --continue"
-    assert runtimes.CODEX.resume_cmd("'hi'") == "codex resume --last 'hi'"
+    assert runtimes.CLAUDE.resume_cmd("recorded-session") == "claude --continue"
+    assert runtimes.CODEX.resume_cmd("recorded-session", "'hi'") == "codex resume --last 'hi'"

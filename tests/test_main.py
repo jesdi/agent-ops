@@ -194,7 +194,8 @@ class FakeSessions:
         self.spawned.append((issue, stage_name, model, prompt, effort))
         self.spawn_calls.append((target, issue))
 
-    def resume(self, target, issue, worktree, message, model, effort="", second=None):
+    def resume(self, target, issue, worktree, message, model, effort="", second=None,
+               *, session_id=None):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
@@ -3210,8 +3211,10 @@ class LiveUntilEnded(FakeSessions):
         super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
         self.alive_set.add(issue)
 
-    def resume(self, target, issue, worktree, message, model, effort="", second=None):
-        super().resume(target, issue, worktree, message, model, effort)
+    def resume(self, target, issue, worktree, message, model, effort="", second=None,
+               *, session_id=None):
+        super().resume(target, issue, worktree, message, model, effort,
+                       session_id=session_id)
         self.alive_set.add(issue)
 
     def end(self, target, issue):
