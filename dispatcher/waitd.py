@@ -10,7 +10,19 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import UnixStreamServer
 
-from dispatcher.state import mark_background, mark_waiting
+from dispatcher.state import (SessionRecord, Stage, load, mark_background,
+                              mark_waiting, write_session)
+
+
+def _record_session(rec: dict, state_dir, target: str, issue: int) -> None:
+    session_id = rec.get("session_id")
+    if not target or not isinstance(session_id, str) or not session_id:
+        return
+    task = load(state_dir, target, issue)
+    if task is None:
+        return
+    stage = "spec" if task.stage is Stage.AWAITING_SPEC_REVIEW else task.stage.value
+    write_session(state_dir, target, issue, SessionRecord(session_id, stage))
 
 
 def handle_ping(body: bytes, state_dir) -> None:
@@ -21,6 +33,7 @@ def handle_ping(body: bytes, state_dir) -> None:
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         print(f"waitd: dropping corrupt ping: {body!r}", file=sys.stderr)
         return
+    _record_session(rec, state_dir, target, issue)
     bg = rec.get("background_tasks")
     if target and isinstance(bg, list) and bg:
         mark_background(state_dir, target, issue, bg)
