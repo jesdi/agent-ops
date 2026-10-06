@@ -12,7 +12,7 @@ from telegram.notify import Notifier
 # excluding the box-wide ones (budget_stall, budget_resume, unit_failed,
 # auth_dark) which carry no {target}/{issue}-keyed task identity.
 PER_TASK_TEMPLATES = [
-    "awaiting_spec_review",
+    "awaiting_plan_review",
     "stage_blocked",
     "pr_opened",
     "artifact_failed",
@@ -20,7 +20,7 @@ PER_TASK_TEMPLATES = [
     "session_crashed",
     "implement_started",
     "parked_question",
-    "spec_parked",
+    "plan_parked",
     "needs_relogin",
     "resumed_for_attach",
     "task_failed",
@@ -60,14 +60,14 @@ def _full_ctx(**overrides):
 
 def test_multitarget_spec_ready_names_the_project(capsys):
     notifier = Notifier(multi_target=True, dry_run=True)
-    text = _dry_run_text(capsys, notifier, "awaiting_spec_review",
+    text = _dry_run_text(capsys, notifier, "awaiting_plan_review",
                           **_full_ctx(issue=3, target="factorial"))
     assert text.startswith("📝 factorial#3 ")
 
 
 def test_singletarget_spec_ready_is_unchanged(capsys):
     notifier = Notifier(multi_target=False, dry_run=True)
-    text = _dry_run_text(capsys, notifier, "awaiting_spec_review",
+    text = _dry_run_text(capsys, notifier, "awaiting_plan_review",
                           **_full_ctx(issue=412, target="portfolio_eval"))
     assert text.startswith("📝 #412 ")
 

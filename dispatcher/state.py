@@ -20,7 +20,7 @@ from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
 class Stage(str, Enum):
     QUEUED = "queued"
     SPEC = "spec"
-    AWAITING_SPEC_REVIEW = "awaiting-spec-review"
+    AWAITING_PLAN_REVIEW = "awaiting-plan-review"
     PLAN = "plan"
     IMPLEMENT = "implement"
     REVIEW = "review"           # fresh-eyes review; rebases, verifies, opens the PR
@@ -39,7 +39,7 @@ TERMINAL_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
 # Stages that occupy capacity and an E2E slot. BLOCKED and
 # STALLED_ON_BUDGET still hold a live session/worktree, so they count.
 IN_FLIGHT_STAGES = frozenset({
-    Stage.QUEUED, Stage.SPEC, Stage.AWAITING_SPEC_REVIEW, Stage.PLAN,
+    Stage.QUEUED, Stage.SPEC, Stage.PLAN, Stage.AWAITING_PLAN_REVIEW,
     Stage.IMPLEMENT, Stage.REVIEW, Stage.ADDRESS_REVIEW, Stage.BLOCKED,
     Stage.STALLED_ON_BUDGET,
 })
@@ -128,8 +128,13 @@ class LoopCaps:
     ci: int = 3       # fixes on an open PR (red check, conflict, failed run)
 
 @dataclass(frozen=True)
-class SpecApprovalRequest:
-    kind: str = "spec-approval"
+class PlanApprovalRequest:
+    path: str   # the plan session's review summary, worktree-relative
+    kind: str = "plan-approval"
+
+    def __post_init__(self):
+        if not self.path:
+            raise ValueError("plan-approval request requires a non-empty path")
 
 
 @dataclass(frozen=True)
@@ -142,7 +147,7 @@ class AnswersRequest:
             raise ValueError("answers request requires a non-empty path")
 
 
-OperatorRequest = SpecApprovalRequest | AnswersRequest  # type alias
+OperatorRequest = PlanApprovalRequest | AnswersRequest  # type alias
 
 
 # A task that holds no E2E slot. Every session-ending park releases its slot
@@ -161,7 +166,7 @@ PARK_HUMAN = "parked"            # waiting for operator input
 PARK_CI = "awaiting-ci"          # waiting for a GitHub Actions run
 PARK_WAKE = "unpark-requested"   # wake event arrived; resume when slot free
 PARK_LOGIN = "parked-login"      # live session sitting at a /login prompt
-PARK_REVIEW = "awaiting-review"  # spec done, parked for review at leisure
+PARK_REVIEW = "awaiting-review"  # plan ready, parked for review at leisure
 
 
 @dataclass(frozen=True)
@@ -189,6 +194,10 @@ class TaskState:
     picks: dict[str, str] = field(default_factory=dict)
     spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track, awaiting-review)
     plan_retries: int = 0                # in-session plan-format retries used
+    plan_slips: int = 0                  # in-session plan-signal retries used (unapproved done, bad track)
+    # Plan gate: respawns of a dead session plus review rounds started since
+    # the operator last acted. Only an operator wake resets it (loops.reset).
+    unattended_rounds: int = 0
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
     feedback_pending: bool = False       # feedback seen, address-review deferred
@@ -232,7 +241,7 @@ class TaskState:
     # counter at that moment. A different counter later means a new turn.
     background_reported: float = 0.0
     background_seq: int = 0
-    # None=no request; SpecApprovalRequest while at gate; AnswersRequest written
+    # None=no request; PlanApprovalRequest while at gate; AnswersRequest written
     # ONLY by _park_for_input in dispatcher/main.py, and only when a
     # worktree-contained path resolves — so an answers request never exists
     # without a valid path.
@@ -279,7 +288,7 @@ class StageSignal:
     run_id: int = 0
     loop: str = ""    # bounded loop a working session is in: review | gate
     round: int = 0    # 1-based round of that loop
-    track: str = ""   # spec stage only: the track for plan/implement/review
+    track: str = ""   # spec done: the track for plan/implement/review; plan done may rename it
 
 
 # The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
@@ -430,26 +439,16 @@ def _read(p: Path) -> TaskState | None:
     _migrate_implement_pick(d)
     d["ticket_tracks"] = _ticket_tracks(d.get("ticket_tracks"))
     d.pop("pending_reply", None)   # retired field, see original comment
-    if "operator_request" not in d:
-        # Legacy record: derive from unambiguous gate evidence.
-        if d["stage"] is Stage.AWAITING_SPEC_REVIEW:
-            d["operator_request"] = SpecApprovalRequest()
-            # Backfill spec_path so the /request endpoint can resolve content
-            # without reading the overloaded artifact field (slice 14).
-            if not d.get("spec_path"):
-                d["spec_path"] = d.get("artifact", "")
-        else:
-            d["operator_request"] = None
-    elif d["operator_request"] is not None:
+    if d.get("operator_request") is not None:
         raw = d["operator_request"]
         kind = raw.get("kind")
-        if kind == "spec-approval":
-            d["operator_request"] = SpecApprovalRequest()
+        if kind == "plan-approval":
+            d["operator_request"] = PlanApprovalRequest(path=raw.get("path", ""))
         elif kind == "answers":
             d["operator_request"] = AnswersRequest(path=raw.get("path", ""))
         else:
             raise ValueError(f"unrecognized operator_request kind {kind!r}")
-    d.pop("artifact", None)        # retired field (slice 24); backfill above used it
+    d.pop("artifact", None)        # retired field (slice 24)
     return TaskState(**d)
 
 

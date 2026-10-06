@@ -99,3 +99,19 @@ def test_triage_prompt_lists_the_tracks_and_the_label_rule():
                                 "tracks": "- `trivial`: Rote edits.\n- `standard`: Else."})
     assert "- `trivial`: Rote edits." in out
     assert "track:<name>" in out and "exactly one" in out
+
+
+def test_plan_prompt_summary_is_headings_and_lists_without_tables():
+    """The console shows the summary on a phone and renders no tables."""
+    out = " ".join(render_stage_prompt(Stage.PLAN, CTX).split())
+    assert "headings and lists" in out and "no tables" in out
+
+
+def test_plan_prompt_signals_working_before_it_applies_feedback():
+    """A session that reworks the plan while its signal still says
+    awaiting-review would be parked by the grace clock mid-rework."""
+    out = render_stage_prompt(Stage.PLAN, CTX)
+    reply = " ".join(out[out.index("## 6."):].split())
+    assert '"status": "working"' in reply
+    assert reply.index('"status": "working"') < reply.index("ready again")
+    assert "before you change anything" in reply.lower()

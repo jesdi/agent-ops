@@ -4,7 +4,7 @@ import json
 import pytest
 
 from dispatcher import eventlog, main, messages
-from dispatcher.state import SpecApprovalRequest, Stage, load, read_stage_signal
+from dispatcher.state import PlanApprovalRequest, Stage, load, read_stage_signal
 from tests.test_main import FakeSessions, cfg, deps, make_task, patch_usage, write_tickets
 
 
@@ -75,7 +75,7 @@ def test_denied_pass_emits_no_ticket_started_and_keeps_session(tmp_path, monkeyp
 def test_plan_done_denied_then_recovered_starts_ticket_one(tmp_path, monkeypatch):
     """Plan-completion denied by budget later starts ticket 1 with correct set size."""
     config = cfg(tmp_path)
-    wt = make_task(config, stage=Stage.PLAN)
+    wt = make_task(config, stage=Stage.AWAITING_PLAN_REVIEW)
     write_tickets(wt, 3)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "plan", "status": "done", "note": "3 tickets", "artifact": ".agent/tickets",
@@ -279,7 +279,7 @@ def test_operator_request_preserved_on_denial_cleared_on_start(tmp_path, monkeyp
     admitted pass clears operator_request (via _spawn_stage) and retains spec_path."""
     config = cfg(tmp_path)
     wt = make_task(config, stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=2,
-                   operator_request=SpecApprovalRequest(),
+                   operator_request=PlanApprovalRequest(".agent/plan-review.md"),
                    spec_path="docs/specs/x-design.md")
     write_tickets(wt, 2)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
@@ -292,7 +292,7 @@ def test_operator_request_preserved_on_denial_cleared_on_start(tmp_path, monkeyp
     patch_usage(monkeypatch, util=0.99)
     main.run_pass(config, dependencies)
     t = load(config.state_dir, "portfolio_eval", 42)
-    assert t.operator_request == SpecApprovalRequest()
+    assert t.operator_request == PlanApprovalRequest(".agent/plan-review.md")
     assert t.spec_path == "docs/specs/x-design.md"
 
     # Admitted pass: operator_request cleared; spec_path retained (spec_path or task.spec_path fallback)

@@ -34,9 +34,9 @@ from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish, task_artifacts
-from dispatcher.artifacts import TICKETS_DIR, ticket_files
+from dispatcher.artifacts import PLAN_SUMMARY, TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
-from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
+from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
                                 RecordBackgroundWait, RetryStage, SetTaskStage,
@@ -51,7 +51,7 @@ from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
-                              RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
+                              RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_turn_markers, delete, has_waiting,
                               holds_slot, launch_entries, launch_ticket, load,
@@ -433,7 +433,7 @@ _COMMAND_ERRORS = (subprocess.CalledProcessError, OSError, LookupError,
 def _reply_parked(tasks: list[TaskState]) -> list[TaskState]:
     # Both parks answer the same way — a reply is text for the session. They
     # stay distinct kinds so /status and the board can say "needs input
-    # mid-stage" vs "spec ready, review at leisure".
+    # mid-stage" vs "plan ready, review at leisure".
     return [t for t in tasks if t.park in (PARK_HUMAN, PARK_REVIEW)]
 
 
@@ -782,8 +782,9 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 
 def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                launch: Launch, reason: str) -> None:
-    """Resume the plan session with the format-check failure, in place, rather
+                launch: Launch, reason: str, slip: bool = False) -> None:
+    """Resume the plan session with why its signal was rejected (the ticket
+    format check, a `done` nobody approved, an unknown track), in place, rather
     than failing the task. The resume reads the transcript from the runtime's
     mounted home, so context survives ending the (zombie) session first —
     which we must do, or _launch would type the resume command INTO the
@@ -793,7 +794,8 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     # Rewrite the signal to working BEFORE resuming, or the next pass re-reads
-    # `done`, re-checks the still-unfixed plan, and burns the retry immediately.
+    # the rejected signal, re-checks the still-unfixed plan, and burns the
+    # retry immediately.
     (agent_dir / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "working", "model": entry.model_id,
          "effort": entry.effort}))
@@ -801,22 +803,21 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     _end_session(cfg, deps, task.target, task.issue)
     block, drained = _drain(cfg, task.target, task.issue)
     retry_text = (
-        f"Your ticket set under .agent/tickets/ failed the pipeline's mechanical "
-        f"check: {reason}. Fix it in place — files named NN-slug.md numbered "
-        f"contiguously from 01 with no gaps or duplicates, each with a "
-        f"'What to build' section, a 'Blocked by' line, at least one "
-        f"unchecked '- [ ]' criterion and at most one 'Track: <name>' line "
-        f"that names a track a ticket may use (no other line may start with "
-        f"'Track:'; a ticket with no fitting track must omit the line, not "
-        f"write 'Track: none') — then re-write .agent/stage.json with "
-        f'status "done". Do not re-plan from scratch; only fix the set.')
+        f"Your .agent/stage.json was rejected: {reason}. Fix that in place, "
+        f"then re-write the signal (the signals, and the track list with each "
+        f"track's meaning, are in your stage prompt). The ticket set under "
+        f".agent/tickets/ must be files named NN-slug.md numbered contiguously "
+        f"from 01 with no gaps or duplicates, each with a 'What to build' "
+        f"section, a 'Blocked by' line and at least one unchecked '- [ ]' "
+        f"criterion. Do not re-plan from scratch.")
     if block:
         retry_text = f"{retry_text}\n\n{block}"
     deps.sessions.resume(task.target, task.issue, task.worktree, retry_text,
                          entry.model_id, entry.effort)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
-    save(cfg.state_dir, replace(task, plan_retries=task.plan_retries + 1,
-                                updated_at=_now()))
+    used = "plan_slips" if slip else "plan_retries"
+    save(cfg.state_dir, replace(task, updated_at=_now(),
+                                **{used: getattr(task, used) + 1}))
     _notify(deps, target, task, "plan_retry", reason)
 
 
@@ -858,8 +859,8 @@ def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 
 def _grace_elapsed(cfg: Config, task: TaskState) -> bool:
-    """Has the spec-review gate gone unanswered past the grace period?
-    `updated_at` was stamped when the stage flipped to AWAITING_SPEC_REVIEW,
+    """Has the plan-review gate gone unanswered past the grace period?
+    `updated_at` was stamped when the stage flipped to AWAITING_PLAN_REVIEW,
     so no extra timer field is needed and the pass stays stateless. An
     unparseable timestamp never expires — failing closed keeps a corrupt state
     file from parking the whole queue."""
@@ -890,11 +891,11 @@ def _spec_note(pub: "spec_publish.PublishResult") -> str:
 
 def _park_for_review(cfg: Config, deps: Deps, target: Target,
                      task: TaskState, dry_run: bool = False) -> None:
-    """Park a finished spec for a human to read whenever they wake up. The
-    only park that also releases the SLOT: the spec stage never used the
+    """Park a finished plan for a human to read whenever they wake up. The
+    only park that also releases the SLOT: the plan stage never used the
     slot's ports and worktrees are per-issue, so resume can take any free
     slot — and freeing it is the whole point, since a held slot would cap the
-    overnight run at max_slots(capacity) specs."""
+    overnight run at max_slots(capacity) plans."""
     tail = deps.sessions.capture_tail(task.target, task.issue)
     note = tail.strip() or "(no detail)"
     if task.spec_path:
@@ -908,15 +909,15 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     # reach it via /attach, the console `resume` intent, or plain-text wakes.
     # This matches the same reasoning in _park_for_input.
     msg_id = deps.notifier.send(
-        "spec_parked", issue=task.issue, title=task.title,
+        "plan_parked", issue=task.issue, title=task.title,
         url=_url(target, task.issue), note=note, target=target.name)
     _end_session(cfg, deps, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,
-                                park_note="spec ready for review",
+                                park_note="plan ready for review",
                                 slot=NO_SLOT, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
-                          detail="spec review grace expired")
+                          detail="plan review grace expired")
 
 
 def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
@@ -1166,9 +1167,10 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
             _mark_wake_blocked(cfg, target, task, "capacity full")
             continue
         if task.slot == NO_SLOT:
-            # Gate-parked tasks gave their slot back. Take any free one —
-            # worktrees are per-issue and the spec stage never bound the
-            # slot's ports, so the number need not be the original.
+            # Parked tasks gave their slot back. Take any free one —
+            # worktrees are per-issue, and the spec and plan prompts name no
+            # slot port, so for a gate-parked task the number need not be
+            # the original.
             slot = allocate_slot(load_all(cfg.state_dir),
                                  max_slots(cfg.capacity))
             if slot is None:
@@ -1615,19 +1617,30 @@ def _on_park_for_input(turn: _Turn, task: TaskState, act: ParkForInput,
                     artifact=act.artifact, is_answers=act.is_answers)
 
 
-def _on_arm_spec_approval(turn: _Turn, task: TaskState, act: ArmSpecApproval,
-                          launch: Launch | None) -> TaskState:
-    # Re-establish spec-approval request cleared by a prior resume.
-    # Do NOT touch updated_at — the resume already stamped it; leaving it
-    # preserves the grace deadline. No stage transition.
-    task = replace(task, operator_request=SpecApprovalRequest(),
-                   spec_path=act.artifact or task.spec_path)
+def _plan_approval(task: TaskState, artifact: str) -> PlanApprovalRequest:
+    """The gate's request: the plan session's summary. stage.json is
+    model-written, so a missing path or one outside the worktree falls back
+    to the path the plan prompt names."""
+    try:
+        rel = (Path(task.worktree) / artifact).resolve().relative_to(
+            Path(task.worktree).resolve()).as_posix()
+    except ValueError:
+        rel = "."
+    return PlanApprovalRequest(path=PLAN_SUMMARY if rel == "." else rel)
+
+
+def _on_disarm_plan_approval(turn: _Turn, task: TaskState,
+                             act: DisarmPlanApproval,
+                             launch: Launch | None) -> TaskState:
+    task = replace(task, operator_request=None)
     save(turn.cfg.state_dir, task)
     return task
 
 
 def _on_park_for_review(turn: _Turn, task: TaskState, act: ParkForReview,
                         launch: Launch | None) -> None:
+    if act.artifact is not None:
+        task = replace(task, operator_request=_plan_approval(task, act.artifact))
     _park_for_review(turn.cfg, turn.deps, turn.target, task, dry_run=turn.dry_run)
 
 
@@ -1638,25 +1651,32 @@ def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
 
 def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
                     launch: Launch) -> None:
-    fn = _retry_spec if act.stage is Stage.SPEC else _retry_plan
-    fn(turn.cfg, turn.deps, turn.target, task, launch, act.reason)
+    if act.stage is Stage.SPEC:
+        _retry_spec(turn.cfg, turn.deps, turn.target, task, launch, act.reason)
+    else:
+        _retry_plan(turn.cfg, turn.deps, turn.target, task, launch, act.reason,
+                    slip=act.slip)
 
 
-def _stage_extra(act: SetTaskStage, signal) -> dict:
+def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
     """The fields a stage transition sets besides the stage itself: the PR
-    number a pr-open signal links, or the spec-approval request (and spec
-    path) a finished spec arms."""
-    if act.stage is Stage.AWAITING_SPEC_REVIEW:
-        extra: dict = {"operator_request": SpecApprovalRequest()}
-        if act.artifact:
-            extra["spec_path"] = act.artifact
-        if signal is not None:
-            extra["track"] = signal.track
+    number a pr-open signal links, or the plan-approval request a finished
+    plan arms. Any other transition drops a request: nothing is left to
+    approve on a task that failed at the gate."""
+    if act.stage is Stage.AWAITING_PLAN_REVIEW:
+        extra: dict = {"operator_request": _plan_approval(task, act.artifact)}
+        if task.stage is Stage.PLAN:
+            # The gate phase has retries of its own.
+            extra.update(plan_retries=0, plan_slips=0)
+        else:
+            extra["unattended_rounds"] = task.unattended_rounds + 1
         return extra
-    if act.stage is not Stage.PR_OPEN or signal is None:
-        return {}
-    m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
-    return {"pr_number": int(m.group(1))} if m else {}
+    extra = {"operator_request": None}
+    if act.stage is Stage.PR_OPEN and signal is not None:
+        m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
+        if m:
+            extra["pr_number"] = int(m.group(1))
+    return extra
 
 
 def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
@@ -1664,7 +1684,7 @@ def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
     cfg = turn.cfg
     clear_turn_markers(cfg.state_dir, task.target, task.issue)
     task = replace(task, stage=act.stage, updated_at=_now(),
-                   **_stage_extra(act, turn.signal))
+                   **_stage_extra(task, act, turn.signal))
     save(cfg.state_dir, task)
     if act.stage is Stage.PR_OPEN:
         eventlog.append_event(cfg.state_dir, "pr-opened",
@@ -1678,12 +1698,12 @@ def _on_publish_spec(turn: _Turn, task: TaskState, act: PublishSpec,
     pub = spec_publish.ensure_published(
         worktree=task.worktree, branch=task.branch,
         repo=turn.target.repo, issue=task.issue,
-        artifact=act.artifact, dry_run=turn.dry_run)
+        artifact=task.spec_path, dry_run=turn.dry_run)
     turn.spec_line = _spec_note(pub)
     if not pub.error:
         try:
             turn.deps.github.comment(
-                turn.target, task.issue, f"📝 Spec ready for review: {pub.url}")
+                turn.target, task.issue, f"📝 Plan ready for review: {pub.url}")
         except Exception as exc:
             print(f"[warn] spec link comment failed for "
                   f"#{task.issue}: {exc}", file=sys.stderr)
@@ -1704,9 +1724,14 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
     # the next stage's podman command INTO it (and the container
     # name would collide). End it first; no-op when already dead.
     _end_session(turn.cfg, turn.deps, task.target, task.issue)
-    spec_path = turn.signal.artifact if act.stage is Stage.PLAN else ""
-    if act.stage is Stage.PLAN:
+    # The spec session's `done` hands spec.md and the track over to plan; a
+    # plan session respawned from the gate keeps both.
+    spec_path = ""
+    if task.stage is Stage.SPEC and act.stage is Stage.PLAN:
+        spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
+    elif task.stage is Stage.AWAITING_PLAN_REVIEW:
+        task = replace(task, unattended_rounds=task.unattended_rounds + 1)
     return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
 
 
@@ -1743,7 +1768,7 @@ _DRIVE: dict[type, Callable[..., TaskState | None]] = {
     StartTicket: _on_start_ticket,
     ApplyDecision: _on_apply_decision,
     ParkForInput: _on_park_for_input,
-    ArmSpecApproval: _on_arm_spec_approval,
+    DisarmPlanApproval: _on_disarm_plan_approval,
     ParkForReview: _on_park_for_review,
     ParkForCI: _on_park_for_ci,
     RetryStage: _on_retry_stage,
@@ -1775,15 +1800,18 @@ def _adopt_track(cfg: Config, policy: ModelPolicy, task: TaskState,
     """The task's track for this turn, settled before anything reads it."""
     if not task.track:
         task, signal = _backfill_track(cfg, policy, task, signal, dry_run)
-    # A spec-stage signal carries the track for every later stage (see
-    # StageSignal.track). Adopt it before anything below reads task.track —
+    # Two signals set the track for every later stage (see StageSignal.track):
+    # the spec session's `done` and the approval, a `done` at the plan gate.
+    # Adopt it before anything below reads task.track —
     # the "track configured" guard and the launch this same turn may spawn
     # (e.g. PLAN off a spec "done" signal) both need the fresh value, not
     # whatever was recorded when the task was last saved. Only a CONFIGURED
     # track is adopted here: an unknown/misspelled one must reach
     # next_actions' bounce-then-park ladder (_track_actions) instead of being
     # written onto the task and mis-parked as "no longer configured".
-    if (signal is not None and signal.track and signal.track != task.track
+    if (signal is not None and signal.status == "done"
+            and task.stage in (Stage.SPEC, Stage.AWAITING_PLAN_REVIEW)
+            and signal.track and signal.track != task.track
             and signal.track in policy.tracks):
         task = replace(task, track=signal.track)
     return task, signal
@@ -2072,6 +2100,15 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
         return
     _queue_message(cfg, target, intent.issue, intent.payload.get("text", ""),
                    intent.actor or "operator")
+    if (task is not None and not task.park
+            and task.stage is Stage.AWAITING_PLAN_REVIEW):
+        # A gate task that has not parked yet waits for exactly this reply,
+        # and only a resume hands the queue to its session: without the wake
+        # the grace park would end the session with the reply undelivered.
+        # So it parks now, as the grace park would (session ended, slot
+        # freed), and wakes below.
+        _end_session(cfg, deps, task.target, task.issue)
+        task = replace(task, park=PARK_REVIEW, slot=NO_SLOT)
     if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
         save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))

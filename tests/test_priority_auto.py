@@ -68,9 +68,9 @@ def policy(implement, review=None):
 
 
 def run(tmp_path, monkeypatch, usages, implement=WRITTEN, review=None,
-        pace=PACE, stage=Stage.PLAN, picks=None, override=None, frozen=None,
+        pace=PACE, stage=Stage.AWAITING_PLAN_REVIEW, picks=None, override=None, frozen=None,
         **task_kw):
-    """One pass over a task about to launch its next stage: PLAN done enters
+    """One pass over a task about to launch its next stage: an approved plan enters
     implement; IMPLEMENT done (one ticket) enters review. Returns the sessions
     fake and the task as saved after the pass."""
     c = dc_replace(cfg(tmp_path), models=policy(implement, review), pace=pace)
@@ -82,7 +82,7 @@ def run(tmp_path, monkeypatch, usages, implement=WRITTEN, review=None,
                 return frozen
         monkeypatch.setattr(main, "datetime", Frozen)
     wt = make_task(c, issue=42, stage=stage, picks=picks or {}, **task_kw)
-    if stage is Stage.PLAN:
+    if stage is Stage.AWAITING_PLAN_REVIEW:
         write_tickets(wt, 1)
         signal = {"stage": "plan", "status": "done", "note": "1 ticket",
                   "artifact": ".agent/tickets"}

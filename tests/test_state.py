@@ -13,7 +13,7 @@ from dispatcher.state import (
     PARK_REVIEW,
     PARK_WAKE,
     AnswersRequest,
-    SpecApprovalRequest,
+    PlanApprovalRequest,
     Stage,
     StageSignal,
     TaskState,
@@ -79,7 +79,7 @@ def test_terminal_stages_do_not_hold_slots():
 
 def test_in_flight_stages():
     assert Stage.SPEC in IN_FLIGHT_STAGES
-    assert Stage.AWAITING_SPEC_REVIEW in IN_FLIGHT_STAGES
+    assert Stage.AWAITING_PLAN_REVIEW in IN_FLIGHT_STAGES
     assert Stage.PR_OPEN not in IN_FLIGHT_STAGES
     assert Stage.FAILED not in IN_FLIGHT_STAGES
 
@@ -211,12 +211,12 @@ def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
 
 def test_allocate_slot_ignores_slot_less_holders():
     # A gate-parked task holds no slot; slot 0 must stay allocatable.
-    existing = [make(issue=1, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT)]
+    existing = [make(issue=1, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT)]
     assert allocate_slot(existing, max_slots=3) == 0
 
 
 def test_all_slots_free_when_every_holder_is_gate_parked():
-    existing = [make(issue=i, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT)
+    existing = [make(issue=i, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT)
                 for i in range(5)]
     assert allocate_slot(existing, max_slots=3) == 0
 
@@ -229,7 +229,7 @@ def test_review_park_frees_capacity_and_counts_as_parked():
 
 
 def test_slot_less_state_round_trips(tmp_path):
-    ts = replace(make(issue=77, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT),
+    ts = replace(make(issue=77, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT),
                  park=PARK_REVIEW)
     save(tmp_path, ts)
     assert load(tmp_path, "portfolio_eval", 77) == ts
@@ -338,7 +338,7 @@ def test_active_is_exactly_the_predicate_over_a_mixed_fixture():
         make(issue=1, stage=Stage.IMPLEMENT),
         replace(make(issue=2, stage=Stage.SPEC), park=PARK_LOGIN),
         replace(make(issue=3, stage=Stage.IMPLEMENT), park=PARK_CI),
-        replace(make(issue=4, stage=Stage.AWAITING_SPEC_REVIEW), park=PARK_REVIEW),
+        replace(make(issue=4, stage=Stage.AWAITING_PLAN_REVIEW), park=PARK_REVIEW),
         make(issue=5, stage=Stage.DONE),
         make(issue=6, stage=Stage.FAILED),
         make(issue=7, stage=Stage.QUEUED),
@@ -432,7 +432,7 @@ def test_the_two_predicates_agree_over_the_mixed_fixture():
         make(issue=1, stage=Stage.IMPLEMENT),
         replace(make(issue=2, stage=Stage.SPEC), park=PARK_LOGIN),
         replace(make(issue=3, stage=Stage.IMPLEMENT), park=PARK_CI),
-        replace(make(issue=4, stage=Stage.AWAITING_SPEC_REVIEW), park=PARK_REVIEW),
+        replace(make(issue=4, stage=Stage.AWAITING_PLAN_REVIEW), park=PARK_REVIEW),
         make(issue=5, stage=Stage.DONE),
         make(issue=6, stage=Stage.FAILED),
         make(issue=7, stage=Stage.QUEUED),
@@ -571,7 +571,7 @@ def test_explicit_null_operator_request_suppresses_legacy_derivation(tmp_path):
     request, even though a leftover artifact is present. The explicit null
     wins; the legacy artifact must not resurrect a request."""
     (tmp_path / "task-alpha-7.json").write_text(json.dumps({
-        "issue": 7, "target": "alpha", "stage": "awaiting-spec-review",
+        "issue": 7, "target": "alpha", "stage": "awaiting-plan-review",
         "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
         "updated_at": "2026-09-08T00:00:00+00:00",
         "artifact": "/wt/docs/specs/x.md",
@@ -581,22 +581,37 @@ def test_explicit_null_operator_request_suppresses_legacy_derivation(tmp_path):
     assert ts.operator_request is None
 
 
-def test_legacy_record_at_gate_derives_spec_approval(tmp_path):
-    """A record at AWAITING_SPEC_REVIEW without an operator_request key must
-    derive a spec-approval request (legacy-compat path in _read)."""
+def test_a_gate_record_without_a_request_loads_with_none(tmp_path):
+    """No operator_request key at the gate: nothing is derived; the next pass
+    re-arms the request from the plan signal (machine.ArmPlanApproval)."""
     (tmp_path / "task-alpha-8.json").write_text(json.dumps({
-        "issue": 8, "target": "alpha", "stage": "awaiting-spec-review",
+        "issue": 8, "target": "alpha", "stage": "awaiting-plan-review",
         "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
         "updated_at": "2026-09-08T00:00:00+00:00",
-        "artifact": "/wt/docs/specs/x.md",
-        # NO operator_request key — legacy record
     }))
-    ts = load(tmp_path, "alpha", 8)
-    assert ts.operator_request == SpecApprovalRequest()
+    assert load(tmp_path, "alpha", 8).operator_request is None
+
+
+@pytest.mark.parametrize("field, value", [
+    ("stage", "awaiting-spec-review"),
+    ("operator_request", {"kind": "spec-approval"}),
+    ("operator_request", {"kind": "plan-approval"}),          # no path
+    ("operator_request", {"kind": "plan-approval", "path": ""}),
+])
+def test_old_gate_stage_and_request_are_no_longer_valid(tmp_path, field, value):
+    """The spec gate's stage and request kind are gone (the migration rewrites
+    old files), and a plan-approval request needs its summary path."""
+    doc = {"issue": 8, "target": "alpha", "stage": "awaiting-plan-review",
+           "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
+           "updated_at": "2026-09-08T00:00:00+00:00", field: value}
+    (tmp_path / "task-alpha-8.json").write_text(json.dumps(doc))
+    with pytest.raises(ValueError):
+        load(tmp_path, "alpha", 8)
+    assert load_all(tmp_path) == []
 
 
 def test_legacy_record_not_at_gate_derives_none(tmp_path):
-    """A legacy record in any stage other than AWAITING_SPEC_REVIEW must
+    """A legacy record in any stage other than AWAITING_PLAN_REVIEW must
     derive operator_request=None (no request)."""
     (tmp_path / "task-alpha-9.json").write_text(json.dumps({
         "issue": 9, "target": "alpha", "stage": "implement",
@@ -612,16 +627,16 @@ def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
     """All four loop counters survive a raw JSON record that includes
     operator_request plus non-zero counters (covers new-format load path)."""
     (tmp_path / "task-alpha-10.json").write_text(json.dumps({
-        "issue": 10, "target": "alpha", "stage": "awaiting-spec-review",
+        "issue": 10, "target": "alpha", "stage": "awaiting-plan-review",
         "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
         "updated_at": "2026-09-08T00:00:00+00:00",
         "review_rounds": 1, "gate_rounds": 2, "e2e_rounds": 3, "ci_rounds": 4,
-        "operator_request": {"kind": "spec-approval"},   # explicit new-format
+        "operator_request": {"kind": "plan-approval", "path": ".agent/plan-review.md"},
     }))
     got = load(tmp_path, "alpha", 10)
     assert (got.review_rounds, got.gate_rounds,
             got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
-    assert got.operator_request == SpecApprovalRequest()
+    assert got.operator_request == PlanApprovalRequest(".agent/plan-review.md")
 
 
 def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):
@@ -637,26 +652,6 @@ def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):
     got = load(tmp_path, "alpha", 20)
     assert got.operator_request == AnswersRequest(path=".agent/questionnaire.md")
     assert (got.review_rounds, got.gate_rounds, got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
-
-
-# ---------------------------------------------------------------------------
-# Slice 14: legacy gate record backfills spec_path from artifact in _read
-# ---------------------------------------------------------------------------
-
-def test_legacy_gate_record_backfills_spec_path_from_artifact(tmp_path):
-    """Slice 14: _read must backfill spec_path from artifact when deriving
-    spec-approval for a legacy record (no operator_request key, no spec_path)."""
-    (tmp_path / "task-alpha-31.json").write_text(json.dumps({
-        "issue": 31, "target": "alpha", "stage": "awaiting-spec-review",
-        "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
-        "updated_at": "2026-09-08T00:00:00+00:00",
-        "artifact": "/abs/path/to/spec.md",
-        # NO operator_request key, NO spec_path — legacy record
-    }))
-    ts = load(tmp_path, "alpha", 31)
-    assert ts.operator_request == SpecApprovalRequest()
-    assert ts.spec_path == "/abs/path/to/spec.md", (
-        f"spec_path must be backfilled from artifact in legacy records, got {ts.spec_path!r}")
 
 
 def test_track_and_picks_round_trip(tmp_path: Path):

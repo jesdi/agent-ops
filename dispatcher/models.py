@@ -20,7 +20,7 @@ DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-opus-5"
 TRACK_LABEL_PREFIX = "track:"
 SECURITY_TRACK = "security"   # no ticket names it, and its tasks take no ticket track
-_POLICY_STAGES = {"queued": "spec", "awaiting-spec-review": "spec",
+_POLICY_STAGES = {"queued": "spec", "awaiting-plan-review": "plan",
                   "address-review": "implement"}
 _OLD_KEYS = ("default", "rules")
 _TOP_KEYS = frozenset({"triage", "untracked", "tracks", "review_second", "pinned"})

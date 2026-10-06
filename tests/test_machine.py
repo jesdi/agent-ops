@@ -6,9 +6,10 @@ from dataclasses import replace
 
 from dispatcher.loops import Outcome
 from dispatcher.machine import (
+    PLAN_NO_APPROVAL,
     SPEC_NO_REVIEW,
     ApplyDecision,
-    ArmSpecApproval,
+    DisarmPlanApproval,
     HandleCrash,
     NoOp,
     Notify,
@@ -22,7 +23,7 @@ from dispatcher.machine import (
     SpawnStage,
     next_actions,
 )
-from dispatcher.state import LoopCaps, SpecApprovalRequest, Stage, StageSignal, TaskState
+from dispatcher.state import LoopCaps, PlanApprovalRequest, Stage, StageSignal, TaskState
 
 GOOD_SPEC = "# t — design\n\n## Problem\n\n" + ("x " * 400) + "\n\n## Decisions\n\n" + ("y " * 400)
 GOOD_TICKET = ("# 01 — thing\n\n**What to build:** " + ("behaviour " * 30)
@@ -52,12 +53,12 @@ def test_dead_session_is_crash():
     assert acts == [HandleCrash()]
 
 
-def test_dead_session_at_gate_respawns_spec():
+def test_dead_session_at_gate_respawns_plan():
     # VPS reboot recovery: gate-parked tasks are re-spawned into a fresh
-    # spec session (draft spec is on disk), not treated as crashes.
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
-                        sig("spec", "awaiting-review"), session_alive=False)
-    assert acts == [SpawnStage(Stage.SPEC)]
+    # plan session (the spec folder is on disk), not treated as crashes.
+    acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW),
+                        sig("plan", "awaiting-review"), session_alive=False)
+    assert acts == [SpawnStage(Stage.PLAN)]
 
 
 def test_dead_session_with_done_signal_is_not_crash(tmp_path):
@@ -90,34 +91,83 @@ def test_spec_awaiting_review_is_bounced_once_then_parks():
 
 def test_awaiting_review_at_the_gate_notifies_once():
     # stage updated + operator_request set (as the executor does) → no re-notify
-    again = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
-                                 operator_request=SpecApprovalRequest()),
-                         sig("spec", "awaiting-review"), True)
+    again = next_actions(replace(task(Stage.AWAITING_PLAN_REVIEW),
+                                 operator_request=PlanApprovalRequest(".agent/plan-review.md")),
+                         sig("plan", "awaiting-review"), True)
     assert again == [NoOp()]
 
 
-def test_gate_and_non_spec_stages_do_not_publish():
+def test_gate_and_other_stages_do_not_publish():
     # already at the gate with operator_request set: no re-publish, no re-arm
-    acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
-                                operator_request=SpecApprovalRequest()),
-                        sig("spec", "awaiting-review"), session_alive=True)
-    assert PublishSpec() not in acts and acts == [NoOp()]
-    # misrouted awaiting-review from a non-SPEC stage: still ignored
-    acts = next_actions(task(Stage.PLAN),
+    acts = next_actions(replace(task(Stage.AWAITING_PLAN_REVIEW),
+                                operator_request=PlanApprovalRequest(".agent/plan-review.md")),
                         sig("plan", "awaiting-review"), session_alive=True)
+    assert PublishSpec() not in acts and acts == [NoOp()]
+    # misrouted awaiting-review from a stage with no gate: still ignored
+    acts = next_actions(task(Stage.IMPLEMENT),
+                        sig("implement", "awaiting-review"), session_alive=True)
     assert acts == [NoOp()]
+
+
+def test_plan_ready_with_valid_tickets_enters_the_gate(tmp_path):
+    tickets(tmp_path, n=3)
+    s = StageSignal("plan", "awaiting-review", note="3 tickets",
+                    artifact=".agent/plan-review.md")
+    acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)), s, True)
+    assert acts == [
+        SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=".agent/plan-review.md"),
+        PublishSpec(), Notify("awaiting_plan_review", "3 tickets")]
+
+
+def test_plan_ready_with_malformed_tickets_retries_then_fails(tmp_path):
+    tickets(tmp_path, n=2, bad=True)
+    s = sig("plan", "awaiting-review", ".agent/plan-review.md")
+    acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)), s, True)
+    assert len(acts) == 1 and isinstance(acts[0], RetryStage) and acts[0].reason
+    t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_retries=1)
+    acts = next_actions(t, s, True)
+    assert SetTaskStage(Stage.FAILED) in acts
+    assert SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=s.artifact) not in acts
+
+
+def test_plan_done_before_the_gate_is_bounced_once_then_parks(tmp_path):
+    tickets(tmp_path, n=3)   # a valid set changes nothing: nobody approved it
+    s = sig("plan", "done", ".agent/tickets")
+    acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)), s, True)
+    assert acts == [RetryStage(Stage.PLAN, PLAN_NO_APPROVAL, slip=True)]
+    # the ticket check's retry is another budget
+    t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_retries=1)
+    assert next_actions(t, s, True) == acts
+    t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_slips=1)
+    assert next_actions(t, s, True) == [ParkForInput(PLAN_NO_APPROVAL)]
+
+
+def test_approval_naming_a_track_is_validated_as_the_spec_track_is(tmp_path):
+    tickets(tmp_path, n=1)
+    gate = task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path))
+    bad = StageSignal("plan", "done", track="deep")
+    (act,) = next_actions(gate, bad, True, tracks=TRACKS)
+    assert act == RetryStage(Stage.PLAN, "stage.json names track 'deep'; it must "
+                                         "be one of ['standard', 'trivial']", slip=True)
+    (act,) = next_actions(replace(gate, plan_slips=1), bad, True, tracks=TRACKS)
+    assert isinstance(act, ParkForInput) and "must be one of" in act.note
+    # naming no track keeps the task's; naming a configured one is accepted
+    for track in ("", "trivial"):
+        acts = next_actions(gate, StageSignal("plan", "done", track=track), True,
+                            tracks=TRACKS)
+        assert acts[0] == StartTicket(1, 1)
 
 
 def test_spec_done_valid_spawns_plan(tmp_path):
     spec = tmp_path / "spec.md"; spec.write_text(GOOD_SPEC)
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)),
+    acts = next_actions(task(Stage.SPEC, worktree=str(tmp_path)),
                         sig("spec", "done", str(spec)), True)
     assert acts == [SpawnStage(Stage.PLAN)]
 
 
 def test_spec_done_invalid_fails(tmp_path):
     spec = tmp_path / "spec.md"; spec.write_text("tiny")
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)),
+    acts = next_actions(task(Stage.SPEC, worktree=str(tmp_path)),
                         sig("spec", "done", str(spec)), True)
     assert SetTaskStage(Stage.FAILED) in acts
     assert any(isinstance(a, Notify) and a.template == "artifact_failed" for a in acts)
@@ -125,7 +175,7 @@ def test_spec_done_invalid_fails(tmp_path):
 
 def test_plan_done_valid_tickets_starts_ticket_one(tmp_path):
     tickets(tmp_path, n=3)
-    acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)),
+    acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
                         sig("plan", "done", ".agent/tickets"), True)
     names = ("01-t1.md", "02-t2.md", "03-t3.md")
     assert acts == [StartTicket(1, 3, names=names),
@@ -134,10 +184,10 @@ def test_plan_done_valid_tickets_starts_ticket_one(tmp_path):
 
 def test_plan_done_malformed_tickets_retries_then_fails(tmp_path):
     tickets(tmp_path, n=2, bad=True)
-    acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)),
+    acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
                         sig("plan", "done", ".agent/tickets"), True)
     assert len(acts) == 1 and isinstance(acts[0], RetryStage) and acts[0].reason
-    t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_retries=1)
+    t = replace(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)), plan_retries=1)
     acts = next_actions(t, sig("plan", "done", ".agent/tickets"), True)
     assert SetTaskStage(Stage.FAILED) in acts
     assert any(isinstance(a, Notify) and a.template == "artifact_failed" for a in acts)
@@ -146,7 +196,7 @@ def test_plan_done_malformed_tickets_retries_then_fails(tmp_path):
 def test_plan_done_with_a_numbering_gap_is_malformed(tmp_path):
     d = tickets(tmp_path, n=1)
     (d / "03-late.md").write_text(GOOD_TICKET)
-    acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)),
+    acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
                         sig("plan", "done", ".agent/tickets"), True)
     assert isinstance(acts[0], RetryStage) and "contiguous" in acts[0].reason
 
@@ -277,9 +327,9 @@ def test_done_signal_on_blocked_stage_is_noop():
     assert acts == [NoOp()]
 
 
-def test_awaiting_review_on_non_spec_stage_is_noop():
-    # Only SPEC should transition to AWAITING_SPEC_REVIEW; stale/misrouted signals are ignored.
-    acts = next_actions(task(Stage.PLAN), sig("plan", "awaiting-review"), True)
+def test_awaiting_review_on_a_stage_without_a_gate_is_noop():
+    # Only PLAN should transition to AWAITING_PLAN_REVIEW; stale/misrouted signals are ignored.
+    acts = next_actions(task(Stage.REVIEW), sig("review", "awaiting-review"), True)
     assert acts == [NoOp()]
 
 
@@ -362,8 +412,8 @@ def test_stall_zero_threshold_disables():
 
 def test_stall_ignores_gated_statuses():
     # idle-by-design states never stall-park; operator_request set = normal gate state
-    acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
-                                operator_request=SpecApprovalRequest()),
+    acts = next_actions(replace(task(Stage.AWAITING_PLAN_REVIEW),
+                                operator_request=PlanApprovalRequest(".agent/plan-review.md")),
                         sig("spec", "awaiting-review"), True, idle_seconds=1e9)
     assert acts == [NoOp()]
     acts = next_actions(task(Stage.IMPLEMENT),
@@ -389,16 +439,18 @@ def test_stall_dead_session_is_still_crash():
 
 
 def test_gate_parks_once_the_grace_period_elapses():
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
-                        sig("spec", "awaiting-review"), session_alive=True,
+    # The clock runs for an armed request only.
+    armed = replace(task(Stage.AWAITING_PLAN_REVIEW),
+                    operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+    acts = next_actions(armed, sig("plan", "awaiting-review"), session_alive=True,
                         grace_elapsed=True)
     assert acts == [ParkForReview()]
 
 
 def test_gate_waits_inside_the_grace_period():
     # With operator_request set: approval already present → NoOp (grace preserved)
-    acts = next_actions(replace(task(Stage.AWAITING_SPEC_REVIEW),
-                                operator_request=SpecApprovalRequest()),
+    acts = next_actions(replace(task(Stage.AWAITING_PLAN_REVIEW),
+                                operator_request=PlanApprovalRequest(".agent/plan-review.md")),
                         sig("spec", "awaiting-review"), session_alive=True,
                         grace_elapsed=False)
     assert acts == [NoOp()]
@@ -407,7 +459,7 @@ def test_gate_waits_inside_the_grace_period():
 def test_gate_parked_task_is_never_re_parked():
     # park short-circuit wins over the grace rule: wake/resume is
     # dispatcher-side, and re-parking would re-send the ping every pass.
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, park="awaiting-review"),
+    acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW, park="awaiting-review"),
                         sig("spec", "awaiting-review"), session_alive=True,
                         grace_elapsed=True)
     assert acts == [NoOp()]
@@ -416,20 +468,20 @@ def test_gate_parked_task_is_never_re_parked():
 def test_dead_session_at_gate_still_respawns_even_after_grace():
     # Crash-during-grace: reboot recovery wins; a dead session has nothing
     # to park.
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW),
-                        sig("spec", "awaiting-review"), session_alive=False,
-                        grace_elapsed=True)
-    assert acts == [SpawnStage(Stage.SPEC)]
-
-
-def test_approved_spec_advances_instead_of_parking(tmp_path):
-    # The operator approved in-session just as the grace expired: a `done`
-    # signal must still advance to PLAN, never park.
-    spec = tmp_path / "spec.md"; spec.write_text(GOOD_SPEC)
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)),
-                        sig("spec", "done", str(spec)), session_alive=True,
+    acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW),
+                        sig("plan", "awaiting-review"), session_alive=False,
                         grace_elapsed=True)
     assert acts == [SpawnStage(Stage.PLAN)]
+
+
+def test_approved_plan_advances_instead_of_parking(tmp_path):
+    # The operator approved in-session just as the grace expired: a `done`
+    # signal must still start implement, never park.
+    tickets(tmp_path, n=2)
+    acts = next_actions(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
+                        sig("plan", "done", ".agent/tickets"), session_alive=True,
+                        grace_elapsed=True)
+    assert acts[0] == StartTicket(1, 2)
 
 
 def test_address_review_done_returns_to_pr_open():
@@ -454,19 +506,51 @@ def test_address_review_dead_session_is_crash():
 
 # Slice 12 tests
 
-def test_gate_rearms_approval_when_operator_request_cleared():
-    """Slice 12: resumed task at gate with cleared operator_request → re-arm, not NoOp."""
-    t = task(Stage.AWAITING_SPEC_REVIEW)  # operator_request=None by default
-    acts = next_actions(t, sig("spec", "awaiting-review", artifact="docs/spec.md"),
-                        session_alive=True, grace_elapsed=False)
-    assert acts == [ArmSpecApproval(artifact="docs/spec.md")]
+def test_ready_at_the_gate_with_no_request_is_a_new_round(tmp_path):
+    """A resume or a rework cleared the request: the ready report enters the
+    gate again (ticket check, publish, notify), it is not a silent re-arm."""
+    tickets(tmp_path, n=2)
+    t = task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path))
+    s = sig("plan", "awaiting-review", artifact=".agent/plan-review.md")
+    acts = next_actions(t, s, session_alive=True, grace_elapsed=False)
+    assert acts == [
+        SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=".agent/plan-review.md"),
+        PublishSpec(), Notify("awaiting_plan_review", "")]
+    (tmp_path / ".agent" / "tickets" / "04-late.md").write_text(GOOD_TICKET)
+    (act,) = next_actions(t, s, session_alive=True)
+    assert isinstance(act, RetryStage) and not act.slip and "contiguous" in act.reason
+    # an old clock does not park a round the operator was never told of,
+    # and never lets a bad ticket set past the check
+    assert next_actions(t, s, True, grace_elapsed=True) == [act]
+
+
+def test_unattended_rounds_at_the_gate_are_capped(tmp_path):
+    tickets(tmp_path, n=2)
+    used = replace(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
+                   unattended_rounds=2)
+    s = sig("plan", "awaiting-review", artifact=".agent/plan-review.md")
+    assert next_actions(used, s, True) == [
+        ParkForReview(artifact=".agent/plan-review.md")]
+    assert next_actions(used, None, session_alive=False) == [ParkForReview()]
+    # gate entry from the plan stage is not a round of its own
+    entry = next_actions(replace(used, stage=Stage.PLAN), s, True)
+    assert entry[0] == SetTaskStage(Stage.AWAITING_PLAN_REVIEW,
+                                    artifact=".agent/plan-review.md")
+
+
+def test_working_at_the_gate_disarms_the_request_once():
+    armed = replace(task(Stage.AWAITING_PLAN_REVIEW),
+                    operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+    assert next_actions(armed, sig("plan", "working"), True) == [DisarmPlanApproval()]
+    assert next_actions(task(Stage.AWAITING_PLAN_REVIEW), sig("plan", "working"),
+                        True) == [NoOp()]
 
 
 def test_gate_does_not_rearm_when_operator_request_already_set():
     """Slice 12: operator_request set → NoOp (slice 8 invariant preserved)."""
-    t = replace(task(Stage.AWAITING_SPEC_REVIEW),
-                operator_request=SpecApprovalRequest())
-    acts = next_actions(t, sig("spec", "awaiting-review", artifact="docs/spec.md"),
+    t = replace(task(Stage.AWAITING_PLAN_REVIEW),
+                operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+    acts = next_actions(t, sig("plan", "awaiting-review", artifact=".agent/plan-review.md"),
                         session_alive=True, grace_elapsed=False)
     assert acts == [NoOp()]
 
@@ -497,7 +581,7 @@ def test_spec_track_retry_exhausted_parks_for_the_operator():
 def test_spec_done_with_unknown_track_retries_before_the_format_check(tmp_path):
     (tmp_path / "s.md").write_text("# tiny\n")     # would FAIL check_spec
     sig = StageSignal(stage="spec", status="done", artifact="s.md", track="nope")
-    (act,) = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)),
+    (act,) = next_actions(task(Stage.SPEC, worktree=str(tmp_path)),
                           sig, True, tracks=TRACKS)
     assert isinstance(act, RetryStage) and act.stage is Stage.SPEC
 
@@ -505,7 +589,7 @@ def test_spec_done_with_unknown_track_retries_before_the_format_check(tmp_path):
 def test_spec_done_with_known_track_spawns_plan(tmp_path):
     (tmp_path / "s.md").write_text(GOOD_SPEC)
     sig = StageSignal(stage="spec", status="done", artifact="s.md", track="standard")
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)),
+    acts = next_actions(task(Stage.SPEC, worktree=str(tmp_path)),
                         sig, True, tracks=TRACKS)
     assert acts == [SpawnStage(Stage.PLAN)]
 
@@ -513,7 +597,7 @@ def test_spec_done_with_known_track_spawns_plan(tmp_path):
 def test_tracks_none_skips_validation(tmp_path):
     (tmp_path / "s.md").write_text(GOOD_SPEC)
     sig = StageSignal(stage="spec", status="done", artifact="s.md")
-    acts = next_actions(task(Stage.AWAITING_SPEC_REVIEW, worktree=str(tmp_path)), sig, True)
+    acts = next_actions(task(Stage.SPEC, worktree=str(tmp_path)), sig, True)
     assert acts == [SpawnStage(Stage.PLAN)]
 
 

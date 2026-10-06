@@ -11,7 +11,7 @@ for (const width of [390, 1280]) {
       updated_at: '2026-09-13T00:00:00Z', stage: 'spec', status: 'published',
       url: '/api/task/widget/42/artifacts/spec', github_url: 'https://github.com/o/r/blob/task/42/docs/spec.md' }
     await page.route('**/api/task/widget/42/request', route => route.fulfill({ json: reviewing ? {
-      kind: 'spec-approval', content: { kind: 'readable', path: 'docs/spec.md', media_type: 'text/markdown', text: '# Task artifacts\nKeep review material accessible across sessions.' },
+      kind: 'plan-approval', content: { kind: 'readable', path: '.agent/plan-review.md', media_type: 'text/markdown', text: '# Task artifacts\nKeep review material accessible across sessions.' },
     } : null }))
     await page.route('**/api/task/widget/42/artifacts', route => route.fulfill({ json: {
       items: [{ ...spec, github_url: published ? spec.github_url : '', status: published ? 'published' : 'local' },
@@ -33,19 +33,19 @@ for (const width of [390, 1280]) {
     const preview = await opened
     await expect(preview.getByRole('heading', { name: 'Prototype preview' })).toBeVisible()
     await preview.close()
-    await page.getByRole('button', { name: 'approve spec', exact: true }).click()
+    await page.getByRole('button', { name: 'approve plan', exact: true }).click()
     const approval = page.waitForRequest(req => req.url().endsWith('/reply') && req.method() === 'POST')
     await page.getByRole('button', { name: 'tap again to approve' }).click()
     expect((await approval).postDataJSON().text).toBe('Approved — proceed.')
     reviewing = false
     await page.reload()
-    await expect(page.getByRole('button', { name: 'approve spec', exact: true })).toBeHidden()
+    await expect(page.getByRole('button', { name: 'approve plan', exact: true })).toBeHidden()
     await expect(artifacts.getByRole('link', { name: 'Open Specification' })).toBeVisible()
     reviewing = true
     published = false
     await page.reload()
     await expect(page.getByText(/hasn’t been published/)).toBeVisible()
-    await expect(page.getByRole('button', { name: 'approve spec', exact: true })).toBeEnabled()
+    await expect(page.getByRole('button', { name: 'approve plan', exact: true })).toBeEnabled()
     reviewing = false
     published = true
     expired = true

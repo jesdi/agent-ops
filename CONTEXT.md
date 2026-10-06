@@ -274,26 +274,32 @@ it never bypasses box capacity or slot allocation.
 
 ## Operator-request ownership
 
-**Durable spec reference**: `TaskState.spec_path` — recorded when the task enters AWAITING-SPEC-REVIEW,
-retained across plan / implement / review / PR-OPEN / address-review. Worktree-relative path.
+**Durable spec reference**: `TaskState.spec_path` — the spec folder's `spec.md`, recorded when the spec
+session reports done, retained across plan / AWAITING-PLAN-REVIEW / implement / review / PR-OPEN /
+address-review. Worktree-relative path.
 
-**Operator request** = `TaskState.operator_request`: `None` (no request), `{"kind": "spec-approval"}`,
-or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns its lifecycle writes:
+**Operator request** = `TaskState.operator_request`: `None` (no request),
+`{"kind": "plan-approval", "path": "<worktree-relative path>"}` (the plan session's review summary,
+`.agent/plan-review.md`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns its lifecycle writes:
 
-- Establish on entering AWAITING-SPEC-REVIEW (spec-approval).
+- Establish on entering AWAITING-PLAN-REVIEW (plan-approval).
 - Set answers kind when a valid answers artifact is signalled.
 - Clear on: successful resume, stage transition, ordinary+exhaustion park, terminal stage, CI/login supersede.
 - Retain on admission denial (resources unavailable at wake time).
-- Re-arm on a resumed gate re-signal.
+- Clear when the session at the gate reports `working` (it reworks the plan on feedback).
+- Re-arm on a ready report at the gate with no request armed: a new review round (ticket check,
+  publish, notification, fresh grace clock). The grace clock runs for an armed request only.
+- A task at the gate gets 2 unattended rounds (`unattended_rounds`: respawns of a dead session plus
+  new rounds since the operator last acted); the next one parks it for review, with the request armed.
 
 The web layer READS `operator_request`; it never infers a request from park state.
 
 **Endpoint and UI**: one `/api/task/{target}/{issue}/request` → `OperatorRequest | null` with a
 discriminated `readable | unavailable` content union. One `RequestPanel` + media renderer in the
-frontend. Approval is only possible on a `readable` spec-approval request.
+frontend. Approval is only possible on a `readable` plan-approval request.
 
-**Legacy conversion**: localized in `state._read` (migrated from the old `artifact`/`spec_path`-inferred
-request). The external stage-signal artifact parser (`read_stage_signal`) is separate and retained.
+**No legacy conversion**: `state._read` rejects the retired `awaiting-spec-review` stage and
+`spec-approval` kind. The external stage-signal artifact parser (`read_stage_signal`) is separate and retained.
 
 **Three distinct questions** — kept separate by design:
 

@@ -211,7 +211,7 @@ def test_mode_openai_orders_a_targets_own_policy(tmp_path, monkeypatch):
             return NOW
     monkeypatch.setattr(main, "datetime", Frozen)
     from tests.test_main import FakeSessions, deps, write_tickets
-    wt = make_task(c, issue=42, stage=Stage.PLAN, picks={})
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, picks={})
     write_tickets(wt, 1)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "plan", "status": "done", "note": "1 ticket",

@@ -5,7 +5,7 @@ state_dir: /home/agent/agent-ops-state
 # Unset -> those failures degrade to a Telegram ping + stderr log only.
 infra_repo: example/agent-ops
 # Optional: web console base URL (https://<box>.<tailnet>.ts.net). When set,
-# the spec-review Telegram ping carries a "read & approve" deep link.
+# the plan-review Telegram ping carries a "read & approve" deep link.
 # console_url: https://box.tailnet.ts.net
 budget_threshold: 0.8
 racing_minutes: 30
@@ -41,8 +41,9 @@ codex_stall_after_seconds: 1800
 # new work; past this many seconds the task parks for the operator and the
 # session is ended. Integer >= 1; default 10800 (3 hours).
 background_wait_seconds: 10800
-# How long a finished spec waits at the review gate for the operator. Once it
-# expires the task parks: the spec session ends and BOTH its capacity unit and
+# How long a finished plan waits at the plan review gate for the operator (the
+# key keeps its old name). Once it
+# expires the task parks: the plan session ends and BOTH its capacity unit and
 # its E2E slot are freed, so the dispatcher keeps claiming and speccing the
 # rest of the Ready queue overnight. Reply to the Telegram park message (or
 # resume from the web console) to pick the review back up. 0 = park on the
