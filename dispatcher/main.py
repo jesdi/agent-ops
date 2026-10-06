@@ -795,7 +795,9 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
                          entry.model_id, entry.effort)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     used = "plan_slips" if slip else "plan_retries"
-    save(cfg.state_dir, replace(task, updated_at=_now(),
+    # The rejected plan is no longer on offer: the session's next ready
+    # report is checked and armed again.
+    save(cfg.state_dir, replace(task, updated_at=_now(), operator_request=None,
                                 **{used: getattr(task, used) + 1}))
     _notify(deps, target, task, "plan_retry", reason)
 

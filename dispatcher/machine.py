@@ -95,9 +95,10 @@ class ParkForCI:
 
 @dataclass(frozen=True)
 class DisarmPlanApproval:
-    """The session at the gate reports `working`: it reworks the plan on the
-    operator's feedback, so the summary the console offers for approval is
-    stale. Its next ready report is a new review round."""
+    """The session at the gate reports `working` (it reworks the plan on the
+    operator's feedback), or its ticket set no longer passes the check: the
+    summary the console offers for approval is stale. Its next ready report
+    is a new review round."""
 
 
 @dataclass(frozen=True)
@@ -249,7 +250,12 @@ def _review_actions(task: TaskState, signal: StageSignal,
                     grace_elapsed: bool) -> list[object]:
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
         if task.operator_request:
-            # Already notified on a previous pass: only the clock runs.
+            # Already notified on a previous pass: only the clock runs. The
+            # tickets are checked all the same: the session may have changed
+            # them with no `working` signal that a pass saw.
+            _result, failed = _checked_tickets(task)
+            if failed:
+                return [DisarmPlanApproval()] + failed
             return [ParkForReview()] if grace_elapsed else [NoOp()]
         # No request armed: a resume or a rework cleared it, so this ready
         # report is a new review round. It enters the gate again, with a

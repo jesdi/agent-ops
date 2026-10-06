@@ -2940,6 +2940,7 @@ def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatc
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED, slot=1)
+    write_tickets(wt, 2)
     gate_signal(wt)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
@@ -2958,6 +2959,7 @@ def test_gate_park_is_event_logged(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED)
+    write_tickets(wt, 2)
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     parked = [e for e in eventlog.read_tail(c.state_dir)
@@ -2976,6 +2978,7 @@ def test_gate_holds_inside_the_grace_period(tmp_path, monkeypatch):
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
                    updated_at=fresh,
                    operator_request=PlanApprovalRequest(PLAN_SUMMARY))
+    write_tickets(wt, 2)
     gate_signal(wt)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
@@ -3003,6 +3006,7 @@ def test_zero_grace_parks_on_the_next_pass(tmp_path, monkeypatch):
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED,
                    updated_at=datetime.now(timezone.utc).isoformat())
+    write_tickets(wt, 2)
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_REVIEW
@@ -3038,6 +3042,7 @@ def test_grace_expiry_park_preserves_plan_approval_request(tmp_path, monkeypatch
                    operator_request=PlanApprovalRequest(".agent/plan-review.md"),
                    spec_path="docs/specs/x-design.md")
     (wt / ".agent" / "plan-review.md").write_text("# Plan review\n\nApprove me.")
+    write_tickets(wt, 2)
     gate_signal(wt)  # status=awaiting-review, grace already elapsed → ParkForReview
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -3114,6 +3119,7 @@ def test_plan_parked_ping_links_spec(tmp_path, monkeypatch):
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
     wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED,
                    spec_path="docs/superpowers/specs/x-design.md")
+    write_tickets(wt, 2)
     gate_signal(wt)
     monkeypatch.setattr(main.spec_publish, "ensure_published",
                         lambda **kw: spec_publish.PublishResult(url=SPEC_URL))
@@ -3132,6 +3138,7 @@ def test_plan_parked_note_says_local_only_when_publish_fails(
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
     wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED,
                    spec_path="docs/superpowers/specs/x-design.md")
+    write_tickets(wt, 2)
     gate_signal(wt)
     monkeypatch.setattr(
         main.spec_publish, "ensure_published",
@@ -3150,6 +3157,7 @@ def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
     wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED,
                    spec_path="docs/specs/x-design.md")
+    write_tickets(wt, 2)
     gate_signal(wt)
     token_error = (
         "git push failed: fatal: unable to access "
@@ -3350,6 +3358,7 @@ def test_park_for_review_saves_park_note(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED, slot=1)
+    write_tickets(wt, 2)
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).park_note == "plan ready for review"
@@ -5710,3 +5719,50 @@ def test_old_ready_signal_is_never_read_after_a_respawn_or_a_resume(tmp_path, mo
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_PLAN_REVIEW and t.operator_request is None
     assert notifier.sent.count("awaiting_plan_review") == 1
+
+
+# --- plan review gate: an armed request never outlives a ticket change -------
+
+def test_tickets_changed_between_two_passes_disarm_the_armed_request(tmp_path, monkeypatch):
+    """Between two passes the session wrote `working`, broke the ticket set and
+    reported ready again: no pass saw `working`, so the request is still armed.
+    The ticket check runs all the same, and the grace park offers nothing."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = FakeSessions(alive={42})
+    _gate_pass(c, sess, monkeypatch)                    # armed
+    tickets = wt / ".agent" / "tickets"
+    (tickets / "02-t2.md").rename(tickets / "03-t3.md")
+    _minutes_ago(c, 20)                                 # past the grace time
+    gate_signal(wt)
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == "" and t.operator_request is None
+    assert d.notifier.sent == ["plan_retry"]
+    assert len(sess.resumed) == 1 and "contiguous" in sess.resumed[0][1]
+
+
+def test_ready_report_after_a_bounced_approval_is_checked_again(tmp_path, monkeypatch):
+    """`done` at the gate with a ticket gap is bounced; the session answers
+    `awaiting-review` with the gap still there: nothing stays armed, and the
+    one retry is not refilled."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = FakeSessions(alive={42})
+    _gate_pass(c, sess, monkeypatch)                    # armed
+    tickets = wt / ".agent" / "tickets"
+    (tickets / "02-t2.md").rename(tickets / "03-t3.md")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "done"}))
+    _gate_pass(c, sess, monkeypatch)                    # bounced
+    assert load(c.state_dir, "portfolio_eval", 42).operator_request is None
+    gate_signal(wt)
+    _minutes_ago(c, 20)
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED and t.park == "" and t.operator_request is None
+    assert d.notifier.sent == ["artifact_failed"]
+    assert len(sess.resumed) == 1
+    assert [s for s in sess.spawned if s[1] == "implement"] == []

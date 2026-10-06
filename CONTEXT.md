@@ -260,6 +260,8 @@ address-review. Worktree-relative path.
 - Clear on: successful resume, stage transition, ordinary+exhaustion park, terminal stage, CI/login supersede.
 - Retain on admission denial (resources unavailable at wake time).
 - Clear when the session at the gate reports `working` (it reworks the plan on feedback).
+- Clear when the plan signal is bounced (`_retry_plan`), and when a ready report at the gate fails
+  the ticket check with the request still armed: the check runs on every ready report, armed or not.
 - Re-arm on a ready report at the gate with no request armed: a new review round (ticket check,
   publish, notification, fresh grace clock). The grace clock runs for an armed request only.
 - A task at the gate gets 2 unattended rounds (`unattended_rounds`: respawns of a dead session plus

@@ -44,6 +44,13 @@ def task(stage, worktree="/tmp/wt", issue=101, park=""):
                      park=park)
 
 
+def armed_gate(tmp_path):
+    """A task that waits at the gate: valid tickets, the request armed."""
+    tickets(tmp_path)
+    return replace(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
+                   operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+
+
 def sig(stage, status, artifact="", run_id=0):
     return StageSignal(stage=stage, status=status, artifact=artifact, run_id=run_id)
 
@@ -89,18 +96,16 @@ def test_spec_awaiting_review_is_bounced_once_then_parks():
     assert act == ParkForInput(SPEC_NO_REVIEW)
 
 
-def test_awaiting_review_at_the_gate_notifies_once():
+def test_awaiting_review_at_the_gate_notifies_once(tmp_path):
     # stage updated + operator_request set (as the executor does) → no re-notify
-    again = next_actions(replace(task(Stage.AWAITING_PLAN_REVIEW),
-                                 operator_request=PlanApprovalRequest(".agent/plan-review.md")),
+    again = next_actions(armed_gate(tmp_path),
                          sig("plan", "awaiting-review"), True)
     assert again == [NoOp()]
 
 
-def test_gate_and_other_stages_do_not_publish():
+def test_gate_and_other_stages_do_not_publish(tmp_path):
     # already at the gate with operator_request set: no re-publish, no re-arm
-    acts = next_actions(replace(task(Stage.AWAITING_PLAN_REVIEW),
-                                operator_request=PlanApprovalRequest(".agent/plan-review.md")),
+    acts = next_actions(armed_gate(tmp_path),
                         sig("plan", "awaiting-review"), session_alive=True)
     assert PublishSpec() not in acts and acts == [NoOp()]
     # misrouted awaiting-review from a stage with no gate: still ignored
@@ -408,10 +413,9 @@ def test_stall_zero_threshold_disables():
                         idle_seconds=1e9, stall_after=0) == [NoOp()]
 
 
-def test_stall_ignores_gated_statuses():
+def test_stall_ignores_gated_statuses(tmp_path):
     # idle-by-design states never stall-park; operator_request set = normal gate state
-    acts = next_actions(replace(task(Stage.AWAITING_PLAN_REVIEW),
-                                operator_request=PlanApprovalRequest(".agent/plan-review.md")),
+    acts = next_actions(armed_gate(tmp_path),
                         sig("spec", "awaiting-review"), True, idle_seconds=1e9)
     assert acts == [NoOp()]
     acts = next_actions(task(Stage.IMPLEMENT),
@@ -436,19 +440,17 @@ def test_stall_dead_session_is_still_crash():
     assert acts == [HandleCrash()]
 
 
-def test_gate_parks_once_the_grace_period_elapses():
+def test_gate_parks_once_the_grace_period_elapses(tmp_path):
     # The clock runs for an armed request only.
-    armed = replace(task(Stage.AWAITING_PLAN_REVIEW),
-                    operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+    armed = armed_gate(tmp_path)
     acts = next_actions(armed, sig("plan", "awaiting-review"), session_alive=True,
                         grace_elapsed=True)
     assert acts == [ParkForReview()]
 
 
-def test_gate_waits_inside_the_grace_period():
+def test_gate_waits_inside_the_grace_period(tmp_path):
     # With operator_request set: approval already present → NoOp (grace preserved)
-    acts = next_actions(replace(task(Stage.AWAITING_PLAN_REVIEW),
-                                operator_request=PlanApprovalRequest(".agent/plan-review.md")),
+    acts = next_actions(armed_gate(tmp_path),
                         sig("spec", "awaiting-review"), session_alive=True,
                         grace_elapsed=False)
     assert acts == [NoOp()]
@@ -544,10 +546,9 @@ def test_working_at_the_gate_disarms_the_request_once():
                         True) == [NoOp()]
 
 
-def test_gate_does_not_rearm_when_operator_request_already_set():
+def test_gate_does_not_rearm_when_operator_request_already_set(tmp_path):
     """Slice 12: operator_request set → NoOp (slice 8 invariant preserved)."""
-    t = replace(task(Stage.AWAITING_PLAN_REVIEW),
-                operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+    t = armed_gate(tmp_path)
     acts = next_actions(t, sig("plan", "awaiting-review", artifact=".agent/plan-review.md"),
                         session_alive=True, grace_elapsed=False)
     assert acts == [NoOp()]
