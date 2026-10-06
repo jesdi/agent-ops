@@ -175,3 +175,38 @@ def test_review_prompt_does_not_invent_a_missing_proposal_or_design():
     para = _review_para("not recorded")
     assert "`proposal.md`" in para and "`design.md`" in para
     assert "never invent" in para
+
+
+# --- restart inputs of the spec prompt (delete with dispatcher/openspec_migration.py) ---
+
+def _spec_items():
+    """Paragraphs and single list items of the spec prompt."""
+    out = render_stage_prompt(Stage.SPEC, CTX)
+    return [item for para in out.split("\n\n") for item in para.split("\n- ")]
+
+
+def _spec_item(*needles):
+    (item,) = [i for i in _spec_items() if all(n in i for n in needles)]
+    return " ".join(item.split())
+
+
+def test_spec_prompt_takes_only_design_files_this_branch_added():
+    item = _spec_item("-design.md", "spec-ready", "remove")
+    assert ("git diff --name-only --diff-filter=A origin/main...HEAD -- docs/specs/"
+            in item)
+    assert "this branch added" in item
+    assert "main already has" in item and "never" in item
+    assert "docs/specs/*-design.md" not in item           # no wildcard over old files
+    assert "-diagnosis.md" not in item
+
+
+def test_spec_prompt_applies_an_operator_change_request_to_the_old_design():
+    item = _spec_item("-design.md", "spec-ready", "remove")
+    assert "operator message" in item and "overrides" in item
+    assert "word for word" in item and "spec.md" in item
+
+
+def test_spec_prompt_reads_answers_from_messages_and_the_old_review_copy():
+    item = _spec_item("answered", "questionnaire.md", "settled")
+    assert "operator message" in item and "docs/review/" in item
+    assert "raise no new questionnaire" in item

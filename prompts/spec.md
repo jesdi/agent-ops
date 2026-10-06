@@ -38,20 +38,32 @@ resume from it instead of starting over.
 
 A task that an earlier session worked on can also hold inputs from before
 the spec folder existed. Look for them now; each one replaces a part of
-steps 2 and 3:
-- An unanswered `.agent/questionnaire.md` (no answers in the file, and no
-  operator message below this prompt that answers it): ask those questions
-  again as they are. Do not rewrite, extend or re-order the file; signal
-  `awaiting-answers` with it as the artifact and stop.
-- An answered `.agent/questionnaire.md` (the answers are in the file, or an
-  operator message below this prompt gives them): take the answers as
-  settled decisions and raise no new questionnaire. Continue at step 4.
-- An old design file `docs/specs/*-design.md` on $branch: handle it as a
-  `spec-ready` body (step 2), whatever the labels say and whatever
-  `.agent/questionnaire.md` holds, because the design already carries the
-  answers. Its decisions go into stage 1 word for word, and `spec.md`
-  records the reconciliation with the code. Then remove the design file from
-  the branch (`git rm`) in the commit that adds the spec folder.
+steps 2 and 3. Operator messages below this prompt can be older than this
+session: they are what the operator told the earlier one, and they count.
+- An unanswered `.agent/questionnaire.md` (no answers in the file, none in
+  an operator message below this prompt, and none under `docs/review/` on
+  $branch): ask those questions again as they are. Do not rewrite, extend
+  or re-order the file; signal `awaiting-answers` with it as the artifact
+  and stop.
+- An answered `.agent/questionnaire.md`: the answers are in the file, in an
+  operator message below this prompt, or in a review copy of the questions
+  and answers that an earlier session left on $branch under `docs/review/`.
+  Take the answers as settled decisions and raise no new questionnaire.
+  Continue at step 4.
+- Any file that this branch added under `docs/specs/`. The old flow kept
+  its design there, as `docs/specs/<date>-<topic>-design.md`. List these
+  files with
+  `git diff --name-only --diff-filter=A origin/main...HEAD -- docs/specs/`
+  (take the repository's default branch when it is not `main`). A file that
+  main already has is never an input and is never touched. Handle what the
+  list shows as a `spec-ready` body (step 2), whatever the labels say and
+  whatever `.agent/questionnaire.md` holds, because the design already
+  carries the answers: its decisions go into stage 1 word for word, and
+  `spec.md` records the reconciliation with the code. An operator message
+  below this prompt that asks for a change to that design overrides the
+  design for that point: apply it and record it in `spec.md`. Then remove
+  every listed file from the branch (`git rm`)
+  in the commit that adds the spec folder.
 
 ## 2. Branch on the labels
 **`bug`** — run the `diagnosing-bugs` skill. Write a
