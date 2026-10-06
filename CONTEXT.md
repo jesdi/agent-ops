@@ -28,7 +28,12 @@ _Avoid_: agent (that's the OS user), container (that's the isolation layer only)
 **Stage**:
 One step of a task's lifecycle (spec → plan → implement → review → pr-open →
 address-review), each executed by a fresh session whose
-only input is the previous stage's artifact.
+only input is the previous stage's artifact. Spec: stage 1 of `to-openspec`
+writes `proposal.md` and `spec.md`; no gate. Plan: checks that stage 1,
+runs stage 2 (`design.md`, tickets), then waits at the plan review gate
+unless the gate skip applies. Implement: one `implement-spec` session works
+every ticket. Review: an independent review, then the content move and the
+PR.
 _Avoid_: phase, step
 
 **Ticket**:
@@ -81,8 +86,15 @@ A candidate with no `track:` label; it specs on `models.untracked`.
 
 **Review stage**:
 The session that reads only the issue, the spec, the tickets and the diff —
-never a summary — fixes what it finds, rebases onto main, runs the gates
-and end to end, and opens the PR.
+never a summary — and fixes what it finds; reads the implement session's
+ledger only after that review. It then writes the PR description to
+`.agent/pr-body.md` (Why, Goal and Non-goals of `proposal.md`, Decisions of
+`design.md`, open rulings of the ledger), adds an ADR under `docs/adr/` for
+each decision that constrains later changes and each new term to this file,
+removes `proposal.md` and `design.md` from the branch, rebases onto main,
+runs the gates and end to end, and opens the PR from that file. The order
+is a safety property: a session that dies part way leaves a body file the
+next one uses.
 _Avoid_: PR stage, verify stage
 
 **Gate**:
@@ -213,22 +225,35 @@ _Avoid_: export, config copy (the seed is authored for the box, not exported
 from a workstation)
 
 **Spec**:
-The design artifact produced by the spec stage. Draft committed and pushed
-before human review; approved before planning. Other registered Markdown
-review artifacts are also committed to the task branch.
+`specs/<date>-<slug>/spec.md`: the requirements and scenarios of one change,
+written by the spec stage with `proposal.md` beside it; the plan stage adds
+`design.md`. The folder is on the task branch for the plan review gate. The
+review stage removes `proposal.md` and `design.md`, so main keeps only
+`spec.md` of a change. No copy of a questionnaire or its answers is
+committed; they stay under `.agent/`.
+
+**Change log**:
+What `specs/` is: one folder per past change, as decided then, never brought
+up to date. The code and this file are the present state; where a spec and
+the code disagree, the code wins. Every stage prompt says so.
+_Avoid_: living spec, source of truth (for `specs/`)
 
 **Repo skills**:
 Skills scoped to a target repo, declared in that repo's `.my-skills.json` and
 synced by `@jesdi/skills-cli`. Distinct from process skills.
 
 **Process skills**:
-Repo-agnostic workflow skills (to-spec, to-openspec, red-team-data-model,
-to-questionnaire, to-tickets, implement-spec, prototype, wizard, tdd,
-review-diff, deep-quality-review…) that stage
-prompts invoke. They live in the claude-home seed (agent-ops-infra, ADR
-0003): the jesdi ones pinned in its `.my-skills.json` and installed with
-`@jesdi/skills-cli`, the mattpocock ones vendored as files
-(`make vendor-skills`); never a plugin, never carried by target repos.
+Repo-agnostic workflow skills that stage prompts invoke: `to-openspec`
+(stage 1 in spec, stage 2 in plan, where it runs `red-team-data-model` and
+`to-tickets`), `to-questionnaire`, `prototype` and `diagnosing-bugs` (spec),
+`implement-spec` (implement, which owns `tdd` per ticket and its own
+reviews), `review-diff` with `deep-quality-review` and
+`resolving-merge-conflicts` (review). `to-spec` is not a box skill: it is the
+Mac tool that writes the design into a `spec-ready` issue body. They live in
+the claude-home seed (agent-ops-infra, ADR 0003): the jesdi ones pinned in
+its `.my-skills.json` and installed with `@jesdi/skills-cli`, the mattpocock
+ones vendored as files (`make vendor-skills`); never a plugin, never carried
+by target repos.
 
 ## Loop-policy ownership
 
@@ -283,7 +308,8 @@ address-review. Worktree-relative path.
 
 **Operator request** = `TaskState.operator_request`: `None` (no request),
 `{"kind": "plan-approval", "path": "<worktree-relative path>"}` (the plan session's review summary,
-`.agent/plan-review.md`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns its lifecycle writes:
+`.agent/plan-review.md`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns
+its lifecycle writes:
 
 - Establish on entering AWAITING-PLAN-REVIEW (plan-approval).
 - Set answers kind when a valid answers artifact is signalled.
@@ -303,8 +329,9 @@ a track the ready report names does not count), `TaskState.asked` is false (neit
 nor the plan session parked for answers), and the report's `open_questions` is the integer 0, its
 `artifact` is `.agent/plan-review.md`, and that file confirms the count (its open-questions section says
 `None.`; `artifacts.count_open_questions`). A missing or malformed count or summary, a summary with other
-`## ` headings than the three prescribed, or one above 256 KB means "the gate applies". The ticket check and the spec folder publish run as at the gate, then implement starts in the
-same pass; no review notification, no request. `TaskState.gated` is set at gate entry, and when a dead
+`## ` headings than the three prescribed, or one above 256 KB means "the gate applies". The ticket check and
+the spec folder publish run as at the gate, then implement starts in the same pass;
+no review notification, no request. `TaskState.gated` is set at gate entry, and when a dead
 gate session is respawned, and never cleared: a task that waited once never skips, also after a respawn
 puts it back in the plan stage.
 

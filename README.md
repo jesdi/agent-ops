@@ -84,12 +84,13 @@ flowchart LR
 ```mermaid
 flowchart LR
     queued["Queued"] --> gate{"Usage (pace) &<br/>capacity gate"}
-    gate --> spec["Spec stage"]
+    gate --> spec["Spec stage<br/>(proposal, spec)"]
     spec --> plan["Plan stage<br/>(design, tickets)"]
-    plan --> review{"Human review<br/>(from your phone)"}
+    plan --> review{"Plan review gate<br/>(from your phone)"}
+    plan -- "gate skip" --> implement
     review -- feedback --> plan
     review -- approved --> implement["Implement<br/>(one session, every ticket)"]
-    implement -- every ticket merged --> codereview["Review stage<br/>(rebase, gates, PR)"]
+    implement -- every ticket merged --> codereview["Review stage<br/>(review, ADRs, only spec.md stays,<br/>rebase, gates, PR)"]
     codereview --> pr["PR open"]
     pr -- "CI green, you merge" --> done(["Merged"])
 
@@ -107,8 +108,8 @@ flowchart LR
   active tasks.
 - **Staged pipeline** — each task moves through **spec → plan → implement (one session works every ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
-  artifact. Spec and plan pause together at one human review gate before
-  implementation spends real tokens on them. The dispatcher skips that gate
+  artifact. The plan stage pauses at one human review gate, where you read
+  the spec and the plan, before implementation spends real tokens on them. The dispatcher skips that gate
   only for a task on a track with `plan_review: false` whose spec and plan
   sessions asked no questionnaire and whose plan has no open question. An
   `untracked:` default that names such a track makes every unlabelled task
@@ -117,6 +118,14 @@ flowchart LR
   PR each have a configured cap; hitting it parks the task and pings you, it
   never fails the task. The implement session's own fix loops are bounded by
   the `implement-spec` skill, not by the dispatcher.
+- **Skills per stage** — spec: `to-openspec` stage 1 (`proposal.md`,
+  `spec.md`), with `to-questionnaire` and `prototype` when a decision is
+  open. Plan: checks stage 1, then `to-openspec` stage 2 (`design.md`,
+  tickets). Implement: `implement-spec`. Review: `review-diff`, then the
+  session moves the why and the decisions into the PR description, ADRs
+  (`docs/adr/`) and `CONTEXT.md`, and removes `proposal.md` and `design.md`.
+  Main keeps only `spec.md` of a change: `specs/` is a change log, the code
+  and `CONTEXT.md` are the present state.
 - **Sessions** run in rootless Podman containers (the `agent-ops-session`
   image: Node + Claude Code CLI, git, gh, Python/pipenv, pnpm), one per task,
   each in a tab of the box's [herdr](https://herdr.dev) server — the agent-aware multiplexer that gives the dispatcher the agent's real lifecycle (`working` / `idle` / `blocked`) instead of screen-activity heuristics, plus TTY persistence and reply injection. Sessions are

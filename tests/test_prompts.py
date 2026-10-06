@@ -8,7 +8,7 @@ CTX = dict(
     repo="jesdi/portfolio_eval", branch="agent/task-42", slot=1,
     backend_port=8101, frontend_port=5201,
     verify_cmd="make e2e-slot SLOT=1", gate_cmd="make gate SLOT=1",
-    spec_path="docs/specs/2026-07-14-widget-design.md",
+    spec_path="specs/2026-07-14-widget/spec.md",
     tickets_dir=".agent/tickets", ticket_count=5, pr_number=12,
     reason="check-failed", labels="auto, frontend",
     tracks="- `trivial`: Rote edits.\n- `standard`: Else.",
@@ -63,7 +63,9 @@ def test_review_prompt_carries_gates_lease_push_and_pr():
     for token in ("make gate SLOT=1", "make e2e-slot SLOT=1",
                   "--force-with-lease origin agent/task-42",
                   '"loop": "review"', "awaiting-ci", "Closes #42",
-                  ".agent/tickets", CTX["spec_path"]):
+                  ".agent/tickets", CTX["spec_path"],
+                  "--body-file .agent/pr-body.md",
+                  'git ls-files "$(dirname specs/2026-07-14-widget/spec.md)"'):
         assert token in out
 
 
@@ -72,6 +74,15 @@ def test_address_review_prompt_carries_reason_pr_and_gate():
     assert "#12" in out and "check-failed" in out and "make gate SLOT=1" in out
     assert "--force-with-lease origin agent/task-42" in out
     assert "awaiting-ci" in out and '"status": "done"' in out
+    assert CTX["spec_path"] in out
+
+
+def test_address_review_prompt_renders_for_a_task_without_a_spec_path():
+    """A pr-open task from before the spec folders has no spec path."""
+    out = render_stage_prompt(Stage.ADDRESS_REVIEW, {**CTX, "spec_path": ""})
+    assert 'Spec path of this task: "". Read that file if it exists.' in out
+    assert "an empty path and no spec" in " ".join(out.split())
+    assert "$" not in out.replace("$(", "")
 
 
 def test_missing_key_raises():
@@ -124,3 +135,44 @@ def test_implement_prompt_keeps_ticket_worktrees_inside_the_task_worktree():
     for token in (".agent/worktrees/", "git worktree prune",
                   "ticket worktrees are removed"):
         assert token in out
+
+
+def _review_para(*words):
+    """The one blank-line-separated paragraph of the review prompt with every word."""
+    paras = [" ".join(p.split()) for p in
+             render_stage_prompt(Stage.REVIEW, CTX).split("\n\n")]
+    (hit,) = [p for p in paras if all(w in p for w in words)]
+    return hit
+
+
+def test_review_prompt_commits_a_staged_removal_and_checks_the_push():
+    """A session that died between `git rm`, the commit and the push must
+    not be read as having finished the step."""
+    para = _review_para("keep only spec.md", "git ls-files")
+    assert "AND `git status` shows nothing staged" in para
+    assert "staged and not committed is yours to commit now" in para
+    assert "in every case" in para and "`git status -sb`" in para
+    assert "plain push" in para
+    assert para.index("commit now") < para.index("git status -sb")
+
+
+def test_review_prompt_keeps_an_adr_an_earlier_session_left_uncommitted():
+    para = _review_para("list `docs/adr/`")
+    assert para.index("`git status`") < para.index("stays")
+    assert "committed or not, stays: commit it, do not add a second" in para
+    assert "term already in `CONTEXT.md`" in para
+
+
+def test_review_prompt_does_not_read_implement_notes_before_its_own_review():
+    look = _review_para("gh pr list")
+    assert "Only check that `.agent/pr-body.md` exists" in look
+    assert "do not read it before step 4" in look
+    ledger = _review_para(".agent/ledger.md", "own review")
+    assert "any other note of the implement session under `.agent/`" in ledger
+    assert "only after" in ledger
+
+
+def test_review_prompt_does_not_invent_a_missing_proposal_or_design():
+    para = _review_para("not recorded")
+    assert "`proposal.md`" in para and "`design.md`" in para
+    assert "never invent" in para
