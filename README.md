@@ -88,8 +88,8 @@ flowchart LR
     spec --> plan["Plan stage<br/>(design, tickets)"]
     plan --> review{"Human review<br/>(from your phone)"}
     review -- feedback --> plan
-    review -- approved --> implement["Implement<br/>(one session per ticket)"]
-    implement -- last ticket --> codereview["Review stage<br/>(rebase, gates, PR)"]
+    review -- approved --> implement["Implement<br/>(one session, every ticket)"]
+    implement -- every ticket merged --> codereview["Review stage<br/>(rebase, gates, PR)"]
     codereview --> pr["PR open"]
     pr -- "CI green, you merge" --> done(["Merged"])
 
@@ -105,7 +105,7 @@ flowchart LR
   launches a Claude Code session for it. Capacity is box-wide: work already in
   flight runs first, then each free unit goes to the target with the fewest
   active tasks.
-- **Staged pipeline** — each task moves through **spec → plan → implement (one fresh session per ticket) → review**,
+- **Staged pipeline** — each task moves through **spec → plan → implement (one session works every ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
   artifact. Spec and plan pause together at one human review gate before
   implementation spends real tokens on them. The dispatcher skips that gate
@@ -113,9 +113,10 @@ flowchart LR
   sessions asked no questionnaire and whose plan has no open question. An
   `untracked:` default that names such a track makes every unlabelled task
   gate-free.
-- **Bounded loops** — review fixes, gate failures, end-to-end fixes and CI
-  fixes on an open PR each have a configured cap; hitting it parks the task
-  with the finished tickets intact and pings you, it never fails the task.
+- **Bounded loops** — review fixes, end-to-end fixes and CI fixes on an open
+  PR each have a configured cap; hitting it parks the task and pings you, it
+  never fails the task. The implement session's own fix loops are bounded by
+  the `implement-spec` skill, not by the dispatcher.
 - **Sessions** run in rootless Podman containers (the `agent-ops-session`
   image: Node + Claude Code CLI, git, gh, Python/pipenv, pnpm), one per task,
   each in a tab of the box's [herdr](https://herdr.dev) server — the agent-aware multiplexer that gives the dispatcher the agent's real lifecycle (`working` / `idle` / `blocked`) instead of screen-activity heuristics, plus TTY persistence and reply injection. Sessions are

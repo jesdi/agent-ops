@@ -105,8 +105,7 @@ flowchart TD
   PL -->|tickets invalid: one retry| PL
   APR -->|operator gives feedback: the plan session applies it| APR
   APR -->|operator approves: signal done| IM[implement]
-  IM -->|next ticket| IM
-  IM -->|last ticket done| RV[review]
+  IM -->|signal done: every ticket merged| RV[review]
   RV -->|signal done: PR opened| PR[pr-open]
   PR -->|PR feedback, red check or conflict| AR[address-review]
   AR -->|signal done| PR
@@ -135,7 +134,7 @@ flowchart TD
 <div class="card"><table>
 <tr><th>Status</th><th>Meaning</th><th>What the pass does</th></tr>
 <tr><td><code>working</code></td><td>The session is doing the stage.</td><td>Nothing, unless a turn-end marker or a timer applies. See <a href="#pass">Dispatcher pass</a>.</td></tr>
-<tr><td><code>done</code></td><td>The stage is complete.</td><td>Checks the stage's output, then starts the next stage or the next ticket.</td></tr>
+<tr><td><code>done</code></td><td>The stage is complete.</td><td>Checks the stage's output, then starts the next stage.</td></tr>
 <tr><td><code>awaiting-review</code></td><td>The plan session has the spec and the plan ready for the operator.</td><td>Checks the ticket set, moves the task to <code>awaiting-plan-review</code>, publishes the spec folder and shows the plan summary in the console. After 15 minutes with no approval, parks the task for review.</td></tr>
 <tr><td><code>blocked</code></td><td>The session cannot continue.</td><td>Parks the task for input with the session's note.</td></tr>
 <tr><td><code>awaiting-answers</code></td><td>The session has a questionnaire, a prototype or a wizard for the operator.</td><td>Parks the task for input and shows the file in the console.</td></tr>
@@ -218,7 +217,7 @@ flowchart TD
 <div class="card"><table>
 <tr><th>Loop</th><th>Cap</th><th>One round is</th></tr>
 <tr><td><code>review</code></td><td>2</td><td>One fix round in the review stage.</td></tr>
-<tr><td><code>gate</code></td><td>2</td><td>One failure of the gate command on a ticket.</td></tr>
+<tr><td><code>gate</code></td><td>2</td><td>One gate-loop round that a session reports. Never counted for an implement session: its skill has its own limit.</td></tr>
 <tr><td><code>e2e</code></td><td>3</td><td>One failed end-to-end run in implement or review.</td></tr>
 <tr><td><code>ci</code></td><td>3</td><td>One fix on an open PR: a red check, a conflict or a failed run.</td></tr>
 </table></div>

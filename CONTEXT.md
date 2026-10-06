@@ -24,15 +24,15 @@ one task. Sessions are disposable; state lives in artifacts and claude-home.
 _Avoid_: agent (that's the OS user), container (that's the isolation layer only)
 
 **Stage**:
-One step of a task's lifecycle (spec → plan → implement, once per ticket →
-review → pr-open → address-review), each executed by a fresh session whose
+One step of a task's lifecycle (spec → plan → implement → review → pr-open →
+address-review), each executed by a fresh session whose
 only input is the previous stage's artifact.
 _Avoid_: phase, step
 
 **Ticket**:
 One vertical slice of the implementation, produced by the plan stage as
-`.agent/tickets/NN-slug.md` and worked by exactly one implement session.
-Never committed; the numeric prefix is the execution order.
+`.agent/tickets/NN-slug.md`. One implement session works every ticket of a
+task. Never committed; the numeric prefix orders the tickets.
 _Avoid_: plan (the plan stage now produces tickets, not a plan file), task
 (that is the whole issue)
 
@@ -62,7 +62,7 @@ _Avoid_: PR stage, verify stage
 
 **Gate**:
 The target repository's own green check (`gate_cmd` in targets.yaml —
-tests, lint, CRAP), run by the session after every ticket and in review.
+tests, lint, CRAP), run by the implement session for every ticket and in review.
 End to end (`verify_cmd`) is separate and runs once, off-box. A target with
 no `verify_cmd` has no pre-PR e2e run; the PR's GitHub checks are the only
 e2e signal.
@@ -71,7 +71,8 @@ _Avoid_: verification ladder
 **Loop cap**:
 The configured number of rounds a bounded loop (review fixes, gate fixes,
 e2e fixes, CI fixes on an open PR) may run before the task parks for the
-operator. Parks, never fails.
+operator. Parks, never fails. A gate round an implement session names is
+never counted: the `implement-spec` skill owns that loop and its limit.
 _Avoid_: retry limit (that is the plan-format retry)
 
 **Background wait**:
@@ -220,7 +221,7 @@ serialisation fields in `state.py` are exempt, as is read-only presentation of t
 A non-exhausted loop decision is eligibility to *retry*, not permission to launch. The usage gate
 (admission) and capacity still decide when launch happens.
 
-**Reset causes** describe logical work boundaries (new stage/ticket, operator intervention, new PR
+**Reset causes** describe logical work boundaries (new stage, operator intervention, new PR
 cycle). A replacement process, model switch, or subscription reset is **not** by itself a fresh
 fix-loop allowance.
 
