@@ -214,3 +214,27 @@ def test_artifact_publication_reuses_remote_snapshot(wt, monkeypatch):
     assert publisher.reference(SPEC_REL, path.read_bytes()) is not None
     assert publisher.reference(SPEC_REL, b'unpublished') is None
     assert sum(args[0] == 'ls-remote' for args in calls) == 1
+
+
+@pytest.mark.parametrize("artifact", [
+    ".agent/plan-review.md",          # would push the summary and the tickets
+    ".agent/specs/x/spec.md",
+    "specs/spec.md",                  # would commit every spec under specs/
+])
+def test_spec_outside_a_folder_of_its_own_is_refused(wt, origin, artifact):
+    path = wt / artifact
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# spec\n")
+    (path.parent / "other.md").write_text("# other\n")
+    res = _publish(wt, artifact=artifact)
+    assert res.url == "" and "unusable" in res.error
+    assert _git(wt, "log", "-1", "--pretty=%s") == "init"   # nothing committed
+
+
+def test_missing_spec_md_is_an_error_although_the_folder_is_tracked(wt, origin):
+    (wt / SPEC_REL).write_text("# spec\n")
+    (wt / FOLDER / "design.md").write_text("# design\n")
+    _git(wt, "add", "."); _git(wt, "commit", "-m", "plan")
+    (wt / SPEC_REL).unlink()
+    res = _publish(wt)
+    assert res.url == "" and SPEC_REL in res.error

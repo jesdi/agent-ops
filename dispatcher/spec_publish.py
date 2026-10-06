@@ -66,15 +66,18 @@ def _must(worktree: str, *args: str) -> subprocess.CompletedProcess:
     return proc
 
 
-def _commit_and_push(worktree: str, branch: str, issue: int, rel: str) -> None:
+def _commit_and_push(worktree: str, branch: str, issue: int, spec: str) -> None:
+    rel = Path(spec).parent.as_posix()
     if _must(worktree, "status", "--porcelain", "--", rel).stdout.strip():
         # Uncommitted (or untracked) files — the agent forgot. Commit
         # ONLY the spec folder; anything else dirty in the worktree
         # is scratch the dispatcher has no business publishing.
         _must(worktree, "add", "--", rel)
         _must(worktree, "commit", "-m", f"docs: spec folder for #{issue}", "--", rel)
-    if _git(worktree, "ls-files", "--error-unmatch", "--", rel).returncode != 0:
-        raise _GitFailed(f"spec folder not tracked in git: {rel}")
+    # The spec itself, not just its folder: a deleted or ignored spec.md
+    # beside a tracked design.md must not get a link.
+    if _git(worktree, "ls-files", "--error-unmatch", "--", spec).returncode != 0:
+        raise _GitFailed(f"spec not tracked in git: {spec}")
     head = _must(worktree, "rev-parse", "HEAD").stdout.strip()
     remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}")
     if remote.returncode != 0 or remote.stdout.split()[:1] != [head]:
@@ -85,16 +88,18 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
                      artifact: str, dry_run: bool = False) -> PublishResult:
     """Publish the folder `artifact` (the task's spec.md) lives in."""
     spec = relative_artifact(worktree, artifact)
-    rel = Path(spec).parent.as_posix() if spec else "."
-    if rel == "." or ".." in Path(rel).parts:
-        # No folder of its own: committing the parent would publish the
-        # whole worktree, scratch and `.agent/` included.
+    parts = Path(spec).parts if spec else ()
+    if len(parts) < 3 or ".." in parts or parts[0] == ".agent":
+        # The folder is committed whole, so the spec needs one of its own
+        # below a parent (specs/<slug>/spec.md): a shallower path would
+        # publish the worktree or every spec, and `.agent/` is never pushed.
         return PublishResult(error=f"unusable spec artifact path: {artifact!r}")
+    rel = Path(spec).parent.as_posix()
     if dry_run:
         print(f"[dry-run] ensure spec folder {rel} committed+pushed on {branch}")
         return PublishResult(url=folder_url(repo, branch, rel))
     try:
-        _commit_and_push(worktree, branch, issue, rel)
+        _commit_and_push(worktree, branch, issue, spec)
     except _GitFailed as exc:
         return PublishResult(error=str(exc))
     except (OSError, subprocess.SubprocessError) as exc:
