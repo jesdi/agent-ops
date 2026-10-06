@@ -37,8 +37,8 @@
       ]
     },
     "to-tickets": {
-      "version": "0.1.3",
-      "package": "0.0.22",
+      "version": "0.1.4",
+      "package": "0.0.27",
       "agents": [
         "claude"
       ]
@@ -58,8 +58,8 @@
       ]
     },
     "implement-spec": {
-      "version": "0.1.3",
-      "package": "0.0.22",
+      "version": "0.1.5",
+      "package": "0.0.27",
       "agents": [
         "claude"
       ]
@@ -72,8 +72,8 @@
       ]
     },
     "to-openspec": {
-      "version": "0.1.2",
-      "package": "0.0.22",
+      "version": "0.1.3",
+      "package": "0.0.27",
       "agents": [
         "claude"
       ]
