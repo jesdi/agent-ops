@@ -591,7 +591,7 @@ def test_asked_is_kept_when_the_spec_session_parks_again_without_a_questionnaire
     main.run_pass(c, deps(sess=sess))
     assert load(c.state_dir, "portfolio_eval", 42).asked is True
     # The operator answers; the resumed session then reports it is blocked.
-    intents.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
                          {"text": "a, b, c"}, actor="op", epoch_ms=1)
     main.run_pass(c, deps(sess=sess))
     assert len(sess.resumed) == 1
@@ -1453,7 +1453,7 @@ def test_reply_wakes_matching_parked_task(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
 
 
 def test_reply_to_unknown_message_is_reported(tmp_path, monkeypatch):
@@ -2252,7 +2252,7 @@ def test_reply_intent_wakes_parked_task_and_is_deleted(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "use oauth"
     assert intents_mod.list_intents(c.state_dir) == []
     applied = [e for e in eventlog.read_tail(c.state_dir)
                if e["event"] == "intent-applied"]
@@ -2305,7 +2305,7 @@ def test_reply_intent_for_running_task_is_queued_but_task_stays_running(tmp_path
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     # message is queued — not dropped — and the task stays unparked
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "hi"
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "hi"
     assert load(c.state_dir, "portfolio_eval", 42).park == ""  # no wake flip for a live session
     assert intents_mod.list_intents(c.state_dir) == []  # intent deleted
 
@@ -2327,7 +2327,7 @@ def test_reply_intent_on_gate_parked_task_wakes_it(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "Approved — proceed."
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "Approved — proceed."
     assert intents_mod.list_intents(c.state_dir) == []
 
 
@@ -2844,7 +2844,7 @@ def test_reply_to_human_park_still_wakes(tmp_path, monkeypatch):
     assert sess.sent_text == []
     # _wake marks PARK_WAKE and queues the text; _resume_woken delivers it into the prompt.
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
     assert messages.all_messages(c.state_dir, "portfolio_eval", 42)[0].text == "hi"
     assert sess.resumed and "hi" in sess.resumed[0][1]
 
@@ -2969,7 +2969,8 @@ def test_gate_holds_inside_the_grace_period(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     fresh = datetime.now(timezone.utc).isoformat()
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
-                   updated_at=fresh)
+                   updated_at=fresh,
+                   operator_request=PlanApprovalRequest(PLAN_SUMMARY))
     gate_signal(wt)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
@@ -3173,7 +3174,7 @@ def test_reply_to_the_plan_parked_message_wakes_the_task(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "drop the caching section"
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "drop the caching section"
 
 
 def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
@@ -3188,7 +3189,7 @@ def test_plain_text_wakes_a_single_gate_parked_task(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "ok"
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42)[0].text == "ok"
 
 
 def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
@@ -4101,7 +4102,7 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
     assert messages.all_messages(c.state_dir, "portfolio_eval", 42)[0].delivered_at != ""
 
 
@@ -4125,7 +4126,7 @@ def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
     main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
     text = d.sessions.resumed[-1][1]
     assert text.index("first") < text.index("second")
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
@@ -4148,7 +4149,7 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
                                       lambda m: True, tuple),
                      "missing Goal line")
     assert "keep the scope small" in d.sessions.resumed[-1][1]
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
@@ -4892,10 +4893,11 @@ def test_successful_pr_open_resume_clears_operator_request(tmp_path, monkeypatch
 # Slice 12 tests
 
 def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
-    """Slice 12: task at gate with operator_request=None (cleared by resume) + fresh
-    updated_at; PLAN session re-signals awaiting-review → operator_request set to the
-    signal's summary, spec_path and stage unchanged, updated_at NOT restarted.
-    GET /request → plan-approval body."""
+    """Slice 12: task at gate with operator_request=None (cleared by resume);
+    PLAN session re-signals awaiting-review → operator_request set to the
+    signal's summary, spec_path and stage unchanged. GET /request →
+    plan-approval body. (The new round's publish, notification and clock are
+    in test_ready_again_after_a_resume_is_a_new_review_round.)"""
     from fastapi.testclient import TestClient
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
@@ -4908,13 +4910,13 @@ def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
                    operator_request=None,
                    spec_path="specs/x/spec.md",
                    updated_at=fresh_ts)
+    write_tickets(wt, 1)
     gate_signal(wt)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_PLAN_REVIEW, "stage must stay unchanged"
     assert t.operator_request == PlanApprovalRequest(".agent/plan-review.md"), "must re-arm approval"
     assert t.spec_path == "specs/x/spec.md", "spec_path must NOT become the summary path"
-    assert t.updated_at == fresh_ts, "updated_at must NOT be restarted (grace preserved)"
     # GET /request must return plan-approval once re-armed
     sources = Sources(c, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
@@ -5289,7 +5291,7 @@ def test_resume_respawns_the_crashed_ticket_fresh(tmp_path, monkeypatch):
     assert t.slot != NO_SLOT
     assert (42, "I") in [(i, o) for (i, o) in gh.statused]
     from dispatcher import messages
-    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
 def test_resume_of_a_killed_task_is_still_skipped(tmp_path, monkeypatch):
@@ -5309,3 +5311,194 @@ def test_a_launch_that_raises_on_resume_fails_resumable_again(tmp_path, monkeypa
     main.run_pass(c, deps(sess=FakeSessions(spawn_raises={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.crashed_stage) == (Stage.FAILED, "implement")
+
+
+# --- plan review gate, fix round 1 ------------------------------------------
+
+def _gate_pass(c, sess, monkeypatch, **kw):
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **k: spec_publish.PublishResult(url=SPEC_URL))
+    d = deps(sess=sess, **kw)
+    main.run_pass(c, d)
+    return d
+
+
+def test_only_a_spec_done_or_an_approval_changes_the_track(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)            # on the standard track
+    sig = wt / ".agent" / "stage.json"
+    sess = FakeSessions(alive={42})
+    for status in ("working", "awaiting-review"):
+        sig.write_text(json.dumps({"stage": "plan", "status": status,
+                                   "artifact": PLAN_SUMMARY, "track": "trivial"}))
+        _gate_pass(c, sess, monkeypatch)
+        assert load(c.state_dir, "portfolio_eval", 42).track == "standard", status
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.AWAITING_PLAN_REVIEW
+    sig.write_text(json.dumps({"stage": "plan", "status": "done", "track": "trivial"}))
+    _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.track) == (Stage.IMPLEMENT, "trivial")
+
+
+def test_premature_done_naming_a_track_does_not_change_it(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "done", "track": "trivial"}))
+    _gate_pass(c, FakeSessions(alive={42}), monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.track, t.plan_slips) == (Stage.PLAN, "standard", 1)
+
+
+def test_ready_again_after_a_resume_is_a_new_review_round(tmp_path, monkeypatch):
+    """After a resume cleared the request, a ready report publishes, notifies
+    and restarts the grace clock; a repeat with the request armed is silent."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    stamp = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH,
+                   updated_at=stamp)
+    write_tickets(wt, 2)
+    gate_signal(wt)
+    sess = FakeSessions(alive={42})
+    seen = []
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **k: seen.append(k) or spec_publish.PublishResult(url=SPEC_URL))
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
+    assert t.updated_at > stamp, "a new round restarts the grace clock"
+    assert len(seen) == 1 and d.notifier.sent.count("awaiting_plan_review") == 1
+    main.run_pass(c, d)
+    assert len(seen) == 1 and d.notifier.sent.count("awaiting_plan_review") == 1
+    assert load(c.state_dir, "portfolio_eval", 42).updated_at == t.updated_at
+
+
+def test_ready_again_with_a_ticket_gap_does_not_ask_for_review(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH,
+                   updated_at=datetime.now(timezone.utc).isoformat())
+    write_tickets(wt, 1)
+    (wt / ".agent" / "tickets" / "03-late.md").write_text(GOOD_TICKET)
+    gate_signal(wt)
+    sess = FakeSessions(alive={42})
+    d = _gate_pass(c, sess, monkeypatch)
+    assert len(sess.resumed) == 1 and "contiguous" in sess.resumed[0][1]
+    assert "awaiting_plan_review" not in d.notifier.sent
+    assert load(c.state_dir, "portfolio_eval", 42).operator_request is None
+
+
+def test_working_at_the_gate_clears_the_request_and_ready_is_a_new_round(
+        tmp_path, monkeypatch):
+    """Feedback through /attach: while the session reworks the plan the stale
+    approve request is gone; its next ready report is announced again."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = FakeSessions(alive={42})
+    _gate_pass(c, sess, monkeypatch)
+    armed = load(c.state_dir, "portfolio_eval", 42)
+    assert armed.operator_request is not None
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "working", "note": "applying feedback"}))
+    _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.AWAITING_PLAN_REVIEW and t.operator_request is None
+    gate_signal(wt)
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
+    assert d.notifier.sent.count("awaiting_plan_review") == 1
+
+
+def test_gate_phase_has_its_own_retry(tmp_path, monkeypatch):
+    """Tickets invalid once → fixed → gate → approval with a misspelled track
+    is bounced with the list, not parked."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c, plan_retries=1)   # the ticket retry was used
+    sess = FakeSessions(alive={42})
+    _gate_pass(c, sess, monkeypatch)
+    assert load(c.state_dir, "portfolio_eval", 42).plan_retries == 0
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "done", "track": "standrad"}))
+    _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == "" and len(sess.resumed) == 1
+    assert "deep" in sess.resumed[0][1] and "standard" in sess.resumed[0][1]
+
+
+def test_ticket_gap_after_a_premature_done_bounce_is_resumed_not_failed(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sig = wt / ".agent" / "stage.json"
+    sig.write_text(json.dumps({"stage": "plan", "status": "done"}))
+    sess = FakeSessions(alive={42})
+    _gate_pass(c, sess, monkeypatch)              # bounced: nobody approved
+    (wt / ".agent" / "tickets" / "04-late.md").write_text(GOOD_TICKET)
+    gate_signal(wt)
+    _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.PLAN and t.park == ""
+    assert len(sess.resumed) == 2 and "contiguous" in sess.resumed[1][1]
+
+
+def test_task_failed_from_the_gate_drops_the_approval_request(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH,
+                   plan_retries=1, operator_request=PlanApprovalRequest(PLAN_SUMMARY))
+    (wt / ".agent" / "tickets").mkdir()
+    (wt / ".agent" / "tickets" / "01-bad.md").write_text("# tiny\n")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "done"}))
+    _gate_pass(c, FakeSessions(alive={42}), monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED and t.operator_request is None
+
+
+def test_approval_sent_to_a_live_gate_reaches_the_session(tmp_path, monkeypatch):
+    """A console reply to a gate task that has not parked yet must reach the
+    session, also when the grace time ends before the session reacts."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = LiveUntilEnded(alive={42})
+    _gate_pass(c, sess, monkeypatch)
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.AWAITING_PLAN_REVIEW
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+                         {"text": "Approved — proceed."}, actor="op", epoch_ms=1)
+    _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == "" and t.slot != NO_SLOT and 42 in sess.alive_set
+    # The grace time ends before the session reacts: nothing is lost,
+    # and the session's `done` starts implement.
+    save(c.state_dir, dc_replace(t, updated_at=(
+        datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()))
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "done"}))
+    _gate_pass(c, sess, monkeypatch)
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.IMPLEMENT
+    got = [m for _i, m, *_ in sess.resumed if "Approved — proceed." in m]
+    assert len(got) == 1, "the reply is delivered, and only once"
+    assert main.messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+
+
+def test_grace_park_arms_the_request_when_none_is_armed(tmp_path, monkeypatch):
+    """A rework longer than the grace time: the ready report parks at once,
+    and the parked task still offers the summary for approval."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH)
+    gate_signal(wt)
+    _gate_pass(c, FakeSessions(alive={42}), monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_REVIEW
+    assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)

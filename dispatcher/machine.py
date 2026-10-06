@@ -43,9 +43,12 @@ class ApplyDecision:
 class RetryStage:
     """Re-run an in-flight stage in-session (via --continue) with corrective
     feedback, instead of failing the task outright. Used when an artifact
-    fails its mechanical format check but the content is likely salvageable."""
+    fails its mechanical format check but the content is likely salvageable.
+    `slip` marks a plan signal that broke the protocol (an unapproved `done`,
+    an unknown track): it spends its own retry, not the ticket check's."""
     stage: Stage
     reason: str = ""
+    slip: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,19 +94,19 @@ class ParkForCI:
 
 
 @dataclass(frozen=True)
-class ArmPlanApproval:
-    """Re-establish the plan-approval operator_request on a resumed gate task
-    whose operator_request was cleared by the resume (slice 12). Does NOT
-    re-stamp updated_at (grace clock must not restart) and does NOT emit
-    SetTaskStage (no stage transition, no re-publish, no re-notify)."""
-    artifact: str = ""
+class DisarmPlanApproval:
+    """The session at the gate reports `working`: it reworks the plan on the
+    operator's feedback, so the summary the console offers for approval is
+    stale. Its next ready report is a new review round."""
 
 
 @dataclass(frozen=True)
 class ParkForReview:
     """Grace expired at the plan-review gate. Unlike every other park this
     one releases the E2E slot too, so the dispatcher can spend it on the next
-    Ready task instead of holding it for a human who is asleep."""
+    Ready task instead of holding it for a human who is asleep. `artifact`
+    is the summary the park arms when no request is armed."""
+    artifact: str = ""
 
 
 @dataclass(frozen=True)
@@ -126,7 +129,8 @@ class BackgroundView(NamedTuple):
 # A ticket set that fails the mechanical check is usually a numbering or
 # heading slip — resume the session with the reason this many times before
 # giving up and failing the task. A plan `done` that skipped the gate or names
-# no configured track is a protocol slip and spends the same retry, then parks.
+# no configured track is a protocol slip: it has a retry of its own
+# (TaskState.plan_slips), then parks. Gate entry resets both.
 PLAN_RETRY_LIMIT = 1
 PLAN_NO_APPROVAL = ('status "done" is accepted only after the operator has '
                     'approved the plan at the review gate; write the review '
@@ -183,8 +187,8 @@ def _spec_bounce(task: TaskState, reason: str) -> list[object]:
 
 
 def _plan_bounce(task: TaskState, reason: str) -> list[object]:
-    if task.plan_retries < PLAN_RETRY_LIMIT:
-        return [RetryStage(Stage.PLAN, reason)]
+    if task.plan_slips < PLAN_RETRY_LIMIT:
+        return [RetryStage(Stage.PLAN, reason, slip=True)]
     return [ParkForInput(reason)]
 
 
@@ -225,6 +229,8 @@ def _blocked_actions(task: TaskState, signal: StageSignal) -> list[object]:
 def _working_actions(task: TaskState, signal: StageSignal, session_alive: bool,
                      waiting: bool, caps: LoopCaps) -> list[object]:
     loop_acts = _loop_actions(task, signal, caps)
+    if task.stage == Stage.AWAITING_PLAN_REVIEW and task.operator_request:
+        loop_acts = [DisarmPlanApproval()] + loop_acts
     if waiting and session_alive:
         return loop_acts + [ParkForInput("(session stopped mid-stage waiting for input)")]
     return loop_acts or [NoOp()]
@@ -234,14 +240,15 @@ def _review_actions(task: TaskState, signal: StageSignal,
                     grace_elapsed: bool) -> list[object]:
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
         if grace_elapsed:
-            return [ParkForReview()]
-        if not task.operator_request:
-            return [ArmPlanApproval(artifact=signal.artifact)]
-        return [NoOp()]  # already notified on a previous pass
-    if task.stage == Stage.SPEC:
+            return [ParkForReview(artifact=signal.artifact)]
+        if task.operator_request:
+            return [NoOp()]  # already notified on a previous pass
+        # No request armed: a resume or a rework cleared it, so this ready
+        # report is a new review round. It enters the gate again.
+    elif task.stage == Stage.SPEC:
         # The spec stage has no review gate: nobody would answer this.
         return _spec_bounce(task, SPEC_NO_REVIEW)
-    if task.stage != Stage.PLAN:
+    elif task.stage != Stage.PLAN:
         return [NoOp()]
     result, failed = _checked_tickets(task)
     return failed or [

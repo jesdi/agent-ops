@@ -9,7 +9,7 @@ from dispatcher.machine import (
     PLAN_NO_APPROVAL,
     SPEC_NO_REVIEW,
     ApplyDecision,
-    ArmPlanApproval,
+    DisarmPlanApproval,
     HandleCrash,
     NoOp,
     Notify,
@@ -134,8 +134,11 @@ def test_plan_done_before_the_gate_is_bounced_once_then_parks(tmp_path):
     tickets(tmp_path, n=3)   # a valid set changes nothing: nobody approved it
     s = sig("plan", "done", ".agent/tickets")
     acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)), s, True)
-    assert acts == [RetryStage(Stage.PLAN, PLAN_NO_APPROVAL)]
+    assert acts == [RetryStage(Stage.PLAN, PLAN_NO_APPROVAL, slip=True)]
+    # the ticket check's retry is another budget
     t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_retries=1)
+    assert next_actions(t, s, True) == acts
+    t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_slips=1)
     assert next_actions(t, s, True) == [ParkForInput(PLAN_NO_APPROVAL)]
 
 
@@ -145,8 +148,8 @@ def test_approval_naming_a_track_is_validated_as_the_spec_track_is(tmp_path):
     bad = StageSignal("plan", "done", track="deep")
     (act,) = next_actions(gate, bad, True, tracks=TRACKS)
     assert act == RetryStage(Stage.PLAN, "stage.json names track 'deep'; it must "
-                                         "be one of ['standard', 'trivial']")
-    (act,) = next_actions(replace(gate, plan_retries=1), bad, True, tracks=TRACKS)
+                                         "be one of ['standard', 'trivial']", slip=True)
+    (act,) = next_actions(replace(gate, plan_slips=1), bad, True, tracks=TRACKS)
     assert isinstance(act, ParkForInput) and "must be one of" in act.note
     # naming no track keeps the task's; naming a configured one is accepted
     for track in ("", "trivial"):
@@ -499,12 +502,30 @@ def test_address_review_dead_session_is_crash():
 
 # Slice 12 tests
 
-def test_gate_rearms_approval_when_operator_request_cleared():
-    """Slice 12: resumed task at gate with cleared operator_request → re-arm, not NoOp."""
-    t = task(Stage.AWAITING_PLAN_REVIEW)  # operator_request=None by default
-    acts = next_actions(t, sig("plan", "awaiting-review", artifact=".agent/plan-review.md"),
-                        session_alive=True, grace_elapsed=False)
-    assert acts == [ArmPlanApproval(artifact=".agent/plan-review.md")]
+def test_ready_at_the_gate_with_no_request_is_a_new_round(tmp_path):
+    """A resume or a rework cleared the request: the ready report enters the
+    gate again (ticket check, publish, notify), it is not a silent re-arm."""
+    tickets(tmp_path, n=2)
+    t = task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path))
+    s = sig("plan", "awaiting-review", artifact=".agent/plan-review.md")
+    acts = next_actions(t, s, session_alive=True, grace_elapsed=False)
+    assert acts == [
+        SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=".agent/plan-review.md"),
+        PublishSpec(), Notify("awaiting_plan_review", "")]
+    (tmp_path / ".agent" / "tickets" / "04-late.md").write_text(GOOD_TICKET)
+    (act,) = next_actions(t, s, session_alive=True)
+    assert isinstance(act, RetryStage) and not act.slip and "contiguous" in act.reason
+    # the grace park arms the summary when no request is armed
+    assert next_actions(t, s, True, grace_elapsed=True) == [
+        ParkForReview(artifact=".agent/plan-review.md")]
+
+
+def test_working_at_the_gate_disarms_the_request_once():
+    armed = replace(task(Stage.AWAITING_PLAN_REVIEW),
+                    operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+    assert next_actions(armed, sig("plan", "working"), True) == [DisarmPlanApproval()]
+    assert next_actions(task(Stage.AWAITING_PLAN_REVIEW), sig("plan", "working"),
+                        True) == [NoOp()]
 
 
 def test_gate_does_not_rearm_when_operator_request_already_set():

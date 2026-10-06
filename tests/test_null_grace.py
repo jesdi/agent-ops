@@ -11,11 +11,14 @@ from datetime import datetime, timedelta, timezone
 
 import dispatcher.main as main
 from dispatcher.github import Candidate
-from dispatcher.state import PARK_REVIEW, load
+from dispatcher.state import PARK_REVIEW, PlanApprovalRequest, load
 
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps,
                              gate_signal, make_task, patch_usage,
                              patch_workspace, replace_capacity)
+
+# A task that waits at the gate has its request armed.
+ARMED = PlanApprovalRequest(".agent/plan-review.md")
 
 
 def test_null_grace_never_parks_after_12_hours(tmp_path, monkeypatch):
@@ -26,6 +29,7 @@ def test_null_grace_never_parks_after_12_hours(tmp_path, monkeypatch):
     twelve_hours_ago = (datetime.now(timezone.utc)
                         - timedelta(hours=12)).isoformat()
     wt = make_task(c, issue=42, stage=main.Stage.AWAITING_PLAN_REVIEW,
+                   operator_request=ARMED,
                    updated_at=twelve_hours_ago)
     gate_signal(wt)
     gh = FakeGitHub([Candidate(99, "fresh", "u")])  # Ready candidate elsewhere
@@ -52,6 +56,7 @@ def test_zero_grace_parks_the_pass_after_it_entered_review(tmp_path, monkeypatch
     patch_workspace(monkeypatch, tmp_path)
     c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
     wt = make_task(c, issue=42, stage=main.Stage.AWAITING_PLAN_REVIEW,
+                   operator_request=ARMED,
                    updated_at=datetime.now(timezone.utc).isoformat())
     gate_signal(wt)
     sess = FakeSessions(alive={42})
@@ -72,6 +77,7 @@ def test_default_grace_does_not_park_before_15_minutes(tmp_path, monkeypatch):
     just_under = (datetime.now(timezone.utc)
                  - timedelta(minutes=14, seconds=59)).isoformat()
     wt = make_task(c, issue=42, stage=main.Stage.AWAITING_PLAN_REVIEW,
+                   operator_request=ARMED,
                    updated_at=just_under)
     gate_signal(wt)
     sess = FakeSessions(alive={42})
@@ -92,6 +98,7 @@ def test_default_grace_parks_at_15_minutes(tmp_path, monkeypatch):
     at_boundary = (datetime.now(timezone.utc)
                   - timedelta(minutes=15, seconds=1)).isoformat()
     wt = make_task(c, issue=42, stage=main.Stage.AWAITING_PLAN_REVIEW,
+                   operator_request=ARMED,
                    updated_at=at_boundary)
     gate_signal(wt)
     sess = FakeSessions(alive={42})

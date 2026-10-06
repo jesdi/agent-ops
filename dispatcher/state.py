@@ -131,6 +131,7 @@ class TaskState:
     picks: dict[str, str] = field(default_factory=dict)  # policy stage -> "provider/model[@effort]", sticky per stage
     spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track, awaiting-review)
     plan_retries: int = 0                # in-session plan-format retries used
+    plan_slips: int = 0                  # in-session plan-signal retries used (unapproved done, bad track)
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
     feedback_pending: bool = False       # feedback seen, address-review deferred
