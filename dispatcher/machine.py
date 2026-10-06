@@ -175,6 +175,102 @@ def _spec_bounce(task: TaskState, reason: str) -> list[object]:
     return [ParkForInput(reason)]
 
 
+def _dead_session_actions(task: TaskState) -> list[object]:
+    """Empty when a dead session needs no action of its own."""
+    if task.stage == Stage.AWAITING_SPEC_REVIEW:
+        # Reboot recovery: gate-parked tasks don't expire — re-spawn a
+        # fresh spec session; the draft spec is on disk in the worktree.
+        return [SpawnStage(Stage.SPEC)]
+    if task.stage in IN_FLIGHT_STAGES:
+        return [HandleCrash()]
+    return []
+
+
+def _stalled(signal: StageSignal | None, session_alive: bool, waiting: bool,
+             idle_seconds: float | None, stall_after: float) -> bool:
+    # Time-based liveness (unchanged): gated statuses are idle by design and
+    # fall through to their own rules.
+    stalled = (session_alive and stall_after > 0
+               and idle_seconds is not None and idle_seconds > stall_after)
+    return stalled and (signal is None
+                        or (signal.status == "working" and not waiting))
+
+
+def _ci_actions(signal: StageSignal) -> list[object]:
+    if signal.run_id <= 0:
+        return [SetTaskStage(Stage.FAILED),
+                Notify("artifact_failed", "awaiting-ci without run_id")]
+    return [ParkForCI(signal.run_id)]
+
+
+def _blocked_actions(task: TaskState, signal: StageSignal) -> list[object]:
+    if task.stage == Stage.BLOCKED:
+        return [NoOp()]  # legacy escalate-in-place state
+    return [ParkForInput(signal.note)]
+
+
+def _working_actions(task: TaskState, signal: StageSignal, session_alive: bool,
+                     waiting: bool, caps: LoopCaps) -> list[object]:
+    loop_acts = _loop_actions(task, signal, caps)
+    if waiting and session_alive:
+        return loop_acts + [ParkForInput("(session stopped mid-stage waiting for input)")]
+    return loop_acts or [NoOp()]
+
+
+def _review_actions(task: TaskState, signal: StageSignal,
+                    grace_elapsed: bool) -> list[object]:
+    if task.stage == Stage.AWAITING_SPEC_REVIEW:
+        if grace_elapsed:
+            return [ParkForReview()]
+        if not task.operator_request:
+            return [ArmSpecApproval(artifact=signal.artifact)]
+        return [NoOp()]  # already notified on a previous pass
+    if task.stage != Stage.SPEC:
+        return [NoOp()]
+    # The spec stage has no review gate: nobody would answer this.
+    return _spec_bounce(task, SPEC_NO_REVIEW)
+
+
+def _plan_done_actions(task: TaskState) -> list[object]:
+    result: CheckResult = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    if not result.ok:
+        if task.plan_retries < PLAN_RETRY_LIMIT:
+            return [RetryStage(Stage.PLAN, result.reason)]
+        return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
+    return [StartTicket(1, result.count),
+            Notify("implement_started", f"{result.count} ticket(s)")]
+
+
+def _spec_done_actions(task: TaskState, signal: StageSignal,
+                       tracks: frozenset[str] | None) -> list[object]:
+    bounced = _track_actions(task, signal, tracks)
+    if bounced:
+        return bounced
+    result = check_spec(_artifact_path(task, signal))
+    if not result.ok:
+        return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
+    return [SpawnStage(Stage.PLAN)]
+
+
+def _done_actions(task: TaskState, signal: StageSignal,
+                  tracks: frozenset[str] | None) -> list[object]:
+    if task.stage == Stage.IMPLEMENT:
+        if task.ticket_cursor < task.ticket_count:
+            nxt = task.ticket_cursor + 1
+            return [StartTicket(nxt, task.ticket_count)]
+        return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
+    if task.stage == Stage.REVIEW:
+        return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]
+    if task.stage == Stage.ADDRESS_REVIEW:
+        # The PR is the artifact — nothing to format-check.
+        return [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", signal.note)]
+    if task.stage == Stage.PLAN:
+        return _plan_done_actions(task)
+    if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
+        return _spec_done_actions(task, signal, tracks)
+    return [NoOp()]   # done signal for a terminal/unknown stage — ignore
+
+
 def next_actions(
     task: TaskState,
     signal: StageSignal | None,
@@ -192,19 +288,11 @@ def next_actions(
     done = signal is not None and signal.status == "done"
 
     if not session_alive and not done:
-        if task.stage == Stage.AWAITING_SPEC_REVIEW:
-            # Reboot recovery: gate-parked tasks don't expire — re-spawn a
-            # fresh spec session; the draft spec is on disk in the worktree.
-            return [SpawnStage(Stage.SPEC)]
-        if task.stage in IN_FLIGHT_STAGES:
-            return [HandleCrash()]
+        dead = _dead_session_actions(task)
+        if dead:
+            return dead
 
-    # Time-based liveness (unchanged): gated statuses are idle by design and
-    # fall through to their own rules below.
-    stalled = (session_alive and stall_after > 0
-               and idle_seconds is not None and idle_seconds > stall_after)
-    if stalled and (signal is None
-                    or (signal.status == "working" and not waiting)):
+    if _stalled(signal, session_alive, waiting, idle_seconds, stall_after):
         return [ParkForInput(
             f"(no session output for {int(stall_after) // 60}m — "
             f"likely login/trust prompt or hang)")]
@@ -212,18 +300,11 @@ def next_actions(
     if signal is None:
         return [NoOp()]
 
-    loop_acts = _loop_actions(task, signal, caps)
-
     if signal.status == "awaiting-ci":
-        if signal.run_id <= 0:
-            return [SetTaskStage(Stage.FAILED),
-                    Notify("artifact_failed", "awaiting-ci without run_id")]
-        return [ParkForCI(signal.run_id)]
+        return _ci_actions(signal)
 
     if signal.status == "blocked":
-        if task.stage == Stage.BLOCKED:
-            return [NoOp()]  # legacy escalate-in-place state
-        return [ParkForInput(signal.note)]
+        return _blocked_actions(task, signal)
 
     if signal.status == "awaiting-answers":
         # Questionnaire, prototype or wizard: an input park that carries the
@@ -231,50 +312,13 @@ def next_actions(
         return [ParkForInput(signal.note, artifact=signal.artifact, is_answers=True)]
 
     if signal.status == "working":
-        if waiting and session_alive:
-            return loop_acts + [ParkForInput("(session stopped mid-stage waiting for input)")]
-        return loop_acts or [NoOp()]
+        return _working_actions(task, signal, session_alive, waiting, caps)
 
     if signal.status == "awaiting-review":
-        if task.stage == Stage.AWAITING_SPEC_REVIEW:
-            if grace_elapsed:
-                return [ParkForReview()]
-            if not task.operator_request:
-                return [ArmSpecApproval(artifact=signal.artifact)]
-            return [NoOp()]  # already notified on a previous pass
-        if task.stage != Stage.SPEC:
-            return [NoOp()]
-        # The spec stage has no review gate: nobody would answer this.
-        return _spec_bounce(task, SPEC_NO_REVIEW)
+        return _review_actions(task, signal, grace_elapsed)
 
     if done:
-        if task.stage == Stage.IMPLEMENT:
-            if task.ticket_cursor < task.ticket_count:
-                nxt = task.ticket_cursor + 1
-                return [StartTicket(nxt, task.ticket_count)]
-            return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
-        if task.stage == Stage.REVIEW:
-            return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]
-        if task.stage == Stage.ADDRESS_REVIEW:
-            # The PR is the artifact — nothing to format-check.
-            return [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", signal.note)]
-        if task.stage == Stage.PLAN:
-            result: CheckResult = check_tickets(Path(task.worktree) / TICKETS_DIR)
-            if not result.ok:
-                if task.plan_retries < PLAN_RETRY_LIMIT:
-                    return [RetryStage(Stage.PLAN, result.reason)]
-                return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-            return [StartTicket(1, result.count),
-                    Notify("implement_started", f"{result.count} ticket(s)")]
-        if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
-            bounced = _track_actions(task, signal, tracks)
-            if bounced:
-                return bounced
-            result = check_spec(_artifact_path(task, signal))
-            if not result.ok:
-                return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-            return [SpawnStage(Stage.PLAN)]
-        return [NoOp()]   # done signal for a terminal/unknown stage — ignore
+        return _done_actions(task, signal, tracks)
 
     return [NoOp()]
 
