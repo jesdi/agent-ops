@@ -21,7 +21,7 @@ class Runtime:
     env: tuple[str, ...]    # extra -e flags: NAME passes the host's value, NAME=v sets it
     herdr_agent: str        # herdr's hint for the agent behind the podman wrapper
     launch_args: Callable[[str, str, str, str], str]  # (name, worktree, bare model, effort)
-    resume_args: str        # what continues the stage's own session
+    resume_args: Callable[[str], str]  # raw session ID -> shell args with a literal ID
     # (prompt, bare model, effort) -> one-shot non-interactive args; the
     # prompt is a shell word the caller already quoted or substitutes.
     headless_args: Callable[[str, str, str], str]
@@ -49,7 +49,7 @@ class Runtime:
 
     def resume(self, session_id: str, message: str) -> str:
         """The args a launch takes to continue with the (quoted) message."""
-        return " ".join(filter(None, (self.resume_args, shlex.quote(session_id), message)))
+        return " ".join(filter(None, (self.resume_args(session_id), message)))
 
     def resume_cmd(self, session_id: str, message: str = "") -> str:
         """The whole resume command line, e.g. for a crash repro."""
@@ -83,7 +83,10 @@ CLAUDE = Runtime(
     launch_args=lambda name, worktree, model, effort: (
         f"--remote-control {name} --permission-mode auto --model {model}"
         f"{' --effort ' + effort if effort else ''}"),
-    resume_args="--resume",
+    # Commander treats a dash-prefixed optional value as a new option unless
+    # it is attached with '='. Shell quoting alone cannot make it a value.
+    resume_args=lambda session_id: (
+        f"--resume{'=' if session_id.startswith('-') else ' '}{shlex.quote(session_id)}"),
     headless_args=lambda prompt, model, effort: (
         f"-p {prompt} --permission-mode auto --model {model}"
         f"{' --effort ' + effort if effort else ''}"),
@@ -113,7 +116,9 @@ CODEX = Runtime(
         # path with a quote or a backslash, which TOML could not carry.
         " -c " + shlex.quote(f'notify=["{worktree}/.agent/stop-hook.sh"]')
         + " -c " + shlex.quote(f'projects={{"{worktree}"={{trust_level="trusted"}}}}')),
-    resume_args="resume",
+    # Clap's '--' ends option parsing, making even '--last' a literal ID.
+    resume_args=lambda session_id: (
+        f"resume {'-- ' if session_id.startswith('-') else ''}{shlex.quote(session_id)}"),
     # `codex exec`: one turn, no TTY. Same bypass as launch_args (the
     # container is the isolation); exec's default read-only sandbox could
     # not write the caller's output file or reach `gh`.
