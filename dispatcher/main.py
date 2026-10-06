@@ -1420,8 +1420,8 @@ def _on_disarm_plan_approval(turn: _Turn, task: TaskState,
 
 def _on_park_for_review(turn: _Turn, task: TaskState, act: ParkForReview,
                         launch: Launch | None) -> None:
-    task = replace(task, operator_request=task.operator_request
-                   or _plan_approval(task, act.artifact))
+    if act.artifact is not None:
+        task = replace(task, operator_request=_plan_approval(task, act.artifact))
     _park_for_review(turn.cfg, turn.deps, turn.target, task, dry_run=turn.dry_run)
 
 

@@ -105,9 +105,10 @@ class ParkForReview:
     """Grace expired at the plan-review gate. Unlike every other park this
     one releases the E2E slot too, so the dispatcher can spend it on the next
     Ready task instead of holding it for a human who is asleep. Also where
-    a task ends that used up its unattended rounds; `artifact` is the summary
-    that park arms when no request is armed."""
-    artifact: str = ""
+    a task ends that used up its unattended rounds. `artifact` is set only by
+    a ready report that passed the ticket check in this pass: the park then
+    arms that summary for approval. None arms nothing."""
+    artifact: str | None = None
 
 
 @dataclass(frozen=True)

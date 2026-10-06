@@ -5664,3 +5664,49 @@ def test_rounds_that_follow_an_operator_reply_are_never_capped(tmp_path, monkeyp
         assert notifier.sent.count("awaiting_plan_review") == 1 + n
     assert "plan_parked" not in notifier.sent
     assert len(sess.resumed) == 5
+
+
+def test_capped_respawn_park_does_not_arm_an_unchecked_summary(tmp_path, monkeypatch):
+    """The session died in the middle of a rework (request disarmed) and the
+    respawns are used up: the task parks, but nothing is offered for approval,
+    because no ready report passed the ticket check."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH,
+                   unattended_rounds=2)
+    write_tickets(wt, 2)
+    gate_signal(wt)                       # the dead session's old signal
+    d = _gate_pass(c, FakeSessions(alive=set()), monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_REVIEW and d.notifier.sent == ["plan_parked"]
+    assert t.operator_request is None
+
+
+def test_old_ready_signal_is_never_read_after_a_respawn_or_a_resume(tmp_path, monkeypatch):
+    """A fresh or resumed session starts from a `working` signal, so the
+    previous session's `awaiting-review` cannot arm a request for a summary
+    the new session has not written."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH)
+    write_tickets(wt, 2)
+    sig = wt / ".agent" / "stage.json"
+    sess = LiveUntilEnded()
+    notifier = FakeNotifier()
+    gate_signal(wt)
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)       # dead: respawn
+    assert json.loads(sig.read_text())["status"] == "working"
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)       # new session, no report yet
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.PLAN and t.operator_request is None
+    gate_signal(wt)
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)       # its own ready report
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+                             {"text": "drop ticket 2"}, actor="op", epoch_ms=1)
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)       # resumed with feedback
+    assert json.loads(sig.read_text())["status"] == "working"
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.AWAITING_PLAN_REVIEW and t.operator_request is None
+    assert notifier.sent.count("awaiting_plan_review") == 1
