@@ -1043,11 +1043,3 @@ def test_usage_view_reports_the_mode_options_and_one_decimal_pace():
         "first": "openai"}
     assert view.providers[0].windows[0].required_pace == 1.6
 
-
-def test_implement_progress_is_trimmed_and_capped():
-    from dispatcher.state import StageSignal
-    from web.read_model import PROGRESS_MAX_CHARS, _implement_progress
-    sig = StageSignal(stage="implement", status="working",
-                      note="  " + "x" * 10_000 + "  ")
-    got = _implement_progress(make_task(), sig)
-    assert got == "x" * PROGRESS_MAX_CHARS

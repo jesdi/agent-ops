@@ -373,7 +373,7 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
         return StageSignal(
             stage=str(d["stage"]),
             status=str(d["status"]),
-            note=d["note"] if isinstance(d.get("note"), str) else "",
+            note=str(d.get("note", "")),
             artifact=str(d.get("artifact", "")),
             run_id=int(d.get("run_id", 0) or 0),
             loop=str(d.get("loop", "") or ""),

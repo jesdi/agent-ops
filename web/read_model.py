@@ -387,9 +387,12 @@ PROGRESS_MAX_CHARS = 200  # the session writes this text: bound what the page sh
 def _implement_progress(t: TaskState,
                         signal: StageSignal | None) -> str | None:
     if t.stage != Stage.IMPLEMENT or signal is None \
-            or signal.stage != Stage.IMPLEMENT:
-        return None
-    return signal.note.strip()[:PROGRESS_MAX_CHARS] or None
+            or signal.stage != Stage.IMPLEMENT or signal.status != "working":
+        return None  # blocked / question / CI notes are not progress
+    note = signal.note.strip()
+    if len(note) > PROGRESS_MAX_CHARS:
+        note = note[:PROGRESS_MAX_CHARS - 1].rstrip() + "…"
+    return note or None
 
 
 def task_detail(t: TaskState, *, model: str,

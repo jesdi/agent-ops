@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import subprocess
 import time
 from dataclasses import dataclass
@@ -24,6 +26,7 @@ from dispatcher.state import TaskState
 
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
+STAGE_SIGNAL_MAX_BYTES = 64 * 1024
 DISPATCHER_KICK = ("systemctl", "--user", "start",
                    "agent-ops-dispatcher.service")
 
@@ -275,9 +278,23 @@ class Sources:
             return {}
 
     def stage_signal(self, worktree: str) -> state.StageSignal | None:
+        """The session-written .agent/stage.json, read defensively: the file
+        is model-written, so a FIFO, a symlink, a huge or a nested file must
+        degrade to None, never hang or fail the task view."""
+        flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_NONBLOCK", 0))
         try:
-            return state.read_stage_signal(worktree)
-        except OSError:  # unreadable file: no progress, never a 500
+            fd = os.open(Path(worktree) / ".agent" / "stage.json", flags)
+            with os.fdopen(fd, "rb") as f:
+                st = os.fstat(f.fileno())
+                if not stat.S_ISREG(st.st_mode) \
+                        or st.st_size > STAGE_SIGNAL_MAX_BYTES:
+                    return None
+                d = json.loads(f.read())
+            return state.StageSignal(
+                stage=str(d["stage"]), status=str(d["status"]),
+                note=d["note"] if isinstance(d.get("note"), str) else "")
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
             return None
 
     def pane_tail(self, target: str, issue: int) -> str:
