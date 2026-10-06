@@ -6,13 +6,14 @@ state directory is a pytest tmp_path; the command runs in-process.
 """
 import json
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 import dispatcher.main as main
-from dispatcher import intents, openspec_migration, spec_publish
+from dispatcher import intents, messages, openspec_migration, spec_publish
 from dispatcher.convergence import pass_lock
 from dispatcher.state import (PARK_REVIEW, PARK_WAKE, PlanApprovalRequest, Stage,
                               load, read_stage_signal, save)
@@ -27,10 +28,10 @@ from tests.test_openspec_migration_acceptance import (
 OLD_GATE = "awaiting-spec-review"
 
 
-def migrate(c, capsys):
+def migrate(c, capsys, *flags):
     """(exit status, output) of one run."""
     capsys.readouterr()
-    status = openspec_migration.main([c.state_dir])
+    status = openspec_migration.main([*flags, c.state_dir])
     return status, capsys.readouterr().out
 
 
@@ -59,7 +60,8 @@ def test_an_undrained_task_refuses_the_whole_run(tmp_path, monkeypatch, capsys, 
 
 
 @pytest.mark.parametrize("content", ['{"issue": 999, "stage": "sp', "[1, 2]",
-                                     '{"issue": 999, "target": "t"}', "\xff"])
+                                     '{"issue": 999, "target": "t"}', "\xff",
+                                     '{"issue": 999, "stage": "spec"}'])
 def test_an_unreadable_task_file_refuses_the_whole_run(tmp_path, monkeypatch,
                                                        capsys, content):
     c = cfg_(tmp_path, monkeypatch)
@@ -191,17 +193,19 @@ def test_every_converted_task_waits_at_the_plan_review_gate(tmp_path, monkeypatc
 
 
 # A value the migration does not know is reported, never coerced.
-@pytest.mark.parametrize("stage, extra, named", [
-    ("spec-approved", {}, "unknown stage"),
-    ("spec", {"park": "approved"}, "unknown park"),
-    ("spec", {"operator_request": {"kind": "approval"}}, "unknown request kind"),
-    ("spec", {"operator_request": {"path": "x"}}, "unknown request kind"),
-    ("spec", {"operator_request": "spec-approval-ish"}, "unknown request kind"),
-    ("pr-open", {"operator_request": {"kind": "spec-approval"}}, "spec-approval request"),
-    ("spec", {"target": None}, "no issue or target"),
+@pytest.mark.parametrize("stage, extra, field, value", [
+    ("spec-approved", {}, "stage", "'spec-approved'"),
+    ("spec", {"park": "approved"}, "park", "'approved'"),
+    ("spec", {"operator_request": {"kind": "approval"}}, "operator_request.kind",
+     "'approval'"),
+    ("spec", {"operator_request": {"path": "x"}}, "operator_request.kind", "''"),
+    ("spec", {"operator_request": "spec-approval-ish"}, "operator_request.kind",
+     "'spec-approval-ish'"),
+    ("pr-open", {"operator_request": {"kind": "spec-approval"}},
+     "operator_request.kind", "'spec-approval'"),
 ])
 def test_an_unknown_value_refuses_the_whole_run(tmp_path, monkeypatch, capsys,
-                                                stage, extra, named):
+                                                stage, extra, field, value):
     c = cfg_(tmp_path, monkeypatch)
     gated_spec(c)
     old_task(c, 370, stage, **extra)
@@ -211,8 +215,11 @@ def test_an_unknown_value_refuses_the_whole_run(tmp_path, monkeypatch, capsys,
 
     assert status != 0
     assert snapshot(c.state_dir) == before
-    assert any(ln.startswith("unreadable") and task_file(c, 370).name in ln
-               and named in ln for ln in text.splitlines()), text
+    assert any(ln.startswith("unknown-value") and task_file(c, 370).name in ln
+               and f"field {field} " in ln and value in ln
+               for ln in text.splitlines()), text
+    # The file is a valid task: the advice must never be to remove it.
+    assert "do not delete" in text and "remove" not in text
 
 
 # A failed task that would resume into the old flow.
@@ -239,7 +246,7 @@ def test_failed_spec_task_stays_failed_and_a_resume_starts_a_fresh_spec_session(
 
 
 @pytest.mark.parametrize("stage, extra", [
-    ("failed", {"crashed_stage": "implement"}), ("failed", {}), ("done", {}),
+    ("failed", {"crashed_stage": "address-review"}), ("failed", {}), ("done", {}),
     ("canceled", {}), ("queued", {}), ("blocked", {}), ("stalled-on-budget", {}),
     ("address-review", {"pr_number": 5}), ("pr-open", {"pr_number": 5})])
 def test_every_other_stage_is_untouched(tmp_path, monkeypatch, capsys, stage, extra):
@@ -362,23 +369,283 @@ def test_stale_done_is_not_read_while_the_restart_waits_for_capacity(
 
 
 # Writes.
-def test_a_failed_write_leaves_no_temp_file_and_the_old_file(tmp_path, monkeypatch,
-                                                            capsys):
+def test_a_failed_write_stops_the_run_and_a_second_run_finishes_it(
+        tmp_path, monkeypatch, capsys):
     c = cfg_(tmp_path, monkeypatch)
-    gated_spec(c)
-    before = task_file(c, 384).read_bytes()
+    for issue in (381, 382, 383):
+        gated_spec(c, issue)
+    real, calls = os.replace, []
 
-    def no_replace(src, dst):
-        raise OSError("disk full")
-    monkeypatch.setattr(os, "replace", no_replace)
+    def second_fails(src, dst):
+        calls.append(dst)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        real(src, dst)
+    monkeypatch.setattr(os, "replace", second_fails)
 
-    with pytest.raises(OSError):
-        openspec_migration.main([c.state_dir])
+    status, text = migrate(c, capsys)
 
     monkeypatch.undo()
-    assert task_file(c, 384).read_bytes() == before
-    assert [p.name for p in Path(c.state_dir).iterdir()
-            if p.name != "convergence.lock"] == [task_file(c, 384).name]
+    assert status != 0
+    stopped = f"stopped at {task_file(c, 382).name}: disk full; run again"
+    assert stopped in text.splitlines(), text
+    assert "Traceback" not in text
+    assert [raw(c, i)["stage"] for i in (381, 382, 383)] == [
+        "spec", OLD_GATE, OLD_GATE]
+    assert sorted(p.name for p in Path(c.state_dir).iterdir()) == sorted(
+        ["convergence.lock"] + [task_file(c, i).name for i in (381, 382, 383)])
+
+    status, text = migrate(c, capsys)
+
+    assert status == 0, text
+    assert [raw(c, i)["stage"] for i in (381, 382, 383)] == ["spec"] * 3
+    assert "2 converted, 1 untouched" in text.splitlines()[-1]
+
+
+# What the operator told the old session.
+def _said(c, issue, text, actor="operator", delivered=True):
+    m = messages.append(c.state_dir, TARGET, issue, text, actor)
+    if delivered:
+        messages.mark_delivered(c.state_dir, TARGET, issue, [m.id])
+    return m
+
+
+def _texts(c, issue, delivered):
+    return [m.text for m in messages.all_messages(c.state_dir, TARGET, issue)
+            if bool(m.delivered_at) is delivered]
+
+
+def test_delivered_answers_ride_in_the_fresh_spec_prompt(tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    old_task(c, 370, "spec")                             # answered, session resumed
+    first = _said(c, 370, "1: yes. 2: option B. 3: no.")
+    _said(c, 370, "E2E run 5 concluded: success — fetch logs", actor="dispatcher")
+    _said(c, 370, "4: keep. 5: 30 days.", actor="dispatcher")   # a Telegram reply
+    _said(c, 370, "", actor="dispatcher")                # /attach queues no text
+    _said(c, 370, "6: later", delivered=False)
+
+    assert migrate(c, capsys)[0] == 0
+    assert _texts(c, 370, delivered=False) == [
+        "1: yes. 2: option B. 3: no.", "4: keep. 5: 30 days.", "6: later"]
+    sess = next_pass(c)
+
+    prompt = sess.spawned[0][3]
+    block = prompt[prompt.index("## Operator messages"):]
+    assert f"- [{first.created_at}] operator: 1: yes. 2: option B. 3: no." in block
+    assert (block.index("option B") < block.index("4: keep. 5: 30 days.")
+            < block.index("6: later"))
+    assert "E2E run 5" not in block
+    assert _texts(c, 370, delivered=False) == []         # stamped once
+
+
+def test_change_request_at_the_old_gate_rides_in_the_fresh_spec_prompt(
+        tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    gated_spec(c)
+    _said(c, 384, "change section 2")
+
+    assert migrate(c, capsys)[0] == 0
+    sess = next_pass(c)
+
+    assert "operator: change section 2" in sess.spawned[0][3]
+
+
+def test_messages_of_an_untouched_task_and_lines_that_are_no_message_stay(
+        tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    gated_spec(c)
+    pr_open(c)
+    _said(c, 391, "fix the review comment")
+    _said(c, 384, "change section 2")
+    gate_file = Path(c.state_dir) / "messages" / f"{TARGET}-384.jsonl"
+    gate_file.write_text(gate_file.read_text() + "not json\n")
+    pr_file = Path(c.state_dir) / "messages" / f"{TARGET}-391.jsonl"
+    before = pr_file.read_bytes()
+
+    assert migrate(c, capsys)[0] == 0
+
+    assert pr_file.read_bytes() == before
+    assert gate_file.read_text().splitlines()[-1] == "not json"
+    assert _texts(c, 384, delivered=False) == ["change section 2"]
+
+
+def test_an_unreadable_message_file_refuses_the_whole_run(tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    parked_spec(c)
+    gated_spec(c)
+    bad = Path(c.state_dir) / "messages" / f"{TARGET}-384.jsonl"
+    bad.parent.mkdir()
+    bad.write_bytes(b"\xff\xfe")
+    before = snapshot(c.state_dir)
+
+    status, text = migrate(c, capsys)
+
+    assert status != 0
+    assert snapshot(c.state_dir) == before
+    assert any(ln.startswith("unreadable") and f"messages/{bad.name}" in ln
+               for ln in text.splitlines()), text
+
+
+# An old task that failed in plan, implement or review.
+@pytest.mark.parametrize("crashed", ["plan", "implement", "review"])
+def test_old_task_failed_past_the_spec_is_labelled_and_only_gets_asked(
+        tmp_path, monkeypatch, capsys, crashed):
+    c = cfg_(tmp_path, monkeypatch)
+    old_task(c, 412, "failed", crashed_stage=crashed, spec_path=DESIGN, ticket_cursor=2)
+    before = raw(c, 412)
+
+    status, text = migrate(c, capsys)
+
+    assert status == 0, text
+    assert raw(c, 412) == {**before, "asked": True}
+    assert f"do-not-resume  {TARGET} #412  (failed, crashed in {crashed})" in text
+    assert "1 do-not-resume" in text.splitlines()[-1]
+    after_first = snapshot(c.state_dir)
+    assert migrate(c, capsys)[0] == 0
+    assert snapshot(c.state_dir) == after_first
+
+
+def test_a_resume_of_an_old_failed_plan_task_cannot_skip_the_gate(
+        tmp_path, monkeypatch, capsys):
+    c = _gate_free_cfg(tmp_path, monkeypatch)
+    wt = old_task(c, 412, "failed", crashed_stage="plan", track="trivial",
+                  spec_path=gate.SPEC)
+
+    assert migrate(c, capsys)[0] == 0
+    intents.write_intent(c.state_dir, "resume", TARGET, 412, {}, "op", 1)
+    assert [s[:2] for s in next_pass(c).spawned] == [(412, "plan")]
+    (wt / gate.FOLDER).mkdir(parents=True)
+    write_tickets(wt, 1)
+    (wt / gate.SUMMARY).write_text(gate.NONE_SUMMARY)
+    gate._ready(wt)
+    sess = FakeSessions(alive={412})
+    main.run_pass(c, deps(sess=sess))
+
+    assert load(c.state_dir, TARGET, 412).stage is Stage.AWAITING_PLAN_REVIEW
+    assert [s for s in sess.spawned if s[1] == "implement"] == []
+
+
+def test_old_failed_task_with_no_crashed_stage_is_named_not_resumable(
+        tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    old_task(c, 411, "failed", spec_path=DESIGN)         # e.g. failed at the old gate
+
+    status, text = migrate(c, capsys)
+
+    assert status == 0
+    assert f"untouched  {TARGET} #411  (failed, not resumable)" in text
+
+
+# --check: the check phase alone.
+def test_check_writes_nothing_and_takes_no_lock(tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    parked_spec(c)
+    gated_spec(c)
+    _said(c, 384, "change section 2")
+    before = snapshot(c.state_dir)
+
+    with pass_lock(c.state_dir):                         # a pass may be running
+        status, text = migrate(c, capsys, "--check")
+    Path(c.state_dir, "convergence.lock").unlink()
+
+    assert status == 0, text
+    assert snapshot(c.state_dir) == before
+    assert any(ln.startswith("would-convert") and "#384" in ln for ln in text.splitlines())
+    assert not any(ln.startswith("converted") for ln in text.splitlines())
+    assert text.splitlines()[-1].startswith("2 would-convert, 0 untouched")
+    assert "nothing was changed" in text.splitlines()[-1]
+
+
+def test_check_has_the_exit_status_of_the_real_run(tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    gated_spec(c)
+    old_task(c, 377, "implement")
+
+    status, text = migrate(c, capsys, "--check")
+
+    assert status == 1
+    assert any(ln.startswith("must-drain") and "#377" in ln for ln in text.splitlines())
+    assert not Path(c.state_dir, "convergence.lock").exists()
+    assert openspec_migration.main(["--check", str(tmp_path / "nope")]) == 2
+    assert openspec_migration.main(["--chek", c.state_dir]) == 2
+
+
+# The guard: no dispatcher pass before the migration.
+def _run_main(c, monkeypatch, capsys, *flags):
+    """dispatcher.main.main() as the unit runs it; (exit status, stderr, passes)."""
+    passes = []
+    monkeypatch.setattr(main, "load_config", lambda path: c)
+    monkeypatch.setattr(main, "guarded_pass", lambda *a, **kw: passes.append(a))
+    monkeypatch.setattr(main.tmux_migration, "migrate",
+                        lambda *a: passes.append(a) or [])
+    monkeypatch.setattr(sys, "argv", ["agent-ops-dispatcher", "--config", "t.yaml", *flags])
+    capsys.readouterr()
+    try:
+        main.main()
+        status = 0
+    except SystemExit as exc:
+        status = exc.code
+    return status, capsys.readouterr().err, passes
+
+
+@pytest.mark.parametrize("flags", [(), ("--migrate-tmux",)])
+@pytest.mark.parametrize("stage, extra", [
+    (OLD_GATE, {"park": "awaiting-review", "operator_request": {"kind": "spec-approval"}}),
+    ("spec", {"park": "parked"}), ("implement", {}),
+    ("failed", {"crashed_stage": "plan"}), (OLD_GATE, {"park": "no-such-park"})])
+def test_a_pass_is_refused_while_an_old_flow_task_is_on_disk(
+        tmp_path, monkeypatch, capsys, flags, stage, extra):
+    c = cfg_(tmp_path, monkeypatch)
+    old_task(c, 384, stage, **extra)
+    intents.write_intent(c.state_dir, "reply", TARGET, 384, {"text": "approved"}, "op", 1)
+    before = snapshot(c.state_dir)
+
+    status, err, passes = _run_main(c, monkeypatch, capsys, *flags)
+
+    assert status == 1 and passes == []
+    assert snapshot(c.state_dir) == before               # the intent is still there
+    assert not Path(c.state_dir, "convergence.lock").exists()
+    assert f"python -m dispatcher.openspec_migration {c.state_dir}" in err
+    assert task_file(c, 384).name in err
+
+
+def test_the_pass_runs_after_the_migration(tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    parked_spec(c)
+    gated_spec(c)
+    pr_open(c)
+    old_task(c, 412, "failed", crashed_stage="plan")
+    assert _run_main(c, monkeypatch, capsys)[0] == 1
+    assert migrate(c, capsys)[0] == 0
+
+    status, err, passes = _run_main(c, monkeypatch, capsys)
+
+    assert status == 0 and len(passes) == 1 and err == ""
+
+
+def test_a_new_flow_box_and_a_corrupt_file_do_not_stop_the_pass(
+        tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    for issue, stage in ((1, Stage.SPEC), (2, Stage.PLAN), (3, Stage.IMPLEMENT),
+                         (4, Stage.FAILED), (5, Stage.PR_OPEN)):
+        make_task(c, issue=issue, stage=stage)
+    old_task(c, 6, "pr-open", pr_number=7)               # old file, nothing to migrate
+    task_file(c, 999).write_text('{"issue": 999, "stage": "sp')   # the loader skips it
+    task_file(c, 998).write_text("[1]")
+
+    status, err, passes = _run_main(c, monkeypatch, capsys)
+
+    assert status == 0 and len(passes) == 1
+
+
+def test_the_guard_does_not_stop_the_commands_that_write_no_task(
+        tmp_path, monkeypatch, capsys):
+    c = cfg_(tmp_path, monkeypatch)
+    gated_spec(c)
+
+    status, _, _ = _run_main(c, monkeypatch, capsys, "--triage")
+
+    assert status == 0
 
 
 def test_usage_error_without_a_state_dir(capsys):
