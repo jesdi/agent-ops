@@ -149,3 +149,27 @@ test('plan-approval revision at same path clears armed state', async () => {
   await user.click(screen.getByRole('button', { name: /approve plan/i }))
   expect(screen.getByRole('button', { name: /tap again to approve/i })).toBeInTheDocument()
 })
+
+// The plan summary is a document: its headings and lists go through the
+// shared markdown style (index.css `.markdown`), not bare unstyled tags.
+test('markdown request renders headings and lists inside the markdown style', async () => {
+  server.use(
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json({
+        kind: 'plan-approval',
+        content: {
+          kind: 'readable',
+          media_type: 'text/markdown',
+          path: '.agent/plan-review.md',
+          text: '# Plan review\n\n## Tickets\n\n1. **01 Export endpoint**\n2. **02 Owner check**\n\n## Open questions\n\nNone.\n',
+        },
+      }),
+    ),
+  )
+  renderPanel()
+  const heading = await screen.findByRole('heading', { name: 'Tickets', level: 2 })
+  const doc = heading.closest('.markdown')
+  expect(doc).not.toBeNull()
+  expect(within(doc as HTMLElement).getAllByRole('listitem')).toHaveLength(2)
+  expect(within(doc as HTMLElement).getByRole('heading', { name: 'Open questions', level: 2 })).toBeInTheDocument()
+})

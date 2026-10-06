@@ -24,11 +24,11 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
 
 // Keys MUST be real `Stage` values from dispatcher/state.py — stageLabel is
 // called with card.stage, so a key matching no stage renders the raw slug.
-// Stages deliberately absent (queued, plan, blocked, failed,
+// Stages deliberately absent (queued, blocked, failed,
 // stalled-on-budget) fall through to their slug, which reads fine as-is.
 const STAGE_LABELS: Record<string, string> = {
   spec: 'Writing spec',
-  plan: 'Writing tickets',
+  plan: 'Writing plan',
   'awaiting-plan-review': 'Plan review',
   implement: 'Implementing',
   review: 'Reviewing',

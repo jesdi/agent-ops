@@ -77,7 +77,7 @@ function RequestContent({ content }: { content: OperatorRequest['content'] }) {
   const name = content.path.split('/').pop() ?? content.path
   switch (content.media_type) {
     case 'text/markdown':
-      return <div className="max-h-96 overflow-auto text-sm"><ReactMarkdown>{content.text}</ReactMarkdown></div>
+      return <div className="markdown max-h-96 overflow-auto text-sm"><ReactMarkdown>{content.text}</ReactMarkdown></div>
     case 'text/html':
       return <iframe title={name} sandbox="allow-scripts" srcDoc={content.text}
         className="h-96 w-full rounded border border-border" />

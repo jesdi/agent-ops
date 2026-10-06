@@ -23,6 +23,8 @@ describe('stageLabel', () => {
   // 'spec-review' matched no stage, so those cards rendered the raw slug.
   it('labels the real Stage values the console renders', () => {
     expect(stageLabel('awaiting-plan-review')).toBe('Plan review')
+    // the plan stage writes the design and the tickets
+    expect(stageLabel('plan')).toBe('Writing plan')
     expect(stageLabel('pr-open')).toBe('PR open')
     expect(stageLabel('address-review')).toBe('Addressing review')
     expect(stageLabel('spec')).toBe('Writing spec')

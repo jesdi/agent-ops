@@ -5502,3 +5502,48 @@ def test_grace_park_arms_the_request_when_none_is_armed(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_REVIEW
     assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
+
+
+def _signals_until_stopped(c, sess, monkeypatch, wt, signals, passes=8):
+    """A session that never learns: each pass it writes the next of `signals`
+    again. Returns the task once it parked or failed (or after `passes`)."""
+    for i in range(passes):
+        t = load(c.state_dir, "portfolio_eval", 42)
+        if t.park or t.stage is Stage.FAILED:
+            break
+        (wt / ".agent" / "stage.json").write_text(json.dumps(signals[i % len(signals)]))
+        _gate_pass(c, sess, monkeypatch)
+    return load(c.state_dir, "portfolio_eval", 42)
+
+
+READY = {"stage": "plan", "status": "awaiting-review", "artifact": PLAN_SUMMARY}
+WORKING = {"stage": "plan", "status": "working"}
+
+
+@pytest.mark.parametrize("at_gate", [False, True], ids=["before-gate", "at-gate"])
+@pytest.mark.parametrize("case, signals, resumes, end", [
+    ("bad tickets", [WORKING, READY], 1, "failed"),
+    ("bad track", [{"stage": "plan", "status": "done", "track": "nope"}], 1, "parked"),
+    ("bad track after rework", [WORKING, READY,
+                                {"stage": "plan", "status": "done", "track": "nope"}], 1, "parked"),
+], ids=lambda v: v if isinstance(v, str) else None)
+def test_no_plan_signal_loop_is_resumed_more_than_once(
+        tmp_path, monkeypatch, at_gate, case, signals, resumes, end):
+    """Every bounce of the plan signal is bounded with no operator action: a
+    round at the gate (ready again after `working`) never refills a retry."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = FakeSessions(alive={42})
+    if at_gate:
+        _gate_pass(c, sess, monkeypatch)
+        assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.AWAITING_PLAN_REVIEW
+    if case == "bad tickets":
+        (wt / ".agent" / "tickets" / "05-late.md").write_text(GOOD_TICKET)
+    t = _signals_until_stopped(c, sess, monkeypatch, wt, signals)
+    assert len(sess.resumed) == resumes
+    if end == "failed":
+        assert t.stage is Stage.FAILED
+    else:
+        assert t.park == PARK_HUMAN
+    assert [s for s in sess.spawned if s[1] == "implement"] == []
