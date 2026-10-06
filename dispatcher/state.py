@@ -124,7 +124,7 @@ class TaskState:
     labels: tuple[str, ...] = ()         # board labels at claim time
     track: str = ""                      # configured track name (spec/2026-09-14-model-tracks)
     picks: dict[str, str] = field(default_factory=dict)  # policy stage -> "provider/model[@effort]", sticky per stage
-    spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track)
+    spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track, awaiting-review)
     plan_retries: int = 0                # in-session plan-format retries used
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new

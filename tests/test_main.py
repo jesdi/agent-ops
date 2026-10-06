@@ -552,6 +552,7 @@ def test_spec_signal_without_a_track_is_bounced_once_then_parks(tmp_path, monkey
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN and "must be one of" in t.park_note
+    assert t.asked is False   # a bounce park is not a questionnaire
 
 
 def test_spec_awaiting_review_is_bounced_to_done_and_never_waits_for_a_review(
@@ -576,6 +577,36 @@ def test_spec_awaiting_review_is_bounced_to_done_and_never_waits_for_a_review(
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.SPEC and t.park == PARK_HUMAN
     assert d.notifier.sent == ["parked_question"]
+    assert t.asked is False   # a bounce park is not a questionnaire
+
+
+def test_asked_is_kept_when_the_spec_session_parks_again_without_a_questionnaire(
+        tmp_path, monkeypatch):
+    from dispatcher import intents
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard",
+                   picks={"spec": "anthropic/claude-opus-5"})
+    (wt / ".agent" / "questionnaire.md").write_text("# Q\n")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-answers",
+         "artifact": ".agent/questionnaire.md"}))
+    sess = FakeSessions(alive={42})
+    main.run_pass(c, deps(sess=sess))
+    assert load(c.state_dir, "portfolio_eval", 42).asked is True
+    # The operator answers; the resumed session then reports it is blocked.
+    intents.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+                         {"text": "a, b, c"}, actor="op", epoch_ms=1)
+    main.run_pass(c, deps(sess=sess))
+    assert len(sess.resumed) == 1
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "blocked", "note": "no access to the repo"}))
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN and t.park_note == "no access to the repo"
+    assert t.asked is True
 
 
 def test_a_plan_session_that_parks_for_answers_is_not_recorded_as_asking(
@@ -3098,12 +3129,12 @@ def test_spec_parked_note_says_local_only_when_publish_fails(
     assert "https://github.com" not in ctx["note"]
 
 
-@_GATE_MOVES
 def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
     """A tokenized remote URL in push stderr must not reach the Telegram note."""
     patch_usage(monkeypatch)
-    c = cfg(tmp_path)
-    wt = make_task(c, stage=Stage.SPEC)
+    c = dc_replace(cfg(tmp_path), spec_review_grace_minutes=0)
+    wt = make_task(c, stage=Stage.AWAITING_SPEC_REVIEW,
+                   spec_path="docs/specs/x-design.md")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-review", "note": "ready",
          "artifact": "docs/specs/x-design.md",
@@ -3118,8 +3149,7 @@ def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
         lambda **kw: spec_publish.PublishResult(error=token_error))
     d = deps(sess=FakeSessions(alive={42}))
     main.run_pass(c, d)
-    (tmpl, ctx), = [x for x in d.notifier.contexts
-                    if x[0] == "awaiting_spec_review"]
+    (tmpl, ctx), = [x for x in d.notifier.contexts if x[0] == "spec_parked"]
     assert "ghp_SECRET" not in ctx["note"]
     assert "⚠️ spec is local only:" in ctx["note"]
 
