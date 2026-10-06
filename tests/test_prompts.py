@@ -212,3 +212,13 @@ def test_spec_prompt_reads_answers_from_messages_and_the_old_review_copy():
     assert "raise no new questionnaire" in item
     review = _spec_item("docs/review/")                  # a paragraph of its own
     assert "source of answers" in review and "questionnaire rules" in review
+    # Only this task's review file: main can hold the answers of other tasks.
+    assert ("git diff --name-only --diff-filter=AM origin/main...HEAD -- docs/review/"
+            in review)
+    assert "this branch did not add or change" in review
+    assert "never a source of answers" in review
+
+
+def test_spec_prompt_says_an_empty_list_of_old_design_files_is_no_work():
+    item = _spec_item("-design.md", "spec-ready", "remove")
+    assert "When the list is empty there is nothing to do." in item

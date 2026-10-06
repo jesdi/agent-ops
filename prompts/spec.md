@@ -53,8 +53,9 @@ session: they are what the operator told the earlier one, and they count.
   its design there, as `docs/specs/<date>-<topic>-design.md`. List these
   files with
   `git diff --name-only --diff-filter=A origin/main...HEAD -- docs/specs/`
-  (take the repository's default branch when it is not `main`). A file that
-  main already has is never an input and is never touched. Handle what the
+  (take the repository's default branch when it is not `main`). When the
+  list is empty there is nothing to do. A file that main already has is
+  never an input and is never touched. Handle what the
   list shows as a `spec-ready` body (step 2), whatever the labels say and
   whatever `.agent/questionnaire.md` holds, because the design already
   carries the answers: its decisions go into stage 1 word for word, and
@@ -65,9 +66,13 @@ session: they are what the operator told the earlier one, and they count.
   in the commit that adds the spec folder.
 
 The review file: a session of the old flow can have left the questions with
-the operator's answers on $branch under `docs/review/`. Read a file you find
-there as a source of answers for the two questionnaire rules above. Do not
-change it.
+the operator's answers on $branch under `docs/review/`. List the files that
+this branch added or changed there with
+`git diff --name-only --diff-filter=AM origin/main...HEAD -- docs/review/`
+(take the repository's default branch when it is not `main`). A listed file
+is a source of answers for the two questionnaire rules above. A file under
+`docs/review/` that this branch did not add or change belongs to another
+task: it is never a source of answers. Do not edit these files.
 
 ## 2. Branch on the labels
 **`bug`** — run the `diagnosing-bugs` skill. Write a
