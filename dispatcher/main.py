@@ -620,7 +620,7 @@ def _continue_or_restart(cfg: Config, deps: Deps, target: Target,
                          task: TaskState, launch: Launch,
                          message: str = "") -> tuple[TaskState, str]:
     """Every continuation names its recorded conversation or launches afresh."""
-    stage = Stage.PLAN if task.stage is Stage.AWAITING_PLAN_REVIEW else task.stage
+    stage = task.continued_stage
     record = read_session(cfg.state_dir, task.target, task.issue)
     detail = ""
     if record is not None and record.stage == stage.value:
@@ -1798,9 +1798,8 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
             or _last_launched(task.worktree))
     runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
     record = read_session(cfg.state_dir, task.target, task.issue)
-    stage = "plan" if task.stage is Stage.AWAITING_PLAN_REVIEW else task.stage.value
     repro = "Restart the stage from the dispatcher: no session recorded"
-    if record is not None and record.stage == stage:
+    if record is not None and record.stage == task.continued_stage.value:
         repro = (f"cd {shlex.quote(task.worktree)} && "
                  f"{runtime.resume_cmd(record.session_id)}  # inside session image")
     rep = failures.FailureReport(

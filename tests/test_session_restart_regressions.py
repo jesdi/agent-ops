@@ -1,6 +1,7 @@
 """T05 review regressions through run_pass and its session launch boundary."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -53,6 +54,23 @@ def _assert_pending_at_launch(sessions, before, queued):
     for message in queued:
         assert message.text in launch["prompt"]
     assert sessions.continuations == []
+
+
+@pytest.mark.parametrize("model", MODELS)
+def test_deeply_nested_record_restarts_review_without_losing_messages(
+        tmp_path, monkeypatch, model):
+    c, d, before, queued = _arrange(tmp_path, monkeypatch, model)
+    record = Path(c.state_dir) / f"session-{before.target}-{before.issue}"
+    record.write_text("[" * 10000 + "]" * 10000)
+    sessions = _observe_launch(c, d)
+
+    launch, after = _pass(c, d, before)
+
+    assert after.stage is Stage.REVIEW
+    assert after.park == ""
+    assert d.github.created_issues == []
+    _assert_pending_at_launch(sessions, before, queued)
+    _assert_delivered(c, before, queued, launch["prompt"])
 
 
 @pytest.mark.parametrize("model", MODELS)

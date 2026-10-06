@@ -227,6 +227,11 @@ class TaskState:
     # without a valid path.
     operator_request: "OperatorRequest | None" = None
 
+    @property
+    def continued_stage(self) -> Stage:
+        """The stage whose conversation a continuation belongs to."""
+        return Stage.PLAN if self.stage is Stage.AWAITING_PLAN_REVIEW else self.stage
+
 
 def launch_track(t: TaskState, policy: ModelPolicy) -> str:
     """The track whose list t's next launch (next_launch) reads, or "" when
@@ -594,7 +599,7 @@ def read_session(state_dir: str | Path, target: str,
         if not isinstance(stage, str) or not stage:
             return None
         return SessionRecord(session_id, stage)
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         return None
 
 

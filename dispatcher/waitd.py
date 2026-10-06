@@ -10,14 +10,14 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import UnixStreamServer
 
-from dispatcher.state import (SessionRecord, Stage, load, mark_background,
+from dispatcher.state import (SessionRecord, load, mark_background,
                               mark_waiting, write_session)
 
 
 def _load_session_task(state_dir, target: str, issue: int):
     try:
         return load(state_dir, target, issue)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         # TaskState's loader calls .get on operator_request; malformed nested
         # data (for example, []) raises AttributeError instead of TypeError.
         print(f"waitd: cannot read task {target}#{issue} for session recording: {exc}",
@@ -33,9 +33,9 @@ def _record_session(rec: dict, state_dir, target: str, issue: int,
     task = _load_session_task(state_dir, target, issue)
     if task is None or (cwd is not None and task.worktree != cwd):
         return
-    stage = "spec" if task.stage is Stage.AWAITING_SPEC_REVIEW else task.stage.value
     try:
-        write_session(state_dir, target, issue, SessionRecord(session_id, stage))
+        write_session(state_dir, target, issue,
+                      SessionRecord(session_id, task.continued_stage.value))
     except OSError as exc:
         print(f"waitd: cannot record session for {target}#{issue}: {exc}", file=sys.stderr)
 
@@ -44,7 +44,7 @@ def _read_codex_metadata(path: Path, session_id: str) -> dict | None:
     try:
         with path.open(encoding="utf-8") as rollout:
             metadata = json.loads(rollout.readline())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(metadata, dict) or metadata.get("type") != "session_meta":
         return None
