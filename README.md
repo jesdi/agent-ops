@@ -34,7 +34,7 @@ agent-ops closes both gaps:
   provider whose usage can't be read fails safe and spawns nothing. Which model runs is a **track**: triage picks one for the spec stage, the spec session picks one for the rest, and each track lists models per stage, so the box takes the one with headroom whose weekly quota most needs spending before its reset and keeps it for the whole stage. A session-bound provider's entries go first, and a priority mode set in the console (`auto` or a provider) replaces this order (see CONTEXT.md).
 - **24-hour access from your phone, PC off.** The box is reachable over
   Tailscale only. The web console and Telegram bot are always on — you can
-  check progress, answer an agent's question, or approve a spec from anywhere.
+  check progress, answer an agent's question, or approve a plan from anywhere.
 - **A board that answers "what needs me?" at a glance.** The board is two
   zones. **Needs you** comes first — Needs review, PR review, Parked, Failed,
   Stalled on budget — and everything in the pipeline zone (Queued, In
@@ -85,9 +85,10 @@ flowchart LR
 flowchart LR
     queued["Queued"] --> gate{"Usage (pace) &<br/>capacity gate"}
     gate --> spec["Spec stage"]
-    spec --> review{"Human review<br/>(from your phone)"}
-    review -- approved --> plan["Plan stage<br/>(tickets)"]
-    plan --> implement["Implement<br/>(one session per ticket)"]
+    spec --> plan["Plan stage<br/>(design, tickets)"]
+    plan --> review{"Human review<br/>(from your phone)"}
+    review -- feedback --> plan
+    review -- approved --> implement["Implement<br/>(one session per ticket)"]
     implement -- last ticket --> codereview["Review stage<br/>(rebase, gates, PR)"]
     codereview --> pr["PR open"]
     pr -- "CI green, you merge" --> done(["Merged"])
@@ -106,8 +107,8 @@ flowchart LR
   active tasks.
 - **Staged pipeline** — each task moves through **spec → plan → implement (one fresh session per ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
-  artifact. Specs pause at a human review gate before implementation spends
-  real tokens on them.
+  artifact. Spec and plan pause together at one human review gate before
+  implementation spends real tokens on them.
 - **Bounded loops** — review fixes, gate failures, end-to-end fixes and CI
   fixes on an open PR each have a configured cap; hitting it parks the task
   with the finished tickets intact and pings you, it never fails the task.
@@ -256,7 +257,7 @@ and [Actions API permissions](https://docs.github.com/en/rest/actions/workflow-r
 ### Task artifacts
 
 The task page keeps review artifacts accessible across sessions on desktop and
-mobile. Open the spec on GitHub beside **Approve spec**, or use **Artifacts**
+mobile. Open the spec on GitHub beside **Approve plan**, or use **Artifacts**
 to revisit prototypes, diagrams, questionnaires, answers and other review files.
 Links open the latest published content in a new tab. If GitHub publication
 fails, local review and approval remain available.

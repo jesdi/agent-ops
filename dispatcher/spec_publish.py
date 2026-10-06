@@ -55,6 +55,32 @@ def _git(worktree: str, *args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, timeout=_TIMEOUT)
 
 
+class _GitFailed(Exception):
+    pass
+
+
+def _must(worktree: str, *args: str) -> subprocess.CompletedProcess:
+    proc = _git(worktree, *args)
+    if proc.returncode != 0:
+        raise _GitFailed(f"git {args[0]} failed: {proc.stderr.strip()}")
+    return proc
+
+
+def _commit_and_push(worktree: str, branch: str, issue: int, rel: str) -> None:
+    if _must(worktree, "status", "--porcelain", "--", rel).stdout.strip():
+        # Uncommitted (or untracked) files — the agent forgot. Commit
+        # ONLY the spec folder; anything else dirty in the worktree
+        # is scratch the dispatcher has no business publishing.
+        _must(worktree, "add", "--", rel)
+        _must(worktree, "commit", "-m", f"docs: spec folder for #{issue}", "--", rel)
+    if _git(worktree, "ls-files", "--error-unmatch", "--", rel).returncode != 0:
+        raise _GitFailed(f"spec folder not tracked in git: {rel}")
+    head = _must(worktree, "rev-parse", "HEAD").stdout.strip()
+    remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}")
+    if remote.returncode != 0 or remote.stdout.split()[:1] != [head]:
+        _must(worktree, "push", "origin", f"HEAD:refs/heads/{branch}")
+
+
 def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
                      artifact: str, dry_run: bool = False) -> PublishResult:
     """Publish the folder `artifact` (the task's spec.md) lives in."""
@@ -68,37 +94,9 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
         print(f"[dry-run] ensure spec folder {rel} committed+pushed on {branch}")
         return PublishResult(url=folder_url(repo, branch, rel))
     try:
-        status = _git(worktree, "status", "--porcelain", "--", rel)
-        if status.returncode != 0:
-            return PublishResult(
-                error=f"git status failed: {status.stderr.strip()}")
-        if status.stdout.strip():
-            # Uncommitted (or untracked) files — the agent forgot. Commit
-            # ONLY the spec folder; anything else dirty in the worktree
-            # is scratch the dispatcher has no business publishing.
-            add = _git(worktree, "add", "--", rel)
-            if add.returncode != 0:
-                return PublishResult(
-                    error=f"git add failed: {add.stderr.strip()}")
-            commit = _git(worktree, "commit",
-                          "-m", f"docs: spec folder for #{issue}", "--", rel)
-            if commit.returncode != 0:
-                return PublishResult(
-                    error=f"git commit failed: {commit.stderr.strip()}")
-        tracked = _git(worktree, "ls-files", "--error-unmatch", "--", rel)
-        if tracked.returncode != 0:
-            return PublishResult(error=f"spec folder not tracked in git: {rel}")
-        head = _git(worktree, "rev-parse", "HEAD")
-        if head.returncode != 0:
-            return PublishResult(
-                error=f"git rev-parse failed: {head.stderr.strip()}")
-        remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}")
-        remote_sha = remote.stdout.split()[:1] if remote.returncode == 0 else []
-        if remote_sha != [head.stdout.strip()]:
-            push = _git(worktree, "push", "origin", f"HEAD:refs/heads/{branch}")
-            if push.returncode != 0:
-                return PublishResult(
-                    error=f"git push failed: {push.stderr.strip()}")
+        _commit_and_push(worktree, branch, issue, rel)
+    except _GitFailed as exc:
+        return PublishResult(error=str(exc))
     except (OSError, subprocess.SubprocessError) as exc:
         return PublishResult(error=f"git invocation failed: {exc}")
     return PublishResult(url=folder_url(repo, branch, rel))
