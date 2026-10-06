@@ -396,29 +396,49 @@ def _plan_prompt(tmp_path, monkeypatch):
     return spawn[3].lower()
 
 
+def _section_from(p, pattern):
+    """The part of the prompt from the first match of `pattern` to the next
+    section heading (or the end)."""
+    m = re.search(pattern, p)
+    assert m, f"prompt has no part matching {pattern!r}"
+    rest = p[m.start():]
+    end = rest.find("\n## ")
+    return rest if end < 0 else rest[:end]
+
+
+def _summary_bullets(p):
+    """The bullets of the part that says what .agent/plan-review.md contains."""
+    part = _section_from(p, r"write\s+`?\.agent/plan-review\.md")
+    return [b.replace("\n", " ") for b in part.split("\n- ")[1:]]
+
+
+def _bullet(p, *words):
+    hits = [b for b in _summary_bullets(p) if all(w in b for w in words)]
+    assert hits, f"no summary bullet with {words}"
+
+
 def test_prompt_has_the_session_check_and_correct_stage_1(tmp_path, monkeypatch):
     p = _plan_prompt(tmp_path, monkeypatch)
+    checks = _section_from(p, r"check stage 1")
+    assert "no source" in checks
     assert "stage 1" in p
-    assert "no source" in p
-    assert "no scenario" in p
-    assert "boundary" in p and "violation scenario" in p
+    assert "no scenario" in checks
+    assert "boundary" in checks and "violation scenario" in checks
     for invented in ("invented", "price", "policy", "deadline", "permission"):
-        assert invented in p, invented
-    assert "correct" in p and "spec.md" in p
-    assert "every correction" in p and ".agent/plan-review.md" in p
+        assert invented in checks, invented
+    assert "correct" in checks and "spec.md" in checks
+    assert "every correction" in checks and "summary" in checks
+    _bullet(p, "correction", "spec.md")      # the summary lists them
 
 
 def test_prompt_has_stage_2_and_the_summary_contents(tmp_path, monkeypatch):
     p = _plan_prompt(tmp_path, monkeypatch)
-    assert "to-openspec" in p
-    assert "stage 2" in p
-    assert ".agent/plan-review.md" in p
-    for field in ("number", "title", "blocked by", "seam"):
-        assert field in p, field
-    assert re.search(r"open[- ]questions", p)
-    assert "recommendation" in p
-    assert "none." in p
-    assert "corrections" in p
+    stage2 = [para for para in p.split("\n\n")
+              if "to-openspec" in para and "stage 2" in para]
+    assert stage2, "no paragraph runs to-openspec stage 2"
+    _bullet(p, "ticket", "number", "title", "blocked by", "seam")
+    _bullet(p, "open questions", "recommendation", "none.")
+    _bullet(p, "correction", "none.")
     assert "awaiting-review" in p
 
 
