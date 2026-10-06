@@ -28,19 +28,18 @@ def test_renders_without_leftover_placeholders(stage):
     assert f'"stage": "{stage.value}"' in out
 
 
-def test_spec_prompt_speaks_answers_and_review_signals():
+def test_spec_prompt_speaks_answers_and_done_signals():
     out = render_stage_prompt(Stage.SPEC, CTX)
     for token in ("awaiting-answers", ".agent/questionnaire.md", ".agent/prototype.html",
-                  "awaiting-review", "docs: draft spec for #42",
-                  "docs: spec for #42 (agent-ops)", "auto, frontend"):
+                  '"status": "done"', "docs: spec for #42 (agent-ops)", "auto, frontend"):
         assert token in out
+    assert "awaiting-review" not in out     # the spec stage has no review gate
 
 
 def test_spec_prompt_carries_the_track_list_and_signal_field():
     out = render_stage_prompt(Stage.SPEC, CTX)
     assert "- `trivial`: Rote edits." in out
     assert '"track": "<name>"' in out
-    assert "approval names a track" in out
 
 
 def test_plan_prompt_names_the_tickets_dir_and_spec():

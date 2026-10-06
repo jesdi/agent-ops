@@ -365,6 +365,19 @@ def test_load_tolerates_a_retired_pending_reply_key(tmp_path):
     assert load(tmp_path, "t", 5).issue == 5
 
 
+def test_a_task_file_written_before_the_asked_field_loads_as_not_asked(tmp_path):
+    import json
+    from dispatcher.state import load, save
+    save(tmp_path, TaskState(issue=5, target="t", stage=Stage.SPEC,
+                             slot=0, worktree="/w", branch="b", title="x",
+                             updated_at="2026-08-12T00:00:00+00:00", asked=True))
+    p = tmp_path / "task-t-5.json"
+    d = json.loads(p.read_text())
+    assert d.pop("asked") is True
+    p.write_text(json.dumps(d))
+    assert load(tmp_path, "t", 5).asked is False
+
+
 def test_max_slots_is_capacity_plus_headroom():
     from dispatcher.state import max_slots
     assert max_slots(2) == 4

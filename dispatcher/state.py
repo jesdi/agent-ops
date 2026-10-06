@@ -187,7 +187,7 @@ class TaskState:
     # models.pick_key(stage) -> "provider/model[@effort]", sticky per key;
     # the implement pick only while a ticket is in progress
     picks: dict[str, str] = field(default_factory=dict)
-    spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track)
+    spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track, awaiting-review)
     plan_retries: int = 0                # in-session plan-format retries used
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
@@ -208,6 +208,9 @@ class TaskState:
     # a state from before picks existed, marked when it is read. Cleared
     # when that ticket is done. See ticket_in_progress.
     ticket_without_pick: bool = False
+    # A spec-stage session parked for answers. Set only by _park_for_input in
+    # dispatcher/main.py, never cleared: it outlives the session that asked.
+    asked: bool = False
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
     review_rounds: int = 0
