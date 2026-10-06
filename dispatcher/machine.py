@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
-from dispatcher.artifacts import TICKETS_DIR, CheckResult, check_spec, check_tickets
+from dispatcher.artifacts import (PLAN_SUMMARY, TICKETS_DIR, CheckResult, check_spec,
+                                  check_tickets, count_open_questions)
 from dispatcher.loops import Decision, Loop, Outcome, ReportedRound, evaluate
 from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
                               StageSignal, TaskState)
@@ -68,7 +69,10 @@ class PublishSpec:
     """Deterministic backstop at the plan-review gate: the executor makes
     sure the task's spec folder is committed+pushed and surfaces the GitHub
     link (or a local-only warning) in the review ping. Emitted between
-    SetTaskStage and Notify so the publish outcome can shape the notification."""
+    SetTaskStage and Notify so the publish outcome can shape the notification.
+    `review` False is the gate skip: the folder is published for the review
+    stage, and nobody is told that a plan waits."""
+    review: bool = True
 
 
 @dataclass(frozen=True)
@@ -246,8 +250,8 @@ def _working_actions(task: TaskState, signal: StageSignal, session_alive: bool,
     return loop_acts or [NoOp()]
 
 
-def _review_actions(task: TaskState, signal: StageSignal,
-                    grace_elapsed: bool) -> list[object]:
+def _review_actions(task: TaskState, signal: StageSignal, grace_elapsed: bool,
+                    gate_free: frozenset[str]) -> list[object]:
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
         if task.operator_request:
             # Already notified on a previous pass: only the clock runs. The
@@ -265,16 +269,31 @@ def _review_actions(task: TaskState, signal: StageSignal,
         return _spec_bounce(task, SPEC_NO_REVIEW)
     elif task.stage != Stage.PLAN:
         return [NoOp()]
-    return _gate_round_actions(task, signal)
+    return _gate_round_actions(task, signal, gate_free)
 
 
-def _gate_round_actions(task: TaskState, signal: StageSignal) -> list[object]:
-    """A ready report that asks the operator: gate entry from the plan stage,
-    or a new round at the gate. Nothing reaches the operator before the
-    ticket check."""
+def _skips_gate(task: TaskState, signal: StageSignal, gate_free: frozenset[str],
+                summary_questions: int | None) -> bool:
+    """The gate skip, decided by the dispatcher alone: a first ready report
+    on a gate-free track, no questionnaire asked, and a count of 0 open
+    questions that the summary confirms. The track is the task's own, never
+    one the ready report names. Anything else waits at the gate."""
+    return (task.stage == Stage.PLAN and not task.gated
+            and task.track in gate_free and not task.asked
+            and signal.open_questions == 0 and summary_questions == 0)
+
+
+def _gate_round_actions(task: TaskState, signal: StageSignal,
+                        gate_free: frozenset[str]) -> list[object]:
+    """A ready report: gate entry from the plan stage, a new round at the
+    gate, or the gate skip. Nothing reaches the operator, and no implement
+    session starts, before the ticket check."""
     result, failed = _checked_tickets(task)
     if failed:
         return failed
+    if _skips_gate(task, signal, gate_free, count_open_questions(
+            Path(task.worktree) / PLAN_SUMMARY)):
+        return [PublishSpec(review=False)] + _implement_actions(result)
     if (task.stage == Stage.AWAITING_PLAN_REVIEW
             and task.unattended_rounds >= UNATTENDED_ROUND_LIMIT):
         return [ParkForReview(artifact=signal.artifact)]
@@ -294,6 +313,13 @@ def _checked_tickets(task: TaskState) -> tuple[CheckResult, list[object]]:
                     Notify("artifact_failed", result.reason)]
 
 
+def _implement_actions(result: CheckResult) -> list[object]:
+    """Implement starts on a checked ticket set: after the operator's
+    approval, or when the gate is skipped."""
+    return [StartTicket(1, result.count),
+            Notify("implement_started", f"{result.count} ticket(s)")]
+
+
 def _plan_done_actions(task: TaskState, signal: StageSignal,
                        tracks: frozenset[str] | None) -> list[object]:
     """The operator's approval, reported by the plan session at the gate. A
@@ -302,8 +328,7 @@ def _plan_done_actions(task: TaskState, signal: StageSignal,
     if bounced:
         return bounced
     result, failed = _checked_tickets(task)
-    return failed or [StartTicket(1, result.count),
-                      Notify("implement_started", f"{result.count} ticket(s)")]
+    return failed or _implement_actions(result)
 
 
 def _spec_done_actions(task: TaskState, signal: StageSignal,
@@ -349,6 +374,7 @@ def next_actions(
     grace_elapsed: bool = False,
     caps: LoopCaps = LoopCaps(),
     tracks: frozenset[str] | None = None,
+    gate_free: frozenset[str] = frozenset(),
 ) -> list[object]:
     if task.park:
         return [NoOp()]  # wake/resume is dispatcher-side; never re-park
@@ -383,7 +409,7 @@ def next_actions(
         return _working_actions(task, signal, session_alive, waiting, caps)
 
     if signal.status == "awaiting-review":
-        return _review_actions(task, signal, grace_elapsed)
+        return _review_actions(task, signal, grace_elapsed, gate_free)
 
     if done:
         return _done_actions(task, signal, tracks)
@@ -429,6 +455,7 @@ def pass_actions(
     grace_elapsed: bool = False,
     caps: LoopCaps = LoopCaps(),
     tracks: frozenset[str] | None = None,
+    gate_free: frozenset[str] = frozenset(),
 ) -> list[object]:
     """next_actions, deferring to a background wait (design "Data model"):
     while the wait holds, neither the stall timer nor a park applies, bar
@@ -439,4 +466,4 @@ def pass_actions(
     return next_actions(task, signal, session_alive, waiting=waiting,
                         idle_seconds=idle_seconds, stall_after=stall_after,
                         grace_elapsed=grace_elapsed, caps=caps,
-                        tracks=tracks)
+                        tracks=tracks, gate_free=gate_free)

@@ -267,6 +267,15 @@ address-review. Worktree-relative path.
 - A task at the gate gets 2 unattended rounds (`unattended_rounds`: respawns of a dead session plus
   new rounds since the operator last acted); the next one parks it for review, with the request armed.
 
+**Gate skip**: the dispatcher alone skips the plan review gate (`machine._skips_gate`), on the first
+ready report of a task, when all of these hold: the task's own track is gate-free (`plan_review: false`;
+a track the ready report names does not count), `TaskState.asked` is false, and the report's
+`open_questions` is the integer 0 and `.agent/plan-review.md` confirms it (its open-questions section
+says `None.`; `artifacts.count_open_questions`). A missing or malformed count or summary means "the gate
+applies". The ticket check and the spec folder publish run as at the gate, then implement starts in the
+same pass; no review notification, no request. `TaskState.gated` is set at gate entry and never cleared:
+a task that waited once never skips, also after a respawn puts it back in the plan stage.
+
 The web layer READS `operator_request`; it never infers a request from park state.
 
 **Endpoint and UI**: one `/api/task/{target}/{issue}/request` → `OperatorRequest | null` with a

@@ -39,6 +39,39 @@ def _check(path: str | Path, patterns: list[str],
     return CheckResult(True)
 
 
+_OPEN_QUESTIONS = re.compile(r"(?ims)^## +open questions[ \t]*\n(.*?)(?=^## |\Z)")
+_LIST_ITEM = re.compile(r"(?:[-*]|\d+\.) ")
+
+
+def _open_questions_lines(summary: str | Path) -> list[str] | None:
+    """The non-blank lines of the summary's one open-questions section."""
+    try:
+        text = Path(summary).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    sections = _OPEN_QUESTIONS.findall(text)
+    if len(sections) != 1:
+        return None
+    return [ln.rstrip() for ln in sections[0].splitlines() if ln.strip()]
+
+
+def count_open_questions(summary: str | Path) -> int | None:
+    """The entries of the plan summary's open-questions section: its top-level
+    list items, or 0 when it says `None.`. None = cannot tell (no file, no
+    such section or two of them, anything but a list in it): the caller
+    treats that as "questions are open"."""
+    lines = _open_questions_lines(summary)
+    if lines == ["None."]:
+        return 0
+    if not lines or not _LIST_ITEM.match(lines[0]):
+        return None
+    items = [ln for ln in lines if _LIST_ITEM.match(ln)]
+    # Every other line must continue an item (indented under it).
+    if any(ln not in items and not ln[0].isspace() for ln in lines):
+        return None
+    return len(items)
+
+
 def check_spec(path: str | Path) -> CheckResult:
     return _check(path, SPEC_PATTERNS)
 

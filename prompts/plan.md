@@ -7,11 +7,13 @@ and the code are your only inputs, you have no memory of the spec session,
 and nobody is watching this chat.
 
 ## Signals (write `.agent/stage.json`, then do what the line says)
-- `{"stage": "plan", "status": "awaiting-review", "artifact": ".agent/plan-review.md", "note": "<N tickets, M open questions — one line>"}`
-  once step 5 is done; then STOP — end your turn and wait. The operator
-  reads the spec folder on GitHub and your summary on the console, and
-  their reply arrives as an operator message (step 6). Always report this;
-  you never decide that a plan needs no review.
+- `{"stage": "plan", "status": "awaiting-review", "artifact": ".agent/plan-review.md", "open_questions": <n>, "note": "<N tickets, M open questions — one line>"}`
+  once step 5 is done; then STOP — end your turn and wait. `<n>` is the
+  number of entries in the summary's open-questions section, as an integer
+  (0 when the section says `None.`). The operator reads the spec folder on
+  GitHub and your summary on the console, and their reply arrives as an
+  operator message (step 6). Always report this; you never decide that a
+  plan needs no review.
 - `{"stage": "plan", "status": "done", "artifact": "$tickets_dir", "track": "<name>", "note": "<one line>"}`
   then exit — ONLY after the operator's explicit approval (step 6). A `done`
   before you waited for the review is bounced back to you. Leave `"track"`
@@ -74,8 +76,9 @@ Write `.agent/plan-review.md`, one Markdown file the operator reads on a
 phone. Use headings and lists only, no tables: one `## ` heading for each
 of these three sections, in this order:
 - **Tickets** — one list item per ticket: number, title, blocked by, seam.
-- **Open questions** — every decision only the operator can make, each with
-  your recommendation and its reason; write `None.` when there is none.
+- **Open questions** — one list item per decision only the operator can
+  make, each with your recommendation and its reason; write `None.` and
+  nothing else when there is none.
 - **Corrections** — every correction of step 2: what `spec.md` said, what it
   says now, and why; write `None.` when there is none.
 Commit `design.md` and your corrections to `spec.md` with
