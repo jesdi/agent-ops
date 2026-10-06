@@ -12,6 +12,25 @@ from enum import Enum
 from pathlib import Path
 
 
+@dataclass(frozen=True)
+class SessionRecord:
+    """The conversation recorded for a task's continued stage."""
+
+    session_id: str
+    stage: str
+
+
+def read_session(state_dir: str | Path, target: str,
+                 issue: int) -> SessionRecord | None:
+    """Read a task's session record; acceptance-first interface stub."""
+    return None
+
+
+def clear_session(state_dir: str | Path, target: str, issue: int) -> None:
+    """Remove a task's session record; acceptance-first interface stub."""
+    pass
+
+
 class Stage(str, Enum):
     QUEUED = "queued"
     SPEC = "spec"
