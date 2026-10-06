@@ -208,5 +208,7 @@ def test_spec_prompt_applies_an_operator_change_request_to_the_old_design():
 
 def test_spec_prompt_reads_answers_from_messages_and_the_old_review_copy():
     item = _spec_item("answered", "questionnaire.md", "settled")
-    assert "operator message" in item and "docs/review/" in item
+    assert "operator message" in item and "the review file" in item
     assert "raise no new questionnaire" in item
+    review = _spec_item("docs/review/")                  # a paragraph of its own
+    assert "source of answers" in review and "questionnaire rules" in review
