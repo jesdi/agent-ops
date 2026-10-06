@@ -89,7 +89,7 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
     """Publish the folder `artifact` (the task's spec.md) lives in."""
     spec = relative_artifact(worktree, artifact)
     parts = Path(spec).parts if spec else ()
-    if len(parts) < 3 or ".." in parts or parts[0] == ".agent":
+    if len(parts) < 3 or ".." in parts or parts[0].lower() == ".agent":
         # The folder is committed whole, so the spec needs one of its own
         # below a parent (specs/<slug>/spec.md): a shallower path would
         # publish the worktree or every spec, and `.agent/` is never pushed.
