@@ -7,7 +7,7 @@ track's stage list that the usage gate admits, and `targets.yaml` may already
 name `openai/…` entries. They are inert: `usage.admits` fails closed for a
 provider with no usage adapter, and every launch path is welded to Claude —
 `containers.session_cmd` and `triage_cmd` type `claude …`,
-`Sessions.resume` types `--continue`, the Stop hook is a Claude settings
+`Sessions.resume` originally used implicit continuation, the Stop hook is a Claude settings
 hook, herdr is told `HERDR_AGENT=claude`, and the only mounted home is
 claude-home.
 
@@ -78,18 +78,18 @@ class Runtime:
     package: str            # "" | "/opt/codex": where a packaged CLI's whole package is mounted :ro
     efforts: tuple[str, ...]
     launch: Callable[[str, str, str, str], str]   # (name, worktree, model, effort) -> shell prefix
-    resume: Callable[[str], str]                  # (quoted message) -> trailing args
+    resume: Callable[[str, str], str]             # (session ID, quoted message) -> trailing args
 
 RUNTIMES = {"anthropic": CLAUDE, "openai": CODEX}
 
 def runtime_for(model_id: str) -> Runtime   # KeyError-free: unknown provider raises ValueError
 ```
 
-Claude, unchanged in behaviour:
+Claude:
 
 ```
 claude --remote-control <name> --permission-mode auto --model <m> [--effort <e>] <args>
-resume: --continue <message>
+resume: --resume <session-id> <message>
 ```
 
 Codex:
@@ -100,7 +100,7 @@ codex --model <m> [-c model_reasoning_effort=<e>]
       -c 'notify=["<worktree>/.agent/stop-hook.sh"]'
       -c 'projects={"<worktree>"={trust_level="trusted"}}'
       <args>
-resume: resume --last <message>
+resume: resume <session-id> <message>
 ```
 
 The trust override is an inline table, not a dotted key. Codex's `-c` splits
@@ -112,15 +112,17 @@ table replaces any `projects` table in codex-home; the seed has none.
 
 - `notify` fires on `agent-turn-complete`, Codex's equivalent of the Stop
   hook, and runs the same `.agent/stop-hook.sh` the worktree already carries.
-  The script ignores its arguments, so Codex's JSON payload is harmless. It is
+  The script forwards the thread ID from Codex's JSON payload to waitd. It is
   set per launch because the worktree path is per task; the seed never knows
   worktrees.
 - The trust override pre-empts Codex's first-run trust prompt, which would
   otherwise stall an unattended pane — the same failure `CLAUDE_CONFIG_DIR`
   fixed for Claude.
-- `codex resume --last` resumes the newest Codex session for the cwd. The
-  worktree is mounted at its host path, and a stage never changes provider
-  (see Overrides), so the newest Codex session in that cwd is the stage's.
+- `codex resume <session-id>` and `claude --resume <session-id>` name the
+  task's recorded conversation. waitd writes the ID and stage in the state
+  dir. All resume sites check that record against the continued stage;
+  absent, unreadable, or mismatched records start that stage afresh with
+  the intended message. Fresh launches and task flushes remove the record.
 - `--remote-control` is Claude-only; Codex has no equivalent.
 
 `main.py` never branches on a provider. Everything provider-specific is
@@ -137,8 +139,8 @@ codex-home when it is granted a second model (see below). A Codex session
 mounts only codex-home.
 
 `Sessions._launch` sets `HERDR_AGENT` from `runtime.herdr_agent` instead of
-the literal `"claude"`. `spawn_stage` and `resume` keep their signatures; the
-`model` they already receive selects the runtime.
+the literal `"claude"`. `resume` requires a `session_id`; the `model` selects
+the runtime. `spawn_stage` removes the old record before the tab starts.
 
 `triage_cmd` stays Claude-only and asserts an anthropic model.
 
@@ -310,8 +312,7 @@ protection on `main`, the backstop for both runtimes.
 
 Switching provider mid-stage throws away the stage's transcript and makes
 the new runtime rebuild its context from scratch. That costs tokens for no
-gain, and `--continue` / `resume --last` would resume the wrong provider's
-newest session, which could be an earlier stage.
+gain, and a recorded conversation ID belongs to the runtime that created it.
 
 Rule: **an override for a stage that already has a pick must name a model of
 the pick's provider.** A stage with no pick (a queued claim, or a parked
@@ -442,8 +443,8 @@ not the first deploy.
 
 1. **Verify on the real account** (manual; infra and box): Codex runs in the
    session image with codex-home mounted; herdr reports its agent state; two
-   concurrent sessions survive a token refresh; `resume --last` picks the
-   right session. Record the findings in this spec. A failure here changes
+   concurrent sessions survive a token refresh; resume by recorded ID selects
+   the task's conversation. Record the findings in this spec. A failure here changes
    the admission cap, not the design.
 2. Runtimes seam and launcher (Claude behaviour byte-identical).
 3. Per-provider effort, and the triage-provider validation.

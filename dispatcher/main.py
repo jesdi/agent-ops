@@ -9,6 +9,7 @@ import argparse
 import json
 import logging
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -53,10 +54,10 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
-                              clear_turn_markers, delete, has_waiting,
+                              clear_session, clear_turn_markers, delete, has_waiting,
                               holds_slot, launch_entries, load,
                               load_all, max_slots,
-                              next_stage, read_background,
+                              next_stage, read_background, read_session,
                               read_stage_signal,
                               implement_done, resumable_crash, shown_stage,
                               save, task_key)
@@ -568,6 +569,15 @@ def _with_implement_provider(task: TaskState, stage: Stage, entry) -> list[str]:
 
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  launch: Launch, spec_path: str = "") -> TaskState:
+    # Logical stage boundaries reset loop budgets; a replacement conversation
+    # calls the same launch I/O without creating a new allowance.
+    task = loops.reset(task, ResetCause.STAGE_STARTED)
+    return _launch_stage(cfg, deps, target, task, launch, spec_path)
+
+
+def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                  launch: Launch, spec_path: str = "",
+                  message: str = "") -> TaskState:
     stage, entry = launch.stage, launch.entry
     model = entry.model_id
     ctx = dict(
@@ -585,6 +595,8 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         tracks=tracks_text(_policy(cfg, target)),
     )
     prompt = render_stage_prompt(stage, ctx)
+    if message:
+        prompt = f"{prompt}\n\n{message}"
     block, drained = _drain(cfg, task.target, task.issue)
     if block:
         prompt = f"{prompt}\n\n{block}\n"
@@ -594,9 +606,6 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                               stage.value, model, entry.effort,
                               second=launch.second)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
-    # A fresh stage is a fresh budget for the loops it runs; ci_rounds belongs
-    # to the PR, not the stage, and is reset by _poll_prs/_resume_one.
-    task = loops.reset(task, ResetCause.STAGE_STARTED)
     task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
                    operator_request=None, updated_at=_now(),
                    picks={**task.picks, pick_key(stage.value): str(entry)},
@@ -605,6 +614,31 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
                           issue=task.issue, stage=stage.value, model=str(entry))
     return task
+
+
+def _continue_or_restart(cfg: Config, deps: Deps, target: Target,
+                         task: TaskState, launch: Launch,
+                         message: str = "") -> tuple[TaskState, str]:
+    """Every continuation names its recorded conversation or launches afresh."""
+    stage = Stage.PLAN if task.stage is Stage.AWAITING_PLAN_REVIEW else task.stage
+    record = read_session(cfg.state_dir, task.target, task.issue)
+    detail = ""
+    if record is not None and record.stage == stage.value:
+        block, drained = _drain(cfg, task.target, task.issue)
+        text = "\n\n".join(filter(None, (message, block))) or "Continue."
+        deps.sessions.resume(task.target, task.issue, task.worktree, text,
+                             launch.model, launch.entry.effort,
+                             second=launch.second, session_id=record.session_id)
+        messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
+    else:
+        detail = (f"new conversation: session recorded for {record.stage}" if record
+                  else "new conversation: no session recorded")
+        task = _launch_stage(cfg, deps, target, task, replace(launch, stage=stage),
+                             message=message or "Continue.")
+    eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          model=str(launch.entry), detail=detail)
+    return task, detail
 
 
 # The weekly allowance grows continuously, so a box running at pace crosses
@@ -836,14 +870,9 @@ def _retry_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # re-check the still-unfixed work, and burn the retry immediately.
     _write_working(task.worktree, act.stage, entry)
     _end_session(cfg, deps, task.target, task.issue)
-    block, drained = _drain(cfg, task.target, task.issue)
     text = (f"Your .agent/stage.json was rejected: {act.reason}. "
             f"{_RETRY_HINT[act.stage]}")
-    if block:
-        text = f"{text}\n\n{block}"
-    deps.sessions.resume(task.target, task.issue, task.worktree, text,
-                         entry.model_id, entry.effort)
-    messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
+    task, _ = _continue_or_restart(cfg, deps, target, task, launch, text)
     # A rejected plan is no longer on offer: the session's next ready report
     # is checked and armed again.
     save(cfg.state_dir, replace(loops.spend_retry(task, act.retry),
@@ -1145,6 +1174,7 @@ def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
         if target is not None and task.worktree:
             remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
         _clear_wake_blocked(cfg, task.target, task.issue)
+        clear_session(cfg.state_dir, task.target, task.issue)
         delete(cfg.state_dir, task.target, task.issue)
         eventlog.append_event(cfg.state_dir, "flushed",
                               target=task.target, issue=task.issue,
@@ -1234,20 +1264,21 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     notice = messages.append(cfg.state_dir, task.target, task.issue,
                              ATTACH_TEXT, "dispatcher")
     try:
-        _launch_woken(cfg, deps, target, task, launch)
+        detail = _launch_woken(cfg, deps, target, task, launch)
     except Exception:
         messages.mark_delivered(cfg.state_dir, task.target, task.issue,
                                 [notice.id])
         raise
     deps.notifier.send("resumed_for_attach", issue=task.issue,
                        title=task.title, url=_url(target, task.issue),
-                       target=target.name, note="")
+                       target=target.name, note="new conversation" if detail else "")
 
 
 def _launch_woken(cfg: Config, deps: Deps, target: Target,
-                  task: TaskState, launch: Launch) -> None:
+                  task: TaskState, launch: Launch) -> str:
+    """Launch a woken task. Returns why a new conversation replaced the
+    recorded one, else ""."""
     entry = launch.entry
-    model = entry.model_id
     _heal_exclude(target, task)
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
@@ -1256,7 +1287,7 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
         # No session to continue: the stage it died in, or review after a
         # done implement session, starts afresh (state.next_launch).
         _respawn(cfg, deps, target, task, launch)
-        return
+        return ""
     if task.stage is Stage.PR_OPEN:
         # No session to continue at pr-open: an operator wake on a parked
         # pr-open task is a fresh address-review round carrying their message.
@@ -1271,16 +1302,12 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
         eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
                               model=str(entry))
-        return
+        return ""
     # Before resuming: the next pass must not re-read blocked/awaiting-ci
     # and re-park the freshly resumed session.
     _write_working(task.worktree, task.stage, entry)
     _log_model(task.worktree, task.stage, str(entry))
-    block, drained = _drain(cfg, task.target, task.issue)
-    deps.sessions.resume(task.target, task.issue, task.worktree,
-                         block or "Continue.", model, entry.effort,
-                         second=launch.second)
-    messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
+    task, detail = _continue_or_restart(cfg, deps, target, task, launch)
     _clear_wake_blocked(cfg, task.target, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                 park_msg_id=0, park_note="",
@@ -1290,9 +1317,7 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
                                 picks={**task.picks,
                                       pick_key(task.stage.value): str(entry)},
                                 updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
-                          issue=task.issue, stage=task.stage.value,
-                          model=str(entry))
+    return detail
 
 
 def _crash_failed(task: TaskState) -> TaskState:
@@ -1313,10 +1338,9 @@ def _respawn(cfg: Config, deps: Deps, target: Target,
     """Resume of a task that has no session to continue; `launch` is its
     next launch. A crashed task: the stage it died in starts afresh in the
     same worktree; an implement session continues from its ledger there. A
-    fresh stage prompt, not a resume (`claude --continue` / `codex resume
-    --last`): the newest transcript may belong to the previous stage, or the
-    crashed launch may never have started one. The queued messages ride in
-    the stage prompt, an attach notice among them."""
+    fresh stage prompt, not a resume: the crashed launch may never have
+    started a conversation. The queued messages ride in the stage prompt,
+    an attach notice among them."""
     detail = "after crash" if task.crashed_stage else "next launch"
     deps.github.set_status(target, task.issue,
                            target.status_in_progress_option_id)
@@ -1773,13 +1797,19 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
     pick = (stage_pick(task.picks, task.stage.value)
             or _last_launched(task.worktree))
     runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
+    record = read_session(cfg.state_dir, task.target, task.issue)
+    stage = "plan" if task.stage is Stage.AWAITING_PLAN_REVIEW else task.stage.value
+    repro = "Restart the stage from the dispatcher: no session recorded"
+    if record is not None and record.stage == stage:
+        repro = (f"cd {shlex.quote(task.worktree)} && "
+                 f"{runtime.resume_cmd(record.session_id)}  # inside session image")
     rep = failures.FailureReport(
         klass="session-crash", target=target.name, issue=task.issue,
         title=f"session crashed during {task.stage.value}: {task.title}",
         error=(f"session task-{task.target}-{task.issue} died during stage "
                f"{task.stage.value}"),
         log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
-        repro=f"cd {task.worktree} && {runtime.resume_cmd('')}  # inside session image",
+        repro=repro,
         worktree=task.worktree)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
     if blocker:
