@@ -19,7 +19,8 @@ import dispatcher.main as main
 from dispatcher import intents as intents_mod
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
-from dispatcher.state import NO_SLOT, PARK_HUMAN, PARK_REVIEW, Stage, load, save
+from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PlanApprovalRequest,
+                              Stage, load, save)
 
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
                              deps, make_task, patch_usage, patch_workspace,
@@ -319,7 +320,7 @@ def test_gate_parks_after_the_grace_time_and_a_later_approval_starts_implement(
     c = dc_replace(_setup(tmp_path, monkeypatch), capacity=1)
     wt = _plan_task(c, tmp_path)
     save(c.state_dir, dc_replace(
-        _task(c), stage=Stage(GATE),
+        _task(c), stage=Stage(GATE), operator_request=PlanApprovalRequest(SUMMARY),
         updated_at=(datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()))
     _ready(wt)
     gh = FakeGitHub([Candidate(99, "next", "u99")])
@@ -351,7 +352,7 @@ def test_null_grace_never_parks_the_gate(tmp_path, monkeypatch):
                    capacity=1)
     wt = _plan_task(c, tmp_path)
     save(c.state_dir, dc_replace(
-        _task(c), stage=Stage(GATE),
+        _task(c), stage=Stage(GATE), operator_request=PlanApprovalRequest(SUMMARY),
         updated_at=(datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()))
     _ready(wt)
     gh = FakeGitHub([Candidate(99, "next", "u99")])
@@ -369,7 +370,8 @@ def test_null_grace_never_parks_the_gate(tmp_path, monkeypatch):
 def test_gate_task_with_a_dead_session_gets_a_fresh_plan_session(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, track="security")
-    save(c.state_dir, dc_replace(_task(c), stage=Stage(GATE)))
+    save(c.state_dir, dc_replace(_task(c), stage=Stage(GATE),
+                                 operator_request=PlanApprovalRequest(SUMMARY)))
     _ready(wt)
     sess = FakeSessions(alive=set())
 
