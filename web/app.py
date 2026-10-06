@@ -19,8 +19,8 @@ from dispatcher.models import (candidates, override_allowed, override_refusal,
                                parse_entry, pick_provider, resolve,
                                stage_pick, track_from_labels)
 from dispatcher.usage import admits
-from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
-                              SpecApprovalRequest, next_stage, resumable_crash)
+from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, next_stage,
+                              resumable_crash)
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
@@ -370,12 +370,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if req is None:
             return None
         wt = Path(t.worktree).resolve()
-        if isinstance(req, SpecApprovalRequest):
-            content = _resolve_content(t.spec_path or "", wt)
-            return read_model.OperatorRequest(kind="spec-approval", content=content)
-        elif isinstance(req, AnswersRequest):
-            content = _resolve_content(req.path, wt)
-            return read_model.OperatorRequest(kind="answers", content=content)
+        # Both request kinds are one file in the worktree: the plan review
+        # summary, or the questionnaire.
+        return read_model.OperatorRequest(
+            kind=req.kind, content=_resolve_content(req.path, wt))
 
     HISTORY_MAX_LINES = 10000
 

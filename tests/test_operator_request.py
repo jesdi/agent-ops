@@ -1,7 +1,6 @@
 """First red acceptance slice for the operator-request refactor.
 
-Exercise HTTP through real task loading and file reads. The legacy record
-is intentional: an existing spec-review task must survive the refactor.
+Exercise HTTP through real task loading and file reads.
 """
 import json
 
@@ -15,24 +14,23 @@ from web.sources import Sources
 
 
 @pytest.mark.parametrize("park", ["", "awaiting-review"], ids=["live-gate", "parked-gate"])
-def test_existing_spec_gate_exposes_an_explicit_approval_request(tmp_path, park):
+def test_plan_gate_exposes_the_summary_as_an_approval_request(tmp_path, park):
     cfg = make_config(tmp_path)
     wt = tmp_path / "worktree"
-    spec = wt / "docs" / "specs" / "login-design.md"
+    spec = wt / "specs" / "2026-10-12-login" / "spec.md"
     spec.parent.mkdir(parents=True)
-    spec.write_text("# Login redirect design\n\nUse the staging host.")
+    spec.write_text("# Login redirect\n\nUse the staging host.")
     agent_dir = wt / ".agent"
     agent_dir.mkdir()
-    (agent_dir / "stage.json").write_text(json.dumps({
-        "stage": "spec", "status": "awaiting-review",
-        "artifact": "docs/specs/login-design.md",
-    }))
+    (agent_dir / "plan-review.md").write_text("# Plan review\n\n## Tickets\n")
     (tmp_path / "task-alpha-7.json").write_text(json.dumps({
-        "issue": 7, "target": "alpha", "stage": "awaiting-spec-review",
+        "issue": 7, "target": "alpha", "stage": "awaiting-plan-review",
         "slot": -1 if park else 0, "worktree": str(wt),
         "branch": "agent/task-7", "title": "Fix login redirect",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": park, "artifact": str(spec),
+        "park": park, "spec_path": "specs/2026-10-12-login/spec.md",
+        "operator_request": {"kind": "plan-approval",
+                             "path": ".agent/plan-review.md"},
     }))
     # This read requires neither a running session nor a GitHub request.
     sources = Sources(cfg, sessions=None, github=None)
@@ -40,13 +38,14 @@ def test_existing_spec_gate_exposes_an_explicit_approval_request(tmp_path, park)
         response = client.get("/api/task/alpha/7/request", headers=HEADERS)
 
     assert response.status_code == 200, response.text
+    # the summary, never the spec the task also records
     assert response.json() == {
-        "kind": "spec-approval",
+        "kind": "plan-approval",
         "content": {
             "kind": "readable",
-            "path": "docs/specs/login-design.md",
+            "path": ".agent/plan-review.md",
             "media_type": "text/markdown",
-            "text": "# Login redirect design\n\nUse the staging host.",
+            "text": "# Plan review\n\n## Tickets\n",
         },
     }
 
@@ -107,28 +106,27 @@ def test_unknown_operator_request_kind_rejected_at_load(tmp_path):
     assert response.status_code == 404
 
 
-def test_spec_approval_missing_file_returns_200_unavailable(tmp_path):
-    """Slice 7: spec file deleted after request was established → 200, content.kind=unavailable."""
+def test_plan_approval_missing_file_returns_200_unavailable(tmp_path):
+    """Slice 7: summary deleted after request was established → 200, content.kind=unavailable."""
     cfg = make_config(tmp_path)
     wt = tmp_path / "worktree"
-    spec = wt / "docs" / "specs" / "login-design.md"
-    spec.parent.mkdir(parents=True)
-    spec.write_text("# Spec")
+    wt.mkdir()
     (tmp_path / "task-alpha-20.json").write_text(json.dumps({
-        "issue": 20, "target": "alpha", "stage": "awaiting-spec-review",
+        "issue": 20, "target": "alpha", "stage": "awaiting-plan-review",
         "slot": -1, "worktree": str(wt),
-        "branch": "agent/task-20", "title": "Missing spec task",
+        "branch": "agent/task-20", "title": "Missing summary task",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "awaiting-review", "artifact": str(spec),
+        "park": "awaiting-review",
+        "operator_request": {"kind": "plan-approval",
+                             "path": ".agent/plan-review.md"},
     }))
-    spec.unlink()  # delete after task was saved
     sources = Sources(cfg, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/20/request", headers=HEADERS)
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["kind"] == "spec-approval"
+    assert body["kind"] == "plan-approval"
     assert body["content"]["kind"] == "unavailable"
     assert "reason" in body["content"]
 
@@ -231,68 +229,3 @@ def test_existing_non_gate_task_returns_null_request(tmp_path):
 
     assert response.status_code == 200, response.text
     assert response.json() is None
-
-
-# ---------------------------------------------------------------------------
-# Slice 14: spec content owned by spec_path; legacy backfill in _read
-# ---------------------------------------------------------------------------
-
-def test_spec_approval_reads_from_spec_path_not_artifact(tmp_path):
-    """Slice 14: endpoint must resolve spec content from spec_path, ignoring artifact."""
-    cfg = make_config(tmp_path)
-    wt = tmp_path / "worktree"
-    spec = wt / "docs" / "specs" / "design.md"
-    spec.parent.mkdir(parents=True)
-    spec.write_text("# Real spec\n\nContent from spec_path.")
-    (tmp_path / "task-alpha-30.json").write_text(json.dumps({
-        "issue": 30, "target": "alpha", "stage": "awaiting-spec-review",
-        "slot": -1, "worktree": str(wt),
-        "branch": "agent/task-30", "title": "Spec path test",
-        "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "awaiting-review",
-        "spec_path": "docs/specs/design.md",   # worktree-relative — endpoint resolves this
-        "artifact": "",                         # empty decoy — endpoint must NOT use this
-        "operator_request": {"kind": "spec-approval"},
-    }))
-    sources = Sources(cfg, sessions=None, github=None)
-    with TestClient(create_app(cfg, sources)) as client:
-        response = client.get("/api/task/alpha/30/request", headers=HEADERS)
-
-    assert response.status_code == 200, response.text
-    assert response.json() == {
-        "kind": "spec-approval",
-        "content": {
-            "kind": "readable",
-            "path": "docs/specs/design.md",
-            "media_type": "text/markdown",
-            "text": "# Real spec\n\nContent from spec_path.",
-        },
-    }
-
-
-def test_legacy_gate_record_with_backfilled_spec_path_serves_content(tmp_path):
-    """Slice 14: legacy record (absolute artifact, no spec_path, no operator_request)
-    loads with spec_path backfilled so endpoint resolves and serves the spec."""
-    cfg = make_config(tmp_path)
-    wt = tmp_path / "worktree"
-    spec = wt / "docs" / "specs" / "login.md"
-    spec.parent.mkdir(parents=True)
-    spec.write_text("# Login spec\n\nBody.")
-    (tmp_path / "task-alpha-32.json").write_text(json.dumps({
-        "issue": 32, "target": "alpha", "stage": "awaiting-spec-review",
-        "slot": -1, "worktree": str(wt),
-        "branch": "agent/task-32", "title": "Legacy gate",
-        "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "awaiting-review",
-        "artifact": str(spec),   # absolute path — no spec_path, no operator_request
-    }))
-    sources = Sources(cfg, sessions=None, github=None)
-    with TestClient(create_app(cfg, sources)) as client:
-        response = client.get("/api/task/alpha/32/request", headers=HEADERS)
-
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["kind"] == "spec-approval"
-    assert body["content"]["kind"] == "readable"
-    assert body["content"]["path"] == "docs/specs/login.md"
-    assert body["content"]["text"] == "# Login spec\n\nBody."

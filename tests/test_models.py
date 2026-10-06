@@ -178,7 +178,7 @@ def test_parse_rejects_label_unsafe_track_names(name):
 
 def test_policy_stage_maps_runtime_stages():
     assert policy_stage("queued") == "spec"
-    assert policy_stage("awaiting-spec-review") == "spec"
+    assert policy_stage("awaiting-plan-review") == "plan"
     assert policy_stage("address-review") == "implement"
     assert policy_stage("review") == "review"
     assert policy_stage("blocked") == "blocked"
@@ -259,7 +259,7 @@ def test_candidates_are_the_tracks_stage_list_in_order():
 def test_candidates_map_runtime_stages_through_policy_stage():
     p = policy()
     assert candidates(p, "trivial", "queued", order=tuple) == p.tracks["trivial"].stages["spec"]
-    assert candidates(p, "trivial", "awaiting-spec-review", order=tuple) == p.tracks["trivial"].stages["spec"]
+    assert candidates(p, "trivial", "awaiting-plan-review", order=tuple) == p.tracks["trivial"].stages["plan"]
     assert candidates(p, "trivial", "address-review", order=tuple) == p.tracks["trivial"].stages["implement"]
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 MIN_BYTES = 1500
 MIN_TICKET_BYTES = 200   # a small ticket is legitimately short
 TICKETS_DIR = ".agent/tickets"
+PLAN_SUMMARY = ".agent/plan-review.md"   # what the operator reads at the gate
 
 # Specs: a title plus at least two H2 sections (a bug diagnosis satisfies
 # this too). Tickets follow to-tickets' per-file template.

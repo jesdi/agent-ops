@@ -19,7 +19,7 @@ PROVIDER_EFFORTS: Mapping[str, tuple[str, ...]] = {
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-opus-5"
 TRACK_LABEL_PREFIX = "track:"
-_POLICY_STAGES = {"queued": "spec", "awaiting-spec-review": "spec",
+_POLICY_STAGES = {"queued": "spec", "awaiting-plan-review": "plan",
                   "address-review": "implement"}
 _OLD_KEYS = ("default", "rules")
 _TOP_KEYS = frozenset({"triage", "untracked", "tracks", "review_second"})

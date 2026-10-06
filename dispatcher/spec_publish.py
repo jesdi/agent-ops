@@ -1,9 +1,9 @@
-"""Deterministic backstop for the spec-review gate: make sure a finished
-spec draft is committed to the task branch and pushed to origin BEFORE the
+"""Deterministic backstop for the plan-review gate: make sure the task's
+spec folder is committed to the task branch and pushed to origin BEFORE the
 human is pinged to review it, and build the GitHub URL the notifications
-link to. The prompt (prompts/spec.md) asks the session to do all of this
-itself; this module is what makes it a guarantee instead of an instruction
-(spec: docs/specs/2026-07-31-spec-visibility-design.md).
+link to. The prompts (prompts/spec.md, prompts/plan.md) ask the sessions to
+do all of this themselves; this module is what makes it a guarantee instead
+of an instruction (spec: docs/specs/2026-07-31-spec-visibility-design.md).
 
 Never raises: every git problem becomes PublishResult.error, because a
 push failure must not block the review gate — review in the attached
@@ -26,6 +26,10 @@ class PublishResult:
 
 def spec_url(repo: str, branch: str, artifact: str) -> str:
     return f"https://github.com/{repo}/blob/{quote(branch, safe='/')}/{quote(artifact, safe='/')}"
+
+
+def folder_url(repo: str, branch: str, folder: str) -> str:
+    return f"https://github.com/{repo}/tree/{quote(branch, safe='/')}/{quote(folder, safe='/')}"
 
 
 def relative_artifact(worktree: str, artifact: str) -> str | None:
@@ -53,33 +57,37 @@ def _git(worktree: str, *args: str) -> subprocess.CompletedProcess:
 
 def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
                      artifact: str, dry_run: bool = False) -> PublishResult:
-    rel = relative_artifact(worktree, artifact)
-    if rel is None:
+    """Publish the folder `artifact` (the task's spec.md) lives in."""
+    spec = relative_artifact(worktree, artifact)
+    rel = Path(spec).parent.as_posix() if spec else "."
+    if rel == "." or ".." in Path(rel).parts:
+        # No folder of its own: committing the parent would publish the
+        # whole worktree, scratch and `.agent/` included.
         return PublishResult(error=f"unusable spec artifact path: {artifact!r}")
     if dry_run:
-        print(f"[dry-run] ensure spec {rel} committed+pushed on {branch}")
-        return PublishResult(url=spec_url(repo, branch, rel))
+        print(f"[dry-run] ensure spec folder {rel} committed+pushed on {branch}")
+        return PublishResult(url=folder_url(repo, branch, rel))
     try:
         status = _git(worktree, "status", "--porcelain", "--", rel)
         if status.returncode != 0:
             return PublishResult(
                 error=f"git status failed: {status.stderr.strip()}")
         if status.stdout.strip():
-            # Uncommitted (or untracked) draft — the agent forgot. Commit
-            # ONLY the artifact path; anything else dirty in the worktree
+            # Uncommitted (or untracked) files — the agent forgot. Commit
+            # ONLY the spec folder; anything else dirty in the worktree
             # is scratch the dispatcher has no business publishing.
             add = _git(worktree, "add", "--", rel)
             if add.returncode != 0:
                 return PublishResult(
                     error=f"git add failed: {add.stderr.strip()}")
             commit = _git(worktree, "commit",
-                          "-m", f"docs: draft spec for #{issue}", "--", rel)
+                          "-m", f"docs: spec folder for #{issue}", "--", rel)
             if commit.returncode != 0:
                 return PublishResult(
                     error=f"git commit failed: {commit.stderr.strip()}")
         tracked = _git(worktree, "ls-files", "--error-unmatch", "--", rel)
         if tracked.returncode != 0:
-            return PublishResult(error=f"spec not tracked in git: {rel}")
+            return PublishResult(error=f"spec folder not tracked in git: {rel}")
         head = _git(worktree, "rev-parse", "HEAD")
         if head.returncode != 0:
             return PublishResult(
@@ -93,7 +101,7 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
                     error=f"git push failed: {push.stderr.strip()}")
     except (OSError, subprocess.SubprocessError) as exc:
         return PublishResult(error=f"git invocation failed: {exc}")
-    return PublishResult(url=spec_url(repo, branch, rel))
+    return PublishResult(url=folder_url(repo, branch, rel))
 
 
 @dataclass(frozen=True)

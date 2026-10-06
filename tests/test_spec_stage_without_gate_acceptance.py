@@ -95,8 +95,8 @@ def test_spec_session_ends_without_a_review_gate(tmp_path, monkeypatch):
     assert t.park == ""
     assert not any("review" in n for n in d.notifier.sent)
     assert (t.operator_request is None
-            or t.operator_request.kind != "spec-approval")
-    assert t.stage.value != "awaiting-spec-review"
+            or t.operator_request.kind != "plan-approval")
+    assert t.stage.value != "awaiting-plan-review"
 
 
 # 2. A track that is not configured is bounced once.

@@ -47,7 +47,7 @@ COLUMNS: tuple[tuple[str, str, Zone], ...] = (
 # and the card keeps the exact park kind so the board can tell them apart.
 # Without the mapping it fell through to the stage column and a session stuck
 # at a /login prompt rendered as healthy "In progress" work.
-# PARK_REVIEW maps to Needs review — a finished spec waiting for a human is
+# PARK_REVIEW maps to Needs review — a finished plan waiting for a human is
 # exactly that column's meaning, parked or not.
 _PARK_COLUMN = {PARK_HUMAN: "parked", PARK_CI: "awaiting-ci",
                 PARK_WAKE: "resuming", PARK_LOGIN: "parked",
@@ -58,7 +58,7 @@ _STAGE_COLUMN = {
     Stage.PLAN.value: "in-progress",
     Stage.IMPLEMENT.value: "in-progress",
     Stage.REVIEW.value: "in-progress",
-    Stage.AWAITING_SPEC_REVIEW.value: "needs-review",
+    Stage.AWAITING_PLAN_REVIEW.value: "needs-review",
     Stage.PR_OPEN.value: "pr-open",
     Stage.ADDRESS_REVIEW.value: "in-progress",
     Stage.DONE.value: "done",
@@ -438,7 +438,7 @@ class UnavailableContent(BaseModel):
 
 
 class OperatorRequest(BaseModel):
-    kind: Literal["spec-approval", "answers"]
+    kind: Literal["plan-approval", "answers"]
     content: Annotated[ReadableContent | UnavailableContent, Field(discriminator="kind")]
 
 

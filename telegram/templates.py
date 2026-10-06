@@ -31,11 +31,11 @@ _RELOGIN = ("ssh -t agent@{host} 'CLAUDE_CONFIG_DIR=$HOME/agent-ops-state/"
             "claude-home $HOME/.local/bin/claude' then /login")
 
 _TEMPLATES = {
-    "awaiting_spec_review": "📝 {ref} {title} — spec ready for review.\n{url}\nsession task-{target}-{issue} · {note}\n" + _ATTACH,
+    "awaiting_plan_review": "📝 {ref} {title} — spec and plan ready for review.\n{url}\nsession task-{target}-{issue} · {note}\n" + _ATTACH,
     "stage_blocked": "🚧 {ref} {title} — stage blocked: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "pr_opened": "✅ {ref} {title} — PR opened: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "artifact_failed": "❌ {ref} {title} — artifact sanity check failed: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "plan_retry": "🔁 {ref} {title} — ticket set failed its format check; resuming the session to fix it: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "plan_retry": "🔁 {ref} {title} — plan signal rejected; resuming the session to fix it: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "session_crashed": "💀 {ref} {title} — session died mid-stage. Worktree preserved for autopsy.\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     # Box-wide events (issue=0, no single owning task) — never had a real
     # session to attach to, so unlike every per-task template above these
@@ -45,10 +45,10 @@ _TEMPLATES = {
     "budget_resume": "▶️ #{issue} {title} — usage gate open again; resuming. {note}\n{url}",
     "implement_started": "🛠 {ref} {title} — implement started. Plan: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "parked_question": "❓ {ref} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
-    "spec_parked": ("🌙 {ref} {title} — spec ready and parked for review. "
+    "plan_parked": ("🌙 {ref} {title} — spec and plan ready and parked for review. "
                     "Session ended; capacity and slot released.\n{note}\n{url}\n"
-                    "Reply to THIS message with review feedback (or `ok` to "
-                    "continue to plan), or /attach {issue}.\n" + _ATTACH),
+                    "Reply to THIS message with review feedback (or `approved` to "
+                    "start implement), or /attach {issue}.\n" + _ATTACH),
     "needs_relogin": ("🔐 {ref} {title} — Claude Code needs re-login. "
                       "Session task-{target}-{issue} is parked but still LIVE.\n"
                       "Authorize here:\n{login_url}\n\n{note}\n{url}\n"
@@ -95,7 +95,7 @@ def render(template: str, multi_target: bool = False, **ctx) -> str:
         ctx = {**ctx, "ref": task_ref(ctx.get("target", ""), ctx["issue"],
                                       multi_target)}
     text = _TEMPLATES[template].format(**ctx)
-    if template in ("awaiting_spec_review", "spec_parked", "parked_question") and ctx.get("console"):
+    if template in ("awaiting_plan_review", "plan_parked", "parked_question") and ctx.get("console"):
         text += (f"\nread & approve: {ctx['console']}/task/"
                  f"{ctx['target']}/{ctx['issue']}")
     return text

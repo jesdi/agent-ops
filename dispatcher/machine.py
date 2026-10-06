@@ -1,6 +1,6 @@
 """Pure per-task state machine: (state, stage signal, session liveness) → actions.
 
-queued → spec → awaiting-spec-review → plan → implement ×tickets → review → pr-open
+queued → spec → plan → awaiting-plan-review → implement ×tickets → review → pr-open
                                     ↘ blocked/awaiting-answers (any stage) ↗   ⇅
                                     ↘ failed / stalled-on-budget
                        pr-open ⇄ address-review, pr-open → done|failed
@@ -62,11 +62,10 @@ class SetTaskStage:
 
 @dataclass(frozen=True)
 class PublishSpec:
-    """Deterministic backstop at the spec-review gate: the executor makes
-    sure the spec is committed+pushed and surfaces the GitHub link (or a
-    local-only warning) in the review ping. Emitted between SetTaskStage
-    and Notify so the publish outcome can shape the notification."""
-    artifact: str = ""
+    """Deterministic backstop at the plan-review gate: the executor makes
+    sure the task's spec folder is committed+pushed and surfaces the GitHub
+    link (or a local-only warning) in the review ping. Emitted between
+    SetTaskStage and Notify so the publish outcome can shape the notification."""
 
 
 @dataclass(frozen=True)
@@ -92,8 +91,8 @@ class ParkForCI:
 
 
 @dataclass(frozen=True)
-class ArmSpecApproval:
-    """Re-establish the spec-approval operator_request on a resumed gate task
+class ArmPlanApproval:
+    """Re-establish the plan-approval operator_request on a resumed gate task
     whose operator_request was cleared by the resume (slice 12). Does NOT
     re-stamp updated_at (grace clock must not restart) and does NOT emit
     SetTaskStage (no stage transition, no re-publish, no re-notify)."""
@@ -102,7 +101,7 @@ class ArmSpecApproval:
 
 @dataclass(frozen=True)
 class ParkForReview:
-    """Grace expired at the spec-review gate. Unlike every other park this
+    """Grace expired at the plan-review gate. Unlike every other park this
     one releases the E2E slot too, so the dispatcher can spend it on the next
     Ready task instead of holding it for a human who is asleep."""
 
@@ -126,8 +125,13 @@ class BackgroundView(NamedTuple):
 
 # A ticket set that fails the mechanical check is usually a numbering or
 # heading slip — resume the session with the reason this many times before
-# giving up and failing the task.
+# giving up and failing the task. A plan `done` that skipped the gate or names
+# no configured track is a protocol slip and spends the same retry, then parks.
 PLAN_RETRY_LIMIT = 1
+PLAN_NO_APPROVAL = ('status "done" is accepted only after the operator has '
+                    'approved the plan at the review gate; write the review '
+                    'summary and report status "awaiting-review" with the '
+                    'summary path as "artifact", then wait for the reply')
 # A spec signal that names no configured track, or asks for a review this
 # stage no longer has, is a protocol slip, not a judgment: resume the session
 # once with the reason, then park for the operator.
@@ -162,11 +166,14 @@ def _loop_actions(task: TaskState, signal: StageSignal,
 
 def _track_actions(task: TaskState, signal: StageSignal,
                    tracks: frozenset[str] | None) -> list[object]:
-    """Empty when the spec signal's track is valid (or validation is off)."""
-    if tracks is None or signal.track in tracks:
+    """Empty when the signal's track is valid (or validation is off). A plan
+    approval may leave the track out: the task keeps the one it has."""
+    at_gate = task.stage == Stage.AWAITING_PLAN_REVIEW
+    if tracks is None or signal.track in tracks or (at_gate and not signal.track):
         return []
-    return _spec_bounce(task, f"stage.json names track {signal.track!r}; it "
-                              f"must be one of {sorted(tracks)}")
+    reason = (f"stage.json names track {signal.track!r}; it must be one of "
+              f"{sorted(tracks)}")
+    return _plan_bounce(task, reason) if at_gate else _spec_bounce(task, reason)
 
 
 def _spec_bounce(task: TaskState, reason: str) -> list[object]:
@@ -175,12 +182,18 @@ def _spec_bounce(task: TaskState, reason: str) -> list[object]:
     return [ParkForInput(reason)]
 
 
+def _plan_bounce(task: TaskState, reason: str) -> list[object]:
+    if task.plan_retries < PLAN_RETRY_LIMIT:
+        return [RetryStage(Stage.PLAN, reason)]
+    return [ParkForInput(reason)]
+
+
 def _dead_session_actions(task: TaskState) -> list[object]:
     """Empty when a dead session needs no action of its own."""
-    if task.stage == Stage.AWAITING_SPEC_REVIEW:
+    if task.stage == Stage.AWAITING_PLAN_REVIEW:
         # Reboot recovery: gate-parked tasks don't expire — re-spawn a
-        # fresh spec session; the draft spec is on disk in the worktree.
-        return [SpawnStage(Stage.SPEC)]
+        # fresh plan session; the spec folder is on disk in the worktree.
+        return [SpawnStage(Stage.PLAN)]
     if task.stage in IN_FLIGHT_STAGES:
         return [HandleCrash()]
     return []
@@ -219,26 +232,45 @@ def _working_actions(task: TaskState, signal: StageSignal, session_alive: bool,
 
 def _review_actions(task: TaskState, signal: StageSignal,
                     grace_elapsed: bool) -> list[object]:
-    if task.stage == Stage.AWAITING_SPEC_REVIEW:
+    if task.stage == Stage.AWAITING_PLAN_REVIEW:
         if grace_elapsed:
             return [ParkForReview()]
         if not task.operator_request:
-            return [ArmSpecApproval(artifact=signal.artifact)]
+            return [ArmPlanApproval(artifact=signal.artifact)]
         return [NoOp()]  # already notified on a previous pass
-    if task.stage != Stage.SPEC:
+    if task.stage == Stage.SPEC:
+        # The spec stage has no review gate: nobody would answer this.
+        return _spec_bounce(task, SPEC_NO_REVIEW)
+    if task.stage != Stage.PLAN:
         return [NoOp()]
-    # The spec stage has no review gate: nobody would answer this.
-    return _spec_bounce(task, SPEC_NO_REVIEW)
+    result, failed = _checked_tickets(task)
+    return failed or [
+        SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=signal.artifact),
+        PublishSpec(),
+        Notify("awaiting_plan_review", signal.note)]
 
 
-def _plan_done_actions(task: TaskState) -> list[object]:
-    result: CheckResult = check_tickets(Path(task.worktree) / TICKETS_DIR)
-    if not result.ok:
-        if task.plan_retries < PLAN_RETRY_LIMIT:
-            return [RetryStage(Stage.PLAN, result.reason)]
-        return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-    return [StartTicket(1, result.count),
-            Notify("implement_started", f"{result.count} ticket(s)")]
+def _checked_tickets(task: TaskState) -> tuple[CheckResult, list[object]]:
+    """The ticket set's check, and the actions when it fails (else empty)."""
+    result = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    if result.ok:
+        return result, []
+    if task.plan_retries < PLAN_RETRY_LIMIT:
+        return result, [RetryStage(Stage.PLAN, result.reason)]
+    return result, [SetTaskStage(Stage.FAILED),
+                    Notify("artifact_failed", result.reason)]
+
+
+def _plan_done_actions(task: TaskState, signal: StageSignal,
+                       tracks: frozenset[str] | None) -> list[object]:
+    """The operator's approval, reported by the plan session at the gate. A
+    configured track it names is already on the task (main._adopt_track)."""
+    bounced = _track_actions(task, signal, tracks)
+    if bounced:
+        return bounced
+    result, failed = _checked_tickets(task)
+    return failed or [StartTicket(1, result.count),
+                      Notify("implement_started", f"{result.count} ticket(s)")]
 
 
 def _spec_done_actions(task: TaskState, signal: StageSignal,
@@ -265,8 +297,11 @@ def _done_actions(task: TaskState, signal: StageSignal,
         # The PR is the artifact — nothing to format-check.
         return [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", signal.note)]
     if task.stage == Stage.PLAN:
-        return _plan_done_actions(task)
-    if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
+        # Nobody approved this plan: the gate comes first.
+        return _plan_bounce(task, PLAN_NO_APPROVAL)
+    if task.stage == Stage.AWAITING_PLAN_REVIEW:
+        return _plan_done_actions(task, signal, tracks)
+    if task.stage == Stage.SPEC:
         return _spec_done_actions(task, signal, tracks)
     return [NoOp()]   # done signal for a terminal/unknown stage — ignore
 

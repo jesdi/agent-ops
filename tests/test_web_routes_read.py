@@ -140,10 +140,10 @@ def test_wake_blocked_by_model_exposes_reason_and_alternatives(tmp_path):
     from tests.webfakes import tracks_policy
     fake = FakeSources()
     cfg = replace(make_config(tmp_path), models=tracks_policy(
-        spec=["claude-fable-5-1@high", "claude-opus-5"]))
+        plan=["claude-fable-5-1@high", "claude-opus-5"]))
     client = TestClient(create_app(cfg, fake))
-    fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_WAKE,
-                                 picks={"spec": "anthropic/claude-fable-5-1@high"})]
+    fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_PLAN_REVIEW, park=PARK_WAKE,
+                                 picks={"plan": "anthropic/claude-fable-5-1@high"})]
     from tests.usagefakes import session_usage
     fake.usages = {"anthropic": session_usage(0.2, fable=0.9)}
 
@@ -204,7 +204,7 @@ def test_task_admission_is_none_when_track_is_unconfigured(tmp_path):
     fake = FakeSources()
     cfg = replace(make_config(tmp_path), models=tracks_policy())
     client = TestClient(create_app(cfg, fake))
-    fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_SPEC_REVIEW,
+    fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_PLAN_REVIEW,
                                  park=PARK_WAKE, track="")]
     fake.usages = {"anthropic": session_usage(0.99)}
     body = client.get("/api/task/alpha/7", headers=HEADERS).json()
