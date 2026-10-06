@@ -22,7 +22,7 @@ describe('stageLabel', () => {
   // Keys must be real dispatcher Stage values, not lookalikes: 'pr' and
   // 'spec-review' matched no stage, so those cards rendered the raw slug.
   it('labels the real Stage values the console renders', () => {
-    expect(stageLabel('awaiting-spec-review')).toBe('Spec review')
+    expect(stageLabel('awaiting-plan-review')).toBe('Plan review')
     expect(stageLabel('pr-open')).toBe('PR open')
     expect(stageLabel('address-review')).toBe('Addressing review')
     expect(stageLabel('spec')).toBe('Writing spec')

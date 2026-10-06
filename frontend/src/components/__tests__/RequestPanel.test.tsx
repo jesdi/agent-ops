@@ -40,12 +40,12 @@ test('text/html readable request renders a sandboxed iframe with allow-scripts o
   expect(iframe.getAttribute('sandbox')).not.toContain('allow-same-origin')
 })
 
-// Cycle 19a: unavailable spec-approval — recovery visible, no approve, panel stays
-test('spec-approval with unavailable content shows recovery, no approve button', async () => {
+// Cycle 19a: unavailable plan-approval — recovery visible, no approve, panel stays
+test('plan-approval with unavailable content shows recovery, no approve button', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        kind: 'spec-approval',
+        kind: 'plan-approval',
         content: {
           kind: 'unavailable',
           path: 'ops/42/spec.md',
@@ -98,7 +98,7 @@ test('non-markdown non-html readable request renders a download link with a data
 })
 
 // Cycle 21: same-path spec revision clears the armed approval confirmation
-test('spec-approval revision at same path clears armed state', async () => {
+test('plan-approval revision at same path clears armed state', async () => {
   const user = userEvent.setup()
   const initialText = '# Spec v1\nInitial content.'
   const revisedText = '# Spec v2\nRevised content.'
@@ -106,7 +106,7 @@ test('spec-approval revision at same path clears armed state', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        kind: 'spec-approval',
+        kind: 'plan-approval',
         content: {
           kind: 'readable',
           media_type: 'text/markdown',
@@ -120,7 +120,7 @@ test('spec-approval revision at same path clears armed state', async () => {
   const { queryClient } = renderPanel()
 
   // Arm the approve button
-  const approveBtn = await screen.findByRole('button', { name: /approve spec/i })
+  const approveBtn = await screen.findByRole('button', { name: /approve plan/i })
   await user.click(approveBtn)
   expect(screen.getByRole('button', { name: /tap again to approve/i })).toBeInTheDocument()
 
@@ -128,7 +128,7 @@ test('spec-approval revision at same path clears armed state', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        kind: 'spec-approval',
+        kind: 'plan-approval',
         content: {
           kind: 'readable',
           media_type: 'text/markdown',
@@ -142,10 +142,10 @@ test('spec-approval revision at same path clears armed state', async () => {
   // Trigger refetch
   await queryClient.invalidateQueries({ queryKey: queryKeys.request('widget', 42) })
 
-  // Armed must reset — button shows "approve spec" again
-  expect(await screen.findByRole('button', { name: /approve spec/i })).toBeInTheDocument()
+  // Armed must reset — button shows "approve plan" again
+  expect(await screen.findByRole('button', { name: /approve plan/i })).toBeInTheDocument()
 
   // A second tap re-arms rather than approving
-  await user.click(screen.getByRole('button', { name: /approve spec/i }))
+  await user.click(screen.getByRole('button', { name: /approve plan/i }))
   expect(screen.getByRole('button', { name: /tap again to approve/i })).toBeInTheDocument()
 })

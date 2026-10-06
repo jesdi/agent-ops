@@ -310,7 +310,7 @@ it('a non-404 server error renders an error message, not a ghost view', async ()
 
 const reviewDetail = {
   ...taskDetail,
-  card: { ...taskDetail.card, stage: 'awaiting-spec-review' },
+  card: { ...taskDetail.card, stage: 'awaiting-plan-review' },
 }
 
 it('hides the request panel when /request returns null', async () => {
@@ -376,7 +376,7 @@ it('shows unavailable placeholder when /request returns unavailable content', as
     http.get('/api/task/widget/42', () => HttpResponse.json(reviewDetail)),
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        kind: 'spec-approval',
+        kind: 'plan-approval',
         content: { kind: 'unavailable', path: '', reason: 'file-missing' },
       }),
     ),
@@ -575,7 +575,7 @@ it('answers request renders content and reply box; no approve control (regressio
   // content renders
   expect(screen.getByTestId('request-panel').textContent).toContain('Which host?')
   // NO approve control — action is driven by kind only
-  expect(screen.queryByRole('button', { name: 'approve spec' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'approve plan' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'tap again to approve' })).not.toBeInTheDocument()
   // reply box is present and functional
   await userEvent.type(screen.getByLabelText('Reply'), 'use staging')
@@ -583,18 +583,18 @@ it('answers request renders content and reply box; no approve control (regressio
   await waitFor(() => expect(replied).toEqual({ text: 'use staging' }))
 })
 
-it('request-panel shows spec markdown once and two-step approve for spec-approval kind', async () => {
+it('request-panel shows spec markdown once and two-step approve for plan-approval kind', async () => {
   let replied: unknown = null
   server.use(
     http.get('/api/task/widget/42', () =>
       HttpResponse.json({
         ...taskDetail,
-        card: { ...taskDetail.card, stage: 'awaiting-spec-review' },
+        card: { ...taskDetail.card, stage: 'awaiting-plan-review' },
       }),
     ),
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        kind: 'spec-approval',
+        kind: 'plan-approval',
         content: {
           kind: 'readable',
           path: 'docs/specs/x-design.md',
@@ -617,7 +617,7 @@ it('request-panel shows spec markdown once and two-step approve for spec-approva
   // spec markdown renders exactly once — no duplicate approval panel
   expect(screen.getAllByText('Spec body here.').length).toBe(1)
   // two-step approve
-  const approve = screen.getByRole('button', { name: 'approve spec' })
+  const approve = screen.getByRole('button', { name: 'approve plan' })
   await userEvent.click(approve)
   expect(replied).toBeNull()
   await userEvent.click(screen.getByRole('button', { name: 'tap again to approve' }))
@@ -634,14 +634,14 @@ it('reply clears stale request panel — cached approval disappears after invali
     http.get('/api/task/widget/42', () =>
       HttpResponse.json({
         ...taskDetail,
-        card: { ...taskDetail.card, stage: 'awaiting-spec-review' },
+        card: { ...taskDetail.card, stage: 'awaiting-plan-review' },
       }),
     ),
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json(
         replyCount === 0
           ? {
-              kind: 'spec-approval',
+              kind: 'plan-approval',
               content: {
                 kind: 'readable',
                 path: 'docs/spec.md',
@@ -666,7 +666,7 @@ it('reply clears stale request panel — cached approval disappears after invali
     expect(screen.getByTestId('request-panel')).toBeInTheDocument(),
   )
   // Approve (two-step)
-  await userEvent.click(screen.getByRole('button', { name: 'approve spec' }))
+  await userEvent.click(screen.getByRole('button', { name: 'approve plan' }))
   await userEvent.click(screen.getByRole('button', { name: 'tap again to approve' }))
   await waitFor(() => expect(replyCount).toBe(1))
   // After invalidation + refetch the panel must disappear (server now returns null)

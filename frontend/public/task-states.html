@@ -100,11 +100,11 @@
 <div class="card"><pre class="mermaid">
 flowchart TD
   Q([queued]) -->|session launched| SP[spec]
-  SP -->|signal awaiting-review| ASR[awaiting-spec-review]
-  ASR -->|operator approves| PL[plan]
-  SP -->|signal done| PL
-  PL -->|tickets valid| IM[implement]
+  SP -->|signal done| PL[plan]
+  PL -->|signal awaiting-review, tickets valid| APR[awaiting-plan-review]
   PL -->|tickets invalid: one retry| PL
+  APR -->|operator gives feedback: the plan session applies it| APR
+  APR -->|operator approves: signal done| IM[implement]
   IM -->|next ticket| IM
   IM -->|last ticket done| RV[review]
   RV -->|signal done: PR opened| PR[pr-open]
@@ -122,10 +122,10 @@ flowchart TD
   classDef you fill:#fef3c7,stroke:#92400e,color:#92400e
   class D ok
   class F,C bad
-  class ASR,PR you
+  class APR,PR you
 </pre></div>
 <ul>
-  <li><b>Amber</b> stages wait for you: a spec to approve, or a PR to review and merge.</li>
+  <li><b>Amber</b> stages wait for you: a spec and its plan to approve, or a PR to review and merge.</li>
   <li><code>done</code>, <code>failed</code> and <code>canceled</code> are final. A task that failed because its session crashed can be resumed.</li>
   <li><code>blocked</code> is an old stage that current code does not set. <code>stalled-on-budget</code> exists as a stage value and a board column, but current code does not set it.</li>
 </ul>
@@ -136,7 +136,7 @@ flowchart TD
 <tr><th>Status</th><th>Meaning</th><th>What the pass does</th></tr>
 <tr><td><code>working</code></td><td>The session is doing the stage.</td><td>Nothing, unless a turn-end marker or a timer applies. See <a href="#pass">Dispatcher pass</a>.</td></tr>
 <tr><td><code>done</code></td><td>The stage is complete.</td><td>Checks the stage's output, then starts the next stage or the next ticket.</td></tr>
-<tr><td><code>awaiting-review</code></td><td>The spec is ready for the operator.</td><td>Moves the task to <code>awaiting-spec-review</code> and publishes the spec. After 15 minutes with no approval, parks the task for review.</td></tr>
+<tr><td><code>awaiting-review</code></td><td>The plan session has the spec and the plan ready for the operator.</td><td>Checks the ticket set, moves the task to <code>awaiting-plan-review</code>, publishes the spec folder and shows the plan summary in the console. After 15 minutes with no approval, parks the task for review.</td></tr>
 <tr><td><code>blocked</code></td><td>The session cannot continue.</td><td>Parks the task for input with the session's note.</td></tr>
 <tr><td><code>awaiting-answers</code></td><td>The session has a questionnaire, a prototype or a wizard for the operator.</td><td>Parks the task for input and shows the file in the console.</td></tr>
 <tr><td><code>awaiting-ci</code></td><td>The session waits for a GitHub Actions run.</td><td>Parks the task until the run completes.</td></tr>
@@ -227,7 +227,7 @@ flowchart TD
 <p>The park decides the column when the task is parked. If the task is not parked, the stage decides.</p>
 <div class="card"><table>
 <tr><th>Column</th><th>Zone</th><th>Shows tasks with</th></tr>
-<tr><td>Needs review</td><td>Needs you</td><td>Stage <code>awaiting-spec-review</code>, or park <code>awaiting-review</code></td></tr>
+<tr><td>Needs review</td><td>Needs you</td><td>Stage <code>awaiting-plan-review</code>, or park <code>awaiting-review</code></td></tr>
 <tr><td>PR review</td><td>Needs you</td><td>Stage <code>pr-open</code></td></tr>
 <tr><td>Parked</td><td>Needs you</td><td>Park <code>parked</code> or <code>parked-login</code></td></tr>
 <tr><td>Failed</td><td>Needs you</td><td>Stage <code>failed</code> or <code>blocked</code></td></tr>

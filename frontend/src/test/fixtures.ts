@@ -15,7 +15,7 @@ export const parkedCard: TaskCard = {
 
 export const reviewCard: TaskCard = {
   issue: 44, target: 'widget', title: 'Add search feature',
-  stage: 'awaiting-spec-review', park: 'awaiting-review', column: 'needs-review',
+  stage: 'awaiting-plan-review', park: 'awaiting-review', column: 'needs-review',
   slot: -1,
   branch: 'feat/search', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: 'spec ready for review', feedback_pending: false,

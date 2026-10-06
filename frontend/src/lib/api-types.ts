@@ -714,7 +714,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "spec-approval" | "answers";
+            kind: "plan-approval" | "answers";
         };
         /** PaneHistory */
         PaneHistory: {

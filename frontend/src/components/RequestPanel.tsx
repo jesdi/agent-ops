@@ -4,7 +4,7 @@ import type { OperatorRequest } from '../lib/api'
 import { useTaskArtifacts, useTaskRequest } from '../hooks/useResources'
 import { banner } from '../lib/tone'
 
-/** Review requests offer approval only when their spec content is readable. */
+/** Review requests offer approval only when their plan summary is readable. */
 export function RequestPanel({ target, issue, busy, onApprove }: {
   target: string
   issue: number
@@ -34,25 +34,25 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
     >
       <header className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h2 className="min-w-0 break-words text-sm font-semibold text-ink">
-          {kind === 'spec-approval' ? 'spec awaiting review' : 'waiting on your answer'}
+          {kind === 'plan-approval' ? 'plan awaiting review' : 'waiting on your answer'}
           <span className="ml-2 break-all font-mono text-xs font-normal text-ink-muted">{content.path}</span>
         </h2>
-        {kind === 'spec-approval' && content.kind === 'readable' && (
+        {kind === 'plan-approval' && content.kind === 'readable' && (
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
             {spec?.github_url && <a href={spec.url} target="_blank" rel="noopener noreferrer"
               className="inline-flex min-h-11 items-center justify-center rounded border border-border px-3 text-sm font-medium">
               View spec on GitHub ↗
             </a>}
-            <SpecApproval contentText={content.text} busy={busy} onApprove={onApprove} />
+            <PlanApproval contentText={content.text} busy={busy} onApprove={onApprove} />
           </div>
         )}
       </header>
-      {kind === 'spec-approval' && artifacts.data && !spec?.github_url && (
+      {kind === 'plan-approval' && artifacts.data && !spec?.github_url && (
         <p className={`mb-3 ${banner.waiting}`}>
-          Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still read and approve the local spec below.'}
+          Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still read the plan summary below and approve.'}
         </p>
       )}
-      {kind === 'spec-approval' && artifacts.isError && (
+      {kind === 'plan-approval' && artifacts.isError && (
         <p className="mb-3 text-sm text-waiting-fg">Could not load the GitHub spec link. Local review is still available.</p>
       )}
       <RequestContent content={content} />
@@ -68,7 +68,7 @@ function RequestContent({ content }: { content: OperatorRequest['content'] }) {
         <p className="mt-1 font-mono text-xs">{content.path}</p>
         <p className="mt-1 text-xs">{content.reason}</p>
         <p className="mt-2 text-xs text-ink-muted">
-          The spec file could not be read. Use{' '}
+          The file could not be read. Use{' '}
           <code>herdr --remote box</code> to inspect the worktree, then reply here once resolved.
         </p>
       </div>
@@ -91,7 +91,7 @@ function RequestContent({ content }: { content: OperatorRequest['content'] }) {
   }
 }
 
-function SpecApproval({ contentText, busy, onApprove }: {
+function PlanApproval({ contentText, busy, onApprove }: {
   contentText: string
   busy: boolean
   onApprove: () => void
@@ -109,7 +109,7 @@ function SpecApproval({ contentText, busy, onApprove }: {
         onApprove()
       }}
     >
-      {armed ? 'tap again to approve' : 'approve spec'}
+      {armed ? 'tap again to approve' : 'approve plan'}
     </button>
   )
 }

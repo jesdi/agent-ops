@@ -28,8 +28,8 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
 // stalled-on-budget) fall through to their slug, which reads fine as-is.
 const STAGE_LABELS: Record<string, string> = {
   spec: 'Writing spec',
-  'awaiting-spec-review': 'Spec review',
   plan: 'Writing tickets',
+  'awaiting-plan-review': 'Plan review',
   implement: 'Implementing',
   review: 'Reviewing',
   'pr-open': 'PR open',
