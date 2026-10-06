@@ -284,6 +284,7 @@ def test_plan_done_without_the_gate_is_resumed_once_then_parks(tmp_path, monkeyp
     t = _task(c)
     assert t.stage is Stage.PLAN and t.park == ""
 
+    _done(wt)   # the session reports done a second time
     main.run_pass(c, deps(sess=sess))
 
     assert len(sess.resumed) == 1
