@@ -280,7 +280,7 @@ Output, one line per task, then a summary line:
 |---|---|
 | `converted` (`would-convert` with `--check`) | Was in the spec stage or at the old spec review gate. It starts a fresh spec session on the next pass. The operator's earlier messages for it are queued again and arrive with the new session's prompt. |
 | `untouched` | Not changed: an open pull request, a finished task, a task of the new flow. `(failed, not resumable)` is a failed task that Resume cannot start, for example one that failed at the old spec review gate: move its issue back to Ready to start it again. |
-| `do-not-resume` | An old task that failed in plan, implement or review. Do not use Resume on it: a new session would work on the old artifacts. Cancel it, or move its issue back to Ready. It is marked so that it can never skip the plan review gate. |
+| `do-not-resume` | An old task that failed in plan, implement or review. A new session would work on the old artifacts, so the command makes it not resumable: the console offers no Resume for it, and its note says which stage it failed in. Cancel it, or move its issue back to Ready. |
 | `must-drain` | An old task still in plan, implement or review. The run is refused. |
 | `not converted` | Would be converted, but the run is refused. |
 | `unreadable` | A task file or a message file that cannot be read. The run is refused. |
@@ -300,6 +300,18 @@ What to know:
   on disk, `python -m dispatcher.main` exits with status 1 and names this
   command. Roll the deploy back, start the old dispatcher, let the named
   tasks finish, and start again at step 3. Step 2 is there to avoid this.
+- **Rollback after a successful step 7.** Never run the old dispatcher on
+  migrated state: the old code cannot read a migrated task file and skips
+  every such task with no sign. Stop the units of step 3, then put the
+  backup back and start the old code:
+
+  ```
+  mv <state_dir> <state_dir>.migrated
+  cp -a <state_dir>.pre-openspec <state_dir>
+  ```
+
+  What the new dispatcher did after step 8 (new sessions, replies, new
+  tasks) is lost by this restore.
 - Every migrated task waits at the plan review gate, also on a track that
   has no plan review.
 - A spec session of the old flow that is still live keeps running, and is
@@ -314,7 +326,8 @@ After the deploy, delete together: `dispatcher/openspec_migration.py`;
 `tests/test_openspec_migration_acceptance.py`; `_refuse_old_flow` and its two
 calls in `dispatcher/main.py`; the `blocking` parameter of `pass_lock` in
 `dispatcher/convergence.py`; the restart-inputs list in step 1 of
-`prompts/spec.md` with its tests in `tests/test_prompts.py`; this section.
+`prompts/spec.md` and the review-file paragraph after it, with their tests
+in `tests/test_prompts.py`; this section.
 
 Deployments may set `AGENT_OPS_COMMAND_WRAPPER` to an executable path that
 prepares credentials and then executes its arguments. Without it, sessions call
