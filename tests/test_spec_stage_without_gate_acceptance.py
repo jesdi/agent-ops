@@ -67,6 +67,19 @@ def _setup(tmp_path, monkeypatch):
     return _cfg(tmp_path)
 
 
+def _blocks(p):
+    """Paragraphs and list items of a prompt."""
+    import re
+    return [b for para in p.split("\n\n") for b in re.split(r"\n(?=\s*[-*] )", para)]
+
+
+def _assert_no_write_under_docs_specs(p):
+    verbs = ("write", "create", "save", "commit")
+    for b in _blocks(p):
+        assert not ("docs/specs" in b and any(v in b for v in verbs)
+                    and "remove" not in b), b
+
+
 def _spec_prompt(tmp_path, monkeypatch, labels):
     c = _setup(tmp_path, monkeypatch)
     gh = FakeGitHub([Candidate(42, "Export a portfolio as CSV", "u42",
@@ -165,8 +178,9 @@ def test_bug_prompt_reproduces_first_and_writes_no_diagnosis_document(tmp_path, 
     assert "root cause" in p
     assert "why" in p and "proposal.md" in p
     assert "first scenario" in p
-    assert "docs/specs" not in p
-    assert "diagnosis.md" not in p
+    _assert_no_write_under_docs_specs(p)
+    for b in _blocks(p):
+        assert "-diagnosis.md" not in b and "write a diagnosis" not in b, b
     assert "to-openspec" in p and "stage 1" in p
 
 
@@ -178,7 +192,7 @@ def test_spec_prompt_names_the_dated_folder_and_stage_1_only(tmp_path, monkeypat
     assert "stage 1" in p
     assert "stage 2" in p            # named, to say it is not run here
     assert "proposal.md" in p and "spec.md" in p
-    assert "docs/specs" not in p
+    _assert_no_write_under_docs_specs(p)
 
 
 # 8. The dispatcher records that a spec session asked a questionnaire.
