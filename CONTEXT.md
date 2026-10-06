@@ -269,12 +269,14 @@ address-review. Worktree-relative path.
 
 **Gate skip**: the dispatcher alone skips the plan review gate (`machine._skips_gate`), on the first
 ready report of a task, when all of these hold: the task's own track is gate-free (`plan_review: false`;
-a track the ready report names does not count), `TaskState.asked` is false, and the report's
-`open_questions` is the integer 0 and `.agent/plan-review.md` confirms it (its open-questions section
-says `None.`; `artifacts.count_open_questions`). A missing or malformed count or summary means "the gate
-applies". The ticket check and the spec folder publish run as at the gate, then implement starts in the
-same pass; no review notification, no request. `TaskState.gated` is set at gate entry and never cleared:
-a task that waited once never skips, also after a respawn puts it back in the plan stage.
+a track the ready report names does not count), `TaskState.asked` is false (neither the spec session
+nor the plan session parked for answers), and the report's `open_questions` is the integer 0, its
+`artifact` is `.agent/plan-review.md`, and that file confirms the count (its open-questions section says
+`None.`; `artifacts.count_open_questions`). A missing or malformed count or summary, a summary with other
+`## ` headings than the three prescribed, or one above 256 KB means "the gate applies". The ticket check and the spec folder publish run as at the gate, then implement starts in the
+same pass; no review notification, no request. `TaskState.gated` is set at gate entry, and when a dead
+gate session is respawned, and never cleared: a task that waited once never skips, also after a respawn
+puts it back in the plan stage.
 
 The web layer READS `operator_request`; it never infers a request from park state.
 
