@@ -36,6 +36,23 @@ Read the issue — body and full comment thread —
 issue already exists on $branch or in the worktree (a restarted session),
 resume from it instead of starting over.
 
+A task that an earlier session worked on can also hold inputs from before
+the spec folder existed. Look for them now; each one replaces a part of
+steps 2 and 3:
+- An unanswered `.agent/questionnaire.md` (no answers in the file, and no
+  operator message below this prompt that answers it): ask those questions
+  again as they are. Do not rewrite, extend or re-order the file; signal
+  `awaiting-answers` with it as the artifact and stop.
+- An answered `.agent/questionnaire.md` (the answers are in the file, or an
+  operator message below this prompt gives them): take the answers as
+  settled decisions and raise no new questionnaire. Continue at step 4.
+- An old design file `docs/specs/*-design.md` on $branch: handle it as a
+  `spec-ready` body (step 2), whatever the labels say and whatever
+  `.agent/questionnaire.md` holds, because the design already carries the
+  answers. Its decisions go into stage 1 word for word, and `spec.md`
+  records the reconciliation with the code. Then remove the design file from
+  the branch (`git rm`) in the commit that adds the spec folder.
+
 ## 2. Branch on the labels
 **`bug`** — run the `diagnosing-bugs` skill. Write a
 failing end-to-end test that reproduces the bug where this repo keeps such

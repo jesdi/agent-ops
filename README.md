@@ -236,10 +236,29 @@ The maintained VPS deployment has moved to the private
 It owns the host configuration, bootstrap/updater, systemd units, session image,
 Claude-home seed, and operational runbooks. Access requires repository permission.
 
-Before a deploy of the openspec pipeline, the Claude-home seed and the
-Codex-home seed there must carry the `implement-spec`, `to-openspec` and
-`red-team-data-model` skills: the stage prompts read them from
-`~/.claude/skills/` and `~/.codex/skills/`.
+The deploy of the openspec pipeline is done once, in this order:
+
+1. Drain the box: let every task in plan, implement or review finish. Tasks
+   in the spec stage, at the spec review gate, or with an open pull request
+   can stay.
+2. Stop the dispatcher: the timer and the service.
+3. Make sure the Claude-home seed and the Codex-home seed there carry the
+   `implement-spec`, `to-openspec` and `red-team-data-model` skills: the
+   stage prompts read them from `~/.claude/skills/` and `~/.codex/skills/`.
+4. Deploy.
+5. Run `python -m dispatcher.openspec_migration <state_dir>` once, by hand,
+   and read its output: one line per task (`converted`, `untouched`,
+   `must-drain`) and a summary line. Each converted task starts a fresh spec
+   session on the next pass.
+6. Start the dispatcher.
+
+The command changes nothing and exits non-zero while a dispatcher pass or the
+updater holds `convergence.lock`, when a task of the old flow is still in
+plan, implement or review (the box was not drained), and when a task file is
+not readable. A second run changes nothing. Do not start the dispatcher
+before step 5: it cannot read a task at the old gate, and a task file it
+saves first is skipped by the command. `dispatcher/openspec_migration.py` and
+its tests are deleted after this deploy.
 
 Deployments may set `AGENT_OPS_COMMAND_WRAPPER` to an executable path that
 prepares credentials and then executes its arguments. Without it, sessions call
