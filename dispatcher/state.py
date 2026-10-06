@@ -161,6 +161,11 @@ class TaskState:
     # without a valid path.
     operator_request: "OperatorRequest | None" = None
 
+    @property
+    def continued_stage(self) -> Stage:
+        """The stage whose conversation a continuation belongs to."""
+        return Stage.SPEC if self.stage is Stage.AWAITING_SPEC_REVIEW else self.stage
+
 
 @dataclass(frozen=True)
 class StageSignal:
@@ -416,7 +421,7 @@ def read_session(state_dir: str | Path, target: str,
         if not isinstance(stage, str) or not stage:
             return None
         return SessionRecord(session_id, stage)
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError):
         return None
 
 

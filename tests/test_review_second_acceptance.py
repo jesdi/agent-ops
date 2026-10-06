@@ -227,7 +227,7 @@ def test_sessions_spawn_and_resume_carry_the_grant_to_the_command(tmp_path, monk
     wt, _ = make_worktree(tmp_path)
     cmds = []
     monkeypatch.setattr(herdr.Tab, "ensure", lambda *a, **k: _Tab(cmds))
-    s = sessions.Sessions()
+    s = sessions.Sessions(state_dir=tmp_path)
     s.spawn_stage("acme", 42, wt, "P", "review", "anthropic/claude-opus-5",
                   second=SECOND)
     s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5", second=SECOND,

@@ -49,11 +49,30 @@ def _assert_markers(state_dir, background_tasks):
         assert background is None
 
 
+def test_deeply_nested_rollout_keeps_prior_record_and_reports_waiting(tmp_path):
+    _task(tmp_path)
+    _ping(tmp_path, FIRST_ID)
+    _prior_marker(tmp_path, None)
+    rollouts = tmp_path / "codex-home" / "sessions" / "2026" / "10" / "06"
+    rollouts.mkdir(parents=True)
+    (rollouts / f"rollout-2026-10-06T09-00-00-{SECOND_ID}.jsonl").write_text(
+        "[" * 10000 + "]" * 10000 + "\n")
+
+    handle_ping(json.dumps({
+        "issue": ISSUE, "target": TARGET, "session_id": SECOND_ID, "runtime": "codex",
+    }).encode(), tmp_path)
+
+    _assert_markers(tmp_path, None)
+    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+
+
 @pytest.mark.parametrize("background_tasks", [None, [BACKGROUND_TASK]],
                          ids=["waiting", "background"])
 @pytest.mark.parametrize("broken_state", [
     '{"stage":', '{}', '[]', '{"stage": "unknown"}', '{"stage": "implement"}',
-], ids=["truncated-json", "missing-stage", "non-object", "unknown-stage", "missing-fields"])
+    "[" * 10000 + "]" * 10000,
+], ids=["truncated-json", "missing-stage", "non-object", "unknown-stage", "missing-fields",
+        "deeply-nested"])
 def test_bad_task_state_keeps_prior_session_and_updates_turn_markers(
         tmp_path, capsys, background_tasks, broken_state):
     _task(tmp_path)

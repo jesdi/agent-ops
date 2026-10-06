@@ -96,12 +96,14 @@ class Sessions:
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "",
                     second: Entry | None = None) -> None:
+        """Start a fresh conversation; real launches require state_dir."""
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
                   f"{session_name(target, issue)} at {worktree}")
             return
-        if self.state_dir is not None:
-            clear_session(self.state_dir, target, issue)
+        if self.state_dir is None:
+            raise ValueError("state_dir is required for a fresh session launch")
+        clear_session(self.state_dir, target, issue)
         agent_dir = Path(worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)

@@ -50,7 +50,7 @@ def wt_seen(tmp_path, monkeypatch):
 
 
 def spawn(wt, model="claude-fable-5"):
-    Sessions().spawn_stage("acme", 42, wt, "P", "plan", model)
+    Sessions(state_dir=Path(wt).parent / "state").spawn_stage("acme", 42, wt, "P", "plan", model)
 
 
 def resume(wt, model="claude-fable-5"):
