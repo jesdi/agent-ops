@@ -70,8 +70,10 @@ Anything that needs human judgment (a scope call, a contradiction a
 reviewer found) becomes an open question in the summary.
 
 ## 5. Summary, commit, push, report
-Write `.agent/plan-review.md`, one Markdown file with these three sections:
-- **Tickets** — one line per ticket: number, title, blocked by, seam.
+Write `.agent/plan-review.md`, one Markdown file the operator reads on a
+phone. Use headings and lists only, no tables: one `## ` heading for each
+of these three sections, in this order:
+- **Tickets** — one list item per ticket: number, title, blocked by, seam.
 - **Open questions** — every decision only the operator can make, each with
   your recommendation and its reason; write `None.` when there is none.
 - **Corrections** — every correction of step 2: what `spec.md` said, what it
@@ -83,7 +85,11 @@ Then signal `awaiting-review` and stop.
 
 ## 6. The operator's reply
 - A reply that answers open questions or asks for changes is feedback, and
-  feedback is never an approval, even when it reads as agreement. Apply it:
+  feedback is never an approval, even when it reads as agreement. It can
+  also reach you in this pane, typed by the operator. Before you change
+  anything, write `{"stage": "plan", "status": "working", "note": "applying feedback"}`:
+  while your signal still says `awaiting-review` the dispatcher may end
+  this session in the middle of the rework. Then apply the feedback:
   a changed requirement changes `spec.md`, `design.md` and the tickets; a
   changed decision changes `design.md` and the tickets. Rewrite everything
   that depends on the change, update the summary, commit, push, and report
