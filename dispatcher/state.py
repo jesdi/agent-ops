@@ -18,25 +18,6 @@ from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
                                review_avoid)
 
 
-@dataclass(frozen=True)
-class SessionRecord:
-    """The conversation recorded for a task's continued stage."""
-
-    session_id: str
-    stage: str
-
-
-def read_session(state_dir: str | Path, target: str,
-                 issue: int) -> SessionRecord | None:
-    """Read a task's session record; acceptance-first interface stub."""
-    return None
-
-
-def clear_session(state_dir: str | Path, target: str, issue: int) -> None:
-    """Remove a task's session record; acceptance-first interface stub."""
-    pass
-
-
 class Stage(str, Enum):
     QUEUED = "queued"
     SPEC = "spec"
@@ -582,6 +563,44 @@ def active(tasks: list[TaskState]) -> list[TaskState]:
 
 def parked(tasks: list[TaskState]) -> list[TaskState]:
     return [t for t in tasks if t.stage in IN_FLIGHT_STAGES and t.park]
+
+
+@dataclass(frozen=True)
+class SessionRecord:
+    """The conversation recorded for a task's continued stage."""
+
+    session_id: str
+    stage: str
+
+
+def _session_path(state_dir: str | Path, target: str, issue: int) -> Path:
+    return Path(state_dir) / f"session-{task_key(target, issue)}"
+
+
+def write_session(state_dir: str | Path, target: str, issue: int,
+                  record: SessionRecord) -> None:
+    """Replace a task's conversation atomically; only waitd writes it."""
+    write_json_atomic(_session_path(state_dir, target, issue), asdict(record))
+
+
+def read_session(state_dir: str | Path, target: str,
+                 issue: int) -> SessionRecord | None:
+    """Read a task's conversation; missing or malformed records are absent."""
+    try:
+        d = json.loads(_session_path(state_dir, target, issue).read_text())
+        session_id, stage = d["session_id"], d["stage"]
+        if not isinstance(session_id, str) or not session_id:
+            return None
+        if not isinstance(stage, str) or not stage:
+            return None
+        return SessionRecord(session_id, stage)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def clear_session(state_dir: str | Path, target: str, issue: int) -> None:
+    """Remove only the task's conversation; a missing record is harmless."""
+    _session_path(state_dir, target, issue).unlink(missing_ok=True)
 
 
 def _waiting_path(state_dir: str | Path, target: str, issue: int) -> Path:
