@@ -924,6 +924,8 @@ export interface components {
             delivery_contract: string;
             /** Effort */
             effort: number | null;
+            /** Implement Progress */
+            implement_progress?: string | null;
             /** Labels */
             labels: string[];
             /** Messages */

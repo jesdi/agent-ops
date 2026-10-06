@@ -18,7 +18,7 @@ from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               required_pace, verdict_note)
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
-                              Stage, TaskState, active, consumes_capacity,
+                              Stage, StageSignal, TaskState, active, consumes_capacity,
                               holds_slot, max_slots, resumable_crash)
 
 FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
@@ -378,10 +378,23 @@ class TaskDetail(BaseModel):
     labels: list[str]
     timeline: list[TimelineEntry]
     track_when: str = ""
+    implement_progress: str | None = None
+
+
+PROGRESS_MAX_CHARS = 200  # the session writes this text: bound what the page shows
+
+
+def _implement_progress(t: TaskState,
+                        signal: StageSignal | None) -> str | None:
+    if t.stage != Stage.IMPLEMENT or signal is None \
+            or signal.stage != Stage.IMPLEMENT:
+        return None
+    return signal.note.strip()[:PROGRESS_MAX_CHARS] or None
 
 
 def task_detail(t: TaskState, *, model: str,
                 pane_tail: str, session_alive: bool,
+                signal: StageSignal | None = None,
                 events: list[dict], now: datetime,
                 messages: list[msgq.Message] | None = None,
                 pending_sends: list[dict] | None = None,
@@ -403,7 +416,8 @@ def task_detail(t: TaskState, *, model: str,
         delivery_contract=delivery_contract(t, wake_blocked=wake_blocked),
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
         timeline=stage_timeline(events, t.target, t.issue, now=now),
-        track_when=track_when)
+        track_when=track_when,
+        implement_progress=_implement_progress(t, signal))
 
 
 class IssueDescription(BaseModel):

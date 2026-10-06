@@ -91,6 +91,10 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
   return (
     <div className="flex flex-col gap-4 p-4">
       <TaskHeader card={card} intents={intents} target={target} issue={issue} />
+      {detail.implement_progress && (
+        <p data-testid="implement-progress"
+          className="text-sm text-ink-muted [overflow-wrap:anywhere]">{detail.implement_progress}</p>
+      )}
       {detail.track_when && (
         <p data-testid="track-when" className="text-xs text-ink-muted">{detail.track_when}</p>
       )}

@@ -129,6 +129,9 @@ class FakeSources:
     def last_claims(self):
         return {}
 
+    def stage_signal(self, worktree):
+        return None
+
     def pane_tail(self, target, issue):
         return self.pane_tails.get(issue, "")
 
