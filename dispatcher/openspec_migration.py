@@ -15,6 +15,12 @@ The files are raw JSON here: state.load rejects the old stage and request
 kind. A file with the `asked` key was written by the new flow or by an earlier
 run, and is left alone; that is what makes a second run change nothing.
 
+Nothing the migration writes is an approval. Every converted task gets
+`asked` true, so it waits at the plan review gate whatever its track: its
+history is unknown, or a human was already part of it. The stage it writes is
+`spec` only, the request it writes is none, and a stage, park or request kind
+it does not know is never coerced: the file is reported and the run refused.
+
 All or nothing: an old task in plan, implement or review (the operator drains
 those before the deploy), or a task file that cannot be read, refuses the
 whole run. A box converted by half is worse than one refused.
@@ -28,12 +34,16 @@ import sys
 from pathlib import Path
 
 from dispatcher.convergence import pass_lock
-from dispatcher.state import PARK_WAKE, write_json_atomic
+from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_REVIEW,
+                              PARK_WAKE, Stage, write_json_atomic)
 
 OLD_GATE = "awaiting-spec-review"
 RESTART_STAGES = ("spec", OLD_GATE)
 DRAIN_STAGES = ("plan", "implement", "review")
-QUESTIONNAIRE = ".agent/questionnaire.md"
+OLD_REQUEST = "spec-approval"
+STAGES = {s.value for s in Stage} | {OLD_GATE}
+PARKS = ("", PARK_HUMAN, PARK_CI, PARK_WAKE, PARK_LOGIN, PARK_REVIEW)
+REQUESTS = ("answers", "plan-approval", OLD_REQUEST)
 # What would bounce, park or fail the fresh session on its first signal.
 COUNTERS = ("spec_retries", "plan_retries", "review_rounds", "gate_rounds",
             "e2e_rounds", "ci_rounds")
@@ -41,11 +51,35 @@ COUNTERS = ("spec_retries", "plan_retries", "review_rounds", "gate_rounds",
 CONVERT, DRAIN, UNTOUCHED = "converted", "must-drain", "untouched"
 
 
+def _request_kind(doc: dict) -> str | None:
+    request = doc.get("operator_request")
+    return request.get("kind", "") if isinstance(request, dict) else request
+
+
+def _problem(doc: object) -> str:
+    """Why this is not a task file the migration can judge; "" when it is.
+    An unknown value is never read as a known one."""
+    if not isinstance(doc, dict):
+        return "not a JSON object"
+    if type(doc.get("issue")) is not int or not isinstance(doc.get("target"), str):
+        return "no issue or target"
+    kind = _request_kind(doc)
+    for name, value, known in (("stage", doc.get("stage"), STAGES),
+                               ("park", doc.get("park", ""), PARKS),
+                               ("request kind", kind, (None, *REQUESTS))):
+        if value not in known:
+            return f"unknown {name} {value!r}"
+    if kind == OLD_REQUEST and doc["stage"] not in RESTART_STAGES:
+        return f"old {OLD_REQUEST} request on a {doc['stage']} task"
+    return ""
+
+
 def _read(path: Path) -> dict:
-    """The raw task file. ValueError when it is not a task."""
+    """The raw task file. ValueError when the migration cannot judge it."""
     doc = json.loads(path.read_text())
-    if not isinstance(doc, dict) or not isinstance(doc.get("stage"), str):
-        raise ValueError("not a task file: no stage")
+    problem = _problem(doc)
+    if problem:
+        raise ValueError(problem)
     return doc
 
 
@@ -60,24 +94,16 @@ def _classify(doc: dict) -> str:
     return DRAIN if stage in DRAIN_STAGES else UNTOUCHED
 
 
-def _asked(doc: dict) -> bool:
-    """Did the old flow raise a questionnaire? False only on proof: the
-    task's worktree is there and holds no questionnaire. The gate skip must
-    not apply to a task whose history is unknown."""
-    if (doc.get("operator_request") or {}).get("kind") == "answers":
-        return True
-    worktree = doc.get("worktree") or ""
-    return not (worktree and Path(worktree).is_dir()
-                and not (Path(worktree) / QUESTIONNAIRE).exists())
-
-
 def _convert(doc: dict) -> dict:
     """`spec_path` is cleared: the old design file must never reach the
     publish backstop (it commits the artifact's whole folder, docs/specs/),
     and the spec session finds the file on the branch by itself. A failed
-    task stays failed; only what its Resume starts changes."""
+    task stays failed; only what its Resume starts changes. `asked` is true
+    for every task, with no attempt to read its history: a converted task
+    never skips the plan review gate. `gated` is false: it never waited at
+    that gate."""
     out = {k: v for k, v in doc.items() if k != "ticket_cursor"}
-    out.update(dict.fromkeys(COUNTERS, 0), asked=_asked(doc), gated=False,
+    out.update(dict.fromkeys(COUNTERS, 0), asked=True, gated=False,
                spec_path="", operator_request=None, crashed_stage="spec")
     if doc["stage"] != "failed":
         out.update(stage="spec", park=PARK_WAKE)
@@ -87,7 +113,7 @@ def _convert(doc: dict) -> dict:
 def _line(label: str, doc: dict) -> str:
     crashed = (f", crashed in {doc['crashed_stage']}"
                if doc["stage"] == "failed" and doc.get("crashed_stage") else "")
-    return (f"{label}  {doc.get('target', '?')} #{doc.get('issue', '?')}  "
+    return (f"{label}  {doc['target']} #{doc['issue']}  "
             f"({doc['stage']}{crashed})")
 
 

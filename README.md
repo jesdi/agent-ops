@@ -249,13 +249,15 @@ The deploy of the openspec pipeline is done once, in this order:
 5. Run `python -m dispatcher.openspec_migration <state_dir>` once, by hand,
    and read its output: one line per task (`converted`, `untouched`,
    `must-drain`) and a summary line. Each converted task starts a fresh spec
-   session on the next pass.
+   session on the next pass, and waits at the plan review gate whatever its
+   track.
 6. Start the dispatcher.
 
 The command changes nothing and exits non-zero while a dispatcher pass or the
 updater holds `convergence.lock`, when a task of the old flow is still in
 plan, implement or review (the box was not drained), and when a task file is
-not readable. A second run changes nothing. Do not start the dispatcher
+not readable or holds a stage, park or request it does not know. A second run
+changes nothing. Do not start the dispatcher
 before step 5: it cannot read a task at the old gate, and a task file it
 saves first is skipped by the command. `dispatcher/openspec_migration.py` and
 its tests are deleted after this deploy.
