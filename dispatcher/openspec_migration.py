@@ -264,21 +264,27 @@ def _refusal(drains: int, problems: list[str]) -> str:
     return "Refused, nothing was changed. " + "; ".join(reasons) + "."
 
 
+def _apply(tasks: list[_Task], label: dict[str, str], write: bool) -> bool:
+    """Write (when asked to) and print each task; False when a write failed."""
+    for task in tasks:
+        if write:
+            try:
+                _write(task)
+            except OSError as exc:
+                print(f"stopped at {task.path.name}: {exc}; run again")
+                return False
+        print(_line(label.get(task.kind, task.kind), task.doc))
+    return True
+
+
 def _run(state_dir: Path, write: bool) -> int:
     tasks, problems = _load(state_dir)
     counts = Counter(t.kind for t in tasks)
     refused = bool(problems or counts[DRAIN])
     will = "converted" if write else "would-convert"
-    for task in tasks:
-        label = task.kind if task.kind != CONVERT else (
-            "not converted" if refused else will)
-        if write and not refused:
-            try:
-                _write(task)
-            except OSError as exc:
-                print(f"stopped at {task.path.name}: {exc}; run again")
-                return 1
-        print(_line(label, task.doc))
+    if not _apply(tasks, {CONVERT: "not converted" if refused else will},
+                  write and not refused):
+        return 1
     for line in problems:
         print(line)
     print(_refusal(counts[DRAIN], problems) if refused else
