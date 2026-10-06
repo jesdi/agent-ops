@@ -74,10 +74,15 @@ def _blocks(p):
 
 
 def _assert_no_write_under_docs_specs(p):
-    verbs = ("write", "create", "save", "commit")
+    """No block naming docs/specs holds a write-class verb. A removal rule
+    passes: its only "adds" is the phrase "the commit that adds the spec
+    folder", deleted before matching; "added" (old files) is no instruction."""
+    import re
+    verbs = re.compile(r"\b(write|create|save|commit|put|add|store|place)\b")
     for b in _blocks(p):
-        assert not ("docs/specs" in b and any(v in b for v in verbs)
-                    and "remove" not in b), b
+        b = b.lower().replace("in the commit that adds", "")
+        b = b.replace("the commit that adds", "")
+        assert not ("docs/specs" in b and verbs.search(b)), b
 
 
 def _spec_prompt(tmp_path, monkeypatch, labels):
