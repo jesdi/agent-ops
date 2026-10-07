@@ -276,7 +276,8 @@ Repo-agnostic workflow skills that stage prompts invoke: `to-openspec`
 `implement-spec` (implement, which owns `tdd` per ticket and its own
 reviews), `review-diff` with `deep-quality-review` and
 `resolving-merge-conflicts` (review). `review-page` builds the review page
-(spec and plan). A fresh box needs `to-questionnaire` installed too. `to-spec` is not a box skill: it is the
+(spec and plan). A fresh box needs `to-questionnaire` installed too.
+`to-spec` is not a box skill: it is the
 Mac tool that writes the design into a `spec-ready` issue body. They live in
 the claude-home seed (agent-ops-infra, ADR 0003): the jesdi ones pinned in
 its `.my-skills.json` and installed with `@jesdi/skills-cli`, the mattpocock

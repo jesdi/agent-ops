@@ -16,8 +16,10 @@ and nobody is watching this chat.
   plan needs no review.
 - `{"stage": "plan", "status": "done", "artifact": "$tickets_dir", "track": "<name>", "note": "<one line>"}`
   then exit — ONLY after the operator's explicit approval (step 6). A `done`
-  before you waited for the review is bounced back to you. Leave `"track"`
-  out unless the approval names another track.
+  before you waited for the review is bounced back to you. Write `"track"`
+  from `answers.track` of the answers file whenever it is there; a text
+  approval that names a track works the same way. Leave it out only when
+  neither names one.
 - `{"stage": "plan", "status": "awaiting-answers", "artifact": ".agent/questions.md", "note": "<one line>"}`
   then STOP, only for a decision you cannot write the design without; you
   are resumed with the answer as an operator message. Every other open
@@ -103,7 +105,8 @@ question id; `answers.track` names a track.
   and never start over.
 - An answer you cannot map, because its id is no question of the current
   page, is ignored. List it under Corrections of the next page ("answer `<id>` = `<value>` ignored:
-  no such question").
+  no such question"). A `<id>.note` of an unknown id is ignored with it.
+  `track` is not a question id: never ignore it.
 - A reply typed in this pane or sent by the reply route is handled the same
   way. First write the same file, `.agent/review-answers.json`, yourself with
   `"actor": "text"`, `"submitted"` as the text says (`"changes"` or
