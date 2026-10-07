@@ -82,7 +82,7 @@ class FakeSources:
         active = next((t for t in self.tasks_list if (t.target, t.issue) == (target, issue)), None)
         if active is not None or self.state_dir is None:
             return active
-        return state.load_archived(self.state_dir, target, issue)
+        return state.load(self.state_dir, target, issue) or state.load_archived(self.state_dir, target, issue)
 
     def artifacts(self, target, issue):
         if self.state_dir is None:

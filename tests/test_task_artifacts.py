@@ -68,7 +68,7 @@ def test_retention_terminal_transition_reopen_and_archive(tmp_path):
     # Unrelated writes in a terminal state do not restart the clock.
     save(state, replace(done, updated_at=(NOW + timedelta(days=10)).isoformat()))
     assert load(state, task.target, task.issue).terminal_at == NOW.isoformat()
-    artifacts.cleanup(state, now=NOW + timedelta(days=29))
+    artifacts.cleanup(state, now=NOW + timedelta(days=6))
     assert artifacts.content_path(state, task.target, task.issue, 'prototype')
     save(state, replace(done, stage=Stage.IMPLEMENT))
     reopened = load(state, task.target, task.issue)
@@ -80,10 +80,10 @@ def test_retention_terminal_transition_reopen_and_archive(tmp_path):
     save(state, replace(reopened, stage=Stage.FAILED, updated_at=ended.isoformat()))
     failed = load(state, task.target, task.issue)
     artifacts.collect(state, failed, '', publish=False, now=ended)
-    artifacts.cleanup(state, now=ended + timedelta(days=30))
+    artifacts.cleanup(state, now=ended + timedelta(days=7))
     assert artifacts.content_path(state, task.target, task.issue, 'prototype') is None
     assert artifacts.read(state, task.target, task.issue).expired
-    artifacts.collect(state, failed, '', publish=False, now=ended + timedelta(days=31))
+    artifacts.collect(state, failed, '', publish=False, now=ended + timedelta(days=8))
     assert artifacts.content_path(state, task.target, task.issue, 'prototype') is None
     assert load_archived(state, task.target, task.issue).stage == Stage.FAILED
     assert Path(task.worktree).exists()  # autopsy worktree is never deleted
@@ -137,7 +137,7 @@ def test_routes_survive_teardown_and_flush_with_isolated_html(tmp_path):
     assert 'sandbox allow-scripts;' in response.headers['content-security-policy']
     assert 'allow-same-origin' not in response.headers['content-security-policy']
     assert client.get('/api/task/beta/7/artifacts', headers=HEADERS).status_code == 404
-    artifacts.cleanup(state, now=NOW + timedelta(days=30))
+    artifacts.cleanup(state, now=NOW + timedelta(days=7))
     assert client.get(url, headers=HEADERS).status_code == 410
     assert client.get(base + '/artifacts', headers=HEADERS).json()['expired']
 
@@ -150,7 +150,7 @@ def test_github_redirect_remains_after_cleanup(tmp_path, monkeypatch):
     done = replace(task, stage=Stage.DONE, terminal_at=NOW.isoformat())
     artifacts.collect(state, done, 'o/r', now=NOW)
     artifacts.pin_published(state, done, 'o/r')
-    artifacts.cleanup(state, now=NOW + timedelta(days=30))
+    artifacts.cleanup(state, now=NOW + timedelta(days=7))
     client = TestClient(create_app(make_config(state), FakeSources(state)))
     response = client.get('/api/task/alpha/7/artifacts/spec', headers=HEADERS, follow_redirects=False)
     assert response.status_code == 302
@@ -230,7 +230,7 @@ def test_legacy_terminal_state_retention_uses_original_completion(tmp_path):
     path.write_text(json.dumps(raw))
     terminal = task_state.load(state, task.target, task.issue)
     artifacts.collect(state, terminal, '', publish=False)
-    artifacts.cleanup(state, now=NOW + timedelta(days=30))
+    artifacts.cleanup(state, now=NOW + timedelta(days=7))
     assert artifacts.read(state, task.target, task.issue).expired
 
 

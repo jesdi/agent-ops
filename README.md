@@ -377,7 +377,7 @@ Sessions register files automatically using the policy in
 Markdown is committed and pushed to the task branch. On merge, GitHub links
 switch to the last verified commit so deleting the branch does not break them.
 
-Stored box copies expire 30 days after done, failed or canceled, on the next
+Stored box copies expire 7 days after done, failed or canceled, on the next
 dispatcher pass. Paused tasks never start that countdown; reopening cancels it.
 GitHub files and artifact metadata remain, including on archived task pages.
 Existing failed-task worktrees are still preserved for autopsy.

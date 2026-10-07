@@ -419,7 +419,7 @@ Done-card flush; archive entries do not consume capacity or return to the board.
 `TaskState.terminal_at` records the first transition into done, failed or
 canceled. State serialization preserves that timestamp across unrelated
 terminal writes and clears it on reopening. Collection cancels expiry for
-active or parked tasks. Each dispatcher pass removes stored content 30 days
+active or parked tasks. Each dispatcher pass removes stored content 7 days
 after the terminal transition; metadata, GitHub links and archived task context
 remain. Task state owns archive serialization and normalizes legacy terminal
 timestamps on read. `Sources` owns active-or-archived lookup and artifact
