@@ -5295,3 +5295,13 @@ def test_flush_skips_teardown_for_a_task_whose_target_left_the_config(
     main.run_pass(c, deps(FakeGitHub()))
     assert removed == []
     assert load(c.state_dir, "gone", 1) is None
+
+
+def test_flush_skips_teardown_for_a_task_with_no_worktree(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, issue=1, stage=Stage.FAILED, slot=NO_SLOT)   # ancient
+    save(c.state_dir, dc_replace(load(c.state_dir, "portfolio_eval", 1), worktree=""))
+    main.run_pass(c, deps(FakeGitHub()))
+    assert removed == [] and load(c.state_dir, "portfolio_eval", 1) is None

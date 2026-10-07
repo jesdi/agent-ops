@@ -1106,7 +1106,7 @@ def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
         if not _expired(task, cfg.done_retention_days * 86400):
             continue
         target = by_name.get(task.target)
-        if target is not None:
+        if target is not None and task.worktree:
             remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
         _clear_wake_blocked(cfg, task.target, task.issue)
         delete(cfg.state_dir, task.target, task.issue)
