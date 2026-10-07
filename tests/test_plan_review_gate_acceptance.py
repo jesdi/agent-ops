@@ -260,6 +260,13 @@ def test_approval_naming_security_runs_implement_on_the_security_entries(tmp_pat
     (impl,) = [s for s in sess.spawned if s[1] == "implement"]
     assert impl[2].endswith("claude-opus-5")
 
+    # ... and the review stage runs on the same track's review entry.
+    _signal(wt, stage="implement", status="done", note="4/4 tickets merged")
+    main.run_pass(c, deps(sess=sess))
+    assert _task(c).stage is Stage.REVIEW and _task(c).track == "security"
+    (review,) = [s for s in sess.spawned if s[1] == "review"]
+    assert review[2].endswith("claude-opus-5")
+
 
 def test_approval_naming_an_unconfigured_track_is_bounced_once(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
