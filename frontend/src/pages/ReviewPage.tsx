@@ -20,21 +20,37 @@ export function ReviewPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const shown = useShownPage(req.data, () => setNotice(CHANGED))
   useBridge(frameRef, shown, req.data, target, Number(issue), () => setNotice(NEWER))
+  // The changed notice covers the page's top: it goes after a while or on tap.
+  // The newer-console notice is an error and stays.
+  const dismiss = () => setNotice((n) => (n === CHANGED ? null : n))
+  useEffect(() => {
+    if (notice !== CHANGED) return
+    const timer = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [notice])
 
   return (
     <>
+      {!shown && <Empty data={req.data} />}
       {shown && (
         <iframe ref={frameRef} data-testid="review-frame" title="review" sandbox="allow-scripts"
           srcDoc={shown.text} className="fixed inset-0 h-full w-full border-0" />
       )}
       {notice && (
-        <p data-testid="review-notice" role="status"
+        <p data-testid="review-notice" role="status" onClick={dismiss}
           className="fixed inset-x-2 top-2 rounded border border-border bg-surface-raised px-3 py-2 text-center text-sm text-ink shadow">
           {notice}
         </p>
       )}
     </>
   )
+}
+
+/** No page to show: say why, once the request route has answered. */
+function Empty({ data }: { data: OperatorRequest | null | undefined }) {
+  if (data === undefined) return null
+  const text = data?.content.kind === 'unavailable' ? data.content.reason : 'no open request'
+  return <p className="p-4 text-center text-sm text-ink-muted">{text}</p>
 }
 
 /** The page on screen: it changes only when the request's revision changes. */

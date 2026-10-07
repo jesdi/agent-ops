@@ -74,12 +74,50 @@ test('a new revision reloads the page and shows the changed notice', async () =>
   expect(screen.getByTestId('review-notice')).toHaveTextContent('the plan changed; your selections were reset to the saved ones')
 })
 
-test('shows nothing while the request is not readable', async () => {
-  req = { kind: 'plan-approval', content: { kind: 'unavailable', path: 'x', reason: 'gone' }, revision: 'r1', answers: {} }
+test('the changed notice goes after 6 s, and at once on tap', async () => {
+  const { queryClient } = await renderReview()
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  try {
+    const change = async (revision: string) => {
+      req = request(revision, `<p>${revision}</p>`)
+      await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.request('widget', 42) }))
+      await waitFor(() => expect(screen.getByTestId('review-notice')).toBeInTheDocument())
+    }
+    await change('r2')
+    act(() => { vi.advanceTimersByTime(5900) })
+    expect(screen.getByTestId('review-notice')).toBeInTheDocument()
+    act(() => { vi.advanceTimersByTime(200) })
+    expect(screen.queryByTestId('review-notice')).not.toBeInTheDocument()
+    await change('r3')
+    act(() => { screen.getByTestId('review-notice').click() })
+    expect(screen.queryByTestId('review-notice')).not.toBeInTheDocument()
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('the newer-console notice stays', async () => {
+  const { send } = await renderReview()
+  vi.useFakeTimers()
+  try {
+    send({ type: 'ready', v: 2 })
+    act(() => { vi.advanceTimersByTime(10_000) })
+    act(() => { screen.getByTestId('review-notice').click() })
+    expect(screen.getByTestId('review-notice')).toHaveTextContent('this review page needs a newer console')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test.each([
+  [null, 'no open request'],
+  [{ kind: 'plan-approval', content: { kind: 'unavailable', path: 'x', reason: 'file not found' }, revision: 'r1', answers: {} }, 'file not found'],
+])('says why there is no page (%#)', async (value, text) => {
+  req = value
   renderWithProviders(
     <Routes><Route path="/task/:target/:issue/review" element={<ReviewPage />} /></Routes>,
     { route: '/task/widget/42/review' },
   )
-  await new Promise((r) => setTimeout(r, 50))
+  expect(await screen.findByText(text)).toBeInTheDocument()
   expect(screen.queryByTestId('review-frame')).not.toBeInTheDocument()
 })
