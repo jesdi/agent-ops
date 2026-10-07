@@ -1914,7 +1914,7 @@ def _submitted_on_disk(worktree: str, name: str, revision: object) -> bool:
     try:
         doc = json.loads(raw or b"{}")
         return (doc.get("submitted") is not None
-                and doc.get("revision", revision) == revision)
+                and doc.get("revision") in (None, revision))
     except (ValueError, AttributeError):
         return False   # garbage on disk is no submission
 
