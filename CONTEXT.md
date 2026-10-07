@@ -45,6 +45,12 @@ Triage picks the track for the spec stage (label `track:<name>`); the spec
 session picks it for plan, implement and review and writes it in its signal.
 _Avoid_: tier, profile, rule
 
+**Pinned track**:
+A track named in `models.pinned`. Its entries are always tried in the written
+order, whatever the priority mode says; the usage gate, picks and one-shot
+overrides still apply. Triage and tracks the list does not name follow the mode.
+_Avoid_: locked track, fixed track
+
 **Entry**:
 One element of a track's stage list: `provider/model[@effort]`.
 _Avoid_: profile (a Claude Code term)

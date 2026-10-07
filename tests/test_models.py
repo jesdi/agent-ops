@@ -152,6 +152,16 @@ def test_parse_rejects_untracked_naming_no_track():
         parse_policy({**RAW, "untracked": "nope"})
 
 
+def test_pinned_defaults_to_empty():
+    assert policy().pinned == ()
+
+
+@pytest.mark.parametrize("bad", ["frontend", [1], ["nope"], ["security", "security"]])
+def test_parse_rejects_bad_pinned(bad):
+    with pytest.raises(ValueError, match="pinned"):
+        parse_policy({**RAW, "pinned": bad})
+
+
 def test_parse_rejects_missing_triage_list():
     raw = dict(RAW)
     del raw["triage"]

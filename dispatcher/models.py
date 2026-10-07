@@ -22,7 +22,7 @@ TRACK_LABEL_PREFIX = "track:"
 _POLICY_STAGES = {"queued": "spec", "awaiting-spec-review": "spec",
                   "address-review": "implement"}
 _OLD_KEYS = ("default", "rules")
-_TOP_KEYS = frozenset({"triage", "untracked", "tracks", "review_second"})
+_TOP_KEYS = frozenset({"triage", "untracked", "tracks", "review_second", "pinned"})
 
 
 def split_model_id(model_id: str) -> tuple[str, str]:
@@ -138,6 +138,7 @@ class ModelPolicy:
     untracked: str          # the track a candidate with no track: label specs on
     tracks: Mapping[str, Track]
     review_second: str = ""  # provider/model a Claude review session's codex exec runs on, "" = unset
+    pinned: tuple[str, ...] = ()  # tracks whose entries the priority mode never reorders
 
     def entries(self) -> list[Entry]:
         out = list(self.triage)
@@ -209,6 +210,21 @@ def _triage(raw: dict) -> tuple[Entry, ...]:
     return _entries(raw["triage"], "triage:")
 
 
+def _pinned(raw: object, tracks: Mapping[str, Track]) -> tuple[str, ...]:
+    """`models.pinned:` -> a list of distinct defined track names."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(n, str) for n in raw):
+        raise ValueError(f"models: pinned: must be a list of track names, got {raw!r}")
+    for name in raw:
+        if name not in tracks:
+            raise ValueError(f"models: pinned: {name!r} is not a defined track "
+                             f"{sorted(tracks)}")
+        if raw.count(name) > 1:
+            raise ValueError(f"models: pinned: {name!r} is named twice")
+    return tuple(raw)
+
+
 def parse_policy(raw: dict | None) -> ModelPolicy:
     """Validate the `models:` block. Raises ValueError so a typo kills the
     pass loudly at config load instead of silently mis-routing."""
@@ -234,7 +250,8 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
         raise ValueError(f"models: untracked: must name a defined track "
                          f"{sorted(tracks)}, got {untracked!r}")
     return ModelPolicy(triage=_triage(raw), untracked=untracked, tracks=tracks,
-                       review_second=_review_second(raw.get("review_second")))
+                       review_second=_review_second(raw.get("review_second")),
+                       pinned=_pinned(raw.get("pinned"), tracks))
 
 
 def tracks_text(policy: ModelPolicy) -> str:
@@ -261,10 +278,12 @@ Order = Callable[[Sequence[Entry]], tuple[Entry, ...]]
 def candidates(policy: ModelPolicy, track: str, stage: str,
                avoid_provider: str = "", *, order: Order) -> tuple[Entry, ...]:
     """The ordered entries a stage may launch: the written list as `order`
-    arranges it (`tuple`: as written). Review prefers a provider other than
+    arranges it (`tuple`: as written; a pinned track is always as written). Review prefers a provider other than
     the one that ran implement: its entries move to the back, order otherwise
     kept, so a track whose every entry shares one provider is unchanged
     (preference, not a rule)."""
+    if track in policy.pinned:
+        order = tuple   # a pinned track keeps its written order, whatever the mode
     entries = order(policy.tracks[track].stages.get(policy_stage(stage), ()))
     if not avoid_provider:
         return entries
