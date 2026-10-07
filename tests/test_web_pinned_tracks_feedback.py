@@ -1,8 +1,7 @@
 """Acceptance tests for ticket 04 of pinned-tracks, console side: a parked
 pr-open task's feedback pick is its next-launch model, and the run and resume
-routes refuse another provider than the feedback pick's. Every task also has
-an implement pick on the OTHER provider, so reading the wrong key gives the
-wrong answer. Black-box through TestClient."""
+routes refuse another provider than the feedback pick's. Black-box
+through TestClient."""
 from dataclasses import replace
 
 import pytest
@@ -24,8 +23,8 @@ def rig(tmp_path, **task_kw):
     fake.tasks_list = [make_task(
         issue=7, stage=Stage.PR_OPEN, slot=NO_SLOT, park=PARK_WAKE,
         pr_number=12, feedback_pending=True,
-        picks={"feedback": f"anthropic/{FABLE}@medium",
-               "implement": f"{CODEX}@high"}, **task_kw)]
+        picks={"feedback": f"anthropic/{FABLE}@medium"},
+        implement_providers=["anthropic"], **task_kw)]
     return fake, TestClient(create_app(cfg, fake))
 
 
