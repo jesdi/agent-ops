@@ -9,9 +9,11 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1886,6 +1888,8 @@ def _answers_drop_reason(task: TaskState | None,
     draft against a submitted file is stale whatever the task does now, so
     that reason comes before "session busy" (the submission's own wake
     makes the task busy)."""
+    if intent.payload.get("submit") not in (None, *ANSWERS_WAKE):
+        return f"unknown submit {intent.payload.get('submit')!r}"
     if task is None or task.operator_request is None:
         return "no open request"
     name, _ = ANSWERS_FILES[task.operator_request.kind]
@@ -1897,8 +1901,6 @@ def _answers_drop_reason(task: TaskState | None,
     revision = task.operator_request.fingerprint
     if not revision or intent.payload.get("revision") != revision:
         return "stale revision"
-    if intent.payload.get("submit") not in (None, *ANSWERS_WAKE):
-        return f"unknown submit {intent.payload.get('submit')!r}"
     return None
 
 
@@ -1924,6 +1926,10 @@ def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
     doc = {"v": 1, "stage": stage, "submitted": submit,
            "submitted_at": intent.created_at if submit else None,
            "actor": actor, "answers": intent.payload.get("answers")}
+    # write_worktree_file creates a missing .agent/; an answers file is
+    # written only into one the session made (lstat: a symlink is refused).
+    if not stat.S_ISDIR(os.lstat(Path(task.worktree) / ".agent").st_mode):
+        raise OSError(f"{task.worktree}/.agent is not a directory")
     write_worktree_file(task.worktree, ".agent", name, json.dumps(doc, indent=2))
     if submit is None:
         return
@@ -2127,18 +2133,31 @@ def _intent_target(cfg: Config, intent: intents.Intent) -> str:
     return intent.target or (resolved.target if resolved is not None else "")
 
 
-def _without_superseded_answers(pending: list[intents.Intent]) -> list[intents.Intent]:
-    """Per task, only one answers intent of a pass is applied: the newest
-    submission, else the newest draft. The others are deleted unapplied."""
+def _competes(cfg: Config, intent: intents.Intent) -> bool:
+    """An answers intent valid for its task's open request: right revision
+    and a known submit value. Only these can supersede one another."""
+    task = _task_for_intent(cfg, intent) if intent.action == "answers" else None
+    req = task.operator_request if task is not None else None
+    return (req is not None and bool(req.fingerprint)
+            and intent.payload.get("revision") == req.fingerprint
+            and intent.payload.get("submit") in (None, *ANSWERS_WAKE))
+
+
+def _without_superseded_answers(cfg: Config,
+                                pending: list[intents.Intent]) -> list[intents.Intent]:
+    """Per task, only one valid answers intent of a pass is applied: the
+    newest submission, else the newest draft. The other valid ones are
+    deleted unapplied; an invalid one stays and drops with its reason (a
+    stale tab never costs a current answer)."""
+    competing = [i for i in pending if _competes(cfg, i)]
     winners: dict[tuple[str, int], intents.Intent] = {}
-    for i in pending:
-        if i.action == "answers":
-            key = (i.target, i.issue)
-            winners[key] = max(winners.get(key, i), i, key=lambda x: (
-                x.payload.get("submit") is not None, x.created_at, x.path.name))
+    for i in competing:
+        key = (i.target, i.issue)
+        winners[key] = max(winners.get(key, i), i, key=lambda x: (
+            x.payload.get("submit") is not None, x.created_at, x.path.name))
     kept = []
     for i in pending:
-        win = winners.get((i.target, i.issue)) if i.action == "answers" else i
+        win = winners[(i.target, i.issue)] if i in competing else i
         if win is i:
             kept.append(i)
         else:
@@ -2153,7 +2172,7 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
     noted to stderr, and never aborts the pass or the remaining intents."""
     by_name = {t.name: t for t in cfg.targets}
-    for intent in _without_superseded_answers(intents.list_intents(cfg.state_dir)):
+    for intent in _without_superseded_answers(cfg, intents.list_intents(cfg.state_dir)):
         try:
             _apply_one_intent(cfg, deps, by_name, intent)
             eventlog.append_event(cfg.state_dir, "intent-applied",
