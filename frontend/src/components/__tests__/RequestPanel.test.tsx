@@ -15,8 +15,8 @@ beforeEach(() => {
   server.use(...defaultHandlers)
 })
 
-// Cycle 1: HTML variant — sandboxed iframe
-test('text/html readable request renders a sandboxed iframe with allow-scripts only', async () => {
+// An HTML page answers only on the review route, behind the bridge: no embed here.
+test('text/html readable request links to the review route and embeds no page', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
@@ -31,11 +31,8 @@ test('text/html readable request renders a sandboxed iframe with allow-scripts o
     ),
   )
   renderPanel()
-  const iframe = await screen.findByTitle('question.html')
-  expect(iframe.tagName).toBe('IFRAME')
-  expect(iframe).toHaveAttribute('sandbox', 'allow-scripts')
-  // No allow-same-origin: that attribute value must not be present
-  expect(iframe.getAttribute('sandbox')).not.toContain('allow-same-origin')
+  expect(await screen.findByRole('link', { name: 'open review' })).toHaveAttribute('href', '/task/widget/42/review')
+  expect(document.querySelector('iframe')).toBeNull()
 })
 
 // Cycle 19a: unavailable plan-approval — recovery visible, no approve, panel stays

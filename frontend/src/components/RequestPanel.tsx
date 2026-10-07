@@ -47,7 +47,7 @@ export function RequestPanel({ target, issue }: { target: string; issue: number 
       </header>
       {kind === 'plan-approval' && artifacts.data && !spec?.github_url && (
         <p className={`mb-3 ${banner.waiting}`}>
-          Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still read the plan summary below and review it.'}
+          Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still open the review.'}
         </p>
       )}
       {kind === 'plan-approval' && artifacts.isError && (
@@ -91,8 +91,8 @@ function RequestContent({ content, boxed }: { content: OperatorRequest['content'
         </div>
       )
     case 'text/html':
-      return <iframe title={name} sandbox="allow-scripts" srcDoc={content.text}
-        className="h-96 w-full rounded border border-border" />
+      // The page's buttons work only on the review route, behind its bridge.
+      return null
     default:
       return (
         <a download={name} href={`data:${content.media_type};charset=utf-8,${encodeURIComponent(content.text)}`}

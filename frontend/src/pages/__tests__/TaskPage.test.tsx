@@ -495,7 +495,7 @@ it('renders the artifact a parked task is waiting on, above the reply box', asyn
   expect(panel.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 })
 
-it('renders an html artifact in a sandboxed frame', async () => {
+it('links an html artifact to the review route and embeds no page', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
@@ -510,10 +510,8 @@ it('renders an html artifact in a sandboxed frame', async () => {
     ),
   )
   renderTask()
-  await waitFor(() => expect(screen.getByTitle('prototype.html')).toBeInTheDocument())
-  const frame = screen.getByTitle('prototype.html') as HTMLIFrameElement
-  expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
-  expect(frame.getAttribute('srcdoc')).toContain('variant A')
+  expect(await screen.findByRole('link', { name: 'open review' })).toHaveAttribute('href', '/task/widget/42/review')
+  expect(document.querySelector('iframe')).toBeNull()
 })
 
 it('offers any other artifact as a download', async () => {
