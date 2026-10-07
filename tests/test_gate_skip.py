@@ -11,15 +11,14 @@ from dispatcher import intents as intents_mod
 from dispatcher import spec_publish
 from dispatcher.artifacts import SUMMARY_MAX_BYTES, count_open_questions
 from dispatcher.machine import SetTaskStage, SpawnStage, next_actions
-from dispatcher.state import Stage, StageSignal, TaskState, load, read_stage_signal, save
+from dispatcher.state import Stage, StageSignal, TaskState, read_stage_signal, save
 
 from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
                                              NONE_SUMMARY, ONE_SUMMARY, SUMMARY,
                                              _assert_waits, _git, _implements,
                                              _pass, _ready, _setup, _task,
                                              _task_at_ready, _wait_case)
-from tests.test_main import (FakeGitHub, LiveUntilEnded, deps, patch_usage,
-                             write_tickets)
+from tests.test_main import FakeGitHub, LiveUntilEnded, deps, write_tickets
 
 
 def test_track_named_in_the_ready_report_does_not_count(tmp_path, monkeypatch):
