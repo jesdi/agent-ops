@@ -58,7 +58,8 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               resumable_crash,
                               save, task_key)
 from dispatcher.workspace import (append_worktree_file, create_workspace,
-                                  remove_workspace, write_worktree_file)
+                                  exclude_local_state, remove_workspace,
+                                  write_worktree_file)
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
@@ -521,6 +522,19 @@ def _notify(deps: Deps, target: Target, task: TaskState, template: str,
                        target=target.name)
 
 
+def _heal_exclude(target: Target, task: TaskState) -> None:
+    """Before a launch or a resume: a worktree made before the exclude lines
+    existed gets them now. The path is the target's configured clone, never
+    one taken from the worktree. The lines are a protection, not a
+    precondition for a task that already exists: a failure is logged and the
+    launch goes on."""
+    try:
+        exclude_local_state(target.clone_path)
+    except OSError as exc:
+        print(f"[warn] exclude lines not written for #{task.issue}: {exc}",
+              file=sys.stderr)
+
+
 def _write_working(worktree: str, stage: Stage, entry) -> None:
     """Rewrite .agent/stage.json to `working` BEFORE a session is launched or
     resumed, or the next pass reads the old signal again (blocked, a rejected
@@ -562,6 +576,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     block, drained = _drain(cfg, task.target, task.issue)
     if block:
         prompt = f"{prompt}\n\n{block}\n"
+    _heal_exclude(target, task)
     _write_working(task.worktree, stage, entry)
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
@@ -1155,6 +1170,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                 task: TaskState, launch: Launch) -> None:
     entry = launch.entry
     model = entry.model_id
+    _heal_exclude(target, task)
     # Before resuming: the next pass must not re-read blocked/awaiting-ci
     # and re-park the freshly resumed session.
     _write_working(task.worktree, task.stage, entry)

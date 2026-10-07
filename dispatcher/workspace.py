@@ -28,13 +28,15 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
 
 @contextmanager
 def _real_dir(root: str | Path, *parts: str):
-    """A descriptor of <root>/<parts...>, each part a real directory (made
-    when missing), never a symlink. Raises OSError otherwise."""
+    """A descriptor of <root>/<parts...>, each part a real directory, never
+    a symlink. Only the last part is made when missing: the ones above it
+    must be there. Raises OSError otherwise."""
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in parts:
-            with suppress(FileExistsError):
-                os.mkdir(part, dir_fd=fd)
+            if part == parts[-1]:
+                with suppress(FileExistsError):
+                    os.mkdir(part, dir_fd=fd)
             try:
                 nxt = os.open(part, _DIR_FLAGS, dir_fd=fd)
             except OSError as exc:
@@ -303,31 +305,26 @@ def install_stop_hook(wt: str) -> None:
 LOCAL_STATE = (".agent/", ".claude/settings.local.json")
 
 
-def exclude_local_state(checkout: str) -> None:
+def exclude_local_state(clone_path: str) -> None:
     """Keep the dispatcher's files in a task worktree out of `git status`,
     so a session's `git add -A` never commits them. git reads info/exclude
     from the common directory only, never from a worktree's own, so the
-    lines go there; git names that directory, for the clone and for any of
-    its worktrees alike. Lines already there are kept, none is added twice.
-    Runs at provisioning and on every launch/resume, so a worktree older
-    than these lines gets them at its next session start. A checkout git
-    cannot read is left alone: the launch that follows reports it."""
-    try:
-        out = subprocess.run(
-            ["git", "-C", checkout, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return
-    if out.returncode != 0 or not out.stdout.strip():
-        return
-    common = Path(checkout, out.stdout.strip())   # relative to the checkout, or absolute
-    raw = read_worktree_file(common, "info", "exclude")
+    lines go in the clone's. Lines already there are kept, none is added twice.
+
+    `clone_path` is the target's configured clone, never a path taken from a
+    task worktree or from git: a worktree's `.git` file and the clone's git
+    metadata are session-writable, and would name any directory on the host.
+    The file is the fixed <clone_path>/.git/info/exclude, and `.git` and
+    `info` must be real directories there (write_worktree_file). Anything
+    else raises OSError."""
+    raw = read_worktree_file(clone_path, ".git/info", "exclude")
     text = raw.decode(errors="replace") if raw is not None else ""
     missing = [line for line in LOCAL_STATE if line not in text.splitlines()]
     if missing:
         if text and not text.endswith("\n"):
             text += "\n"
-        write_worktree_file(common, "info", "exclude", text + "\n".join(missing) + "\n")
+        write_worktree_file(clone_path, ".git/info", "exclude",
+                            text + "\n".join(missing) + "\n")
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:

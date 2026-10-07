@@ -634,14 +634,3 @@ def test_agent_state_unknown_without_a_tab_or_in_dry_run(monkeypatch):
     assert Sessions().agent_state("acme", 42) is None
     assert Sessions(dry_run=True).agent_state("acme", 42) is None
 
-
-def test_every_launch_heals_the_exclude_lines_of_its_worktree(tmp_path, monkeypatch):
-    from dispatcher import workspace
-    wt = _worktree(tmp_path)
-    healed = []
-    monkeypatch.setattr(workspace, "exclude_local_state", healed.append)
-    herdr_fake_creating(monkeypatch, [])
-    s = Sessions()
-    s.spawn_stage("acme", 42, wt, "PROMPT", "spec", "claude-fable-5")
-    s.resume("acme", 42, wt, "go on", "claude-fable-5")
-    assert healed == [wt, wt]

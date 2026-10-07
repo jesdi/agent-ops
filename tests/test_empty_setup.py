@@ -52,6 +52,7 @@ def fake_git_sh(tmp_path):
 
 def test_claim_with_empty_setup_cmd_runs_no_container_and_reaches_spec(
         tmp_path, monkeypatch):
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
     calls, fake_sh = fake_git_sh(tmp_path)
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")

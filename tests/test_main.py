@@ -6003,3 +6003,44 @@ def test_agent_directory_that_is_a_symlink_fails_the_launch_and_not_the_pass(
     assert t.stage is Stage.FAILED and [s[0] for s in sess.spawned] == [43]
     assert "not a real directory" in gh.created_issues[0][2]
     assert load(c.state_dir, "portfolio_eval", 43).stage is Stage.REVIEW
+
+
+def test_launch_and_resume_write_the_exclude_lines_in_the_configured_clone_only(
+        tmp_path, monkeypatch):
+    """The lines heal on every launch and resume, at the clone the target's
+    configuration names. The worktree's own `.git` pointer, which a session
+    can rewrite, decides nothing."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    info = Path(c.targets[0].clone_path) / ".git" / "info"
+    info.mkdir(parents=True)
+    outside = tmp_path / "outside-git"
+    (outside / "info").mkdir(parents=True)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW)        # spawned
+    wt2 = make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=NO_SLOT, park=PARK_WAKE)
+    for w in (wt, wt2):
+        (w / ".git").write_text(f"gitdir: {outside}\n")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert [s[0] for s in sess.spawned] == [42] and [r[0] for r in sess.resumed] == [43]
+    assert list((outside / "info").iterdir()) == []
+    assert (info / "exclude").read_text().splitlines() == [
+        ".agent/", ".claude/settings.local.json"]
+
+
+def test_unusable_clone_git_dir_does_not_stop_a_resume(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    outside = tmp_path / "outside-git"
+    (outside / "info").mkdir(parents=True)
+    clone = Path(c.targets[0].clone_path)
+    clone.mkdir()
+    (clone / ".git").symlink_to(outside, target_is_directory=True)
+    make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=NO_SLOT, park=PARK_WAKE)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert [r[0] for r in sess.resumed] == [43]
+    assert load(c.state_dir, "portfolio_eval", 43).park == ""
+    assert list((outside / "info").iterdir()) == []

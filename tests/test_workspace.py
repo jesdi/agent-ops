@@ -20,6 +20,7 @@ def target(tmp_path: Path) -> Target:
 
 
 def test_create_workspace(tmp_path: Path, monkeypatch):
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -72,6 +73,7 @@ def test_create_workspace_skips_setup_when_no_setup_cmd(tmp_path: Path, monkeypa
     container runs at all — not a podman invocation with an empty command
     tail. create_workspace must still create the worktree and return its
     path."""
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -121,6 +123,7 @@ def test_create_workspace_reuses_existing_worktree_dir(tmp_path: Path, monkeypat
     skip straight to the setup step. The reused directory is a real,
     healthy checkout here (see the unhealthy-reuse test below for the
     Finding-1 rejection path)."""
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -173,6 +176,7 @@ def test_create_workspace_reuses_existing_branch(tmp_path: Path, monkeypatch):
     """Worktree removed but the branch left behind (e.g. manual cleanup):
     add the worktree onto the existing branch instead of trying to create
     it again with -b, which would die on "branch already exists"."""
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -247,6 +251,7 @@ def test_create_workspace_reuses_worktree_marked_provisioned_despite_deleted_fil
     see a `D` line in `git status --porcelain` and raise forever. The
     `provisioned` marker — written right after `git worktree add` succeeds
     — lets a retry skip that heuristic entirely."""
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -365,6 +370,7 @@ def test_create_workspace_seeds_claude_trust(tmp_path: Path, monkeypatch):
     claude-home's .claude.json: stage containers run interactive `claude`
     with nobody attached, so a first-run wizard or folder-trust dialog
     stalls the task forever (task #192 sat on the theme picker for 1.5h)."""
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
     def fake_sh(args, cwd, timeout=300, log=None):
         if "worktree" in args:
             wt = Path(args[-2])
@@ -621,46 +627,76 @@ def test_stop_hook_install_neither_reads_nor_writes_through_symlinks(tmp_path):
     assert not hook.is_symlink() and hook.stat().st_mode & 0o111
 
 
-# --- the exclude lines: any git layout, healed on every launch ---------------
+# --- the exclude lines: a fixed path under the configured clone, never a
+# path that a session can choose ----------------------------------------------
 
-def test_exclude_lines_go_to_the_common_git_dir_when_dot_git_is_a_file(tmp_path, monkeypatch):
-    import subprocess as sp
-    clone, gitdir = tmp_path / "clone", tmp_path / "elsewhere.git"
-    sp.run(["git", "init", "-q", "--separate-git-dir", str(gitdir), str(clone)], check=True)
-    assert (clone / ".git").is_file()
-    workspace.exclude_local_state(str(clone))
-    assert (gitdir / "info" / "exclude").read_text().splitlines()[-2:] == [
-        ".agent/", ".claude/settings.local.json"]
+def _exclude_of(t) -> Path:
+    return Path(t.clone_path) / ".git" / "info" / "exclude"
 
 
-def test_exclude_lines_heal_from_a_task_worktree_that_existed_before(tmp_path, monkeypatch):
-    """A worktree made before the exclude lines existed gets them at its next
-    session start: the launch path calls this with the worktree."""
+def _tree(root: Path) -> dict:
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*"))
+            if p.is_file() and not p.is_symlink()}
+
+
+def test_clone_whose_dot_git_is_a_symlink_fails_the_creation_and_writes_nothing_outside(
+        tmp_path, monkeypatch):
     t = _clone_with_origin(tmp_path, monkeypatch)
-    wt = workspace.create_workspace(t, 42)
-    exclude = Path(t.clone_path) / ".git" / "info" / "exclude"
-    exclude.write_text("# mine\n")
-    (Path(wt) / ".agent" / "ledger.md").write_text("01 merged\n")
-    assert _untracked(wt) != ""
-    workspace.exclude_local_state(wt)
-    assert _untracked(wt) == "" and exclude.read_text().startswith("# mine\n")
+    moved = tmp_path / "outside-git"
+    (Path(t.clone_path) / ".git").rename(moved)
+    (Path(t.clone_path) / ".git").symlink_to(moved, target_is_directory=True)
+    (moved / "info" / "exclude").write_text("# theirs\n")
+    with pytest.raises(OSError, match="not a real directory"):
+        workspace.create_workspace(t, 42)
+    assert (moved / "info" / "exclude").read_text() == "# theirs\n"
 
 
-def test_exclude_write_is_whole_and_follows_no_symlink(tmp_path, monkeypatch):
+def test_info_directory_that_is_a_symlink_fails_the_creation_and_writes_nothing_outside(
+        tmp_path, monkeypatch):
+    import shutil
     t = _clone_with_origin(tmp_path, monkeypatch)
     out = _outside(tmp_path)
-    exclude = Path(t.clone_path) / ".git" / "info" / "exclude"
+    info = Path(t.clone_path) / ".git" / "info"
+    shutil.rmtree(info)
+    info.symlink_to(out, target_is_directory=True)
+    before = _tree(out)
+    with pytest.raises(OSError, match="not a real directory"):
+        workspace.create_workspace(t, 42)
+    assert _tree(out) == before
+
+
+def test_symlink_planted_at_the_exclude_file_is_replaced(tmp_path, monkeypatch):
+    t = _clone_with_origin(tmp_path, monkeypatch)
+    out = _outside(tmp_path)
+    exclude = _exclude_of(t)
     exclude.unlink(missing_ok=True)
     exclude.symlink_to(out / "victim")
     workspace.exclude_local_state(t.clone_path)
     assert (out / "victim").read_text() == "untouched"
-    assert not exclude.is_symlink() and ".agent/" in exclude.read_text().splitlines()
+    assert not exclude.is_symlink()
+    assert exclude.read_text().splitlines() == [".agent/", ".claude/settings.local.json"]
     assert [p.name for p in exclude.parent.iterdir() if p.name.endswith(".tmp")] == []
 
 
-def test_exclude_on_a_directory_that_is_no_repository_does_nothing(tmp_path):
+def test_exclude_never_follows_a_worktrees_own_git_pointer(tmp_path, monkeypatch):
+    """A worktree's `.git` file is session-writable: `gitdir:` can name any
+    directory on the host. Nothing is derived from it."""
+    import subprocess as sp
+    outside = tmp_path / "outside-repo"
+    sp.run(["git", "init", "-q", str(outside)], check=True)
+    before = _tree(outside)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {outside / '.git'}\n")
+    with pytest.raises(OSError):
+        workspace.exclude_local_state(str(wt))
+    assert _tree(outside) == before
+
+
+def test_exclude_on_a_directory_that_is_no_clone_raises_and_makes_nothing(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()
-    workspace.exclude_local_state(str(plain))        # must not raise
-    workspace.exclude_local_state(str(tmp_path / "missing"))
+    for path in (plain, tmp_path / "missing"):
+        with pytest.raises(OSError):
+            workspace.exclude_local_state(str(path))
     assert list(plain.iterdir()) == []
