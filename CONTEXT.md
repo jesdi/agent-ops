@@ -57,7 +57,11 @@ _Avoid_: profile (a Claude Code term)
 
 **Pick**:
 The entry chosen when a task enters a stage, recorded in `TaskState.picks`
-and reused by every session of that stage. A denied pick waits.
+and reused by every session of that stage. PR feedback has one pick of its
+own, under the key `feedback`: the first session that addresses PR feedback
+chooses it from the task track's `implement` list, and every later feedback
+round of the task reuses it. It does not read or write the implement pick.
+A denied pick waits.
 
 **Untracked**:
 A candidate with no `track:` label; it specs on `models.untracked`.

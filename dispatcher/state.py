@@ -127,7 +127,7 @@ class TaskState:
     track: str = ""                      # configured track name (spec/2026-09-14-model-tracks)
     # providers that ran tickets: first use first, no repeats
     implement_providers: list[str] = field(default_factory=list)
-    picks: dict[str, str] = field(default_factory=dict)  # policy stage -> "provider/model[@effort]", sticky per stage
+    picks: dict[str, str] = field(default_factory=dict)  # models.pick_key(stage) -> "provider/model[@effort]", sticky per key
     spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track)
     plan_retries: int = 0                # in-session plan-format retries used
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
@@ -254,6 +254,34 @@ def _write_task(p: Path, ts: TaskState) -> None:
     tmp.replace(p)
 
 
+# The next launch of a task at one of these is a PR feedback round.
+_PR_OPEN_STAGES = frozenset({Stage.PR_OPEN, Stage.ADDRESS_REVIEW})
+_PAST_IMPLEMENT = _PR_OPEN_STAGES | {Stage.REVIEW}
+
+
+def _migrate_implement_pick(d: dict) -> None:
+    """A task from before the provider record existed (no recorded provider):
+    the implement pick's provider ran its tickets. Past implement that pick
+    is no ticket's any more: it becomes the feedback pick when the PR is open
+    and there is none yet, so the next feedback round stays on its provider,
+    and is dropped otherwise. A crashed task counts as the stage it resumes.
+    Once a provider is recorded this changes nothing, so a second read (or a
+    read after a save) is the same."""
+    if d.get("implement_providers"):
+        return
+    picks = d["picks"]
+    d["implement_providers"] = list(
+        filter(None, [pick_provider(picks, "implement")]))
+    stage = d["stage"]
+    if stage is Stage.FAILED and d.get("crashed_stage"):
+        stage = Stage(d["crashed_stage"])
+    if stage not in _PAST_IMPLEMENT or "implement" not in picks:
+        return
+    pick = picks.pop("implement")
+    if stage in _PR_OPEN_STAGES:
+        picks.setdefault("feedback", pick)
+
+
 def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
@@ -265,11 +293,7 @@ def _read(p: Path) -> TaskState | None:
         d["terminal_at"] = ""
     d["labels"] = tuple(d.get("labels", ()))
     d["picks"] = dict(d.get("picks") or {})
-    # No recorded provider: the implement pick's provider ran the tickets
-    # (tasks from before the record existed).
-    if not d.get("implement_providers"):
-        d["implement_providers"] = list(
-            filter(None, [pick_provider(d["picks"], "implement")]))
+    _migrate_implement_pick(d)
     d.pop("pending_reply", None)   # retired field, see original comment
     if "operator_request" not in d:
         # Legacy record: derive from unambiguous gate evidence.

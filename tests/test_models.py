@@ -195,11 +195,15 @@ def test_policy_stage_maps_runtime_stages():
 
 
 PICKS = {"implement": "anthropic/claude-opus-5@high"}
+# PR feedback has its own pick; the implement pick is on the other provider.
+FEEDBACK = {"implement": "openai/gpt-5-codex@high",
+            "feedback": "anthropic/claude-opus-5@high"}
 
 
 def test_pick_provider_is_the_provider_of_the_stages_pick_or_empty():
     assert pick_provider(PICKS, "implement") == "anthropic"
-    assert pick_provider(PICKS, "address-review") == "anthropic"
+    assert pick_provider(PICKS, "address-review") == ""
+    assert pick_provider(FEEDBACK, "address-review") == "anthropic"
     assert pick_provider(PICKS, "review") == ""
 
 
@@ -207,11 +211,12 @@ def test_override_must_match_the_picks_provider_once_the_stage_has_a_pick():
     assert override_allowed(PICKS, "implement", "anthropic/claude-sonnet-5")
     assert override_allowed(PICKS, "implement", "claude-sonnet-5")
     assert not override_allowed(PICKS, "implement", "openai/gpt-5-codex")
-    assert not override_allowed(PICKS, "address-review", "openai/gpt-5-codex")
+    assert override_allowed(PICKS, "address-review", "openai/gpt-5-codex")
+    assert not override_allowed(FEEDBACK, "address-review", "openai/gpt-5-codex")
 
 
 def test_override_refusal_names_the_policy_stage_and_its_provider():
-    assert override_refusal(PICKS, "address-review", "openai/gpt-5-codex") == (
+    assert override_refusal(FEEDBACK, "address-review", "openai/gpt-5-codex") == (
         "stage implement runs on anthropic; pick a model from anthropic")
     assert override_refusal(PICKS, "implement", "anthropic/claude-sonnet-5") == ""
     assert override_refusal(PICKS, "review", "openai/gpt-5-codex") == ""

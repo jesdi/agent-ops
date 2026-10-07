@@ -43,7 +43,7 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
                                 StartTicket, SpawnStage, pass_actions)
 from dispatcher.models import (Admitted, Entry, ModelPolicy, Order, candidates,
                                override_refusal, parse_entry,
-                               policy_stage, resolve, review_avoid, second_model, stage_pick,
+                               pick_key, resolve, review_avoid, second_model, stage_pick,
                                track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
@@ -563,7 +563,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     task = loops.reset(task, ResetCause.STAGE_STARTED)
     task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
                    operator_request=None, updated_at=_now(),
-                   picks={**task.picks, policy_stage(stage.value): str(entry)})
+                   picks={**task.picks, pick_key(stage.value): str(entry)})
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
                           issue=task.issue, stage=stage.value, model=str(entry),
@@ -1227,7 +1227,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                                 resume_bypass_usage=False,
                                 operator_request=None,
                                 picks={**task.picks,
-                                      policy_stage(task.stage.value): str(entry)},
+                                      pick_key(task.stage.value): str(entry)},
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                           issue=task.issue, stage=task.stage.value,

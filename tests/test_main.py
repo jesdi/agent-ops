@@ -3647,21 +3647,22 @@ def test_remove_workspace_dry_run_flag_reaches_the_real_teardown(
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PR_OPEN
 
 
-def test_address_review_reuses_the_implement_pick(tmp_path, monkeypatch):
-    """address-review is implement-shaped work: a pr-open task resuming it
-    reuses the implement stage's sticky pick, same mechanism as
-    test_pick_is_reused_for_every_ticket_of_the_stage — not a fresh policy
-    resolution that would silently fall through to something else."""
+def test_address_review_reuses_the_feedback_pick(tmp_path, monkeypatch):
+    """A pr-open task's feedback round reuses the task's sticky feedback
+    pick — not the implement pick, and not a fresh policy resolution (the
+    deep track's implement list would give opus@medium)."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     pr_open_task(c, feedback_pending=True, track="deep",
-                 picks={"implement": "anthropic/claude-opus-5@medium"})
+                 picks={"feedback": "anthropic/claude-sonnet-5@low",
+                        "implement": "anthropic/claude-opus-5@medium"},
+                 implement_providers=["anthropic"])
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload()
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
     assert [s[:3] + (s[4],) for s in sess.spawned] == [
-        (42, "address-review", "anthropic/claude-opus-5", "medium")]
+        (42, "address-review", "anthropic/claude-sonnet-5", "low")]
 
 
 def test_cursor_now_never_seals_the_second_it_was_taken_in():
