@@ -175,3 +175,36 @@ export const usageRouted: UsageView = {
   gate: usage.gate,
   priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic' },
 }
+
+// Pinned tracks: fields the generated api-types does not carry until the
+// console ships them, so these are spread-built (no excess-property check).
+export const pinnedCard = {
+  ...inProgressCard, issue: 51, title: 'Rework the settings screen',
+  model: 'claude-fable-5-1', track: 'architecture', pinned_track: 'frontend',
+} as TaskCard
+
+export const unpinnedCard = {
+  ...inProgressCard, issue: 52, title: 'Tidy the changelog',
+  model: 'openai/gpt-sol', track: 'standard', pinned_track: '',
+} as TaskCard
+
+export const pinnedWaitAdmission = {
+  requested: { model: 'anthropic/claude-fable-5-1', provider: 'anthropic', admitted: false, note: 'week·Fable over pace' },
+  alternatives: [
+    { model: 'anthropic/claude-opus-5', provider: 'anthropic', admitted: false, note: 'limited' },
+    { model: 'anthropic/claude-sonnet-5', provider: 'anthropic', admitted: true, note: 'capacity available' },
+    { model: 'openai/gpt-astra', provider: 'openai', admitted: true, note: 'capacity available' },
+    { model: 'openai/gpt-sol', provider: 'openai', admitted: true, note: 'capacity available' },
+  ],
+  pinned_track: 'frontend',
+}
+
+export const usagePinned = {
+  ...usageRouted,
+  priority: { ...usageRouted.priority, pinned: ['security', 'architecture', 'frontend'] },
+} as UsageView
+
+export const usageUnpinned = {
+  ...usageRouted,
+  priority: { ...usageRouted.priority, pinned: [] },
+} as UsageView

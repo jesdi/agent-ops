@@ -26,6 +26,29 @@ const parkedCard = {
   undelivered_messages: 0, wake_blocked: true,
 }
 
+// Control route /__control__/seed-pinned adds these: a pinned task and a
+// pinned task waiting on the usage gate (pinned_track + admission fields).
+const pinnedCards = () => [
+  { ...parkedCard, issue: 51, title: 'Rework the settings screen layout', stage: 'implement',
+    park: '', column: 'in-progress', slot: 1, model: 'claude-fable-5-1',
+    track: 'architecture', pinned_track: 'frontend', park_note_pending: false,
+    park_note: '', consuming_capacity: true, wake_blocked: false },
+  { ...parkedCard, issue: 52, title: 'Rebuild the navigation bar for small screens', stage: 'implement',
+    park: 'awaiting-wake', column: 'parked', slot: -1, model: 'claude-fable-5-1',
+    track: 'frontend', pinned_track: 'frontend', park_note_pending: false,
+    park_note: '', consuming_capacity: false, wake_blocked: false,
+    admission: {
+      requested: { model: 'anthropic/claude-fable-5-1', provider: 'anthropic', admitted: false,
+        note: 'anthropic week·Fable: 90% used, allowance 29%' },
+      alternatives: [
+        { model: 'anthropic/claude-opus-5', provider: 'anthropic', admitted: false, note: 'limited' },
+        { model: 'anthropic/claude-sonnet-5', provider: 'anthropic', admitted: true, note: 'capacity available' },
+        { model: 'openai/gpt-astra', provider: 'openai', admitted: true, note: 'capacity available' },
+        { model: 'openai/gpt-sol', provider: 'openai', admitted: true, note: 'capacity available' },
+      ],
+    } },
+]
+
 const seedGhosts = () => [
   { number: 73, target: 'widget', title: 'Ship dark mode',
     url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
@@ -292,11 +315,19 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/__control__/reset-queue' && req.method === 'POST') {
     queued().ghosts = seedGhosts()
     state.usage.priority = { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic' }
+    for (const c of state.board.columns) c.cards = c.cards.filter((x) => x.pinned_track === undefined)
     state.board.next_claim = {
       verdict: 'will-claim',
       next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
       next_issue: 73, next_target: 'widget', minutes_to_reset: 0, blocked_by: '',
     }
+    return json(200, { ok: true })
+  }
+  if (url.pathname === '/__control__/seed-pinned' && req.method === 'POST') {
+    state.usage.priority = { ...state.usage.priority, pinned: ['security', 'architecture', 'frontend'] }
+    const col = (key) => state.board.columns.find((c) => c.key === key)
+    for (const c of pinnedCards()) col(c.column).cards.push(c)
+    push(['board', 'usage'])
     return json(200, { ok: true })
   }
   if (url.pathname === '/__control__/apply-intents' && req.method === 'POST') {
