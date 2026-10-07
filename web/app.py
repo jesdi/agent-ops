@@ -15,12 +15,13 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import priority, queue_ops
 from dispatcher.config import Config, policy_for, routed_providers
-from dispatcher.models import (candidates, override_allowed, override_refusal,
-                               parse_entry, resolve, review_avoid,
-                               stage_pick, track_from_labels)
+from dispatcher.models import (ModelPolicy, candidates, override_allowed,
+                               override_refusal, parse_entry, resolve,
+                               review_avoid, stage_pick, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
-                              SpecApprovalRequest, next_stage, resumable_crash)
+                              SpecApprovalRequest, TaskState, next_stage,
+                              resumable_crash)
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
@@ -94,6 +95,12 @@ class ReadyReq(BaseModel):
     issue: int
 
 
+def launch_pinned_track(t: TaskState, policy: ModelPolicy) -> str:
+    """The pinned track t's next launch comes from, else "": the task track
+    when it is pinned. (A ticket with its own track is ticket 06's.)"""
+    return t.track if t.track in policy.pinned else ""
+
+
 def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
                frontend_dist: Path | None = None) -> FastAPI:
@@ -162,13 +169,19 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if sources.execution_override(t.target, t.issue) is not None:
             return None
         stage = next_stage(t)
+        pinned = _pinned_track(t)
+        # A pinned wait may be overridden with any model of the policy.
+        offered = (_policy(t.target).model_ids() if pinned
+                   else [e.model_id for e in _choices(t, order)])
         return _admission_for_model(
             _model_for(t, order, usages, now),
-            [e.model_id for e in _choices(t, order)
-             if override_allowed(t.picks, stage, e.model_id)],
-            usages, now)
+            [m for m in offered if override_allowed(t.picks, stage, m)],
+            usages, now, pinned_track=pinned)
 
-    def _admission_for_model(model, choices, usages, now):
+    def _pinned_track(t):
+        return launch_pinned_track(t, _policy(t.target))
+
+    def _admission_for_model(model, choices, usages, now, pinned_track=""):
         if not model:
             return None
         requested = read_model.model_admission_view(
@@ -179,7 +192,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             usages, now=now, pace=cfg.pace, model=m)
             for m in dict.fromkeys(choices) if m != requested.model]
         return read_model.TaskAdmissionView(
-            requested=requested, alternatives=alternatives)
+            requested=requested, alternatives=alternatives,
+            pinned_track=pinned_track)
 
     def _candidate_choices(target, row, order):
         policy = policy_for(cfg, target)
@@ -227,6 +241,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.build_board_snapshot(
             tasks, capacity=cfg.capacity,
             models={(t.target, t.issue): _model_for(t, order) for t in tasks},
+            pinned_tracks={(t.target, t.issue): _pinned_track(t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT), queues=[],
             undelivered={(t.target, t.issue): mail.get((t.target, t.issue), 0)
                          for t in tasks},
@@ -237,7 +252,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return read_model.usage_view(
             usages, now=now, pace=cfg.pace,
             default_model=cfg.models.gate_entry().model_id,
-            mode=mode, routed=routed)
+            mode=mode, routed=routed, pinned=cfg.models.pinned)
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
@@ -259,6 +274,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             tasks, capacity=cfg.capacity,
             models={(t.target, t.issue): _model_for(t, order, usages, now)
                     for t in tasks},
+            pinned_tracks={(t.target, t.issue): _pinned_track(t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=sources.pass_heartbeat(),
             now=now,
@@ -297,6 +313,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         policy = _policy(t.target)
         return read_model.task_detail(
             t, model=_model_for(t, order, usages, now),
+            pinned_track=_pinned_track(t),
             pane_tail=sources.pane_tail(target, issue),
             session_alive=sources.session_alive(target, issue),
             events=sources.events_tail(EVENTS_SCAN_LIMIT),

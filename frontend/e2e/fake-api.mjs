@@ -46,6 +46,7 @@ const pinnedCards = () => [
         { model: 'openai/gpt-astra', provider: 'openai', admitted: true, note: 'capacity available' },
         { model: 'openai/gpt-sol', provider: 'openai', admitted: true, note: 'capacity available' },
       ],
+      pinned_track: 'frontend',
     } },
 ]
 
@@ -105,7 +106,7 @@ const state = {
       minutes_to_reset: 7320,
       binding: { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok', required_pace: 5.6 },
     },
-    priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic' },
+    priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic', pinned: [] },
   },
   failures: { quarantined: [], fingerprints: [] },
   history: { events: [] },
@@ -314,7 +315,7 @@ const server = createServer(async (req, res) => {
   // spec is idempotent across Playwright retries (workers:1, no parallel runs).
   if (url.pathname === '/__control__/reset-queue' && req.method === 'POST') {
     queued().ghosts = seedGhosts()
-    state.usage.priority = { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic' }
+    state.usage.priority = { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic', pinned: [] }
     for (const c of state.board.columns) c.cards = c.cards.filter((x) => x.pinned_track === undefined)
     state.board.next_claim = {
       verdict: 'will-claim',

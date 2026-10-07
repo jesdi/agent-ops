@@ -222,7 +222,7 @@ it('a failing /api/usage states the gap instead of silently dropping the gauge',
 
 it('two provider groups render side by side; the spawn chip shows once, on the gate provider', async () => {
   const twoProviders: UsageView = {
-    priority: { mode: 'auto', options: ['auto', 'anthropic', 'nvidia'], first: 'anthropic' },
+    priority: { mode: 'auto', options: ['auto', 'anthropic', 'nvidia'], first: 'anthropic', pinned: [] },
     providers: [
       {
         provider: 'anthropic', source: 'oauth',
