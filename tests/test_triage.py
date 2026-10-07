@@ -722,6 +722,9 @@ def test_tick_forwards_dispatcher_env_to_the_runner(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path))
+    # The runner composes the triage container's argv itself; without the
+    # wrapper its `claude -p` has no setup-token and refreshes claude-home.
+    monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/opt/infra/with-claude-token.sh")
     calls = []
     _herdr_fake_creating(monkeypatch, calls)
     triage.enqueue(tmp_path)
@@ -729,7 +732,8 @@ def test_tick_forwards_dispatcher_env_to_the_runner(tmp_path, monkeypatch):
     create = next(c for c in calls if c[:2] == ["tab", "create"])
     env = [create[i + 1] for i, a in enumerate(create) if a == "--env"]
     assert env == ["TELEGRAM_BOT_TOKEN=tok", "TELEGRAM_CHAT_ID=42",
-                   f"AGENT_OPS_STATE_DIR={tmp_path}"]
+                   f"AGENT_OPS_STATE_DIR={tmp_path}",
+                   "AGENT_OPS_COMMAND_WRAPPER=/opt/infra/with-claude-token.sh"]
 
 
 def test_tick_launch_omits_unset_env_vars(tmp_path, monkeypatch):

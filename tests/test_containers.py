@@ -215,6 +215,36 @@ def test_wrapper_path_is_one_executable_even_with_spaces(monkeypatch, tmp_path):
     assert argv[:2] == ["/opt/my infra/token-wrapper", "podman"]
 
 
+def test_a_runtime_without_a_passthrough_runs_podman_without_the_wrapper(
+        monkeypatch, tmp_path, codex_package):
+    # with-claude-token.sh fails closed when 1P cannot hand it the Claude
+    # setup-token. Codex declares no bare `-e NAME` passthrough, so its spawns
+    # must not go through (and be blocked by) a wrapper they never needed.
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/opt/infra/token-wrapper")
+    wt, _ = make_worktree(tmp_path)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-6-sol", "P")
+    assert cmd.startswith("podman run --rm -it --name task-42 ")
+    argv = containers.triage_cmd("triage", "/repo", "/triage", "2g", "2",
+                                 "openai/gpt-6-sol", "/p")
+    assert argv[:2] == ["podman", "run"]
+
+
+def test_a_codex_session_granted_a_claude_second_model_gets_the_wrapper(
+        monkeypatch, tmp_path, codex_package):
+    # The second model's `-e CLAUDE_CODE_OAUTH_TOKEN` passthrough is only
+    # worth anything if the wrapper resolved the token for it.
+    from dispatcher.models import Entry
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/opt/infra/token-wrapper")
+    wt, _ = make_worktree(tmp_path)
+    second = Entry(provider="anthropic", model="claude-fable-5")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-6-sol", "P",
+                                 second=second)
+    assert cmd.startswith("/opt/infra/token-wrapper podman run ")
+    assert "-e CLAUDE_CODE_OAUTH_TOKEN " in cmd
+
+
 @pytest.mark.parametrize("model_id", ["anthropic/claude-fable-5", "openai/gpt-5-codex"])
 def test_model_prefix_never_reaches_the_cli(tmp_path: Path, monkeypatch, model_id):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))

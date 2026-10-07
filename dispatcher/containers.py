@@ -66,10 +66,16 @@ def _runtime_args(runtime: Runtime) -> list[str]:
             *_host_binary(runtime)]
 
 
-def _wrapper() -> list[str]:
-    """Optional deployment-owned executable that prepares the session environment."""
+def _wrapper(*runtimes: Runtime) -> list[str]:
+    """The deployment-owned executable that provides a runtime's bare env
+    passthroughs (`-e NAME`: on the box, with-claude-token.sh resolving
+    CLAUDE_CODE_OAUTH_TOKEN from 1Password at spawn time). Only a runtime
+    that declares such a passthrough needs it; one whose env is all `NAME=v`
+    (Codex) runs podman directly, so a wrapper that fails closed when its
+    secret is unreachable cannot block a spawn that never wanted it."""
     path = os.environ.get("AGENT_OPS_COMMAND_WRAPPER", "")
-    return [path] if path else []
+    needs = any("=" not in e for r in runtimes for e in r.env)
+    return [path] if path and needs else []
 
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
@@ -80,7 +86,8 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     A granted `second` model (models.second_model) also gets its runtime's
     home, env and host binary: the mount is the permission."""
     runtime = runtime_for(model)
-    extra = _runtime_args(runtime_for(second.model_id)) if second else []
+    runtimes = [runtime, *([runtime_for(second.model_id)] if second else [])]
+    extra = _runtime_args(runtimes[1]) if second else []
     clone = clone_root(worktree)
     branch = task_branch(worktree)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
@@ -94,7 +101,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     except OSError:
         pass
     return (
-        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {name} "
+        f"{shlex.join([*_wrapper(*runtimes), 'podman'])} run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
         f"{shlex.join(_runtime_args(runtime) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's
@@ -142,7 +149,7 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     line = runtime.headless(f"\"$(cat {shlex.quote(prompt_path)})\"",
                             bare_model_id(model), effort)
     return [
-        *_wrapper(),
+        *_wrapper(runtime),
         "podman", "run", "--rm", "--name", name,
         "--memory", memory, "--cpus", cpus,
         *_runtime_args(runtime),
