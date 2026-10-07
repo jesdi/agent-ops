@@ -81,20 +81,22 @@ _Avoid_: design file, spec file (the spec is the folder's `spec.md`)
 **Plan review gate**:
 The one point where a task waits for the operator before a pull request
 exists: after the plan session wrote the design and the tickets. The
-operator is shown the spec folder on GitHub and the plan summary on the
+operator is shown the spec folder on GitHub and the review page on the
 console. Only an explicit approval starts implement.
 _Avoid_: spec review gate, spec approval (retired with the old flow)
 
-**Plan summary**:
-`.agent/plan-review.md`, written by the plan session before it reports
-ready: the ticket list, the open questions and the corrections it made to
-stage 1. It is the request the console shows at the gate. Never committed.
+**Review page**:
+`.agent/review.html`, written by the plan session with the `review-page` skill
+before it reports ready: the ticket list, the open questions and the corrections
+it made to stage 1. The dispatcher judges it by shape only: a regular file in the
+worktree, at most 256 KiB, carrying the template marker. It is the request the
+console shows at the gate. Never committed.
 
 **Open question**:
 What the plan session reports at its end: a red-team finding the design
 leaves unresolved, a choice between two behaviours that differ for the user
 or the business, or an input the design assumes and no source provides.
-Listed in the plan summary, counted in the ready report.
+Shown on the review page, counted in the ready report.
 
 **Gate-free track**:
 A track whose `targets.yaml` entry carries `plan_review: false`. A track
@@ -320,8 +322,8 @@ session reports done, retained across plan / AWAITING-PLAN-REVIEW / implement / 
 address-review. Worktree-relative path.
 
 **Operator request** = `TaskState.operator_request`: `None` (no request),
-`{"kind": "plan-approval", "path": "<worktree-relative path>"}` (the plan session's review summary,
-`.agent/plan-review.md`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns
+`{"kind": "plan-approval", "path": "<worktree-relative path>"}` (the plan session's review page,
+`.agent/review.html`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns
 its lifecycle writes:
 
 - Establish on entering AWAITING-PLAN-REVIEW (plan-approval).
@@ -331,9 +333,9 @@ its lifecycle writes:
 - Clear when the session at the gate reports `working` (it reworks the plan on feedback).
 - Clear when the plan signal is bounced (`_retry_stage`).
 - A plan-approval request is bound to one plan revision: its `fingerprint` is a digest over the
-  summary, the ticket files and the spec folder's `spec.md`, `proposal.md` and `design.md`, taken
+  review page, the ticket files and the spec folder's `spec.md`, `proposal.md` and `design.md`, taken
   when it is armed (`artifacts.plan_revision`; not sent to the console). A ready report at the gate
-  that names another revision or another summary path clears the request and is a new review
+  that names another revision or another page path clears the request and is a new review
   round; a request with no fingerprint matches no plan. Every file is read without following a
   symlink and without blocking, up to 1 MB: a file that cannot be read that way makes the revision
   unavailable, which clears the request and has the outcome of a failed ticket check.
@@ -349,12 +351,9 @@ its lifecycle writes:
 ready report of a task, when all of these hold: the task's own track is gate-free (`plan_review: false`;
 a track the ready report names does not count), `TaskState.asked` is false (neither the spec session
 nor the plan session parked for answers), and the report's `open_questions` is the integer 0, its
-`artifact` is `.agent/plan-review.md`, and that file confirms the count (its open-questions section says
-`None.`; `artifacts.count_open_questions`). A missing or malformed count or summary, a summary with other
-level-2 headings than the three prescribed, or one above 256 KB means "the gate applies". A heading
-counts in any form Markdown reads as one (indented by up to three spaces, a tab after the hashes);
-a heading the counter cannot classify, a setext heading (a text line underlined with `=` or `-`)
-included, also means "the gate applies". The ticket check and
+`artifact` is `.agent/review.html`, and that page confirms the count (its number of
+`data-q` question blocks is 0; `artifacts.count_open_questions`). A missing or malformed count or
+page, or one that fails the shape check, means "the gate applies". The ticket check and
 the spec folder publish run as at the gate, then implement starts in the same pass;
 no review notification, no request. `TaskState.gated` is set at gate entry, and when a dead
 gate session is respawned, and never cleared: a task that waited once never skips, also after a respawn
