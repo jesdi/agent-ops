@@ -72,17 +72,35 @@ def test_an_existing_feedback_pick_is_not_replaced(tmp_path):
     assert got.implement_providers == ["openai"]
 
 
-def test_recorded_providers_leave_the_implement_pick_alone(tmp_path):
+def test_recorded_providers_do_not_keep_a_leftover_pick_past_implement(tmp_path):
     old_shape(tmp_path, Stage.PR_OPEN, {"implement": SOL},
+              implement_providers=["anthropic"])
+    got = load(tmp_path, "t", 42)
+    assert got.picks == {"feedback": SOL}
+    assert got.implement_providers == ["anthropic"]   # no second provider
+
+
+def test_recorded_providers_at_review_drop_the_leftover_pick(tmp_path):
+    old_shape(tmp_path, Stage.REVIEW, {"implement": SOL},
+              implement_providers=["anthropic"])
+    got = load(tmp_path, "t", 42)
+    assert got.picks == {}
+    assert got.implement_providers == ["anthropic"]
+
+
+def test_recorded_providers_in_implement_keep_the_pick(tmp_path):
+    old_shape(tmp_path, Stage.IMPLEMENT, {"implement": SOL},
               implement_providers=["anthropic"])
     got = load(tmp_path, "t", 42)
     assert got.picks == {"implement": SOL}
     assert got.implement_providers == ["anthropic"]
 
 
+@pytest.mark.parametrize("recorded", [{}, {"implement_providers": ["anthropic"]}])
 @pytest.mark.parametrize("stage", [Stage.PR_OPEN, Stage.REVIEW, Stage.IMPLEMENT])
-def test_migration_is_the_same_on_every_read_and_after_a_save(tmp_path, stage):
-    p = old_shape(tmp_path, stage, {"implement": SOL})
+def test_migration_is_the_same_on_every_read_and_after_a_save(
+        tmp_path, stage, recorded):
+    p = old_shape(tmp_path, stage, {"implement": SOL}, **recorded)
     before = p.read_text()
     first = load(tmp_path, "t", 42)
     assert load(tmp_path, "t", 42) == first      # a read does not write

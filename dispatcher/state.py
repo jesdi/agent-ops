@@ -260,18 +260,17 @@ _PAST_IMPLEMENT = _PR_OPEN_STAGES | {Stage.REVIEW}
 
 
 def _migrate_implement_pick(d: dict) -> None:
-    """A task from before the provider record existed (no recorded provider):
-    the implement pick's provider ran its tickets. Past implement that pick
-    is no ticket's any more: it becomes the feedback pick when the PR is open
-    and there is none yet, so the next feedback round stays on its provider,
-    and is dropped otherwise. A crashed task counts as the stage it resumes.
-    Once a provider is recorded this changes nothing, so a second read (or a
-    read after a save) is the same."""
-    if d.get("implement_providers"):
-        return
+    """State from before this change. No recorded provider: the implement
+    pick's provider ran the tickets. Past implement the implement pick is no
+    ticket's any more: it becomes the feedback pick when the PR is open and
+    there is none yet, so the next feedback round stays on its provider, and
+    is dropped otherwise. A crashed task counts as the stage it resumes.
+    Afterwards there is a provider and no such pick, so a second read (or a
+    read after a save) changes nothing."""
     picks = d["picks"]
-    d["implement_providers"] = list(
-        filter(None, [pick_provider(picks, "implement")]))
+    if not d.get("implement_providers"):
+        d["implement_providers"] = list(
+            filter(None, [pick_provider(picks, "implement")]))
     stage = d["stage"]
     if stage is Stage.FAILED and d.get("crashed_stage"):
         stage = Stage(d["crashed_stage"])

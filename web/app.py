@@ -633,10 +633,12 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             _require_same_provider(task, req.model)
         if req.model:
             return req.model
-        order = _order(_mode())
         if task is not None:
-            return stage_pick(task.picks, next_stage(task)) or _model_for(task, order)
-        return _candidate_model(configured_target, row, order)
+            # No pick: the model the card names, the first admitted entry.
+            now, usages = datetime.now(timezone.utc), sources.usage()
+            return (stage_pick(task.picks, next_stage(task))
+                    or _model_for(task, _order(_mode(), usages, now), usages, now))
+        return _candidate_model(configured_target, row, _order(_mode()))
 
     def _arm_run(target: str, issue: int, req: RunReq, task, model: str,
                  op: Operator):
