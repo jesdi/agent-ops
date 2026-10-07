@@ -1,17 +1,13 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import ReactMarkdown from 'react-markdown'
 import type { OperatorRequest } from '../lib/api'
 import { useTaskArtifacts, useTaskRequest } from '../hooks/useResources'
 import { breakAfterSeparators } from '../lib/format'
 import { banner } from '../lib/tone'
 
-/** Review requests offer approval only when their plan summary is readable. */
-export function RequestPanel({ target, issue, busy, onApprove }: {
-  target: string
-  issue: number
-  busy: boolean
-  onApprove: () => void
-}) {
+/** The operator answers a request on its full-screen review route. */
+export function RequestPanel({ target, issue }: { target: string; issue: number }) {
   const req = useTaskRequest(target, issue)
   const artifacts = useTaskArtifacts(target, issue)
   const spec = artifacts.data?.items.find((item) => item.id === 'spec')
@@ -38,19 +34,20 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
           {kind === 'plan-approval' ? 'plan awaiting review' : 'waiting on your answer'}
           <span className="ml-2 break-all font-mono text-xs font-normal text-ink-muted">{content.path}</span>
         </h2>
-        {kind === 'plan-approval' && content.kind === 'readable' && (
-          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-            {spec?.github_url && <a href={spec.url} target="_blank" rel="noopener noreferrer"
-              className="inline-flex min-h-11 items-center justify-center rounded border border-border px-3 text-sm font-medium">
-              View spec on GitHub ↗
-            </a>}
-            <PlanApproval contentText={content.text} busy={busy} onApprove={onApprove} />
-          </div>
-        )}
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          {kind === 'plan-approval' && spec?.github_url && <a href={spec.url} target="_blank" rel="noopener noreferrer"
+            className="inline-flex min-h-11 items-center justify-center rounded border border-border px-3 text-sm font-medium">
+            View spec on GitHub ↗
+          </a>}
+          <Link to={`/task/${target}/${issue}/review`}
+            className="inline-flex min-h-11 items-center justify-center rounded bg-ink px-3 text-sm font-medium text-surface-raised">
+            open review
+          </Link>
+        </div>
       </header>
       {kind === 'plan-approval' && artifacts.data && !spec?.github_url && (
         <p className={`mb-3 ${banner.waiting}`}>
-          Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still read the plan summary below and approve.'}
+          Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still read the plan summary below and review it.'}
         </p>
       )}
       {kind === 'plan-approval' && artifacts.isError && (
@@ -104,27 +101,4 @@ function RequestContent({ content, boxed }: { content: OperatorRequest['content'
         </a>
       )
   }
-}
-
-function PlanApproval({ contentText, busy, onApprove }: {
-  contentText: string
-  busy: boolean
-  onApprove: () => void
-}) {
-  const [armed, setArmed] = useState(false)
-  // Every revision requires a fresh confirmation of the reviewed content.
-  useEffect(() => { setArmed(false) }, [contentText])
-  return (
-    <button
-      className="min-h-11 rounded bg-ink px-3 py-1 text-sm font-medium text-surface-raised disabled:opacity-50"
-      disabled={busy}
-      onClick={() => {
-        if (!armed) { setArmed(true); return }
-        setArmed(false)
-        onApprove()
-      }}
-    >
-      {armed ? 'tap again to approve' : 'approve plan'}
-    </button>
-  )
 }

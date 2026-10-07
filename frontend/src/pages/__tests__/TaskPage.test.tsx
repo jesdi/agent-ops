@@ -583,8 +583,7 @@ it('answers request renders content and reply box; no approve control (regressio
   await waitFor(() => expect(replied).toEqual({ text: 'use staging' }))
 })
 
-it('request-panel shows spec markdown once and two-step approve for plan-approval kind', async () => {
-  let replied: unknown = null
+it('request-panel shows spec markdown once and the review link for plan-approval kind', async () => {
   server.use(
     http.get('/api/task/widget/42', () =>
       HttpResponse.json({
@@ -603,12 +602,6 @@ it('request-panel shows spec markdown once and two-step approve for plan-approva
         },
       }),
     ),
-    http.post('/api/task/widget/42/reply', async ({ request }) => {
-      replied = await request.json()
-      return HttpResponse.json(
-        { status: 'pending', intent: '175-42-reply' }, { status: 202 },
-      )
-    }),
   )
   renderTask()
   await waitFor(() =>
@@ -616,14 +609,9 @@ it('request-panel shows spec markdown once and two-step approve for plan-approva
   )
   // spec markdown renders exactly once — no duplicate approval panel
   expect(screen.getAllByText('Spec body here.').length).toBe(1)
-  // two-step approve
-  const approve = screen.getByRole('button', { name: 'approve plan' })
-  await userEvent.click(approve)
-  expect(replied).toBeNull()
-  await userEvent.click(screen.getByRole('button', { name: 'tap again to approve' }))
-  await waitFor(() =>
-    expect(replied).toEqual({ text: 'Approved — proceed.' }),
-  )
+  // the operator answers on the review route
+  expect(screen.getByRole('link', { name: 'open review' })).toHaveAttribute('href', '/task/widget/42/review')
+  expect(screen.queryByRole('button', { name: 'approve plan' })).not.toBeInTheDocument()
 })
 
 // --- Slice 20: request query invalidated after intent ---
@@ -665,9 +653,8 @@ it('reply clears stale request panel — cached approval disappears after invali
   await waitFor(() =>
     expect(screen.getByTestId('request-panel')).toBeInTheDocument(),
   )
-  // Approve (two-step)
-  await userEvent.click(screen.getByRole('button', { name: 'approve plan' }))
-  await userEvent.click(screen.getByRole('button', { name: 'tap again to approve' }))
+  await userEvent.type(screen.getByLabelText('Reply'), 'approved')
+  await userEvent.click(screen.getByRole('button', { name: 'Send reply & wake' }))
   await waitFor(() => expect(replyCount).toBe(1))
   // After invalidation + refetch the panel must disappear (server now returns null)
   await waitFor(() =>

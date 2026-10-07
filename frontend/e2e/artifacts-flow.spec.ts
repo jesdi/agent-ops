@@ -33,19 +33,16 @@ for (const width of [390, 1280]) {
     const preview = await opened
     await expect(preview.getByRole('heading', { name: 'Prototype preview' })).toBeVisible()
     await preview.close()
-    await page.getByRole('button', { name: 'approve plan', exact: true }).click()
-    const approval = page.waitForRequest(req => req.url().endsWith('/reply') && req.method() === 'POST')
-    await page.getByRole('button', { name: 'tap again to approve' }).click()
-    expect((await approval).postDataJSON().text).toBe('Approved — proceed.')
+    await expect(page.getByRole('link', { name: 'open review' })).toHaveAttribute('href', '/task/widget/42/review')
     reviewing = false
     await page.reload()
-    await expect(page.getByRole('button', { name: 'approve plan', exact: true })).toBeHidden()
+    await expect(page.getByRole('link', { name: 'open review' })).toBeHidden()
     await expect(artifacts.getByRole('link', { name: 'Open Specification' })).toBeVisible()
     reviewing = true
     published = false
     await page.reload()
     await expect(page.getByText(/hasn’t been published/)).toBeVisible()
-    await expect(page.getByRole('button', { name: 'approve plan', exact: true })).toBeEnabled()
+    await expect(page.getByRole('link', { name: 'open review' })).toBeVisible()
     reviewing = false
     published = true
     expired = true
