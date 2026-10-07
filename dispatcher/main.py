@@ -1346,6 +1346,7 @@ class _Turn:
     signal: object          # the stage signal read at the start of the turn
     dry_run: bool
     spec_line: str = ""
+    launch_failed: bool = False   # a launch raised: the operator's choice is not used up
 
 
 def _action_stage(act: object) -> Stage | None:
@@ -1493,6 +1494,7 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         # fails as crashed in the stage it could not start, and Resume starts
         # that stage: an implement task asks for no second approval, and no
         # earlier stage runs again.
+        turn.launch_failed = True
         _fail_task_crash(turn.cfg, turn.deps, turn.target,
                          replace(task, stage=act.stage,
                                  spec_path=spec_path or task.spec_path),
@@ -1630,7 +1632,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             return  # nothing mutated; the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)
-        if launch is not None:
+        if launch is not None and not turn.launch_failed:
             _consume_execution_choice(cfg, *choice_key)
         if task is None:
             return

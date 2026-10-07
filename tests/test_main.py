@@ -1942,6 +1942,26 @@ def test_forced_active_task_uses_choice_at_next_stage(tmp_path):
         c.state_dir, "portfolio_eval", 42) is None
 
 
+def test_failed_launch_keeps_the_operators_one_time_choice(tmp_path):
+    """The choice is for the launch that runs: one that failed has not used it."""
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.SPEC)
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "spec", "status": "done", "note": "", "artifact": "spec.md",
+        "track": "standard"}))
+    choice = execution_overrides.ExecutionOverride(
+        model="claude-sonnet-4-6", bypass_usage=True)
+    execution_overrides.save(c.state_dir, "portfolio_eval", 42, choice)
+
+    main._drive_task(c, deps(sess=FakeSessions(alive=(42,), spawn_raises={42})),
+                     c.targets[0], load(c.state_dir, "portfolio_eval", 42),
+                     DENY_ALL, tuple)
+
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+    assert execution_overrides.load(c.state_dir, "portfolio_eval", 42) == choice
+
+
 def test_resume_uses_the_model_for_the_parked_stage(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
