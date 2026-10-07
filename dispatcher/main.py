@@ -6,6 +6,7 @@ systemd timer; one invocation = one pass."""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import re
@@ -34,7 +35,7 @@ from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import openspec_migration, spec_publish, task_artifacts
-from dispatcher.artifacts import TICKETS_DIR, plan_revision
+from dispatcher.artifacts import PLAN_FILE_MAX_BYTES, TICKETS_DIR, plan_revision
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
@@ -54,7 +55,8 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_turn_markers, delete, has_waiting,
                               holds_slot, load, load_all, max_slots,
-                              next_stage, read_background, read_stage_signal,
+                              next_stage, read_background, read_regular,
+                              read_stage_signal,
                               resumable_crash,
                               save, task_key)
 from dispatcher.workspace import (append_worktree_file, create_workspace,
@@ -684,7 +686,10 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         wt_abs = Path(task.worktree).resolve()
         try:
             wt_rel = str(Path(resolved).resolve().relative_to(wt_abs))
-            answers_request = AnswersRequest(path=wt_rel)
+            page = read_regular(resolved, PLAN_FILE_MAX_BYTES)
+            answers_request = AnswersRequest(
+                path=wt_rel,
+                fingerprint=hashlib.sha256(page).hexdigest() if page is not None else "")
         except ValueError:
             # Path escapes the worktree — treat as unusable reference.
             resolved = ""

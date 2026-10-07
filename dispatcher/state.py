@@ -87,6 +87,9 @@ class PlanApprovalRequest:
 class AnswersRequest:
     path: str
     kind: str = "answers"
+    # SHA-256 of the page bytes when the request was armed: the revision an
+    # answers intent must name. "" = unknown: such a request matches nothing.
+    fingerprint: str = field(default="", compare=False)
 
     def __post_init__(self):
         if not self.path:
@@ -294,7 +297,8 @@ def _read(p: Path) -> TaskState | None:
             d["operator_request"] = PlanApprovalRequest(
                 path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
         elif kind == "answers":
-            d["operator_request"] = AnswersRequest(path=raw.get("path", ""))
+            d["operator_request"] = AnswersRequest(
+                path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
         else:
             raise ValueError(f"unrecognized operator_request kind {kind!r}")
     d.pop("artifact", None)        # retired field (slice 24)
