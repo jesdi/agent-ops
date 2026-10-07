@@ -682,3 +682,26 @@ def test_next_stage_wakes_a_pr_open_task_into_address_review():
     from dispatcher.state import next_stage
     assert next_stage(_task(stage=Stage.PR_OPEN)) == "address-review"
     assert next_stage(_task(stage=Stage.IMPLEMENT)) == "implement"
+
+
+def test_implement_providers_round_trip(tmp_path: Path):
+    save(tmp_path, make(implement_providers=["openai", "anthropic"]))
+    assert load(tmp_path, "portfolio_eval", 101).implement_providers == ["openai", "anthropic"]
+
+
+def test_old_shape_implement_pick_counts_as_the_recorded_provider(tmp_path: Path):
+    import dataclasses
+    d = dataclasses.asdict(make(picks={"implement": "openai/gpt-sol@medium"}))
+    d["stage"] = "implement"
+    d.pop("implement_providers")
+    (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
+    assert load(tmp_path, "portfolio_eval", 101).implement_providers == ["openai"]
+
+
+def test_old_shape_without_an_implement_pick_records_nothing(tmp_path: Path):
+    import dataclasses
+    d = dataclasses.asdict(make())
+    d["stage"] = "spec"
+    d.pop("implement_providers")
+    (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
+    assert load(tmp_path, "portfolio_eval", 101).implement_providers == []

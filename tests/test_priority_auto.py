@@ -282,7 +282,8 @@ def test_review_avoids_the_implement_provider_although_openai_ranks_first(
     u = both([wk(0.10, 96)], [wk(0.20, 24)])
     sess, _ = run(tmp_path, monkeypatch, u, implement=WRITTEN,
                   review=[OPUS, SOL], stage=Stage.IMPLEMENT,
-                  ticket_cursor=1, ticket_count=1, picks={"implement": LUNA})
+                  ticket_cursor=1, ticket_count=1, picks={"implement": LUNA},
+                  implement_providers=["openai"])
     assert launched(sess) == ["anthropic/claude-opus-5-5"]
 
 

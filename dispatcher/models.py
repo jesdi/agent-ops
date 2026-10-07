@@ -61,6 +61,14 @@ def pick_provider(picks: Mapping[str, str], stage: str) -> str:
     return parse_entry(pick, "pick").provider if pick else ""
 
 
+def review_avoid(implement_providers: Sequence[str], stage: str) -> str:
+    """The provider review moves to the back: the one provider that ran the
+    task's tickets. Two or more, or none: nothing to avoid. The one rule the
+    dispatcher and the console share."""
+    one = len(implement_providers) == 1 and policy_stage(stage) == "review"
+    return implement_providers[0] if one else ""
+
+
 def override_refusal(picks: Mapping[str, str], stage: str, model_id: str) -> str:
     """Why `model_id` may not override `stage`, or "" when it may: the one
     message the console's 422 and the dispatcher's drop event both carry. A

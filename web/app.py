@@ -16,7 +16,7 @@ from starlette.staticfiles import StaticFiles
 from dispatcher import priority, queue_ops
 from dispatcher.config import Config, policy_for, routed_providers
 from dispatcher.models import (candidates, override_allowed, override_refusal,
-                               parse_entry, pick_provider, resolve,
+                               parse_entry, resolve, review_avoid,
                                stage_pick, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
@@ -130,7 +130,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             raise HTTPException(422, refusal)
 
     def _avoid(t):
-        return pick_provider(t.picks, "implement")
+        return review_avoid(t.implement_providers, next_stage(t))
 
     def _choices(t, order):
         """The ordered entries the dispatcher would walk for t's next launch."""

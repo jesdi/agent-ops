@@ -181,7 +181,8 @@ def test_mode_openai_review_avoids_an_openai_implement_pick(
     save_mode(tmp_path)
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
                         stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
-                        picks={"implement": LUNA})
+                        picks={"implement": LUNA},
+                        implement_providers=["openai"])
     assert launched(sess) == [OPUS_ID]
 
 
@@ -190,7 +191,8 @@ def test_mode_openai_review_after_a_sonnet_implement_pick_goes_to_openai(
     save_mode(tmp_path)
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
                         stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
-                        picks={"implement": SONNET})
+                        picks={"implement": SONNET},
+                        implement_providers=["anthropic"])
     assert launched(sess) == [SOL_ID]
 
 

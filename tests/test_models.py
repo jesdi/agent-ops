@@ -3,7 +3,7 @@ import pytest
 from dispatcher.models import (DEFAULT_MODEL, DEFAULT_POLICY, EFFORTS, STAGES,
                                Entry, ModelPolicy, bare_model_id, parse_entry,
                                override_allowed, override_refusal, parse_policy,
-                               pick_provider, policy_stage, split_model_id,
+                               pick_provider, policy_stage, review_avoid, split_model_id,
                                track_from_labels, tracks_text)
 
 RAW = {
@@ -377,3 +377,10 @@ def test_parse_rejects_tracks_not_a_mapping_or_empty():
         parse_policy({**RAW, "tracks": []})
     with pytest.raises(ValueError, match="tracks: must be a non-empty mapping"):
         parse_policy({**RAW, "tracks": {}})
+
+
+def test_review_avoid_names_the_single_implement_provider_for_review_only():
+    assert review_avoid(["openai"], "review") == "openai"
+    assert review_avoid(["openai", "anthropic"], "review") == ""
+    assert review_avoid([], "review") == ""
+    assert review_avoid(["openai"], "implement") == ""

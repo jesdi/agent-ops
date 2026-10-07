@@ -100,7 +100,8 @@ def test_session_bound_provider_still_yields_the_review_to_the_other_provider(
     sess, _ = go(tmp_path, monkeypatch,
                  [ses(0.0, 5, NOW), wk(0.70, 30, now=NOW)],
                  implement=WRITTEN, review=[OPUS, SOL], stage=Stage.IMPLEMENT,
-                 ticket_cursor=1, ticket_count=1, picks={"implement": SONNET})
+                 ticket_cursor=1, ticket_count=1, picks={"implement": SONNET},
+                 implement_providers=["anthropic"])
     assert launched(sess) == ["openai/gpt-6-sol"]
 
 

@@ -42,8 +42,8 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
                                 RecordBackgroundWait, RetryStage, SetTaskStage,
                                 StartTicket, SpawnStage, pass_actions)
 from dispatcher.models import (Admitted, Entry, ModelPolicy, Order, candidates,
-                               override_refusal, parse_entry, pick_provider,
-                               policy_stage, resolve, second_model, stage_pick,
+                               override_refusal, parse_entry,
+                               policy_stage, resolve, review_avoid, second_model, stage_pick,
                                track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
@@ -130,8 +130,7 @@ def _launch_for(cfg: Config, target: Target | None, task: TaskState,
     track = task.track or policy.untracked
     if track not in policy.tracks:
         return None
-    avoid = (pick_provider(task.picks, "implement")
-             if policy_stage(stage.value) == "review" else "")
+    avoid = review_avoid(task.implement_providers, stage.value)
     entry = resolve(policy, track, stage.value, admitted, avoid, order=order)
     return Launch(stage, entry) if entry else None
 
@@ -1385,7 +1384,12 @@ def _on_start_ticket(turn: _Turn, task: TaskState, act: StartTicket,
             f"ticket {act.cursor} of {act.count} missing "
             f"under {task.worktree}/{TICKETS_DIR}")
     _end_session(cfg, deps, task.target, task.issue)
-    task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count)
+    # A ticket's first session records its provider; a resume never gets here.
+    providers = task.implement_providers
+    if (provider := launch.entry.provider) not in providers:
+        providers = [*providers, provider]
+    task = replace(task, ticket_cursor=act.cursor, ticket_count=act.count,
+                   implement_providers=providers)
     task = _spawn_stage(cfg, deps, target, task, launch, ticket=act.cursor)
     eventlog.append_event(cfg.state_dir, "ticket-started", target=target.name,
                           issue=task.issue, stage=Stage.IMPLEMENT.value,
