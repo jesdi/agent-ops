@@ -184,14 +184,14 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
     assert artifacts.content_path(state, task.target, task.issue, 'prototype')
 
 
-def test_manifest_backfills_older_prototype_and_questionnaire(tmp_path):
+def test_manifest_backfills_older_prototype_but_not_the_markdown_questionnaire(tmp_path):
     state, task = setup(tmp_path)
     wt = Path(task.worktree)
     (wt / '.agent/artifacts.json').unlink()
     (wt / '.agent/prototype.html').write_text('<h1>Earlier session</h1>')
     (wt / '.agent/questionnaire.md').write_text('# Questions and answers')
     artifacts.collect(state, task, '', publish=False)
-    assert {i.id for i in artifacts.read(state, task.target, task.issue).items} == {'spec', 'prototype', 'questionnaire'}
+    assert {i.id for i in artifacts.read(state, task.target, task.issue).items} == {'spec', 'prototype'}
 
 
 def test_invalid_manifest_keeps_automatic_spec(tmp_path):

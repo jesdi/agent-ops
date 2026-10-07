@@ -156,7 +156,6 @@ def _automatic_registrations(task: TaskState) -> list[Registration]:
     entries = []
     for artifact_id, name, path in (
         ("prototype", "Prototype", ".agent/prototype.html"),
-        ("questionnaire", "Questionnaire", ".agent/questionnaire.md"),
         ("review-answers", "Review answers", ".agent/review-answers.json"),
         ("questionnaire-answers", "Questionnaire answers", ".agent/questionnaire-answers.json"),
     ):
