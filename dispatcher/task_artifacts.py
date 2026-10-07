@@ -251,7 +251,6 @@ def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
     if not index.expired and Path(task.worktree).is_dir():
         Collector(root, task, repo, publish, now).collect(index)
     index.save(root / "index.json")
-    state.save(state_dir, task)
     state.archive(state_dir, task)
 
 

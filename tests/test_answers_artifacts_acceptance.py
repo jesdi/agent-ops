@@ -41,7 +41,9 @@ def test_both_answers_files_are_registered_with_snapshot_and_listed_local(tmp_pa
     assert items['questionnaire-answers'].path == QUESTIONNAIRE
     assert artifacts.content_path(state, 'alpha', 412, 'review-answers').read_text() == '{"stage": "plan"}'
     assert artifacts.content_path(state, 'alpha', 412, 'questionnaire-answers').read_text() == '{"stage": "spec"}'
-    client = TestClient(create_app(make_config(state), FakeSources(state)))
+    fake = FakeSources(state)
+    fake.tasks_list = [task]   # an active task is known to the console through its sources
+    client = TestClient(create_app(make_config(state), fake))
     body = client.get('/api/task/alpha/412/artifacts', headers=HEADERS).json()
     status = {i['id']: i['status'] for i in body['items']}
     assert status['review-answers'] == status['questionnaire-answers'] == 'local'
