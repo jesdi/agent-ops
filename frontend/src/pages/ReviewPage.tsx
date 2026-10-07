@@ -6,6 +6,7 @@ import { createBridge } from '../lib/reviewBridge'
 
 const NEWER = 'this review page needs a newer console'
 const CHANGED = 'the plan changed; your selections were reset to the saved ones'
+const UNSAVED = 'could not save your selection; try again'
 
 type Shown = { revision: string; text: string }
 
@@ -19,12 +20,13 @@ export function ReviewPage() {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const shown = useShownPage(req.data, () => setNotice(CHANGED))
-  useBridge(frameRef, shown, req.data, target, Number(issue), () => setNotice(NEWER))
-  // The changed notice covers the page's top: it goes after a while or on tap.
-  // The newer-console notice is an error and stays.
-  const dismiss = () => setNotice((n) => (n === CHANGED ? null : n))
+  useBridge(frameRef, shown, req.data, target, Number(issue), setNotice)
+  // The changed and unsaved notices cover the page's top: they go after a
+  // while or on tap (the page keeps its selections). The newer-console notice
+  // is an error and stays.
+  const dismiss = () => setNotice((n) => (n === NEWER ? n : null))
   useEffect(() => {
-    if (notice !== CHANGED) return
+    if (!notice || notice === NEWER) return
     const timer = setTimeout(() => setNotice(null), 6000)
     return () => clearTimeout(timer)
   }, [notice])
@@ -33,7 +35,9 @@ export function ReviewPage() {
     <>
       {!shown && <Empty data={req.data} />}
       {shown && (
-        <iframe ref={frameRef} data-testid="review-frame" title="review" sandbox="allow-scripts"
+        // A new window per revision: a late message of the old page then
+        // fails the bridge's source check instead of posting on the new one.
+        <iframe key={shown.revision} ref={frameRef} data-testid="review-frame" title="review" sandbox="allow-scripts"
           srcDoc={shown.text} className="fixed inset-0 h-full w-full border-0" />
       )}
       {notice && (
@@ -53,10 +57,13 @@ function Empty({ data }: { data: OperatorRequest | null | undefined }) {
   return <p className="p-4 text-center text-sm text-ink-muted">{text}</p>
 }
 
-/** The page on screen: it changes only when the request's revision changes. */
+/** The page on screen: it changes only when the request's revision changes,
+ *  and goes when the request has no page any more (closed, or unreadable). */
 function useShownPage(data: OperatorRequest | null | undefined, onChanged: () => void): Shown | null {
   const [shown, setShown] = useState<Shown | null>(null)
-  if (data?.content.kind === 'readable' && data.revision !== shown?.revision) {
+  if (shown && data !== undefined && data?.content.kind !== 'readable') {
+    setShown(null)
+  } else if (data?.content.kind === 'readable' && data.revision !== shown?.revision) {
     if (shown) onChanged()
     setShown({ revision: data.revision, text: data.content.text })
   }
@@ -65,10 +72,11 @@ function useShownPage(data: OperatorRequest | null | undefined, onChanged: () =>
 
 /** One bridge per page on screen, bound to the iframe's window and revision. */
 function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown | null,
-  data: OperatorRequest | null | undefined, target: string, issue: number, onNewer: () => void) {
+  data: OperatorRequest | null | undefined, target: string, issue: number,
+  onNotice: (notice: string) => void) {
   // restore sends the latest saved answers, not the ones of the first load.
-  const latest = useRef({ data, onNewer })
-  latest.current = { data, onNewer }
+  const latest = useRef({ data, onNotice })
+  latest.current = { data, onNotice }
 
   useEffect(() => {
     const frameWindow = frameRef.current?.contentWindow
@@ -76,8 +84,8 @@ function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown |
     const bridge = createBridge({
       frameWindow,
       revision: shown.revision,
-      post: (body) => { api.answers(target, issue, body).catch(() => {}) },
-      onNotice: () => latest.current.onNewer(),
+      post: (body) => { api.answers(target, issue, body).catch(() => latest.current.onNotice(UNSAVED)) },
+      onNotice: () => latest.current.onNotice(NEWER),
       onReady: () => bridge.restore(latest.current.data?.answers ?? {}),
     })
     // A draft the page sent just before pagehide can arrive after it: while

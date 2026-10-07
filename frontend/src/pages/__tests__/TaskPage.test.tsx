@@ -479,7 +479,7 @@ it('renders the artifact a parked task is waiting on, above the reply box', asyn
         kind: 'answers',
         content: {
           kind: 'readable',
-          path: '.agent/questionnaire.md',
+          path: '.agent/questionnaire.html',
           media_type: 'text/markdown',
           text: '# Questions\n\nPick the redirect host.',
         },

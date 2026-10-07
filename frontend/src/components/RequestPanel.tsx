@@ -53,8 +53,10 @@ export function RequestPanel({ target, issue }: { target: string; issue: number 
       {kind === 'plan-approval' && artifacts.isError && (
         <p className="mb-3 text-sm text-waiting-fg">Could not load the GitHub spec link. Local review is still available.</p>
       )}
-      {/* The plan summary is the review document: it flows with the page. */}
-      <RequestContent content={content} boxed={kind !== 'plan-approval'} />
+      {/* A review page (text/html) is shown and answered on the review route only. */}
+      {!(content.kind === 'readable' && content.media_type === 'text/html') && (
+        <RequestContent content={content} boxed={kind !== 'plan-approval'} />
+      )}
     </section>
   )
 }
@@ -90,9 +92,6 @@ function RequestContent({ content, boxed }: { content: OperatorRequest['content'
           <ReactMarkdown components={{ code: Code }}>{content.text}</ReactMarkdown>
         </div>
       )
-    case 'text/html':
-      // The page's buttons work only on the review route, behind its bridge.
-      return null
     default:
       return (
         <a download={name} href={`data:${content.media_type};charset=utf-8,${encodeURIComponent(content.text)}`}

@@ -66,11 +66,11 @@ test('a message with another v shows the newer-console notice', async () => {
 })
 
 test('a new revision reloads the page and shows the changed notice', async () => {
-  const { frame, queryClient } = await renderReview()
+  const { queryClient } = await renderReview()
   expect(screen.queryByTestId('review-notice')).not.toBeInTheDocument()
   req = request('r2', '<p>second</p>')
   await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.request('widget', 42) }))
-  await waitFor(() => expect(frame).toHaveAttribute('srcdoc', '<p>second</p>'))
+  await waitFor(() => expect(screen.getByTestId('review-frame')).toHaveAttribute('srcdoc', '<p>second</p>'))
   expect(screen.getByTestId('review-notice')).toHaveTextContent('the plan changed; your selections were reset to the saved ones')
 })
 
@@ -120,4 +120,34 @@ test.each([
   )
   expect(await screen.findByText(text)).toBeInTheDocument()
   expect(screen.queryByTestId('review-frame')).not.toBeInTheDocument()
+})
+
+test('a new revision gets a new frame window: a late message of the old page posts nothing', async () => {
+  const { frame, send, queryClient } = await renderReview()
+  req = request('r2', '<p>second</p>')
+  await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.request('widget', 42) }))
+  await waitFor(() => expect(screen.getByTestId('review-frame')).toHaveAttribute('srcdoc', '<p>second</p>'))
+  const next = screen.getByTestId('review-frame')
+  expect(next).not.toBe(frame)
+  send({ type: 'answers', v: 1, answers: { format: 'old' }, submit: 'approve' })
+  await new Promise((r) => setTimeout(r, 50))
+  expect(posts).toEqual([])
+})
+
+test('a request that closes clears the page and its bridge', async () => {
+  const { send, queryClient } = await renderReview()
+  req = null
+  await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.request('widget', 42) }))
+  expect(await screen.findByText('no open request')).toBeInTheDocument()
+  expect(screen.queryByTestId('review-frame')).not.toBeInTheDocument()
+  send({ type: 'answers', v: 1, answers: { format: 'a' }, submit: 'approve' })
+  await new Promise((r) => setTimeout(r, 50))
+  expect(posts).toEqual([])
+})
+
+test('a post that fails shows the unsaved notice', async () => {
+  server.use(http.post('/api/task/widget/42/answers', () => HttpResponse.json({ detail: 'x' }, { status: 500 })))
+  const { send } = await renderReview()
+  send({ type: 'answers', v: 1, answers: { format: 'a' }, submit: 'changes' })
+  expect(await screen.findByTestId('review-notice')).toHaveTextContent('could not save your selection; try again')
 })
