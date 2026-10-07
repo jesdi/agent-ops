@@ -100,9 +100,8 @@ class Sessions:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
                   f"{session_name(target, issue)} at {worktree}")
             return
-        agent_dir = Path(worktree) / ".agent"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)
+        workspace.write_worktree_file(worktree, ".agent",
+                                      f"prompt-{stage_name}.md", prompt)
         self._launch(target, issue, worktree, model,
                      f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort,
                      second=second)

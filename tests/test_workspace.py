@@ -472,12 +472,17 @@ def test_install_stop_hook_never_leaves_half_written_settings(tmp_path, monkeypa
     settings.parent.mkdir()
     settings.write_text('{"keep": 1}')
 
-    def no_rename(self, target):
-        raise OSError("interrupted")
-    monkeypatch.setattr(Path, "replace", no_rename)
+    real_replace = workspace.os.replace
+
+    def no_settings_rename(src, dst, **kw):
+        if dst == "settings.local.json":
+            raise OSError("interrupted")
+        return real_replace(src, dst, **kw)
+    monkeypatch.setattr(workspace.os, "replace", no_settings_rename)
     with pytest.raises(OSError):
         workspace.install_stop_hook(str(tmp_path))
     assert settings.read_text() == '{"keep": 1}'
+    assert [p.name for p in settings.parent.iterdir()] == ["settings.local.json"]
 
 
 # ---------------------------------------------------------------------------
@@ -532,3 +537,85 @@ def test_exclude_lines_are_added_once_and_keep_the_operators_own(tmp_path: Path,
     assert lines[:2] == ["# mine", "*.swp"]
     assert sorted(lines[2:]) == [".agent/", ".claude/settings.local.json"]
     assert exclude.read_text().endswith("\n")
+
+
+# --- writes into a session-controlled directory never leave it ---------------
+
+def _outside(tmp_path):
+    out = tmp_path / "outside"
+    out.mkdir()
+    (out / "victim").write_text("untouched")
+    return out
+
+
+def test_write_replaces_a_planted_symlink_instead_of_following_it(tmp_path):
+    out = _outside(tmp_path)
+    wt = tmp_path / "wt"
+    (wt / ".agent").mkdir(parents=True)
+    (wt / ".agent" / "stage.json").symlink_to(out / "victim")
+    workspace.write_worktree_file(str(wt), ".agent", "stage.json", "new")
+    assert (out / "victim").read_text() == "untouched"
+    written = wt / ".agent" / "stage.json"
+    assert not written.is_symlink() and written.read_text() == "new"
+    assert sorted(p.name for p in (wt / ".agent").iterdir()) == ["stage.json"]
+
+
+def test_write_refuses_a_directory_that_is_a_symlink(tmp_path):
+    import pytest
+    out = _outside(tmp_path)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".agent").symlink_to(out, target_is_directory=True)
+    with pytest.raises(OSError, match="not a real directory"):
+        workspace.write_worktree_file(str(wt), ".agent", "stage.json", "new")
+    with pytest.raises(OSError):
+        workspace.append_worktree_file(str(wt), ".agent", "models.log", "line\n")
+    assert sorted(p.name for p in out.iterdir()) == ["victim"]
+
+
+def test_write_takes_no_path_in_the_name_and_leaves_no_temp_file(tmp_path):
+    import pytest
+    wt = tmp_path / "wt"
+    (wt / ".agent" / "stage.json").mkdir(parents=True)   # a directory in the way
+    with pytest.raises(ValueError):
+        workspace.write_worktree_file(str(wt), ".agent", "../x", "new")
+    with pytest.raises(OSError):
+        workspace.write_worktree_file(str(wt), ".agent", "stage.json", "new")
+    assert sorted(p.name for p in (wt / ".agent").iterdir()) == ["stage.json"]
+    assert not (wt / "x").exists()
+
+
+def test_append_refuses_a_symlink_and_a_hard_link(tmp_path):
+    import os
+    import pytest
+    out = _outside(tmp_path)
+    wt = tmp_path / "wt"
+    (wt / ".agent").mkdir(parents=True)
+    workspace.append_worktree_file(str(wt), ".agent", "models.log", "a\n")
+    workspace.append_worktree_file(str(wt), ".agent", "models.log", "b\n")
+    assert (wt / ".agent" / "models.log").read_text() == "a\nb\n"
+    for plant in (lambda p: p.symlink_to(out / "victim"),
+                  lambda p: os.link(out / "victim", p)):
+        (wt / ".agent" / "models.log").unlink()
+        plant(wt / ".agent" / "models.log")
+        with pytest.raises(OSError):
+            workspace.append_worktree_file(str(wt), ".agent", "models.log", "c\n")
+        assert (out / "victim").read_text() == "untouched"
+
+
+def test_stop_hook_install_neither_reads_nor_writes_through_symlinks(tmp_path):
+    out = _outside(tmp_path)
+    (out / "secret.json").write_text(json.dumps({"token": "host-secret"}))
+    wt = tmp_path / "wt"
+    (wt / ".agent").mkdir(parents=True)
+    (wt / ".claude").mkdir()
+    (wt / ".agent" / "stop-hook.sh").symlink_to(out / "victim")
+    (wt / ".claude" / "settings.local.json").symlink_to(out / "secret.json")
+    (wt / ".claude" / "settings.local.json.tmp").symlink_to(out / "victim")
+    workspace.install_stop_hook(str(wt))
+    assert (out / "victim").read_text() == "untouched"
+    assert json.loads((out / "secret.json").read_text()) == {"token": "host-secret"}
+    settings = wt / ".claude" / "settings.local.json"
+    assert not settings.is_symlink() and "host-secret" not in settings.read_text()
+    hook = wt / ".agent" / "stop-hook.sh"
+    assert not hook.is_symlink() and hook.stat().st_mode & 0o111

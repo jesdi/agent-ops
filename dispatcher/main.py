@@ -57,7 +57,8 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               next_stage, read_background, read_stage_signal,
                               resumable_crash,
                               save, task_key)
-from dispatcher.workspace import create_workspace, remove_workspace
+from dispatcher.workspace import (append_worktree_file, create_workspace,
+                                  remove_workspace, write_worktree_file)
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
@@ -225,10 +226,8 @@ def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
 def _log_model(worktree: str, stage: Stage, model: str) -> None:
     """Durable per-worktree breadcrumb. stage.json is co-owned — sessions
     overwrite it when they signal — so the log is the record that survives."""
-    p = Path(worktree) / ".agent" / "models.log"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a") as fh:
-        fh.write(f"{_now()} {stage.value} {model}\n")
+    append_worktree_file(worktree, ".agent", "models.log",
+                         f"{_now()} {stage.value} {model}\n")
 
 
 def _url(target: Target, issue: int) -> str:
@@ -315,10 +314,13 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     if signal is not None and signal.status != "working":
         by_name = {t.name: t for t in cfg.targets}
         model = _display_entry(cfg, by_name.get(task.target), task)
-        agent_dir = Path(task.worktree) / ".agent"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        (agent_dir / "stage.json").write_text(json.dumps(
-            {"stage": task.stage.value, "status": "working", "model": model}))
+        try:
+            write_worktree_file(task.worktree, ".agent", "stage.json", json.dumps(
+                {"stage": task.stage.value, "status": "working", "model": model}))
+        except OSError as exc:
+            # Not written: the next pass reads the old signal and parks again.
+            print(f"[warn] stage signal of #{task.issue} not rewritten: {exc}",
+                  file=sys.stderr)
     save(cfg.state_dir, replace(task, park="", park_msg_id=0,
                                 park_note="", updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "login-code-injected",
@@ -525,16 +527,16 @@ def _write_working(worktree: str, stage: Stage, entry) -> None:
     report, the previous stage's `done`) and acts on it a second time. An
     implement session's progress note is kept for the same stage: the
     tickets it counts are still merged on the branch, and the console shows
-    them until the session reports again. Never across stages."""
-    agent_dir = Path(worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
+    them until the session reports again. Never across stages. Raises OSError
+    when .agent is not a usable directory: the launch then fails with that
+    reason, and nothing is written outside the worktree."""
     doc = {"stage": stage.value, "status": "working", "model": entry.model_id,
            "effort": entry.effort}
     old = read_stage_signal(worktree)
     if (stage is Stage.IMPLEMENT and old is not None and old.note
             and (old.stage, old.status) == (stage.value, "working")):
         doc["note"] = old.note
-    (agent_dir / "stage.json").write_text(json.dumps(doc))
+    write_worktree_file(worktree, ".agent", "stage.json", json.dumps(doc))
     _log_model(worktree, stage, str(entry))
 
 

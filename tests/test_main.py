@@ -5930,3 +5930,70 @@ def test_fifo_at_the_stage_signal_path_does_not_stop_the_pass(tmp_path, monkeypa
     assert not th.is_alive(), "the pass blocks on the FIFO"
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PLAN
     assert load(c.state_dir, "portfolio_eval", 43).stage is Stage.REVIEW
+
+
+# --- the dispatcher never writes through a session's symlink -----------------
+
+def _victim(tmp_path):
+    out = tmp_path / "outside"
+    out.mkdir()
+    (out / "victim.json").write_text("untouched")
+    return out
+
+
+def _working_signal_is_a_regular_file(wt):
+    f = wt / ".agent" / "stage.json"
+    assert not f.is_symlink() and json.loads(f.read_text())["status"] == "working"
+
+
+def test_symlink_at_the_stage_signal_is_replaced_on_spawn_and_on_resume(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    out = _victim(tmp_path)
+    # Spawn: a gate task whose session died gets a fresh plan session.
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW)
+    (wt / ".agent" / "stage.json").symlink_to(out / "victim.json")
+    # Resume: a parked implement task the operator woke.
+    wt2 = make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=NO_SLOT, park=PARK_WAKE)
+    (wt2 / ".agent" / "stage.json").symlink_to(out / "victim.json")
+    (wt2 / ".agent" / "models.log").symlink_to(out / "victim.json")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert (out / "victim.json").read_text() == "untouched"
+    assert [s[:2] for s in sess.spawned] == [(42, "plan")]
+    _working_signal_is_a_regular_file(wt)
+    # the planted log link fails that task's resume; nothing left the worktree
+    assert load(c.state_dir, "portfolio_eval", 43).stage is Stage.FAILED
+    (wt2 / ".agent" / "models.log").unlink()
+    save(c.state_dir, dc_replace(load(c.state_dir, "portfolio_eval", 43),
+                                 stage=Stage.IMPLEMENT, park=PARK_WAKE, crashed_stage=""))
+    (wt2 / ".agent" / "stage.json").unlink()
+    (wt2 / ".agent" / "stage.json").symlink_to(out / "victim.json")
+    main.run_pass(c, deps(sess=sess))
+    assert (out / "victim.json").read_text() == "untouched"
+    assert [r[0] for r in sess.resumed] == [43]
+    _working_signal_is_a_regular_file(wt2)
+
+
+def test_agent_directory_that_is_a_symlink_fails_the_launch_and_not_the_pass(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    out = _victim(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW)
+    (wt / ".agent").rmdir()
+    (wt / ".agent").symlink_to(out, target_is_directory=True)
+    wt2 = make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=1)
+    (wt2 / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "done"}))
+    gh, sess = FakeGitHub(), FakeSessions(alive={43})
+    main.run_pass(c, deps(gh, sess))             # must not raise
+    assert sorted(p.name for p in out.iterdir()) == ["victim.json"]
+    assert (out / "victim.json").read_text() == "untouched"
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED and [s[0] for s in sess.spawned] == [43]
+    assert "not a real directory" in gh.created_issues[0][2]
+    assert load(c.state_dir, "portfolio_eval", 43).stage is Stage.REVIEW
