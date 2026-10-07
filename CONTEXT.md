@@ -15,7 +15,9 @@ How many sessions the box runs at once, shared by every target. Each pass
 spends it on work already in flight first, then claims new issues one unit at
 a time: each unit goes to the target with the fewest active tasks that still
 has a candidate and is under its `max_active`, ties to the one that claimed
-least recently.
+least recently. Claims also stop at `max_open`, the box-wide cap on
+unfinished tasks (parked and pr-open ones hold no capacity but still hold a
+worktree).
 _Avoid_: slots per target (there are none; `max_active` is only a cap)
 
 **Session**:
@@ -311,7 +313,9 @@ Each artifact has a stable route which redirects to GitHub or serves isolated
 content. Generated HTML/SVG has an opaque sandbox origin and no API access.
 After merge, GitHub destinations use the last verified published commit,
 because the task branch is deleted. Archived task details survive the normal
-Done-card flush; archive entries do not consume capacity or return to the board.
+finished-task flush (done, failed and won't do, `done_retention_days` after
+`terminal_at`; it also removes the worktree and local branch); archive entries
+do not consume capacity or return to the board.
 
 `TaskState.terminal_at` records the first transition into done, failed or
 canceled. State serialization preserves that timestamp across unrelated

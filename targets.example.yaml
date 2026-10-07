@@ -47,7 +47,12 @@ background_wait_seconds: 10800
 # next pass; attaching holds the task — it will not park while you are attached.
 # null = never auto-park (wait for the operator no matter how long it takes).
 spec_review_grace_minutes: 15
-# Days a merged task's Done card stays on the console before flush.
+# Box-wide cap on unfinished tasks (running, parked, awaiting review or CI,
+# pr-open). The claim round stops at it even when capacity is free: every
+# unfinished task keeps a worktree on disk. Must be >= capacity.
+max_open: 10
+# Days a finished task (done, failed, won't do) keeps its console card,
+# worktree and local branch before the flush removes them.
 done_retention_days: 7
 # Rounds each bounded loop may run before the task parks for the operator
 # (never fails). Defaults shown; every key is optional.

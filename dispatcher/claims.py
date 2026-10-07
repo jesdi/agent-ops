@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Mapping
 
 from dispatcher.eventlog import EVENTS_FILE
-from dispatcher.state import TaskState, active
+from dispatcher.state import TERMINAL_STAGES, TaskState, active
 
 
 def box_free(capacity: int, tasks: list[TaskState], triage_running: bool) -> int:
@@ -17,6 +17,22 @@ def box_free(capacity: int, tasks: list[TaskState], triage_running: bool) -> int
     triage sweep holds a unit that active() cannot see (a herdr tab, not a
     TaskState)."""
     return capacity - len(active(tasks)) - int(triage_running)
+
+
+def open_tasks(tasks: list[TaskState]) -> list[TaskState]:
+    """Every task not yet finished: running, parked, awaiting review or CI,
+    pr-open. Each one keeps a worktree on disk."""
+    return [t for t in tasks if t.stage not in TERMINAL_STAGES]
+
+
+def claim_room(capacity: int, max_open: int, tasks: list[TaskState],
+               triage_running: bool) -> int:
+    """How many NEW issues this pass may claim: free capacity, further
+    capped so the box never holds more than `max_open` unfinished tasks.
+    Woken work and PR feedback are not claims and ignore `max_open`; only
+    the claim round and the console's forecast go through here."""
+    return min(box_free(capacity, tasks, triage_running),
+               max_open - len(open_tasks(tasks)))
 
 
 def pick_target(names: list[str], active_counts: Mapping[str, int],

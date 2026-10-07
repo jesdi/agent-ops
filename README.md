@@ -269,4 +269,13 @@ switch to the last verified commit so deleting the branch does not break them.
 Stored box copies expire 30 days after done, failed or canceled, on the next
 dispatcher pass. Paused tasks never start that countdown; reopening cancels it.
 GitHub files and artifact metadata remain, including on archived task pages.
-Existing failed-task worktrees are still preserved for autopsy.
+
+### Disk on the box
+
+Every unfinished task keeps a worktree on the box. `max_open` caps how many
+unfinished tasks (running, parked, awaiting review or CI, pr-open) the box
+holds: the claim round stops at it even with capacity free. A finished task
+(done, failed, won't do) keeps its card, worktree and local branch for
+`done_retention_days`, then the flush removes all three; the remote branch,
+PR and issue are the record. A failed task's worktree is there for autopsy
+only inside that window.

@@ -1080,23 +1080,39 @@ def _clear_wake_blocked(cfg: Config, target: str, issue: int) -> None:
     _wake_blocked_path(cfg, target, issue).unlink(missing_ok=True)
 
 
-def _flush_done(cfg: Config) -> None:
-    cutoff = cfg.done_retention_days * 86400
+def _expired(task: TaskState, cutoff_seconds: int) -> bool:
+    """Finished for at least the retention window. An unparseable or
+    missing terminal_at never expires: fail closed, the card stays."""
+    if task.stage not in TERMINAL_STAGES:
+        return False
+    try:
+        since = datetime.fromisoformat(task.terminal_at)
+    except (TypeError, ValueError):
+        return False
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - since).total_seconds() >= cutoff_seconds
+
+
+def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
+    """Retire finished tasks (done, failed, won't do) past the retention
+    window: worktree and local branch go (the remote branch, PR and issue
+    are the record), then the state file. A done task's teardown already
+    ran at merge; remove_workspace is best-effort, so repeating it is a
+    no-op. A task whose target left the config keeps its worktree: nothing
+    knows its clone any more."""
+    by_name = {t.name: t for t in cfg.targets}
     for task in load_all(cfg.state_dir):
-        if task.stage is not Stage.DONE or not task.done_at:
+        if not _expired(task, cfg.done_retention_days * 86400):
             continue
-        try:
-            since = datetime.fromisoformat(task.done_at)
-        except (TypeError, ValueError):
-            continue  # unparseable never expires — fail closed, card stays
-        if since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
-        if (datetime.now(timezone.utc) - since).total_seconds() >= cutoff:
-            _clear_wake_blocked(cfg, task.target, task.issue)
-            delete(cfg.state_dir, task.target, task.issue)
-            eventlog.append_event(cfg.state_dir, "flushed",
-                                  target=task.target, issue=task.issue,
-                                  stage=Stage.DONE.value)
+        target = by_name.get(task.target)
+        if target is not None:
+            remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
+        _clear_wake_blocked(cfg, task.target, task.issue)
+        delete(cfg.state_dir, task.target, task.issue)
+        eventlog.append_event(cfg.state_dir, "flushed",
+                              target=task.target, issue=task.issue,
+                              stage=task.stage.value)
 
 
 def _oldest_first(cfg: Config):
@@ -1748,7 +1764,8 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
     """Claim free units one at a time, each via claims.pick_target. A target leaves
     the round when its candidates run out or provisioning fails for it."""
     all_tasks = load_all(cfg.state_dir)
-    free = _box_free(cfg, all_tasks)
+    free = claims.claim_room(cfg.capacity, cfg.max_open, all_tasks,
+                             triage_running=False)
     if free <= 0:
         return
     counts = _round_counts(targets, all_tasks)
@@ -2253,7 +2270,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not claims_paused:
         _claim_new(eff, deps, eff.targets, admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
-    _flush_done(cfg)
+    _flush_finished(cfg, dry_run)
     _write_heartbeat(cfg, pass_started)
 
 

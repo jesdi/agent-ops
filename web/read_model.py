@@ -2,6 +2,8 @@
 Pydantic responses. NO I/O in this module — construction only."""
 from __future__ import annotations
 
+import sys
+
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -11,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from dispatcher import messages as msgq
 from dispatcher import priority
-from dispatcher.claims import box_free, pick_target
+from dispatcher.claims import claim_room, pick_target
 from dispatcher.models import Entry
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
@@ -337,6 +339,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 candidate_admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
                 max_active: Mapping[str, int | None],
                 last_claimed: Mapping[str, str],
+                max_open: int = sys.maxsize,
                 ) -> BoardView:
     # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
@@ -363,7 +366,8 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                               claims_paused=claims_paused,
                               triage_running=triage_running,
                               max_active=max_active,
-                              last_claimed=last_claimed))
+                              last_claimed=last_claimed,
+                              max_open=max_open))
 
 
 class TaskDetail(BaseModel):
@@ -744,7 +748,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                claims_paused: bool = False,
                triage_running: bool = False,
                max_active: Mapping[str, int | None],
-               last_claimed: Mapping[str, str]) -> NextClaimView:
+               last_claimed: Mapping[str, str],
+               max_open: int = sys.maxsize) -> NextClaimView:
     """A forecast of what the claim round (dispatcher main._claim_new)
     consumes next, from data already on the board request. The target comes
     from the same claims.pick_target the dispatcher uses, over box-wide free
@@ -784,7 +789,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     running = active(tasks)
     counts = {n: sum(t.target == n for t in running) for n in heads}
     name = (pick_target(list(heads), counts, last_claimed, max_active)
-            if box_free(capacity, tasks, triage_running) > 0 else None)
+            if claim_room(capacity, max_open, tasks, triage_running) > 0
+            else None)
     if name is None:
         return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
     return NextClaimView(verdict="will-claim", next_pass_eta=eta,
