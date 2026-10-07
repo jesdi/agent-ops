@@ -45,22 +45,31 @@ def _check(path: str | Path, patterns: list[str],
 
 _SUMMARY_SECTIONS = ["tickets", "open questions", "corrections"]
 _LIST_ITEM = re.compile(r"(?:[-*]|\d+\.) ")
+# Every form Markdown reads as a heading, and a little more (fail closed): up
+# to three spaces of indent, a tab after the hashes, an empty heading; and a
+# text line underlined with `===` or `---` (setext), which the prescribed
+# summary never has.
+_H1 = r"(?m)^ {0,3}#(?!#)"
+_H2 = r"(?m)^ {0,3}##(?!#)[ \t]*"
+_SETEXT = r"(?m)^[^\n]*\S[^\n]*\n {0,3}(?:=+|-+)[ \t]*$"
 
 
 def _open_questions_lines(summary: str | Path) -> list[str] | None:
     """The non-blank lines of the summary's open-questions section. None for
     a summary that is not the prescribed one: not a readable regular file
     (state.read_regular: a FIFO never blocks the pass), above the size cap,
-    more than one title, or `## ` headings other than the three, in order."""
+    more than one title, level-2 headings other than the three, in order, or
+    a setext heading."""
     raw = read_regular(summary, SUMMARY_MAX_BYTES)
     try:
         text = raw.decode("utf-8")
     except (AttributeError, UnicodeDecodeError):   # AttributeError: not readable
         return None
-    headings = [h.strip().lower() for h in re.findall(r"(?m)^## +(.*)$", text)]
-    if headings != _SUMMARY_SECTIONS or len(re.findall(r"(?m)^# ", text)) > 1:
+    headings = [h.strip().lower() for h in re.findall(_H2 + r"(.*)$", text)]
+    if (headings != _SUMMARY_SECTIONS or len(re.findall(_H1, text)) > 1
+            or re.search(_SETEXT, text)):
         return None
-    section = re.split(r"(?m)^## +.*$", text)[2]
+    section = re.split(_H2 + r".*$", text)[2]
     return [ln.rstrip() for ln in section.splitlines() if ln.strip()]
 
 

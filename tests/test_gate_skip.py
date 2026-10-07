@@ -317,3 +317,24 @@ def test_nul_character_in_the_ready_reports_artifact_waits_at_the_gate(tmp_path,
     _pass(c, sess)
     _assert_no_implement(c, sess)
     assert _task(c).operator_request.path == SUMMARY
+
+
+@pytest.mark.parametrize("heading", [
+    " ## Open questions", "   ## Open questions", "##\tOpen questions", "##",
+    "Open questions\n--------------", "Open questions\n-", " # Second title",
+    "#\tSecond title", "Second title\n===", "Second title\n   ==="],
+    ids=["h2-one-space", "h2-three-spaces", "h2-tab", "h2-empty", "setext-h2",
+         "setext-h2-short", "h1-one-space", "h1-tab", "setext-h1", "setext-indented"])
+def test_summary_with_a_heading_in_another_form_cannot_be_counted(tmp_path, heading):
+    """Markdown reads each of these as a heading: a section written this way
+    would hide its entries from a count that only knows `## ` at column 0."""
+    p = tmp_path / "plan-review.md"
+    p.write_text(NONE_SUMMARY + f"\n{heading}\n\n- Hidden?\n")
+    assert count_open_questions(p) is None
+
+
+def test_summary_rule_line_and_indented_code_are_not_headings(tmp_path):
+    p = tmp_path / "plan-review.md"
+    p.write_text(NONE_SUMMARY.replace(
+        "- 01 Fix label", "- 01 Fix label\n\n---\n\n    ## not a heading\n\n- 02 More"))
+    assert count_open_questions(p) == 0
