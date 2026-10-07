@@ -213,7 +213,7 @@ def test_an_intent_while_the_session_works_on_the_feedback_is_dropped(tmp_path, 
 
     assert _file(wt) is None
     (e,) = _events(c, "intent-dropped")
-    assert "session busy" in e["detail"] or "no open request" in e["detail"]
+    assert "no open request" in e["detail"]   # the rework cleared the request
     assert len(_events(c, "intent-applied")) == before
 
 
