@@ -1200,6 +1200,10 @@ def _resume_launch(cfg: Config, target: Target, task: TaskState,
     return _with_second(cfg, target, launch, admit) if launch else None
 
 
+ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
+               "Wait for their input.")
+
+
 def _resume_one(cfg: Config, deps: Deps, target: Target,
                 task: TaskState, launch: Launch) -> None:
     entry = launch.entry
@@ -1209,6 +1213,13 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # LIVE, and _launch would then type the podman command INTO the
     # running session (the failure _retry_plan and SpawnStage guard).
     _end_session(cfg, deps, task.target, task.issue)
+    if task.hold_for_attach:
+        # Queued, so it rides with the operator's messages in whatever the
+        # session reads first: the resume text or a fresh stage prompt.
+        _queue_message(cfg, task.target, task.issue, ATTACH_TEXT, "dispatcher")
+        deps.notifier.send("resumed_for_attach", issue=task.issue,
+                           title=task.title, url=_url(target, task.issue),
+                           target=target.name, note="")
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
     if task.crashed_stage or _no_ticket_in_progress(task):
@@ -1238,19 +1249,9 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
          "effort": entry.effort}))
     _log_model(task.worktree, task.stage, str(entry))
     block, drained = _drain(cfg, task.target, task.issue)
-    if task.hold_for_attach:
-        text = ATTACH_TEXT
-        if block:
-            text = f"{text}\n\n{block}"
-        deps.sessions.resume(task.target, task.issue, task.worktree, text,
-                             model, entry.effort, second=launch.second)
-        deps.notifier.send("resumed_for_attach", issue=task.issue,
-                           title=task.title, url=_url(target, task.issue),
-                           target=target.name, note="")
-    else:
-        deps.sessions.resume(task.target, task.issue, task.worktree,
-                             block or "Continue.", model, entry.effort,
-                             second=launch.second)
+    deps.sessions.resume(task.target, task.issue, task.worktree,
+                         block or "Continue.", model, entry.effort,
+                         second=launch.second)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     _clear_wake_blocked(cfg, task.target, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
@@ -1266,28 +1267,17 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                           model=str(entry))
 
 
-# A stage with no session of its own -> the stage a Resume respawns for it:
-# a turn can save such a stage (the PR is open, the spec waits at its gate)
-# and fail afterwards.
-_RESPAWN_AS = {Stage.PR_OPEN: Stage.ADDRESS_REVIEW,
-               Stage.AWAITING_SPEC_REVIEW: Stage.SPEC}
-
-
 def _crash_failed(task: TaskState) -> TaskState:
-    """FAILED by a crash, remembering the stage so Resume can respawn it. A
-    task that is already a resumable crash (its turn failed again after the
-    crash was saved) keeps the stage it recorded."""
-    stage = _RESPAWN_AS.get(task.stage, task.stage)
-    crashed = stage.value if stage in RESPAWNABLE_STAGES else ""
-    if resumable_crash(task):
-        crashed = task.crashed_stage
+    """FAILED by a crash, remembering the stage of its next launch
+    (state.next_launch) so Resume can respawn it: its own stage; for a stage
+    with no session of its own (the PR is open, the spec waits at its gate)
+    the stage that has one; for a task that is already a resumable crash,
+    whose turn failed again, the stage it recorded."""
+    stage = next_stage(task)
+    crashed = stage if Stage(stage) in RESPAWNABLE_STAGES else ""
     return replace(task, stage=Stage.FAILED, crashed_stage=crashed, park="",
                    hold_for_attach=False, operator_request=None,
                    updated_at=_now())
-
-
-ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
-               "Wait for their input.")
 
 
 def _no_ticket_in_progress(task: TaskState) -> bool:
@@ -1310,16 +1300,11 @@ def _respawn(cfg: Config, deps: Deps, target: Target,
     detail = "after crash" if task.crashed_stage else "next launch"
     deps.github.set_status(target, task.issue,
                            target.status_in_progress_option_id)
-    if task.hold_for_attach:
-        _queue_message(cfg, task.target, task.issue, ATTACH_TEXT, "dispatcher")
-        deps.notifier.send("resumed_for_attach", issue=task.issue,
-                           title=task.title, url=_url(target, task.issue),
-                           target=target.name, note="")
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
                    park_note="", hold_for_attach=False,
                    resume_model_override="", resume_bypass_usage=False)
     _clear_wake_blocked(cfg, task.target, task.issue)
-    ticket = launch_ticket(task) if launch.stage is Stage.IMPLEMENT else 0
+    ticket = launch_ticket(task)
     if ticket and not ticket_in_progress(task):
         task = _start_ticket(cfg, deps, target, task, ticket, launch)
     else:

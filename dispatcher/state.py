@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
+from typing import NamedTuple
 
 from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, ModelPolicy,
                                pick_provider)
@@ -53,29 +54,39 @@ def resumable_crash(t: "TaskState") -> bool:
     return t.stage is Stage.FAILED and bool(t.crashed_stage)
 
 
-def next_launch(t: "TaskState") -> tuple[str, int]:
-    """(runtime stage, ticket number) of a task's next launch, read from the
-    persisted state: the one answer the dispatcher, the status lines and the
-    console share. A crashed task resumes the stage it crashed in, and a
-    parked pr-open task wakes into an address-review round. In implement the
-    launch runs a ticket: the one in progress, or, when none is
-    (ticket_in_progress), the next one; after the last ticket the next
-    launch is review. The ticket number is 0 for every launch that is not a
-    ticket."""
+class NextLaunch(NamedTuple):
+    stage: str        # runtime stage
+    ticket: int = 0   # the ticket it works; 0 for a launch that is no ticket
+
+
+# A stage with no session of its own -> the stage its next launch runs: a
+# parked pr-open task wakes into an address-review round, and a spec that
+# waits at its gate is continued, or respawned, as the spec stage.
+_LAUNCHED_AS = {Stage.PR_OPEN.value: Stage.ADDRESS_REVIEW.value,
+                Stage.AWAITING_SPEC_REVIEW.value: Stage.SPEC.value}
+
+
+def next_launch(t: "TaskState") -> NextLaunch:
+    """A task's next launch, read from the persisted state: the one answer
+    the dispatcher, the status lines and the console share. A crashed task
+    resumes the stage it crashed in. In implement the launch runs a ticket:
+    the one in progress, or, when none is (ticket_in_progress), the next
+    one; after the last ticket the next launch is review."""
     stage = t.crashed_stage if resumable_crash(t) else t.stage.value
-    if stage == Stage.PR_OPEN.value:
-        return Stage.ADDRESS_REVIEW.value, 0
+    stage = _LAUNCHED_AS.get(stage, stage)
     if stage != Stage.IMPLEMENT.value:
-        return stage, 0
-    return (stage, t.ticket_cursor) if ticket_in_progress(t) else after_ticket(t)
+        return NextLaunch(stage)
+    if ticket_in_progress(t):
+        return NextLaunch(stage, t.ticket_cursor)
+    return after_ticket(t)
 
 
-def after_ticket(t: "TaskState") -> tuple[str, int]:
+def after_ticket(t: "TaskState") -> NextLaunch:
     """The launch that follows the ticket at the cursor: the next ticket, or
     review after the last one."""
     if t.ticket_cursor < t.ticket_count:
-        return Stage.IMPLEMENT.value, t.ticket_cursor + 1
-    return Stage.REVIEW.value, 0
+        return NextLaunch(Stage.IMPLEMENT.value, t.ticket_cursor + 1)
+    return NextLaunch(Stage.REVIEW.value)
 
 
 def ticket_in_progress(t: "TaskState") -> bool:
@@ -98,12 +109,12 @@ def shown_stage(t: "TaskState") -> str:
 
 def next_stage(t: "TaskState") -> str:
     """The runtime stage a task's next launch runs (next_launch)."""
-    return next_launch(t)[0]
+    return next_launch(t).stage
 
 
 def launch_ticket(t: "TaskState") -> int:
     """The ticket a task's next launch runs, 0 when it runs none (next_launch)."""
-    return next_launch(t)[1]
+    return next_launch(t).ticket
 
 
 @dataclass(frozen=True)

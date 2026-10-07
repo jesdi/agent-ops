@@ -12,16 +12,17 @@ import dispatcher.main as main
 from dispatcher import execution_overrides, failures
 from dispatcher.machine import Notify, StartTicket, next_actions
 from dispatcher.models import ticket_tracks_text
-from dispatcher.state import (PARK_WAKE, Stage, StageSignal, launch_ticket,
-                              launch_track, load, next_launch, next_stage,
-                              save)
+from dispatcher.state import (NO_SLOT, PARK_WAKE, Stage, StageSignal,
+                              launch_ticket, launch_track, load, next_launch,
+                              next_stage, save)
 from tests import webfakes
 from tests.pinned import (ASTRA, DENY_FRONTEND, FABLE, HEADERS, IMPL_DONE,
                           OPUS, PLAN_DONE, SOL, ahead, anthropic, cards, deny,
-                          detail, launched, legacy, models, openai, policy,
-                          raw, resume_intent, rig, rewrite, saved, setup,
-                          step, task, unpinned, usage_now, wake, write_ticket)
-from tests.test_main import FakeNotifier, FakeSessions, deps
+                          detail, launched, legacy, make_cfg, models, openai,
+                          policy, raw, resume_intent, rig, rewrite, saved,
+                          setup, step, task, unpinned, usage_now, wake,
+                          write_ticket)
+from tests.test_main import FakeNotifier, FakeSessions, deps, make_task
 
 
 # --- the one answer -------------------------------------------------------------
@@ -39,6 +40,8 @@ def test_next_launch_of_each_implement_state():
     assert next_launch(task(ticket_cursor=3, ticket_count=3)) == ("review", 0)
     assert next_launch(task(Stage.PLAN)) == ("plan", 0)
     assert next_launch(task(Stage.PR_OPEN)) == ("address-review", 0)
+    assert next_launch(task(Stage.AWAITING_SPEC_REVIEW)) == ("spec", 0)
+    assert next_launch(task(Stage.PLAN)).stage == "plan"
     crashed = task(Stage.FAILED, crashed_stage="implement", ticket_cursor=3,
                    ticket_count=3)
     assert next_launch(crashed) == ("review", 0)
@@ -328,3 +331,16 @@ def test_an_attach_wake_between_tickets_tells_the_new_session_to_wait(
     assert "The operator is attaching to talk to you directly" in sess.spawned[0][3]
     assert "resumed_for_attach" in notifier.sent
     assert not saved(c).hold_for_attach
+
+
+def test_an_attach_wake_of_a_pr_open_task_tells_the_new_session_to_wait(
+        tmp_path, monkeypatch):
+    """One place queues the attach notice for every resume path."""
+    c = make_cfg(tmp_path, monkeypatch, ahead())
+    make_task(c, issue=42, stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=12,
+              track="architecture", park=PARK_WAKE, hold_for_attach=True)
+    sess, notifier = FakeSessions(), FakeNotifier()
+    main.run_pass(c, deps(sess=sess, notifier=notifier))
+    assert sess.spawned[0][1] == "address-review"
+    assert "The operator is attaching to talk to you directly" in sess.spawned[0][3]
+    assert "resumed_for_attach" in notifier.sent
