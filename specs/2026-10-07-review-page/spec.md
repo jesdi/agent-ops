@@ -287,7 +287,7 @@ plan session has three questions with ids `format`, `limit` and `headers`, each 
 - **Given** the plan session was resumed with "changes" at 10:00 and reports `working`
 - **When** an `answers` intent with `submit` `"approve"` is drained at 10:01
 - **Then** no file is written, the session gets no message, and an `intent-dropped` event
-  says "session busy".
+  says "no open request" (the rework cleared the request).
 
 ### Scenario: a draft never overwrites a submission
 
