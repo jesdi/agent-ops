@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="agent-ops-review" content="1">
-<title>Plan Review Page</title>
+<title>Review</title>
 <style>
 /* Layout: one column, phone first; the console's own token system so the page
    reads as part of the console, not as a foreign document. */
@@ -96,92 +96,75 @@ ol.tickets .by { color: var(--muted); font-size: 12px }
 .bar button:disabled { opacity: .5; cursor: default }
 .bar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
 
-/* Prototype only: shows the message the page posts to the console. */
-details.proto { margin-top: 28px; border: 1px dashed var(--border); border-radius: 6px; padding: 10px 12px }
-details.proto summary { cursor: pointer; font-size: 12px; color: var(--muted) }
-details.proto pre { margin: 8px 0 0; font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink) }
 @media (prefers-reduced-motion: no-preference) { .opt, .tracks label { transition: background .12s, border-color .12s } }
+
+/* Questionnaire mode: questions only, one button. */
+body[data-mode="questionnaire"] section[data-slot="tickets"],
+body[data-mode="questionnaire"] section[data-slot="corrections"],
+body[data-mode="questionnaire"] section[data-slot="track"],
+body[data-mode="questionnaire"] #approve { display: none }
 </style>
 </head>
-<body>
-
+<body data-mode="plan">
 <main>
-  <div class="eyebrow">plan review · jesdi/agent-ops #170 · branch task/170-review-page</div>
-  <h1>Review page and answers file for the plan gate</h1>
-  <p class="lede">6 tickets · 3 open questions · 1 correction. Pick an option under each question, then send. Nothing is applied until you press a button.</p>
+  <!-- slot: header -->
+  <div class="eyebrow">plan review · owner/repo #123 · branch task/123-example</div>
+  <h1>Title of the plan</h1>
+  <p class="lede">2 tickets · 1 open question · 1 correction. Pick an option under each question, then send.</p>
+  <!-- /slot -->
 
-  <section>
+  <section data-slot="tickets">
+    <!-- slot: tickets -->
     <h2>Tickets</h2>
     <ol class="tickets">
-      <li><span class="n">01</span><span>Message bridge in the request panel <span class="by">· seam: RequestPanel.tsx</span></span></li>
-      <li><span class="n">02</span><span>Answers intent and dispatcher write <span class="by">· blocked by 01 · seam: intents.py, main.py</span></span></li>
-      <li><span class="n">03</span><span>Restore saved answers on reopen <span class="by">· blocked by 02 · seam: sources.py, app.py</span></span></li>
-      <li><span class="n">04</span><span>Plan prompt writes review.html from the template <span class="by">· blocked by 02 · seam: prompts/plan.md</span></span></li>
-      <li><span class="n">05</span><span>Spec prompt uses the same page for the questionnaire <span class="by">· blocked by 04 · seam: prompts/spec.md</span></span></li>
-      <li><span class="n">06</span><span>Submit resumes the plan session with the file <span class="by">· blocked by 02, 04 · seam: main.py</span></span></li>
+      <li><span class="n">01</span><span>First ticket title <span class="by">· seam: module.py</span></span></li>
+      <li><span class="n">02</span><span>Second ticket title <span class="by">· blocked by 01 · seam: other.py</span></span></li>
     </ol>
+    <!-- /slot -->
   </section>
 
-  <section>
+  <section data-slot="questions">
+    <!-- slot: questions -->
     <h2>Open questions</h2>
-
-    <div class="q" data-q="debounce">
-      <header><h3>How often does the console send a change to the box?</h3><span class="chip waiting">needs you</span></header>
-      <p class="why">Each selection posts the full answers set to the console. The console turns it into an intent file the dispatcher drains on its next pass.</p>
+    <div class="q" data-q="format">
+      <header><h3>Which format does the export use?</h3><span class="chip waiting">needs you</span></header>
+      <p class="why">One sentence on why the answer matters.</p>
       <div class="opts">
-        <label class="opt"><input type="radio" name="debounce" value="debounce"><span><span class="t">One draft intent, debounced 2 seconds <span class="chip rec">recommended</span></span><br><span class="d">Fewer files in the intents directory. The last state wins. A reload within 2 s can lose one tick.</span></span></label>
-        <label class="opt"><input type="radio" name="debounce" value="each"><span><span class="t">One intent for each change</span><br><span class="d">Simplest console code. Ten taps make ten files; the dispatcher applies them in order.</span></span></label>
-        <label class="opt"><input type="radio" name="debounce" value="submit-only"><span><span class="t">Only on Send changes or Approve</span><br><span class="d">No draft on the box. Selections live only in this tab until you press a button.</span></span></label>
+        <label class="opt"><input type="radio" name="format" value="a"><span><span class="t">Option A <span class="chip rec">recommended</span></span><br><span class="d">What A costs and gives.</span></span></label>
+        <label class="opt"><input type="radio" name="format" value="b"><span><span class="t">Option B</span><br><span class="d">What B costs and gives.</span></span></label>
       </div>
-      <textarea id="note-debounce" placeholder="Note for the plan session (optional)"></textarea>
+      <textarea id="note-format" placeholder="Note (optional)"></textarea>
     </div>
-
-    <div class="q" data-q="unmapped">
-      <header><h3>What does a session do with an answer it cannot map?</h3><span class="chip waiting">needs you</span></header>
-      <p class="why">The file can name a question id the current page no longer has, after a plan revision.</p>
-      <div class="opts">
-        <label class="opt"><input type="radio" name="unmapped" value="ignore-log"><span><span class="t">Ignore it and list it in the summary <span class="chip rec">recommended</span></span><br><span class="d">The operator sees what was dropped and can answer again.</span></span></label>
-        <label class="opt"><input type="radio" name="unmapped" value="block"><span><span class="t">Signal blocked</span><br><span class="d">Safe, but a stale id after every revision stops the pipeline.</span></span></label>
-      </div>
-      <textarea id="note-unmapped" placeholder="Note for the plan session (optional)"></textarea>
-    </div>
-
-    <div class="q" data-q="fallback">
-      <header><h3>Does the Markdown summary stay as a fallback?</h3><span class="chip waiting">needs you</span></header>
-      <p class="why">A session that cannot write the page would still have a review surface the console can render.</p>
-      <div class="opts">
-        <label class="opt"><input type="radio" name="fallback" value="remove"><span><span class="t">Remove it; the page is the one surface <span class="chip rec">recommended</span></span><br><span class="d">One format to check. The template makes the page as easy to write as the Markdown.</span></span></label>
-        <label class="opt"><input type="radio" name="fallback" value="keep"><span><span class="t">Keep both; the console prefers the page</span><br><span class="d">Two artifacts to keep in sync on every revision.</span></span></label>
-      </div>
-      <textarea id="note-fallback" placeholder="Note for the plan session (optional)"></textarea>
-    </div>
+    <!-- /slot -->
   </section>
 
-  <section>
-    <h2>Corrections to spec.md</h2>
+  <section data-slot="corrections">
+    <!-- slot: corrections -->
+    <h2>Corrections</h2>
     <div class="corr">
-      <p class="was">The console writes <code>.agent/review-answers.json</code> into the worktree.</p>
-      <p>The dispatcher writes it. The web layer records an intent; it never writes into a worktree.</p>
-      <p class="why" style="color:var(--muted)">Why: <code>web/app.py</code> has no worktree path, and ADR 0003 forbids it.</p>
+      <p class="was">The old statement.</p>
+      <p>The corrected statement.</p>
+      <p class="why" style="color:var(--muted)">Why: the reason.</p>
     </div>
+    <!-- /slot -->
   </section>
 
-  <section>
+  <section data-slot="track">
+    <!-- slot: track -->
     <h2>Track</h2>
-    <p class="why" style="color:var(--muted)">The plan session proposed <strong>default</strong>. Change it only when implement and review must run on another track.</p>
+    <p class="why" style="color:var(--muted)">The plan session proposed <strong>standard</strong>. Change it only when needed.</p>
     <div class="tracks" role="radiogroup" aria-label="track">
-      <label><input type="radio" name="track" value="default" checked>default</label>
-      <label><input type="radio" name="track" value="security">security</label>
       <label><input type="radio" name="track" value="trivial">trivial</label>
-      <label><input type="radio" name="track" value="frontend">frontend</label>
+      <label><input type="radio" name="track" value="standard" checked>standard</label>
+      <label><input type="radio" name="track" value="security">security</label>
     </div>
+    <!-- /slot -->
   </section>
-
 </main>
 
 <div class="bar">
   <div class="in">
-    <p class="state" id="state">0 of 3 questions answered · nothing sent</p>
+    <p class="state" id="state">0 of 0 questions answered · nothing sent</p>
     <button class="send" id="send" type="button">Send changes</button>
     <button class="approve" id="approve" type="button">Approve</button>
   </div>
@@ -190,18 +173,23 @@ details.proto pre { margin: 8px 0 0; font: 12px/1.45 var(--mono); white-space: p
 <script>
 // Fixed part of the template: collect, post, restore. The session never edits this.
 const V = 1;
-const qs = [...document.querySelectorAll('.q')].map(el => el.dataset.q);
-const state = document.getElementById('state');
-const approve = document.getElementById('approve');
+const mode = document.body.dataset.mode;
+const bar = document.querySelector('.bar');   // the controls live here, never in a slot
+const state = bar.querySelector('#state'), send = bar.querySelector('#send');
+const approve = bar.querySelector('#approve');
+const embedded = window.parent !== window;
+const questions = () => [...document.querySelectorAll('.q[data-q]')];
 let armed = false, sent = 'nothing sent';
+if (mode === 'questionnaire') send.textContent = 'Send answers';
 
 function collect() {
   const answers = {};
-  for (const q of qs) {
-    const picked = document.querySelector(`input[name="${q}"]:checked`);
+  for (const el of questions()) {
+    const q = el.dataset.q;
+    const picked = [...document.getElementsByName(q)].find(i => i.checked);
     if (picked) answers[q] = picked.value;
-    const note = document.getElementById('note-' + q).value.trim();
-    if (note) answers[q + '.note'] = note;
+    const note = document.getElementById('note-' + q);
+    if (note && note.value.trim()) answers[q + '.note'] = note.value.trim();
   }
   const track = document.querySelector('input[name="track"]:checked');
   if (track) answers.track = track.value;
@@ -209,41 +197,43 @@ function collect() {
 }
 
 function post(submit) {
-  const msg = { type: 'answers', v: V, answers: collect(), submit };
   // In the console this is the only way out of the sandbox.
-  if (window.parent !== window) window.parent.postMessage(msg, '*');
+  if (embedded) window.parent.postMessage({ type: 'answers', v: V, answers: collect(), submit }, '*');
   paint();
 }
 
 function paint() {
   let n = 0;
-  for (const q of qs) {
-    const el = document.querySelector(`.q[data-q="${q}"]`);
-    const done = !!document.querySelector(`input[name="${q}"]:checked`);
+  const all = questions();
+  for (const el of all) {
+    const done = [...document.getElementsByName(el.dataset.q)].some(i => i.checked);
     el.classList.toggle('answered', done);
-    el.querySelector('.chip.waiting').textContent = done ? 'answered' : 'needs you';
-    el.querySelector('.chip.waiting').className = done ? 'chip rec' : 'chip waiting';
+    const chip = el.querySelector('header .chip.waiting, header .chip.rec');
+    if (chip) { chip.textContent = done ? 'answered' : 'needs you'; chip.className = done ? 'chip rec' : 'chip waiting'; }
     if (done) n++;
   }
-  state.textContent = `${n} of ${qs.length} questions answered · ${sent}`;
-  state.classList.toggle('saved', sent.startsWith('saved') || sent.startsWith('sent') || sent.startsWith('approved'));
+  state.textContent = `${n} of ${all.length} questions answered · ${sent}`;
+  state.classList.toggle('saved', /^(saved|sent|approved)/.test(sent));
 }
 
 function restore(answers) {
   for (const [k, v] of Object.entries(answers || {})) {
     if (k.endsWith('.note')) { const t = document.getElementById('note-' + k.slice(0, -5)); if (t) t.value = v; continue; }
-    const input = document.querySelector(`input[name="${k}"][value="${CSS.escape(v)}"]`);
+    const input = [...document.getElementsByName(k)].find(i => i.value === v);
     if (input) input.checked = true;
   }
   paint();
 }
 
-document.querySelectorAll('input[type=radio]').forEach(i => i.addEventListener('change', () => { armed = false; approve.textContent = 'Approve'; post(null); }));
-document.querySelectorAll('textarea').forEach(t => t.addEventListener('input', () => post(null)));
+document.addEventListener('change', e => {
+  if (e.target.type !== 'radio') return;
+  armed = false; approve.textContent = 'Approve'; post(null);
+});
+document.addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') post(null); });
 
-document.getElementById('send').addEventListener('click', () => {
+send.addEventListener('click', () => {
   armed = false; approve.textContent = 'Approve';
-  sent = 'sent as changes · the plan session will revise';
+  sent = mode === 'questionnaire' ? 'sent · the session continues with your answers' : 'sent as changes · the plan session will revise';
   post('changes');
 });
 approve.addEventListener('click', () => {
@@ -254,14 +244,12 @@ approve.addEventListener('click', () => {
 });
 
 // From the console: saved answers, when the page reopens on any device.
-window.addEventListener('message', (e) => {
-  if (e.source !== window.parent) return;
+window.addEventListener('message', e => {
   const d = e.data;
-  if (!d || d.v !== V) return;
-  if (d.type === 'restore') { restore(d.answers); sent = 'saved answers restored'; paint(); }
+  if (e.source !== window.parent || !d || d.v !== V || d.type !== 'restore') return;
+  restore(d.answers); sent = 'saved answers restored'; paint();
 });
-if (window.parent !== window) window.parent.postMessage({ type: 'ready', v: V }, '*');
-
+if (embedded) window.parent.postMessage({ type: 'ready', v: V }, '*');
 paint();
 </script>
 </body>
