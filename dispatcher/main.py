@@ -298,7 +298,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     back at the host shell, where send_text would execute the operator's text
     as a shell command outside the sandbox.
 
-    Un-parking then restores the same invariant _resume_woken and _retry_plan
+    Un-parking then restores the same invariant _resume_woken and _retry_stage
     enforce — no waiting marker, a `working` signal — or the very next pass
     re-reads blocked/awaiting-ci, re-parks, and ENDS the session that was
     just re-authenticated."""
@@ -751,11 +751,26 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
     return True
 
 
-def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                launch: Launch, reason: str, slip: bool = False) -> None:
-    """Resume the plan session with why its signal was rejected (the ticket
-    format check, a `done` nobody approved, an unknown track), in place, rather
-    than failing the task. The resume reads the transcript from the runtime's
+# What a resumed session is told to do about its rejected signal.
+_RETRY_HINT = {
+    Stage.SPEC: ("Re-write the signal to fix that (the track list, with each "
+                 "track's meaning, is in your stage prompt)."),
+    Stage.PLAN: ("Fix that in place, then re-write the signal (the signals, "
+                 "and the track list with each track's meaning, are in your "
+                 "stage prompt). The ticket set under .agent/tickets/ must be "
+                 "files named NN-slug.md numbered contiguously from 01 with no "
+                 "gaps or duplicates, each with a 'What to build' section, a "
+                 "'Blocked by' line and at least one unchecked '- [ ]' "
+                 "criterion. Do not re-plan from scratch."),
+}
+
+
+def _retry_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                 launch: Launch, act: RetryStage) -> None:
+    """Resume the spec or plan session with why its signal was rejected (a
+    track that is not configured, a review the stage does not have, the
+    ticket format check, a `done` nobody approved), in place, rather than
+    failing the task. The resume reads the transcript from the runtime's
     mounted home, so context survives ending the (zombie) session first —
     which we must do, or _launch would type the resume command INTO the
     stopped session's input box (same failure mode as spawning over a live
@@ -764,59 +779,27 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
     agent_dir = Path(task.worktree) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     # Rewrite the signal to working BEFORE resuming, or the next pass re-reads
-    # the rejected signal, re-checks the still-unfixed plan, and burns the
+    # the rejected signal, re-checks the still-unfixed work, and burns the
     # retry immediately.
     (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": "plan", "status": "working", "model": entry.model_id,
+        {"stage": act.stage.value, "status": "working", "model": entry.model_id,
          "effort": entry.effort}))
-    _log_model(task.worktree, Stage.PLAN, str(entry))
+    _log_model(task.worktree, act.stage, str(entry))
     _end_session(cfg, deps, task.target, task.issue)
     block, drained = _drain(cfg, task.target, task.issue)
-    retry_text = (
-        f"Your .agent/stage.json was rejected: {reason}. Fix that in place, "
-        f"then re-write the signal (the signals, and the track list with each "
-        f"track's meaning, are in your stage prompt). The ticket set under "
-        f".agent/tickets/ must be files named NN-slug.md numbered contiguously "
-        f"from 01 with no gaps or duplicates, each with a 'What to build' "
-        f"section, a 'Blocked by' line and at least one unchecked '- [ ]' "
-        f"criterion. Do not re-plan from scratch.")
-    if block:
-        retry_text = f"{retry_text}\n\n{block}"
-    deps.sessions.resume(task.target, task.issue, task.worktree, retry_text,
-                         entry.model_id, entry.effort)
-    messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
-    used = "plan_slips" if slip else "plan_retries"
-    # The rejected plan is no longer on offer: the session's next ready
-    # report is checked and armed again.
-    save(cfg.state_dir, replace(task, updated_at=_now(), operator_request=None,
-                                **{used: getattr(task, used) + 1}))
-    _notify(deps, target, task, "plan_retry", reason)
-
-
-def _retry_spec(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                launch: Launch, reason: str) -> None:
-    """Resume the spec session with the rejection reason, in place. Same shape as
-    _retry_plan: rewrite the signal to working first, end the zombie, then
-    --continue with the correction."""
-    entry = launch.entry
-    agent_dir = Path(task.worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "working", "model": entry.model_id,
-         "effort": entry.effort}))
-    _log_model(task.worktree, Stage.SPEC, str(entry))
-    _end_session(cfg, deps, task.target, task.issue)
-    block, drained = _drain(cfg, task.target, task.issue)
-    text = (f"Your .agent/stage.json was rejected: {reason}. Re-write the "
-            f"signal to fix that (the track list, with each track's meaning, "
-            f"is in your stage prompt).")
+    text = (f"Your .agent/stage.json was rejected: {act.reason}. "
+            f"{_RETRY_HINT[act.stage]}")
     if block:
         text = f"{text}\n\n{block}"
     deps.sessions.resume(task.target, task.issue, task.worktree, text,
                          entry.model_id, entry.effort)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
-    save(cfg.state_dir, replace(task, spec_retries=task.spec_retries + 1,
-                                updated_at=_now()))
+    # A rejected plan is no longer on offer: the session's next ready report
+    # is checked and armed again.
+    save(cfg.state_dir, replace(loops.spend_retry(task, act.retry),
+                                updated_at=_now(), operator_request=None))
+    if act.stage is Stage.PLAN:
+        _notify(deps, target, task, "plan_retry", act.reason)
 
 
 def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -1168,7 +1151,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # End first, unconditionally. Most parks already stopped the session,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
-    # running session (the failure _retry_plan and SpawnStage guard).
+    # running session (the failure _retry_stage and SpawnStage guard).
     _end_session(cfg, deps, task.target, task.issue)
     if task.crashed_stage:
         _respawn_crashed(cfg, deps, target, task, launch)
@@ -1342,7 +1325,7 @@ class _Turn:
 def _action_stage(act: object) -> Stage | None:
     """The stage an action launches a session for; None when it launches none."""
     if isinstance(act, RetryStage):
-        return act.stage  # _retry_plan/_retry_spec resume the session in place
+        return act.stage  # _retry_stage resumes the session in place
     return act.stage if isinstance(act, SpawnStage) else None
 
 
@@ -1397,11 +1380,7 @@ def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
 
 def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
                     launch: Launch) -> None:
-    if act.stage is Stage.SPEC:
-        _retry_spec(turn.cfg, turn.deps, turn.target, task, launch, act.reason)
-    else:
-        _retry_plan(turn.cfg, turn.deps, turn.target, task, launch, act.reason,
-                    slip=act.slip)
+    _retry_stage(turn.cfg, turn.deps, turn.target, task, launch, act)
 
 
 def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:

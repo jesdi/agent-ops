@@ -2876,7 +2876,7 @@ def test_injection_refused_when_pane_left_the_login_prompt(tmp_path, monkeypatch
 
 
 def test_injection_restores_the_unpark_invariant(tmp_path, monkeypatch):
-    # Same invariant _resume_woken/_retry_plan enforce: a stale blocked signal
+    # Same invariant _resume_woken/_retry_stage enforce: a stale blocked signal
     # or waiting marker would re-park (and END) the freshly re-authed session.
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -4178,10 +4178,11 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
     messages.append(c.state_dir, "portfolio_eval", 42, "keep the scope small", "jesdi@github")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._retry_plan(c, d, c.targets[0], task,
-                     main._launch_for(c, c.targets[0], task, Stage.PLAN,
-                                      lambda m: True, tuple),
-                     "missing Goal line")
+    main._retry_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.PLAN,
+                                       lambda m: True, tuple),
+                      main.RetryStage(Stage.PLAN, "missing Goal line",
+                                      main.loops.Retry.PLAN_TICKETS))
     assert "keep the scope small" in d.sessions.resumed[-1][1]
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 

@@ -202,3 +202,33 @@ def evaluate(task: TaskState, observation: object, caps: LoopCaps) -> Decision:
             detail=observation.detail,
         )
     raise TypeError(f"Unknown observation type: {type(observation)!r}")
+
+
+class Retry(Enum):
+    """What an in-session retry answers: the session is resumed with the
+    reason its signal was rejected. Each kind has a counter of its own on the
+    task, so one kind never spends another's retry."""
+    SPEC_SIGNAL = "spec-signal"     # no configured track, or `awaiting-review`
+    PLAN_TICKETS = "plan-tickets"   # the ticket set failed its mechanical check
+    PLAN_SIGNAL = "plan-signal"     # a `done` nobody approved, an unknown track
+
+
+# Private mapping: retry kind → (TaskState counter field, retries allowed).
+# A rejected signal or ticket set is usually a slip, not a judgment: one
+# resume with the reason, then the task parks or fails. Gate entry resets
+# both plan counters (the gate phase has retries of its own).
+_RETRY_BUDGET: dict[Retry, tuple[str, int]] = {
+    Retry.SPEC_SIGNAL: ("spec_retries", 1),
+    Retry.PLAN_TICKETS: ("plan_retries", 1),
+    Retry.PLAN_SIGNAL: ("plan_slips", 1),
+}
+
+
+def retry_left(task: TaskState, retry: Retry) -> bool:
+    field, limit = _RETRY_BUDGET[retry]
+    return getattr(task, field) < limit
+
+
+def spend_retry(task: TaskState, retry: Retry) -> TaskState:
+    field, _limit = _RETRY_BUDGET[retry]
+    return replace(task, **{field: getattr(task, field) + 1})

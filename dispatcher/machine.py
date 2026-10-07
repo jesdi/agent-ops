@@ -14,8 +14,8 @@ from typing import NamedTuple
 
 from dispatcher.artifacts import (PLAN_SUMMARY, TICKETS_DIR, CheckResult, check_spec,
                                   check_tickets, count_open_questions, plan_revision)
-from dispatcher.loops import (Decision, Loop, Outcome, ReportedRound, evaluate,
-                              unattended_rounds_used)
+from dispatcher.loops import (Decision, Loop, Outcome, ReportedRound, Retry, evaluate,
+                              retry_left, unattended_rounds_used)
 from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
                               StageSignal, TaskState)
 
@@ -38,13 +38,12 @@ class ApplyDecision:
 @dataclass(frozen=True)
 class RetryStage:
     """Re-run an in-flight stage in-session (via --continue) with corrective
-    feedback, instead of failing the task outright. Used when an artifact
-    fails its mechanical format check but the content is likely salvageable.
-    `slip` marks a plan signal that broke the protocol (an unapproved `done`,
-    an unknown track): it spends its own retry, not the ticket check's."""
+    feedback, instead of failing the task outright. Used when a signal or an
+    artifact fails a mechanical check but the work is likely salvageable.
+    `retry` names the budget this spends (loops.Retry)."""
     stage: Stage
-    reason: str = ""
-    slip: bool = False
+    reason: str
+    retry: Retry
 
 
 @dataclass(frozen=True)
@@ -128,20 +127,10 @@ class BackgroundView(NamedTuple):
     cap: int                        # background_wait_seconds
 
 
-# A ticket set that fails the mechanical check is usually a numbering or
-# heading slip — resume the session with the reason this many times before
-# giving up and failing the task. A plan `done` that skipped the gate or names
-# no configured track is a protocol slip: it has a retry of its own
-# (TaskState.plan_slips), then parks. Gate entry resets both.
-PLAN_RETRY_LIMIT = 1
 PLAN_NO_APPROVAL = ('status "done" is accepted only after the operator has '
                     'approved the plan at the review gate; write the review '
                     'summary and report status "awaiting-review" with the '
                     'summary path as "artifact", then wait for the reply')
-# A spec signal that names no configured track, or asks for a review this
-# stage no longer has, is a protocol slip, not a judgment: resume the session
-# once with the reason, then park for the operator.
-SPEC_RETRY_LIMIT = 1
 SPEC_NO_REVIEW = ('the spec stage has no review gate and status '
                   '"awaiting-review" is not valid in it; once stage 1 is '
                   'committed and pushed, report status "done" with the '
@@ -182,14 +171,14 @@ def _bad_track(signal: StageSignal, tracks: frozenset[str] | None,
 
 
 def _spec_bounce(task: TaskState, reason: str) -> list[object]:
-    if task.spec_retries < SPEC_RETRY_LIMIT:
-        return [RetryStage(Stage.SPEC, reason)]
+    if retry_left(task, Retry.SPEC_SIGNAL):
+        return [RetryStage(Stage.SPEC, reason, Retry.SPEC_SIGNAL)]
     return [ParkForInput(reason)]
 
 
 def _plan_bounce(task: TaskState, reason: str) -> list[object]:
-    if task.plan_slips < PLAN_RETRY_LIMIT:
-        return [RetryStage(Stage.PLAN, reason, slip=True)]
+    if retry_left(task, Retry.PLAN_SIGNAL):
+        return [RetryStage(Stage.PLAN, reason, Retry.PLAN_SIGNAL)]
     return [ParkForInput(reason)]
 
 
@@ -326,8 +315,8 @@ def _checked_tickets(task: TaskState) -> tuple[CheckResult, list[object]]:
     result = check_tickets(Path(task.worktree) / TICKETS_DIR)
     if result.ok:
         return result, []
-    if task.plan_retries < PLAN_RETRY_LIMIT:
-        return result, [RetryStage(Stage.PLAN, result.reason)]
+    if retry_left(task, Retry.PLAN_TICKETS):
+        return result, [RetryStage(Stage.PLAN, result.reason, Retry.PLAN_TICKETS)]
     return result, [SetTaskStage(Stage.FAILED),
                     Notify("artifact_failed", result.reason)]
 
