@@ -225,6 +225,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{target}/{issue}/answers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Intent Answers */
+        post: operations["intent_answers_api_task__target___issue__answers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{target}/{issue}/artifacts": {
         parameters: {
             query?: never;
@@ -450,6 +467,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AnswersReq */
+        AnswersReq: {
+            /** Answers */
+            answers: {
+                [key: string]: string | string[] | boolean;
+            };
+            /** Revision */
+            revision: string;
+            /** Submit */
+            submit?: ("changes" | "approve") | null;
+        };
         /** ArtifactView */
         ArtifactView: {
             /** Github Url */
@@ -708,6 +736,10 @@ export interface components {
         };
         /** OperatorRequest */
         OperatorRequest: {
+            /** Answers */
+            answers: {
+                [key: string]: unknown;
+            };
             /** Content */
             content: components["schemas"]["ReadableContent"] | components["schemas"]["UnavailableContent"];
             /**
@@ -715,6 +747,8 @@ export interface components {
              * @enum {string}
              */
             kind: "plan-approval" | "answers";
+            /** Revision */
+            revision: string;
         };
         /** PaneHistory */
         PaneHistory: {
@@ -1350,6 +1384,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    intent_answers_api_task__target___issue__answers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                target: string;
+                issue: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnswersReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
