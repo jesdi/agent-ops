@@ -22,7 +22,7 @@ test('persistent artifacts open stable URLs in new tabs without an approval requ
   const link = await screen.findByRole('link', { name: 'Open Specification' })
   expect(link).toHaveAttribute('href', spec.url)
   expect(link).toHaveAttribute('target', '_blank')
-  expect(screen.getByText(/30 days after completion/)).toBeInTheDocument()
+  expect(screen.getByText(/7 days after completion/)).toBeInTheDocument()
 })
 
 test('expired copies have no open link while GitHub artifacts remain', async () => {
