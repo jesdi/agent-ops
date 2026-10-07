@@ -5908,3 +5908,24 @@ def test_plan_that_changes_every_pass_gets_two_new_rounds_then_parks(tmp_path, m
     t = load(c.state_dir, "portfolio_eval", 42)
     assert notifier.sent == ["awaiting_plan_review"] * 2 + ["plan_parked"]
     assert t.park == PARK_REVIEW and t.operator_request.path == PLAN_SUMMARY
+
+
+def test_fifo_at_the_stage_signal_path_does_not_stop_the_pass(tmp_path, monkeypatch):
+    """stage.json is session-written: a FIFO there must not block the pass
+    for this task, nor for the one behind it."""
+    import threading
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.PLAN)
+    os.mkfifo(wt / ".agent" / "stage.json")
+    wt2 = make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=1)
+    (wt2 / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "done"}))
+    sess = FakeSessions(alive={42, 43})
+    th = threading.Thread(target=lambda: main.run_pass(c, deps(sess=sess)), daemon=True)
+    th.start()
+    th.join(10)
+    assert not th.is_alive(), "the pass blocks on the FIFO"
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PLAN
+    assert load(c.state_dir, "portfolio_eval", 43).stage is Stage.REVIEW

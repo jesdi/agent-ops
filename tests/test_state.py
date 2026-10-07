@@ -174,6 +174,53 @@ def test_stage_signal_run_id_defaults_zero(tmp_path):
     assert read_stage_signal(tmp_path).run_id == 0
 
 
+def _signal_file(tmp_path):
+    (tmp_path / ".agent").mkdir()
+    return tmp_path / ".agent" / "stage.json"
+
+
+def test_stage_signal_at_a_fifo_is_none_and_does_not_block(tmp_path):
+    import os
+    import threading
+    os.mkfifo(_signal_file(tmp_path))
+    out = []
+    th = threading.Thread(target=lambda: out.append(read_stage_signal(tmp_path)),
+                          daemon=True)
+    th.start()
+    th.join(2)
+    assert not th.is_alive() and out == [None]
+
+
+def test_stage_signal_symlink_is_not_followed(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"stage": "plan", "status": "done"}')
+    _signal_file(tmp_path).symlink_to(outside)
+    assert read_stage_signal(tmp_path) is None
+
+
+def test_oversized_stage_signal_is_ignored(tmp_path):
+    from dispatcher.state import STAGE_SIGNAL_MAX_BYTES
+    f = _signal_file(tmp_path)
+    body = '{"stage": "plan", "status": "done", "note": "%s"}'
+    f.write_text(body % ("x" * (STAGE_SIGNAL_MAX_BYTES - len(body) + 2)))
+    assert f.stat().st_size == STAGE_SIGNAL_MAX_BYTES
+    assert read_stage_signal(tmp_path).status == "done"
+    f.write_text(body % ("x" * STAGE_SIGNAL_MAX_BYTES))
+    assert read_stage_signal(tmp_path) is None
+
+
+@pytest.mark.parametrize("note", [None, 3, ["a"], {"a": 1}, True])
+def test_stage_signal_note_that_is_not_a_string_reads_as_empty(tmp_path, note):
+    _signal_file(tmp_path).write_text(json.dumps(
+        {"stage": "plan", "status": "blocked", "note": note}))
+    assert read_stage_signal(tmp_path) == StageSignal("plan", "blocked", note="")
+
+
+def test_deeply_nested_stage_signal_is_none(tmp_path):
+    _signal_file(tmp_path).write_text("[" * 100_000)
+    assert read_stage_signal(tmp_path) is None
+
+
 def test_waiting_marker_lifecycle(tmp_path):
     assert not has_waiting(tmp_path, "t", 9)
     mark_waiting(tmp_path, "t", 9)

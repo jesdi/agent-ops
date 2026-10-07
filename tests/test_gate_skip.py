@@ -285,3 +285,36 @@ def test_failed_implement_launch_on_the_skip_path_resumes_into_implement(
     assert [s[0] for s in _implements(sess)] == [ISSUE]
     assert (t.stage, t.gated, t.asked, t.ticket_count) == (Stage.IMPLEMENT, False, False, 1)
     assert not [n for n in d.notifier.sent + d2.notifier.sent if "review" in n]
+
+
+def test_summary_padded_after_its_last_section_is_above_the_cap(tmp_path):
+    """Read only up to the cap, such a summary would look complete: an extra
+    section behind the padding would never be seen."""
+    p = tmp_path / "plan-review.md"
+    p.write_text(NONE_SUMMARY + "x" * SUMMARY_MAX_BYTES + "\n## Appendix\n\n- One more?\n")
+    assert count_open_questions(p) is None
+    p.write_text(NONE_SUMMARY + "x" * (SUMMARY_MAX_BYTES - len(NONE_SUMMARY)))
+    assert p.stat().st_size == SUMMARY_MAX_BYTES and count_open_questions(p) == 0
+
+
+def test_fifo_or_symlink_as_the_summary_cannot_be_counted(tmp_path):
+    import os
+    import threading
+    fifo = tmp_path / "fifo.md"
+    os.mkfifo(fifo)
+    out = []
+    th = threading.Thread(target=lambda: out.append(count_open_questions(fifo)), daemon=True)
+    th.start()
+    th.join(2)
+    assert not th.is_alive() and out == [None]
+    (tmp_path / "real.md").write_text(NONE_SUMMARY)
+    (tmp_path / "link.md").symlink_to(tmp_path / "real.md")
+    assert count_open_questions(tmp_path / "link.md") is None
+
+
+def test_nul_character_in_the_ready_reports_artifact_waits_at_the_gate(tmp_path, monkeypatch):
+    c = _setup(tmp_path, monkeypatch)
+    wt, sess = _task_at_ready(c, tmp_path, report={"artifact": ".agent/plan\u0000.md"})
+    _pass(c, sess)
+    _assert_no_implement(c, sess)
+    assert _task(c).operator_request.path == SUMMARY

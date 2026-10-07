@@ -280,11 +280,14 @@ def _skips_gate(task: TaskState, signal: StageSignal,
     report must name that file: it is what the gate would show. It is read
     last, only when everything else holds. Anything else waits at the gate."""
     summary = Path(task.worktree) / PLAN_SUMMARY
-    return (task.stage == Stage.PLAN and not task.gated
-            and task.track in gate_free and not task.asked
-            and signal.open_questions == 0
-            and _artifact_path(task, signal).resolve() == summary.resolve()
-            and count_open_questions(summary) == 0)
+    try:
+        return (task.stage == Stage.PLAN and not task.gated
+                and task.track in gate_free and not task.asked
+                and signal.open_questions == 0
+                and _artifact_path(task, signal).resolve() == summary.resolve()
+                and count_open_questions(summary) == 0)
+    except (OSError, ValueError, RuntimeError):
+        return False   # a path that cannot be resolved (a NUL character, a loop)
 
 
 def _gate_round_actions(task: TaskState, signal: StageSignal,

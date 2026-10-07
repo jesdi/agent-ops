@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -370,16 +371,38 @@ def _open_questions(raw: object) -> int | None:
     return raw if type(raw) is int and raw >= 0 else None
 
 
+STAGE_SIGNAL_MAX_BYTES = 64 * 1024
+
+
+def read_regular(path: str | Path, max_bytes: int) -> bytes | None:
+    """The bytes of a regular file a session wrote; None for anything else:
+    missing, unreadable, a symlink (not followed), a FIFO or a device (the
+    open never blocks), or larger than max_bytes."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        with os.fdopen(os.open(path, flags), "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return None
+            raw = f.read(max_bytes + 1)
+    except (OSError, ValueError):   # ValueError: a NUL character in the path
+        return None
+    return raw if len(raw) <= max_bytes else None
+
+
 def read_stage_signal(worktree: str | Path) -> StageSignal | None:
-    p = Path(worktree) / ".agent" / "stage.json"
-    if not p.exists():
+    """The session-written .agent/stage.json, read defensively for the
+    dispatcher and the console alike: whatever a model put at that path, the
+    answer is a signal or None, never a hang or an exception."""
+    raw = read_regular(Path(worktree) / ".agent" / "stage.json", STAGE_SIGNAL_MAX_BYTES)
+    if raw is None:
         return None
     try:
-        d = json.loads(p.read_text())
+        d = json.loads(raw)
+        note = d.get("note", "")
         return StageSignal(
             stage=str(d["stage"]),
             status=str(d["status"]),
-            note=str(d.get("note", "")),
+            note=note if isinstance(note, str) else "",
             artifact=str(d.get("artifact", "")),
             run_id=int(d.get("run_id", 0) or 0),
             loop=str(d.get("loop", "") or ""),
@@ -387,7 +410,7 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
             track=str(d.get("track", "") or ""),
             open_questions=_open_questions(d.get("open_questions")),
         )
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
         return None
 
 

@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from dispatcher.state import read_regular
+
 MIN_BYTES = 1500
 MIN_TICKET_BYTES = 200   # a small ticket is legitimately short
 TICKETS_DIR = ".agent/tickets"
@@ -30,7 +32,7 @@ class CheckResult:
 def _check(path: str | Path, patterns: list[str],
            min_bytes: int = MIN_BYTES) -> CheckResult:
     p = Path(path)
-    if not p.exists():
+    if not p.is_file():   # also a FIFO, which would block the read
         return CheckResult(False, f"artifact missing: {p}")
     text = p.read_text(errors="replace")
     if len(text.encode()) < min_bytes:
@@ -47,17 +49,16 @@ _LIST_ITEM = re.compile(r"(?:[-*]|\d+\.) ")
 
 def _open_questions_lines(summary: str | Path) -> list[str] | None:
     """The non-blank lines of the summary's open-questions section. None for
-    a summary that is not the prescribed one: unreadable, above the size cap,
+    a summary that is not the prescribed one: not a readable regular file
+    (state.read_regular: a FIFO never blocks the pass), above the size cap,
     more than one title, or `## ` headings other than the three, in order."""
+    raw = read_regular(summary, SUMMARY_MAX_BYTES)
     try:
-        with open(summary, "rb") as fh:
-            raw = fh.read(SUMMARY_MAX_BYTES + 1)
         text = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (AttributeError, UnicodeDecodeError):   # AttributeError: not readable
         return None
     headings = [h.strip().lower() for h in re.findall(r"(?m)^## +(.*)$", text)]
-    if (len(raw) > SUMMARY_MAX_BYTES or headings != _SUMMARY_SECTIONS
-            or len(re.findall(r"(?m)^# ", text)) > 1):
+    if headings != _SUMMARY_SECTIONS or len(re.findall(r"(?m)^# ", text)) > 1:
         return None
     section = re.split(r"(?m)^## +.*$", text)[2]
     return [ln.rstrip() for ln in section.splitlines() if ln.strip()]

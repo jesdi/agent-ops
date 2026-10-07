@@ -6,10 +6,10 @@ import threading
 
 import pytest
 
-from dispatcher.state import StageSignal
+from dispatcher.state import STAGE_SIGNAL_MAX_BYTES, StageSignal
 from tests.webfakes import make_config, make_task
 from web.read_model import PROGRESS_MAX_CHARS, _implement_progress
-from web.sources import STAGE_SIGNAL_MAX_BYTES, Sources
+from web.sources import Sources
 
 
 def _read(tmp_path, wt):
