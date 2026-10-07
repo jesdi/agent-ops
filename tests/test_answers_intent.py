@@ -2,9 +2,11 @@
 
 import shutil
 
+from dataclasses import replace
+
 from dispatcher import eventlog, intents
 from dispatcher.state import (NO_SLOT, PARK_REVIEW, PARK_WAKE,
-                              PlanApprovalRequest, Stage)
+                              PlanApprovalRequest, Stage, save)
 
 from tests.test_answers_intent_acceptance import (ISSUE, PLAN_FILE, REV,
                                                   _drain, _events, _file,
@@ -131,3 +133,20 @@ def test_an_agent_path_that_is_a_file_fails_the_intent(tmp_path, monkeypatch, ca
     assert (wt / ".agent").read_text() == "x"
     assert not _events(c, "intent-applied")
     assert "not a directory" in capsys.readouterr().err
+
+
+def test_a_draft_on_a_new_revision_is_not_blocked_by_an_old_submission(tmp_path, monkeypatch):
+    c = _setup(tmp_path, monkeypatch)
+    wt = _gate(c)
+    _intent(c, {"format": "a"}, submit="changes", ms=1)
+    _drain(c)
+    t = _task(c)
+    save(c.state_dir, replace(t, park=PARK_REVIEW, operator_request=replace(
+        t.operator_request, fingerprint="rev-2")))
+    _intent(c, {"format": "b"}, revision="rev-2", ms=5)
+
+    _drain(c)
+
+    f = _file(wt)
+    assert (f["answers"], f["submitted"], f["revision"]) == ({"format": "b"}, None, "rev-2")
+    assert not _events(c, "intent-dropped")

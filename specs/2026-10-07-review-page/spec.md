@@ -45,6 +45,7 @@ answer writes it in the same shape):
   "submitted": "changes",
   "submitted_at": "2026-10-12T10:12:03+00:00",
   "actor": "jesdi",
+  "revision": "9f2c…",
   "answers": {"debounce": "draft", "debounce.note": "flush on pagehide", "track": "standard"}
 }
 ```

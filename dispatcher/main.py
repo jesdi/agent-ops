@@ -1894,7 +1894,8 @@ def _answers_drop_reason(task: TaskState | None,
         return "no open request"
     name, _ = ANSWERS_FILES[task.operator_request.kind]
     if (intent.payload.get("submit") is None
-            and _submitted_on_disk(task.worktree, name)):
+            and _submitted_on_disk(task.worktree, name,
+                                   intent.payload.get("revision"))):
         return "already submitted"
     if not _waits_for_operator(task):
         return "session busy"
@@ -1904,10 +1905,14 @@ def _answers_drop_reason(task: TaskState | None,
     return None
 
 
-def _submitted_on_disk(worktree: str, name: str) -> bool:
+def _submitted_on_disk(worktree: str, name: str, revision: object) -> bool:
+    """The file on disk is a submission made on this page revision. One of
+    an older revision (or with none, as a session's text answer) does not
+    block a draft on the page shown now."""
     raw = read_regular(Path(worktree) / ".agent" / name, PLAN_FILE_MAX_BYTES)
     try:
-        return json.loads(raw or b"{}").get("submitted") is not None
+        doc = json.loads(raw or b"{}")
+        return doc.get("submitted") is not None and doc.get("revision") == revision
     except (ValueError, AttributeError):
         return False   # garbage on disk is no submission
 
@@ -1925,7 +1930,8 @@ def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
     actor = intent.actor or "operator"
     doc = {"v": 1, "stage": stage, "submitted": submit,
            "submitted_at": intent.created_at if submit else None,
-           "actor": actor, "answers": intent.payload.get("answers")}
+           "actor": actor, "revision": intent.payload.get("revision"),
+           "answers": intent.payload.get("answers")}
     # write_worktree_file creates a missing .agent/; an answers file is
     # written only into one the session made (lstat: a symlink is refused).
     if not stat.S_ISDIR(os.lstat(Path(task.worktree) / ".agent").st_mode):
