@@ -338,3 +338,14 @@ def test_summary_rule_line_and_indented_code_are_not_headings(tmp_path):
     p.write_text(NONE_SUMMARY.replace(
         "- 01 Fix label", "- 01 Fix label\n\n---\n\n    ## not a heading\n\n- 02 More"))
     assert count_open_questions(p) == 0
+
+
+def test_one_very_long_line_does_not_slow_the_count(tmp_path):
+    """A summary at the size limit that is one line is counted at once: the
+    heading patterns stay linear (a pass must never wait on a summary)."""
+    import time
+    p = tmp_path / "plan-review.md"
+    p.write_text(NONE_SUMMARY + "x " * ((SUMMARY_MAX_BYTES - len(NONE_SUMMARY)) // 2))
+    start = time.monotonic()
+    assert count_open_questions(p) == 0
+    assert time.monotonic() - start < 2

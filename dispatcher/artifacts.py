@@ -65,7 +65,15 @@ _LIST_ITEM = re.compile(r"(?:[-*]|\d+\.) ")
 # summary never has.
 _H1 = r"(?m)^ {0,3}#(?!#)"
 _H2 = r"(?m)^ {0,3}##(?!#)[ \t]*"
-_SETEXT = r"(?m)^[^\n]*\S[^\n]*\n {0,3}(?:=+|-+)[ \t]*$"
+_UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
+
+
+def _has_setext_heading(text: str) -> bool:
+    """A text line with an underline of `=` or `-` below it. Line by line:
+    one pattern over the whole text is quadratic on a very long line."""
+    lines = text.split("\n")
+    return any(_UNDERLINE.fullmatch(line) and lines[i].strip()
+               for i, line in enumerate(lines[1:]))
 
 
 def _open_questions_lines(summary: str | Path) -> list[str] | None:
@@ -81,7 +89,7 @@ def _open_questions_lines(summary: str | Path) -> list[str] | None:
         return None
     headings = [h.strip().lower() for h in re.findall(_H2 + r"(.*)$", text)]
     if (headings != _SUMMARY_SECTIONS or len(re.findall(_H1, text)) > 1
-            or re.search(_SETEXT, text)):
+            or _has_setext_heading(text)):
         return None
     section = re.split(_H2 + r".*$", text)[2]
     return [ln.rstrip() for ln in section.splitlines() if ln.strip()]
