@@ -255,8 +255,20 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
 
 
 def tracks_text(policy: ModelPolicy) -> str:
-    """The track list as the prompts show it: one line per track."""
-    return "\n".join(f"- `{t.name}`: {t.when}" for t in policy.tracks.values())
+    """The track list as the prompts show it: one line per track. The rules for
+    choosing come first when a track is pinned, then pinned tracks in pinned
+    order, marked, then the rest."""
+    pinned = [policy.tracks[n] for n in policy.pinned]
+    rest = [t for t in policy.tracks.values() if t.name not in policy.pinned]
+    lines = []
+    if pinned:
+        lines.append(
+            "Pick a pinned track only when the work clearly fits its "
+            f"sentence. When it is not clear, pick {policy.untracked}. "
+            "When more than one pinned track fits, pick the one listed first.")
+    lines += [f"- `{t.name}` (pinned): {t.when}" for t in pinned]
+    lines += [f"- `{t.name}`: {t.when}" for t in rest]
+    return "\n".join(lines)
 
 
 def track_from_labels(labels: Sequence[str], policy: ModelPolicy) -> str:
