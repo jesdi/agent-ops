@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { OperatorRequest } from '../lib/api'
 import { useTaskArtifacts, useTaskRequest } from '../hooks/useResources'
+import { breakAfterSeparators } from '../lib/format'
 import { banner } from '../lib/tone'
 
 /** Review requests offer approval only when their plan summary is readable. */
@@ -66,7 +67,7 @@ export function RequestPanel({ target, issue, busy, onApprove }: {
  *  ends with a newline) keeps its lines as written. */
 function Code({ children }: { children?: ReactNode }) {
   if (typeof children !== 'string' || children.includes('\n')) return <code>{children}</code>
-  const parts = children.split(/(?<=[_./])/)
+  const parts = breakAfterSeparators(children)
   return <code>{parts.map((part, i) => <Fragment key={i}>{i > 0 && <wbr />}{part}</Fragment>)}</code>
 }
 

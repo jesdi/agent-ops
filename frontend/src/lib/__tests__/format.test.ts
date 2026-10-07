@@ -1,4 +1,4 @@
-import { relativeTime, stageLabel } from '../format'
+import { breakAfterSeparators, relativeTime, stageLabel } from '../format'
 
 describe('relativeTime', () => {
   const now = new Date('2026-07-25T12:00:00Z')
@@ -40,4 +40,19 @@ test('formatDuration picks the two most significant units', () => {
   expect(formatDuration(8100)).toBe('2h 15m')
   expect(formatDuration(273600)).toBe('3d 4h')
   expect(formatDuration(0)).toBe('0s')
+})
+
+describe('breakAfterSeparators', () => {
+  it.each([
+    'write_rows_to.csv', 'dispatcher/main.py', '_private', 'trailing_', 'a__b',
+    'plain', '', '../x', 'a.b/c_d',
+  ])('splits %j after each of _ . / and loses nothing', (text) => {
+    const parts = breakAfterSeparators(text)
+    expect(parts.join('')).toBe(text)
+    // What the lookbehind split gave; a lookbehind does not parse on Safari < 16.4.
+    expect(parts).toEqual(text.split(new RegExp('(?<=[_./])')).filter(Boolean))
+  })
+  it('uses no lookbehind', () => {
+    expect(breakAfterSeparators.toString()).not.toContain('?<')
+  })
 })
