@@ -36,7 +36,7 @@ test('expired copies have no open link while GitHub artifacts remain', async () 
 test('approval panel links to published spec beside the review link', async () => {
   seed()
   server.use(http.get('/api/task/widget/42/request', () => HttpResponse.json({
-    kind: 'plan-approval', content: { kind: 'readable', path: '.agent/plan-review.md', media_type: 'text/markdown', text: '# Design' },
+    kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Design' },
   })))
   renderWithProviders(<RequestPanel target="widget" issue={42} />)
   expect(await screen.findByRole('link', { name: 'View spec on GitHub ↗' })).toHaveAttribute('href', spec.url)
@@ -46,7 +46,7 @@ test('approval panel links to published spec beside the review link', async () =
 test('publication failure preserves local review', async () => {
   seed([{ ...spec, status: 'local', github_url: '' }])
   server.use(http.get('/api/task/widget/42/request', () => HttpResponse.json({
-    kind: 'plan-approval', content: { kind: 'readable', path: '.agent/plan-review.md', media_type: 'text/markdown', text: '# Design' },
+    kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Design' },
   })))
   renderWithProviders(<RequestPanel target="widget" issue={42} />)
   expect(await screen.findByText(/hasn’t been published/)).toBeInTheDocument()
@@ -87,7 +87,7 @@ test('failed artifact query preserves the review link and local request content'
   server.use(
     http.get('/api/task/widget/42/artifacts', () => HttpResponse.json({ detail: 'registry offline' }, { status: 500 })),
     http.get('/api/task/widget/42/request', () => HttpResponse.json({
-      kind: 'plan-approval', content: { kind: 'readable', path: '.agent/plan-review.md', media_type: 'text/markdown', text: '# Local design' },
+      kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Local design' },
     })),
   )
   renderWithProviders(<RequestPanel target="widget" issue={42} />)

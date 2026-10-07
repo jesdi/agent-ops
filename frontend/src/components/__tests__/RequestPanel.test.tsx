@@ -117,7 +117,7 @@ test('markdown request renders headings and lists inside the markdown style', as
         content: {
           kind: 'readable',
           media_type: 'text/markdown',
-          path: '.agent/plan-review.md',
+          path: '.agent/review.html',
           text: '# Plan review\n\n## Tickets\n\n1. **01 Export endpoint**\n2. **02 Owner check**\n\n## Open questions\n\nNone.\n',
         },
       }),
