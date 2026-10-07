@@ -66,6 +66,8 @@ BAD = {
     "missing-revision": {"answers": {}},
     "list-with-number": {"answers": {"format": ["a", 1]}, "revision": "r1"},
     "bad-note-base": {"answers": {"x!.note": "a"}, "revision": "r1"},
+    "number-value": {"answers": {"format": 1}, "revision": "r1"},
+    "null-value": {"answers": {"format": None}, "revision": "r1"},
 }
 
 
