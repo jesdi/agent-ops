@@ -46,9 +46,11 @@ session picks it for plan, implement and review and writes it in its signal.
 _Avoid_: tier, profile, rule
 
 **Pinned track**:
-A track named in `models.pinned`. Its entries are always tried in the written
-order, whatever the priority mode says; the usage gate, picks and one-shot
-overrides still apply. Triage and tracks the list does not name follow the mode.
+A track named in `models.pinned`. Required pace, the session-bound rule and a
+provider-first priority mode do not apply to it: its entries are tried in the
+written order. The usage gate, picks and one-shot overrides still apply; when
+no entry of its list is admitted, the task waits. Triage and the tracks the
+list does not name follow the mode.
 _Avoid_: locked track, fixed track
 
 **Ticket track**:
@@ -57,9 +59,9 @@ plan session. That ticket is implemented from the named track's `implement`
 list; a ticket with no such line, and the spec, plan, review and PR feedback
 of every task, use the task's own track. It must be a pinned track other than
 `security`, and no ticket of a `security` task may have one: the ticket check
-refuses any other ticket set. The accepted set's ticket tracks are copied to
-`TaskState.ticket_tracks`, and routing reads that copy, never the ticket
-files. A ticket whose track is no longer pinned when it starts parks the task.
+refuses any other ticket set. The ticket tracks are fixed when the ticket set
+is accepted: routing reads the copy the task keeps, never the ticket files. A
+ticket whose track is no longer pinned when it starts parks the task.
 _Avoid_: ticket lane, per-ticket model
 
 **Entry**:
@@ -67,20 +69,12 @@ One element of a track's stage list: `provider/model[@effort]`.
 _Avoid_: profile (a Claude Code term)
 
 **Pick**:
-The entry chosen when a task enters a stage, recorded in `TaskState.picks`
-and reused by every session of that stage. For implement the pick is the
-pick of the ticket in progress: it is chosen when the ticket starts, from the
-ticket track's list or else the task track's, kept for that ticket's
-sessions (a gate-loop round, a resume after a park, a respawn after a crash)
-and dropped when the ticket is done, in a write of its own before the next
-launch is admitted. The pick is how the state says that a ticket is in
-progress: a task in implement with no implement pick waits for its next
-ticket (ticket 1 after the ticket set is accepted), or for review after the
-last one. The next ticket chooses again, and a one-shot override covers one
-ticket. PR feedback has one pick of its own, under the key
-`feedback`: the first session that addresses PR feedback chooses it from the
-task track's `implement` list, and every later feedback round of the task
-reuses it. It does not read or write the implement pick. A denied pick waits.
+The entry chosen when a task enters a stage, reused by every later session of
+that stage. Implement has one pick per ticket: chosen when the ticket starts,
+kept for that ticket's sessions, dropped when the ticket is done; the next
+ticket chooses again. PR feedback has one pick of its own, chosen by the first
+session that addresses PR feedback and reused by every later round. A denied
+pick waits.
 
 **Untracked**:
 A candidate with no `track:` label; it specs on `models.untracked`.
@@ -263,7 +257,7 @@ adapters, one per provider. The dispatcher fetches only the providers the
 model policy references; the console also shows any other provider whose
 adapter reads (Codex run by hand), and nothing admits on that reading. Loop policy stays independent of all of it: waiting for
 headroom does not spend a fix round, and a denial for one provider never
-prevents considering another. The router is `dispatcher/models.py::resolve`: first admitted entry of the task's track for the stage, tried in the order `dispatcher/priority.py::order` gives for the priority mode (a fixed mode: that provider's entries first; auto: a session-bound provider's entries first, then highest required pace); labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
+prevents considering another. The router is `dispatcher/state.py::launch_entries`: the dispatcher launches the first admitted entry of the next launch's track (a ticket's own ticket track, else the task track) for the stage, tried in the order `dispatcher/priority.py::order` gives for the priority mode (a fixed mode: that provider's entries first; auto: a session-bound provider's entries first, then highest required pace); labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
 changes provider, so cross-runtime session continuation is excluded by rule,
 not pending. See docs/specs/2026-09-24-codex-runtime-design.md.
 
