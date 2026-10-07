@@ -519,6 +519,25 @@ def _notify(deps: Deps, target: Target, task: TaskState, template: str,
                        target=target.name)
 
 
+def _write_working(worktree: str, stage: Stage, entry) -> None:
+    """Rewrite .agent/stage.json to `working` BEFORE a session is launched or
+    resumed, or the next pass reads the old signal again (blocked, a rejected
+    report, the previous stage's `done`) and acts on it a second time. An
+    implement session's progress note is kept for the same stage: the
+    tickets it counts are still merged on the branch, and the console shows
+    them until the session reports again. Never across stages."""
+    agent_dir = Path(worktree) / ".agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    doc = {"stage": stage.value, "status": "working", "model": entry.model_id,
+           "effort": entry.effort}
+    old = read_stage_signal(worktree)
+    if (stage is Stage.IMPLEMENT and old is not None and old.note
+            and (old.stage, old.status) == (stage.value, "working")):
+        doc["note"] = old.note
+    (agent_dir / "stage.json").write_text(json.dumps(doc))
+    _log_model(worktree, stage, str(entry))
+
+
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  launch: Launch, spec_path: str = "") -> TaskState:
     stage, entry = launch.stage, launch.entry
@@ -541,12 +560,7 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     block, drained = _drain(cfg, task.target, task.issue)
     if block:
         prompt = f"{prompt}\n\n{block}\n"
-    agent_dir = Path(task.worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": stage.value, "status": "working", "model": model,
-         "effort": entry.effort}))
-    _log_model(task.worktree, stage, str(entry))
+    _write_working(task.worktree, stage, entry)
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
                               second=launch.second)
@@ -776,15 +790,9 @@ def _retry_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     stopped session's input box (same failure mode as spawning over a live
     session)."""
     entry = launch.entry
-    agent_dir = Path(task.worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    # Rewrite the signal to working BEFORE resuming, or the next pass re-reads
-    # the rejected signal, re-checks the still-unfixed work, and burns the
-    # retry immediately.
-    (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": act.stage.value, "status": "working", "model": entry.model_id,
-         "effort": entry.effort}))
-    _log_model(task.worktree, act.stage, str(entry))
+    # Before resuming: the next pass must not re-read the rejected signal,
+    # re-check the still-unfixed work, and burn the retry immediately.
+    _write_working(task.worktree, act.stage, entry)
     _end_session(cfg, deps, task.target, task.issue)
     block, drained = _drain(cfg, task.target, task.issue)
     text = (f"Your .agent/stage.json was rejected: {act.reason}. "
@@ -1140,14 +1148,9 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                 task: TaskState, launch: Launch) -> None:
     entry = launch.entry
     model = entry.model_id
-    agent_dir = Path(task.worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    # Rewrite stage.json BEFORE resuming, or the next pass re-reads
-    # blocked/awaiting-ci and re-parks the freshly resumed session.
-    (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": task.stage.value, "status": "working", "model": model,
-         "effort": entry.effort}))
-    _log_model(task.worktree, task.stage, str(entry))
+    # Before resuming: the next pass must not re-read blocked/awaiting-ci
+    # and re-park the freshly resumed session.
+    _write_working(task.worktree, task.stage, entry)
     # End first, unconditionally. Most parks already stopped the session,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
