@@ -131,6 +131,9 @@ targets:
     # The implement session keeps its ticket worktrees under .agent/worktrees/
     # in the task worktree: a check tool that scans dot-directories (ESLint 9,
     # for one) must exclude that path, or it checks every ticket checkout too.
+    # The dispatcher writes only into real directories (fail closed): a
+    # target whose worktrees have `.agent` or `.claude` as a symlink, or whose
+    # clone has no real `.git` directory, fails its launches or its claims.
     gate_cmd: "make gate"
     project_number: 1
     project_owner: example

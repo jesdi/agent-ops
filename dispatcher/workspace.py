@@ -56,10 +56,11 @@ def _plain_name(name: str) -> str:
 
 
 def write_worktree_file(root: str | Path, subdir: str, name: str,
-                        data: str | bytes, mode: int = 0o644) -> None:
+                        data: str | bytes, mode: int | None = 0o644) -> None:
     """Write <root>/<subdir>/<name> whole (temp file, then rename), never
     through a symlink. `subdir` may hold several components. A failed write
-    leaves no temp file behind."""
+    leaves no temp file behind. `mode` None keeps the mode of the regular
+    file that is replaced, and makes a new file 0600."""
     name = _plain_name(name)
     raw = data.encode() if isinstance(data, str) else data
     tmp = f".{name}.{secrets.token_hex(6)}.tmp"
@@ -69,12 +70,20 @@ def write_worktree_file(root: str | Path, subdir: str, name: str,
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(raw)
-                os.fchmod(fh.fileno(), mode)
+                os.fchmod(fh.fileno(), _kept_mode(dfd, name) if mode is None else mode)
             os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
         except BaseException:
             with suppress(OSError):
                 os.unlink(tmp, dir_fd=dfd)
             raise
+
+
+def _kept_mode(dfd: int, name: str) -> int:
+    try:
+        st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+    except OSError:
+        return 0o600
+    return stat.S_IMODE(st.st_mode) if stat.S_ISREG(st.st_mode) else 0o600
 
 
 def append_worktree_file(root: str | Path, subdir: str, name: str, text: str) -> None:
@@ -266,7 +275,7 @@ def _seed_claude_state(wt: str) -> None:
     projects[wt] = trust = trust if isinstance(trust, dict) else {}
     trust["hasTrustDialogAccepted"] = True
     write_worktree_file(state_dir, "claude-home", ".claude.json",
-                        json.dumps(data, indent=2) + "\n")
+                        json.dumps(data, indent=2) + "\n", mode=None)
 
 
 def _json_object(raw: bytes | None) -> dict:

@@ -700,3 +700,16 @@ def test_exclude_on_a_directory_that_is_no_clone_raises_and_makes_nothing(tmp_pa
         with pytest.raises(OSError):
             workspace.exclude_local_state(str(path))
     assert list(plain.iterdir()) == []
+
+
+def test_claude_state_file_keeps_its_mode_and_a_new_one_is_private(tmp_path, monkeypatch):
+    import os
+    state = tmp_path / "state"
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(state))
+    workspace._seed_claude_state("/wt/a")
+    f = state / "claude-home" / ".claude.json"
+    assert f.stat().st_mode & 0o777 == 0o600           # new: it is in a home
+    os.chmod(f, 0o640)
+    workspace._seed_claude_state("/wt/b")
+    assert f.stat().st_mode & 0o777 == 0o640           # replaced: mode kept
+    assert set(json.loads(f.read_text())["projects"]) == {"/wt/a", "/wt/b"}

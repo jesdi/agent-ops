@@ -147,8 +147,9 @@ def test_plan_session_stopped_message_claims_no_ready_plan_and_names_the_way_bac
                  target="acme", rounds=2, console="https://box.ts.net")
     assert "ready" not in msg
     assert "plan session stopped at the review gate" in msg and "2 unattended" in msg
-    assert "Reply to THIS message" in msg and "task-acme-42" in msg
-    assert "https://box.ts.net/task/acme/42" in msg
+    assert "Reply to THIS message to continue" in msg and "task-acme-42" in msg
+    # Nothing is armed: no link that offers to approve.
+    assert "approve" not in msg and "https://box.ts.net/task/acme/42" not in msg
 
 
 def test_plan_parked_carries_the_console_deep_link_when_configured():

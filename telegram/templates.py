@@ -101,8 +101,7 @@ def render(template: str, multi_target: bool = False, **ctx) -> str:
         ctx = {**ctx, "ref": task_ref(ctx.get("target", ""), ctx["issue"],
                                       multi_target)}
     text = _TEMPLATES[template].format(**ctx)
-    if template in ("awaiting_plan_review", "plan_parked", "plan_session_stopped",
-                    "parked_question") and ctx.get("console"):
+    if template in ("awaiting_plan_review", "plan_parked", "parked_question") and ctx.get("console"):
         text += (f"\nread & approve: {ctx['console']}/task/"
                  f"{ctx['target']}/{ctx['issue']}")
     return text
