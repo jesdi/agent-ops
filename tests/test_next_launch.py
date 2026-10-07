@@ -70,6 +70,20 @@ def test_a_state_file_from_before_the_field_marks_a_ticket_without_a_pick(
     assert not load(tmp_path, "t", 42).ticket_without_pick
 
 
+def test_a_task_with_no_track_is_untracked_work_for_the_status_line_too(
+        tmp_path, monkeypatch):
+    """The status line names the entry the dispatcher launches: the task has
+    no track (claimed before tracks existed, parked ever since), the
+    untracked track is pinned, mode `openai` does not reorder it."""
+    c = make_cfg(tmp_path, monkeypatch, ahead(), pinned=["standard"],
+                 mode="openai")
+    make_task(c, issue=42, stage=Stage.PLAN, track="", park=PARK_WAKE)
+    assert f"plan [anthropic/{FABLE}@medium]" in main._status_lines(c)[0]
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert [(r[2], r[3]) for r in sess.resumed] == [(f"anthropic/{FABLE}", "medium")]
+
+
 # --- A: a legacy state with no pick is in the middle of its ticket -------------
 
 def test_a_wake_of_a_legacy_task_continues_its_ticket(tmp_path, monkeypatch):

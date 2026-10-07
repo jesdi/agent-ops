@@ -16,13 +16,12 @@ from starlette.staticfiles import StaticFiles
 from dispatcher import priority, queue_ops
 from dispatcher.config import Config, policy_for, routed_providers
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
-                               override_refusal, parse_entry, resolve,
-                               review_avoid, stage_pick, track_from_labels)
+                               override_refusal, parse_entry, stage_pick,
+                               track_from_labels)
 from dispatcher.usage import admits
 from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
-                              SpecApprovalRequest, TaskState, launch_track,
-                              next_stage,
-                              resumable_crash)
+                              SpecApprovalRequest, TaskState, launch_entries,
+                              launch_track, next_stage, resumable_crash)
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
@@ -144,17 +143,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if refusal:
             raise HTTPException(422, refusal)
 
-    def _avoid(t):
-        return review_avoid(t.implement_providers, next_stage(t))
-
     def _choices(t, order):
         """The ordered entries the dispatcher would walk for t's next launch."""
-        policy = _policy(t.target)
-        track = launch_track(t, policy)
-        if not track:
-            return ()
-        return candidates(policy, track, next_stage(t), _avoid(t),
-                          order=order)
+        return launch_entries(t, _policy(t.target), order)
 
     def _model_for(t, order, usages=None, now=None):
         if t.park == PARK_WAKE and t.resume_model_override:

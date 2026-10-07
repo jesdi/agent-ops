@@ -42,8 +42,8 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
                                 RecordBackgroundWait, RetryStage, SetTaskStage,
                                 StartTicket, SpawnStage, pass_actions)
 from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
-                               Order, candidates, override_refusal, parse_entry,
-                               pick_key, resolve, review_avoid, second_model, stage_pick,
+                               Order, override_refusal, parse_entry,
+                               pick_key, second_model, stage_pick,
                                ticket_track_names, ticket_tracks_text,
                                track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
@@ -54,7 +54,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_turn_markers, delete, has_waiting,
-                              holds_slot, launch_ticket, launch_track, load,
+                              holds_slot, launch_entries, launch_ticket, load,
                               load_all, max_slots,
                               next_stage, read_background, read_stage_signal,
                               resumable_crash, shown_stage, ticket_in_progress,
@@ -120,23 +120,14 @@ class Launch:
 def _launch_for(cfg: Config, target: Target | None, task: TaskState,
                 stage: Stage, admitted: Admitted,
                 order: Order) -> Launch | None:
-    """The stage's recorded pick, else the first admitted entry of the next
-    launch's track (state.launch_track: a ticket's own track, else the
-    task's), tried in `order`. None: that track is not usable, or nothing is
-    admitted — wait.
-    Review avoids the provider that ran implement."""
-    policy = _policy(cfg, target)
+    """The stage's recorded pick, else the first admitted of the entries the
+    launch walks (state.launch_entries). None: its track is not usable, or
+    nothing is admitted — wait."""
     pick = stage_pick(task.picks, stage.value)
     if pick:
         return Launch(stage, parse_entry(pick, "pick"))
-    # No track: claimed before tracks existed and parked ever since, so
-    # _drive_task never backfilled it. Untracked work, as it does there.
-    track = launch_track(replace(task, track=task.track or policy.untracked),
-                         policy)
-    if not track:
-        return None
-    avoid = review_avoid(task.implement_providers, stage.value)
-    entry = resolve(policy, track, stage.value, admitted, avoid, order=order)
+    entries = launch_entries(task, _policy(cfg, target), order, stage.value)
+    entry = next((e for e in entries if admitted(e.model_id)), None)
     return Launch(stage, entry) if entry else None
 
 
@@ -209,23 +200,17 @@ def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
 
 def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
     """The entry a task runs or would run next, for status lines: its pick for
-    the next launch, else the first candidate of that launch's track (the
-    next ticket's between two tickets), else ''. No usage reading
-    here, so the order is built from an empty one: a fixed mode applies, and
-    in auto every entry is unrated, which is the written order."""
-    policy = _policy(cfg, target)
-    stage = next_stage(task)
-    pick = stage_pick(task.picks, stage)
+    the next launch, else the first of the entries that launch walks
+    (state.launch_entries), else ''. No usage reading here, so the order is
+    built from an empty one: a fixed mode applies, and in auto every entry
+    is unrated, which is the written order."""
+    pick = stage_pick(task.picks, next_stage(task))
     if pick:
         return pick
-    track = launch_track(task, policy)
-    if track:
-        cands = candidates(policy, track, stage, order=priority.order(
-            priority.load(cfg.state_dir, routed_providers(cfg)), {},
-            datetime.now(timezone.utc), cfg.pace))
-        if cands:
-            return str(cands[0])
-    return ""
+    entries = launch_entries(task, _policy(cfg, target), priority.order(
+        priority.load(cfg.state_dir, routed_providers(cfg)), {},
+        datetime.now(timezone.utc), cfg.pace))
+    return str(entries[0]) if entries else ""
 
 
 def _last_launched(worktree: str) -> str:

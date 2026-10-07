@@ -12,8 +12,9 @@ from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
-from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, ModelPolicy,
-                               pick_provider)
+from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
+                               ModelPolicy, Order, candidates, pick_provider,
+                               review_avoid)
 
 
 class Stage(str, Enum):
@@ -239,11 +240,30 @@ def launch_track(t: TaskState, policy: ModelPolicy) -> str:
     it has none. A ticket that names a ticket track is implemented from it,
     as long as that track is still pinned; it never falls to another list.
     A ticket that names none, and every other launch (PR feedback too), uses
-    the task track."""
+    the task track. A task with no track (claimed before tracks existed) is
+    untracked work."""
     named = t.ticket_tracks.get(launch_ticket(t), "")
     if named:
         return named if named in policy.pinned else ""
-    return t.track if t.track in policy.tracks else ""
+    track = t.track or policy.untracked
+    return track if track in policy.tracks else ""
+
+
+def launch_entries(t: TaskState, policy: ModelPolicy, order: Order,
+                   stage: str = "") -> tuple[Entry, ...]:
+    """The entries t's next launch walks, in the order they are tried: the
+    launch track's list as models.candidates arranges it, the one provider
+    that ran the tickets moved back for review. Empty when the launch has no
+    usable track. The one definition: the dispatcher launches the first
+    admitted entry, the status line names the first, the console offers all.
+    `stage`: the runtime stage, for a launch the persisted state does not
+    name yet (the stage that follows one just done); else next_stage."""
+    track = launch_track(t, policy)
+    if not track:
+        return ()
+    stage = stage or next_stage(t)
+    return candidates(policy, track, stage,
+                      review_avoid(t.implement_providers, stage), order=order)
 
 
 @dataclass(frozen=True)

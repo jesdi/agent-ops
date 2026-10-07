@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from dispatcher.models import parse_policy
 from dispatcher.state import PARK_WAKE, Stage
+from tests.pinned import anthropic, openai, rig, web_policy
 from tests.webfakes import FakeSources, HEADERS, make_config, make_task, tracks_policy
 from web import read_model
 from web.app import create_app, launch_pinned_track
@@ -77,6 +78,20 @@ def test_a_done_task_and_an_overridden_task_carry_no_pin_on_the_board(tmp_path):
         cards = by_issue(c.get(route, headers=HEADERS).json())
         assert [cards[i]["pinned_track"] for i in (7, 8, 9)] == ["", "", ""], route
     assert c.get("/api/task/alpha/9", headers=HEADERS).json()["card"]["pinned_track"] == ""
+
+
+def test_a_task_with_no_track_shows_the_untracked_tracks_model_and_pin(tmp_path):
+    """A task claimed before tracks existed runs as untracked work. The
+    board names the model the dispatcher launches for it, and the pin: here
+    the untracked track is pinned, so the written-first entry, not the one
+    mode `openai` would put first."""
+    fake, c = rig(tmp_path, {"anthropic": anthropic(), "openai": openai()},
+                  models=web_policy(pinned=("standard",)))
+    fake.tasks_list = [make_task(issue=7, track="", park=PARK_WAKE)]
+    for route in ("/api/board", "/api/board/snapshot"):
+        card = by_issue(c.get(route, headers=HEADERS).json())[7]
+        assert card["model"] == "anthropic/claude-sonnet-5", route
+        assert card["pinned_track"] == "standard", route
 
 
 def test_task_card_carries_the_pinned_track_and_defaults_to_none():
