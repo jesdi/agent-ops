@@ -457,6 +457,8 @@ class UnavailableContent(BaseModel):
 class OperatorRequest(BaseModel):
     kind: Literal["plan-approval", "answers"]
     content: Annotated[ReadableContent | UnavailableContent, Field(discriminator="kind")]
+    revision: str
+    answers: dict
 
 
 class PaneHistory(BaseModel):

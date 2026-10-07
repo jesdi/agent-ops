@@ -41,6 +41,8 @@ def test_plan_gate_exposes_the_review_page_as_an_approval_request(tmp_path, park
     # the review page, never the spec the task also records
     assert response.json() == {
         "kind": "plan-approval",
+        "revision": "",
+        "answers": {},
         "content": {
             "kind": "readable",
             "path": ".agent/review.html",
@@ -72,6 +74,8 @@ def test_answers_request_serves_readable_content(tmp_path):
     assert response.status_code == 200, response.text
     assert response.json() == {
         "kind": "answers",
+        "revision": "",
+        "answers": {},
         "content": {
             "kind": "readable",
             "path": ".agent/questionnaire.md",

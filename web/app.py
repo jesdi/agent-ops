@@ -10,7 +10,10 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from pydantic import BaseModel, Field
+import re
+from typing import Literal
+from pydantic import (BaseModel, Field, StrictBool, StrictStr,
+                      field_validator)
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import priority, queue_ops
@@ -19,7 +22,8 @@ from dispatcher.models import (candidates, override_allowed, override_refusal,
                                parse_entry, pick_provider, resolve,
                                stage_pick, track_from_labels)
 from dispatcher.usage import admits
-from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, next_stage,
+from dispatcher.main import ANSWERS_FILES
+from dispatcher.state import (read_regular, TERMINAL_STAGES, PARK_WAKE, next_stage,
                               resumable_crash)
 from web import read_model
 from web.artifacts import router as artifacts_router
@@ -68,6 +72,29 @@ class BoostReq(BaseModel):
 
 class ReplyReq(BaseModel):
     text: str = Field(min_length=1)
+
+
+ANSWERS_MAX_BYTES = 64 * 1024
+ANSWER_KEY = re.compile(r"^([a-z0-9_-]{1,64}(\.note)?|track)$")
+
+
+class AnswersReq(BaseModel):
+    answers: dict[str, StrictStr | list[StrictStr] | StrictBool]
+    submit: Literal["changes", "approve"] | None = None
+    revision: str = Field(min_length=1)
+
+    @field_validator("answers")
+    @classmethod
+    def _keys(cls, v):
+        bad = [k for k in v if not ANSWER_KEY.match(k)]
+        if bad:
+            raise ValueError(f"bad answer key {bad[0]!r}")
+        return v
+
+
+async def _capped_body(request: Request) -> None:
+    if len(await request.body()) > ANSWERS_MAX_BYTES:
+        raise HTTPException(422, "answers body over 64 KiB")
 
 
 class ResumeReq(BaseModel):
@@ -374,7 +401,26 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         # Both request kinds are one file in the worktree: the plan review
         # summary, or the questionnaire.
         return read_model.OperatorRequest(
-            kind=req.kind, content=_resolve_content(req.path, wt))
+            kind=req.kind, content=_resolve_content(req.path, wt),
+            revision=req.fingerprint, answers=_saved_answers(t))
+
+    def _saved_answers(t) -> dict:
+        name, _ = ANSWERS_FILES[t.operator_request.kind]
+        raw = read_regular(Path(t.worktree) / ".agent" / name,
+                           ANSWERS_MAX_BYTES)
+        try:
+            saved = _json.loads(raw or b"")["answers"]
+        except (ValueError, KeyError, TypeError):
+            saved = {}
+        out = dict(saved) if isinstance(saved, dict) else {}
+        for i in sources.pending_intents():   # oldest first: newest wins
+            p = i.get("payload")
+            if ((i["action"], i["target"], i["issue"])
+                    == ("answers", t.target, t.issue)
+                    and isinstance(p, dict)
+                    and isinstance(p.get("answers"), dict)):
+                out.update(p["answers"])
+        return out
 
     HISTORY_MAX_LINES = 10000
 
@@ -524,6 +570,14 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         # The queue is keyed by issue and survives every task lifecycle, so
         # there is nothing here to 404 against.
         return _accepted("reply", target, issue, {"text": req.text}, op)
+
+    @app.post("/api/task/{target}/{issue}/answers", status_code=202,
+              dependencies=[Depends(_capped_body)])
+    def intent_answers(target: str, issue: int, req: AnswersReq,
+                       op: Operator = Depends(current_operator)):
+        _require_task(target, issue)
+        return _accepted("answers", target, issue,
+                         req.model_dump(mode="json"), op)
 
     @app.post("/api/task/{target}/{issue}/park", status_code=202)
     def intent_park(target: str, issue: int,
