@@ -325,9 +325,12 @@ After the deploy, delete together: `dispatcher/openspec_migration.py`;
 `tests/test_openspec_migration.py` and
 `tests/test_openspec_migration_acceptance.py`; `_refuse_old_flow` and its two
 calls in `dispatcher/main.py`; the `blocking` parameter of `pass_lock` in
-`dispatcher/convergence.py`; the restart-inputs list in step 1 of
-`prompts/spec.md` and the review-file paragraph after it, with their tests
-in `tests/test_prompts.py`; this section.
+`dispatcher/convergence.py`, with the two docstring sentences there that
+name it; the restart-inputs list in step 1 of `prompts/spec.md` and the
+review-file paragraph after it, with their tests in `tests/test_prompts.py`;
+`_blocks` and `_assert_no_write_under_docs_specs` in
+`tests/test_spec_stage_without_gate_acceptance.py` (their two callers then
+assert `"docs/specs" not in prompt` again); this section.
 
 Deployments may set `AGENT_OPS_COMMAND_WRAPPER` to an executable path that
 prepares credentials and then executes its arguments. Without it, sessions call

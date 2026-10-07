@@ -314,8 +314,10 @@ The web layer READS `operator_request`; it never infers a request from park stat
 discriminated `readable | unavailable` content union. One `RequestPanel` + media renderer in the
 frontend. Approval is only possible on a `readable` plan-approval request.
 
-**No legacy conversion**: `state._read` rejects the retired `awaiting-spec-review` stage and
-`spec-approval` kind. The external stage-signal artifact parser (`read_stage_signal`) is separate and retained.
+**Retired fields are dropped on load; nothing else is converted**: `state._read` drops the
+retired task fields (`pending_reply`, `artifact`, `ticket_cursor`) and rejects the retired
+`awaiting-spec-review` stage and `spec-approval` kind. `read_stage_signal` is the one parser of
+the session-written `.agent/stage.json`, for the dispatcher and the console.
 
 **Three distinct questions** — kept separate by design:
 
