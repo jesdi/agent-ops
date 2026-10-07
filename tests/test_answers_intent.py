@@ -10,7 +10,7 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import answers, eventlog, intents, messages
-from dispatcher.artifacts import REVIEW_PAGE_MAX_BYTES, page_revision
+from dispatcher.artifacts import REVIEW_PAGE_MARKER, REVIEW_PAGE_MAX_BYTES, page_revision
 from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PARK_WAKE,
                               AnswersRequest, PlanApprovalRequest, Stage, save,
                               task_key)
@@ -19,7 +19,7 @@ from tests.test_answers_intent_acceptance import (ISSUE, PLAN_FILE, REV, TARGET,
                                                   _drain, _events, _file,
                                                   _gate, _intent, _setup,
                                                   _task, _texts)
-from tests.test_main import make_task
+from tests.test_main import FakeSessions, deps, make_task
 
 
 def test_an_unknown_submit_value_is_dropped(tmp_path, monkeypatch):
@@ -249,12 +249,13 @@ def test_an_intent_for_the_page_on_disk_is_applied(tmp_path, monkeypatch):
 
 def test_a_questionnaire_rewritten_since_the_pass_is_stale(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
+    one = (REVIEW_PAGE_MARKER + "<p>one</p>").encode()
     wt = make_task(c, issue=ISSUE, stage=Stage.SPEC, park=PARK_HUMAN, slot=NO_SLOT,
                    operator_request=AnswersRequest(
                        path=".agent/questionnaire.html",
-                       fingerprint=hashlib.sha256(b"<p>one</p>").hexdigest()))
-    (wt / ".agent" / "questionnaire.html").write_text("<p>two</p>")
-    _intent(c, {"format": "a"}, revision=hashlib.sha256(b"<p>one</p>").hexdigest())
+                       fingerprint=hashlib.sha256(one).hexdigest()))
+    (wt / ".agent" / "questionnaire.html").write_text(REVIEW_PAGE_MARKER + "<p>two</p>")
+    _intent(c, {"format": "a"}, revision=hashlib.sha256(one).hexdigest())
 
     _drain(c)
 
@@ -304,8 +305,26 @@ def test_discard_stale_tolerates_an_agent_dir_that_is_a_symlink(tmp_path, capsys
 
 def test_page_revision_is_the_digest_of_the_bytes_or_the_problem(tmp_path):
     p = tmp_path / "q.html"
-    p.write_bytes(b"<p>q</p>")
-    assert page_revision(p) == (hashlib.sha256(b"<p>q</p>").hexdigest(), "")
+    page = (REVIEW_PAGE_MARKER + "<p>q</p>").encode()
+    p.write_bytes(page)
+    assert page_revision(p) == (hashlib.sha256(page).hexdigest(), "")
     assert page_revision(tmp_path / "missing.html") == ("", "review page missing")
+    p.write_bytes(b"<p>q</p>")
+    assert page_revision(p) == ("", "review page lacks the template marker")
     p.write_bytes(b"x" * (REVIEW_PAGE_MAX_BYTES + 1))
     assert page_revision(p)[0] == ""
+
+
+def test_a_questionnaire_without_the_marker_arms_no_revision(tmp_path, monkeypatch, capsys):
+    c = _setup(tmp_path, monkeypatch)
+    wt = make_task(c, issue=ISSUE, stage=Stage.SPEC)
+    (wt / ".agent" / "questionnaire.html").write_text("<p>no marker</p>")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "spec", "status": "awaiting-answers", "note": "q",
+         "artifact": ".agent/questionnaire.html"}))
+
+    main.run_pass(c, deps(sess=FakeSessions(alive={ISSUE})))
+
+    req = _task(c).operator_request
+    assert req.path == ".agent/questionnaire.html" and req.fingerprint == ""
+    assert "review page lacks the template marker" in capsys.readouterr().err

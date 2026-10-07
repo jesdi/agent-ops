@@ -407,7 +407,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     def _saved_answers(t) -> read_model.Answers:
         """The answers the page is restored with: those of the intent the
-        drain would apply next, else the answers file's. A whole set, never
+        drain would apply next (made on the request's revision), else the
+        answers file's. A whole set, never
         merged: a note cleared in the newer set stays cleared."""
         kind = t.operator_request.kind
         pending = [intents.Intent(i["action"], i["target"], i["issue"],
@@ -417,7 +418,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                    if (i["action"], i["target"], i["issue"])
                    == ("answers", t.target, t.issue)
                    and isinstance(i["payload"].get("answers"), dict)]
-        win = answers_file.select(pending, None)
+        win = answers_file.select(pending, t.operator_request.fingerprint)
         saved = (win.payload if win is not None
                  else answers_file.read(t.worktree, kind) or {}).get("answers")
         try:

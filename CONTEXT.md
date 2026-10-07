@@ -339,7 +339,8 @@ address-review. Worktree-relative path.
 **Operator request** = `TaskState.operator_request`: `None` (no request),
 `{"kind": "plan-approval", "path": "<worktree-relative path>"}` (the plan session's review page,
 `.agent/review.html`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. An `answers`
-request's `fingerprint` is the SHA-256 of the page bytes when it is armed (`artifacts.page_revision`).
+request's `fingerprint` is the SHA-256 of the page bytes when it is armed (`artifacts.page_revision`;
+"" for a page that fails the shape check, which matches no intent).
 The console calls the fingerprint `revision`; an `answers` intent must name it, and the revision on disk
 must still match when the intent is drained. The dispatcher owns its lifecycle writes:
 

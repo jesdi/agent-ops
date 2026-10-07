@@ -85,23 +85,21 @@ def _read_page(page: str | Path) -> tuple[str, bytes]:
     return "", raw
 
 
-def _page_problem(page: str | Path) -> tuple[str, str]:
-    """(problem, text) of a review page: the problem is "" for a page
+def _page_problem(page: str | Path) -> tuple[str, bytes]:
+    """(problem, bytes) of a review page: the problem is "" for a page
     _read_page accepts that carries the template marker."""
     problem, raw = _read_page(page)
     if problem:
-        return problem, ""
-    text = raw.decode("utf-8", errors="replace")
-    if REVIEW_PAGE_MARKER not in text:
-        return "review page lacks the template marker", ""
-    return "", text
+        return problem, b""
+    if REVIEW_PAGE_MARKER.encode() not in raw:
+        return "review page lacks the template marker", b""
+    return "", raw
 
 
 def page_revision(page: str | Path) -> tuple[str, str]:
-    """(revision, problem) of a questionnaire page: the SHA-256 hex of its
-    bytes, or "" with the problem when _read_page refuses it. No marker
-    check: a questionnaire is not bound to the template."""
-    problem, raw = _read_page(page)
+    """(revision, problem) of a review page: the SHA-256 hex of its bytes,
+    or "" with the problem when it fails the shape check."""
+    problem, raw = _page_problem(page)
     return ("", problem) if problem else (hashlib.sha256(raw).hexdigest(), "")
 
 
@@ -109,9 +107,10 @@ def count_open_questions(page: str | Path) -> int | None:
     """The question blocks (`data-q` attributes) of the review page. None =
     cannot tell (the page fails the shape check, or a `data-q` value is no
     question id): the caller treats that as "questions are open"."""
-    problem, text = _page_problem(page)
+    problem, raw = _page_problem(page)
     if problem:
         return None
+    text = raw.decode("utf-8", errors="replace")
     ids = [m[1:-1] if m[:1] in "\"'" else m for m in _QUESTION_ATTR.findall(text)]
     return None if any(not _QUESTION_ID.fullmatch(i) for i in ids) else len(ids)
 

@@ -80,19 +80,17 @@ def discard_stale(worktree: str | Path, kind: str, revision: str) -> None:
         print(f"[warn] {name} not removed: {exc}", file=sys.stderr)
 
 
-def _valid(intent: intents.Intent, revision: str | None) -> bool:
+def _valid(intent: intents.Intent, revision: str) -> bool:
     p = intent.payload
     return (p.get("submit") in (None, *SUBMITS)
-            and (revision is None or (bool(revision) and p.get("revision") == revision)))
+            and bool(revision) and p.get("revision") == revision)
 
 
 def select(pending: Iterable[intents.Intent],
-           revision: str | None) -> intents.Intent | None:
+           revision: str) -> intents.Intent | None:
     """The answers intent of one task that wins: the newest with a valid
     submit made on `revision`, else the newest valid draft, else None. On a
-    tie the later one in `pending` wins. `revision` None takes any revision
-    (the console's restore, whose request revision a pending intent may
-    predate)."""
+    tie the later one in `pending` wins."""
     valid = [i for i in pending if _valid(i, revision)]
     return max(reversed(valid), default=None, key=lambda i: (
         i.payload.get("submit") is not None, i.created_at, i.path.name))

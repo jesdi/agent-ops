@@ -37,3 +37,10 @@ def test_a_file_off_the_schema_gives_empty_answers(tmp_path):
     _, client = rig(tmp_path, answers_req(), saved({"format": {"x": 1}}))
     r = client.get(REQ, headers=HEADERS)
     assert r.status_code == 200 and r.json()["answers"] == {}
+
+
+def test_a_pending_intent_on_another_revision_never_restores(tmp_path):
+    fake, client = rig(tmp_path, answers_req(), saved({"format": "b"}))
+    fake.pending = [pending({"answers": {"format": "old"}, "submit": "approve",
+                             "revision": "r0"})]
+    assert client.get(REQ, headers=HEADERS).json()["answers"] == {"format": "b"}

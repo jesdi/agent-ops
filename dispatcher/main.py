@@ -685,8 +685,11 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         wt_abs = Path(task.worktree).resolve()
         try:
             wt_rel = str(Path(resolved).resolve().relative_to(wt_abs))
-            answers_request = AnswersRequest(
-                path=wt_rel, fingerprint=page_revision(resolved)[0])
+            fingerprint, problem = page_revision(resolved)
+            if problem:
+                print(f"[warn] #{task.issue} answers page {wt_rel}: {problem}",
+                      file=sys.stderr)
+            answers_request = AnswersRequest(path=wt_rel, fingerprint=fingerprint)
         except ValueError:
             # Path escapes the worktree — treat as unusable reference.
             resolved = ""
