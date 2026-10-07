@@ -1263,9 +1263,13 @@ _RESPAWN_AS = {Stage.PR_OPEN: Stage.ADDRESS_REVIEW,
 
 
 def _crash_failed(task: TaskState) -> TaskState:
-    """FAILED by a crash, remembering the stage so Resume can respawn it."""
+    """FAILED by a crash, remembering the stage so Resume can respawn it. A
+    task that is already a resumable crash (its turn failed again after the
+    crash was saved) keeps the stage it recorded."""
     stage = _RESPAWN_AS.get(task.stage, task.stage)
     crashed = stage.value if stage in RESPAWNABLE_STAGES else ""
+    if resumable_crash(task):
+        crashed = task.crashed_stage
     return replace(task, stage=Stage.FAILED, crashed_stage=crashed, park="",
                    hold_for_attach=False, operator_request=None,
                    updated_at=_now())

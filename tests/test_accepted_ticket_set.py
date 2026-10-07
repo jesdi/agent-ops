@@ -178,6 +178,23 @@ def test_a_turn_that_fails_after_it_saved_the_spec_gate_stays_resumable(
     assert t.stage is Stage.FAILED and t.crashed_stage == "spec"
 
 
+class NoTail(FakeSessions):
+    def capture_tail(self, target, issue, lines=25):
+        raise RuntimeError("herdr down")
+
+
+def test_a_crash_whose_report_fails_stays_resumable(tmp_path, monkeypatch):
+    """The session died mid-ticket and the crash was saved as resumable; the
+    report then raises. The second failure keeps the recorded crashed stage."""
+    c, wt, _ = accepted(tmp_path, monkeypatch, admitted=True)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "working"}))
+    main.run_pass(c, deps(sess=NoTail()))           # no live session
+    t = saved(c)
+    assert t.stage is Stage.FAILED and t.crashed_stage == "implement"
+    assert resumable_crash(t)
+
+
 # --- 5: a task from before tickets (ticket_count 0) -------------------------------
 
 def test_a_task_with_no_ticket_set_keeps_its_pick_while_review_waits(
