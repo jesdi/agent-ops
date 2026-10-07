@@ -9,6 +9,7 @@ before its spec is written". Black-box, through dispatcher.main.run_pass over
 the fakes of tests/test_main.py.
 """
 import json
+import re
 from dataclasses import replace as dc_replace
 from datetime import date
 
@@ -174,6 +175,18 @@ def test_spec_ready_prompt_has_no_interview_and_keeps_decisions_verbatim(tmp_pat
     assert "to-openspec" in p
     assert "contradict" in p
     assert "raise no questionnaire" in p
+    # Requirement 3, in the ONE paragraph that is the spec-ready case.
+    (para,) = [" ".join(b.split()) for b in p.split("\n\n")
+               if b.startswith("**`spec-ready`**")]
+    assert "raise no questionnaire" in para and "word for word" in para
+    assert "record in `spec.md` what moved in the code" in para
+    assert "how the design absorbs it" in para
+    exception = para[para.index("the one exception"):]
+    assert "contradicts a settled decision" in exception
+    assert "questionnaire" in exception
+    assert "about that one decision only" in exception
+    assert "recommended answer" in exception
+    assert re.search(r"never[^.]*the other settled decisions", exception)
 
 
 # 6. A bug is reproduced before its spec is written.

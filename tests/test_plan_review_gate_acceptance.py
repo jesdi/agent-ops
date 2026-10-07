@@ -462,6 +462,14 @@ def test_prompt_treats_feedback_as_never_an_approval(tmp_path, monkeypatch):
     assert "never an approval" in p
     assert "push" in p
     assert "ready again" in p
+    # Requirement 8, in the ONE list item that is the feedback rule.
+    (item,) = [" ".join(b.split()) for b in _section_from(p, r"## 6\.").split("\n- ")
+               if "is feedback" in b]
+    assert "never an approval" in item
+    assert "a changed requirement changes `spec.md`, `design.md` and the tickets" in item
+    assert "a changed decision changes `design.md` and the tickets" in item
+    assert "ready again" in item and "push" in item
+    assert "never go back to an interview" in item
 
 
 def test_stage_is_never_the_spec_stage_across_a_feedback_round(tmp_path, monkeypatch):
