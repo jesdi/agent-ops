@@ -14,20 +14,40 @@ const viewports = [{ name: 'phone', width: 390, height: 844 }, { name: 'desktop'
 const noPageScroll = (page: Page) =>
   page.evaluate<boolean>('document.documentElement.scrollWidth <= document.documentElement.clientWidth')
 
-/** Every text-bearing element under `root` is inside the viewport, unclipped. */
+/** No text under `root` is cut off: skips screen-reader text, and flags an
+ *  element only when its content overflows AND the overflow is hidden, or its
+ *  box leaves the viewport or `root`'s box. */
 async function expectNoClip(root: Locator, width: number) {
   const bad = await root.evaluate((el, vw) => {
     const out: string[] = []
+    const box = el.getBoundingClientRect()
     for (const node of [el, ...el.querySelectorAll('*')] as HTMLElement[]) {
-      if (!node.textContent?.trim()) continue
+      if (node.closest('.sr-only') || !node.textContent?.trim()) continue
       const r = node.getBoundingClientRect()
       if (r.width === 0) continue
-      if (r.left < -0.5 || r.right > vw + 0.5) out.push(`outside viewport: ${node.tagName} ${node.textContent.slice(0, 30)}`)
-      if (node.scrollWidth > node.clientWidth + 1 && getComputedStyle(node).display !== 'inline') out.push(`clipped: ${node.tagName} ${node.textContent.slice(0, 30)}`)
+      const label = `${node.tagName} ${node.textContent.slice(0, 30)}`
+      if (r.left < -0.5 || r.right > vw + 0.5) out.push(`outside viewport: ${label}`)
+      if (r.left < box.left - 0.5 || r.right > box.right + 0.5) out.push(`outside container: ${label}`)
+      const cs = getComputedStyle(node)
+      const hidden = ['hidden', 'clip'].includes(cs.overflowX)
+      if (hidden && node.scrollWidth > node.clientWidth + 1) out.push(`clipped: ${label}`)
     }
     return out
   }, width)
   expect(bad).toEqual([])
+}
+
+/** The pin's whole text is visible, unclipped, inside the card and the viewport. */
+async function expectPinFits(pin: Locator, card: Locator, width: number) {
+  await expect(pin).toBeVisible()
+  await expect(pin).toContainText(/pinned/i)
+  await expect(pin).toContainText(/frontend/i)
+  const [p, c] = [(await pin.boundingBox())!, (await card.boundingBox())!]
+  expect(p.x).toBeGreaterThanOrEqual(c.x - 0.5)
+  expect(p.x + p.width).toBeLessThanOrEqual(c.x + c.width + 0.5)
+  expect(p.x).toBeGreaterThanOrEqual(-0.5)
+  expect(p.x + p.width).toBeLessThanOrEqual(width + 0.5)
+  expect(await pin.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
 }
 
 /** The two boxes share no area. */
@@ -48,7 +68,8 @@ for (const vp of viewports) {
 
       test('the pinned-tracks line under the priority control fits', async ({ page }) => {
         await page.goto('/')
-        // 390px folds the header on every project; wider shows it already.
+        // The fold needs the board; wait for it before deciding to unfold.
+        await expect(page.getByTestId('board-row')).toBeAttached()
         const fold = page.getByRole('button', { name: /active/, expanded: false })
         if (await fold.count()) await fold.click()
         const control = page.getByRole('radiogroup', { name: /priority/i })
@@ -69,8 +90,7 @@ for (const vp of viewports) {
         await expect(card).toBeVisible()
         await card.getByRole('button', { name: 'Details for widget#51' }).click()
         const pin = card.getByText(/pinned/i).first()
-        await expect(pin).toBeVisible()
-        await expect(pin).toContainText(/frontend/i)
+        await expectPinFits(pin, card, vp.width)
         expect(await noPageScroll(page)).toBe(true)
         await expectNoClip(card, vp.width)
         await expectNoOverlap(pin, card.getByText('claude-fable-5-1', { exact: true }))
