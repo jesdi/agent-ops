@@ -1,6 +1,6 @@
 import pytest
 
-from dispatcher.prompts import render_stage_prompt, render_triage_prompt
+from dispatcher.prompts import PROMPTS_DIR, render_stage_prompt, render_triage_prompt
 from dispatcher.state import Stage
 
 CTX = dict(
@@ -223,3 +223,16 @@ def test_spec_prompt_reads_answers_from_messages_and_the_old_review_copy():
 def test_spec_prompt_says_an_empty_list_of_old_design_files_is_no_work():
     item = _spec_item("-design.md", "spec-ready", "remove")
     assert "When the list is empty there is nothing to do." in item
+
+
+def test_implement_and_review_share_the_answers_paragraph():
+    note = (PROMPTS_DIR / "answers.md").read_text().rstrip("\n")
+    for stage in (Stage.IMPLEMENT, Stage.REVIEW):
+        assert note in render_stage_prompt(stage, CTX)
+
+
+def test_spec_prompt_has_a_text_answer_write_the_questionnaire_file():
+    out = render_stage_prompt(Stage.SPEC, CTX)
+    paras = [p for p in out.split("\n\n")
+             if '"actor": "text"' in p and "questionnaire-answers.json" in p]
+    assert paras and '"submitted": "changes"' in paras[0]

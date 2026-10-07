@@ -36,6 +36,8 @@ def _load_fragment(name: str) -> dict:
 
 def render_stage_prompt(stage: Stage, ctx: dict) -> str:
     text = (PROMPTS_DIR / _TEMPLATE_FILES[stage]).read_text()
+    # The answers-file paragraph that implement.md and review.md share.
+    ctx = {**ctx, "answers_note": (PROMPTS_DIR / "answers.md").read_text().rstrip("\n")}
     if stage in _E2E_FRAGMENTS:
         frag = _load_fragment(_E2E_FRAGMENTS[stage][bool(ctx["verify_cmd"])])
         signal = frag.get("SIGNAL", "")

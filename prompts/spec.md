@@ -10,8 +10,8 @@ stuck.
   then STOP — end your turn. The task parks, the operator sees the file on
   the console or their phone, and you are resumed with their answers
   (for the questionnaire: `.agent/questionnaire-answers.json`, step 3).
-  The questionnaire is the one case that always names
-  `"artifact": ".agent/questionnaire.html"`, and the prototype is the other.
+  Only two files are ever the artifact: `.agent/questionnaire.html` for the
+  questionnaire and `.agent/prototype.html` for the prototype.
 - `{"stage": "spec", "status": "done", "artifact": "specs/<today's date>-<topic>/spec.md", "track": "<name>", "note": "<one line>"}`
   once stage 1 is committed and pushed (step 4); then exit the session.
   Nobody approves the spec here and you do not wait for anyone: a fresh
@@ -119,7 +119,11 @@ Signal `awaiting-answers` with `"artifact": ".agent/questionnaire.html"` and
 stop. On resume the answers are in `.agent/questionnaire-answers.json`:
 `answers` is keyed by question id, `<id>.note` holds a note, and
 `"submitted": "changes"` means the operator pressed "Send answers". An answer
-in the file beats an operator message for the same question.
+in the file beats an operator message for the same question. A reply typed in
+this pane or sent by the reply route is an answer too: first write
+`.agent/questionnaire-answers.json` yourself with `"actor": "text"`,
+`"submitted": "changes"` and the answers you could read from the text (by
+question id), then continue.
 
 If — and only if — the operator answered yes to the prototype: use the
 `prototype` skill to build ONE self-contained HTML file at
