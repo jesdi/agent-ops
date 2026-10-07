@@ -65,17 +65,19 @@ def _page_problem(page: str | Path) -> tuple[str, str]:
     """(problem, text) of a review page: the problem is "" for a regular file
     (state.read_regular: a FIFO never blocks the pass) of at most 256 KiB
     that carries the template marker."""
-    if not os.path.lexists(page):
-        return "review page missing", ""
     try:
-        raw = read_regular(page, PLAN_FILE_MAX_BYTES)
+        size = os.lstat(page).st_size   # no follow: a symlink is read below, and refused
+    except (OSError, ValueError):
+        return "review page missing", ""
+    if size > REVIEW_PAGE_MAX_BYTES:
+        return "review page exceeds 256 KiB", ""
+    try:
+        raw = read_regular(page, REVIEW_PAGE_MAX_BYTES)
     except OSError:   # the page went away between the check and the read
         raw = None
     if raw is None:
         return ("review page is not a readable regular file "
-                "(a symlink, a pipe, a directory, or above 1 MiB)"), ""
-    if len(raw) > REVIEW_PAGE_MAX_BYTES:
-        return "review page exceeds 256 KiB", ""
+                "(a symlink, a pipe, a directory, or it grew)"), ""
     text = raw.decode("utf-8", errors="replace")
     if REVIEW_PAGE_MARKER not in text:
         return "review page lacks the template marker", ""
@@ -139,10 +141,13 @@ class PlanRevision(NamedTuple):
 
 
 def _page_path(root: Path, artifact: str) -> str | None:
-    """The artifact, worktree-relative; the prescribed page for an empty one,
-    None when it leaves the worktree (stage.json is model-written)."""
+    """The artifact, worktree-relative and not resolved (the read refuses a
+    symlink); the prescribed page for an empty one, None when it leaves the
+    worktree (stage.json is model-written)."""
     try:
-        rel = (root / artifact).resolve().relative_to(root.resolve()).as_posix()
+        (root / artifact).resolve().relative_to(root.resolve())
+        rel = Path(os.path.normpath(root / artifact)).relative_to(
+            os.path.normpath(root)).as_posix()
     except (OSError, ValueError, RuntimeError):
         return None
     return REVIEW_PAGE if rel == "." else rel

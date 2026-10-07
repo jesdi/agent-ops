@@ -293,3 +293,36 @@ def test_nul_character_in_the_ready_reports_artifact_waits_at_the_gate(tmp_path,
     assert _task(c).stage is Stage.PLAN and _implements(sess) == []
 
 
+
+
+def _skip_inputs(tmp_path, **kw):
+    """A task and ready report that skip the gate; `kw` spoils one condition."""
+    from dispatcher.machine import _skips_gate
+    (tmp_path / ".agent").mkdir(exist_ok=True)
+    (tmp_path / SUMMARY).write_text(NONE_SUMMARY)
+    t = TaskState(issue=ISSUE, target="portfolio_eval", slot=0, branch=BRANCH,
+                  stage=Stage.PLAN, worktree=str(tmp_path), title="t",
+                  updated_at="2026-10-13T00:00:00+00:00", track="trivial")
+    sig = StageSignal("plan", "awaiting-review", artifact=SUMMARY, open_questions=0)
+    return _skips_gate, dc_replace(t, **kw.pop("task", {})), dc_replace(sig, **kw)
+
+
+def test_skips_gate_when_every_condition_holds(tmp_path):
+    skips, t, sig = _skip_inputs(tmp_path)
+    assert skips(t, sig, frozenset({"trivial"}))
+
+
+@pytest.mark.parametrize("spoil", [
+    {"task": {"gated": True}}, {"task": {"track": "standard"}},
+    {"task": {"asked": True}}, {"open_questions": 1},
+    {"artifact": ".agent/other.html"}, {"artifact": ".agent/plan\u0000.html"},
+], ids=["gated", "track", "asked", "reported", "artifact", "nul-artifact"])
+def test_each_spoiled_condition_keeps_the_gate(tmp_path, spoil):
+    skips, t, sig = _skip_inputs(tmp_path, **spoil)
+    assert not skips(t, sig, frozenset({"trivial"}))
+
+
+def test_page_with_a_question_block_keeps_the_gate(tmp_path):
+    skips, t, sig = _skip_inputs(tmp_path)
+    (tmp_path / SUMMARY).write_text(ONE_SUMMARY)
+    assert not skips(t, sig, frozenset({"trivial"}))
