@@ -5682,6 +5682,34 @@ def test_rounds_that_follow_an_operator_reply_are_never_capped(tmp_path, monkeyp
     assert len(sess.resumed) == 5
 
 
+def test_round_that_follows_an_operator_reply_is_not_an_unattended_one(
+        tmp_path, monkeypatch):
+    """After a reply the operator is involved: the round that answers them is
+    theirs, the next two unprompted rounds are announced, the third parks."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = LiveUntilEnded(alive={42})
+    notifier = FakeNotifier()
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+                             {"text": "drop ticket 2"}, actor="op", epoch_ms=1)
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)       # delivered
+    gate_signal(wt)
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)       # the answer's round
+    assert load(c.state_dir, "portfolio_eval", 42).unattended_rounds == 0
+    for flap in range(1, 4):
+        (wt / ".agent" / "stage.json").write_text(json.dumps(WORKING))
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)
+        gate_signal(wt)
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)
+        t = load(c.state_dir, "portfolio_eval", 42)
+        assert (t.park == PARK_REVIEW) == (flap == 3), flap
+    assert notifier.sent.count("awaiting_plan_review") == 1 + 1 + 2
+    assert notifier.sent.count("plan_parked") == 1
+
+
 def test_capped_respawn_park_does_not_arm_an_unchecked_summary(tmp_path, monkeypatch):
     """The session died in the middle of a rework (request disarmed) and the
     respawns are used up: the task parks, but nothing is offered for approval,

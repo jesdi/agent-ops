@@ -137,7 +137,8 @@ class TaskState:
     plan_retries: int = 0                # in-session plan-format retries used
     plan_slips: int = 0                  # in-session plan-signal retries used (unapproved done, bad track)
     # Plan gate: respawns of a dead session plus review rounds started since
-    # the operator last acted. Only an operator wake resets it (loops.reset).
+    # the operator last acted. Owned by dispatcher/loops.py (gate_fields
+    # counts, reset on an operator wake, UNATTENDED_ROUND_LIMIT caps).
     unattended_rounds: int = 0
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
@@ -146,8 +147,8 @@ class TaskState:
     done_at: str = ""                    # merge-detection time; drives the flush
     spec_path: str = ""                  # approved spec, worktree-relative or absolute
     ticket_count: int = 0                # size of .agent/tickets/ when implement started
-    # The task entered the plan review gate. Set only by _stage_extra in
-    # dispatcher/main.py, never cleared: a task that waited for the operator
+    # The task entered the plan review gate. Set only through
+    # loops.gate_fields, never cleared: a task that waited for the operator
     # once never skips the gate, whatever stage a respawn puts it back in.
     gated: bool = False
     # A spec- or plan-stage session parked for answers. Set only by

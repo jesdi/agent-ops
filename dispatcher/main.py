@@ -1411,12 +1411,10 @@ def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
     approve on a task that failed at the gate."""
     if act.stage is Stage.AWAITING_PLAN_REVIEW:
         extra: dict = {"operator_request": _plan_approval(task, act.artifact),
-                       "gated": True}
+                       **loops.gate_fields(task)}
         if task.stage is Stage.PLAN:
             # The gate phase has retries of its own.
             extra.update(plan_retries=0, plan_slips=0)
-        else:
-            extra["unattended_rounds"] = task.unattended_rounds + 1
         return extra
     extra = {"operator_request": None}
     if act.stage is Stage.PR_OPEN and signal is not None:
@@ -1478,9 +1476,7 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
     elif task.stage is Stage.AWAITING_PLAN_REVIEW:
-        # A task file from before `gated` existed left the gate here.
-        task = replace(task, unattended_rounds=task.unattended_rounds + 1,
-                       gated=True)
+        task = replace(task, **loops.gate_fields(task))
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
     try:

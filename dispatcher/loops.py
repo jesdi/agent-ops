@@ -98,16 +98,45 @@ class ResetCause(Enum):
 # Private: which counter fields each cause zeroes.
 _RESET_FIELDS: dict[ResetCause, tuple[str, ...]] = {
     ResetCause.STAGE_STARTED: ("review_rounds", "gate_rounds", "e2e_rounds"),
-    ResetCause.OPERATOR_WAKE: ("review_rounds", "gate_rounds", "e2e_rounds", "ci_rounds",
-                               "unattended_rounds"),
+    ResetCause.OPERATOR_WAKE: ("review_rounds", "gate_rounds", "e2e_rounds", "ci_rounds"),
     ResetCause.PR_CYCLE_STARTED: ("ci_rounds",),
 }
+
+
+# What a task at the plan gate may do with no operator action: respawn a dead
+# session, or start a new review round (each one a notification and a fresh
+# grace clock). Past this many the task parks for review instead, so neither
+# loop runs without a human.
+UNATTENDED_ROUND_LIMIT = 2
+# What an operator wake leaves in `unattended_rounds`: the operator acted, so
+# the round that answers them is theirs and brings the count to 0, not 1.
+_OPERATOR_ACTED = -1
 
 
 def reset(task: TaskState, cause: ResetCause) -> TaskState:
     """Return a new TaskState with only the counters owned by cause zeroed.
     Every other field (cursors, stage, metadata) is preserved. Input is not mutated."""
-    return replace(task, **{f: 0 for f in _RESET_FIELDS[cause]})
+    task = replace(task, **{f: 0 for f in _RESET_FIELDS[cause]})
+    if cause is ResetCause.OPERATOR_WAKE:
+        task = replace(task, unattended_rounds=_OPERATOR_ACTED)
+    return task
+
+
+def gate_fields(task: TaskState) -> dict[str, object]:
+    """What a step at the plan gate records on the task, for the executor to
+    save. The task has waited there (`gated`, never cleared: also a task that
+    leaves the gate by a respawn has waited). A step taken from the gate, a
+    new review round or the respawn of a dead session, is one more unattended
+    round; gate entry from the plan stage is not a round."""
+    if task.stage is Stage.AWAITING_PLAN_REVIEW:
+        rounds = task.unattended_rounds + 1
+    else:
+        rounds = max(task.unattended_rounds, 0)   # an operator's round is one at the gate
+    return {"gated": True, "unattended_rounds": rounds}
+
+
+def unattended_rounds_used(task: TaskState) -> bool:
+    return task.unattended_rounds >= UNATTENDED_ROUND_LIMIT
 
 
 def _threshold(n: int, cap: int) -> Outcome:

@@ -14,7 +14,8 @@ from typing import NamedTuple
 
 from dispatcher.artifacts import (PLAN_SUMMARY, TICKETS_DIR, CheckResult, check_spec,
                                   check_tickets, count_open_questions, plan_revision)
-from dispatcher.loops import Decision, Loop, Outcome, ReportedRound, evaluate
+from dispatcher.loops import (Decision, Loop, Outcome, ReportedRound, evaluate,
+                              unattended_rounds_used)
 from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
                               StageSignal, TaskState)
 
@@ -133,11 +134,6 @@ class BackgroundView(NamedTuple):
 # no configured track is a protocol slip: it has a retry of its own
 # (TaskState.plan_slips), then parks. Gate entry resets both.
 PLAN_RETRY_LIMIT = 1
-# What a task at the gate may do with no operator action: respawn a dead
-# session, or start a new review round (each one a notification and a fresh
-# grace clock). Past this many the task parks for review instead, so neither
-# loop runs without a human; the operator's reply resets the count.
-UNATTENDED_ROUND_LIMIT = 2
 PLAN_NO_APPROVAL = ('status "done" is accepted only after the operator has '
                     'approved the plan at the review gate; write the review '
                     'summary and report status "awaiting-review" with the '
@@ -203,7 +199,7 @@ def _dead_session_actions(task: TaskState) -> list[object]:
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
         # Reboot recovery: gate-parked tasks don't expire — re-spawn a
         # fresh plan session; the spec folder is on disk in the worktree.
-        if task.unattended_rounds >= UNATTENDED_ROUND_LIMIT:
+        if unattended_rounds_used(task):
             return [ParkForReview()]
         return [SpawnStage(Stage.PLAN)]
     if task.stage in IN_FLIGHT_STAGES:
@@ -302,7 +298,7 @@ def _gate_round_actions(task: TaskState, signal: StageSignal,
     if _skips_gate(task, signal, gate_free):
         return [PublishSpec(review=False)] + _implement_actions(result)
     if (task.stage == Stage.AWAITING_PLAN_REVIEW
-            and task.unattended_rounds >= UNATTENDED_ROUND_LIMIT):
+            and unattended_rounds_used(task)):
         return [ParkForReview(artifact=signal.artifact)]
     return [SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=signal.artifact),
             PublishSpec(),

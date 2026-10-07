@@ -1,7 +1,8 @@
 """Tests for dispatcher.loops — strict TDD, one slice at a time."""
 from dataclasses import replace
 
-from dispatcher.loops import Loop, ReportedRound, FailedRun, PRAttention, Outcome, evaluate, ResetCause, reset
+from dispatcher.loops import (Loop, ReportedRound, FailedRun, PRAttention, Outcome, evaluate,
+                              ResetCause, gate_fields, reset, unattended_rounds_used)
 from dispatcher.state import LoopCaps, Stage, TaskState
 
 # ---------------------------------------------------------------------------
@@ -292,6 +293,19 @@ def test_reset_operator_wake():
     assert result.e2e_rounds == 0
     assert result.ci_rounds == 0
     assert result.ticket_count == 5   # preserved
+
+
+def test_gate_fields_count_only_what_the_task_does_at_the_gate():
+    gate = _task(stage=Stage.AWAITING_PLAN_REVIEW, unattended_rounds=1)
+    assert gate_fields(gate) == {"gated": True, "unattended_rounds": 2}
+    assert unattended_rounds_used(replace(gate, **gate_fields(gate)))
+    # the round that answers the operator is theirs
+    answered = reset(gate, ResetCause.OPERATOR_WAKE)
+    assert gate_fields(answered)["unattended_rounds"] == 0
+    # gate entry from the plan stage is not a round, and keeps no credit
+    for before, after in ((1, 1), (answered.unattended_rounds, 0)):
+        plan = _task(stage=Stage.PLAN, unattended_rounds=before)
+        assert gate_fields(plan) == {"gated": True, "unattended_rounds": after}
 
 
 # ---------------------------------------------------------------------------
