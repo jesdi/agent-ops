@@ -74,6 +74,7 @@ class Sessions:
                          model, args, effort=effort,
                          second=second)
         workspace.install_stop_hook(worktree)
+        workspace.exclude_local_state(worktree)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,
             # herdr's hint for detecting an agent behind a wrapper (podman

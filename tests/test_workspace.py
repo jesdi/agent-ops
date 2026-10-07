@@ -619,3 +619,48 @@ def test_stop_hook_install_neither_reads_nor_writes_through_symlinks(tmp_path):
     assert not settings.is_symlink() and "host-secret" not in settings.read_text()
     hook = wt / ".agent" / "stop-hook.sh"
     assert not hook.is_symlink() and hook.stat().st_mode & 0o111
+
+
+# --- the exclude lines: any git layout, healed on every launch ---------------
+
+def test_exclude_lines_go_to_the_common_git_dir_when_dot_git_is_a_file(tmp_path, monkeypatch):
+    import subprocess as sp
+    clone, gitdir = tmp_path / "clone", tmp_path / "elsewhere.git"
+    sp.run(["git", "init", "-q", "--separate-git-dir", str(gitdir), str(clone)], check=True)
+    assert (clone / ".git").is_file()
+    workspace.exclude_local_state(str(clone))
+    assert (gitdir / "info" / "exclude").read_text().splitlines()[-2:] == [
+        ".agent/", ".claude/settings.local.json"]
+
+
+def test_exclude_lines_heal_from_a_task_worktree_that_existed_before(tmp_path, monkeypatch):
+    """A worktree made before the exclude lines existed gets them at its next
+    session start: the launch path calls this with the worktree."""
+    t = _clone_with_origin(tmp_path, monkeypatch)
+    wt = workspace.create_workspace(t, 42)
+    exclude = Path(t.clone_path) / ".git" / "info" / "exclude"
+    exclude.write_text("# mine\n")
+    (Path(wt) / ".agent" / "ledger.md").write_text("01 merged\n")
+    assert _untracked(wt) != ""
+    workspace.exclude_local_state(wt)
+    assert _untracked(wt) == "" and exclude.read_text().startswith("# mine\n")
+
+
+def test_exclude_write_is_whole_and_follows_no_symlink(tmp_path, monkeypatch):
+    t = _clone_with_origin(tmp_path, monkeypatch)
+    out = _outside(tmp_path)
+    exclude = Path(t.clone_path) / ".git" / "info" / "exclude"
+    exclude.unlink(missing_ok=True)
+    exclude.symlink_to(out / "victim")
+    workspace.exclude_local_state(t.clone_path)
+    assert (out / "victim").read_text() == "untouched"
+    assert not exclude.is_symlink() and ".agent/" in exclude.read_text().splitlines()
+    assert [p.name for p in exclude.parent.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_exclude_on_a_directory_that_is_no_repository_does_nothing(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    workspace.exclude_local_state(str(plain))        # must not raise
+    workspace.exclude_local_state(str(tmp_path / "missing"))
+    assert list(plain.iterdir()) == []

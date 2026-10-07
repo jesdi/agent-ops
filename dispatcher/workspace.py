@@ -303,19 +303,31 @@ def install_stop_hook(wt: str) -> None:
 LOCAL_STATE = (".agent/", ".claude/settings.local.json")
 
 
-def _exclude_local_state(clone_path: str) -> None:
+def exclude_local_state(checkout: str) -> None:
     """Keep the dispatcher's files in a task worktree out of `git status`,
     so a session's `git add -A` never commits them. git reads info/exclude
     from the common directory only, never from a worktree's own, so the
-    lines go in the clone's. Lines already there are kept, none is added twice."""
-    exclude = Path(clone_path) / ".git" / "info" / "exclude"
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    text = exclude.read_text() if exclude.exists() else ""
+    lines go there; git names that directory, for the clone and for any of
+    its worktrees alike. Lines already there are kept, none is added twice.
+    Runs at provisioning and on every launch/resume, so a worktree older
+    than these lines gets them at its next session start. A checkout git
+    cannot read is left alone: the launch that follows reports it."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", checkout, "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if out.returncode != 0 or not out.stdout.strip():
+        return
+    common = Path(checkout, out.stdout.strip())   # relative to the checkout, or absolute
+    raw = read_worktree_file(common, "info", "exclude")
+    text = raw.decode(errors="replace") if raw is not None else ""
     missing = [line for line in LOCAL_STATE if line not in text.splitlines()]
     if missing:
         if text and not text.endswith("\n"):
             text += "\n"
-        exclude.write_text(text + "\n".join(missing) + "\n")
+        write_worktree_file(common, "info", "exclude", text + "\n".join(missing) + "\n")
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
@@ -375,7 +387,7 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
     write_worktree_file(wt, ".agent", "task.json", json.dumps(
         {"issue": issue, "target": target.name, "branch": branch}))
 
-    _exclude_local_state(target.clone_path)
+    exclude_local_state(target.clone_path)
 
     install_stop_hook(wt)
 
