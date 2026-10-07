@@ -6174,6 +6174,21 @@ def test_spec_folder_file_changed_under_an_armed_request_is_a_new_review_round(
     assert t.operator_request.fingerprint not in ("", before)
 
 
+def test_spec_folder_that_leaves_the_worktree_is_never_armed(tmp_path, monkeypatch):
+    """A spec folder swapped for a symlink out of the worktree cannot be
+    read as part of the revision: the approval is disarmed, never kept for a
+    plan whose spec files are no longer covered."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt, folder = _armed_gate_with_spec_folder(c, sess, monkeypatch)
+    outside = tmp_path / "outside"
+    folder.rename(outside)
+    folder.symlink_to(outside, target_is_directory=True)
+    _gate_pass(c, sess, monkeypatch)
+    assert load(c.state_dir, "portfolio_eval", 42).operator_request is None
+
+
 def test_same_summary_bytes_at_another_path_is_a_new_review_round(tmp_path, monkeypatch):
     """The request names a path: the console reads that file. The same text
     in another file is not what the operator was shown."""

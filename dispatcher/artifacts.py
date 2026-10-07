@@ -172,15 +172,19 @@ def _summary_path(root: Path, artifact: str) -> str:
     return PLAN_SUMMARY if rel == "." else rel
 
 
-def _spec_folder_files(root: Path, spec_path: str) -> list[Path]:
+def _spec_folder_files(root: Path, spec_path: str) -> list[Path] | None:
     """spec.md, proposal.md and design.md beside the task's spec; none for a
-    task with no spec path or one outside the worktree."""
+    task with no spec path. None when the folder leaves the worktree (a
+    symlink included): its files cannot be covered, so the revision cannot
+    be told."""
+    if not spec_path:
+        return []
     try:
         folder = (root / spec_path).parent
         folder.resolve().relative_to(root.resolve())
     except (OSError, ValueError, RuntimeError):
-        return []
-    return [folder / name for name in SPEC_FOLDER_FILES] if spec_path else []
+        return None
+    return [folder / name for name in SPEC_FOLDER_FILES]
 
 
 def _read_plan_file(p: Path) -> bytes | None:
@@ -212,8 +216,11 @@ def plan_revision(worktree: str | Path, artifact: str,
     tickets = ticket_files(root / TICKETS_DIR)
     if len(tickets) > MAX_TICKETS:
         return PlanRevision(rel, "", f"more than {MAX_TICKETS} ticket files")
+    spec_files = _spec_folder_files(root, spec_path)
+    if spec_files is None:
+        return PlanRevision(rel, "", f"the spec folder of {spec_path} is outside the worktree")
     digest = hashlib.sha256()
-    for p in [root / rel, *tickets, *_spec_folder_files(root, spec_path)]:
+    for p in [root / rel, *tickets, *spec_files]:
         data = _read_plan_file(p)
         if data is None:
             return PlanRevision(rel, "", (
