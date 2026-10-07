@@ -9,7 +9,7 @@ from dispatcher import execution_overrides
 from dispatcher.machine import Notify, RetryStage, StartTicket, next_actions
 from dispatcher.state import (PARK_HUMAN, PARK_WAKE, Stage, StageSignal,
                               launch_track, load, save)
-from tests.pinned import (ASTRA, DENY_FRONTEND, FABLE, IMPL_DONE, OPUS,
+from tests.pinned import (ASTRA, BOTH, DENY_FRONTEND, FABLE, IMPL_DONE, OPUS,
                           PLAN_DONE, SOL, ahead, deny, launched, make_cfg,
                           policy, raw, rewrite, saved, setup, step, task,
                           unpinned, usage_now, wake, write_ticket)
@@ -142,6 +142,38 @@ def test_a_ticket_whose_track_is_not_pinned_parks_with_no_implement_pick(
     step(unpinned(c), wt, IMPL_DONE)
     t = saved(c)
     assert "implement" not in t.picks and "pinned" in t.park_note
+
+
+def test_review_avoids_none_when_the_tickets_ran_on_both_providers(
+        tmp_path, monkeypatch):
+    """Spec scenario "review avoids none when implement used both
+    providers", with both tickets really launched: ticket 1 on openai,
+    ticket 2 (ticket track frontend) on anthropic. Review takes the entry
+    written first; avoiding the last ticket's provider would give astra."""
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)])
+    out = [launched(step(c, wt, sig))
+           for sig in (PLAN_DONE, IMPL_DONE, IMPL_DONE)]
+    assert out == [[(ASTRA, "medium")], [(f"anthropic/{FABLE}", "medium")],
+                   [(f"anthropic/{FABLE}", "high")]]
+    assert raw(c)["implement_providers"] == BOTH
+    assert saved(c).stage is Stage.REVIEW
+
+
+def test_a_one_shot_override_wins_over_an_admitted_ticket_track(
+        tmp_path, monkeypatch):
+    """Spec scenario "a one-shot override wins over a ticket track": the
+    gate admits every entry, so nothing but the override keeps ticket 2 off
+    the frontend list. It covers that ticket only."""
+    c, wt = setup(tmp_path, monkeypatch, "architecture",
+                  [(), ("frontend",), ("frontend",)])
+    step(c, wt, PLAN_DONE)
+    execution_overrides.save(
+        c.state_dir, "portfolio_eval", 42,
+        execution_overrides.ExecutionOverride(model=ASTRA, bypass_usage=False))
+    assert launched(step(c, wt, IMPL_DONE)) == [(ASTRA, "")]
+    assert saved(c).ticket_cursor == 2
+    assert execution_overrides.load(c.state_dir, "portfolio_eval", 42) is None
+    assert launched(step(c, wt, IMPL_DONE)) == [(f"anthropic/{FABLE}", "medium")]
 
 
 # --- a wake between two tickets -------------------------------------------------

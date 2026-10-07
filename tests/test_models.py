@@ -157,9 +157,14 @@ def test_pinned_defaults_to_empty():
     assert policy().pinned == ()
 
 
-@pytest.mark.parametrize("bad", ["frontend", [1], ["nope"], ["security", "security"]])
-def test_parse_rejects_bad_pinned(bad):
-    with pytest.raises(ValueError, match="pinned"):
+@pytest.mark.parametrize("bad, message", [
+    ("frontend", "must be a list of track names"),
+    ([1], "must be a list of track names"),
+    ([["a"]], "must be a list of track names"),
+    (["nope"], "'nope' is not a defined track"),
+    (["security", "security"], "'security' is named twice")])
+def test_parse_rejects_bad_pinned(bad, message):
+    with pytest.raises(ValueError, match=f"pinned: {message}"):
         parse_policy({**RAW, "pinned": bad})
 
 

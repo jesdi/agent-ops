@@ -41,7 +41,9 @@ def test_architecture_feedback_takes_the_written_first_entry(
     # Mode anthropic would put fable first; the track is pinned.
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="anthropic")
     sess = feedback_round(c, track="architecture", picks={},
-                          implement_providers=BOTH)
+                          implement_providers=BOTH,
+                          ticket_tracks={2: "frontend"}, ticket_cursor=2,
+                          ticket_count=2)
     assert launched(sess) == [(ASTRA, "medium")]
     assert saved(c).picks["feedback"] == f"{ASTRA}@medium"
 
