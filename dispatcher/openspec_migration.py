@@ -42,10 +42,15 @@ Delete after the deploy, all of it together:
 - tests/test_openspec_migration.py, tests/test_openspec_migration_acceptance.py;
 - the guard in dispatcher/main.py (`_refuse_old_flow` and its two calls) and
   its tests in tests/test_openspec_migration.py;
-- the `blocking` parameter of dispatcher/convergence.pass_lock;
+- the `blocking` parameter of dispatcher/convergence.pass_lock, and the two
+  docstring sentences in that module that name it;
 - the README section "Deploying the openspec pipeline";
 - the restart-inputs list in step 1 of prompts/spec.md and the review-file
-  paragraph after it, with their tests in tests/test_prompts.py."""
+  paragraph after it, with their tests in tests/test_prompts.py;
+- `_blocks` and `_assert_no_write_under_docs_specs` in
+  tests/test_spec_stage_without_gate_acceptance.py: once the restart list is
+  gone the spec prompt names no `docs/specs` path, so its two callers assert
+  `"docs/specs" not in prompt` again."""
 from __future__ import annotations
 
 import json

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -131,6 +132,10 @@ class LoopCaps:
 class PlanApprovalRequest:
     path: str   # the plan session's review summary, worktree-relative
     kind: str = "plan-approval"
+    # The plan revision the operator is asked to approve (see
+    # artifacts.plan_revision). "" = unknown: such a request matches no plan.
+    # Not part of the request's identity, and not sent to the console.
+    fingerprint: str = field(default="", compare=False)
 
     def __post_init__(self):
         if not self.path:
@@ -196,7 +201,8 @@ class TaskState:
     plan_retries: int = 0                # in-session plan-format retries used
     plan_slips: int = 0                  # in-session plan-signal retries used (unapproved done, bad track)
     # Plan gate: respawns of a dead session plus review rounds started since
-    # the operator last acted. Only an operator wake resets it (loops.reset).
+    # the operator last acted. Owned by dispatcher/loops.py (gate_fields
+    # counts, reset on an operator wake, UNATTENDED_ROUND_LIMIT caps).
     unattended_rounds: int = 0
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
@@ -217,8 +223,8 @@ class TaskState:
     # a state from before picks existed, marked when it is read. Cleared
     # when that ticket is done. See ticket_in_progress.
     ticket_without_pick: bool = False
-    # The task entered the plan review gate. Set only by _stage_extra in
-    # dispatcher/main.py, never cleared: a task that waited for the operator
+    # The task entered the plan review gate. Set only through
+    # loops.gate_fields, never cleared: a task that waited for the operator
     # once never skips the gate, whatever stage a respawn puts it back in.
     gated: bool = False
     # A spec- or plan-stage session parked for answers. Set only by
@@ -451,7 +457,8 @@ def _read(p: Path) -> TaskState | None:
         raw = d["operator_request"]
         kind = raw.get("kind")
         if kind == "plan-approval":
-            d["operator_request"] = PlanApprovalRequest(path=raw.get("path", ""))
+            d["operator_request"] = PlanApprovalRequest(
+                path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
         elif kind == "answers":
             d["operator_request"] = AnswersRequest(path=raw.get("path", ""))
         else:
@@ -530,24 +537,63 @@ def _open_questions(raw: object) -> int | None:
     return raw if type(raw) is int and raw >= 0 else None
 
 
+STAGE_SIGNAL_MAX_BYTES = 64 * 1024
+_SIGNAL_INT_MAX = 2 ** 53   # what JSON carries exactly; far above any run id
+
+
+def _signal_int(d: dict, key: str) -> int:
+    """A number field of the signal: 0 when left out or null, else an integer
+    in range, also written as a string of digits (sessions do that). Anything
+    else (a float, also 1e400; a bool; other text) raises ValueError: the
+    signal is unreadable, as for any other malformed one."""
+    raw = d.get(key)
+    if raw is None or raw == "":
+        return 0
+    if isinstance(raw, str) and raw.isascii() and raw.isdigit() and len(raw) <= 16:
+        raw = int(raw)
+    if type(raw) is not int or not 0 <= raw <= _SIGNAL_INT_MAX:
+        raise ValueError(f"{key} is not a sane integer: {raw!r}")
+    return raw
+
+
+def read_regular(path: str | Path, max_bytes: int) -> bytes | None:
+    """The bytes of a regular file a session wrote; None for anything else:
+    missing, unreadable, a symlink (not followed), a FIFO or a device (the
+    open never blocks), or larger than max_bytes."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        with os.fdopen(os.open(path, flags), "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return None
+            raw = f.read(max_bytes + 1)
+    except (OSError, ValueError):   # ValueError: a NUL character in the path
+        return None
+    return raw if len(raw) <= max_bytes else None
+
+
 def read_stage_signal(worktree: str | Path) -> StageSignal | None:
-    p = Path(worktree) / ".agent" / "stage.json"
-    if not p.exists():
+    """The session-written .agent/stage.json, read defensively for the
+    dispatcher and the console alike: whatever a model put at that path, the
+    answer is a signal or None, never a hang or an exception."""
+    raw = read_regular(Path(worktree) / ".agent" / "stage.json", STAGE_SIGNAL_MAX_BYTES)
+    if raw is None:
         return None
     try:
-        d = json.loads(p.read_text())
+        d = json.loads(raw)
+        note = d.get("note", "")
         return StageSignal(
             stage=str(d["stage"]),
             status=str(d["status"]),
-            note=str(d.get("note", "")),
+            note=note if isinstance(note, str) else "",
             artifact=str(d.get("artifact", "")),
-            run_id=int(d.get("run_id", 0) or 0),
+            run_id=_signal_int(d, "run_id"),
             loop=str(d.get("loop", "") or ""),
-            round=int(d.get("round", 0) or 0),
+            round=_signal_int(d, "round"),
             track=str(d.get("track", "") or ""),
             open_questions=_open_questions(d.get("open_questions")),
         )
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError,
+            OverflowError):
         return None
 
 

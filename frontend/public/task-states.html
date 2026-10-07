@@ -43,6 +43,7 @@
   main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 64px; }
   h1 { font-size: 24px; font-weight: 600; margin: 0 0 4px; }
   h2 { font-size: 18px; font-weight: 600; margin: 40px 0 8px; }
+  h3 { font-size: 15px; font-weight: 600; margin: 24px 0 8px; }
   p, li { max-width: 72ch; }
   ul { padding-left: 20px; }
   .muted { color: var(--ink-muted); }
@@ -221,6 +222,15 @@ flowchart TD
 <tr><td><code>e2e</code></td><td>3</td><td>One failed end-to-end run in implement or review.</td></tr>
 <tr><td><code>ci</code></td><td>3</td><td>One fix on an open PR: a red check, a conflict or a failed run.</td></tr>
 </table></div>
+
+<h3>Review rounds at the plan gate</h3>
+<p>The task waits at <code>awaiting-plan-review</code> with an approval request for one plan: the review summary and the ticket files as they were when the request was made.</p>
+<ul>
+  <li>Signal <code>working</code> at the gate removes the request. The session changes the plan, and the old summary must not be approved.</li>
+  <li>The next signal <code>awaiting-review</code> starts a new review round: the dispatcher checks the ticket set again, publishes the spec folder, sends a new notification and starts the 15 minutes again.</li>
+  <li>A new round also starts when the summary or a ticket file changed and no pass saw the signal <code>working</code>.</li>
+  <li>With no action from the operator, the task has a budget of two steps. A new review round uses one step, and a new start of a stopped plan session uses one step: the two kinds share the budget. When the budget is used, the next step parks the task for review. A reply from the operator gives the full budget back, and the round that answers the reply uses no step.</li>
+</ul>
 
 <h2 id="board">Board columns</h2>
 <p>The park decides the column when the task is parked. If the task is not parked, the stage decides.</p>

@@ -149,6 +149,13 @@ def _task(c):
     return load(c.state_dir, "portfolio_eval", ISSUE)
 
 
+def _arm(c):
+    """A request armed by hand is bound to the plan on disk, as a pass binds it."""
+    t = _task(c)
+    save(c.state_dir, dc_replace(
+        t, operator_request=main._plan_approval(t, t.operator_request.path)))
+
+
 # 1. The task waits at the plan review gate.
 def test_ready_report_makes_the_task_wait_with_a_folder_link(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
@@ -253,6 +260,13 @@ def test_approval_naming_security_runs_implement_on_the_security_entries(tmp_pat
     (impl,) = [s for s in sess.spawned if s[1] == "implement"]
     assert impl[2].endswith("claude-opus-5")
 
+    # ... and the review stage runs on the same track's review entry.
+    _signal(wt, stage="implement", status="done", note="4/4 tickets merged")
+    main.run_pass(c, deps(sess=sess))
+    assert _task(c).stage is Stage.REVIEW and _task(c).track == "security"
+    (review,) = [s for s in sess.spawned if s[1] == "review"]
+    assert review[2].endswith("claude-opus-5")
+
 
 def test_approval_naming_an_unconfigured_track_is_bounced_once(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
@@ -323,6 +337,7 @@ def test_gate_parks_after_the_grace_time_and_a_later_approval_starts_implement(
         _task(c), stage=Stage(GATE), operator_request=PlanApprovalRequest(SUMMARY),
         updated_at=(datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()))
     _ready(wt)
+    _arm(c)
     gh = FakeGitHub([Candidate(99, "next", "u99")])
     sess = FakeSessions(alive={ISSUE})
 
@@ -355,6 +370,7 @@ def test_null_grace_never_parks_the_gate(tmp_path, monkeypatch):
         _task(c), stage=Stage(GATE), operator_request=PlanApprovalRequest(SUMMARY),
         updated_at=(datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()))
     _ready(wt)
+    _arm(c)
     gh = FakeGitHub([Candidate(99, "next", "u99")])
     sess = FakeSessions(alive={ISSUE})
 
@@ -373,6 +389,7 @@ def test_gate_task_with_a_dead_session_gets_a_fresh_plan_session(tmp_path, monke
     save(c.state_dir, dc_replace(_task(c), stage=Stage(GATE),
                                  operator_request=PlanApprovalRequest(SUMMARY)))
     _ready(wt)
+    _arm(c)
     sess = FakeSessions(alive=set())
 
     main.run_pass(c, deps(sess=sess))
@@ -452,6 +469,14 @@ def test_prompt_treats_feedback_as_never_an_approval(tmp_path, monkeypatch):
     assert "never an approval" in p
     assert "push" in p
     assert "ready again" in p
+    # Requirement 8, in the ONE list item that is the feedback rule.
+    (item,) = [" ".join(b.split()) for b in _section_from(p, r"## 6\.").split("\n- ")
+               if "is feedback" in b]
+    assert "never an approval" in item
+    assert "a changed requirement changes `spec.md`, `design.md` and the tickets" in item
+    assert "a changed decision changes `design.md` and the tickets" in item
+    assert "ready again" in item and "push" in item
+    assert "never go back to an interview" in item
 
 
 def test_stage_is_never_the_spec_stage_across_a_feedback_round(tmp_path, monkeypatch):

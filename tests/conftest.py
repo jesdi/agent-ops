@@ -45,6 +45,32 @@ def _isolated_state_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
 
 
+class _EveryTarget(dict):
+    """A clones mapping that answers every target with one path."""
+
+    def __init__(self, clone: str):
+        super().__init__()
+        self.clone = clone
+
+    def get(self, key, default=None):
+        return self.clone
+
+
+@pytest.fixture(autouse=True)
+def _a_clone_for_every_target(tmp_path, monkeypatch):
+    """Production builds Sessions with the configured clone of each target
+    and launches nothing for a target without one. A test that builds
+    `Sessions()` with no `clones` gets <tmp_path>/clone for every target, so
+    launch tests need not repeat it; a test of the rule passes `clones`."""
+    from dispatcher import sessions
+    real = sessions.Sessions.__init__
+
+    def init(self, *args, clones=None, **kw):
+        real(self, *args, clones=_EveryTarget(str(tmp_path / "clone"))
+             if clones is None else clones, **kw)
+    monkeypatch.setattr(sessions.Sessions, "__init__", init)
+
+
 @pytest.fixture(autouse=True)
 def _no_herdr_server(monkeypatch):
     """The dev machine runs a real herdr server. Every herdr call in the

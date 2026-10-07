@@ -97,6 +97,46 @@ is a safety property: a session that dies part way leaves a body file the
 next one uses.
 _Avoid_: PR stage, verify stage
 
+**Spec folder**:
+`specs/<YYYY-MM-DD>-<topic>/` in the task's worktree, dated with the day the
+spec session starts. It holds `proposal.md`, `spec.md` and `design.md` during
+the task; `main` keeps only `spec.md`.
+_Avoid_: design file, spec file (the spec is the folder's `spec.md`)
+
+**Plan review gate**:
+The one point where a task waits for the operator before a pull request
+exists: after the plan session wrote the design and the tickets. The
+operator is shown the spec folder on GitHub and the plan summary on the
+console. Only an explicit approval starts implement.
+_Avoid_: spec review gate, spec approval (retired with the old flow)
+
+**Plan summary**:
+`.agent/plan-review.md`, written by the plan session before it reports
+ready: the ticket list, the open questions and the corrections it made to
+stage 1. It is the request the console shows at the gate. Never committed.
+
+**Open question**:
+What the plan session reports at its end: a red-team finding the design
+leaves unresolved, a choice between two behaviours that differ for the user
+or the business, or an input the design assumes and no source provides.
+Listed in the plan summary, counted in the ready report.
+
+**Gate-free track**:
+A track whose `targets.yaml` entry carries `plan_review: false`. A track
+without the key has the gate. Gate-free is one of the conditions of the gate
+skip, never the only one.
+
+**Ledger**:
+`.agent/ledger.md` in the task's worktree: the rulings of the implement
+session and the state of every ticket. A session that finds one continues
+from it. The review session reads it only after its own review. Never
+committed.
+
+**Implement progress**:
+The note of the implement session's last `working` report, for example
+"2/4 tickets merged". The console shows it on the task page while the task
+is in implement.
+
 **Gate**:
 The target repository's own green check (`gate_cmd` in targets.yaml —
 tests, lint, CRAP), run by the implement session for every ticket and in review.
@@ -316,12 +356,21 @@ its lifecycle writes:
 - Clear on: successful resume, stage transition, ordinary+exhaustion park, terminal stage, CI/login supersede.
 - Retain on admission denial (resources unavailable at wake time).
 - Clear when the session at the gate reports `working` (it reworks the plan on feedback).
-- Clear when the plan signal is bounced (`_retry_plan`), and when a ready report at the gate fails
-  the ticket check with the request still armed: the check runs on every ready report, armed or not.
-- Re-arm on a ready report at the gate with no request armed: a new review round (ticket check,
-  publish, notification, fresh grace clock). The grace clock runs for an armed request only.
-- A task at the gate gets 2 unattended rounds (`unattended_rounds`: respawns of a dead session plus
-  new rounds since the operator last acted); the next one parks it for review, with the request armed.
+- Clear when the plan signal is bounced (`_retry_stage`).
+- A plan-approval request is bound to one plan revision: its `fingerprint` is a digest over the
+  summary, the ticket files and the spec folder's `spec.md`, `proposal.md` and `design.md`, taken
+  when it is armed (`artifacts.plan_revision`; not sent to the console). A ready report at the gate
+  that names another revision or another summary path clears the request and is a new review
+  round; a request with no fingerprint matches no plan. Every file is read without following a
+  symlink and without blocking, up to 1 MB: a file that cannot be read that way makes the revision
+  unavailable, which clears the request and has the outcome of a failed ticket check.
+- Re-arm on a ready report at the gate with no request armed for that plan: a new review round
+  (ticket check, publish, notification, fresh grace clock). The grace clock runs for an armed
+  request only. The ticket check runs on every ready report that is not for the armed revision.
+- A task at the gate gets 2 unattended rounds (`unattended_rounds`, owned by `dispatcher/loops.py`:
+  respawns of a dead session plus new rounds since the operator last acted; the round that answers
+  an operator reply is not counted). The next round parks the task for review with the request
+  armed; a dead session with the rounds used up parks it with a message that claims no ready plan.
 
 **Gate skip**: the dispatcher alone skips the plan review gate (`machine._skips_gate`), on the first
 ready report of a task, when all of these hold: the task's own track is gate-free (`plan_review: false`;
@@ -329,7 +378,10 @@ a track the ready report names does not count), `TaskState.asked` is false (neit
 nor the plan session parked for answers), and the report's `open_questions` is the integer 0, its
 `artifact` is `.agent/plan-review.md`, and that file confirms the count (its open-questions section says
 `None.`; `artifacts.count_open_questions`). A missing or malformed count or summary, a summary with other
-`## ` headings than the three prescribed, or one above 256 KB means "the gate applies". The ticket check and
+level-2 headings than the three prescribed, or one above 256 KB means "the gate applies". A heading
+counts in any form Markdown reads as one (indented by up to three spaces, a tab after the hashes);
+a heading the counter cannot classify, a setext heading (a text line underlined with `=` or `-`)
+included, also means "the gate applies". The ticket check and
 the spec folder publish run as at the gate, then implement starts in the same pass;
 no review notification, no request. `TaskState.gated` is set at gate entry, and when a dead
 gate session is respawned, and never cleared: a task that waited once never skips, also after a respawn
@@ -341,8 +393,10 @@ The web layer READS `operator_request`; it never infers a request from park stat
 discriminated `readable | unavailable` content union. One `RequestPanel` + media renderer in the
 frontend. Approval is only possible on a `readable` plan-approval request.
 
-**No legacy conversion**: `state._read` rejects the retired `awaiting-spec-review` stage and
-`spec-approval` kind. The external stage-signal artifact parser (`read_stage_signal`) is separate and retained.
+**Retired fields are dropped on load; nothing else is converted**: `state._read` drops the
+retired task fields (`pending_reply`, `artifact`, `ticket_cursor`) and rejects the retired
+`awaiting-spec-review` stage and `spec-approval` kind. `read_stage_signal` is the one parser of
+the session-written `.agent/stage.json`, for the dispatcher and the console.
 
 **Three distinct questions** — kept separate by design:
 

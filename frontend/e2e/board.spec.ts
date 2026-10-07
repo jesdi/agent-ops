@@ -22,13 +22,20 @@ test('empty columns are chips and the Wont do chip takes a drop', async ({ page 
 
   await showColumn(page, 'parked')
   // Not dragTo: the chip accepts a drop only after a dragover, and Playwright
-  // needs a second move over the target to fire one reliably.
-  await page.getByTestId('card-42').hover()
-  await page.mouse.down()
-  await page.getByTestId('chip-wont-do').hover()
-  await page.getByTestId('chip-wont-do').hover()
-  await page.mouse.up()
-  await expect(page.getByTestId('wont-do-confirm')).toContainText('#42')
+  // needs a second move over the target to fire one reliably. Even so, about
+  // one synthetic drag in a hundred never starts (the card stays where it
+  // is and no drop fires), so the gesture is repeated until the board asks.
+  const confirm = page.getByTestId('wont-do-confirm')
+  await expect(async () => {
+    if (!(await confirm.isVisible())) {
+      await page.getByTestId('card-42').hover()
+      await page.mouse.down()
+      await page.getByTestId('chip-wont-do').hover()
+      await page.getByTestId('chip-wont-do').hover()
+      await page.mouse.up()
+    }
+    await expect(confirm).toContainText('#42', { timeout: 1000 })
+  }).toPass({ timeout: 15_000 })
   await page.getByRole('button', { name: "Confirm won't do?" }).click()
   await expect(page.getByTestId('wont-do-confirm')).toHaveCount(0)
   await expect(page.getByTestId('card-42').getByText('pending: cancel')).toBeVisible()

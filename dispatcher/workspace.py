@@ -3,14 +3,123 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
+import stat
 import subprocess
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from dispatcher import containers
 from dispatcher.config import Target
 
 HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
+
+# A task worktree, the clone and the runtime homes are mounted into the
+# session's container, so a session can plant a symlink at any path the
+# dispatcher writes there, or swap a directory for one. Every dispatcher write
+# into such a place goes through the three functions below: the directory is
+# opened once, component by component, without following a symlink, and the
+# file is created and renamed relative to that descriptor. A rename replaces a
+# symlink at the destination instead of following it, and a directory swapped
+# after the open cannot redirect the write.
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+
+
+@contextmanager
+def _real_dir(root: str | Path, *parts: str):
+    """A descriptor of <root>/<parts...>, each part a real directory, never
+    a symlink. Only the last part is made when missing: the ones above it
+    must be there. Raises OSError otherwise."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            if part == parts[-1]:
+                with suppress(FileExistsError):
+                    os.mkdir(part, dir_fd=fd)
+            try:
+                nxt = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            except OSError as exc:
+                raise OSError(exc.errno, f"{Path(root, *parts)}: {part!r} is not a "
+                              f"real directory (a symlink?); nothing written") from exc
+            os.close(fd)
+            fd = nxt
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def _plain_name(name: str) -> str:
+    if not name or name in (".", "..") or "/" in name or "\0" in name:
+        raise ValueError(f"not a plain file name: {name!r}")
+    return name
+
+
+def write_worktree_file(root: str | Path, subdir: str, name: str,
+                        data: str | bytes, mode: int | None = 0o644) -> None:
+    """Write <root>/<subdir>/<name> whole (temp file, then rename), never
+    through a symlink. `subdir` may hold several components. A failed write
+    leaves no temp file behind. `mode` None keeps the mode of the regular
+    file that is replaced, and makes a new file 0600."""
+    name = _plain_name(name)
+    raw = data.encode() if isinstance(data, str) else data
+    tmp = f".{name}.{secrets.token_hex(6)}.tmp"
+    with _real_dir(root, *Path(subdir).parts) as dfd:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=dfd)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(raw)
+                os.fchmod(fh.fileno(), _kept_mode(dfd, name) if mode is None else mode)
+            os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+        except BaseException:
+            with suppress(OSError):
+                os.unlink(tmp, dir_fd=dfd)
+            raise
+
+
+def _kept_mode(dfd: int, name: str) -> int:
+    try:
+        st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+    except OSError:
+        return 0o600
+    return stat.S_IMODE(st.st_mode) if stat.S_ISREG(st.st_mode) else 0o600
+
+
+def append_worktree_file(root: str | Path, subdir: str, name: str, text: str) -> None:
+    """Append to <root>/<subdir>/<name>: only to a regular file with one
+    name (no symlink, no hard link to a file elsewhere)."""
+    with _real_dir(root, *Path(subdir).parts) as dfd:
+        fd = os.open(_plain_name(name), os.O_WRONLY | os.O_APPEND | os.O_CREAT
+                     | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+                     0o644, dir_fd=dfd)
+        with os.fdopen(fd, "a") as fh:
+            st = os.fstat(fh.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                raise OSError(f"{Path(root, subdir, name)} is not a plain file; "
+                              f"nothing appended")
+            fh.write(text)
+
+
+def read_worktree_file(root: str | Path, subdir: str, name: str,
+                       max_bytes: int = 1024 * 1024) -> bytes | None:
+    """The bytes of the regular file <root>/<subdir>/<name>, read without
+    following a symlink at any component; None when there is no such file."""
+    try:
+        with _real_dir(root, *Path(subdir).parts) as dfd:
+            fd = os.open(_plain_name(name), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                         | getattr(os, "O_NONBLOCK", 0), dir_fd=dfd)
+            with os.fdopen(fd, "rb") as fh:
+                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    return None
+                raw = fh.read(max_bytes + 1)
+    except OSError:
+        return None
+    return raw if len(raw) <= max_bytes else None
+
+
+def _write_log(log: Path, text: str) -> None:
+    write_worktree_file(log.parent.parent, log.parent.name, log.name, text)
 
 
 def _sh(args: list[str], cwd: str, timeout: int = 300,
@@ -26,12 +135,10 @@ def _sh(args: list[str], cwd: str, timeout: int = 300,
                 if isinstance(v, bytes):
                     return v.decode(errors="replace")
                 return v
-            log.parent.mkdir(parents=True, exist_ok=True)
-            log.write_text(_decode(exc.stdout) + _decode(exc.stderr))
+            _write_log(log, _decode(exc.stdout) + _decode(exc.stderr))
         raise
     if log is not None:
-        log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text(proc.stdout + proc.stderr)
+        _write_log(log, proc.stdout + proc.stderr)
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, args,
                                             proc.stdout, proc.stderr)
@@ -83,9 +190,7 @@ def _mark_provisioned(wt: str) -> None:
     directory is a complete checkout" apart from "this directory is
     wreckage left by an add killed mid-run" without relying solely on the
     deleted-tracked-file heuristic in _worktree_health_issue."""
-    agent_dir = Path(wt) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    (agent_dir / "provisioned").touch()
+    write_worktree_file(wt, ".agent", "provisioned", "")
 
 
 def _status_porcelain_probe(wt: str) -> subprocess.CompletedProcess | None:
@@ -152,13 +257,6 @@ def _worktree_health_issue(wt: str, branch: str) -> str | None:
     return None
 
 
-def _write_json_atomic(p: Path, data) -> None:
-    """Write JSON so a reader never sees half a file: temp file, then rename."""
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    tmp.replace(p)
-
-
 def _seed_claude_state(wt: str) -> None:
     """Merge-write claude-home/.claude.json so stage containers never stall
     on an interactive dialog nobody is attached to answer: complete
@@ -167,17 +265,26 @@ def _seed_claude_state(wt: str) -> None:
     .claude.json is machine state — only these keys are asserted, the rest
     is preserved; an unreadable file starts fresh rather than failing
     provisioning."""
-    home = Path(containers._state_dir()) / "claude-home"
-    home.mkdir(parents=True, exist_ok=True)
-    p = home / ".claude.json"
-    try:
-        data = json.loads(p.read_text()) if p.exists() else {}
-    except (json.JSONDecodeError, OSError):
-        data = {}
+    state_dir = Path(containers._state_dir())
+    state_dir.mkdir(parents=True, exist_ok=True)
+    data = _json_object(read_worktree_file(state_dir, "claude-home", ".claude.json"))
     data["hasCompletedOnboarding"] = True
-    data.setdefault("projects", {}).setdefault(wt, {})[
-        "hasTrustDialogAccepted"] = True
-    _write_json_atomic(p, data)
+    projects = data.get("projects")
+    data["projects"] = projects = projects if isinstance(projects, dict) else {}
+    trust = projects.get(wt)
+    projects[wt] = trust = trust if isinstance(trust, dict) else {}
+    trust["hasTrustDialogAccepted"] = True
+    write_worktree_file(state_dir, "claude-home", ".claude.json",
+                        json.dumps(data, indent=2) + "\n", mode=None)
+
+
+def _json_object(raw: bytes | None) -> dict:
+    """The JSON object in `raw`; {} for a missing, unparseable or other file."""
+    try:
+        data = json.loads(raw) if raw is not None else None
+    except (ValueError, RecursionError):
+        data = None
+    return data if isinstance(data, dict) else {}
 
 
 def install_stop_hook(wt: str) -> None:
@@ -186,21 +293,10 @@ def install_stop_hook(wt: str) -> None:
     on every launch/resume, so a stale or deleted hook heals. Only hooks.Stop
     is asserted; other settings keys survive, and a missing, unparseable or
     non-object file is replaced."""
-    agent_dir = Path(wt) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    hook_dst = agent_dir / "stop-hook.sh"
-    shutil.copy(HOOKS_DIR / "stop-hook.sh", hook_dst)
-    hook_dst.chmod(0o755)   # copy keeps the source mode; the box's checkout may lack +x
-
-    claude_dir = Path(wt) / ".claude"
-    claude_dir.mkdir(exist_ok=True)
-    path = claude_dir / "settings.local.json"
-    try:
-        settings = json.loads(path.read_text())
-    except (OSError, ValueError):
-        settings = None
-    if not isinstance(settings, dict):
-        settings = {}
+    # 0755: the box's checkout of the source may lack +x.
+    write_worktree_file(wt, ".agent", "stop-hook.sh",
+                        (HOOKS_DIR / "stop-hook.sh").read_bytes(), mode=0o755)
+    settings = _json_object(read_worktree_file(wt, ".claude", "settings.local.json"))
     hooks = settings.get("hooks")
     settings["hooks"] = hooks = hooks if isinstance(hooks, dict) else {}
     # Anchor to $CLAUDE_PROJECT_DIR, not a bare relative path: Claude fires
@@ -210,25 +306,34 @@ def install_stop_hook(wt: str) -> None:
     hooks["Stop"] = [{"hooks": [{
         "type": "command",
         "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]}]
-    _write_json_atomic(path, settings)   # a live session may read it mid-resume
+    # Whole or not at all: a live session may read it mid-resume.
+    write_worktree_file(wt, ".claude", "settings.local.json",
+                        json.dumps(settings, indent=2) + "\n")
 
 
 LOCAL_STATE = (".agent/", ".claude/settings.local.json")
 
 
-def _exclude_local_state(clone_path: str) -> None:
+def exclude_local_state(clone_path: str) -> None:
     """Keep the dispatcher's files in a task worktree out of `git status`,
     so a session's `git add -A` never commits them. git reads info/exclude
     from the common directory only, never from a worktree's own, so the
-    lines go in the clone's. Lines already there are kept, none is added twice."""
-    exclude = Path(clone_path) / ".git" / "info" / "exclude"
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    text = exclude.read_text() if exclude.exists() else ""
+    lines go in the clone's. Lines already there are kept, none is added twice.
+
+    `clone_path` is the target's configured clone, never a path taken from a
+    task worktree or from git: a worktree's `.git` file and the clone's git
+    metadata are session-writable, and would name any directory on the host.
+    The file is the fixed <clone_path>/.git/info/exclude, and `.git` and
+    `info` must be real directories there (write_worktree_file). Anything
+    else raises OSError."""
+    raw = read_worktree_file(clone_path, ".git/info", "exclude")
+    text = raw.decode(errors="replace") if raw is not None else ""
     missing = [line for line in LOCAL_STATE if line not in text.splitlines()]
     if missing:
         if text and not text.endswith("\n"):
             text += "\n"
-        exclude.write_text(text + "\n".join(missing) + "\n")
+        write_worktree_file(clone_path, ".git/info", "exclude",
+                            text + "\n".join(missing) + "\n")
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
@@ -282,15 +387,13 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
         _mark_provisioned(wt)
     if target.setup_cmd:
         _sh(containers.setup_cmd(f"task-{target.name}-{issue}-setup", wt,
-                                 target.setup_cmd),
+                                 target.setup_cmd, target.clone_path),
             cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
 
-    agent_dir = Path(wt) / ".agent"
-    agent_dir.mkdir(exist_ok=True)
-    (agent_dir / "task.json").write_text(
-        json.dumps({"issue": issue, "target": target.name, "branch": branch}))
+    write_worktree_file(wt, ".agent", "task.json", json.dumps(
+        {"issue": issue, "target": target.name, "branch": branch}))
 
-    _exclude_local_state(target.clone_path)
+    exclude_local_state(target.clone_path)
 
     install_stop_hook(wt)
 

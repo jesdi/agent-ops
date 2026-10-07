@@ -13,7 +13,7 @@ import dispatcher.main as main
 from dispatcher.github import Candidate
 from dispatcher.state import PARK_REVIEW, PlanApprovalRequest, load
 
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps,
+from tests.test_main import (FakeGitHub, FakeSessions, arm_gate, cfg, deps,
                              gate_signal, make_task, patch_usage,
                              patch_workspace, replace_capacity,
                              write_tickets)
@@ -34,6 +34,7 @@ def test_null_grace_never_parks_after_12_hours(tmp_path, monkeypatch):
                    updated_at=twelve_hours_ago)
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     gh = FakeGitHub([Candidate(99, "fresh", "u")])  # Ready candidate elsewhere
     sess = FakeSessions(alive={42})
     d = deps(gh, sess)
@@ -62,6 +63,7 @@ def test_zero_grace_parks_the_pass_after_it_entered_review(tmp_path, monkeypatch
                    updated_at=datetime.now(timezone.utc).isoformat())
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
 
@@ -84,6 +86,7 @@ def test_default_grace_does_not_park_before_15_minutes(tmp_path, monkeypatch):
                    updated_at=just_under)
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
 
@@ -106,6 +109,7 @@ def test_default_grace_parks_at_15_minutes(tmp_path, monkeypatch):
                    updated_at=at_boundary)
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
 

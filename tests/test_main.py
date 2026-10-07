@@ -17,7 +17,7 @@ from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                PARK_REVIEW, PARK_WAKE, AnswersRequest,
                                LoopCaps, PlanApprovalRequest, Stage,
-                               TaskState, clear_turn_markers, has_waiting, load,
+                               TaskState, has_waiting, load,
                                load_all, mark_waiting, save)
 from tests.usagefakes import session_usage
 
@@ -165,7 +165,7 @@ class FakeSessions:
         self.spawn_calls = []
         self.resume_calls = []
         # Issues whose launch explodes the way a vanished worktree does:
-        # containers.clone_root reads <worktree>/.git to find the clone to
+        # the launcher checks <worktree>/.git before it builds the command to
         # mount, so a swept or half-removed checkout raises here.
         self.resume_raises = set(resume_raises)
         self.spawn_raises = set(spawn_raises)
@@ -1610,7 +1610,7 @@ def test_broken_worktree_fails_that_task_and_pass_survives(tmp_path, monkeypatch
     """A woken task whose worktree vanished must not take the pass with it.
 
     The box wedged this way for hours: task-194's checkout was gone, so
-    clone_root raised inside sessions.resume, guarded_pass re-raised, and
+    the launch raised inside sessions.resume, guarded_pass re-raised, and
     _resume_woken never reached the tasks behind it — no claims, no spawns,
     nothing, every pass, until a human looked."""
     patch_usage(monkeypatch)
@@ -1942,6 +1942,26 @@ def test_forced_active_task_uses_choice_at_next_stage(tmp_path):
         (42, Stage.PLAN.value, "anthropic/claude-sonnet-4-6")]
     assert execution_overrides.load(
         c.state_dir, "portfolio_eval", 42) is None
+
+
+def test_failed_launch_keeps_the_operators_one_time_choice(tmp_path):
+    """The choice is for the launch that runs: one that failed has not used it."""
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.SPEC)
+    valid_spec(wt)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "spec", "status": "done", "note": "", "artifact": "spec.md",
+        "track": "standard"}))
+    choice = execution_overrides.ExecutionOverride(
+        model="claude-sonnet-4-6", bypass_usage=True)
+    execution_overrides.save(c.state_dir, "portfolio_eval", 42, choice)
+
+    main._drive_task(c, deps(sess=FakeSessions(alive=(42,), spawn_raises={42})),
+                     c.targets[0], load(c.state_dir, "portfolio_eval", 42),
+                     DENY_ALL, tuple)
+
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+    assert execution_overrides.load(c.state_dir, "portfolio_eval", 42) == choice
 
 
 def test_resume_uses_the_model_for_the_parked_stage(tmp_path, monkeypatch):
@@ -2928,7 +2948,7 @@ def test_injection_refused_when_pane_left_the_login_prompt(tmp_path, monkeypatch
 
 
 def test_injection_restores_the_unpark_invariant(tmp_path, monkeypatch):
-    # Same invariant _resume_woken/_retry_plan enforce: a stale blocked signal
+    # Same invariant _resume_woken/_retry_stage enforce: a stale blocked signal
     # or waiting marker would re-park (and END) the freshly re-authed session.
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -2984,6 +3004,13 @@ def gate_signal(wt: Path, artifact: str = ".agent/plan-review.md") -> None:
          "artifact": artifact}))
 
 
+def arm_gate(c, issue: int = 42, artifact: str = ".agent/plan-review.md") -> None:
+    """Bind the task's request to the plan that is on disk now, as the pass
+    that armed it did: call it after the tickets and the summary are written."""
+    t = load(c.state_dir, "portfolio_eval", issue)
+    save(c.state_dir, dc_replace(t, operator_request=main._plan_approval(t, artifact)))
+
+
 def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -2991,6 +3018,7 @@ def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatc
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED, slot=1)
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
@@ -3010,6 +3038,7 @@ def test_gate_park_is_event_logged(tmp_path, monkeypatch):
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED)
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     parked = [e for e in eventlog.read_tail(c.state_dir)
               if e["event"] == "parked"]
@@ -3029,6 +3058,7 @@ def test_gate_holds_inside_the_grace_period(tmp_path, monkeypatch):
                    operator_request=PlanApprovalRequest(PLAN_SUMMARY))
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
@@ -3057,6 +3087,7 @@ def test_zero_grace_parks_on_the_next_pass(tmp_path, monkeypatch):
                    updated_at=datetime.now(timezone.utc).isoformat())
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_REVIEW
 
@@ -3067,10 +3098,17 @@ def test_unparseable_timestamp_never_expires(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
-                   updated_at="not-a-timestamp")
+                   updated_at="not-a-timestamp", operator_request=ARMED)
+    write_tickets(wt, 2)
     gate_signal(wt)
-    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    assert load(c.state_dir, "portfolio_eval", 42).park == ""
+    arm_gate(c)
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == "" and t.updated_at == "not-a-timestamp"
+    assert t.operator_request is not None and t.plan_retries == 0
+    assert sess.ended == [] and sess.resumed == [] and d.notifier.sent == []
 
 
 def test_grace_expiry_park_preserves_plan_approval_request(tmp_path, monkeypatch):
@@ -3093,6 +3131,7 @@ def test_grace_expiry_park_preserves_plan_approval_request(tmp_path, monkeypatch
     (wt / ".agent" / "plan-review.md").write_text("# Plan review\n\nApprove me.")
     write_tickets(wt, 2)
     gate_signal(wt)  # status=awaiting-review, grace already elapsed → ParkForReview
+    arm_gate(c)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_REVIEW
@@ -3170,6 +3209,7 @@ def test_plan_parked_ping_links_spec(tmp_path, monkeypatch):
                    spec_path="docs/superpowers/specs/x-design.md")
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     monkeypatch.setattr(main.spec_publish, "ensure_published",
                         lambda **kw: spec_publish.PublishResult(url=SPEC_URL))
     d = deps(sess=FakeSessions(alive={42}))
@@ -3189,6 +3229,7 @@ def test_plan_parked_note_says_local_only_when_publish_fails(
                    spec_path="docs/superpowers/specs/x-design.md")
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     monkeypatch.setattr(
         main.spec_publish, "ensure_published",
         lambda **kw: spec_publish.PublishResult(error="git push failed: auth"))
@@ -3208,6 +3249,7 @@ def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
                    spec_path="docs/specs/x-design.md")
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     token_error = (
         "git push failed: fatal: unable to access "
         "'https://x-access-token:ghp_SECRET@github.com/jesdi/r.git/': "
@@ -3409,6 +3451,7 @@ def test_park_for_review_saves_park_note(tmp_path, monkeypatch):
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED, slot=1)
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).park_note == "plan ready for review"
 
@@ -4229,10 +4272,11 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
     messages.append(c.state_dir, "portfolio_eval", 42, "keep the scope small", "jesdi@github")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._retry_plan(c, d, c.targets[0], task,
-                     main._launch_for(c, c.targets[0], task, Stage.PLAN,
-                                      lambda m: True, tuple),
-                     "missing Goal line")
+    main._retry_stage(c, d, c.targets[0], task,
+                      main._launch_for(c, c.targets[0], task, Stage.PLAN,
+                                       lambda m: True, tuple),
+                      main.RetryStage(Stage.PLAN, "missing Goal line",
+                                      main.loops.Retry.PLAN_TICKETS))
     assert "keep the scope small" in d.sessions.resumed[-1][1]
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
@@ -5715,11 +5759,12 @@ def test_a_session_that_dies_at_the_gate_each_life_is_respawned_twice_then_parks
     assert [s[1] for s in sess.spawned] == ["plan", "plan"]
     assert t.park == PARK_REVIEW and t.slot == NO_SLOT
     assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
-    assert notifier.sent.count("plan_parked") == 1
+    assert notifier.sent.count("plan_session_stopped") == 1
+    assert "plan_parked" not in notifier.sent
     assert notifier.sent.count("awaiting_plan_review") == 3
     for _ in range(3):                         # parked: nothing more happens
         _gate_pass(c, sess, monkeypatch, notifier=notifier)
-    assert len(sess.spawned) == 2 and notifier.sent.count("plan_parked") == 1
+    assert len(sess.spawned) == 2 and notifier.sent.count("plan_session_stopped") == 1
 
 
 def test_flapping_at_the_gate_gets_two_new_rounds_then_parks(tmp_path, monkeypatch):
@@ -5769,6 +5814,34 @@ def test_rounds_that_follow_an_operator_reply_are_never_capped(tmp_path, monkeyp
     assert len(sess.resumed) == 5
 
 
+def test_round_that_follows_an_operator_reply_is_not_an_unattended_one(
+        tmp_path, monkeypatch):
+    """After a reply the operator is involved: the round that answers them is
+    theirs, the next two unprompted rounds are announced, the third parks."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = _plan_ready_task(c)
+    sess = LiveUntilEnded(alive={42})
+    notifier = FakeNotifier()
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
+                             {"text": "drop ticket 2"}, actor="op", epoch_ms=1)
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)       # delivered
+    gate_signal(wt)
+    _gate_pass(c, sess, monkeypatch, notifier=notifier)       # the answer's round
+    assert load(c.state_dir, "portfolio_eval", 42).unattended_rounds == 0
+    for flap in range(1, 4):
+        (wt / ".agent" / "stage.json").write_text(json.dumps(WORKING))
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)
+        gate_signal(wt)
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)
+        t = load(c.state_dir, "portfolio_eval", 42)
+        assert (t.park == PARK_REVIEW) == (flap == 3), flap
+    assert notifier.sent.count("awaiting_plan_review") == 1 + 1 + 2
+    assert notifier.sent.count("plan_parked") == 1
+
+
 def test_capped_respawn_park_does_not_arm_an_unchecked_summary(tmp_path, monkeypatch):
     """The session died in the middle of a rework (request disarmed) and the
     respawns are used up: the task parks, but nothing is offered for approval,
@@ -5781,8 +5854,13 @@ def test_capped_respawn_park_does_not_arm_an_unchecked_summary(tmp_path, monkeyp
     gate_signal(wt)                       # the dead session's old signal
     d = _gate_pass(c, FakeSessions(alive=set()), monkeypatch)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_REVIEW and d.notifier.sent == ["plan_parked"]
-    assert t.operator_request is None
+    assert t.park == PARK_REVIEW and t.operator_request is None
+    # No plan is ready here: the message says what happened, not "plan ready".
+    ((template, ctx),) = d.notifier.contexts
+    assert template == "plan_session_stopped" and ctx["rounds"] == 2
+    assert t.park_note == "plan session stopped at the review gate"
+    (parked,) = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "parked"]
+    assert parked["detail"] == "plan session died at the gate; unattended rounds used up"
 
 
 def test_old_ready_signal_is_never_read_after_a_respawn_or_a_resume(tmp_path, monkeypatch):
@@ -5879,3 +5957,360 @@ def test_denied_retry_does_not_leave_the_changed_tickets_armed(tmp_path, monkeyp
     t = load(c.state_dir, "portfolio_eval", 42)
     assert sess.resumed == [] and t.plan_retries == 0
     assert t.park == "" and t.operator_request is None
+
+
+# --- plan review gate: the armed request is bound to one plan revision -------
+
+def _armed_gate(c, sess, monkeypatch):
+    """A task that reached the gate through a pass: summary on disk, armed."""
+    wt = _plan_ready_task(c)
+    (wt / PLAN_SUMMARY).write_text("# Plan review\n\nfirst plan\n")
+    _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.AWAITING_PLAN_REVIEW and t.operator_request.fingerprint
+    return wt
+
+
+def _rework_between_passes(wt, name):
+    """What `name` selects changes with no `working` signal that a pass sees."""
+    if name == "summary":
+        (wt / PLAN_SUMMARY).write_text("# Plan review\n\nsecond plan\n")
+    elif name == "ticket":
+        ticket = wt / ".agent" / "tickets" / "02-t2.md"
+        ticket.write_text(ticket.read_text() + "\n- [ ] one more criterion\n")
+    else:
+        (wt / ".agent" / "plan-v2.md").write_text("# Plan review\n\nsecond plan\n")
+    gate_signal(wt, ".agent/plan-v2.md" if name == "path" else PLAN_SUMMARY)
+
+
+@pytest.mark.parametrize("changed", ["summary", "ticket", "path"])
+def test_plan_changed_under_an_armed_request_is_a_new_review_round(
+        tmp_path, monkeypatch, changed):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    before = load(c.state_dir, "portfolio_eval", 42)
+    _minutes_ago(c, 20)                       # past the grace time
+    _rework_between_passes(wt, changed)
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+    assert t.park == "" and sess.ended == [], "a new round, not the grace park"
+    assert t.unattended_rounds == before.unattended_rounds + 1
+    assert t.operator_request.fingerprint != before.operator_request.fingerprint
+    assert t.operator_request.path == (".agent/plan-v2.md" if changed == "path"
+                                       else PLAN_SUMMARY)
+    assert _gate_pass(c, sess, monkeypatch).notifier.sent == []
+
+
+def test_unchanged_plan_under_an_armed_request_is_never_announced_again(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    before = load(c.state_dir, "portfolio_eval", 42)
+    for _ in range(3):
+        gate_signal(wt)                       # the same report, written again
+        assert _gate_pass(c, sess, monkeypatch).notifier.sent == []
+    assert load(c.state_dir, "portfolio_eval", 42) == before
+
+
+def test_armed_request_with_no_fingerprint_is_a_new_review_round(tmp_path, monkeypatch):
+    """Fail closed: nothing says which plan such a request was armed for."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH,
+                   operator_request=PlanApprovalRequest(PLAN_SUMMARY))
+    write_tickets(wt, 2)
+    gate_signal(wt)
+    d = _gate_pass(c, FakeSessions(alive={42}), monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+    assert t.park == "" and t.operator_request.fingerprint
+
+
+def test_plan_that_changes_every_pass_gets_two_new_rounds_then_parks(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    notifier = FakeNotifier()
+    for n in range(8):
+        if load(c.state_dir, "portfolio_eval", 42).park:
+            break
+        (wt / PLAN_SUMMARY).write_text(f"# Plan review\n\nplan {n}\n")
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert notifier.sent == ["awaiting_plan_review"] * 2 + ["plan_parked"]
+    assert t.park == PARK_REVIEW and t.operator_request.path == PLAN_SUMMARY
+
+
+def test_fifo_at_the_stage_signal_path_does_not_stop_the_pass(tmp_path, monkeypatch):
+    """stage.json is session-written: a FIFO there must not block the pass
+    for this task, nor for the one behind it."""
+    import threading
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.PLAN)
+    os.mkfifo(wt / ".agent" / "stage.json")
+    wt2 = make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=1)
+    (wt2 / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "done"}))
+    sess = FakeSessions(alive={42, 43})
+    th = threading.Thread(target=lambda: main.run_pass(c, deps(sess=sess)), daemon=True)
+    th.start()
+    th.join(10)
+    assert not th.is_alive(), "the pass blocks on the FIFO"
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PLAN
+    assert load(c.state_dir, "portfolio_eval", 43).stage is Stage.REVIEW
+
+
+# --- the dispatcher never writes through a session's symlink -----------------
+
+def _victim(tmp_path):
+    out = tmp_path / "outside"
+    out.mkdir()
+    (out / "victim.json").write_text("untouched")
+    return out
+
+
+def _working_signal_is_a_regular_file(wt):
+    f = wt / ".agent" / "stage.json"
+    assert not f.is_symlink() and json.loads(f.read_text())["status"] == "working"
+
+
+def test_symlink_at_the_stage_signal_is_replaced_on_spawn_and_on_resume(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    out = _victim(tmp_path)
+    # Spawn: a gate task whose session died gets a fresh plan session.
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW)
+    (wt / ".agent" / "stage.json").symlink_to(out / "victim.json")
+    # Resume: a parked implement task the operator woke.
+    wt2 = make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=NO_SLOT, park=PARK_WAKE)
+    (wt2 / ".agent" / "stage.json").symlink_to(out / "victim.json")
+    (wt2 / ".agent" / "models.log").symlink_to(out / "victim.json")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert (out / "victim.json").read_text() == "untouched"
+    assert [s[:2] for s in sess.spawned] == [(42, "plan")]
+    _working_signal_is_a_regular_file(wt)
+    # the planted log link fails that task's resume; nothing left the worktree
+    assert load(c.state_dir, "portfolio_eval", 43).stage is Stage.FAILED
+    (wt2 / ".agent" / "models.log").unlink()
+    save(c.state_dir, dc_replace(load(c.state_dir, "portfolio_eval", 43),
+                                 stage=Stage.IMPLEMENT, park=PARK_WAKE, crashed_stage=""))
+    (wt2 / ".agent" / "stage.json").unlink()
+    (wt2 / ".agent" / "stage.json").symlink_to(out / "victim.json")
+    main.run_pass(c, deps(sess=sess))
+    assert (out / "victim.json").read_text() == "untouched"
+    assert [r[0] for r in sess.resumed] == [43]
+    _working_signal_is_a_regular_file(wt2)
+
+
+def test_agent_directory_that_is_a_symlink_fails_the_launch_and_not_the_pass(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    out = _victim(tmp_path)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW)
+    (wt / ".agent").rmdir()
+    (wt / ".agent").symlink_to(out, target_is_directory=True)
+    wt2 = make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=1)
+    (wt2 / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "done"}))
+    gh, sess = FakeGitHub(), FakeSessions(alive={43})
+    main.run_pass(c, deps(gh, sess))             # must not raise
+    assert sorted(p.name for p in out.iterdir()) == ["victim.json"]
+    assert (out / "victim.json").read_text() == "untouched"
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED and [s[0] for s in sess.spawned] == [43]
+    assert "not a real directory" in gh.created_issues[0][2]
+    assert load(c.state_dir, "portfolio_eval", 43).stage is Stage.REVIEW
+
+
+def test_launch_and_resume_write_the_exclude_lines_in_the_configured_clone_only(
+        tmp_path, monkeypatch):
+    """The lines heal on every launch and resume, at the clone the target's
+    configuration names. The worktree's own `.git` pointer, which a session
+    can rewrite, decides nothing."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    info = Path(c.targets[0].clone_path) / ".git" / "info"
+    info.mkdir(parents=True)
+    outside = tmp_path / "outside-git"
+    (outside / "info").mkdir(parents=True)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW)        # spawned
+    wt2 = make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=NO_SLOT, park=PARK_WAKE)
+    for w in (wt, wt2):
+        (w / ".git").write_text(f"gitdir: {outside}\n")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert [s[0] for s in sess.spawned] == [42] and [r[0] for r in sess.resumed] == [43]
+    assert list((outside / "info").iterdir()) == []
+    assert (info / "exclude").read_text().splitlines() == [
+        ".agent/", ".claude/settings.local.json"]
+
+
+def test_unusable_clone_git_dir_does_not_stop_a_resume(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    outside = tmp_path / "outside-git"
+    (outside / "info").mkdir(parents=True)
+    clone = Path(c.targets[0].clone_path)
+    clone.mkdir()
+    (clone / ".git").symlink_to(outside, target_is_directory=True)
+    make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=NO_SLOT, park=PARK_WAKE)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert [r[0] for r in sess.resumed] == [43]
+    assert load(c.state_dir, "portfolio_eval", 43).park == ""
+    assert list((outside / "info").iterdir()) == []
+
+
+# --- the plan revision is read defensively, and covers the spec folder -------
+
+def _pass_within(c, d, seconds=5):
+    import threading
+    th = threading.Thread(target=lambda: main.run_pass(c, d), daemon=True)
+    th.start()
+    th.join(seconds)
+    assert not th.is_alive(), "the pass blocks"
+
+
+def _assert_disarmed_and_resumed_once(c, sess, d):
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is not Stage.FAILED and t.park == ""
+    assert t.operator_request is None
+    assert len(sess.resumed) == 1 and d.notifier.sent == ["plan_retry"]
+
+
+def _plant_fifo_summary(wt, tmp_path):
+    (wt / PLAN_SUMMARY).unlink()
+    os.mkfifo(wt / PLAN_SUMMARY)
+
+
+def _plant_fifo_ticket(wt, tmp_path):
+    (wt / ".agent" / "tickets" / "02-t2.md").unlink()
+    os.mkfifo(wt / ".agent" / "tickets" / "02-t2.md")
+
+
+def _plant_symlinked_ticket(wt, tmp_path):
+    ticket = wt / ".agent" / "tickets" / "02-t2.md"
+    (tmp_path / "outside-ticket.md").write_text(ticket.read_text())
+    ticket.unlink()
+    ticket.symlink_to(tmp_path / "outside-ticket.md")
+
+
+def _plant_symlinked_summary(wt, tmp_path):
+    (tmp_path / "outside-summary.md").write_text((wt / PLAN_SUMMARY).read_text())
+    (wt / PLAN_SUMMARY).unlink()
+    (wt / PLAN_SUMMARY).symlink_to(tmp_path / "outside-summary.md")
+
+
+@pytest.mark.parametrize("plant", [_plant_fifo_summary, _plant_fifo_ticket,
+                                   _plant_symlinked_ticket, _plant_symlinked_summary],
+                         ids=["fifo-summary", "fifo-ticket", "symlinked-ticket",
+                              "symlinked-summary"])
+def test_plan_file_that_is_no_regular_file_disarms_and_resumes_the_session(
+        tmp_path, monkeypatch, plant):
+    """Never a blocked pass, never an exception, never an approval left armed."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    plant(wt, tmp_path)
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **k: spec_publish.PublishResult(url=SPEC_URL))
+    d = deps(sess=sess)
+    _pass_within(c, d)
+    _assert_disarmed_and_resumed_once(c, sess, d)
+    assert "regular file" in sess.resumed[0][1] or "contiguous" in sess.resumed[0][1]
+
+
+def test_plan_file_that_cannot_be_read_this_pass_does_not_fail_the_task(
+        tmp_path, monkeypatch):
+    """The summary went away between the listing and the read."""
+    from dispatcher import artifacts
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    _armed_gate(c, sess, monkeypatch)
+    real, calls = artifacts.read_regular, []
+
+    def once(path, max_bytes):
+        if str(path).endswith("plan-review.md") and not calls:
+            calls.append(path)
+            raise FileNotFoundError(path)
+        return real(path, max_bytes)
+    monkeypatch.setattr(artifacts, "read_regular", once)
+    d = _gate_pass(c, sess, monkeypatch)
+    assert calls
+    _assert_disarmed_and_resumed_once(c, sess, d)
+
+
+def _armed_gate_with_spec_folder(c, sess, monkeypatch):
+    wt = _plan_ready_task(c)
+    folder = wt / Path(SPEC_PATH).parent
+    folder.mkdir(parents=True)
+    for name in ("proposal.md", "spec.md", "design.md"):
+        (folder / name).write_text(f"# {name}\n\nfirst\n")
+    (wt / PLAN_SUMMARY).write_text("# Plan review\n\nfirst plan\n")
+    _gate_pass(c, sess, monkeypatch)
+    return wt, folder
+
+
+@pytest.mark.parametrize("name", ["design.md", "spec.md", "proposal.md"])
+def test_spec_folder_file_changed_under_an_armed_request_is_a_new_review_round(
+        tmp_path, monkeypatch, name):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt, folder = _armed_gate_with_spec_folder(c, sess, monkeypatch)
+    before = load(c.state_dir, "portfolio_eval", 42).operator_request.fingerprint
+    assert _gate_pass(c, sess, monkeypatch).notifier.sent == []      # unchanged: silent
+    (folder / name).write_text(f"# {name}\n\nsecond\n")
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+    assert t.operator_request.fingerprint not in ("", before)
+
+
+def test_spec_folder_that_leaves_the_worktree_is_never_armed(tmp_path, monkeypatch):
+    """A spec folder swapped for a symlink out of the worktree cannot be
+    read as part of the revision: the approval is disarmed, never kept for a
+    plan whose spec files are no longer covered."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt, folder = _armed_gate_with_spec_folder(c, sess, monkeypatch)
+    outside = tmp_path / "outside"
+    folder.rename(outside)
+    folder.symlink_to(outside, target_is_directory=True)
+    _gate_pass(c, sess, monkeypatch)
+    assert load(c.state_dir, "portfolio_eval", 42).operator_request is None
+
+
+def test_same_summary_bytes_at_another_path_is_a_new_review_round(tmp_path, monkeypatch):
+    """The request names a path: the console reads that file. The same text
+    in another file is not what the operator was shown."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    other = wt / ".agent" / "v2" / "plan-review.md"
+    other.parent.mkdir()
+    other.write_bytes((wt / PLAN_SUMMARY).read_bytes())
+    gate_signal(wt, ".agent/v2/plan-review.md")
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+    assert t.operator_request.path == ".agent/v2/plan-review.md"

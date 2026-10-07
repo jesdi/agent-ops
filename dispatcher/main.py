@@ -34,12 +34,12 @@ from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import openspec_migration, spec_publish, task_artifacts
-from dispatcher.artifacts import PLAN_SUMMARY, TICKETS_DIR
+from dispatcher.artifacts import TICKETS_DIR, plan_revision
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
-                                RecordBackgroundWait, RetryStage, SetTaskStage,
+                                RecordBackgroundWait, RetryStage, ReviewPark, SetTaskStage,
                                 SpawnStage, pass_actions)
 from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
                                Order, candidates, override_refusal,
@@ -61,7 +61,9 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               next_stage, read_background, read_stage_signal,
                               resumable_crash, shown_stage, ticket_in_progress,
                               save, task_key)
-from dispatcher.workspace import create_workspace, remove_workspace
+from dispatcher.workspace import (append_worktree_file, create_workspace,
+                                  exclude_local_state, remove_workspace,
+                                  write_worktree_file)
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
@@ -229,10 +231,8 @@ def _last_launched(worktree: str) -> str:
 def _log_model(worktree: str, stage: Stage, model: str) -> None:
     """Durable per-worktree breadcrumb. stage.json is co-owned — sessions
     overwrite it when they signal — so the log is the record that survives."""
-    p = Path(worktree) / ".agent" / "models.log"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a") as fh:
-        fh.write(f"{_now()} {stage.value} {model}\n")
+    append_worktree_file(worktree, ".agent", "models.log",
+                         f"{_now()} {stage.value} {model}\n")
 
 
 def _url(target: Target, issue: int) -> str:
@@ -302,7 +302,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     back at the host shell, where send_text would execute the operator's text
     as a shell command outside the sandbox.
 
-    Un-parking then restores the same invariant _resume_woken and _retry_plan
+    Un-parking then restores the same invariant _resume_woken and _retry_stage
     enforce — no waiting marker, a `working` signal — or the very next pass
     re-reads blocked/awaiting-ci, re-parks, and ENDS the session that was
     just re-authenticated."""
@@ -319,10 +319,13 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     if signal is not None and signal.status != "working":
         by_name = {t.name: t for t in cfg.targets}
         model = _display_entry(cfg, by_name.get(task.target), task)
-        agent_dir = Path(task.worktree) / ".agent"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        (agent_dir / "stage.json").write_text(json.dumps(
-            {"stage": task.stage.value, "status": "working", "model": model}))
+        try:
+            write_worktree_file(task.worktree, ".agent", "stage.json", json.dumps(
+                {"stage": task.stage.value, "status": "working", "model": model}))
+        except OSError as exc:
+            # Not written: the next pass reads the old signal and parks again.
+            print(f"[warn] stage signal of #{task.issue} not rewritten: {exc}",
+                  file=sys.stderr)
     save(cfg.state_dir, replace(task, park="", park_msg_id=0,
                                 park_note="", updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "login-code-injected",
@@ -540,6 +543,38 @@ def _ticket_file(task: TaskState, number: int) -> Path:
     return files[0]
 
 
+def _heal_exclude(target: Target, task: TaskState) -> None:
+    """Before a launch or a resume: a worktree made before the exclude lines
+    existed gets them now. The path is the target's configured clone, never
+    one taken from the worktree. The lines are a protection, not a
+    precondition for a task that already exists: a failure is logged and the
+    launch goes on."""
+    try:
+        exclude_local_state(target.clone_path)
+    except OSError as exc:
+        print(f"[warn] exclude lines not written for #{task.issue}: {exc}",
+              file=sys.stderr)
+
+
+def _write_working(worktree: str, stage: Stage, entry) -> None:
+    """Rewrite .agent/stage.json to `working` BEFORE a session is launched or
+    resumed, or the next pass reads the old signal again (blocked, a rejected
+    report, the previous stage's `done`) and acts on it a second time. An
+    implement session's progress note is kept for the same stage: the
+    tickets it counts are still merged on the branch, and the console shows
+    them until the session reports again. Never across stages. Raises OSError
+    when .agent is not a usable directory: the launch then fails with that
+    reason, and nothing is written outside the worktree."""
+    doc = {"stage": stage.value, "status": "working", "model": entry.model_id,
+           "effort": entry.effort}
+    old = read_stage_signal(worktree)
+    if (stage is Stage.IMPLEMENT and old is not None and old.note
+            and (old.stage, old.status) == (stage.value, "working")):
+        doc["note"] = old.note
+    write_worktree_file(worktree, ".agent", "stage.json", json.dumps(doc))
+    _log_model(worktree, stage, str(entry))
+
+
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  launch: Launch, spec_path: str = "") -> TaskState:
     stage, entry = launch.stage, launch.entry
@@ -563,12 +598,8 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     block, drained = _drain(cfg, task.target, task.issue)
     if block:
         prompt = f"{prompt}\n\n{block}\n"
-    agent_dir = Path(task.worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": stage.value, "status": "working", "model": model,
-         "effort": entry.effort}))
-    _log_model(task.worktree, stage, str(entry))
+    _heal_exclude(target, task)
+    _write_working(task.worktree, stage, entry)
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
                               second=launch.second)
@@ -778,72 +809,49 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
     return True
 
 
-def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                launch: Launch, reason: str, slip: bool = False) -> None:
-    """Resume the plan session with why its signal was rejected (the ticket
-    format check, a `done` nobody approved, an unknown track), in place, rather
-    than failing the task. The resume reads the transcript from the runtime's
+# What a resumed session is told to do about its rejected signal.
+_RETRY_HINT = {
+    Stage.SPEC: ("Re-write the signal to fix that (the track list, with each "
+                 "track's meaning, is in your stage prompt)."),
+    Stage.PLAN: ("Fix that in place, then re-write the signal (the signals, "
+                 "and the track list with each track's meaning, are in your "
+                 "stage prompt). The ticket set under .agent/tickets/ must be "
+                 "files named NN-slug.md numbered contiguously from 01 with no "
+                 "gaps or duplicates, each with a 'What to build' section, a "
+                 "'Blocked by' line and at least one unchecked '- [ ]' "
+                 "criterion. Do not re-plan from scratch."),
+}
+
+
+def _retry_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                 launch: Launch, act: RetryStage) -> None:
+    """Resume the spec or plan session with why its signal was rejected (a
+    track that is not configured, a review the stage does not have, the
+    ticket format check, a `done` nobody approved), in place, rather than
+    failing the task. The resume reads the transcript from the runtime's
     mounted home, so context survives ending the (zombie) session first —
     which we must do, or _launch would type the resume command INTO the
     stopped session's input box (same failure mode as spawning over a live
     session)."""
     entry = launch.entry
-    agent_dir = Path(task.worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    # Rewrite the signal to working BEFORE resuming, or the next pass re-reads
-    # the rejected signal, re-checks the still-unfixed plan, and burns the
-    # retry immediately.
-    (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": "plan", "status": "working", "model": entry.model_id,
-         "effort": entry.effort}))
-    _log_model(task.worktree, Stage.PLAN, str(entry))
+    # Before resuming: the next pass must not re-read the rejected signal,
+    # re-check the still-unfixed work, and burn the retry immediately.
+    _write_working(task.worktree, act.stage, entry)
     _end_session(cfg, deps, task.target, task.issue)
     block, drained = _drain(cfg, task.target, task.issue)
-    retry_text = (
-        f"Your .agent/stage.json was rejected: {reason}. Fix that in place, "
-        f"then re-write the signal (the signals, and the track list with each "
-        f"track's meaning, are in your stage prompt). The ticket set under "
-        f".agent/tickets/ must be files named NN-slug.md numbered contiguously "
-        f"from 01 with no gaps or duplicates, each with a 'What to build' "
-        f"section, a 'Blocked by' line and at least one unchecked '- [ ]' "
-        f"criterion. Do not re-plan from scratch.")
-    if block:
-        retry_text = f"{retry_text}\n\n{block}"
-    deps.sessions.resume(task.target, task.issue, task.worktree, retry_text,
-                         entry.model_id, entry.effort)
-    messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
-    used = "plan_slips" if slip else "plan_retries"
-    # The rejected plan is no longer on offer: the session's next ready
-    # report is checked and armed again.
-    save(cfg.state_dir, replace(task, updated_at=_now(), operator_request=None,
-                                **{used: getattr(task, used) + 1}))
-    _notify(deps, target, task, "plan_retry", reason)
-
-
-def _retry_spec(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                launch: Launch, reason: str) -> None:
-    """Resume the spec session with the rejection reason, in place. Same shape as
-    _retry_plan: rewrite the signal to working first, end the zombie, then
-    --continue with the correction."""
-    entry = launch.entry
-    agent_dir = Path(task.worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": "spec", "status": "working", "model": entry.model_id,
-         "effort": entry.effort}))
-    _log_model(task.worktree, Stage.SPEC, str(entry))
-    _end_session(cfg, deps, task.target, task.issue)
-    block, drained = _drain(cfg, task.target, task.issue)
-    text = (f"Your .agent/stage.json was rejected: {reason}. Re-write the "
-            f"signal to fix that (the track list, with each track's meaning, "
-            f"is in your stage prompt).")
+    text = (f"Your .agent/stage.json was rejected: {act.reason}. "
+            f"{_RETRY_HINT[act.stage]}")
     if block:
         text = f"{text}\n\n{block}"
     deps.sessions.resume(task.target, task.issue, task.worktree, text,
                          entry.model_id, entry.effort)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
-    save(cfg.state_dir, replace(task, spec_retries=task.spec_retries + 1,
-                                updated_at=_now()))
+    # A rejected plan is no longer on offer: the session's next ready report
+    # is checked and armed again.
+    save(cfg.state_dir, replace(loops.spend_retry(task, act.retry),
+                                updated_at=_now(), operator_request=None))
+    if act.stage is Stage.PLAN:
+        _notify(deps, target, task, "plan_retry", act.reason)
 
 
 def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -888,13 +896,16 @@ def _spec_note(pub: "spec_publish.PublishResult") -> str:
     return f"spec: {pub.url}"
 
 
-def _park_for_review(cfg: Config, deps: Deps, target: Target,
-                     task: TaskState, dry_run: bool = False) -> None:
-    """Park a finished plan for a human to read whenever they wake up. The
-    only park that also releases the SLOT: the plan stage never used the
-    slot's ports and worktrees are per-issue, so resume can take any free
+def _park_for_review(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                     reason: ReviewPark, dry_run: bool = False) -> None:
+    """Park a task at the plan gate for a human to read whenever they wake
+    up. The only park that also releases the SLOT: the plan stage never used
+    the slot's ports and worktrees are per-issue, so resume can take any free
     slot — and freeing it is the whole point, since a held slot would cap the
-    overnight run at max_slots(capacity) plans."""
+    overnight run at max_slots(capacity) plans. A session that died with the
+    unattended rounds used up may have left no plan: the operator is told
+    that, not "plan ready"."""
+    died = reason is ReviewPark.SESSION_DIED
     tail = deps.sessions.capture_tail(task.target, task.issue)
     note = tail.strip() or "(no detail)"
     if task.spec_path:
@@ -908,15 +919,17 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     # reach it via /attach, the console `resume` intent, or plain-text wakes.
     # This matches the same reasoning in _park_for_input.
     msg_id = deps.notifier.send(
-        "plan_parked", issue=task.issue, title=task.title,
-        url=_url(target, task.issue), note=note, target=target.name)
+        "plan_session_stopped" if died else "plan_parked",
+        issue=task.issue, title=task.title, url=_url(target, task.issue),
+        note=note, target=target.name, rounds=task.unattended_rounds)
     _end_session(cfg, deps, task.target, task.issue)
-    save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,
-                                park_note="plan ready for review",
-                                slot=NO_SLOT, updated_at=_now()))
+    save(cfg.state_dir, replace(
+        task, park=PARK_REVIEW, park_msg_id=msg_id, slot=NO_SLOT, updated_at=_now(),
+        park_note=("plan session stopped at the review gate" if died
+                   else "plan ready for review")))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
-                          detail="plan review grace expired")
+                          detail=reason.value)
 
 
 def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
@@ -1223,7 +1236,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # End first, unconditionally. Most parks already stopped the session,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
-    # running session (the failure _retry_plan and SpawnStage guard).
+    # running session (the failure _retry_stage and SpawnStage guard).
     _end_session(cfg, deps, task.target, task.issue)
     if not task.hold_for_attach:
         _launch_woken(cfg, deps, target, task, launch)
@@ -1245,6 +1258,7 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
                   task: TaskState, launch: Launch) -> None:
     entry = launch.entry
     model = entry.model_id
+    _heal_exclude(target, task)
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
     if task.crashed_stage:
@@ -1265,13 +1279,9 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
                               model=str(entry))
         return
-    agent_dir = Path(task.worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    # Rewrite stage.json BEFORE resuming, or the next pass re-reads
-    # blocked/awaiting-ci and re-parks the freshly resumed session.
-    (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": task.stage.value, "status": "working", "model": model,
-         "effort": entry.effort}))
+    # Before resuming: the next pass must not re-read blocked/awaiting-ci
+    # and re-park the freshly resumed session.
+    _write_working(task.worktree, task.stage, entry)
     _log_model(task.worktree, task.stage, str(entry))
     block, drained = _drain(cfg, task.target, task.issue)
     deps.sessions.resume(task.target, task.issue, task.worktree,
@@ -1333,7 +1343,7 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
 
     Everything a task's turn touches is reachable through its worktree, and
     a worktree can simply be gone — swept, half-removed, or deleted by hand.
-    containers.clone_root then raises reading <worktree>/.git, and before
+    The launch then raises writing into the missing worktree, and before
     this the exception unwound all the way out of run_pass: guarded_pass
     filed a pass-crash and re-raised, so the unit failed and every task
     QUEUED BEHIND the broken one was never reached. One dead checkout stopped
@@ -1429,12 +1439,13 @@ class _Turn:
     signal: object          # the stage signal read at the start of the turn
     dry_run: bool
     spec_line: str = ""
+    launch_failed: bool = False   # a launch raised: the operator's choice is not used up
 
 
 def _action_stage(act: object) -> Stage | None:
     """The stage an action launches a session for; None when it launches none."""
     if isinstance(act, RetryStage):
-        return act.stage  # _retry_plan/_retry_spec resume the session in place
+        return act.stage  # _retry_stage resumes the session in place
     return act.stage if isinstance(act, SpawnStage) else None
 
 
@@ -1572,15 +1583,10 @@ def _on_park_for_input(turn: _Turn, task: TaskState, act: ParkForInput,
 
 
 def _plan_approval(task: TaskState, artifact: str) -> PlanApprovalRequest:
-    """The gate's request: the plan session's summary. stage.json is
-    model-written, so a missing path or one outside the worktree falls back
-    to the path the plan prompt names."""
-    try:
-        rel = (Path(task.worktree) / artifact).resolve().relative_to(
-            Path(task.worktree).resolve()).as_posix()
-    except ValueError:
-        rel = "."
-    return PlanApprovalRequest(path=PLAN_SUMMARY if rel == "." else rel)
+    """The gate's request: the plan session's summary, bound to the plan
+    revision that is on disk now."""
+    revision = plan_revision(task.worktree, artifact, task.spec_path)
+    return PlanApprovalRequest(path=revision.path, fingerprint=revision.fingerprint)
 
 
 def _on_disarm_plan_approval(turn: _Turn, task: TaskState,
@@ -1595,7 +1601,8 @@ def _on_park_for_review(turn: _Turn, task: TaskState, act: ParkForReview,
                         launch: Launch | None) -> None:
     if act.artifact is not None:
         task = replace(task, operator_request=_plan_approval(task, act.artifact))
-    _park_for_review(turn.cfg, turn.deps, turn.target, task, dry_run=turn.dry_run)
+    _park_for_review(turn.cfg, turn.deps, turn.target, task, act.reason,
+                     dry_run=turn.dry_run)
 
 
 def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
@@ -1605,11 +1612,7 @@ def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
 
 def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
                     launch: Launch) -> None:
-    if act.stage is Stage.SPEC:
-        _retry_spec(turn.cfg, turn.deps, turn.target, task, launch, act.reason)
-    else:
-        _retry_plan(turn.cfg, turn.deps, turn.target, task, launch, act.reason,
-                    slip=act.slip)
+    _retry_stage(turn.cfg, turn.deps, turn.target, task, launch, act)
 
 
 def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
@@ -1619,12 +1622,10 @@ def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
     approve on a task that failed at the gate."""
     if act.stage is Stage.AWAITING_PLAN_REVIEW:
         extra: dict = {"operator_request": _plan_approval(task, act.artifact),
-                       "gated": True}
+                       **loops.gate_fields(task)}
         if task.stage is Stage.PLAN:
             # The gate phase has retries of its own.
             extra.update(plan_retries=0, plan_slips=0)
-        else:
-            extra["unattended_rounds"] = task.unattended_rounds + 1
         return extra
     extra = {"operator_request": None}
     if act.stage is Stage.PR_OPEN and signal is not None:
@@ -1673,7 +1674,7 @@ def _on_notify(turn: _Turn, task: TaskState, act: Notify,
 
 
 def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
-                    launch: Launch) -> TaskState:
+                    launch: Launch) -> TaskState | None:
     # The previous stage's session is usually still alive here — an
     # interactive session cannot exit itself. _launch would type
     # the next stage's podman command INTO it (and the container
@@ -1686,12 +1687,23 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
     elif task.stage is Stage.AWAITING_PLAN_REVIEW:
-        # A task file from before `gated` existed left the gate here.
-        task = replace(task, unattended_rounds=task.unattended_rounds + 1,
-                       gated=True)
+        task = replace(task, **loops.gate_fields(task))
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
-    return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
+    try:
+        return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
+    except Exception:
+        # What the previous stage handed over is accepted (a checked spec, an
+        # approved or gate-free plan); only this launch failed. So the task
+        # fails as crashed in the stage it could not start, and Resume starts
+        # that stage: an implement task asks for no second approval, and no
+        # earlier stage runs again.
+        turn.launch_failed = True
+        _fail_task_crash(turn.cfg, turn.deps, turn.target,
+                         replace(task, stage=act.stage,
+                                 spec_path=spec_path or task.spec_path),
+                         turn.dry_run)
+        return None
 
 
 def _on_handle_crash(turn: _Turn, task: TaskState, act: HandleCrash,
@@ -1765,7 +1777,7 @@ def _adopt_track(cfg: Config, policy: ModelPolicy, task: TaskState,
     # (e.g. PLAN off a spec "done" signal) both need the fresh value, not
     # whatever was recorded when the task was last saved. Only a CONFIGURED
     # track is adopted here: an unknown/misspelled one must reach
-    # next_actions' bounce-then-park ladder (_track_actions) instead of being
+    # next_actions' bounce-then-park ladder (_bad_track) instead of being
     # written onto the task and mis-parked as "no longer configured".
     if (signal is not None and signal.status == "done"
             and task.stage in (Stage.SPEC, Stage.AWAITING_PLAN_REVIEW)
@@ -1843,7 +1855,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             return  # no launch: the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)
-        if launch is not None:
+        if launch is not None and not turn.launch_failed:
             _consume_execution_choice(cfg, *choice_key)
         if task is None:
             return
@@ -2549,7 +2561,9 @@ def main() -> None:
         print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
               f"their entries are never admitted", file=sys.stderr)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
-                sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory, cpus=cfg.session_cpus, state_dir=cfg.state_dir),
+                sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
+                                  cpus=cfg.session_cpus, state_dir=cfg.state_dir,
+                                  clones={t.name: t.clone_path for t in cfg.targets}),
                 notifier=Notifier(dry_run=args.dry_run,
                                   console_url=cfg.console_url,
                                   multi_target=len(cfg.targets) > 1))

@@ -49,6 +49,12 @@ _TEMPLATES = {
                     "Session ended; capacity and slot released.\n{note}\n{url}\n"
                     "Reply to THIS message with review feedback (or `approved` to "
                     "start implement), or /attach {issue}.\n" + _ATTACH),
+    "plan_session_stopped": ("🌙 {ref} {title} — the plan session stopped at the review gate "
+                             "and was not started again: {rounds} unattended restarts or "
+                             "review rounds are used up. Session ended; capacity and slot "
+                             "released.\n{note}\n{url}\n"
+                             "Reply to THIS message to continue (your reply starts the "
+                             "plan session again), or /attach {issue}.\n" + _ATTACH),
     "needs_relogin": ("🔐 {ref} {title} — Claude Code needs re-login. "
                       "Session task-{target}-{issue} is parked but still LIVE.\n"
                       "Authorize here:\n{login_url}\n\n{note}\n{url}\n"

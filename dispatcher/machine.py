@@ -9,12 +9,15 @@ Every bounded loop (review fixes, gate fixes, e2e, ci) parks past its cap.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
-from dispatcher.artifacts import (PLAN_SUMMARY, TICKETS_DIR, CheckResult, check_spec,
-                                  check_tickets, count_open_questions)
-from dispatcher.loops import Decision, Loop, Outcome, ReportedRound, evaluate
+from dispatcher.artifacts import (PLAN_SUMMARY, TICKETS_DIR, CheckResult, PlanRevision,
+                                  check_spec,
+                                  check_tickets, count_open_questions, plan_revision)
+from dispatcher.loops import (Decision, Loop, Outcome, ReportedRound, Retry, evaluate,
+                              retry_left, unattended_rounds_used)
 from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
                               StageSignal, TaskState)
 
@@ -37,13 +40,12 @@ class ApplyDecision:
 @dataclass(frozen=True)
 class RetryStage:
     """Re-run an in-flight stage in-session (via --continue) with corrective
-    feedback, instead of failing the task outright. Used when an artifact
-    fails its mechanical format check but the content is likely salvageable.
-    `slip` marks a plan signal that broke the protocol (an unapproved `done`,
-    an unknown track): it spends its own retry, not the ticket check's."""
+    feedback, instead of failing the task outright. Used when a signal or an
+    artifact fails a mechanical check but the work is likely salvageable.
+    `retry` names the budget this spends (loops.Retry)."""
     stage: Stage
-    reason: str = ""
-    slip: bool = False
+    reason: str
+    retry: Retry
 
 
 @dataclass(frozen=True)
@@ -94,19 +96,29 @@ class ParkForCI:
 @dataclass(frozen=True)
 class DisarmPlanApproval:
     """The session at the gate reports `working` (it reworks the plan on the
-    operator's feedback), or its ticket set no longer passes the check: the
-    summary the console offers for approval is stale. Its next ready report
-    is a new review round."""
+    operator's feedback), or its ready report names another plan revision
+    than the request was armed for: the summary the console offers for
+    approval is stale. The next ready report is a new review round."""
+
+
+class ReviewPark(Enum):
+    """Why a task at the plan gate parks. The value is the event's detail."""
+    GRACE = "plan review grace expired"
+    ROUNDS = "unattended review rounds used up"
+    SESSION_DIED = "plan session died at the gate; unattended rounds used up"
 
 
 @dataclass(frozen=True)
 class ParkForReview:
-    """Grace expired at the plan-review gate. Unlike every other park this
-    one releases the E2E slot too, so the dispatcher can spend it on the next
-    Ready task instead of holding it for a human who is asleep. Also where
-    a task ends that used up its unattended rounds. `artifact` is set only by
-    a ready report that passed the ticket check in this pass: the park then
-    arms that summary for approval. None arms nothing."""
+    """Park a task at the plan-review gate. Unlike every other park this one
+    releases the E2E slot too, so the dispatcher can spend it on the next
+    Ready task instead of holding it for a human who is asleep. `reason`
+    says why, and so what the operator is told: the grace time ran out on an
+    armed plan, a new round came with the unattended rounds used up, or the
+    session died with them used up (then no plan may be ready at all).
+    `artifact` is set only by a ready report that passed the ticket check in
+    this pass: the park then arms that summary for approval."""
+    reason: ReviewPark
     artifact: str | None = None
 
 
@@ -127,25 +139,10 @@ class BackgroundView(NamedTuple):
     cap: int                        # background_wait_seconds
 
 
-# A ticket set that fails the mechanical check is usually a numbering or
-# heading slip — resume the session with the reason this many times before
-# giving up and failing the task. A plan `done` that skipped the gate or names
-# no configured track is a protocol slip: it has a retry of its own
-# (TaskState.plan_slips), then parks. Gate entry resets both.
-PLAN_RETRY_LIMIT = 1
-# What a task at the gate may do with no operator action: respawn a dead
-# session, or start a new review round (each one a notification and a fresh
-# grace clock). Past this many the task parks for review instead, so neither
-# loop runs without a human; the operator's reply resets the count.
-UNATTENDED_ROUND_LIMIT = 2
 PLAN_NO_APPROVAL = ('status "done" is accepted only after the operator has '
                     'approved the plan at the review gate; write the review '
                     'summary and report status "awaiting-review" with the '
                     'summary path as "artifact", then wait for the reply')
-# A spec signal that names no configured track, or asks for a review this
-# stage no longer has, is a protocol slip, not a judgment: resume the session
-# once with the reason, then park for the operator.
-SPEC_RETRY_LIMIT = 1
 SPEC_NO_REVIEW = ('the spec stage has no review gate and status '
                   '"awaiting-review" is not valid in it; once stage 1 is '
                   'committed and pushed, report status "done" with the '
@@ -174,27 +171,26 @@ def _loop_actions(task: TaskState, signal: StageSignal,
     return [ApplyDecision(decision)]
 
 
-def _track_actions(task: TaskState, signal: StageSignal,
-                   tracks: frozenset[str] | None) -> list[object]:
-    """Empty when the signal's track is valid (or validation is off). A plan
-    approval may leave the track out: the task keeps the one it has."""
-    at_gate = task.stage == Stage.AWAITING_PLAN_REVIEW
-    if tracks is None or signal.track in tracks or (at_gate and not signal.track):
-        return []
-    reason = (f"stage.json names track {signal.track!r}; it must be one of "
-              f"{sorted(tracks)}")
-    return _plan_bounce(task, reason) if at_gate else _spec_bounce(task, reason)
+def _bad_track(signal: StageSignal, tracks: frozenset[str] | None,
+               optional: bool) -> str | None:
+    """Why a `done` signal's track is rejected; None when it is a configured
+    one, when validation is off, or when it is left out where `optional` (a
+    plan approval: the task keeps the track it has)."""
+    if tracks is None or signal.track in tracks or (optional and not signal.track):
+        return None
+    return (f"stage.json names track {signal.track!r}; it must be one of "
+            f"{sorted(tracks)}")
 
 
 def _spec_bounce(task: TaskState, reason: str) -> list[object]:
-    if task.spec_retries < SPEC_RETRY_LIMIT:
-        return [RetryStage(Stage.SPEC, reason)]
+    if retry_left(task, Retry.SPEC_SIGNAL):
+        return [RetryStage(Stage.SPEC, reason, Retry.SPEC_SIGNAL)]
     return [ParkForInput(reason)]
 
 
 def _plan_bounce(task: TaskState, reason: str) -> list[object]:
-    if task.plan_slips < PLAN_RETRY_LIMIT:
-        return [RetryStage(Stage.PLAN, reason, slip=True)]
+    if retry_left(task, Retry.PLAN_SIGNAL):
+        return [RetryStage(Stage.PLAN, reason, Retry.PLAN_SIGNAL)]
     return [ParkForInput(reason)]
 
 
@@ -203,8 +199,8 @@ def _dead_session_actions(task: TaskState) -> list[object]:
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
         # Reboot recovery: gate-parked tasks don't expire — re-spawn a
         # fresh plan session; the spec folder is on disk in the worktree.
-        if task.unattended_rounds >= UNATTENDED_ROUND_LIMIT:
-            return [ParkForReview()]
+        if unattended_rounds_used(task):
+            return [ParkForReview(ReviewPark.SESSION_DIED)]
         return [SpawnStage(Stage.PLAN)]
     if task.stage in IN_FLIGHT_STAGES:
         return [HandleCrash()]
@@ -246,69 +242,111 @@ def _working_actions(task: TaskState, signal: StageSignal, session_alive: bool,
 
 def _review_actions(task: TaskState, signal: StageSignal, grace_elapsed: bool,
                     gate_free: frozenset[str]) -> list[object]:
+    """A ready report (`awaiting-review`), by the stage it arrives in."""
+    if task.stage == Stage.PLAN:
+        return _plan_ready_actions(task, signal, gate_free)
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
-        if task.operator_request:
-            # Already notified on a previous pass: only the clock runs. The
-            # tickets are checked all the same: the session may have changed
-            # them with no `working` signal that a pass saw.
-            _result, failed = _checked_tickets(task)
-            if failed:
-                return [DisarmPlanApproval()] + failed
-            return [ParkForReview()] if grace_elapsed else [NoOp()]
-        # No request armed: a resume or a rework cleared it, so this ready
-        # report is a new review round. It enters the gate again, with a
-        # fresh grace clock.
-    elif task.stage == Stage.SPEC:
+        return _gate_ready_actions(task, signal, grace_elapsed)
+    if task.stage == Stage.SPEC:
         # The spec stage has no review gate: nobody would answer this.
         return _spec_bounce(task, SPEC_NO_REVIEW)
-    elif task.stage != Stage.PLAN:
-        return [NoOp()]
-    return _gate_round_actions(task, signal, gate_free)
+    return [NoOp()]
 
 
-def _skips_gate(task: TaskState, signal: StageSignal,
-                gate_free: frozenset[str]) -> bool:
-    """The gate skip, decided by the dispatcher alone: a first ready report
-    on a gate-free track, no questionnaire asked, and a count of 0 open
-    questions that the summary confirms. The track is the task's own, never
-    one the ready report names. The summary is the prescribed file, and the
-    report must name that file: it is what the gate would show. It is read
-    last, only when everything else holds. Anything else waits at the gate."""
-    summary = Path(task.worktree) / PLAN_SUMMARY
-    return (task.stage == Stage.PLAN and not task.gated
-            and task.track in gate_free and not task.asked
-            and signal.open_questions == 0
-            and _artifact_path(task, signal).resolve() == summary.resolve()
-            and count_open_questions(summary) == 0)
-
-
-def _gate_round_actions(task: TaskState, signal: StageSignal,
+def _plan_ready_actions(task: TaskState, signal: StageSignal,
                         gate_free: frozenset[str]) -> list[object]:
-    """A ready report: gate entry from the plan stage, a new round at the
-    gate, or the gate skip. Nothing reaches the operator, and no implement
-    session starts, before the ticket check."""
-    result, failed = _checked_tickets(task)
+    """The plan stage's ready report: the gate skip or gate entry. Nothing
+    reaches the operator, and no implement session starts, before the ticket
+    check."""
+    revision = plan_revision(task.worktree, signal.artifact, task.spec_path)
+    result, failed = _checked_plan(task, revision)
     if failed:
         return failed
     if _skips_gate(task, signal, gate_free):
         return [PublishSpec(review=False)] + _implement_actions(result)
-    if (task.stage == Stage.AWAITING_PLAN_REVIEW
-            and task.unattended_rounds >= UNATTENDED_ROUND_LIMIT):
-        return [ParkForReview(artifact=signal.artifact)]
+    return _review_round(signal)
+
+
+def _gate_ready_actions(task: TaskState, signal: StageSignal,
+                        grace_elapsed: bool) -> list[object]:
+    """A ready report of a task at the gate. With the request armed for this
+    plan the operator was told on a previous pass: only the clock runs.
+    Anything else is a new review round, which is checked, announced and
+    clocked again, while unattended rounds are left: no request is armed (a
+    resume or a rework cleared it), or the session changed the plan with no
+    `working` signal that a pass saw, and what the console offers is stale.
+    A task that waited at the gate never skips it."""
+    revision = plan_revision(task.worktree, signal.artifact, task.spec_path)
+    if task.operator_request and _armed_for(task.operator_request, revision):
+        return [ParkForReview(ReviewPark.GRACE)] if grace_elapsed else [NoOp()]
+    disarm: list[object] = [DisarmPlanApproval()] if task.operator_request else []
+    _result, failed = _checked_plan(task, revision)
+    if failed:
+        return disarm + failed
+    if unattended_rounds_used(task):
+        return disarm + [ParkForReview(ReviewPark.ROUNDS, artifact=signal.artifact)]
+    return disarm + _review_round(signal)
+
+
+def _review_round(signal: StageSignal) -> list[object]:
     return [SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=signal.artifact),
             PublishSpec(),
             Notify("awaiting_plan_review", signal.note)]
 
 
+def _armed_for(request, revision: PlanRevision) -> bool:
+    """Is the armed request for the plan revision on disk? Then the summary,
+    the tickets and the spec folder are as they were when it was armed (so
+    the check they passed then still holds), at the path the console reads.
+    A request with no fingerprint is for no plan, and a revision that cannot
+    be told matches no request."""
+    return bool(revision.fingerprint) and (
+        (request.path, request.fingerprint) == (revision.path, revision.fingerprint))
+
+
+def _skips_gate(task: TaskState, signal: StageSignal,
+                gate_free: frozenset[str]) -> bool:
+    """The gate skip, decided by the dispatcher alone for a plan-stage ready
+    report: a task that never waited at the gate, on a gate-free track, no
+    questionnaire asked, and a count of 0 open questions that the summary
+    confirms. The track is the task's own, never one the ready report names.
+    The summary is the prescribed file, and the report must name that file:
+    it is what the gate would show. It is read last, only when everything
+    else holds. Anything else waits at the gate."""
+    summary = Path(task.worktree) / PLAN_SUMMARY
+    try:
+        return (not task.gated
+                and task.track in gate_free and not task.asked
+                and signal.open_questions == 0
+                and _artifact_path(task, signal).resolve() == summary.resolve()
+                and count_open_questions(summary) == 0)
+    except (OSError, ValueError, RuntimeError):
+        return False   # a path that cannot be resolved (a NUL character, a loop)
+
+
+def _checked_plan(task: TaskState,
+                  revision: PlanRevision) -> tuple[CheckResult, list[object]]:
+    """The check of a ready report: the ticket set, and that the plan can be
+    read as one revision (what a request is armed for). Same outcome when
+    either fails."""
+    result = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    if result.ok and revision.problem:
+        result = CheckResult(False, revision.problem)
+    return result, _check_failed(task, result)
+
+
 def _checked_tickets(task: TaskState) -> tuple[CheckResult, list[object]]:
     """The ticket set's check, and the actions when it fails (else empty)."""
     result = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    return result, _check_failed(task, result)
+
+
+def _check_failed(task: TaskState, result: CheckResult) -> list[object]:
     if result.ok:
-        return result, []
-    if task.plan_retries < PLAN_RETRY_LIMIT:
-        return result, [RetryStage(Stage.PLAN, result.reason)]
-    return result, [SetTaskStage(Stage.FAILED),
-                    Notify("artifact_failed", result.reason)]
+        return []
+    if retry_left(task, Retry.PLAN_TICKETS):
+        return [RetryStage(Stage.PLAN, result.reason, Retry.PLAN_TICKETS)]
+    return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
 
 
 def _implement_actions(result: CheckResult) -> list[object]:
@@ -322,18 +360,18 @@ def _plan_done_actions(task: TaskState, signal: StageSignal,
                        tracks: frozenset[str] | None) -> list[object]:
     """The operator's approval, reported by the plan session at the gate. A
     configured track it names is already on the task (main._adopt_track)."""
-    bounced = _track_actions(task, signal, tracks)
-    if bounced:
-        return bounced
+    reason = _bad_track(signal, tracks, optional=True)
+    if reason:
+        return _plan_bounce(task, reason)
     result, failed = _checked_tickets(task)
     return failed or _implement_actions(result)
 
 
 def _spec_done_actions(task: TaskState, signal: StageSignal,
                        tracks: frozenset[str] | None) -> list[object]:
-    bounced = _track_actions(task, signal, tracks)
-    if bounced:
-        return bounced
+    reason = _bad_track(signal, tracks, optional=False)
+    if reason:
+        return _spec_bounce(task, reason)
     result = check_spec(_artifact_path(task, signal))
     if not result.ok:
         return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]

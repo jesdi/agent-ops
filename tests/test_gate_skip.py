@@ -11,15 +11,14 @@ from dispatcher import intents as intents_mod
 from dispatcher import spec_publish
 from dispatcher.artifacts import SUMMARY_MAX_BYTES, count_open_questions
 from dispatcher.machine import SetTaskStage, SpawnStage, next_actions
-from dispatcher.state import Stage, StageSignal, TaskState, load, read_stage_signal, save
+from dispatcher.state import Stage, StageSignal, TaskState, read_stage_signal, save
 
 from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
                                              NONE_SUMMARY, ONE_SUMMARY, SUMMARY,
                                              _assert_waits, _git, _implements,
                                              _pass, _ready, _setup, _task,
                                              _task_at_ready, _wait_case)
-from tests.test_main import (FakeGitHub, LiveUntilEnded, deps, patch_usage,
-                             write_tickets)
+from tests.test_main import FakeGitHub, LiveUntilEnded, deps, write_tickets
 
 
 def test_track_named_in_the_ready_report_does_not_count(tmp_path, monkeypatch):
@@ -263,3 +262,90 @@ def test_summary_with_other_headings_cannot_be_counted(tmp_path, text):
     p = tmp_path / "plan-review.md"
     p.write_text(text)
     assert count_open_questions(p) is None
+
+
+def test_failed_implement_launch_on_the_skip_path_resumes_into_implement(
+        tmp_path, monkeypatch):
+    """The skip was decided in the pass whose launch failed: Resume starts
+    implement, and nobody is asked for an approval the task never needed."""
+    c = _setup(tmp_path, monkeypatch)
+    wt, sess = _task_at_ready(c, tmp_path)
+    sess.spawn_raises = {ISSUE}
+    _pass(c, sess)
+    failed = _task(c)
+    assert (failed.stage, failed.crashed_stage) == (Stage.FAILED, "implement")
+    assert (failed.gated, failed.asked) == (False, False)
+
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", ISSUE, {}, "op", 1)
+    sess = LiveUntilEnded()
+    d = _pass(c, sess)
+    d2 = _pass(c, sess)
+    t = _task(c)
+    assert [s[0] for s in _implements(sess)] == [ISSUE]
+    assert (t.stage, t.gated, t.asked, t.ticket_count) == (Stage.IMPLEMENT, False, False, 1)
+    assert not [n for n in d.notifier.sent + d2.notifier.sent if "review" in n]
+
+
+def test_summary_padded_after_its_last_section_is_above_the_cap(tmp_path):
+    """Read only up to the cap, such a summary would look complete: an extra
+    section behind the padding would never be seen."""
+    p = tmp_path / "plan-review.md"
+    p.write_text(NONE_SUMMARY + "x" * SUMMARY_MAX_BYTES + "\n## Appendix\n\n- One more?\n")
+    assert count_open_questions(p) is None
+    p.write_text(NONE_SUMMARY + "x" * (SUMMARY_MAX_BYTES - len(NONE_SUMMARY)))
+    assert p.stat().st_size == SUMMARY_MAX_BYTES and count_open_questions(p) == 0
+
+
+def test_fifo_or_symlink_as_the_summary_cannot_be_counted(tmp_path):
+    import os
+    import threading
+    fifo = tmp_path / "fifo.md"
+    os.mkfifo(fifo)
+    out = []
+    th = threading.Thread(target=lambda: out.append(count_open_questions(fifo)), daemon=True)
+    th.start()
+    th.join(2)
+    assert not th.is_alive() and out == [None]
+    (tmp_path / "real.md").write_text(NONE_SUMMARY)
+    (tmp_path / "link.md").symlink_to(tmp_path / "real.md")
+    assert count_open_questions(tmp_path / "link.md") is None
+
+
+def test_nul_character_in_the_ready_reports_artifact_waits_at_the_gate(tmp_path, monkeypatch):
+    c = _setup(tmp_path, monkeypatch)
+    wt, sess = _task_at_ready(c, tmp_path, report={"artifact": ".agent/plan\u0000.md"})
+    _pass(c, sess)
+    _assert_no_implement(c, sess)
+    assert _task(c).operator_request.path == SUMMARY
+
+
+@pytest.mark.parametrize("heading", [
+    " ## Open questions", "   ## Open questions", "##\tOpen questions", "##",
+    "Open questions\n--------------", "Open questions\n-", " # Second title",
+    "#\tSecond title", "Second title\n===", "Second title\n   ==="],
+    ids=["h2-one-space", "h2-three-spaces", "h2-tab", "h2-empty", "setext-h2",
+         "setext-h2-short", "h1-one-space", "h1-tab", "setext-h1", "setext-indented"])
+def test_summary_with_a_heading_in_another_form_cannot_be_counted(tmp_path, heading):
+    """Markdown reads each of these as a heading: a section written this way
+    would hide its entries from a count that only knows `## ` at column 0."""
+    p = tmp_path / "plan-review.md"
+    p.write_text(NONE_SUMMARY + f"\n{heading}\n\n- Hidden?\n")
+    assert count_open_questions(p) is None
+
+
+def test_summary_rule_line_and_indented_code_are_not_headings(tmp_path):
+    p = tmp_path / "plan-review.md"
+    p.write_text(NONE_SUMMARY.replace(
+        "- 01 Fix label", "- 01 Fix label\n\n---\n\n    ## not a heading\n\n- 02 More"))
+    assert count_open_questions(p) == 0
+
+
+def test_one_very_long_line_does_not_slow_the_count(tmp_path):
+    """A summary at the size limit that is one line is counted at once: the
+    heading patterns stay linear (a pass must never wait on a summary)."""
+    import time
+    p = tmp_path / "plan-review.md"
+    p.write_text(NONE_SUMMARY + "x " * ((SUMMARY_MAX_BYTES - len(NONE_SUMMARY)) // 2))
+    start = time.monotonic()
+    assert count_open_questions(p) == 0
+    assert time.monotonic() - start < 2

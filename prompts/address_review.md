@@ -43,8 +43,7 @@ ${e2e_signal}- `{"stage": "address-review", "status": "done", "note": "<one line
 Never open a second PR — one issue is one branch is one PR. Address every
 point test-first with small Conventional Commits. If you disagree with a
 review point, reply in that thread with your reasoning instead of changing
-the code. A point that changes what the change must do changes the spec
-too, in the same commit.
+the code.
 
 ## 3. Verify
 Run `$gate_cmd`; it must pass. After a rebase rerun it, then push with the

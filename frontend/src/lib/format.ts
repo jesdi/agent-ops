@@ -47,3 +47,16 @@ export function providerOf(modelId: string): string {
   const slash = modelId.indexOf('/')
   return slash < 0 ? 'anthropic' : modelId.slice(0, slash)
 }
+
+/** `text` cut after each `_`, `.` and `/`: the places a long name may wrap.
+ *  A capture group, not a lookbehind, which Safari before 16.4 cannot parse
+ *  (the whole chunk then fails to load). */
+export function breakAfterSeparators(text: string): string[] {
+  const pieces = text.split(/([_./])/)   // [word, separator, word, separator, …]
+  const parts: string[] = []
+  for (let i = 0; i < pieces.length; i += 2) {
+    const part = pieces[i] + (pieces[i + 1] ?? '')
+    if (part) parts.push(part)
+  }
+  return parts
+}

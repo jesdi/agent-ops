@@ -2,16 +2,29 @@
 retries or fails the stage instead of propagating garbage downstream."""
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import stat
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
+
+from dispatcher.state import read_regular
 
 MIN_BYTES = 1500
 MIN_TICKET_BYTES = 200   # a small ticket is legitimately short
 TICKETS_DIR = ".agent/tickets"
 PLAN_SUMMARY = ".agent/plan-review.md"   # what the operator reads at the gate
 SUMMARY_MAX_BYTES = 256 * 1024          # a larger summary is not counted
+# What a plan revision reads, and what the checks read: one bound per file,
+# and no more ticket files than NN can number.
+PLAN_FILE_MAX_BYTES = 1024 * 1024
+MAX_TICKETS = 99
+SPEC_FOLDER_FILES = ("spec.md", "proposal.md", "design.md")
+# Markers for "no bytes to hash": a text file holds no NUL at its start.
+_ABSENT, _DIRECTORY = b"\0absent", b"\0directory"
 
 # Specs: a title plus at least two H2 sections (a bug diagnosis satisfies
 # this too). Tickets follow to-tickets' per-file template.
@@ -37,7 +50,11 @@ def _check(path: str | Path, patterns: list[str],
     p = Path(path)
     if not p.exists():
         return CheckResult(False, f"artifact missing: {p}")
-    text = p.read_text(errors="replace")
+    raw = read_regular(p, PLAN_FILE_MAX_BYTES)   # never follows, never blocks
+    if raw is None:
+        return CheckResult(False, f"artifact is not a readable regular file "
+                                  f"(a symlink, a pipe, or too large): {p}")
+    text = raw.decode(errors="replace")
     if len(text.encode()) < min_bytes:
         return CheckResult(False, f"artifact too small (<{min_bytes}B): {p}")
     for pat in patterns:
@@ -48,23 +65,39 @@ def _check(path: str | Path, patterns: list[str],
 
 _SUMMARY_SECTIONS = ["tickets", "open questions", "corrections"]
 _LIST_ITEM = re.compile(r"(?:[-*]|\d+\.) ")
+# Every form Markdown reads as a heading, and a little more (fail closed): up
+# to three spaces of indent, a tab after the hashes, an empty heading; and a
+# text line underlined with `===` or `---` (setext), which the prescribed
+# summary never has.
+_H1 = r"(?m)^ {0,3}#(?!#)"
+_H2 = r"(?m)^ {0,3}##(?!#)[ \t]*"
+_UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
+
+
+def _has_setext_heading(text: str) -> bool:
+    """A text line with an underline of `=` or `-` below it. Line by line:
+    one pattern over the whole text is quadratic on a very long line."""
+    lines = text.split("\n")
+    return any(_UNDERLINE.fullmatch(line) and lines[i].strip()
+               for i, line in enumerate(lines[1:]))
 
 
 def _open_questions_lines(summary: str | Path) -> list[str] | None:
     """The non-blank lines of the summary's open-questions section. None for
-    a summary that is not the prescribed one: unreadable, above the size cap,
-    more than one title, or `## ` headings other than the three, in order."""
+    a summary that is not the prescribed one: not a readable regular file
+    (state.read_regular: a FIFO never blocks the pass), above the size cap,
+    more than one title, level-2 headings other than the three, in order, or
+    a setext heading."""
+    raw = read_regular(summary, SUMMARY_MAX_BYTES)
     try:
-        with open(summary, "rb") as fh:
-            raw = fh.read(SUMMARY_MAX_BYTES + 1)
         text = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (AttributeError, UnicodeDecodeError):   # AttributeError: not readable
         return None
-    headings = [h.strip().lower() for h in re.findall(r"(?m)^## +(.*)$", text)]
-    if (len(raw) > SUMMARY_MAX_BYTES or headings != _SUMMARY_SECTIONS
-            or len(re.findall(r"(?m)^# ", text)) > 1):
+    headings = [h.strip().lower() for h in re.findall(_H2 + r"(.*)$", text)]
+    if (headings != _SUMMARY_SECTIONS or len(re.findall(_H1, text)) > 1
+            or _has_setext_heading(text)):
         return None
-    section = re.split(r"(?m)^## +.*$", text)[2]
+    section = re.split(_H2 + r".*$", text)[2]
     return [ln.rstrip() for ln in section.splitlines() if ln.strip()]
 
 
@@ -96,8 +129,10 @@ def ticket_files(tickets_dir: str | Path) -> list[Path]:
     d = Path(tickets_dir)
     if not d.is_dir():
         return []
+    # By name alone: an entry that is no regular file (a symlink, a pipe, a
+    # directory) fails the check of its content instead of being skipped.
     named = [(int(m.group(1)), p) for p in d.iterdir()
-             if (m := _TICKET_NAME.match(p.name)) and p.is_file()]
+             if (m := _TICKET_NAME.match(p.name))]
     return [p for _, p in sorted(named, key=lambda t: (t[0], t[1].name))]
 
 
@@ -128,6 +163,8 @@ def check_tickets(tickets_dir: str | Path,
     files = ticket_files(d)
     if not files:
         return CheckResult(False, f"no ticket named NN-slug.md in {d}")
+    if len(files) > MAX_TICKETS:
+        return CheckResult(False, f"more than {MAX_TICKETS} ticket files in {d}")
     numbers = [int(p.name[:2]) for p in files]
     if len(set(numbers)) != len(numbers):
         dup = sorted({n for n in numbers if numbers.count(n) > 1})
@@ -139,10 +176,80 @@ def check_tickets(tickets_dir: str | Path,
         r = _check(p, TICKET_PATTERNS, min_bytes=MIN_TICKET_BYTES)
         if not r.ok:
             return r
-        track, reason = _ticket_track(p, tracks)
-        if reason:
-            return CheckResult(False, reason)
-        if track:
-            named[number] = track
-    return CheckResult(True, count=len(files), tracks=named,
-                       names=tuple(p.name for p in files))
+    return CheckResult(True, count=len(files))
+
+
+class PlanRevision(NamedTuple):
+    """What the operator is asked to approve at the plan gate. `fingerprint`
+    is "" when the revision cannot be told; `problem` then says why."""
+    path: str            # the summary, worktree-relative
+    fingerprint: str
+    problem: str = ""
+
+
+def _summary_path(root: Path, artifact: str) -> str:
+    """stage.json is model-written, so a missing path or one outside the
+    worktree falls back to the path the plan prompt names."""
+    try:
+        rel = (root / artifact).resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError, RuntimeError):
+        rel = "."
+    return PLAN_SUMMARY if rel == "." else rel
+
+
+def _spec_folder_files(root: Path, spec_path: str) -> list[Path] | None:
+    """spec.md, proposal.md and design.md beside the task's spec; none for a
+    task with no spec path. None when the folder leaves the worktree (a
+    symlink included): its files cannot be covered, so the revision cannot
+    be told."""
+    if not spec_path:
+        return []
+    try:
+        folder = (root / spec_path).parent
+        folder.resolve().relative_to(root.resolve())
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return [folder / name for name in SPEC_FOLDER_FILES]
+
+
+def _read_plan_file(p: Path) -> bytes | None:
+    """The file's bytes, b"" marked as absent for a file that is not there
+    (each file of a revision is optional), None for one that is there and is
+    not a readable regular file of a sane size."""
+    try:
+        if stat.S_ISDIR(os.lstat(p).st_mode):
+            return _DIRECTORY   # nothing to read, nothing to follow
+    except FileNotFoundError:
+        return _ABSENT
+    except (OSError, ValueError):
+        return None
+    try:
+        return read_regular(p, PLAN_FILE_MAX_BYTES)
+    except OSError:
+        return None
+
+
+def plan_revision(worktree: str | Path, artifact: str,
+                  spec_path: str = "") -> PlanRevision:
+    """The plan revision on disk: the summary's path, and a digest over the
+    summary, the ticket files and the spec folder's three files (names and
+    bytes). Every file is read without following a symlink and without
+    blocking, up to a size limit. Never raises: a file that is there and
+    cannot be read that way makes the revision unavailable."""
+    root = Path(worktree)
+    rel = _summary_path(root, artifact)
+    tickets = ticket_files(root / TICKETS_DIR)
+    if len(tickets) > MAX_TICKETS:
+        return PlanRevision(rel, "", f"more than {MAX_TICKETS} ticket files")
+    spec_files = _spec_folder_files(root, spec_path)
+    if spec_files is None:
+        return PlanRevision(rel, "", f"the spec folder of {spec_path} is outside the worktree")
+    digest = hashlib.sha256()
+    for p in [root / rel, *tickets, *spec_files]:
+        data = _read_plan_file(p)
+        if data is None:
+            return PlanRevision(rel, "", (
+                f"{p} is not a readable regular file (a symlink, a pipe, or "
+                f"above {PLAN_FILE_MAX_BYTES // 1024} KB)"))
+        digest.update(f"{p.name}\0{len(data)}\0".encode() + data)
+    return PlanRevision(rel, digest.hexdigest())

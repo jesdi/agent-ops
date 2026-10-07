@@ -148,6 +148,7 @@ def test_dry_run_writes_nothing(tmp_path, wt_seen, op):
 
 
 def test_create_workspace_matches_a_launched_worktree(tmp_path, monkeypatch, wt_seen):
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
     wt, seen = wt_seen
     spawn(wt)
     launched = snapshot(wt)

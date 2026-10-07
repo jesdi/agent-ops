@@ -174,6 +174,73 @@ def test_stage_signal_run_id_defaults_zero(tmp_path):
     assert read_stage_signal(tmp_path).run_id == 0
 
 
+def _signal_file(tmp_path):
+    (tmp_path / ".agent").mkdir()
+    return tmp_path / ".agent" / "stage.json"
+
+
+def test_stage_signal_at_a_fifo_is_none_and_does_not_block(tmp_path):
+    import os
+    import threading
+    os.mkfifo(_signal_file(tmp_path))
+    out = []
+    th = threading.Thread(target=lambda: out.append(read_stage_signal(tmp_path)),
+                          daemon=True)
+    th.start()
+    th.join(2)
+    assert not th.is_alive() and out == [None]
+
+
+def test_stage_signal_symlink_is_not_followed(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"stage": "plan", "status": "done"}')
+    _signal_file(tmp_path).symlink_to(outside)
+    assert read_stage_signal(tmp_path) is None
+
+
+def test_oversized_stage_signal_is_ignored(tmp_path):
+    from dispatcher.state import STAGE_SIGNAL_MAX_BYTES
+    f = _signal_file(tmp_path)
+    body = '{"stage": "plan", "status": "done", "note": "%s"}'
+    f.write_text(body % ("x" * (STAGE_SIGNAL_MAX_BYTES - len(body) + 2)))
+    assert f.stat().st_size == STAGE_SIGNAL_MAX_BYTES
+    assert read_stage_signal(tmp_path).status == "done"
+    f.write_text(body % ("x" * STAGE_SIGNAL_MAX_BYTES))
+    assert read_stage_signal(tmp_path) is None
+
+
+@pytest.mark.parametrize("note", [None, 3, ["a"], {"a": 1}, True])
+def test_stage_signal_note_that_is_not_a_string_reads_as_empty(tmp_path, note):
+    _signal_file(tmp_path).write_text(json.dumps(
+        {"stage": "plan", "status": "blocked", "note": note}))
+    assert read_stage_signal(tmp_path) == StageSignal("plan", "blocked", note="")
+
+
+def test_deeply_nested_stage_signal_is_none(tmp_path):
+    _signal_file(tmp_path).write_text("[" * 100_000)
+    assert read_stage_signal(tmp_path) is None
+
+
+@pytest.mark.parametrize("field", ["run_id", "round"])
+@pytest.mark.parametrize("raw", ["1e400", "-1e400", "1.5", "true", '"1e400"', '"-1"',
+                                 '"' + "9" * 400 + '"', "-1", str(2 ** 70), "[1]", "{}"])
+def test_stage_signal_with_a_number_field_that_is_no_sane_integer_is_unreadable(
+        tmp_path, field, raw):
+    _signal_file(tmp_path).write_text(
+        '{"stage": "implement", "status": "awaiting-ci", "%s": %s}' % (field, raw))
+    assert read_stage_signal(tmp_path) is None
+
+
+@pytest.mark.parametrize("raw, value", [("0", 0), ("null", 0), ('""', 0), ("4242", 4242),
+                                        ('"12"', 12), ("17123456789", 17123456789)])
+def test_stage_signal_integer_fields_read(tmp_path, raw, value):
+    _signal_file(tmp_path).write_text(
+        '{"stage": "implement", "status": "awaiting-ci", "run_id": %s, "round": %s}'
+        % (raw, raw))
+    sig = read_stage_signal(tmp_path)
+    assert (sig.run_id, sig.round) == (value, value)
+
+
 def test_waiting_marker_lifecycle(tmp_path):
     assert not has_waiting(tmp_path, "t", 9)
     mark_waiting(tmp_path, "t", 9)
@@ -637,6 +704,9 @@ def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
     assert (got.review_rounds, got.gate_rounds,
             got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
     assert got.operator_request == PlanApprovalRequest(".agent/plan-review.md")
+    assert got.operator_request.fingerprint == "", "a request from before the field loads"
+    save(tmp_path, replace(got, operator_request=PlanApprovalRequest("p.md", fingerprint="abc")))
+    assert load(tmp_path, "alpha", 10).operator_request.fingerprint == "abc"
 
 
 def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):

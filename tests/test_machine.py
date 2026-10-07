@@ -1,10 +1,9 @@
-from pathlib import Path
-
 import pytest
 
 from dataclasses import replace
 
-from dispatcher.loops import Outcome
+from dispatcher.artifacts import plan_revision
+from dispatcher.loops import Outcome, Retry
 from dispatcher.machine import (
     PLAN_NO_APPROVAL,
     SPEC_NO_REVIEW,
@@ -16,6 +15,7 @@ from dispatcher.machine import (
     ParkForCI,
     ParkForInput,
     ParkForReview,
+    ReviewPark,
     PublishSpec,
     RetryStage,
     SetTaskStage,
@@ -46,8 +46,9 @@ def task(stage, worktree="/tmp/wt", issue=101, park=""):
 def armed_gate(tmp_path):
     """A task that waits at the gate: valid tickets, the request armed."""
     tickets(tmp_path)
+    now = plan_revision(tmp_path, ".agent/plan-review.md")
     return replace(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
-                   operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+                   operator_request=PlanApprovalRequest(now.path, fingerprint=now.fingerprint))
 
 
 def sig(stage, status, artifact="", run_id=0):
@@ -89,7 +90,7 @@ def test_spec_awaiting_review_is_bounced_once_then_parks():
                     track="standard")
     (act,) = next_actions(task(Stage.SPEC), s, True, grace_elapsed=True,
                           tracks=frozenset({"standard"}))
-    assert act == RetryStage(Stage.SPEC, SPEC_NO_REVIEW)
+    assert act == RetryStage(Stage.SPEC, SPEC_NO_REVIEW, Retry.SPEC_SIGNAL)
     assert '"done"' in act.reason
     (act,) = next_actions(replace(task(Stage.SPEC), spec_retries=1), s, True)
     assert act == ParkForInput(SPEC_NO_REVIEW)
@@ -138,7 +139,7 @@ def test_plan_done_before_the_gate_is_bounced_once_then_parks(tmp_path):
     tickets(tmp_path, n=3)   # a valid set changes nothing: nobody approved it
     s = sig("plan", "done", ".agent/tickets")
     acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)), s, True)
-    assert acts == [RetryStage(Stage.PLAN, PLAN_NO_APPROVAL, slip=True)]
+    assert acts == [RetryStage(Stage.PLAN, PLAN_NO_APPROVAL, Retry.PLAN_SIGNAL)]
     # the ticket check's retry is another budget
     t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_retries=1)
     assert next_actions(t, s, True) == acts
@@ -152,7 +153,7 @@ def test_approval_naming_a_track_is_validated_as_the_spec_track_is(tmp_path):
     bad = StageSignal("plan", "done", track="deep")
     (act,) = next_actions(gate, bad, True, tracks=TRACKS)
     assert act == RetryStage(Stage.PLAN, "stage.json names track 'deep'; it must "
-                                         "be one of ['standard', 'trivial']", slip=True)
+                                         "be one of ['standard', 'trivial']", Retry.PLAN_SIGNAL)
     (act,) = next_actions(replace(gate, plan_slips=1), bad, True, tracks=TRACKS)
     assert isinstance(act, ParkForInput) and "must be one of" in act.note
     # naming no track keeps the task's; naming a configured one is accepted
@@ -445,7 +446,7 @@ def test_gate_parks_once_the_grace_period_elapses(tmp_path):
     armed = armed_gate(tmp_path)
     acts = next_actions(armed, sig("plan", "awaiting-review"), session_alive=True,
                         grace_elapsed=True)
-    assert acts == [ParkForReview()]
+    assert acts == [ParkForReview(ReviewPark.GRACE)]
 
 
 def test_gate_waits_inside_the_grace_period(tmp_path):
@@ -518,7 +519,7 @@ def test_ready_at_the_gate_with_no_request_is_a_new_round(tmp_path):
         PublishSpec(), Notify("awaiting_plan_review", "")]
     (tmp_path / ".agent" / "tickets" / "04-late.md").write_text(GOOD_TICKET)
     (act,) = next_actions(t, s, session_alive=True)
-    assert isinstance(act, RetryStage) and not act.slip and "contiguous" in act.reason
+    assert isinstance(act, RetryStage) and act.retry is Retry.PLAN_TICKETS and "contiguous" in act.reason
     # an old clock does not park a round the operator was never told of,
     # and never lets a bad ticket set past the check
     assert next_actions(t, s, True, grace_elapsed=True) == [act]
@@ -530,8 +531,9 @@ def test_unattended_rounds_at_the_gate_are_capped(tmp_path):
                    unattended_rounds=2)
     s = sig("plan", "awaiting-review", artifact=".agent/plan-review.md")
     assert next_actions(used, s, True) == [
-        ParkForReview(artifact=".agent/plan-review.md")]
-    assert next_actions(used, None, session_alive=False) == [ParkForReview()]
+        ParkForReview(ReviewPark.ROUNDS, artifact=".agent/plan-review.md")]
+    assert next_actions(used, None, session_alive=False) == [
+        ParkForReview(ReviewPark.SESSION_DIED)]
     # gate entry from the plan stage is not a round of its own
     entry = next_actions(replace(used, stage=Stage.PLAN), s, True)
     assert entry[0] == SetTaskStage(Stage.AWAITING_PLAN_REVIEW,
@@ -561,7 +563,8 @@ def test_spec_done_with_unknown_track_retries_in_place():
     sig = StageSignal(stage="spec", status="done", artifact="s.md", track="deep")
     acts = next_actions(task(Stage.SPEC), sig, True, tracks=TRACKS)
     assert acts == [RetryStage(Stage.SPEC, "stage.json names track 'deep'; it must be "
-                                           "one of ['standard', 'trivial']")]
+                                           "one of ['standard', 'trivial']",
+                       Retry.SPEC_SIGNAL)]
 
 
 def test_spec_done_with_missing_track_retries_in_place():

@@ -284,3 +284,73 @@ def test_operator_resume_starts_a_session_in_the_same_worktree_with_the_prompt(
     assert _rule(spawn[3], "ledger", "continue")
     assert not re.search(r"ticket\s+\d+\s+of\s+\d+", spawn[3].lower())
     assert ".agent/tickets/0" not in spawn[3]
+
+
+# Requirement 13, scenario "a quota error mid-implement parks and resumes":
+# driven through passes, with the console's task view as the observer.
+def _progress_shown(c):
+    from fastapi.testclient import TestClient
+    from tests.test_web_implement_progress import _NoGithub, _NoSessions
+    from tests.webfakes import HEADERS
+    from web.app import create_app
+    from web.sources import Sources
+    with TestClient(create_app(c, Sources(c, _NoSessions(), _NoGithub()))) as client:
+        r = client.get(f"/api/task/portfolio_eval/{ISSUE}", headers=HEADERS)
+    assert r.status_code == 200, r.text
+    return r.json()["implement_progress"]
+
+
+def test_parked_implement_task_resumes_its_session_and_keeps_its_progress(
+        tmp_path, monkeypatch):
+    from tests.test_main import LiveUntilEnded
+    c = _setup(tmp_path, monkeypatch)
+    wt, _ = _started(c)
+    _signal(wt, stage="implement", status="working", note="2/4 tickets merged")
+    sess = LiveUntilEnded(alive={ISSUE}, idle={ISSUE: 999999.0})
+    main.run_pass(c, deps(sess=sess))               # silent live session: parked
+    assert _task(c).park == PARK_HUMAN and sess.ended == [ISSUE]
+    assert _progress_shown(c) == "2/4 tickets merged"
+
+    sess.idle = {}
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", ISSUE,
+                             {"text": "the quota is back, continue"}, "op", 1)
+    main.run_pass(c, deps(sess=sess))               # the operator's reply resumes it
+    main.run_pass(c, deps(sess=sess))               # and nothing else happens
+
+    t = _task(c)
+    assert (t.stage, t.park) == (Stage.IMPLEMENT, "")
+    assert [r[0] for r in sess.resumed] == [ISSUE], "one resume of the same session"
+    assert "the quota is back, continue" in sess.resumed[0][1]
+    assert _implements(sess) == [], "no second implement session"
+    assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
+    assert _progress_shown(c) == "2/4 tickets merged"
+
+
+def test_respawn_after_a_crash_keeps_the_progress_and_a_new_stage_drops_it(
+        tmp_path, monkeypatch):
+    c, wt, _ = _dead_after_two_merges(tmp_path, monkeypatch)
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", ISSUE, {},
+                             "op", 1)
+    sess = FakeSessions(alive=set())
+    main.run_pass(c, deps(sess=sess))               # fresh implement session
+    assert len(_implements(sess)) == 1
+    assert _progress_shown(c) == "2/4 tickets merged"
+
+    _signal(wt, stage="implement", status="done", note="4/4 tickets merged")
+    sess.alive_set = {ISSUE}
+    main.run_pass(c, deps(sess=sess))               # review starts
+    assert _task(c).stage is Stage.REVIEW
+    assert "note" not in json.loads((wt / ".agent" / "stage.json").read_text())
+
+
+def test_blocked_reason_is_not_kept_as_progress_after_the_reply(tmp_path, monkeypatch):
+    from tests.test_main import LiveUntilEnded
+    c = _setup(tmp_path, monkeypatch)
+    wt, _ = _started(c)
+    _signal(wt, stage="implement", status="blocked", note="no subagent tool")
+    sess = LiveUntilEnded(alive={ISSUE})
+    main.run_pass(c, deps(sess=sess))
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", ISSUE,
+                             {"text": "fixed"}, "op", 1)
+    main.run_pass(c, deps(sess=sess))
+    assert len(sess.resumed) == 1 and _progress_shown(c) is None
