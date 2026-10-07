@@ -72,6 +72,46 @@ is a safety property: a session that dies part way leaves a body file the
 next one uses.
 _Avoid_: PR stage, verify stage
 
+**Spec folder**:
+`specs/<YYYY-MM-DD>-<topic>/` in the task's worktree, dated with the day the
+spec session starts. It holds `proposal.md`, `spec.md` and `design.md` during
+the task; `main` keeps only `spec.md`.
+_Avoid_: design file, spec file (the spec is the folder's `spec.md`)
+
+**Plan review gate**:
+The one point where a task waits for the operator before a pull request
+exists: after the plan session wrote the design and the tickets. The
+operator is shown the spec folder on GitHub and the plan summary on the
+console. Only an explicit approval starts implement.
+_Avoid_: spec review gate, spec approval (retired with the old flow)
+
+**Plan summary**:
+`.agent/plan-review.md`, written by the plan session before it reports
+ready: the ticket list, the open questions and the corrections it made to
+stage 1. It is the request the console shows at the gate. Never committed.
+
+**Open question**:
+What the plan session reports at its end: a red-team finding the design
+leaves unresolved, a choice between two behaviours that differ for the user
+or the business, or an input the design assumes and no source provides.
+Listed in the plan summary, counted in the ready report.
+
+**Gate-free track**:
+A track whose `targets.yaml` entry carries `plan_review: false`. A track
+without the key has the gate. Gate-free is one of the conditions of the gate
+skip, never the only one.
+
+**Ledger**:
+`.agent/ledger.md` in the task's worktree: the rulings of the implement
+session and the state of every ticket. A session that finds one continues
+from it. The review session reads it only after its own review. Never
+committed.
+
+**Implement progress**:
+The note of the implement session's last `working` report, for example
+"2/4 tickets merged". The console shows it on the task page while the task
+is in implement.
+
 **Gate**:
 The target repository's own green check (`gate_cmd` in targets.yaml —
 tests, lint, CRAP), run by the implement session for every ticket and in review.
