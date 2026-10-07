@@ -1,14 +1,15 @@
 """Edge cases of the answers intent the acceptance file does not reach."""
 
+import json
 import shutil
-
 from dataclasses import replace
+from pathlib import Path
 
-from dispatcher import eventlog, intents
-from dispatcher.state import (NO_SLOT, PARK_REVIEW, PARK_WAKE,
-                              PlanApprovalRequest, Stage, save)
+from dispatcher import eventlog, intents, messages
+from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PARK_WAKE,
+                              PlanApprovalRequest, Stage, save, task_key)
 
-from tests.test_answers_intent_acceptance import (ISSUE, PLAN_FILE, REV,
+from tests.test_answers_intent_acceptance import (ISSUE, PLAN_FILE, REV, TARGET,
                                                   _drain, _events, _file,
                                                   _gate, _intent, _setup,
                                                   _task, _texts)
@@ -150,3 +151,51 @@ def test_a_draft_on_a_new_revision_is_not_blocked_by_an_old_submission(tmp_path,
     f = _file(wt)
     assert (f["answers"], f["submitted"], f["revision"]) == ({"format": "b"}, None, "rev-2")
     assert not _events(c, "intent-dropped")
+
+
+def test_a_corrupt_task_file_fails_only_its_own_answers_intent(tmp_path, monkeypatch, capsys):
+    c = _setup(tmp_path, monkeypatch)
+    _gate(c)
+    (Path(c.state_dir) / f"task-{task_key(TARGET, ISSUE)}.json").write_text("{not json")
+    make_task(c, issue=7, park=PARK_HUMAN, slot=NO_SLOT)
+    _intent(c, {"format": "a"}, ms=1)
+    intents.write_intent(c.state_dir, "reply", TARGET, 7, {"text": "go"},
+                         actor="jesdi", epoch_ms=2)
+
+    _drain(c)
+
+    assert intents.list_intents(c.state_dir) == []
+    (e,) = _events(c, "intent-applied")
+    assert (e["issue"], e["detail"]) == (7, "reply")
+    assert [m.text for m in messages.undelivered(c.state_dir, TARGET, 7)] == ["go"]
+    assert "failed" in capsys.readouterr().err
+
+
+def test_a_text_answer_without_revision_blocks_a_draft(tmp_path, monkeypatch):
+    c = _setup(tmp_path, monkeypatch)
+    wt = _gate(c)
+    text_answer = json.dumps({"v": 1, "stage": "plan", "submitted": "approve",
+                              "submitted_at": "2026-10-07T10:00:05+00:00",
+                              "actor": "text", "answers": {"format": "a"}})
+    (wt / PLAN_FILE).write_text(text_answer)
+    _intent(c, {"format": "b"})
+
+    _drain(c)
+
+    assert (wt / PLAN_FILE).read_text() == text_answer
+    (e,) = _events(c, "intent-dropped")
+    assert "already submitted" in e["detail"]
+
+
+def test_a_garbage_submit_does_not_beat_a_valid_draft(tmp_path, monkeypatch):
+    c = _setup(tmp_path, monkeypatch)
+    wt = _gate(c)
+    _intent(c, {"format": "a"}, ms=1)
+    _intent(c, {"format": "x"}, submit="merge", ms=5)
+
+    _drain(c)
+
+    assert _file(wt)["answers"] == {"format": "a"}
+    (e,) = _events(c, "intent-dropped")
+    assert "unknown submit" in e["detail"]
+    assert len(_events(c, "intent-applied")) == 1

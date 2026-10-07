@@ -1906,13 +1906,15 @@ def _answers_drop_reason(task: TaskState | None,
 
 
 def _submitted_on_disk(worktree: str, name: str, revision: object) -> bool:
-    """The file on disk is a submission made on this page revision. One of
-    an older revision (or with none, as a session's text answer) does not
-    block a draft on the page shown now."""
+    """The file on disk is a submission that a draft must not overwrite:
+    one made on this page revision, or one with no revision (a session
+    wrote it from a text answer). Only a submission made on another
+    revision lets a draft on the page shown now through."""
     raw = read_regular(Path(worktree) / ".agent" / name, PLAN_FILE_MAX_BYTES)
     try:
         doc = json.loads(raw or b"{}")
-        return doc.get("submitted") is not None and doc.get("revision") == revision
+        return (doc.get("submitted") is not None
+                and doc.get("revision", revision) == revision)
     except (ValueError, AttributeError):
         return False   # garbage on disk is no submission
 
@@ -2141,8 +2143,15 @@ def _intent_target(cfg: Config, intent: intents.Intent) -> str:
 
 def _competes(cfg: Config, intent: intents.Intent) -> bool:
     """An answers intent valid for its task's open request: right revision
-    and a known submit value. Only these can supersede one another."""
-    task = _task_for_intent(cfg, intent) if intent.action == "answers" else None
+    and a known submit value. Only these can supersede one another. A task
+    file that does not load leaves the intent to the drain, which fails it
+    on its own."""
+    if intent.action != "answers":
+        return False
+    try:
+        task = _task_for_intent(cfg, intent)
+    except Exception:
+        return False
     req = task.operator_request if task is not None else None
     return (req is not None and bool(req.fingerprint)
             and intent.payload.get("revision") == req.fingerprint
@@ -2155,15 +2164,15 @@ def _without_superseded_answers(cfg: Config,
     newest submission, else the newest draft. The other valid ones are
     deleted unapplied; an invalid one stays and drops with its reason (a
     stale tab never costs a current answer)."""
-    competing = [i for i in pending if _competes(cfg, i)]
+    competing = {i.path: i for i in pending if _competes(cfg, i)}
     winners: dict[tuple[str, int], intents.Intent] = {}
-    for i in competing:
+    for i in competing.values():
         key = (i.target, i.issue)
         winners[key] = max(winners.get(key, i), i, key=lambda x: (
             x.payload.get("submit") is not None, x.created_at, x.path.name))
     kept = []
     for i in pending:
-        win = winners[(i.target, i.issue)] if i in competing else i
+        win = winners[(i.target, i.issue)] if i.path in competing else i
         if win is i:
             kept.append(i)
         else:
