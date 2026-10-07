@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from dispatcher.artifacts import (PLAN_SUMMARY, TICKETS_DIR, CheckResult, check_spec,
-                                  check_tickets, count_open_questions)
+                                  check_tickets, count_open_questions, plan_revision)
 from dispatcher.loops import Decision, Loop, Outcome, ReportedRound, evaluate
 from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
                               StageSignal, TaskState)
@@ -94,9 +94,9 @@ class ParkForCI:
 @dataclass(frozen=True)
 class DisarmPlanApproval:
     """The session at the gate reports `working` (it reworks the plan on the
-    operator's feedback), or its ticket set no longer passes the check: the
-    summary the console offers for approval is stale. Its next ready report
-    is a new review round."""
+    operator's feedback), or its ready report names another plan revision
+    than the request was armed for: the summary the console offers for
+    approval is stale. The next ready report is a new review round."""
 
 
 @dataclass(frozen=True)
@@ -248,13 +248,12 @@ def _review_actions(task: TaskState, signal: StageSignal, grace_elapsed: bool,
                     gate_free: frozenset[str]) -> list[object]:
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
         if task.operator_request:
-            # Already notified on a previous pass: only the clock runs. The
-            # tickets are checked all the same: the session may have changed
-            # them with no `working` signal that a pass saw.
-            _result, failed = _checked_tickets(task)
-            if failed:
-                return [DisarmPlanApproval()] + failed
-            return [ParkForReview()] if grace_elapsed else [NoOp()]
+            if _armed_for(task, signal):
+                # Already notified on a previous pass: only the clock runs.
+                return [ParkForReview()] if grace_elapsed else [NoOp()]
+            # The session changed the plan with no `working` signal that a
+            # pass saw: what the console offers is stale.
+            return [DisarmPlanApproval()] + _gate_round_actions(task, signal, gate_free)
         # No request armed: a resume or a rework cleared it, so this ready
         # report is a new review round. It enters the gate again, with a
         # fresh grace clock.
@@ -264,6 +263,16 @@ def _review_actions(task: TaskState, signal: StageSignal, grace_elapsed: bool,
     elif task.stage != Stage.PLAN:
         return [NoOp()]
     return _gate_round_actions(task, signal, gate_free)
+
+
+def _armed_for(task: TaskState, signal: StageSignal) -> bool:
+    """Is the armed request for the plan this ready report names? The summary
+    and the tickets are as they were when the request was armed (so the ticket
+    check they passed then still holds). A request with no fingerprint is for
+    no plan."""
+    request = task.operator_request
+    return bool(request.fingerprint) and (request.path, request.fingerprint) == (
+        plan_revision(task.worktree, signal.artifact))
 
 
 def _skips_gate(task: TaskState, signal: StageSignal,

@@ -34,7 +34,7 @@ from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import openspec_migration, spec_publish, task_artifacts
-from dispatcher.artifacts import PLAN_SUMMARY, TICKETS_DIR
+from dispatcher.artifacts import TICKETS_DIR, plan_revision
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
@@ -1369,15 +1369,10 @@ def _on_park_for_input(turn: _Turn, task: TaskState, act: ParkForInput,
 
 
 def _plan_approval(task: TaskState, artifact: str) -> PlanApprovalRequest:
-    """The gate's request: the plan session's summary. stage.json is
-    model-written, so a missing path or one outside the worktree falls back
-    to the path the plan prompt names."""
-    try:
-        rel = (Path(task.worktree) / artifact).resolve().relative_to(
-            Path(task.worktree).resolve()).as_posix()
-    except ValueError:
-        rel = "."
-    return PlanApprovalRequest(path=PLAN_SUMMARY if rel == "." else rel)
+    """The gate's request: the plan session's summary, bound to the plan
+    revision that is on disk now."""
+    path, fingerprint = plan_revision(task.worktree, artifact)
+    return PlanApprovalRequest(path=path, fingerprint=fingerprint)
 
 
 def _on_disarm_plan_approval(turn: _Turn, task: TaskState,

@@ -149,6 +149,13 @@ def _task(c):
     return load(c.state_dir, "portfolio_eval", ISSUE)
 
 
+def _arm(c):
+    """A request armed by hand is bound to the plan on disk, as a pass binds it."""
+    t = _task(c)
+    save(c.state_dir, dc_replace(
+        t, operator_request=main._plan_approval(t, t.operator_request.path)))
+
+
 # 1. The task waits at the plan review gate.
 def test_ready_report_makes_the_task_wait_with_a_folder_link(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
@@ -323,6 +330,7 @@ def test_gate_parks_after_the_grace_time_and_a_later_approval_starts_implement(
         _task(c), stage=Stage(GATE), operator_request=PlanApprovalRequest(SUMMARY),
         updated_at=(datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()))
     _ready(wt)
+    _arm(c)
     gh = FakeGitHub([Candidate(99, "next", "u99")])
     sess = FakeSessions(alive={ISSUE})
 
@@ -355,6 +363,7 @@ def test_null_grace_never_parks_the_gate(tmp_path, monkeypatch):
         _task(c), stage=Stage(GATE), operator_request=PlanApprovalRequest(SUMMARY),
         updated_at=(datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()))
     _ready(wt)
+    _arm(c)
     gh = FakeGitHub([Candidate(99, "next", "u99")])
     sess = FakeSessions(alive={ISSUE})
 
@@ -373,6 +382,7 @@ def test_gate_task_with_a_dead_session_gets_a_fresh_plan_session(tmp_path, monke
     save(c.state_dir, dc_replace(_task(c), stage=Stage(GATE),
                                  operator_request=PlanApprovalRequest(SUMMARY)))
     _ready(wt)
+    _arm(c)
     sess = FakeSessions(alive=set())
 
     main.run_pass(c, deps(sess=sess))

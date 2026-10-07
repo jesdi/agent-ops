@@ -637,6 +637,9 @@ def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
     assert (got.review_rounds, got.gate_rounds,
             got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
     assert got.operator_request == PlanApprovalRequest(".agent/plan-review.md")
+    assert got.operator_request.fingerprint == "", "a request from before the field loads"
+    save(tmp_path, replace(got, operator_request=PlanApprovalRequest("p.md", fingerprint="abc")))
+    assert load(tmp_path, "alpha", 10).operator_request.fingerprint == "abc"
 
 
 def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):

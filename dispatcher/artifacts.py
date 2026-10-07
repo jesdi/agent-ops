@@ -2,6 +2,7 @@
 retries or fails the stage instead of propagating garbage downstream."""
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,3 +116,21 @@ def check_tickets(tickets_dir: str | Path) -> CheckResult:
         if not r.ok:
             return r
     return CheckResult(True, count=len(files))
+
+
+def plan_revision(worktree: str | Path, artifact: str) -> tuple[str, str]:
+    """What the operator is asked to approve at the plan gate: the summary's
+    worktree-relative path, and a digest over its bytes and the ticket files'
+    names and bytes. stage.json is model-written, so a missing path or one
+    outside the worktree falls back to the path the plan prompt names."""
+    root = Path(worktree)
+    try:
+        rel = (root / artifact).resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        rel = "."
+    rel = PLAN_SUMMARY if rel == "." else rel
+    digest = hashlib.sha256()
+    for p in [root / rel, *ticket_files(root / TICKETS_DIR)]:
+        data = p.read_bytes() if p.is_file() else b""
+        digest.update(f"{p.name}\0{len(data)}\0".encode() + data)
+    return rel, digest.hexdigest()

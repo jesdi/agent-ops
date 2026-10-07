@@ -72,6 +72,10 @@ class LoopCaps:
 class PlanApprovalRequest:
     path: str   # the plan session's review summary, worktree-relative
     kind: str = "plan-approval"
+    # The plan revision the operator is asked to approve (see
+    # artifacts.plan_revision). "" = unknown: such a request matches no plan.
+    # Not part of the request's identity, and not sent to the console.
+    fingerprint: str = field(default="", compare=False)
 
     def __post_init__(self):
         if not self.path:
@@ -285,7 +289,8 @@ def _read(p: Path) -> TaskState | None:
         raw = d["operator_request"]
         kind = raw.get("kind")
         if kind == "plan-approval":
-            d["operator_request"] = PlanApprovalRequest(path=raw.get("path", ""))
+            d["operator_request"] = PlanApprovalRequest(
+                path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
         elif kind == "answers":
             d["operator_request"] = AnswersRequest(path=raw.get("path", ""))
         else:

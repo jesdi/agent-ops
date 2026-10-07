@@ -4,6 +4,7 @@ import pytest
 
 from dataclasses import replace
 
+from dispatcher.artifacts import plan_revision
 from dispatcher.loops import Outcome
 from dispatcher.machine import (
     PLAN_NO_APPROVAL,
@@ -46,8 +47,9 @@ def task(stage, worktree="/tmp/wt", issue=101, park=""):
 def armed_gate(tmp_path):
     """A task that waits at the gate: valid tickets, the request armed."""
     tickets(tmp_path)
+    path, fingerprint = plan_revision(tmp_path, ".agent/plan-review.md")
     return replace(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
-                   operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+                   operator_request=PlanApprovalRequest(path, fingerprint=fingerprint))
 
 
 def sig(stage, status, artifact="", run_id=0):

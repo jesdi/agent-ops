@@ -2932,6 +2932,13 @@ def gate_signal(wt: Path, artifact: str = ".agent/plan-review.md") -> None:
          "artifact": artifact}))
 
 
+def arm_gate(c, issue: int = 42, artifact: str = ".agent/plan-review.md") -> None:
+    """Bind the task's request to the plan that is on disk now, as the pass
+    that armed it did: call it after the tickets and the summary are written."""
+    t = load(c.state_dir, "portfolio_eval", issue)
+    save(c.state_dir, dc_replace(t, operator_request=main._plan_approval(t, artifact)))
+
+
 def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -2939,6 +2946,7 @@ def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatc
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED, slot=1)
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
@@ -2958,6 +2966,7 @@ def test_gate_park_is_event_logged(tmp_path, monkeypatch):
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED)
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     parked = [e for e in eventlog.read_tail(c.state_dir)
               if e["event"] == "parked"]
@@ -2977,6 +2986,7 @@ def test_gate_holds_inside_the_grace_period(tmp_path, monkeypatch):
                    operator_request=PlanApprovalRequest(PLAN_SUMMARY))
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     sess = FakeSessions(alive={42})
     d = deps(sess=sess)
     main.run_pass(c, d)
@@ -3005,6 +3015,7 @@ def test_zero_grace_parks_on_the_next_pass(tmp_path, monkeypatch):
                    updated_at=datetime.now(timezone.utc).isoformat())
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_REVIEW
 
@@ -3041,6 +3052,7 @@ def test_grace_expiry_park_preserves_plan_approval_request(tmp_path, monkeypatch
     (wt / ".agent" / "plan-review.md").write_text("# Plan review\n\nApprove me.")
     write_tickets(wt, 2)
     gate_signal(wt)  # status=awaiting-review, grace already elapsed → ParkForReview
+    arm_gate(c)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_REVIEW
@@ -3118,6 +3130,7 @@ def test_plan_parked_ping_links_spec(tmp_path, monkeypatch):
                    spec_path="docs/superpowers/specs/x-design.md")
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     monkeypatch.setattr(main.spec_publish, "ensure_published",
                         lambda **kw: spec_publish.PublishResult(url=SPEC_URL))
     d = deps(sess=FakeSessions(alive={42}))
@@ -3137,6 +3150,7 @@ def test_plan_parked_note_says_local_only_when_publish_fails(
                    spec_path="docs/superpowers/specs/x-design.md")
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     monkeypatch.setattr(
         main.spec_publish, "ensure_published",
         lambda **kw: spec_publish.PublishResult(error="git push failed: auth"))
@@ -3156,6 +3170,7 @@ def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
                    spec_path="docs/specs/x-design.md")
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     token_error = (
         "git push failed: fatal: unable to access "
         "'https://x-access-token:ghp_SECRET@github.com/jesdi/r.git/': "
@@ -3357,6 +3372,7 @@ def test_park_for_review_saves_park_note(tmp_path, monkeypatch):
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, operator_request=ARMED, slot=1)
     write_tickets(wt, 2)
     gate_signal(wt)
+    arm_gate(c)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).park_note == "plan ready for review"
 
@@ -5769,3 +5785,91 @@ def test_denied_retry_does_not_leave_the_changed_tickets_armed(tmp_path, monkeyp
     t = load(c.state_dir, "portfolio_eval", 42)
     assert sess.resumed == [] and t.plan_retries == 0
     assert t.park == "" and t.operator_request is None
+
+
+# --- plan review gate: the armed request is bound to one plan revision -------
+
+def _armed_gate(c, sess, monkeypatch):
+    """A task that reached the gate through a pass: summary on disk, armed."""
+    wt = _plan_ready_task(c)
+    (wt / PLAN_SUMMARY).write_text("# Plan review\n\nfirst plan\n")
+    _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.AWAITING_PLAN_REVIEW and t.operator_request.fingerprint
+    return wt
+
+
+def _rework_between_passes(wt, name):
+    """What `name` selects changes with no `working` signal that a pass sees."""
+    if name == "summary":
+        (wt / PLAN_SUMMARY).write_text("# Plan review\n\nsecond plan\n")
+    elif name == "ticket":
+        ticket = wt / ".agent" / "tickets" / "02-t2.md"
+        ticket.write_text(ticket.read_text() + "\n- [ ] one more criterion\n")
+    else:
+        (wt / ".agent" / "plan-v2.md").write_text("# Plan review\n\nsecond plan\n")
+    gate_signal(wt, ".agent/plan-v2.md" if name == "path" else PLAN_SUMMARY)
+
+
+@pytest.mark.parametrize("changed", ["summary", "ticket", "path"])
+def test_plan_changed_under_an_armed_request_is_a_new_review_round(
+        tmp_path, monkeypatch, changed):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    before = load(c.state_dir, "portfolio_eval", 42)
+    _minutes_ago(c, 20)                       # past the grace time
+    _rework_between_passes(wt, changed)
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+    assert t.park == "" and sess.ended == [], "a new round, not the grace park"
+    assert t.unattended_rounds == before.unattended_rounds + 1
+    assert t.operator_request.fingerprint != before.operator_request.fingerprint
+    assert t.operator_request.path == (".agent/plan-v2.md" if changed == "path"
+                                       else PLAN_SUMMARY)
+    assert _gate_pass(c, sess, monkeypatch).notifier.sent == []
+
+
+def test_unchanged_plan_under_an_armed_request_is_never_announced_again(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    before = load(c.state_dir, "portfolio_eval", 42)
+    for _ in range(3):
+        gate_signal(wt)                       # the same report, written again
+        assert _gate_pass(c, sess, monkeypatch).notifier.sent == []
+    assert load(c.state_dir, "portfolio_eval", 42) == before
+
+
+def test_armed_request_with_no_fingerprint_is_a_new_review_round(tmp_path, monkeypatch):
+    """Fail closed: nothing says which plan such a request was armed for."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH,
+                   operator_request=PlanApprovalRequest(PLAN_SUMMARY))
+    write_tickets(wt, 2)
+    gate_signal(wt)
+    d = _gate_pass(c, FakeSessions(alive={42}), monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+    assert t.park == "" and t.operator_request.fingerprint
+
+
+def test_plan_that_changes_every_pass_gets_two_new_rounds_then_parks(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    notifier = FakeNotifier()
+    for n in range(8):
+        if load(c.state_dir, "portfolio_eval", 42).park:
+            break
+        (wt / PLAN_SUMMARY).write_text(f"# Plan review\n\nplan {n}\n")
+        _gate_pass(c, sess, monkeypatch, notifier=notifier)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert notifier.sent == ["awaiting_plan_review"] * 2 + ["plan_parked"]
+    assert t.park == PARK_REVIEW and t.operator_request.path == PLAN_SUMMARY
