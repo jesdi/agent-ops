@@ -125,7 +125,8 @@ class TaskState:
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time
     track: str = ""                      # configured track name (spec/2026-09-14-model-tracks)
-    implement_providers: list[str] = field(default_factory=list)  # providers that ran tickets, first use first, no repeats
+    # providers that ran tickets: first use first, no repeats
+    implement_providers: list[str] = field(default_factory=list)
     picks: dict[str, str] = field(default_factory=dict)  # policy stage -> "provider/model[@effort]", sticky per stage
     spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track)
     plan_retries: int = 0                # in-session plan-format retries used
@@ -264,9 +265,11 @@ def _read(p: Path) -> TaskState | None:
         d["terminal_at"] = ""
     d["labels"] = tuple(d.get("labels", ()))
     d["picks"] = dict(d.get("picks") or {})
-    # Old shape: the implement pick's provider ran the tickets.  No recorded provider: the pick stands in.
+    # No recorded provider: the implement pick's provider ran the tickets
+    # (tasks from before the record existed).
     if not d.get("implement_providers"):
-        d["implement_providers"] = list(filter(None, [pick_provider(d["picks"], "implement")]))
+        d["implement_providers"] = list(
+            filter(None, [pick_provider(d["picks"], "implement")]))
     d.pop("pending_reply", None)   # retired field, see original comment
     if "operator_request" not in d:
         # Legacy record: derive from unambiguous gate evidence.
