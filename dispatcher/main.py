@@ -41,8 +41,8 @@ from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
                                 ParkForInput, ParkForReview, PublishSpec,
                                 RecordBackgroundWait, RetryStage, SetTaskStage,
                                 StartTicket, SpawnStage, pass_actions)
-from dispatcher.models import (Admitted, Entry, ModelPolicy, Order, candidates,
-                               override_refusal, parse_entry,
+from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
+                               Order, candidates, override_refusal, parse_entry,
                                pick_key, resolve, review_avoid, second_model, stage_pick,
                                ticket_track_names, ticket_tracks_text,
                                track_from_labels, tracks_text)
@@ -1441,7 +1441,7 @@ def _without_ticket_pick(task: TaskState) -> TaskState:
     is the pick of the ticket in progress and goes when that ticket is done."""
     return replace(task, ticket_without_pick=False,
                    picks={k: v for k, v in task.picks.items()
-                          if k != pick_key(Stage.IMPLEMENT.value)})
+                          if k != IMPLEMENT_PICK})
 
 
 def _step_done(turn: _Turn, task: TaskState, act: object) -> TaskState:

@@ -11,7 +11,8 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
-from dispatcher.models import ModelPolicy, pick_provider
+from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, ModelPolicy,
+                               pick_provider)
 
 
 class Stage(str, Enum):
@@ -84,7 +85,7 @@ def ticket_in_progress(t: "TaskState") -> bool:
     progress with no pick; the state read marks it (`ticket_without_pick`).
     With no ticket set at all (`ticket_count` 0, a task from before tickets)
     the implement stage is its one session."""
-    return ("implement" in t.picks or t.ticket_without_pick
+    return (IMPLEMENT_PICK in t.picks or t.ticket_without_pick
             or t.ticket_count == 0)
 
 
@@ -342,7 +343,7 @@ def _migrate_ticket_without_pick(d: dict) -> None:
     ticket and never skips to the next one."""
     if "ticket_without_pick" not in d:
         d["ticket_without_pick"] = (_effective_stage(d) is Stage.IMPLEMENT
-                                    and "implement" not in d["picks"])
+                                    and IMPLEMENT_PICK not in d["picks"])
 
 
 def _migrate_implement_pick(d: dict) -> None:
@@ -356,13 +357,13 @@ def _migrate_implement_pick(d: dict) -> None:
     picks = d["picks"]
     if not d.get("implement_providers"):
         d["implement_providers"] = list(
-            filter(None, [pick_provider(picks, "implement")]))
+            filter(None, [pick_provider(picks, Stage.IMPLEMENT.value)]))
     stage = _effective_stage(d)
-    if stage not in _PAST_IMPLEMENT or "implement" not in picks:
+    if stage not in _PAST_IMPLEMENT or IMPLEMENT_PICK not in picks:
         return
-    pick = picks.pop("implement")
+    pick = picks.pop(IMPLEMENT_PICK)
     if stage in _PR_OPEN_STAGES:
-        picks.setdefault("feedback", pick)
+        picks.setdefault(FEEDBACK_PICK, pick)
 
 
 def _ticket_tracks(raw: dict | None) -> dict[int, str]:

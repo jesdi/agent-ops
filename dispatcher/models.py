@@ -50,12 +50,17 @@ def policy_stage(stage: str) -> str:
     return _POLICY_STAGES.get(stage, stage)
 
 
+# The two keys of `TaskState.picks` that are not simply a stage's own name.
+IMPLEMENT_PICK = "implement"   # the pick of the ticket in progress
+FEEDBACK_PICK = "feedback"     # the one pick of every PR feedback round
+
+
 def pick_key(stage: str) -> str:
     """Runtime stage -> its key in `TaskState.picks`: the policy stage, but
     PR feedback has its own. Address-review chooses from the implement list
-    (policy_stage) and keeps that one choice under `feedback`, so the
+    (policy_stage) and keeps that one choice under FEEDBACK_PICK, so the
     implement pick stays the tickets'."""
-    return "feedback" if stage == "address-review" else policy_stage(stage)
+    return FEEDBACK_PICK if stage == "address-review" else policy_stage(stage)
 
 
 def stage_pick(picks: Mapping[str, str], stage: str) -> str:
