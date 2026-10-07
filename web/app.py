@@ -417,6 +417,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                    for i in sources.pending_intents()
                    if (i["action"], i["target"], i["issue"])
                    == ("answers", t.target, t.issue)
+                   and isinstance(i["payload"], dict)
                    and isinstance(i["payload"].get("answers"), dict)]
         win = answers_file.select(pending, t.operator_request.fingerprint)
         saved = (win.payload if win is not None
