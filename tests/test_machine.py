@@ -17,6 +17,7 @@ from dispatcher.machine import (
     ParkForCI,
     ParkForInput,
     ParkForReview,
+    ReviewPark,
     PublishSpec,
     RetryStage,
     SetTaskStage,
@@ -447,7 +448,7 @@ def test_gate_parks_once_the_grace_period_elapses(tmp_path):
     armed = armed_gate(tmp_path)
     acts = next_actions(armed, sig("plan", "awaiting-review"), session_alive=True,
                         grace_elapsed=True)
-    assert acts == [ParkForReview()]
+    assert acts == [ParkForReview(ReviewPark.GRACE)]
 
 
 def test_gate_waits_inside_the_grace_period(tmp_path):
@@ -532,8 +533,9 @@ def test_unattended_rounds_at_the_gate_are_capped(tmp_path):
                    unattended_rounds=2)
     s = sig("plan", "awaiting-review", artifact=".agent/plan-review.md")
     assert next_actions(used, s, True) == [
-        ParkForReview(artifact=".agent/plan-review.md")]
-    assert next_actions(used, None, session_alive=False) == [ParkForReview()]
+        ParkForReview(ReviewPark.ROUNDS, artifact=".agent/plan-review.md")]
+    assert next_actions(used, None, session_alive=False) == [
+        ParkForReview(ReviewPark.SESSION_DIED)]
     # gate entry from the plan stage is not a round of its own
     entry = next_actions(replace(used, stage=Stage.PLAN), s, True)
     assert entry[0] == SetTaskStage(Stage.AWAITING_PLAN_REVIEW,

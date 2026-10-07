@@ -9,6 +9,7 @@ Every bounded loop (review fixes, gate fixes, e2e, ci) parks past its cap.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -99,14 +100,24 @@ class DisarmPlanApproval:
     approval is stale. The next ready report is a new review round."""
 
 
+class ReviewPark(Enum):
+    """Why a task at the plan gate parks. The value is the event's detail."""
+    GRACE = "plan review grace expired"
+    ROUNDS = "unattended review rounds used up"
+    SESSION_DIED = "plan session died at the gate; unattended rounds used up"
+
+
 @dataclass(frozen=True)
 class ParkForReview:
-    """Grace expired at the plan-review gate. Unlike every other park this
-    one releases the E2E slot too, so the dispatcher can spend it on the next
-    Ready task instead of holding it for a human who is asleep. Also where
-    a task ends that used up its unattended rounds. `artifact` is set only by
-    a ready report that passed the ticket check in this pass: the park then
-    arms that summary for approval. None arms nothing."""
+    """Park a task at the plan-review gate. Unlike every other park this one
+    releases the E2E slot too, so the dispatcher can spend it on the next
+    Ready task instead of holding it for a human who is asleep. `reason`
+    says why, and so what the operator is told: the grace time ran out on an
+    armed plan, a new round came with the unattended rounds used up, or the
+    session died with them used up (then no plan may be ready at all).
+    `artifact` is set only by a ready report that passed the ticket check in
+    this pass: the park then arms that summary for approval."""
+    reason: ReviewPark
     artifact: str | None = None
 
 
@@ -188,7 +199,7 @@ def _dead_session_actions(task: TaskState) -> list[object]:
         # Reboot recovery: gate-parked tasks don't expire — re-spawn a
         # fresh plan session; the spec folder is on disk in the worktree.
         if unattended_rounds_used(task):
-            return [ParkForReview()]
+            return [ParkForReview(ReviewPark.SESSION_DIED)]
         return [SpawnStage(Stage.PLAN)]
     if task.stage in IN_FLIGHT_STAGES:
         return [HandleCrash()]
@@ -264,13 +275,13 @@ def _gate_ready_actions(task: TaskState, signal: StageSignal,
     `working` signal that a pass saw, and what the console offers is stale.
     A task that waited at the gate never skips it."""
     if task.operator_request and _armed_for(task, signal):
-        return [ParkForReview()] if grace_elapsed else [NoOp()]
+        return [ParkForReview(ReviewPark.GRACE)] if grace_elapsed else [NoOp()]
     disarm: list[object] = [DisarmPlanApproval()] if task.operator_request else []
     _result, failed = _checked_tickets(task)
     if failed:
         return disarm + failed
     if unattended_rounds_used(task):
-        return disarm + [ParkForReview(artifact=signal.artifact)]
+        return disarm + [ParkForReview(ReviewPark.ROUNDS, artifact=signal.artifact)]
     return disarm + _review_round(signal)
 
 

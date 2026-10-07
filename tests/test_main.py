@@ -5629,11 +5629,12 @@ def test_a_session_that_dies_at_the_gate_each_life_is_respawned_twice_then_parks
     assert [s[1] for s in sess.spawned] == ["plan", "plan"]
     assert t.park == PARK_REVIEW and t.slot == NO_SLOT
     assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
-    assert notifier.sent.count("plan_parked") == 1
+    assert notifier.sent.count("plan_session_stopped") == 1
+    assert "plan_parked" not in notifier.sent
     assert notifier.sent.count("awaiting_plan_review") == 3
     for _ in range(3):                         # parked: nothing more happens
         _gate_pass(c, sess, monkeypatch, notifier=notifier)
-    assert len(sess.spawned) == 2 and notifier.sent.count("plan_parked") == 1
+    assert len(sess.spawned) == 2 and notifier.sent.count("plan_session_stopped") == 1
 
 
 def test_flapping_at_the_gate_gets_two_new_rounds_then_parks(tmp_path, monkeypatch):
@@ -5723,8 +5724,13 @@ def test_capped_respawn_park_does_not_arm_an_unchecked_summary(tmp_path, monkeyp
     gate_signal(wt)                       # the dead session's old signal
     d = _gate_pass(c, FakeSessions(alive=set()), monkeypatch)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_REVIEW and d.notifier.sent == ["plan_parked"]
-    assert t.operator_request is None
+    assert t.park == PARK_REVIEW and t.operator_request is None
+    # No plan is ready here: the message says what happened, not "plan ready".
+    ((template, ctx),) = d.notifier.contexts
+    assert template == "plan_session_stopped" and ctx["rounds"] == 2
+    assert t.park_note == "plan session stopped at the review gate"
+    (parked,) = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "parked"]
+    assert parked["detail"] == "plan session died at the gate; unattended rounds used up"
 
 
 def test_old_ready_signal_is_never_read_after_a_respawn_or_a_resume(tmp_path, monkeypatch):

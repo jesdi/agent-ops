@@ -39,7 +39,7 @@ from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
-                                RecordBackgroundWait, RetryStage, SetTaskStage,
+                                RecordBackgroundWait, RetryStage, ReviewPark, SetTaskStage,
                                 SpawnStage, pass_actions)
 from dispatcher.models import (Admitted, Entry, ModelPolicy, Order, candidates,
                                override_refusal, parse_entry, pick_provider,
@@ -854,13 +854,16 @@ def _spec_note(pub: "spec_publish.PublishResult") -> str:
     return f"spec: {pub.url}"
 
 
-def _park_for_review(cfg: Config, deps: Deps, target: Target,
-                     task: TaskState, dry_run: bool = False) -> None:
-    """Park a finished plan for a human to read whenever they wake up. The
-    only park that also releases the SLOT: the plan stage never used the
-    slot's ports and worktrees are per-issue, so resume can take any free
+def _park_for_review(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                     reason: ReviewPark, dry_run: bool = False) -> None:
+    """Park a task at the plan gate for a human to read whenever they wake
+    up. The only park that also releases the SLOT: the plan stage never used
+    the slot's ports and worktrees are per-issue, so resume can take any free
     slot — and freeing it is the whole point, since a held slot would cap the
-    overnight run at max_slots(capacity) plans."""
+    overnight run at max_slots(capacity) plans. A session that died with the
+    unattended rounds used up may have left no plan: the operator is told
+    that, not "plan ready"."""
+    died = reason is ReviewPark.SESSION_DIED
     tail = deps.sessions.capture_tail(task.target, task.issue)
     note = tail.strip() or "(no detail)"
     if task.spec_path:
@@ -874,15 +877,17 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target,
     # reach it via /attach, the console `resume` intent, or plain-text wakes.
     # This matches the same reasoning in _park_for_input.
     msg_id = deps.notifier.send(
-        "plan_parked", issue=task.issue, title=task.title,
-        url=_url(target, task.issue), note=note, target=target.name)
+        "plan_session_stopped" if died else "plan_parked",
+        issue=task.issue, title=task.title, url=_url(target, task.issue),
+        note=note, target=target.name, rounds=task.unattended_rounds)
     _end_session(cfg, deps, task.target, task.issue)
-    save(cfg.state_dir, replace(task, park=PARK_REVIEW, park_msg_id=msg_id,
-                                park_note="plan ready for review",
-                                slot=NO_SLOT, updated_at=_now()))
+    save(cfg.state_dir, replace(
+        task, park=PARK_REVIEW, park_msg_id=msg_id, slot=NO_SLOT, updated_at=_now(),
+        park_note=("plan session stopped at the review gate" if died
+                   else "plan ready for review")))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
-                          detail="plan review grace expired")
+                          detail=reason.value)
 
 
 def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
@@ -1375,7 +1380,8 @@ def _on_park_for_review(turn: _Turn, task: TaskState, act: ParkForReview,
                         launch: Launch | None) -> None:
     if act.artifact is not None:
         task = replace(task, operator_request=_plan_approval(task, act.artifact))
-    _park_for_review(turn.cfg, turn.deps, turn.target, task, dry_run=turn.dry_run)
+    _park_for_review(turn.cfg, turn.deps, turn.target, task, act.reason,
+                     dry_run=turn.dry_run)
 
 
 def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
