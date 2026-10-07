@@ -1143,19 +1143,9 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
     )
     for task in woken:
         target = targets[task.target]
-        # A wake accepts a changed set before review (the park said so),
-        # never a ticket that would run another file.
-        if launch_ticket(task) and _park_changed_tickets(cfg, deps, target, task):
-            continue
-        launch = _resume_launch(cfg, target, task, admit, order)
+        launch = _wake_launch(cfg, deps, target, task, admit, order)
         if launch is None:
-            # Nothing admitted: wait. A ticket track that is still not
-            # pinned: back to the operator, with the reason.
-            _park_unpinned_ticket(cfg, deps, target, task, execution_overrides.load(
-                cfg.state_dir, task.target, task.issue))
             continue
-        if not task.resume_bypass_usage and not admit(launch.model).admitted:
-            continue  # this model's provider has no headroom; others may
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
             continue
@@ -1176,6 +1166,27 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
             _consume_execution_choice(cfg, task.target, task.issue)
         except Exception:
             _fail_task_crash(cfg, deps, target, task, dry_run)
+
+
+def _wake_launch(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                 admit: Admit, order: Order) -> Launch | None:
+    """The launch a woken task resumes on. None: it waits (its model's
+    provider has no headroom; another task's may), or it went back to the
+    operator, with the reason, because its next ticket cannot start."""
+    # A wake accepts a changed ticket set before review (the park said so),
+    # never a ticket that would run another file.
+    if launch_ticket(task) and _park_changed_tickets(cfg, deps, target, task):
+        return None
+    launch = _resume_launch(cfg, target, task, admit, order)
+    if launch is None:
+        # Nothing admitted: wait. A ticket track that is still not pinned:
+        # the park explains.
+        _park_unpinned_ticket(cfg, deps, target, task, execution_overrides.load(
+            cfg.state_dir, task.target, task.issue))
+        return None
+    if not task.resume_bypass_usage and not admit(launch.model).admitted:
+        return None
+    return launch
 
 
 def _resume_launch(cfg: Config, target: Target, task: TaskState,
