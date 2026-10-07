@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
-from dispatcher.artifacts import (PLAN_SUMMARY, TICKETS_DIR, CheckResult, PlanRevision,
+from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, CheckResult, PlanRevision,
                                   check_spec,
                                   check_tickets, count_open_questions, plan_revision)
 from dispatcher.loops import (Decision, Loop, Outcome, ReportedRound, Retry, evaluate,
@@ -97,7 +97,7 @@ class ParkForCI:
 class DisarmPlanApproval:
     """The session at the gate reports `working` (it reworks the plan on the
     operator's feedback), or its ready report names another plan revision
-    than the request was armed for: the summary the console offers for
+    than the request was armed for: the review page the console offers for
     approval is stale. The next ready report is a new review round."""
 
 
@@ -117,7 +117,7 @@ class ParkForReview:
     armed plan, a new round came with the unattended rounds used up, or the
     session died with them used up (then no plan may be ready at all).
     `artifact` is set only by a ready report that passed the ticket check in
-    this pass: the park then arms that summary for approval."""
+    this pass: the park then arms that review page for approval."""
     reason: ReviewPark
     artifact: str | None = None
 
@@ -141,8 +141,8 @@ class BackgroundView(NamedTuple):
 
 PLAN_NO_APPROVAL = ('status "done" is accepted only after the operator has '
                     'approved the plan at the review gate; write the review '
-                    'summary and report status "awaiting-review" with the '
-                    'summary path as "artifact", then wait for the reply')
+                    'page and report status "awaiting-review" with the '
+                    'page path as "artifact", then wait for the reply')
 SPEC_NO_REVIEW = ('the spec stage has no review gate and status '
                   '"awaiting-review" is not valid in it; once stage 1 is '
                   'committed and pushed, report status "done" with the '
@@ -295,7 +295,7 @@ def _review_round(signal: StageSignal) -> list[object]:
 
 
 def _armed_for(request, revision: PlanRevision) -> bool:
-    """Is the armed request for the plan revision on disk? Then the summary,
+    """Is the armed request for the plan revision on disk? Then the review page,
     the tickets and the spec folder are as they were when it was armed (so
     the check they passed then still holds), at the path the console reads.
     A request with no fingerprint is for no plan, and a revision that cannot
@@ -308,18 +308,18 @@ def _skips_gate(task: TaskState, signal: StageSignal,
                 gate_free: frozenset[str]) -> bool:
     """The gate skip, decided by the dispatcher alone for a plan-stage ready
     report: a task that never waited at the gate, on a gate-free track, no
-    questionnaire asked, and a count of 0 open questions that the summary
+    questionnaire asked, and a count of 0 question blocks that the review page
     confirms. The track is the task's own, never one the ready report names.
-    The summary is the prescribed file, and the report must name that file:
+    The page is the prescribed file, and the report must name that file:
     it is what the gate would show. It is read last, only when everything
     else holds. Anything else waits at the gate."""
-    summary = Path(task.worktree) / PLAN_SUMMARY
+    page = Path(task.worktree) / REVIEW_PAGE
     try:
         return (not task.gated
                 and task.track in gate_free and not task.asked
                 and signal.open_questions == 0
-                and _artifact_path(task, signal).resolve() == summary.resolve()
-                and count_open_questions(summary) == 0)
+                and _artifact_path(task, signal).resolve() == page.resolve()
+                and count_open_questions(page) == 0)
     except (OSError, ValueError, RuntimeError):
         return False   # a path that cannot be resolved (a NUL character, a loop)
 

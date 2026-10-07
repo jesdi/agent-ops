@@ -71,7 +71,7 @@ class LoopCaps:
 
 @dataclass(frozen=True)
 class PlanApprovalRequest:
-    path: str   # the plan session's review summary, worktree-relative
+    path: str   # the plan session's review page, worktree-relative
     kind: str = "plan-approval"
     # The plan revision the operator is asked to approve (see
     # artifacts.plan_revision). "" = unknown: such a request matches no plan.
@@ -194,8 +194,8 @@ class StageSignal:
     loop: str = ""    # bounded loop a working session is in: review | gate
     round: int = 0    # 1-based round of that loop
     track: str = ""   # spec done: the track for plan/implement/review; plan done may rename it
-    # Plan ready report: the open questions the session counted in its
-    # summary. None = missing or not a non-negative integer.
+    # Plan ready report: the question blocks the session counted in its
+    # review page. None = missing or not a non-negative integer.
     open_questions: int | None = None
 
 
