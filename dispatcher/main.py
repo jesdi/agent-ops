@@ -1465,7 +1465,7 @@ def _on_notify(turn: _Turn, task: TaskState, act: Notify,
 
 
 def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
-                    launch: Launch) -> TaskState:
+                    launch: Launch) -> TaskState | None:
     # The previous stage's session is usually still alive here — an
     # interactive session cannot exit itself. _launch would type
     # the next stage's podman command INTO it (and the container
@@ -1483,7 +1483,19 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
                        gated=True)
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
-    return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
+    try:
+        return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
+    except Exception:
+        # What the previous stage handed over is accepted (a checked spec, an
+        # approved or gate-free plan); only this launch failed. So the task
+        # fails as crashed in the stage it could not start, and Resume starts
+        # that stage: an implement task asks for no second approval, and no
+        # earlier stage runs again.
+        _fail_task_crash(turn.cfg, turn.deps, turn.target,
+                         replace(task, stage=act.stage,
+                                 spec_path=spec_path or task.spec_path),
+                         turn.dry_run)
+        return None
 
 
 def _on_handle_crash(turn: _Turn, task: TaskState, act: HandleCrash,

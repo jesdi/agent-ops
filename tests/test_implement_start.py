@@ -4,8 +4,9 @@ import json
 
 import pytest
 
-from dispatcher import eventlog, main, messages
-from dispatcher.state import PlanApprovalRequest, Stage, load, read_stage_signal
+from dispatcher import eventlog, intents, main, messages
+from dispatcher.state import (PlanApprovalRequest, Stage, load, read_stage_signal,
+                              resumable_crash)
 from tests.test_main import FakeSessions, cfg, deps, make_task, patch_usage, write_tickets
 
 REQUEST = PlanApprovalRequest(".agent/plan-review.md")
@@ -94,7 +95,8 @@ def test_implement_done_launches_review_deferred_under_denial(tmp_path, monkeypa
 
 def test_launcher_raise_does_not_record_the_start(tmp_path, monkeypatch):
     """spawn_stage raising (e.g. missing worktree .git): the start did not
-    commit, so neither the stage nor the ticket count is persisted."""
+    commit, so no stage start is logged and nobody is told implement runs.
+    The task fails as crashed in implement, with the approved set's size."""
     config, _wt, _sessions, dependencies = _approved(
         tmp_path, sessions=FakeSessions(alive={42}, spawn_raises={42}))
     patch_usage(monkeypatch, util=0.2)
@@ -102,9 +104,42 @@ def test_launcher_raise_does_not_record_the_start(tmp_path, monkeypatch):
     main.run_pass(config, dependencies)
 
     assert _events(config, "stage-started") == []
+    assert "implement_started" not in dependencies.notifier.sent
     task = _task(config)
-    assert (task.stage, task.ticket_count) == (Stage.FAILED, 0)
-    assert len(_events(config, "failed")) >= 1
+    assert (task.stage, task.crashed_stage, task.ticket_count) == (
+        Stage.FAILED, "implement", 3)
+    assert len(_events(config, "failed")) == 1
+
+
+def test_resume_after_a_failed_implement_launch_needs_no_second_approval(
+        tmp_path, monkeypatch):
+    """The approval was accepted in the pass whose launch failed: Resume
+    starts the implement session, on the track the approval named."""
+    config, _wt, _sessions, dependencies = _approved(
+        tmp_path, sessions=FakeSessions(alive={42}, spawn_raises={42}),
+        gated=True, asked=True)
+    (_wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "done", "track": "deep"}))
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(config, dependencies)
+    failed = _task(config)
+    assert resumable_crash(failed) and failed.track == "deep"
+
+    intents.write_intent(config.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
+    sessions = FakeSessions()
+    d = deps(sess=sessions)
+    main.run_pass(config, d)
+    sessions.alive_set = {42}
+    main.run_pass(config, d)
+
+    assert [(s[0], s[1], s[2]) for s in sessions.spawned] == [
+        (42, "implement", "anthropic/claude-opus-5")]
+    assert sessions.spawned[0][4] == "medium"       # the deep track's entry
+    task = _task(config)
+    assert (task.stage, task.crashed_stage, task.operator_request) == (
+        Stage.IMPLEMENT, "", None)
+    assert (task.gated, task.asked, task.ticket_count) == (True, True, 3)
+    assert not [n for n in d.notifier.sent if "review" in n or "parked" in n]
 
 
 def test_counters_retained_on_denial_reset_on_start(tmp_path, monkeypatch):

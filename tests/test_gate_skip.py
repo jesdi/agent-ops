@@ -263,3 +263,25 @@ def test_summary_with_other_headings_cannot_be_counted(tmp_path, text):
     p = tmp_path / "plan-review.md"
     p.write_text(text)
     assert count_open_questions(p) is None
+
+
+def test_failed_implement_launch_on_the_skip_path_resumes_into_implement(
+        tmp_path, monkeypatch):
+    """The skip was decided in the pass whose launch failed: Resume starts
+    implement, and nobody is asked for an approval the task never needed."""
+    c = _setup(tmp_path, monkeypatch)
+    wt, sess = _task_at_ready(c, tmp_path)
+    sess.spawn_raises = {ISSUE}
+    _pass(c, sess)
+    failed = _task(c)
+    assert (failed.stage, failed.crashed_stage) == (Stage.FAILED, "implement")
+    assert (failed.gated, failed.asked) == (False, False)
+
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", ISSUE, {}, "op", 1)
+    sess = LiveUntilEnded()
+    d = _pass(c, sess)
+    d2 = _pass(c, sess)
+    t = _task(c)
+    assert [s[0] for s in _implements(sess)] == [ISSUE]
+    assert (t.stage, t.gated, t.asked, t.ticket_count) == (Stage.IMPLEMENT, False, False, 1)
+    assert not [n for n in d.notifier.sent + d2.notifier.sent if "review" in n]
