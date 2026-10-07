@@ -1848,18 +1848,89 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
         return
     _queue_message(cfg, target, intent.issue, intent.payload.get("text", ""),
                    intent.actor or "operator")
-    if (task is not None and not task.park
-            and task.stage is Stage.AWAITING_PLAN_REVIEW):
-        # A gate task that has not parked yet waits for exactly this reply,
+    if task is not None:
+        _wake_for_queued_message(cfg, deps, task)
+
+
+def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
+    """Wake a task that waits for the operator, so its session reads the
+    message just queued. Any other task reads it on its next resume."""
+    if not task.park and task.stage is Stage.AWAITING_PLAN_REVIEW:
+        # A gate task that has not parked yet waits for exactly this message,
         # and only a resume hands the queue to its session: without the wake
-        # the grace park would end the session with the reply undelivered.
+        # the grace park would end the session with the message undelivered.
         # So it parks now, as the grace park would (session ended, slot
         # freed), and wakes below.
         _end_session(cfg, deps, task.target, task.issue)
         task = replace(task, park=PARK_REVIEW, slot=NO_SLOT)
-    if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
+    if task.park in (PARK_HUMAN, PARK_REVIEW):
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
         save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
+
+
+# The answers file of each operator request kind, and the stage it answers.
+ANSWERS_FILES = {"plan-approval": ("review-answers.json", "plan"),
+                 "answers": ("questionnaire-answers.json", "spec")}
+ANSWERS_WAKE = {"changes": "Apply them as feedback.", "approve": "Approved."}
+
+
+def _waits_for_operator(task: TaskState) -> bool:
+    """Parked for input or review, or at the gate before the grace park."""
+    return (task.park in (PARK_HUMAN, PARK_REVIEW)
+            or (not task.park and task.stage is Stage.AWAITING_PLAN_REVIEW))
+
+
+def _answers_drop_reason(task: TaskState | None,
+                         intent: intents.Intent) -> str | None:
+    """Why an answers intent must not be applied; None when it may be. A
+    draft against a submitted file is stale whatever the task does now, so
+    that reason comes before "session busy" (the submission's own wake
+    makes the task busy)."""
+    if task is None or task.operator_request is None:
+        return "no open request"
+    name, _ = ANSWERS_FILES[task.operator_request.kind]
+    if (intent.payload.get("submit") is None
+            and _submitted_on_disk(task.worktree, name)):
+        return "already submitted"
+    if not _waits_for_operator(task):
+        return "session busy"
+    revision = task.operator_request.fingerprint
+    if not revision or intent.payload.get("revision") != revision:
+        return "stale revision"
+    if intent.payload.get("submit") not in (None, *ANSWERS_WAKE):
+        return f"unknown submit {intent.payload.get('submit')!r}"
+    return None
+
+
+def _submitted_on_disk(worktree: str, name: str) -> bool:
+    raw = read_regular(Path(worktree) / ".agent" / name, PLAN_FILE_MAX_BYTES)
+    try:
+        return json.loads(raw or b"{}").get("submitted") is not None
+    except (ValueError, AttributeError):
+        return False   # garbage on disk is no submission
+
+
+def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
+                          intent: intents.Intent) -> None:
+    """Write the answers file of the task's open request; a submission
+    then wakes the session to read it."""
+    reason = _answers_drop_reason(task, intent)
+    if reason:
+        raise IntentDropped(reason)
+    assert task is not None and task.operator_request is not None
+    name, stage = ANSWERS_FILES[task.operator_request.kind]
+    submit = intent.payload.get("submit")
+    actor = intent.actor or "operator"
+    doc = {"v": 1, "stage": stage, "submitted": submit,
+           "submitted_at": intent.created_at if submit else None,
+           "actor": actor, "answers": intent.payload.get("answers")}
+    write_worktree_file(task.worktree, ".agent", name, json.dumps(doc, indent=2))
+    if submit is None:
+        return
+    _queue_message(cfg, task.target, task.issue,
+                   f"Answers in .agent/{name} ({submit}). {ANSWERS_WAKE[submit]}",
+                   actor)
+    _wake_for_queued_message(cfg, deps, task)
 
 
 def _parkable_task(deps: Deps, task: TaskState | None, issue: int) -> bool:
@@ -2040,6 +2111,8 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         _apply_retry_intent(cfg, issue)
     elif intent.action == "resume":
         _apply_resume_intent(cfg, by_name, task, intent)
+    elif intent.action == "answers":
+        _apply_answers_intent(cfg, deps, task, intent)
     else:
         print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
               file=sys.stderr)
@@ -2054,12 +2127,33 @@ def _intent_target(cfg: Config, intent: intents.Intent) -> str:
     return intent.target or (resolved.target if resolved is not None else "")
 
 
+def _without_superseded_answers(pending: list[intents.Intent]) -> list[intents.Intent]:
+    """Per task, only one answers intent of a pass is applied: the newest
+    submission, else the newest draft. The others are deleted unapplied."""
+    winners: dict[tuple[str, int], intents.Intent] = {}
+    for i in pending:
+        if i.action == "answers":
+            key = (i.target, i.issue)
+            winners[key] = max(winners.get(key, i), i, key=lambda x: (
+                x.payload.get("submit") is not None, x.created_at, x.path.name))
+    kept = []
+    for i in pending:
+        win = winners.get((i.target, i.issue)) if i.action == "answers" else i
+        if win is i:
+            kept.append(i)
+        else:
+            print(f"[info] intent {i.path.name} superseded by {win.path.name}",
+                  file=sys.stderr)
+            intents.delete_intent(i)
+    return kept
+
+
 def _apply_intents(cfg: Config, deps: Deps) -> None:
     """Drain operator intents (web console writes) at the top of the pass.
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
     noted to stderr, and never aborts the pass or the remaining intents."""
     by_name = {t.name: t for t in cfg.targets}
-    for intent in intents.list_intents(cfg.state_dir):
+    for intent in _without_superseded_answers(intents.list_intents(cfg.state_dir)):
         try:
             _apply_one_intent(cfg, deps, by_name, intent)
             eventlog.append_event(cfg.state_dir, "intent-applied",
