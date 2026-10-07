@@ -12,7 +12,7 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from pydantic import (BaseModel, Field, StrictBool, StrictStr,
+from pydantic import (BaseModel, Field, TypeAdapter, ValidationError,
                       field_validator)
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
@@ -22,8 +22,8 @@ from dispatcher.models import (candidates, override_allowed, override_refusal,
                                parse_entry, pick_provider, resolve,
                                stage_pick, track_from_labels)
 from dispatcher.usage import admits
-from dispatcher.artifacts import PLAN_FILE_MAX_BYTES
-from dispatcher.state import (ANSWERS_FILES, read_regular, TERMINAL_STAGES, PARK_WAKE, next_stage,
+from dispatcher import answers as answers_file, intents
+from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, next_stage,
                               resumable_crash)
 from web import read_model
 from web.artifacts import router as artifacts_router
@@ -75,12 +75,13 @@ class ReplyReq(BaseModel):
 
 
 ANSWERS_MAX_BYTES = 64 * 1024
-ANSWER_KEY = re.compile(r"^([a-z0-9_-]{1,64}(\.note)?|track)$")
+ANSWER_KEY = re.compile(rf"^({answers_file.QUESTION_ID}(\.note)?|track)$")
+_ANSWERS = TypeAdapter(read_model.Answers)
 
 
 class AnswersReq(BaseModel):
-    answers: dict[str, StrictStr | list[StrictStr] | StrictBool]
-    submit: Literal["changes", "approve"] | None = None
+    answers: read_model.Answers
+    submit: Literal[answers_file.SUBMITS] | None = None
     revision: str = Field(min_length=1)
 
     @field_validator("answers")
@@ -404,23 +405,25 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             kind=req.kind, content=_resolve_content(req.path, wt),
             revision=req.fingerprint, answers=_saved_answers(t))
 
-    def _saved_answers(t) -> dict:
-        name, _ = ANSWERS_FILES[t.operator_request.kind]
-        raw = read_regular(Path(t.worktree) / ".agent" / name,
-                           PLAN_FILE_MAX_BYTES)
+    def _saved_answers(t) -> read_model.Answers:
+        """The answers the page is restored with: those of the intent the
+        drain would apply next, else the answers file's. A whole set, never
+        merged: a note cleared in the newer set stays cleared."""
+        kind = t.operator_request.kind
+        pending = [intents.Intent(i["action"], i["target"], i["issue"],
+                                  i["payload"], i["actor"], i["created_at"],
+                                  Path(i["id"]))
+                   for i in sources.pending_intents()
+                   if (i["action"], i["target"], i["issue"])
+                   == ("answers", t.target, t.issue)
+                   and isinstance(i["payload"].get("answers"), dict)]
+        win = answers_file.select(pending, None)
+        saved = (win.payload if win is not None
+                 else answers_file.read(t.worktree, kind) or {}).get("answers")
         try:
-            saved = _json.loads(raw or b"")["answers"]
-        except (ValueError, KeyError, TypeError):
-            saved = {}
-        out = dict(saved) if isinstance(saved, dict) else {}
-        for i in sources.pending_intents():   # oldest first: newest wins
-            p = i.get("payload")
-            if ((i["action"], i["target"], i["issue"])
-                    == ("answers", t.target, t.issue)
-                    and isinstance(p, dict)
-                    and isinstance(p.get("answers"), dict)):
-                out.update(p["answers"])
-        return out
+            return _ANSWERS.validate_python(saved)
+        except ValidationError:   # a session wrote the file: anything goes
+            return {}
 
     HISTORY_MAX_LINES = 10000
 

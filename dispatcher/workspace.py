@@ -27,14 +27,14 @@ _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
 
 
 @contextmanager
-def _real_dir(root: str | Path, *parts: str):
+def _real_dir(root: str | Path, *parts: str, create: bool = True):
     """A descriptor of <root>/<parts...>, each part a real directory, never
-    a symlink. Only the last part is made when missing: the ones above it
-    must be there. Raises OSError otherwise."""
+    a symlink. Only the last part is made when missing (and `create`): the
+    ones above it must be there. Raises OSError otherwise."""
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in parts:
-            if part == parts[-1]:
+            if create and part == parts[-1]:
                 with suppress(FileExistsError):
                     os.mkdir(part, dir_fd=fd)
             try:
@@ -76,6 +76,16 @@ def write_worktree_file(root: str | Path, subdir: str, name: str,
             with suppress(OSError):
                 os.unlink(tmp, dir_fd=dfd)
             raise
+
+
+def remove_worktree_file(root: str | Path, subdir: str, name: str) -> None:
+    """Remove <root>/<subdir>/<name>, never through a symlinked directory
+    (a symlink at <name> is removed itself, not followed). A missing file or
+    directory is fine."""
+    name = _plain_name(name)
+    with suppress(FileNotFoundError), \
+            _real_dir(root, *Path(subdir).parts, create=False) as dfd:
+        os.unlink(name, dir_fd=dfd)
 
 
 def _kept_mode(dfd: int, name: str) -> int:
