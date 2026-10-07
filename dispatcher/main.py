@@ -163,20 +163,16 @@ def _execution_override_for(cfg: Config, task: TaskState,
     return override
 
 
-_STORED = object()   # _choose_launch: read the stored one-shot override
-
-
-def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
-                   stage: Stage, admit: Admit, order: Order,
-                   override: object = _STORED) -> tuple[Launch | None, bool]:
+def _choose_launch(
+        cfg: Config, target: Target | None, task: TaskState, stage: Stage,
+        admit: Admit, order: Order,
+        override: execution_overrides.ExecutionOverride | None,
+) -> tuple[Launch | None, bool]:
     """What a spawn site launches and whether usage is bypassed. A one-shot
-    operator override names the entry outright; otherwise the sticky pick or
+    operator `override` (_execution_override_for; on a wake also what the
+    resume named) names the entry outright; otherwise the sticky pick or
     the track decides, and a denied launch is (None, bypass): nothing
-    mutated, the signal persists, retried once headroom returns.
-    `override`: the stored one-shot override, from a caller that has read
-    it (_execution_override_for) and needs it again."""
-    if override is _STORED:
-        override = _execution_override_for(cfg, task, stage)
+    mutated, the signal persists, retried once headroom returns."""
     bypass = bool(override and override.bypass_usage)
     if override is not None and override.model:
         launch = Launch(stage, parse_entry(override.model, "override"))
@@ -197,7 +193,8 @@ def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
     probe = TaskState(issue=cand.number, target=target.name, stage=Stage.QUEUED,
                       slot=NO_SLOT, worktree="", branch="", title=cand.title,
                       updated_at="", track=track_from_labels(cand.labels, policy))
-    return _choose_launch(cfg, target, probe, Stage.SPEC, admit, order)
+    return _choose_launch(cfg, target, probe, Stage.SPEC, admit, order,
+                          _execution_override_for(cfg, probe, Stage.SPEC))
 
 
 def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
@@ -692,9 +689,14 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         url=_url(target, task.issue), target=target.name,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     _end_session(cfg, deps, task.target, task.issue)
+    # A wake that ends here is over: the wake that follows this park says
+    # for itself whether it is an attach, and on which model.
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, slot=NO_SLOT,
                                 operator_request=answers_request,
+                                hold_for_attach=False,
+                                resume_model_override="",
+                                resume_bypass_usage=False,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
@@ -1183,36 +1185,26 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
 
 def _wake_launch(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  admit: Admit, order: Order) -> Launch | None:
-    """The launch a woken task resumes on. None: it waits (its model's
-    provider has no headroom; another task's may), or it went back to the
-    operator, with the reason, because its next ticket cannot start."""
+    """The launch a woken task resumes on: its next launch
+    (state.next_launch), chosen as every launch is (_choose_launch). Its
+    one-shot override is the model the resume named, else the stored
+    execution override: "the next launch runs on this model" holds for a
+    wake too. None: it waits (the gate denies the model; another task's may
+    be admitted), or it went back to the operator, with the reason, because
+    its next launch cannot start."""
     if (_launch_needs_ticket_set(task)
             and _park_changed_tickets(cfg, deps, target, task)):
         return None
-    launch = _resume_launch(cfg, target, task, admit, order)
-    if launch is None:
-        # Nothing admitted: wait. A ticket track that is still not pinned:
-        # the park explains.
-        _park_unpinned_ticket(cfg, deps, target, task, execution_overrides.load(
-            cfg.state_dir, task.target, task.issue))
-        return None
-    if not task.resume_bypass_usage and not admit(launch.model).admitted:
-        return None
-    return launch
-
-
-def _resume_launch(cfg: Config, target: Target, task: TaskState,
-                   admit: Admit, order: Order) -> Launch | None:
-    """The task's next launch (state.next_launch). A parked pr-open task has
-    no session to continue: it resumes as a fresh address-review round, on
-    that stage's model; a task whose last ticket is done resumes as review."""
     stage = Stage(next_stage(task))
-    if task.resume_model_override:
-        launch = Launch(stage, parse_entry(task.resume_model_override, "override"))
-    else:
-        launch = _launch_for(cfg, target, task, stage,
-                             _admitted(admit, task.resume_bypass_usage), order)
-    return _with_second(cfg, target, launch, admit) if launch else None
+    override = execution_overrides.pending(
+        _execution_override_for(cfg, task, stage),
+        task.resume_model_override, task.resume_bypass_usage)
+    launch, _ = _choose_launch(cfg, target, task, stage, admit, order, override)
+    if launch is None:
+        # Denied: wait. A ticket track that is still not pinned, and no
+        # override to launch instead: the park explains.
+        _park_unpinned_ticket(cfg, deps, target, task, override)
+    return launch
 
 
 ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
@@ -1221,20 +1213,36 @@ ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
 
 def _resume_one(cfg: Config, deps: Deps, target: Target,
                 task: TaskState, launch: Launch) -> None:
-    entry = launch.entry
-    model = entry.model_id
+    """Resume a woken task on `launch`. An attach wake tells the session to
+    wait for the operator: the notice is queued, so it rides with the
+    operator's messages in whatever the session reads first (the resume
+    text or a fresh stage prompt), and it is taken back, and the operator
+    is not pinged, when the launch fails."""
     # End first, unconditionally. Most parks already stopped the session,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
     # running session (the failure _retry_plan and SpawnStage guard).
     _end_session(cfg, deps, task.target, task.issue)
-    if task.hold_for_attach:
-        # Queued, so it rides with the operator's messages in whatever the
-        # session reads first: the resume text or a fresh stage prompt.
-        _queue_message(cfg, task.target, task.issue, ATTACH_TEXT, "dispatcher")
-        deps.notifier.send("resumed_for_attach", issue=task.issue,
-                           title=task.title, url=_url(target, task.issue),
-                           target=target.name, note="")
+    if not task.hold_for_attach:
+        _launch_woken(cfg, deps, target, task, launch)
+        return
+    notice = messages.append(cfg.state_dir, task.target, task.issue,
+                             ATTACH_TEXT, "dispatcher")
+    try:
+        _launch_woken(cfg, deps, target, task, launch)
+    except Exception:
+        messages.mark_delivered(cfg.state_dir, task.target, task.issue,
+                                [notice.id])
+        raise
+    deps.notifier.send("resumed_for_attach", issue=task.issue,
+                       title=task.title, url=_url(target, task.issue),
+                       target=target.name, note="")
+
+
+def _launch_woken(cfg: Config, deps: Deps, target: Target,
+                  task: TaskState, launch: Launch) -> None:
+    entry = launch.entry
+    model = entry.model_id
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
     if task.crashed_stage or _no_ticket_in_progress(task):
@@ -1387,8 +1395,9 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         key=_oldest_first(cfg))
     for task in pending:
         target = targets[task.target]
-        launch, bypass_usage = _choose_launch(cfg, target, task,
-                                              Stage.ADDRESS_REVIEW, admit, order)
+        launch, bypass_usage = _choose_launch(
+            cfg, target, task, Stage.ADDRESS_REVIEW, admit, order,
+            _execution_override_for(cfg, task, Stage.ADDRESS_REVIEW))
         if launch is None:
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:

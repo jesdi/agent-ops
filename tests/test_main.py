@@ -381,7 +381,9 @@ def test_override_model_without_bypass_still_checked_by_usage_gate(tmp_path, mon
         execution_overrides.ExecutionOverride(
             model="claude-sonnet-4-6", bypass_usage=False))
 
-    launch, bypass = main._choose_launch(c, c.targets[0], task, Stage.IMPLEMENT, DENY_ALL, tuple)
+    launch, bypass = main._choose_launch(
+        c, c.targets[0], task, Stage.IMPLEMENT, DENY_ALL, tuple,
+        main._execution_override_for(c, task, Stage.IMPLEMENT))
 
     assert (launch, bypass) == (None, False)
 

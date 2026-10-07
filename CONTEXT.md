@@ -265,7 +265,9 @@ A model-limited queue candidate or claimed task may carry a durable, one-shot
 execution override. Queue claims and active stage transitions store it under
 `execution-overrides/`; a parked task carries it through the existing resume
 intent and `TaskState.resume_model_override` / `resume_bypass_usage`. The
-requested model must belong to the target's configured policy. The choice
+requested model must belong to the target's configured policy. A wake that
+names no model launches on a stored execution override; a wake that names
+one wins, and the stored override is used up with that launch. The choice
 survives ordinary capacity, slot, or provisioning denial and is consumed only
 after the selected session starts. A usage bypass applies to that launch only;
 it never bypasses box capacity or slot allocation.
