@@ -8,7 +8,8 @@ Every bounded loop (review fixes, gate fixes, e2e, ci) parks past its cap.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
@@ -27,9 +28,12 @@ class SpawnStage:
 class StartTicket:
     """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
     and session spawn happen together. The executor checks budget_ok first and
-    makes no state mutation when denied."""
+    makes no state mutation when denied. `tracks` are the ticket tracks of
+    the accepted ticket set: a new set's at plan done, the task's own copy
+    between tickets."""
     cursor: int
     count: int
+    tracks: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -212,17 +216,19 @@ def _awaiting_review_actions(task: TaskState, signal: StageSignal,
 def _implement_done(task: TaskState, signal: StageSignal) -> list[object]:
     if task.ticket_cursor < task.ticket_count:
         nxt = task.ticket_cursor + 1
-        return [StartTicket(nxt, task.ticket_count)]
+        return [StartTicket(nxt, task.ticket_count, task.ticket_tracks)]
     return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
 
 
-def _plan_done(task: TaskState) -> list[object]:
-    result: CheckResult = check_tickets(Path(task.worktree) / TICKETS_DIR)
+def _plan_done(task: TaskState, ticket_tracks: Collection[str]) -> list[object]:
+    """`ticket_tracks`: the track names a ticket of this task may name."""
+    result: CheckResult = check_tickets(Path(task.worktree) / TICKETS_DIR,
+                                        ticket_tracks)
     if not result.ok:
         if task.plan_retries < PLAN_RETRY_LIMIT:
             return [RetryStage(Stage.PLAN, result.reason)]
         return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-    return [StartTicket(1, result.count),
+    return [StartTicket(1, result.count, result.tracks),
             Notify("implement_started", f"{result.count} ticket(s)")]
 
 
@@ -238,7 +244,8 @@ def _spec_done(task: TaskState, signal: StageSignal,
 
 
 def _done_actions(task: TaskState, signal: StageSignal,
-                  tracks: frozenset[str] | None) -> list[object]:
+                  tracks: frozenset[str] | None,
+                  ticket_tracks: Collection[str]) -> list[object]:
     if task.stage == Stage.IMPLEMENT:
         return _implement_done(task, signal)
     if task.stage == Stage.REVIEW:
@@ -247,7 +254,7 @@ def _done_actions(task: TaskState, signal: StageSignal,
         # The PR is the artifact — nothing to format-check.
         return [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", signal.note)]
     if task.stage == Stage.PLAN:
-        return _plan_done(task)
+        return _plan_done(task, ticket_tracks)
     if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
         return _spec_done(task, signal, tracks)
     return [NoOp()]   # done signal for a terminal/unknown stage — ignore
@@ -255,7 +262,8 @@ def _done_actions(task: TaskState, signal: StageSignal,
 
 def _signal_actions(task: TaskState, signal: StageSignal, session_alive: bool,
                     waiting: bool, grace_elapsed: bool, caps: LoopCaps,
-                    tracks: frozenset[str] | None) -> list[object]:
+                    tracks: frozenset[str] | None,
+                    ticket_tracks: Collection[str]) -> list[object]:
     """What the stage signal's status asks for."""
     if signal.status == "awaiting-ci":
         return _awaiting_ci_actions(signal)
@@ -272,7 +280,7 @@ def _signal_actions(task: TaskState, signal: StageSignal, session_alive: bool,
     if signal.status == "awaiting-review":
         return _awaiting_review_actions(task, signal, grace_elapsed, tracks)
     if signal.status == "done":
-        return _done_actions(task, signal, tracks)
+        return _done_actions(task, signal, tracks, ticket_tracks)
     return [NoOp()]
 
 
@@ -286,6 +294,7 @@ def next_actions(
     grace_elapsed: bool = False,
     caps: LoopCaps = LoopCaps(),
     tracks: frozenset[str] | None = None,
+    ticket_tracks: Collection[str] = (),
 ) -> list[object]:
     if task.park:
         return [NoOp()]  # wake/resume is dispatcher-side; never re-park
@@ -309,7 +318,7 @@ def next_actions(
         return [NoOp()]
 
     return _signal_actions(task, signal, session_alive, waiting, grace_elapsed,
-                           caps, tracks)
+                           caps, tracks, ticket_tracks)
 
 
 def _in_wait(signal: StageSignal | None, session_alive: bool, waiting: bool,
@@ -350,6 +359,7 @@ def pass_actions(
     grace_elapsed: bool = False,
     caps: LoopCaps = LoopCaps(),
     tracks: frozenset[str] | None = None,
+    ticket_tracks: Collection[str] = (),
 ) -> list[object]:
     """next_actions, deferring to a background wait (design "Data model"):
     while the wait holds, neither the stall timer nor a park applies, bar
@@ -360,4 +370,4 @@ def pass_actions(
     return next_actions(task, signal, session_alive, waiting=waiting,
                         idle_seconds=idle_seconds, stall_after=stall_after,
                         grace_elapsed=grace_elapsed, caps=caps,
-                        tracks=tracks)
+                        tracks=tracks, ticket_tracks=ticket_tracks)

@@ -4,7 +4,8 @@ from dispatcher.models import (DEFAULT_MODEL, DEFAULT_POLICY, EFFORTS, STAGES,
                                Entry, ModelPolicy, bare_model_id, parse_entry,
                                override_allowed, override_refusal, parse_policy,
                                pick_provider, policy_stage, review_avoid, split_model_id,
-                               track_from_labels, tracks_text)
+                               ticket_track_names, track_from_labels,
+                               tracks_text)
 
 RAW = {
     "triage": ["anthropic/claude-sonnet-5@medium"],
@@ -389,3 +390,26 @@ def test_review_avoid_names_the_single_implement_provider_for_review_only():
     assert review_avoid(["openai", "anthropic"], "review") == ""
     assert review_avoid([], "review") == ""
     assert review_avoid(["openai"], "implement") == ""
+
+
+def _pinned_policy(pinned):
+    raw = {"triage": ["claude-sonnet-5"], "untracked": "standard",
+           "pinned": pinned,
+           "tracks": {n: {"when": f"{n} work.", **{s: ["claude-sonnet-5"] for s in STAGES}}
+                      for n in ("standard", "frontend", "architecture", "security")}}
+    return parse_policy(raw)
+
+
+def test_a_ticket_may_name_the_pinned_tracks_other_than_security():
+    p = _pinned_policy(["security", "architecture", "frontend"])
+    assert ticket_track_names(p, "standard") == ("architecture", "frontend")
+    assert ticket_track_names(p, "frontend") == ("architecture", "frontend")
+
+
+def test_a_ticket_of_a_security_task_may_name_no_track():
+    p = _pinned_policy(["security", "architecture", "frontend"])
+    assert ticket_track_names(p, "security") == ()
+
+
+def test_with_no_pinned_track_a_ticket_may_name_none():
+    assert ticket_track_names(_pinned_policy([]), "standard") == ()
