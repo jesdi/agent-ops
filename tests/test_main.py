@@ -590,13 +590,13 @@ def test_spec_signal_with_a_misspelled_track_is_bounced_not_mis_parked(tmp_path,
     assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
 
 
-def test_pick_is_reused_for_every_ticket_of_the_stage(tmp_path, monkeypatch):
+def test_the_next_ticket_chooses_again_and_does_not_reuse_the_pick(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, track="deep",
                    ticket_cursor=1, ticket_count=2,
-                   picks={"implement": "anthropic/claude-sonnet-5@low"})  # a forced pick
+                   picks={"implement": "anthropic/claude-sonnet-5@low"})  # ticket 1's forced pick
     (wt / ".agent" / "tickets").mkdir(parents=True)
     for i in (1, 2):
         (wt / ".agent" / "tickets" / f"0{i}-t.md").write_text("# t\n\n**What to build:** x\n\n**Blocked by:** None\n\n- [ ] ok\n")
@@ -604,7 +604,7 @@ def test_pick_is_reused_for_every_ticket_of_the_stage(tmp_path, monkeypatch):
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
     assert [s[:3] + (s[4],) for s in sess.spawned] == [
-        (42, "implement", "anthropic/claude-sonnet-5", "low")]
+        (42, "implement", "anthropic/claude-opus-5", "medium")]
 
 
 def test_denied_pick_waits_and_never_re_walks_the_list(tmp_path, monkeypatch):

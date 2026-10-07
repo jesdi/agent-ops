@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
-from dispatcher.models import pick_provider
+from dispatcher.models import ModelPolicy, pick_provider
 
 
 class Stage(str, Enum):
@@ -127,7 +127,7 @@ class TaskState:
     track: str = ""                      # configured track name (spec/2026-09-14-model-tracks)
     # providers that ran tickets: first use first, no repeats
     implement_providers: list[str] = field(default_factory=list)
-    picks: dict[str, str] = field(default_factory=dict)  # models.pick_key(stage) -> "provider/model[@effort]", sticky per key
+    picks: dict[str, str] = field(default_factory=dict)  # models.pick_key(stage) -> "provider/model[@effort]", sticky per key; "implement" only while a ticket is in progress
     spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track)
     plan_retries: int = 0                # in-session plan-format retries used
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
@@ -138,6 +138,9 @@ class TaskState:
     spec_path: str = ""                  # approved spec, worktree-relative or absolute
     ticket_cursor: int = 0               # 1-based ticket the implement session works; 0 = none yet
     ticket_count: int = 0                # size of .agent/tickets/ at plan done
+    # ticket number -> its ticket track, only tickets that name one: the copy
+    # of the accepted ticket set that routing reads, never the ticket files
+    ticket_tracks: dict[int, str] = field(default_factory=dict)
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
     review_rounds: int = 0
@@ -164,6 +167,28 @@ class TaskState:
     # worktree-contained path resolves — so an answers request never exists
     # without a valid path.
     operator_request: "OperatorRequest | None" = None
+
+
+def launch_ticket(t: TaskState) -> int:
+    """The ticket t's next implement launch runs: the one in progress while
+    the task holds an implement pick, else the next one. The implement pick
+    is the pick of the ticket in progress and goes when that ticket is done."""
+    return t.ticket_cursor + (0 if "implement" in t.picks else 1)
+
+
+def launch_track(t: TaskState, stage: str, policy: ModelPolicy) -> str:
+    """The track whose list t's launch of `stage` (runtime vocabulary) reads,
+    or "" when it has none. An implement launch runs a ticket
+    (launch_ticket), and a ticket that names a ticket track is implemented
+    from it, as long as that track is still pinned; it never falls to
+    another list. A ticket that names none, and every other launch (PR
+    feedback too), uses the task track. The one answer the dispatcher and
+    the console share."""
+    if stage == Stage.IMPLEMENT.value:
+        named = t.ticket_tracks.get(launch_ticket(t), "")
+        if named:
+            return named if named in policy.pinned else ""
+    return t.track if t.track in policy.tracks else ""
 
 
 @dataclass(frozen=True)
@@ -281,6 +306,11 @@ def _migrate_implement_pick(d: dict) -> None:
         picks.setdefault("feedback", pick)
 
 
+def _ticket_tracks(raw: dict | None) -> dict[int, str]:
+    """JSON object keys are strings: the ticket numbers come back as int."""
+    return {int(number): track for number, track in (raw or {}).items()}
+
+
 def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
@@ -293,6 +323,7 @@ def _read(p: Path) -> TaskState | None:
     d["labels"] = tuple(d.get("labels", ()))
     d["picks"] = dict(d.get("picks") or {})
     _migrate_implement_pick(d)
+    d["ticket_tracks"] = _ticket_tracks(d.get("ticket_tracks"))
     d.pop("pending_reply", None)   # retired field, see original comment
     if "operator_request" not in d:
         # Legacy record: derive from unambiguous gate evidence.

@@ -20,7 +20,8 @@ from dispatcher.models import (ModelPolicy, candidates, override_allowed,
                                review_avoid, stage_pick, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher.state import (TERMINAL_STAGES, AnswersRequest, PARK_WAKE,
-                              SpecApprovalRequest, TaskState, next_stage,
+                              SpecApprovalRequest, TaskState, launch_track,
+                              next_stage,
                               resumable_crash)
 from web import read_model
 from web.artifacts import router as artifacts_router
@@ -97,13 +98,15 @@ class ReadyReq(BaseModel):
 
 def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
                         overridden: bool = False) -> str:
-    """The pinned track t's next launch comes from, else "": the task track
-    when it is pinned, unless no launch comes from the list — a terminal
-    task or a pending one-shot override (`overridden`). A pick keeps the
-    pin. (A ticket with its own track is ticket 06's.)"""
+    """The pinned track t's next launch comes from, else "": the launch's
+    track (state.launch_track: the ticket track of a ticket that has one,
+    else the task track) when it is pinned, unless no launch comes from the
+    list — a terminal task or a pending one-shot override (`overridden`). A
+    pick keeps the pin."""
     if t.stage in TERMINAL_STAGES or overridden:
         return ""
-    return t.track if t.track in policy.pinned else ""
+    track = launch_track(t, next_stage(t), policy)
+    return track if track in policy.pinned else ""
 
 
 def create_app(cfg: Config, sources, sse_interval: float = 1.0,
@@ -147,9 +150,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def _choices(t, order):
         """The ordered entries the dispatcher would walk for t's next launch."""
         policy = _policy(t.target)
-        if t.track not in policy.tracks:
+        track = launch_track(t, next_stage(t), policy)
+        if not track:
             return ()
-        return candidates(policy, t.track, next_stage(t), _avoid(t),
+        return candidates(policy, track, next_stage(t), _avoid(t),
                           order=order)
 
     def _model_for(t, order, usages=None, now=None):
