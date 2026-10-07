@@ -139,7 +139,7 @@ def test_the_markdown_summary_is_no_longer_a_gate_artifact(tmp_path, monkeypatch
 def test_no_code_reads_the_summary_format():
     root = Path(dispatcher.__file__).parent
     hits = [p.name for p in root.rglob("*.py")
-            and "open questions" in p.read_text(errors="replace").lower()]
+            if "open questions" in p.read_text(errors="replace").lower()]
     assert hits == []
     assert not hasattr(artifacts, "PLAN_SUMMARY")
 
