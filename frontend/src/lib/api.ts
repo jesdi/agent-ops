@@ -118,6 +118,10 @@ export const api = {
   // Intent actions — 202 accepted, applied by the next dispatcher pass.
   reply: (target: string, issue: number, text: string) =>
     post<IntentAccepted>(`/task/${target}/${issue}/reply`, { text }),
+  // keepalive: a pagehide flush still reaches the server while the page unloads.
+  answers: (target: string, issue: number, body: components['schemas']['AnswersReq']) =>
+    request<IntentAccepted>(`/task/${target}/${issue}/answers`,
+      { method: 'POST', body: JSON.stringify(body), keepalive: true }),
   park: (target: string, issue: number) =>
     post<IntentAccepted>(`/task/${target}/${issue}/park`, {}),
   kill: (target: string, issue: number) =>
