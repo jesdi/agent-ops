@@ -77,3 +77,10 @@ def test_old_report_is_ignored_outside_implement(tmp_path, stage):
 ])
 def test_unusable_report_is_null_and_endpoint_answers(tmp_path, signal):
     assert _progress(tmp_path, Stage.IMPLEMENT, signal) is None
+
+
+@pytest.mark.parametrize("field", ["run_id", "round"])
+def test_number_too_large_for_an_integer_is_null_and_endpoint_answers(tmp_path, field):
+    raw = ('{"stage": "implement", "status": "working", "note": "2/4 tickets merged", '
+           f'"{field}": 1e400}}')
+    assert _progress(tmp_path, Stage.IMPLEMENT, raw) is None

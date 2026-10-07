@@ -221,6 +221,26 @@ def test_deeply_nested_stage_signal_is_none(tmp_path):
     assert read_stage_signal(tmp_path) is None
 
 
+@pytest.mark.parametrize("field", ["run_id", "round"])
+@pytest.mark.parametrize("raw", ["1e400", "-1e400", "1.5", "true", '"1e400"', '"-1"',
+                                 '"' + "9" * 400 + '"', "-1", str(2 ** 70), "[1]", "{}"])
+def test_stage_signal_with_a_number_field_that_is_no_sane_integer_is_unreadable(
+        tmp_path, field, raw):
+    _signal_file(tmp_path).write_text(
+        '{"stage": "implement", "status": "awaiting-ci", "%s": %s}' % (field, raw))
+    assert read_stage_signal(tmp_path) is None
+
+
+@pytest.mark.parametrize("raw, value", [("0", 0), ("null", 0), ('""', 0), ("4242", 4242),
+                                        ('"12"', 12), ("17123456789", 17123456789)])
+def test_stage_signal_integer_fields_read(tmp_path, raw, value):
+    _signal_file(tmp_path).write_text(
+        '{"stage": "implement", "status": "awaiting-ci", "run_id": %s, "round": %s}'
+        % (raw, raw))
+    sig = read_stage_signal(tmp_path)
+    assert (sig.run_id, sig.round) == (value, value)
+
+
 def test_waiting_marker_lifecycle(tmp_path):
     assert not has_waiting(tmp_path, "t", 9)
     mark_waiting(tmp_path, "t", 9)

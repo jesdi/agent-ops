@@ -372,6 +372,22 @@ def _open_questions(raw: object) -> int | None:
 
 
 STAGE_SIGNAL_MAX_BYTES = 64 * 1024
+_SIGNAL_INT_MAX = 2 ** 53   # what JSON carries exactly; far above any run id
+
+
+def _signal_int(d: dict, key: str) -> int:
+    """A number field of the signal: 0 when left out or null, else an integer
+    in range, also written as a string of digits (sessions do that). Anything
+    else (a float, also 1e400; a bool; other text) raises ValueError: the
+    signal is unreadable, as for any other malformed one."""
+    raw = d.get(key)
+    if raw is None or raw == "":
+        return 0
+    if isinstance(raw, str) and raw.isascii() and raw.isdigit() and len(raw) <= 16:
+        raw = int(raw)
+    if type(raw) is not int or not 0 <= raw <= _SIGNAL_INT_MAX:
+        raise ValueError(f"{key} is not a sane integer: {raw!r}")
+    return raw
 
 
 def read_regular(path: str | Path, max_bytes: int) -> bytes | None:
@@ -404,13 +420,14 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
             status=str(d["status"]),
             note=note if isinstance(note, str) else "",
             artifact=str(d.get("artifact", "")),
-            run_id=int(d.get("run_id", 0) or 0),
+            run_id=_signal_int(d, "run_id"),
             loop=str(d.get("loop", "") or ""),
-            round=int(d.get("round", 0) or 0),
+            round=_signal_int(d, "round"),
             track=str(d.get("track", "") or ""),
             open_questions=_open_questions(d.get("open_questions")),
         )
-    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError,
+            OverflowError):
         return None
 
 
