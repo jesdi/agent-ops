@@ -1171,6 +1171,9 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
             task = replace(task, slot=slot)
         try:
             _resume_one(cfg, deps, target, task, launch)
+            # The wake's launch is the next launch: a stored one-shot
+            # override is used up with it, whatever model the wake ran on.
+            _consume_execution_choice(cfg, task.target, task.issue)
         except Exception:
             _fail_task_crash(cfg, deps, target, task, dry_run)
 

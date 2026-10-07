@@ -5,13 +5,14 @@ the status line's entry for PR feedback."""
 from dataclasses import replace
 
 import dispatcher.main as main
+from dispatcher import execution_overrides
 from dispatcher.machine import Notify, RetryStage, StartTicket, next_actions
-from dispatcher.state import (PARK_WAKE, Stage, StageSignal, launch_track,
-                              load, save)
-from tests.pinned import (ASTRA, DENY_FRONTEND, FABLE, IMPL_DONE, PLAN_DONE,
-                          SOL, ahead, deny, launched, make_cfg, policy, raw,
-                          rewrite, saved, setup, step, task, unpinned, usage_now, wake,
-                          write_ticket)
+from dispatcher.state import (PARK_HUMAN, PARK_WAKE, Stage, StageSignal,
+                              launch_track, load, save)
+from tests.pinned import (ASTRA, DENY_FRONTEND, FABLE, IMPL_DONE, OPUS,
+                          PLAN_DONE, SOL, ahead, deny, launched, make_cfg,
+                          policy, raw, rewrite, saved, setup, step, task,
+                          unpinned, usage_now, wake, write_ticket)
 from tests.test_main import GOOD_TICKET, FakeSessions, deps, make_task
 
 POLICY = policy()
@@ -173,6 +174,25 @@ def test_a_resume_override_between_tickets_covers_the_next_ticket_only(
     assert saved(c).ticket_cursor == 2
     assert step(c, wt, IMPL_DONE).spawned == []     # ticket 3 waits again
     assert "implement" not in saved(c).picks
+
+
+def test_a_wake_with_a_model_uses_up_a_stored_one_shot_override(
+        tmp_path, monkeypatch):
+    """A one-shot override covers the next launch only. The wake's launch is
+    that launch, also when the wake names its own model: the stored override
+    does not stay behind for the ticket after."""
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",), ()])
+    step(c, wt, PLAN_DONE)
+    step(unpinned(c), wt, IMPL_DONE)                # parked: frontend unpinned
+    assert saved(c).park == PARK_HUMAN
+    execution_overrides.save(
+        c.state_dir, "portfolio_eval", 42,
+        execution_overrides.ExecutionOverride(model=SOL, bypass_usage=False))
+    sess = wake(c, unpinned(c), resume_model_override=f"anthropic/{OPUS}")
+    assert launched(sess) == [(f"anthropic/{OPUS}", "")]
+    assert saved(c).ticket_cursor == 2
+    assert execution_overrides.load(c.state_dir, "portfolio_eval", 42) is None
+    assert launched(step(c, wt, IMPL_DONE)) == [(ASTRA, "medium")]   # ticket 3
 
 
 def test_a_wake_of_a_ticket_whose_track_is_not_pinned_waits_for_the_pin(
