@@ -309,7 +309,9 @@ def ticket_tracks_text(policy: ModelPolicy, track: str) -> str:
         "like the Blocked by line, and never more than one. That ticket is "
         "implemented on the named track's models; a ticket without the line "
         "is implemented on the task's own track. Name a track only when the "
-        "ticket's work clearly fits its sentence. The names a ticket may use:",
+        "ticket's work clearly fits its sentence; when none fits, omit the "
+        "line (do not write `Track: none`). No other line of a ticket may "
+        "start with `Track:`. The names a ticket may use:",
         *(f"- `{n}`: {policy.tracks[n].when}" for n in names)])
 
 

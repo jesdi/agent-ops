@@ -5218,7 +5218,8 @@ def _crash_ticket_2(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.IMPLEMENT, ticket_cursor=2,
-                   ticket_count=2)
+                   ticket_count=2,
+                   picks={"implement": "anthropic/claude-opus-5"})  # ticket 2 in progress
     (wt / ".agent" / "tickets").mkdir()
     for name in ("01-seams.md", "02-logout.md"):
         (wt / ".agent" / "tickets" / name).write_text(f"# {name}\n")

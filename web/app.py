@@ -105,7 +105,7 @@ def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
     pick keeps the pin."""
     if t.stage in TERMINAL_STAGES or overridden:
         return ""
-    track = launch_track(t, next_stage(t), policy)
+    track = launch_track(t, policy)
     return track if track in policy.pinned else ""
 
 
@@ -150,7 +150,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def _choices(t, order):
         """The ordered entries the dispatcher would walk for t's next launch."""
         policy = _policy(t.target)
-        track = launch_track(t, next_stage(t), policy)
+        track = launch_track(t, policy)
         if not track:
             return ()
         return candidates(policy, track, next_stage(t), _avoid(t),

@@ -46,37 +46,37 @@ def test_a_state_file_from_before_ticket_tracks_reads_as_none(tmp_path):
 # --- the track a launch reads its list from ----------------------------------
 
 def test_between_tickets_the_next_ticket_names_the_track():
-    t = task(ticket_cursor=1, ticket_tracks={2: "frontend"})
-    assert launch_track(t, "implement", POLICY) == "frontend"
+    t = task(ticket_cursor=1, ticket_count=3, ticket_tracks={2: "frontend"})
+    assert launch_track(t, POLICY) == "frontend"
 
 
 def test_a_ticket_in_progress_names_the_track():
     picks = {"implement": f"{ASTRA}@medium"}
     t = task(ticket_cursor=1, ticket_tracks={2: "frontend"}, picks=picks)
-    assert launch_track(t, "implement", POLICY) == "architecture"
-    assert launch_track(replace(t, ticket_cursor=2), "implement",
-                        POLICY) == "frontend"
+    assert launch_track(t, POLICY) == "architecture"
+    assert launch_track(replace(t, ticket_cursor=2), POLICY) == "frontend"
 
 
 def test_a_ticket_without_a_track_uses_the_task_track():
-    t = task(ticket_cursor=2, ticket_tracks={2: "frontend"})
-    assert launch_track(t, "implement", POLICY) == "architecture"
+    t = task(ticket_cursor=2, ticket_count=3, ticket_tracks={2: "frontend"})
+    assert launch_track(t, POLICY) == "architecture"
 
 
 def test_only_an_implement_launch_reads_a_ticket_track():
-    t = task(ticket_cursor=1, ticket_tracks={2: "frontend"})
-    for stage in ("spec", "plan", "review", "address-review"):
-        assert launch_track(t, stage, POLICY) == "architecture"
+    for stage in (Stage.SPEC, Stage.PLAN, Stage.REVIEW, Stage.PR_OPEN,
+                  Stage.ADDRESS_REVIEW):
+        t = task(stage, ticket_cursor=1, ticket_count=3,
+                 ticket_tracks={2: "frontend"})
+        assert launch_track(t, POLICY) == "architecture"
 
 
 def test_a_ticket_track_no_longer_pinned_gives_no_track():
-    t = task(ticket_cursor=1, ticket_tracks={2: "frontend"})
-    assert launch_track(t, "implement",
-                        policy(pinned=["security", "architecture"])) == ""
+    t = task(ticket_cursor=1, ticket_count=3, ticket_tracks={2: "frontend"})
+    assert launch_track(t, policy(pinned=["security", "architecture"])) == ""
 
 
 def test_a_task_track_the_policy_does_not_know_gives_no_track():
-    assert launch_track(task(track="legacy"), "implement", POLICY) == ""
+    assert launch_track(task(track="legacy"), POLICY) == ""
 
 
 # --- machine ------------------------------------------------------------------
@@ -103,10 +103,10 @@ def test_plan_done_with_a_track_no_ticket_may_name_retries(tmp_path):
     assert isinstance(act, RetryStage) and "ticket 02" in act.reason
 
 
-def test_implement_done_keeps_the_accepted_ticket_tracks():
+def test_implement_done_starts_the_next_ticket_of_the_accepted_set():
     t = task(ticket_cursor=1, ticket_count=3, ticket_tracks={3: "frontend"})
     assert next_actions(t, StageSignal("implement", "done"), True) == [
-        StartTicket(2, 3, {3: "frontend"})]
+        StartTicket(2, 3)]
 
 
 # --- the ticket boundary ------------------------------------------------------

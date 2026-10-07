@@ -52,13 +52,46 @@ def resumable_crash(t: "TaskState") -> bool:
     return t.stage is Stage.FAILED and bool(t.crashed_stage)
 
 
+def next_launch(t: "TaskState") -> tuple[str, int]:
+    """(runtime stage, ticket number) of a task's next launch, read from the
+    persisted state: the one answer the dispatcher, the status lines and the
+    console share. A crashed task resumes the stage it crashed in, and a
+    parked pr-open task wakes into an address-review round. In implement the
+    launch runs a ticket: the one in progress, or, when none is
+    (ticket_in_progress), the next one; after the last ticket the next
+    launch is review. The ticket number is 0 for every launch that is not a
+    ticket."""
+    stage = t.crashed_stage if resumable_crash(t) else t.stage.value
+    if stage == Stage.PR_OPEN.value:
+        return Stage.ADDRESS_REVIEW.value, 0
+    if stage != Stage.IMPLEMENT.value:
+        return stage, 0
+    if ticket_in_progress(t):
+        return stage, t.ticket_cursor
+    if t.ticket_cursor < t.ticket_count:
+        return stage, t.ticket_cursor + 1
+    return Stage.REVIEW.value, 0
+
+
+def ticket_in_progress(t: "TaskState") -> bool:
+    """A ticket has started and is not done. The implement pick says so: it
+    is written when a ticket starts and dropped, in a write of its own, when
+    the ticket is done. A state from before picks existed has a ticket in
+    progress with no pick; the state read marks it (`ticket_without_pick`).
+    With no ticket set at all (`ticket_count` 0, a task from before tickets)
+    the implement stage is its one session."""
+    return ("implement" in t.picks or t.ticket_without_pick
+            or t.ticket_count == 0)
+
+
 def next_stage(t: "TaskState") -> str:
-    """The runtime stage a task's next launch runs: a crashed task resumes
-    the stage it crashed in, and a parked pr-open task wakes into an
-    address-review round."""
-    if resumable_crash(t):
-        return t.crashed_stage
-    return Stage.ADDRESS_REVIEW.value if t.stage is Stage.PR_OPEN else t.stage.value
+    """The runtime stage a task's next launch runs (next_launch)."""
+    return next_launch(t)[0]
+
+
+def launch_ticket(t: "TaskState") -> int:
+    """The ticket a task's next launch runs, 0 when it runs none (next_launch)."""
+    return next_launch(t)[1]
 
 
 @dataclass(frozen=True)
@@ -141,6 +174,10 @@ class TaskState:
     # ticket number -> its ticket track, only tickets that name one: the copy
     # of the accepted ticket set that routing reads, never the ticket files
     ticket_tracks: dict[int, str] = field(default_factory=dict)
+    # A ticket is in progress although the task has no implement pick: only
+    # a state from before picks existed, marked when it is read. Cleared
+    # when that ticket is done. See ticket_in_progress.
+    ticket_without_pick: bool = False
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
     review_rounds: int = 0
@@ -169,25 +206,15 @@ class TaskState:
     operator_request: "OperatorRequest | None" = None
 
 
-def launch_ticket(t: TaskState) -> int:
-    """The ticket t's next implement launch runs: the one in progress while
-    the task holds an implement pick, else the next one. The implement pick
-    is the pick of the ticket in progress and goes when that ticket is done."""
-    return t.ticket_cursor + (0 if "implement" in t.picks else 1)
-
-
-def launch_track(t: TaskState, stage: str, policy: ModelPolicy) -> str:
-    """The track whose list t's launch of `stage` (runtime vocabulary) reads,
-    or "" when it has none. An implement launch runs a ticket
-    (launch_ticket), and a ticket that names a ticket track is implemented
-    from it, as long as that track is still pinned; it never falls to
-    another list. A ticket that names none, and every other launch (PR
-    feedback too), uses the task track. The one answer the dispatcher and
-    the console share."""
-    if stage == Stage.IMPLEMENT.value:
-        named = t.ticket_tracks.get(launch_ticket(t), "")
-        if named:
-            return named if named in policy.pinned else ""
+def launch_track(t: TaskState, policy: ModelPolicy) -> str:
+    """The track whose list t's next launch (next_launch) reads, or "" when
+    it has none. A ticket that names a ticket track is implemented from it,
+    as long as that track is still pinned; it never falls to another list.
+    A ticket that names none, and every other launch (PR feedback too), uses
+    the task track."""
+    named = t.ticket_tracks.get(launch_ticket(t), "")
+    if named:
+        return named if named in policy.pinned else ""
     return t.track if t.track in policy.tracks else ""
 
 
@@ -284,6 +311,24 @@ _PR_OPEN_STAGES = frozenset({Stage.PR_OPEN, Stage.ADDRESS_REVIEW})
 _PAST_IMPLEMENT = _PR_OPEN_STAGES | {Stage.REVIEW}
 
 
+def _effective_stage(d: dict) -> Stage:
+    """A crashed task counts as the stage it resumes."""
+    if d["stage"] is Stage.FAILED and d.get("crashed_stage"):
+        return Stage(d["crashed_stage"])
+    return d["stage"]
+
+
+def _migrate_ticket_without_pick(d: dict) -> None:
+    """A file from before the field was written by code that kept no state
+    for "no ticket in progress": a task in implement was always in the
+    middle of its ticket. With no implement pick (a task from before picks
+    existed) nothing else says so; mark it, so the task continues that
+    ticket and never skips to the next one."""
+    if "ticket_without_pick" not in d:
+        d["ticket_without_pick"] = (_effective_stage(d) is Stage.IMPLEMENT
+                                    and "implement" not in d["picks"])
+
+
 def _migrate_implement_pick(d: dict) -> None:
     """State from before this change. No recorded provider: the implement
     pick's provider ran the tickets. Past implement the implement pick is no
@@ -296,9 +341,7 @@ def _migrate_implement_pick(d: dict) -> None:
     if not d.get("implement_providers"):
         d["implement_providers"] = list(
             filter(None, [pick_provider(picks, "implement")]))
-    stage = d["stage"]
-    if stage is Stage.FAILED and d.get("crashed_stage"):
-        stage = Stage(d["crashed_stage"])
+    stage = _effective_stage(d)
     if stage not in _PAST_IMPLEMENT or "implement" not in picks:
         return
     pick = picks.pop("implement")
@@ -322,6 +365,7 @@ def _read(p: Path) -> TaskState | None:
         d["terminal_at"] = ""
     d["labels"] = tuple(d.get("labels", ()))
     d["picks"] = dict(d.get("picks") or {})
+    _migrate_ticket_without_pick(d)
     _migrate_implement_pick(d)
     d["ticket_tracks"] = _ticket_tracks(d.get("ticket_tracks"))
     d.pop("pending_reply", None)   # retired field, see original comment

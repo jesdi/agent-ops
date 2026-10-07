@@ -29,8 +29,8 @@ class StartTicket:
     """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
     and session spawn happen together. The executor checks budget_ok first and
     makes no state mutation when denied. `tracks` are the ticket tracks of
-    the accepted ticket set: a new set's at plan done, the task's own copy
-    between tickets."""
+    the ticket set the plan stage just had accepted; between tickets the
+    task's own copy stands."""
     cursor: int
     count: int
     tracks: dict[int, str] = field(default_factory=dict)
@@ -216,7 +216,11 @@ def _awaiting_review_actions(task: TaskState, signal: StageSignal,
 def _implement_done(task: TaskState, signal: StageSignal) -> list[object]:
     if task.ticket_cursor < task.ticket_count:
         nxt = task.ticket_cursor + 1
-        return [StartTicket(nxt, task.ticket_count, task.ticket_tracks)]
+        start: list[object] = [StartTicket(nxt, task.ticket_count)]
+        # Cursor 0: the set was accepted in an earlier pass and ticket 1
+        # had to wait, so its ping was not sent then.
+        return start + ([] if task.ticket_cursor else [
+            Notify("implement_started", f"{task.ticket_count} ticket(s)")])
     return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
 
 

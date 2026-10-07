@@ -57,7 +57,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               holds_slot, launch_ticket, launch_track, load,
                               load_all, max_slots,
                               next_stage, read_background, read_stage_signal,
-                              resumable_crash,
+                              resumable_crash, ticket_in_progress,
                               save, task_key)
 from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
@@ -120,9 +120,10 @@ class Launch:
 def _launch_for(cfg: Config, target: Target | None, task: TaskState,
                 stage: Stage, admitted: Admitted,
                 order: Order) -> Launch | None:
-    """The stage's recorded pick, else the first admitted entry of the launch's
-    track (state.launch_track: a ticket's own track, else the task's), tried
-    in `order`. None: that track is not usable, or nothing is admitted — wait.
+    """The stage's recorded pick, else the first admitted entry of the next
+    launch's track (state.launch_track: a ticket's own track, else the
+    task's), tried in `order`. None: that track is not usable, or nothing is
+    admitted — wait.
     Review avoids the provider that ran implement."""
     policy = _policy(cfg, target)
     pick = stage_pick(task.picks, stage.value)
@@ -131,7 +132,7 @@ def _launch_for(cfg: Config, target: Target | None, task: TaskState,
     # No track: claimed before tracks existed and parked ever since, so
     # _drive_task never backfilled it. Untracked work, as it does there.
     track = launch_track(replace(task, track=task.track or policy.untracked),
-                         stage.value, policy)
+                         policy)
     if not track:
         return None
     avoid = review_avoid(task.implement_providers, stage.value)
@@ -217,7 +218,7 @@ def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
     pick = stage_pick(task.picks, stage)
     if pick:
         return pick
-    track = launch_track(task, stage, policy)
+    track = launch_track(task, policy)
     if track:
         cands = candidates(policy, track, stage, order=priority.order(
             priority.load(cfg.state_dir, routed_providers(cfg)), {},
@@ -225,6 +226,14 @@ def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
         if cands:
             return str(cands[0])
     return ""
+
+
+def _last_launched(worktree: str) -> str:
+    """The entry of the worktree's last launch, from the models.log
+    breadcrumb; "" when there is none."""
+    p = Path(worktree) / ".agent" / "models.log"
+    lines = p.read_text().splitlines() if p.exists() else []
+    return lines[-1].split()[-1] if lines else ""
 
 
 def _log_model(worktree: str, stage: Stage, model: str) -> None:
@@ -790,7 +799,9 @@ def _retry_plan(cfg: Config, deps: Deps, target: Target, task: TaskState,
         f"contiguously from 01 with no gaps or duplicates, each with a "
         f"'What to build' section, a 'Blocked by' line, at least one "
         f"unchecked '- [ ]' criterion and at most one 'Track: <name>' line "
-        f"that names a track a ticket may use — then re-write .agent/stage.json with "
+        f"that names a track a ticket may use (no other line may start with "
+        f"'Track:'; a ticket with no fitting track must omit the line, not "
+        f"write 'Track: none') — then re-write .agent/stage.json with "
         f'status "done". Do not re-plan from scratch; only fix the set.')
     if block:
         retry_text = f"{retry_text}\n\n{block}"
@@ -1166,9 +1177,10 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
 
 def _resume_launch(cfg: Config, target: Target, task: TaskState,
                    admit: Admit, order: Order) -> Launch | None:
-    """A parked pr-open task has no session to continue: it resumes as a
-    fresh address-review round, on that stage's model."""
-    stage = Stage.ADDRESS_REVIEW if task.stage is Stage.PR_OPEN else task.stage
+    """The task's next launch (state.next_launch). A parked pr-open task has
+    no session to continue: it resumes as a fresh address-review round, on
+    that stage's model; a task whose last ticket is done resumes as review."""
+    stage = Stage(next_stage(task))
     if task.resume_model_override:
         launch = Launch(stage, parse_entry(task.resume_model_override, "override"))
     else:
@@ -1194,7 +1206,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # LIVE, and _launch would then type the podman command INTO the
     # running session (the failure _retry_plan and SpawnStage guard).
     _end_session(cfg, deps, task.target, task.issue)
-    if task.crashed_stage or _between_tickets(task):
+    if task.crashed_stage or _no_ticket_in_progress(task):
         _respawn(cfg, deps, target, task, launch)
         return
     if task.stage is Stage.PR_OPEN:
@@ -1214,8 +1226,7 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
         return
     block, drained = _drain(cfg, task.target, task.issue)
     if task.hold_for_attach:
-        text = ("The operator is attaching to talk to you directly. "
-                "Wait for their input.")
+        text = ATTACH_TEXT
         if block:
             text = f"{text}\n\n{block}"
         deps.sessions.resume(task.target, task.issue, task.worktree, text,
@@ -1250,38 +1261,51 @@ def _crash_failed(task: TaskState) -> TaskState:
                    updated_at=_now())
 
 
-def _between_tickets(task: TaskState) -> bool:
-    """In implement with no ticket in progress: the last one is done (its
-    pick is gone) and the next one has not started."""
-    return (task.stage is Stage.IMPLEMENT
-            and task.ticket_cursor < launch_ticket(task) <= task.ticket_count)
+ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
+               "Wait for their input.")
+
+
+def _no_ticket_in_progress(task: TaskState) -> bool:
+    """In implement with no session to continue: the ticket set is accepted
+    or a ticket is done, and the next launch (the next ticket, or review)
+    has not started."""
+    return task.stage is Stage.IMPLEMENT and not ticket_in_progress(task)
 
 
 def _respawn(cfg: Config, deps: Deps, target: Target,
              task: TaskState, launch: Launch) -> None:
-    """Resume of a task that has no session to continue. A crashed task: the
-    stage it died in starts afresh in the same worktree — the same ticket
-    for implement. A fresh stage prompt, not a resume (`claude --continue` /
-    `codex resume --last`): the newest transcript may belong to the previous
-    stage or ticket, or the crashed launch may never have started one. A
-    task parked or crashed between two tickets: the next ticket starts, on
-    `launch`, which is that ticket's own choice. The queued messages ride in
-    the stage prompt."""
-    detail = "after crash" if task.crashed_stage else "next ticket"
+    """Resume of a task that has no session to continue; `launch` is its
+    next launch. A crashed task: the stage it died in starts afresh in the
+    same worktree — the same ticket for implement. A fresh stage prompt, not
+    a resume (`claude --continue` / `codex resume --last`): the newest
+    transcript may belong to the previous stage or ticket, or the crashed
+    launch may never have started one. A task with no ticket in progress:
+    its next ticket starts, or review after the last one. The queued
+    messages ride in the stage prompt, an attach notice among them."""
+    detail = "after crash" if task.crashed_stage else "next launch"
     deps.github.set_status(target, task.issue,
                            target.status_in_progress_option_id)
+    if task.hold_for_attach:
+        _queue_message(cfg, task.target, task.issue, ATTACH_TEXT, "dispatcher")
+        deps.notifier.send("resumed_for_attach", issue=task.issue,
+                           title=task.title, url=_url(target, task.issue),
+                           target=target.name, note="")
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
                    park_note="", hold_for_attach=False,
                    resume_model_override="", resume_bypass_usage=False)
     _clear_wake_blocked(cfg, task.target, task.issue)
-    if _between_tickets(task):
-        task = _start_ticket(cfg, deps, target, task, launch_ticket(task), launch)
+    ticket = launch_ticket(task) if launch.stage is Stage.IMPLEMENT else 0
+    if ticket and not ticket_in_progress(task):
+        task = _start_ticket(cfg, deps, target, task, ticket, launch)
     else:
-        ticket = task.ticket_cursor if task.stage is Stage.IMPLEMENT else 0
         task = _spawn_stage(cfg, deps, target, task, launch, ticket=ticket)
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                           issue=task.issue, stage=task.stage.value,
                           model=str(launch.entry), detail=detail)
+
+
+def _saved(cfg: Config, task: TaskState) -> TaskState:
+    return load(cfg.state_dir, task.target, task.issue) or task
 
 
 def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
@@ -1387,35 +1411,51 @@ def _action_stage(act: object) -> Stage | None:
 
 
 def _without_ticket_pick(task: TaskState) -> TaskState:
-    """The implement pick is the pick of the ticket in progress: it goes
-    when that ticket is done."""
-    return replace(task, picks={k: v for k, v in task.picks.items()
-                                if k != pick_key(Stage.IMPLEMENT.value)})
+    """No ticket in progress (state.ticket_in_progress): the implement pick
+    is the pick of the ticket in progress and goes when that ticket is done."""
+    return replace(task, ticket_without_pick=False,
+                   picks={k: v for k, v in task.picks.items()
+                          if k != pick_key(Stage.IMPLEMENT.value)})
 
 
-def _ticket_boundary(turn: _Turn, policy: ModelPolicy, task: TaskState,
-                     act: StartTicket) -> TaskState | None:
-    """The task as ticket `act.cursor` is about to start on it; None when the
-    ticket may not start. The set `act` carries is the accepted one, so its
-    ticket tracks replace the task's whole copy. The ticket before is done,
-    so its pick is dropped in a write of its own, before the next ticket
-    chooses: a ticket that then has to wait leaves a task in implement with
-    no implement pick. A ticket whose track is no longer pinned starts on no
-    other list: the task parks for the operator."""
-    task = replace(task, ticket_tracks=dict(act.tracks))
-    if pick_key(Stage.IMPLEMENT.value) in task.picks:
-        task = _without_ticket_pick(task)
-        save(turn.cfg.state_dir, task)
-    track = task.ticket_tracks.get(act.cursor, "")
-    if track and track not in policy.pinned:
-        _park_for_input(
-            turn.cfg, turn.deps, turn.target, task,
-            f"ticket {act.cursor:02d} names track {track!r}, which is no "
-            f"longer a pinned track (pinned: {list(policy.pinned)}); pin it "
-            f"again in targets.yaml and wake the task, or resume the task "
-            f"with a model override for this ticket")
-        return None
-    return task
+def _step_done(cfg: Config, task: TaskState, act: object) -> TaskState:
+    """The task with the step `act` says is complete persisted, in a write of
+    its own, BEFORE the next launch is chosen and admitted: every reader of
+    the state (state.next_launch) then names the launch that waits. Plan
+    done with a valid set: the set is accepted — the task is in implement
+    with no ticket started and the set's count and ticket tracks, and the
+    ticket files are not read for routing again. A ticket done: no ticket
+    is in progress and its pick is gone, so the next ticket chooses from its
+    own list, or review starts after the last one."""
+    done = task
+    if isinstance(act, StartTicket) and task.stage is Stage.PLAN:
+        done = replace(task, stage=Stage.IMPLEMENT, ticket_cursor=0,
+                       ticket_count=act.count, ticket_tracks=dict(act.tracks),
+                       updated_at=_now())
+    if (done.stage is Stage.IMPLEMENT
+            and _action_stage(act) in (Stage.IMPLEMENT, Stage.REVIEW)):
+        done = _without_ticket_pick(done)
+    if done != task:
+        save(cfg.state_dir, done)
+    return done
+
+
+def _park_unpinned_ticket(turn: _Turn, policy: ModelPolicy,
+                          task: TaskState) -> None:
+    """A ticket whose track is no longer pinned starts on no other list: the
+    task parks for the operator. Not while a one-shot override is pending:
+    that launch is the override's, whenever the gate admits it."""
+    ticket = launch_ticket(task)
+    track = task.ticket_tracks.get(ticket, "")
+    override = execution_overrides.load(turn.cfg.state_dir, task.target, task.issue)
+    if not track or track in policy.pinned or (override and override.model):
+        return
+    _park_for_input(
+        turn.cfg, turn.deps, turn.target, task,
+        f"ticket {ticket:02d} names track {track!r}, which is no longer a "
+        f"pinned track (pinned: {list(policy.pinned)}); pin it again in "
+        f"targets.yaml and wake the task, or resume the task with a model "
+        f"override for this ticket")
 
 
 # Handlers return the task to keep driving, or None to end the task's turn.
@@ -1452,8 +1492,7 @@ def _start_ticket(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 def _on_start_ticket(turn: _Turn, task: TaskState, act: StartTicket,
                      launch: Launch) -> TaskState:
-    return _start_ticket(turn.cfg, turn.deps, turn.target,
-                         replace(task, ticket_count=act.count), act.cursor,
+    return _start_ticket(turn.cfg, turn.deps, turn.target, task, act.cursor,
                          launch)
 
 
@@ -1564,8 +1603,6 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
     spec_path = turn.signal.artifact if act.stage is Stage.PLAN else ""
     if act.stage is Stage.PLAN:
         task = replace(task, track=turn.signal.track)
-    if act.stage is Stage.REVIEW:
-        task = _without_ticket_pick(task)   # the last ticket is done
     return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
 
 
@@ -1688,15 +1725,14 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             grace_elapsed=_grace_elapsed(cfg, task),
                             tracks=frozenset(policy.tracks),
                             ticket_tracks=ticket_track_names(policy, task.track)):
-        if isinstance(act, StartTicket):
-            task = _ticket_boundary(turn, policy, task, act)
-            if task is None:
-                return
+        task = _step_done(cfg, task, act)
         stage = _action_stage(act)
         launch, bypass_usage = ((None, False) if stage is None
                                 else _choose_launch(cfg, target, task, stage, admit, order))
         if stage is not None and launch is None:
-            return  # nothing mutated; the signal persists; retried once headroom returns
+            if isinstance(act, StartTicket):
+                _park_unpinned_ticket(turn, policy, task)
+            return  # no launch: the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)
         if launch is not None:
@@ -1707,9 +1743,12 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 def _report_session_crash(cfg: Config, deps: Deps, target: Target,
                           task: TaskState, dry_run: bool) -> None:
-    # The stage's pick names its runtime; a pre-picks task ran on Claude,
-    # which is what a bare (here: empty) id resolves to.
-    pick = stage_pick(task.picks, task.stage.value)
+    # The stage's pick names its runtime. With no pick (no ticket in
+    # progress: the implement pick is gone) the session that died is the
+    # worktree's last launch. A pre-picks task ran on Claude, which is what
+    # a bare (here: empty) id resolves to.
+    pick = (stage_pick(task.picks, task.stage.value)
+            or _last_launched(task.worktree))
     runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
     rep = failures.FailureReport(
         klass="session-crash", target=target.name, issue=task.issue,
@@ -2332,7 +2371,9 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
             try:
                 _drive_task(eff, deps, target, task, admit, order, dry_run)
             except Exception:
-                _fail_task_crash(eff, deps, target, task, dry_run)
+                # From the saved state: the turn may have persisted a done
+                # step before it failed, and `task` predates that write.
+                _fail_task_crash(eff, deps, target, _saved(eff, task), dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
     _resume_woken(eff, deps, admit, order, dry_run)

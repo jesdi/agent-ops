@@ -72,9 +72,12 @@ and reused by every session of that stage. For implement the pick is the
 pick of the ticket in progress: it is chosen when the ticket starts, from the
 ticket track's list or else the task track's, kept for that ticket's
 sessions (a gate-loop round, a resume after a park, a respawn after a crash)
-and dropped when the ticket is done. The next ticket chooses again, so a task
-that waits between two tickets has no implement pick, and a one-shot override
-covers one ticket. PR feedback has one pick of its own, under the key
+and dropped when the ticket is done, in a write of its own before the next
+launch is admitted. The pick is how the state says that a ticket is in
+progress: a task in implement with no implement pick waits for its next
+ticket (ticket 1 after the ticket set is accepted), or for review after the
+last one. The next ticket chooses again, and a one-shot override covers one
+ticket. PR feedback has one pick of its own, under the key
 `feedback`: the first session that addresses PR feedback chooses it from the
 task track's `implement` list, and every later feedback round of the task
 reuses it. It does not read or write the implement pick. A denied pick waits.
