@@ -9,19 +9,19 @@ import json
 from dataclasses import replace
 
 import dispatcher.main as main
-from dispatcher import execution_overrides, failures
+from dispatcher import execution_overrides, failures, state
 from dispatcher.machine import Notify, StartTicket, next_actions
-from dispatcher.models import ticket_tracks_text
+from dispatcher.models import parse_policy, ticket_tracks_text
 from dispatcher.state import (NO_SLOT, PARK_WAKE, Stage, StageSignal,
-                              launch_ticket, launch_track, load, next_launch,
-                              next_stage, save)
+                              launch_entries, launch_ticket, launch_track,
+                              load, next_launch, next_stage, save)
 from tests import webfakes
 from tests.pinned import (ASTRA, DENY_FRONTEND, FABLE, HEADERS, IMPL_DONE,
                           OPUS, PLAN_DONE, SOL, ahead, anthropic, cards, deny,
                           detail, launched, legacy, make_cfg, models, openai,
-                          policy, raw, resume_intent, rig, rewrite, saved,
-                          setup, step, task, unpinned, usage_now, wake,
-                          write_ticket)
+                          policy, policy_raw, raw, resume_intent, rig,
+                          rewrite, saved, setup, step, task, unpinned,
+                          usage_now, wake, write_ticket)
 from tests.test_main import FakeNotifier, FakeSessions, deps, make_task
 
 
@@ -82,6 +82,49 @@ def test_a_task_with_no_track_is_untracked_work_for_the_status_line_too(
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     assert [(r[2], r[3]) for r in sess.resumed] == [(f"anthropic/{FABLE}", "medium")]
+
+
+def test_launch_entries_reads_the_list_of_the_stage_it_is_given():
+    """The drive loop starts the stage after a done one, which the saved
+    state does not name yet: spec done reads the plan list, the last ticket
+    done reads the review list (with the review avoid)."""
+    raw_policy = policy_raw()
+    raw_policy["tracks"]["standard"]["plan"] = [f"{OPUS}@low"]
+    pol = parse_policy(raw_policy)
+    spec = task(Stage.AWAITING_SPEC_REVIEW, track="standard")
+    assert [str(e) for e in launch_entries(spec, pol, tuple, "plan")] == [
+        f"anthropic/{OPUS}@low"]
+    assert [str(e) for e in launch_entries(spec, pol, tuple)] == [
+        f"anthropic/{FABLE}@medium", f"{ASTRA}@medium"]
+    last = task(picks=PICK, implement_providers=["anthropic"])   # no ticket set
+    assert [str(e) for e in launch_entries(last, pol, tuple, "review")] == [
+        f"{ASTRA}@high", f"anthropic/{FABLE}@high"]
+    assert [str(e) for e in launch_entries(last, pol, tuple)] == [
+        f"{ASTRA}@medium", f"anthropic/{FABLE}@medium"]
+
+
+class Corrupting(FakeSessions):
+    """The turn leaves the state file unreadable, then raises."""
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    def is_alive(self, target, issue):
+        self.path.write_text("{not json")
+        raise RuntimeError("boom")
+
+
+def test_a_crash_over_an_unreadable_state_file_does_not_stop_the_pass(
+        tmp_path, monkeypatch):
+    c = make_cfg(tmp_path, monkeypatch, ahead())
+    make_task(c, issue=42, track="architecture", picks=PICK)
+    make_task(c, issue=43, track="architecture", picks=PICK, park=PARK_WAKE)
+    sess = Corrupting(state._path(c.state_dir, "portfolio_eval", 42))
+    main.run_pass(c, deps(sess=sess))
+    t = saved(c)
+    assert t.stage is Stage.FAILED and t.crashed_stage == "implement"
+    assert len(sess.resumed) == 1                   # task 43 was still reached
 
 
 # --- A: a legacy state with no pick is in the middle of its ticket -------------

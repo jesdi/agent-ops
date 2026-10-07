@@ -1352,9 +1352,14 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
 
     The failure is written from the saved state: the turn may have persisted
     a step (a done ticket, a started one) before it failed, and the caller's
-    `task` predates that write."""
+    `task` predates that write. From the caller's task when the state file
+    cannot be read: this function must not raise."""
     error = traceback.format_exc()
-    task = load(cfg.state_dir, task.target, task.issue) or task
+    try:
+        task = load(cfg.state_dir, task.target, task.issue) or task
+    except Exception as exc:
+        print(f"[warn] state of #{task.issue} unreadable after its crash: "
+              f"{exc}", file=sys.stderr)
     # Best-effort teardown: the point of this function is that nothing in it
     # may raise, or we are back to killing the pass.
     try:

@@ -14,7 +14,8 @@ from dispatcher.state import PARK_WAKE, Stage, TaskState, load, save
 from tests.test_main import FakeGitHub, FakeSessions, deps, make_task
 from tests.test_pinned_tracks_order import (ASTRA, FABLE, OPUS, SOL,
                                             SONNET, ahead, deny, enter,
-                                            launched, make_cfg, policy)
+                                            launched, make_cfg, policy,
+                                            policy_raw)
 from tests.test_pinned_tracks_ticket_tracks import (IMPL_DONE,
                                                     PLAN_DONE, setup, step,
                                                     usage_now, write_ticket)

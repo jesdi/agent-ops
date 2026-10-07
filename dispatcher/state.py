@@ -306,8 +306,17 @@ def _legacy_path(state_dir: str | Path, issue: int) -> Path:
     return Path(state_dir) / f"task-{issue}.json"
 
 
+def _previous(state_dir: str | Path, ts: TaskState) -> TaskState | None:
+    """The state a save replaces; None also when the file cannot be read:
+    the save is what repairs it."""
+    try:
+        return load(state_dir, ts.target, ts.issue)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
 def save(state_dir: str | Path, ts: TaskState) -> None:
-    previous = load(state_dir, ts.target, ts.issue)
+    previous = _previous(state_dir, ts)
     if ts.stage in TERMINAL_STAGES:
         stamp = (previous.terminal_at
                  if previous and previous.stage in TERMINAL_STAGES else ts.updated_at)
