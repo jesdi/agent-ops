@@ -86,11 +86,21 @@ console. Only an explicit approval starts implement.
 _Avoid_: spec review gate, spec approval (retired with the old flow)
 
 **Review page**:
-`.agent/review.html`, written by the plan session with the `review-page` skill
-before it reports ready: the ticket list, the open questions and the corrections
-it made to stage 1. The dispatcher judges it by shape only: a regular file in the
-worktree, at most 256 KiB, carrying the template marker. It is the request the
-console shows at the gate. Never committed.
+The gate surface of the plan gate and of the spec questionnaire:
+`.agent/review.html` (plan mode) and `.agent/questionnaire.html`
+(questionnaire mode), written by the session with the `review-page` skill.
+The review page holds the ticket list, the open questions and the corrections
+the plan session made to stage 1. The dispatcher judges a page by shape only:
+a regular file in the worktree, at most 256 KiB, carrying the template marker.
+It is the request the console shows. Never committed.
+
+**Answers file**:
+`.agent/review-answers.json` (plan) or `.agent/questionnaire-answers.json`
+(spec). The dispatcher writes it from an `answers` intent; the session writes
+it from a text reply, with `"actor": "text"`. It is the one record that the
+plan, implement and review sessions read. Fields: `v`, `stage`, `submitted`
+(`null`, `"changes"` or `"approve"`), `submitted_at`, `actor`, `answers` (by
+question id; `<id>.note` for a note; `track`). Never committed.
 
 **Open question**:
 What the plan session reports at its end: a red-team finding the design
@@ -265,7 +275,8 @@ Repo-agnostic workflow skills that stage prompts invoke: `to-openspec`
 `to-tickets`), `to-questionnaire`, `prototype` and `diagnosing-bugs` (spec),
 `implement-spec` (implement, which owns `tdd` per ticket and its own
 reviews), `review-diff` with `deep-quality-review` and
-`resolving-merge-conflicts` (review). `to-spec` is not a box skill: it is the
+`resolving-merge-conflicts` (review). `review-page` builds the review page
+(spec and plan). A fresh box needs `to-questionnaire` installed too. `to-spec` is not a box skill: it is the
 Mac tool that writes the design into a `spec-ready` issue body. They live in
 the claude-home seed (agent-ops-infra, ADR 0003): the jesdi ones pinned in
 its `.my-skills.json` and installed with `@jesdi/skills-cli`, the mattpocock
