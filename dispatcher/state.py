@@ -98,6 +98,10 @@ class AnswersRequest:
 
 OperatorRequest = PlanApprovalRequest | AnswersRequest  # type alias
 
+# The answers file of each operator request kind, and the stage it answers.
+ANSWERS_FILES = {"plan-approval": ("review-answers.json", "plan"),
+                 "answers": ("questionnaire-answers.json", "spec")}
+
 
 # A task that holds no E2E slot. Every session-ending park releases its slot
 # back to the pool; only PARK_LOGIN keeps a slot because it keeps a live

@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
-import re
-from typing import Literal
 from pydantic import (BaseModel, Field, StrictBool, StrictStr,
                       field_validator)
 from starlette.responses import JSONResponse, StreamingResponse
@@ -22,8 +22,8 @@ from dispatcher.models import (candidates, override_allowed, override_refusal,
                                parse_entry, pick_provider, resolve,
                                stage_pick, track_from_labels)
 from dispatcher.usage import admits
-from dispatcher.main import ANSWERS_FILES
-from dispatcher.state import (read_regular, TERMINAL_STAGES, PARK_WAKE, next_stage,
+from dispatcher.artifacts import PLAN_FILE_MAX_BYTES
+from dispatcher.state import (ANSWERS_FILES, read_regular, TERMINAL_STAGES, PARK_WAKE, next_stage,
                               resumable_crash)
 from web import read_model
 from web.artifacts import router as artifacts_router
@@ -407,7 +407,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def _saved_answers(t) -> dict:
         name, _ = ANSWERS_FILES[t.operator_request.kind]
         raw = read_regular(Path(t.worktree) / ".agent" / name,
-                           ANSWERS_MAX_BYTES)
+                           PLAN_FILE_MAX_BYTES)
         try:
             saved = _json.loads(raw or b"")["answers"]
         except (ValueError, KeyError, TypeError):
