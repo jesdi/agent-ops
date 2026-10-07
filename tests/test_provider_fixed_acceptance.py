@@ -7,9 +7,12 @@ observable state only, no internals.
 Both `anthropic/claude-opus-5` and `openai/gpt-5-codex` are configured for
 the `implement` stage below, so "not configured" is never the reason a
 cross-provider override is rejected."""
+import json
+
+import pytest
 from fastapi.testclient import TestClient
 
-from dispatcher import eventlog, intents as intents_mod
+from dispatcher import eventlog, execution_overrides, intents as intents_mod
 from dispatcher.config import Config, Target
 from dispatcher.models import parse_policy
 from dispatcher.state import PARK_HUMAN, Stage, TaskState, save
@@ -148,3 +151,39 @@ def test_dispatcher_drops_a_cross_provider_resume_intent_and_records_an_event(
     events = [e for e in eventlog.read_tail(c.state_dir) if e["issue"] == 7]
     assert len(events) == 1, f"expected one drop event, got {events}"
     assert "openai" in (events[0]["detail"] + events[0].get("model", "")).lower()
+
+
+@pytest.mark.parametrize("openai_used, resumed_models", [
+    (0.2, ["openai/gpt-sol"]),
+    (0.99, []),
+])
+def test_stale_execution_override_cannot_switch_plan_provider_or_bypass_its_gate(
+        tmp_path, monkeypatch, openai_used, resumed_models):
+    from tests.test_main import FakeSessions, cfg, deps, make_task
+
+    c = cfg(tmp_path)
+    # /run validated the old Claude spec snapshot. The plan started on
+    # Codex before the request persisted that now-stale choice.
+    wt = make_task(c, stage=Stage.PLAN, picks={
+        "spec": "anthropic/claude-opus-5", "plan": "openai/gpt-sol"})
+    (wt / ".agent" / "tickets").mkdir()
+    (wt / ".agent" / "tickets" / "01-bad.md").write_text("# tiny\n")
+    (wt / ".agent" / "stage.json").write_text(json.dumps({
+        "stage": "plan", "status": "done", "artifact": ".agent/tickets"}))
+    execution_overrides.save(c.state_dir, "portfolio_eval", 42,
+                             execution_overrides.ExecutionOverride(
+                                 model="anthropic/claude-opus-5", bypass_usage=True))
+    monkeypatch.setattr(main, "fetch_all", lambda cfg, **kw: {
+        "anthropic": session_usage(0.2),
+        "openai": session_usage(openai_used, provider="openai")})
+    sess = FakeSessions(alive={42})
+
+    main.run_pass(c, deps(sess=sess))
+
+    assert [r[2] for r in sess.resumed] == resumed_models
+    assert execution_overrides.load(c.state_dir, "portfolio_eval", 42) is None
+    dropped = [e for e in eventlog.read_tail(c.state_dir)
+               if e["event"] == "execution-override-dropped"]
+    assert len(dropped) == 1
+    assert dropped[0]["detail"] == (
+        "stage plan runs on openai; pick a model from openai")

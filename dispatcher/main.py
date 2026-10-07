@@ -148,6 +148,26 @@ def _with_second(cfg: Config, target: Target | None, launch: Launch,
     return replace(launch, second=second)
 
 
+def _execution_override_for(cfg: Config, task: TaskState,
+                            stage: Stage) -> execution_overrides.ExecutionOverride | None:
+    """Revalidate a saved choice against the stage actually about to launch.
+
+    The web's task snapshot can precede a stage transition. Drop an obsolete
+    cross-provider choice, including its bypass, before selecting a launch.
+    """
+    override = execution_overrides.load(cfg.state_dir, task.target, task.issue)
+    if override is None or not override.model:
+        return override
+    refusal = override_refusal(task.picks, stage.value, override.model)
+    if refusal:
+        execution_overrides.delete(cfg.state_dir, task.target, task.issue)
+        eventlog.append_event(cfg.state_dir, "execution-override-dropped",
+                              target=task.target, issue=task.issue,
+                              stage=stage.value, model=override.model, detail=refusal)
+        return None
+    return override
+
+
 def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
                    stage: Stage, admit: Admit,
                    order: Order) -> tuple[Launch | None, bool]:
@@ -155,7 +175,7 @@ def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
     operator override names the entry outright; otherwise the sticky pick or
     the track decides, and a denied launch is (None, bypass): nothing
     mutated, the signal persists, retried once headroom returns."""
-    override = execution_overrides.load(cfg.state_dir, task.target, task.issue)
+    override = _execution_override_for(cfg, task, stage)
     bypass = bool(override and override.bypass_usage)
     if override is not None and override.model:
         launch = Launch(stage, parse_entry(override.model, "override"))
