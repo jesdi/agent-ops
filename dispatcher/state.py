@@ -201,7 +201,8 @@ class TaskState:
     # of the accepted ticket set that routing reads, never the ticket files
     ticket_tracks: dict[int, str] = field(default_factory=dict)
     # File names of the accepted ticket set, in ticket order: its identity.
-    # Empty for a set accepted before the names were kept: nothing to compare.
+    # Empty for a set accepted before the names were kept: only the count
+    # can be compared.
     ticket_names: list[str] = field(default_factory=list)
     # A ticket is in progress although the task has no implement pick: only
     # a state from before picks existed, marked when it is read. Cleared

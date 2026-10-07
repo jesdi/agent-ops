@@ -40,9 +40,14 @@
     implement with no ticket started and the set's count, file names and ticket tracks)
     and "ticket done" (the pick is dropped; after the last ticket the next launch is
     review). The plan session is ended at acceptance, so it cannot change the set while
-    ticket 1 waits. The accepted file names are the identity of the set: a ticket starts
-    only when the file at its position still has the accepted name, and review only when
-    the whole list is the accepted one; otherwise the task parks for the operator. A state
+    ticket 1 waits. The accepted file names are the identity of the set; they come from
+    the one read of the directory that checked the set. A ticket is launched from the file
+    with its accepted name, never from a position; when that file was renamed or replaced
+    the task parks, and when it is gone the launch fails as a missing ticket. Review starts
+    only when the directory holds exactly the accepted names, on every path that starts it
+    (the drive loop, a wake, a crash resume). Nothing accepts a changed set: the task parks
+    again until the accepted files are back, or the operator cancels it. A set accepted
+    before the names were kept is checked by its count before review. A state
     file from before picks existed has a ticket in progress with no pick; the state read
     marks it (`ticket_without_pick`), and the mark is cleared when that ticket is done.
 - **The providers that ran tickets are recorded on the task.** One provider is added when a
@@ -85,7 +90,7 @@ file, and fields on the console's views.
 | `targets.yaml` → `ModelPolicy` | `pinned` | list of names; each a track of the same policy; no name twice; absent or empty = none; anything else fails the config load | which tracks the mode does not reorder, and their precedence |
 | ticket file `NN-slug.md` | `Track: <name>` line | optional; at most one; the name is a pinned track other than `security`; none at all when the task track is `security`; otherwise the ticket set is invalid | the ticket track |
 | `TaskState` | `ticket_tracks` | mapping of ticket number to track name; only tickets that name one; replaced as a whole each time a ticket set is accepted; empty for a task planned before this change | what the dispatcher and the console route from |
-| | `ticket_names` | file names of the accepted ticket set, in ticket order; empty for a set accepted before the names were kept (no check) | the identity of the accepted set |
+| | `ticket_names` | file names of the accepted ticket set, in ticket order; empty for a set accepted before the names were kept (then the count is checked before review) | the identity of the accepted set |
 | | `picks["implement"]` | present exactly while a ticket is in progress; dropped when the ticket is done | the pick of the ticket in progress (was: of the whole stage) |
 | | `picks["feedback"]` | set by the first address-review launch; never changed after | the one pick for every PR feedback round |
 | | `implement_providers` | list of provider names without repeats, in the order first used; a provider is added when a ticket's first session is launched | review avoids the single one, or none |

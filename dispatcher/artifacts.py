@@ -27,6 +27,7 @@ class CheckResult:
     count: int = 0   # tickets in a valid set
     # ticket number -> the track it names; only tickets that name one
     tracks: dict[int, str] = field(default_factory=dict)
+    names: tuple[str, ...] = ()   # file names of a valid set, in ticket order
 
 
 def _check(path: str | Path, patterns: list[str],
@@ -100,4 +101,5 @@ def check_tickets(tickets_dir: str | Path,
             return CheckResult(False, reason)
         if track:
             named[number] = track
-    return CheckResult(True, count=len(files), tracks=named)
+    return CheckResult(True, count=len(files), tracks=named,
+                       names=tuple(p.name for p in files))

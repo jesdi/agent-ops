@@ -83,7 +83,8 @@ def test_plan_done_hands_over_the_ticket_tracks(tmp_path):
     t = tickets(tmp_path, "", "Track: frontend")
     acts = next_actions(t, StageSignal("plan", "done"), True,
                         ticket_tracks=("architecture", "frontend"))
-    assert acts == [StartTicket(1, 2, {2: "frontend"}),
+    assert acts == [StartTicket(1, 2, {2: "frontend"},
+                                ("01-t1.md", "02-t2.md")),
                     Notify("implement_started", "2 ticket(s)")]
 
 

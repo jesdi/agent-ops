@@ -30,12 +30,13 @@ class StartTicket:
     complete (the accepted ticket set, or the ticket that is done), then
     asks for admission; when the launch is denied nothing else changes and
     the action comes again next pass. Cursor advance and session spawn
-    happen together. `count` and `tracks` describe the ticket set the plan
-    stage just had accepted and are read only then; between tickets the
-    task's own copy stands."""
+    happen together. `count`, `tracks` and `names` describe the ticket set
+    the plan stage just had accepted, all from the one read that checked it,
+    and are read only then; between tickets the task's own copy stands."""
     cursor: int
     count: int
     tracks: dict[int, str] = field(default_factory=dict)
+    names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -234,7 +235,7 @@ def _plan_done(task: TaskState, ticket_tracks: Collection[str]) -> list[object]:
         if task.plan_retries < PLAN_RETRY_LIMIT:
             return [RetryStage(Stage.PLAN, result.reason)]
         return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-    return [StartTicket(1, result.count, result.tracks),
+    return [StartTicket(1, result.count, result.tracks, result.names),
             Notify("implement_started", f"{result.count} ticket(s)")]
 
 

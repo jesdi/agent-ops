@@ -524,17 +524,30 @@ def _notify(deps: Deps, target: Target, task: TaskState, template: str,
                        target=target.name)
 
 
+def _ticket_file(task: TaskState, number: int) -> Path:
+    """The file of ticket `number`: the one with its accepted name
+    (TaskState.ticket_names), so that a file added, removed or renamed since
+    cannot put another file in its place; by sorted position for a set
+    accepted before the names were kept. Raises when it is not there."""
+    files = ticket_files(Path(task.worktree) / TICKETS_DIR)
+    if task.ticket_names:
+        files = [p for p in files
+                 if [p.name] == task.ticket_names[number - 1:number]]
+    else:
+        files = files[number - 1:number]
+    if not files:
+        raise RuntimeError(f"ticket {number} of {task.ticket_count} missing "
+                           f"under {task.worktree}/{TICKETS_DIR}")
+    return files[0]
+
+
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  launch: Launch, spec_path: str = "", ticket: int = 0) -> TaskState:
     stage, entry = launch.stage, launch.entry
     model = entry.model_id
     ticket_path = ""
     if ticket:
-        files = ticket_files(Path(task.worktree) / TICKETS_DIR)
-        if ticket > len(files):
-            raise RuntimeError(f"ticket {ticket} of {task.ticket_count} missing "
-                               f"under {task.worktree}/{TICKETS_DIR}")
-        ticket_path = str(files[ticket - 1].relative_to(task.worktree))
+        ticket_path = str(_ticket_file(task, ticket).relative_to(task.worktree))
     ctx = dict(
         issue_number=task.issue, issue_title=task.title,
         issue_url=_url(target, task.issue), repo=target.repo,
@@ -1173,9 +1186,8 @@ def _wake_launch(cfg: Config, deps: Deps, target: Target, task: TaskState,
     """The launch a woken task resumes on. None: it waits (its model's
     provider has no headroom; another task's may), or it went back to the
     operator, with the reason, because its next ticket cannot start."""
-    # A wake accepts a changed ticket set before review (the park said so),
-    # never a ticket that would run another file.
-    if launch_ticket(task) and _park_changed_tickets(cfg, deps, target, task):
+    if (_launch_needs_ticket_set(task)
+            and _park_changed_tickets(cfg, deps, target, task)):
         return None
     launch = _resume_launch(cfg, target, task, admit, order)
     if launch is None:
@@ -1449,7 +1461,7 @@ def _step_done(turn: _Turn, task: TaskState, act: object) -> TaskState:
         _end_session(turn.cfg, turn.deps, task.target, task.issue)
         done = replace(task, stage=Stage.IMPLEMENT, ticket_cursor=0,
                        ticket_count=act.count, ticket_tracks=dict(act.tracks),
-                       ticket_names=_ticket_names(task), updated_at=_now())
+                       ticket_names=list(act.names), updated_at=_now())
     if (done.stage is Stage.IMPLEMENT and done.ticket_count
             and _action_stage(act) in (Stage.IMPLEMENT, Stage.REVIEW)):
         done = _without_ticket_pick(done)
@@ -1458,48 +1470,61 @@ def _step_done(turn: _Turn, task: TaskState, act: object) -> TaskState:
     return done
 
 
-def _ticket_names(task: TaskState) -> list[str]:
-    return [p.name for p in ticket_files(Path(task.worktree) / TICKETS_DIR)]
+def _ticket_set_diff(task: TaskState,
+                     now: list[str]) -> tuple[list[str], list[str]]:
+    """(added, removed): how the file names in the tickets directory, `now`,
+    differ from the accepted set (TaskState.ticket_names). A set accepted
+    before its names were kept has only its count: the files past it were
+    added. A task from before tickets has no set."""
+    accepted = task.ticket_names
+    if not accepted:
+        return (now[task.ticket_count:] if task.ticket_count else []), []
+    return ([n for n in now if n not in accepted],
+            [n for n in accepted if n not in now])
 
 
-def _ticket_set_intact(task: TaskState, ticket: int) -> bool:
-    """The tickets directory still holds what the launch needs of the
-    accepted set (TaskState.ticket_names). Before ticket `ticket` starts:
-    the file at its position has the accepted name, because the prompt
-    selects the file, and the stored ticket track is read, by position. A
-    file missing there is _start_ticket's failure, not a change. Before
-    review (`ticket` 0): the whole list of names is the accepted one. A set
-    accepted before its names were kept is not compared."""
-    now, accepted = _ticket_names(task), task.ticket_names
-    if not accepted or now == accepted:
-        return True
-    return bool(ticket) and now[ticket - 1:ticket] in (
-        [], accepted[ticket - 1:ticket])
+def _ticket_renamed(task: TaskState, ticket: int, now: list[str]) -> bool:
+    """The accepted file of `ticket` is not in the directory, which still
+    holds as many files: it was renamed or replaced. With fewer files it is
+    missing, and that is the launch's own failure (_ticket_file)."""
+    name = task.ticket_names[ticket - 1:ticket]
+    return bool(name) and name[0] not in now and len(now) >= ticket
 
 
 def _park_changed_tickets(cfg: Config, deps: Deps, target: Target,
                           task: TaskState) -> bool:
-    """True when the task was parked instead of starting its next ticket or
-    entering review: someone added, removed or renamed a ticket file after
-    the plan stage. The ticket would run another file than the accepted one,
-    on that one's ticket track; review would start over tickets that were
-    never implemented."""
+    """True when the task was parked instead of launching: someone added,
+    removed or renamed a ticket file after the plan stage. A ticket launch
+    needs its own accepted file; review needs the whole accepted set, or it
+    would start over tickets that were never implemented. Nothing accepts a
+    changed set: the task parks again until the files are back."""
     ticket = launch_ticket(task)
-    if _ticket_set_intact(task, ticket):
+    now = [p.name for p in ticket_files(Path(task.worktree) / TICKETS_DIR)]
+    added, removed = _ticket_set_diff(task, now)
+    if not (_ticket_renamed(task, ticket, now) if ticket else added or removed):
         return False
-    now, accepted = _ticket_names(task), task.ticket_names
-    added = ", ".join(n for n in now if n not in accepted) or "none"
-    removed = ", ".join(n for n in accepted if n not in now) or "none"
-    then = (f"ticket {ticket:02d} is not started: restore the accepted file "
-            f"names, then wake the task" if ticket else
-            "restore the set or accept the change, then wake the task: it "
-            "enters review")
+    if not ticket:
+        what = "review is not started"
+    elif ticket_in_progress(task):
+        what = f"ticket {ticket:02d} is in progress and is not continued"
+    else:
+        what = f"ticket {ticket:02d} is not started"
     _park_for_input(
         cfg, deps, target, task,
-        f"the accepted ticket set has {len(accepted)} ticket(s), but "
-        f"{TICKETS_DIR} changed after the plan stage (added: {added}; "
-        f"removed: {removed}; a renamed file counts as both); {then}")
+        f"the accepted ticket set has {task.ticket_count} ticket(s), but "
+        f"{TICKETS_DIR} changed after the plan stage (added: "
+        f"{', '.join(added) or 'none'}; removed: {', '.join(removed) or 'none'}"
+        f"; a renamed file counts as both); {what}: restore the accepted "
+        f"files, then wake the task, or cancel the task")
     return True
+
+
+def _launch_needs_ticket_set(task: TaskState) -> bool:
+    """A woken task's next launch depends on the accepted ticket set: a
+    ticket, or a review that starts. Not a review session that is continued."""
+    return bool(launch_ticket(task)) or (
+        next_stage(task) == Stage.REVIEW.value
+        and (bool(task.crashed_stage) or task.stage is not Stage.REVIEW))
 
 
 def _park_unpinned_ticket(
@@ -1536,10 +1561,7 @@ def _start_ticket(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # effects (ending the previous session, advancing the cursor).
     # Missing file → raise now so _run_pass routes to _fail_task_crash
     # without having killed the old session or mutated state.
-    if number > len(ticket_files(Path(task.worktree) / TICKETS_DIR)):
-        raise RuntimeError(
-            f"ticket {number} of {task.ticket_count} missing "
-            f"under {task.worktree}/{TICKETS_DIR}")
+    _ticket_file(task, number)
     if task.ticket_cursor:
         # The session of the ticket before. With no ticket started yet the
         # plan session was ended when the set was accepted (_step_done).

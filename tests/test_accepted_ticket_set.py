@@ -16,7 +16,7 @@ from tests import webfakes
 from tests.pinned import (ASTRA, DENY_ARCHITECTURE, DENY_FRONTEND, FABLE,
                           IMPL_DONE, OPUS, PLAN_DONE, SOL, ahead, anthropic,
                           cards, deny, launched, legacy, make_cfg, openai,
-                          raw, rewrite, rig, saved, setup, step, task, unpinned,
+                          raw, resume_intent, rewrite, rig, saved, setup, step, task, unpinned,
                           usage_now, wake, write_ticket)
 from tests.test_main import (FakeNotifier, FakeSessions, deps, make_task,
                              valid_spec)
@@ -174,17 +174,132 @@ def test_a_renamed_ticket_file_parks_before_review(tmp_path, monkeypatch):
     assert t.park == PARK_HUMAN and t.stage is Stage.IMPLEMENT
     assert "added: 01-other.md" in t.park_note
     assert "removed: 01-t1.md" in t.park_note
-    assert [s[1] for s in wake(c).spawned] == ["review"]   # the wake accepts it
+    assert "review is not started" in t.park_note
 
 
-def test_a_set_accepted_before_its_names_were_kept_is_not_checked(
+def changed_before_review(tmp_path, monkeypatch):
+    """Both tickets done, one more file in the directory, parked for it."""
+    c, wt, _ = accepted(tmp_path, monkeypatch, admitted=True)
+    step(c, wt, IMPL_DONE)
+    write_ticket(wt, 3)
+    step(c, wt, IMPL_DONE)
+    assert saved(c).park == PARK_HUMAN
+    return c, wt
+
+
+def test_a_wake_does_not_accept_a_changed_set_before_review(
+        tmp_path, monkeypatch):
+    c, wt = changed_before_review(tmp_path, monkeypatch)
+    assert wake(c, park_note="").spawned == []
+    t = saved(c)
+    assert t.park == PARK_HUMAN and "added: 03-t3.md" in t.park_note
+    (tickets_dir(wt) / "03-t3.md").unlink()
+    assert [s[1] for s in wake(c).spawned] == ["review"]
+
+
+def test_a_crash_resume_does_not_start_review_over_a_changed_set(
+        tmp_path, monkeypatch):
+    c, wt = changed_before_review(tmp_path, monkeypatch)
+    save(c.state_dir, replace(saved(c), stage=Stage.FAILED, park="",
+                              park_note="", crashed_stage="review"))
+    assert resume_intent(c).spawned == []
+    t = saved(c)
+    assert t.park == PARK_HUMAN and "added: 03-t3.md" in t.park_note
+
+
+def test_a_wake_of_a_review_in_progress_is_not_checked(tmp_path, monkeypatch):
+    """Only a review that starts depends on the set; a parked review session
+    is continued."""
+    c, wt, _ = accepted(tmp_path, monkeypatch, admitted=True)
+    step(c, wt, IMPL_DONE)
+    step(c, wt, IMPL_DONE)
+    assert saved(c).stage is Stage.REVIEW
+    write_ticket(wt, 3)
+    assert len(wake(c).resumed) == 1
+
+
+def test_a_renamed_file_of_the_ticket_in_progress_parks_its_wake(
+        tmp_path, monkeypatch):
+    c, wt, _ = accepted(tmp_path, monkeypatch, admitted=True)
+    (tickets_dir(wt) / "01-t1.md").rename(tickets_dir(wt) / "01-other.md")
+    sess = wake(c)
+    assert sess.resumed == [] and sess.spawned == []
+    t = saved(c)
+    assert t.park == PARK_HUMAN
+    assert "ticket 01 is in progress" in t.park_note
+    assert "not started" not in t.park_note
+
+
+class OnEnd(FakeSessions):
+    """Runs `then` the first time a session is ended: the tickets directory
+    changes in the middle of a pass."""
+
+    def __init__(self, then, **kw):
+        super().__init__(**kw)
+        self.then = [then]
+
+    def end(self, target, issue):
+        super().end(target, issue)
+        if self.then:
+            self.then.pop()()
+
+
+def pass_with(c, wt, signal, then):
+    (wt / ".agent" / "stage.json").write_text(json.dumps(signal))
+    sess = OnEnd(then, alive={42})
+    main.run_pass(c, deps(sess=sess))
+    return sess
+
+
+def test_a_file_written_while_the_set_is_accepted_is_not_part_of_it(
+        tmp_path, monkeypatch):
+    """The plan session writes ticket 03 after the check read the directory
+    and before it is ended. The set that was checked is the accepted one:
+    two tickets, two names. Ticket 03 is not skipped in silence."""
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ()])
+    pass_with(c, wt, PLAN_DONE, lambda: write_ticket(wt, 3))
+    t = saved(c)
+    assert (t.ticket_count, t.ticket_names) == (2, ["01-t1.md", "02-t2.md"])
+    step(c, wt, IMPL_DONE)                          # ticket 2 runs
+    assert step(c, wt, IMPL_DONE).spawned == []     # no review
+    t = saved(c)
+    assert t.park == PARK_HUMAN and "added: 03-t3.md" in t.park_note
+
+
+def test_a_ticket_is_launched_from_its_accepted_file_not_its_position(
+        tmp_path, monkeypatch):
+    """A file that sorts first appears after the set was compared and before
+    the prompt is rendered: ticket 2 is still the accepted file 02."""
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), (), ()])
+    step(c, wt, PLAN_DONE)
+    sess = pass_with(c, wt, IMPL_DONE, lambda: write_ticket(wt, 0))
+    assert "02-t2.md" in sess.spawned[0][3]
+    assert "01-t1.md" not in sess.spawned[0][3]
+
+
+def test_an_accepted_file_that_goes_in_that_window_fails_the_ticket(
+        tmp_path, monkeypatch):
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), (), ()])
+    step(c, wt, PLAN_DONE)
+    sess = pass_with(c, wt, IMPL_DONE,
+                     lambda: (tickets_dir(wt) / "02-t2.md").unlink())
+    assert sess.spawned == []                       # not file 03 as ticket 2
+    assert saved(c).stage is Stage.FAILED
+
+
+def test_a_set_accepted_before_its_names_were_kept_is_checked_by_its_count(
         tmp_path, monkeypatch):
     c, wt, _ = accepted(tmp_path, monkeypatch, admitted=True)
     rewrite(c.state_dir, "portfolio_eval", "ticket_names")
     assert saved(c).ticket_names == []
     (tickets_dir(wt) / "02-t2.md").rename(tickets_dir(wt) / "02-other.md")
-    assert "02-other.md" in step(c, wt, IMPL_DONE).spawned[0][3]
-    assert [s[1] for s in step(c, wt, IMPL_DONE).spawned] == ["review"]
+    assert "02-other.md" in step(c, wt, IMPL_DONE).spawned[0][3]   # by position
+    write_ticket(wt, 3)
+    assert step(c, wt, IMPL_DONE).spawned == []
+    t = saved(c)
+    assert t.park == PARK_HUMAN and "added: 03-t3.md" in t.park_note
+    (tickets_dir(wt) / "03-t3.md").unlink()
+    assert [s[1] for s in wake(c).spawned] == ["review"]
 
 
 # --- 4: a turn that fails after it saved a stage with no session of its own -----
