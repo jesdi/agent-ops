@@ -45,19 +45,31 @@ export function RequestPanel({ target, issue }: { target: string; issue: number 
           </Link>
         </div>
       </header>
-      {kind === 'plan-approval' && artifacts.data && !spec?.github_url && (
-        <p className={`mb-3 ${banner.waiting}`}>
-          Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still open the review.'}
-        </p>
-      )}
-      {kind === 'plan-approval' && artifacts.isError && (
-        <p className="mb-3 text-sm text-waiting-fg">Could not load the GitHub spec link. Local review is still available.</p>
-      )}
+      {kind === 'plan-approval' && <SpecNotice artifacts={artifacts} published={!!spec?.github_url}
+        readable={content.kind === 'readable'} />}
       {/* A review page (text/html) is shown and answered on the review route only. */}
       {!(content.kind === 'readable' && content.media_type === 'text/html') && (
         <RequestContent content={content} boxed={kind !== 'plan-approval'} />
       )}
     </section>
+  )
+}
+
+/** Why the GitHub spec link is missing, when it is. */
+function SpecNotice({ artifacts, published, readable }: {
+  artifacts: ReturnType<typeof useTaskArtifacts>; published: boolean; readable: boolean
+}) {
+  return (
+    <>
+      {artifacts.data && !published && (
+        <p className={`mb-3 ${banner.waiting}`}>
+          Spec hasn’t been published to GitHub yet. {readable && 'You can still open the review.'}
+        </p>
+      )}
+      {artifacts.isError && (
+        <p className="mb-3 text-sm text-waiting-fg">Could not load the GitHub spec link. Local review is still available.</p>
+      )}
+    </>
   )
 }
 

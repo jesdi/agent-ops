@@ -180,34 +180,41 @@ def record(task: TaskState, intent: intents.Intent) -> str | None:
     return f"Answers in .agent/{name} ({submit}). {WAKE[submit]}" if submit else None
 
 
+def _superseded(group: list[intents.Intent],
+                task_for: Callable[[intents.Intent], TaskState | None]
+                ) -> list[intents.Intent]:
+    """The intents of one task's group that answer its open request and
+    lose to the one `select` picks. A task file that does not load leaves
+    the group to the drain, which fails each intent."""
+    try:
+        task = task_for(group[0])
+    except Exception:
+        return []
+    on_disk = disk_revision(task)
+    competing = [i for i in group if request_reason(task, i, on_disk) is None]
+    if not competing:
+        return []
+    win = select(competing, task.operator_request.fingerprint)
+    for i in competing:
+        if i is not win:
+            print(f"[info] intent {i.path.name} superseded by {win.path.name}",
+                  file=sys.stderr)
+    return [i for i in competing if i is not win]
+
+
 def without_superseded(pending: list[intents.Intent],
                        task_for: Callable[[intents.Intent], TaskState | None]
                        ) -> list[intents.Intent]:
     """Per task, only one answers intent of a pass that answers the open
     request is applied: the one `select` picks. The others that answer it
     are deleted unapplied; one that does not stays and drops with its
-    reason (a stale tab never costs a current answer). A task file that
-    does not load leaves its intents to the drain, which fails each."""
+    reason (a stale tab never costs a current answer)."""
     groups: dict[tuple[str, int], list[intents.Intent]] = {}
     for i in pending:
         if i.action == "answers":
             groups.setdefault((i.target, i.issue), []).append(i)
-    losers: dict[Path, intents.Intent] = {}
-    for group in groups.values():
-        try:
-            task = task_for(group[0])
-        except Exception:
-            continue
-        on_disk = disk_revision(task)
-        competing = [i for i in group if request_reason(task, i, on_disk) is None]
-        if not competing:
-            continue
-        win = select(competing, task.operator_request.fingerprint)
-        for i in competing:
-            if i is not win:
-                print(f"[info] intent {i.path.name} superseded by {win.path.name}",
-                      file=sys.stderr)
-                losers[i.path] = i
-    for i in losers.values():
-        intents.delete_intent(i)
+    losers = {i.path for g in groups.values() for i in _superseded(g, task_for)}
+    for i in pending:
+        if i.path in losers:
+            intents.delete_intent(i)
     return [i for i in pending if i.path not in losers]
