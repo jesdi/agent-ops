@@ -865,7 +865,7 @@ def test_every_machine_action_has_a_drive_handler():
 
 
 SPEC_PATH = "specs/2026-10-12-x/spec.md"
-PLAN_SUMMARY = ".agent/plan-review.md"
+PLAN_SUMMARY = ".agent/review.html"
 SPEC_URL = ("https://github.com/jesdi/portfolio_eval/tree/agent/task-42/"
             "specs/2026-10-12-x")
 
@@ -956,8 +956,8 @@ def test_gate_entry_arms_the_request_and_keeps_spec_path_and_track(tmp_path, mon
     assert t.track == "deep"
 
 
-@pytest.mark.parametrize("artifact", ["", "../outside.md", "/etc/passwd"])
-def test_gate_request_falls_back_to_the_summary_path_on_an_unusable_artifact(
+@pytest.mark.parametrize("artifact", ["../outside.md", "/etc/passwd"])
+def test_gate_bounces_an_unusable_artifact_instead_of_the_default_page(
         tmp_path, monkeypatch, artifact):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -968,7 +968,7 @@ def test_gate_request_falls_back_to_the_summary_path_on_an_unusable_artifact(
                         lambda **kw: spec_publish.PublishResult(url=SPEC_URL))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
+    assert t.stage is Stage.PLAN and t.operator_request is None and t.plan_retries == 1
 
 
 def test_repeated_awaiting_review_preserves_grace_and_request(tmp_path, monkeypatch):
@@ -1043,7 +1043,7 @@ def test_plan_format_failure_retries_in_session_then_fails(tmp_path, monkeypatch
     (wt / ".agent" / "tickets" / "01-bad.md").write_text("# tiny\n")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "awaiting-review", "note": "",
-         "artifact": ".agent/plan-review.md"}))
+         "artifact": ".agent/review.html"}))
     save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
                                 stage=Stage.PLAN, slot=0, worktree=str(wt),
                                 branch="agent/task-42", title="t",
@@ -1064,7 +1064,7 @@ def test_plan_format_failure_retries_in_session_then_fails(tmp_path, monkeypatch
     # Session reports ready again but the tickets are still malformed → retry exhausted.
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "awaiting-review", "note": "",
-         "artifact": ".agent/plan-review.md"}))
+         "artifact": ".agent/review.html"}))
     d2 = deps(sess=FakeSessions(alive={42}))
     main.run_pass(c, d2)
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
@@ -2942,17 +2942,17 @@ def test_injection_logs_a_distinct_event(tmp_path, monkeypatch):
 
 # A task that waits at the gate has its request armed; only then does the
 # grace clock run.
-ARMED = PlanApprovalRequest(".agent/plan-review.md")
+ARMED = PlanApprovalRequest(".agent/review.html")
 
 
-def gate_signal(wt: Path, artifact: str = ".agent/plan-review.md") -> None:
+def gate_signal(wt: Path, artifact: str = ".agent/review.html") -> None:
     """The plan session's 'plan ready, review it' signal."""
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "awaiting-review", "note": "plan ready",
          "artifact": artifact}))
 
 
-def arm_gate(c, issue: int = 42, artifact: str = ".agent/plan-review.md") -> None:
+def arm_gate(c, issue: int = 42, artifact: str = ".agent/review.html") -> None:
     """Bind the task's request to the plan that is on disk now, as the pass
     that armed it did: call it after the tickets and the summary are written."""
     t = load(c.state_dir, "portfolio_eval", issue)
@@ -3074,16 +3074,16 @@ def test_grace_expiry_park_preserves_plan_approval_request(tmp_path, monkeypatch
                         lambda **kw: spec_publish.PublishResult(url="https://example.com/spec"))
     c = cfg(tmp_path)
     wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW,
-                   operator_request=PlanApprovalRequest(".agent/plan-review.md"),
+                   operator_request=PlanApprovalRequest(".agent/review.html"),
                    spec_path="docs/specs/x-design.md")
-    (wt / ".agent" / "plan-review.md").write_text("# Plan review\n\nApprove me.")
+    (wt / ".agent" / "review.html").write_text("<meta name=\"agent-ops-review\" content=\"1\">Approve me.")
     write_tickets(wt, 2)
     gate_signal(wt)  # status=awaiting-review, grace already elapsed → ParkForReview
     arm_gate(c)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_REVIEW
-    assert t.operator_request == PlanApprovalRequest(".agent/plan-review.md"), "operator_request must survive park"
+    assert t.operator_request == PlanApprovalRequest(".agent/review.html"), "operator_request must survive park"
     assert t.spec_path == "docs/specs/x-design.md", "spec_path must survive park"
     # GET /request must serve the plan-approval body (the summary the request names)
     sources = Sources(c, sessions=None, github=None)
@@ -3093,8 +3093,8 @@ def test_grace_expiry_park_preserves_plan_approval_request(tmp_path, monkeypatch
     body = response.json()
     assert body["kind"] == "plan-approval"
     assert body["content"]["kind"] == "readable"
-    assert body["content"]["path"] == ".agent/plan-review.md"
-    assert body["content"]["text"] == "# Plan review\n\nApprove me."
+    assert body["content"]["path"] == ".agent/review.html"
+    assert body["content"]["text"] == "<meta name=\"agent-ops-review\" content=\"1\">Approve me."
 
 
 def test_woken_gate_parked_task_gets_a_fresh_slot(tmp_path, monkeypatch):
@@ -4492,8 +4492,14 @@ GOOD_TICKET = ("# 01 — thing\n\n**What to build:** " + ("behaviour " * 30)
                + "\n\n**Blocked by:** None\n\n- [ ] It works end to end\n")
 
 
-def write_tickets(wt, n):
+REVIEW_PAGE_STUB = '<meta name="agent-ops-review" content="1">'
+
+
+def write_tickets(wt, n, page=True):
+    """n valid tickets, and a review page (the gate wants both) unless one is there."""
     d = wt / ".agent" / "tickets"; d.mkdir(parents=True, exist_ok=True)
+    if page and not (wt / ".agent" / "review.html").exists():
+        (wt / ".agent" / "review.html").write_text(REVIEW_PAGE_STUB)
     for i in range(1, n + 1):
         (d / f"{i:02d}-t{i}.md").write_text(GOOD_TICKET)
 
@@ -4922,7 +4928,7 @@ def test_successful_pr_open_resume_clears_operator_request(tmp_path, monkeypatch
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    req = PlanApprovalRequest(".agent/plan-review.md")
+    req = PlanApprovalRequest(".agent/review.html")
     make_task(c, stage=Stage.PR_OPEN, slot=NO_SLOT, park=PARK_WAKE,
               operator_request=req, spec_path="docs/spec.md")
     sess = FakeSessions()
@@ -4958,7 +4964,7 @@ def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_PLAN_REVIEW, "stage must stay unchanged"
-    assert t.operator_request == PlanApprovalRequest(".agent/plan-review.md"), "must re-arm approval"
+    assert t.operator_request == PlanApprovalRequest(".agent/review.html"), "must re-arm approval"
     assert t.spec_path == "specs/x/spec.md", "spec_path must NOT become the summary path"
     # GET /request must return plan-approval once re-armed
     sources = Sources(c, sessions=None, github=None)
@@ -4977,7 +4983,7 @@ def test_ordinary_blocked_park_clears_stale_operator_request(tmp_path):
     """Slice 13: _park_for_input(is_answers=False) clears a stale operator_request.
     spec_path and counters must be preserved."""
     c = cfg(tmp_path)
-    stale_req = PlanApprovalRequest(".agent/plan-review.md")
+    stale_req = PlanApprovalRequest(".agent/review.html")
     wt = make_task(c, stage=Stage.IMPLEMENT,
                    operator_request=stale_req,
                    spec_path="docs/specs/design.md",
@@ -5024,7 +5030,7 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
     while preserving spec_path."""
     c = cfg(tmp_path)
     wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW,
-                   operator_request=PlanApprovalRequest(".agent/plan-review.md"),
+                   operator_request=PlanApprovalRequest(".agent/review.html"),
                    spec_path="docs/specs/design.md")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
@@ -5044,7 +5050,7 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
 def test_failed_transition_clears_operator_request(tmp_path):
     """Slice 15a: kill intent → FAILED clears operator_request; spec_path preserved."""
     c = cfg(tmp_path)
-    make_task(c, issue=42, operator_request=PlanApprovalRequest(".agent/plan-review.md"),
+    make_task(c, issue=42, operator_request=PlanApprovalRequest(".agent/review.html"),
               spec_path="docs/specs/design.md")
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
     main._apply_intents(c, deps(sess=FakeSessions(alive={42})))
@@ -5097,7 +5103,7 @@ def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_teardown(monkeypatch)
     c = cfg(tmp_path)
-    pr_open_task(c, operator_request=PlanApprovalRequest(".agent/plan-review.md"),
+    pr_open_task(c, operator_request=PlanApprovalRequest(".agent/review.html"),
                  spec_path="docs/specs/design.md")
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(state="MERGED",
@@ -5126,7 +5132,7 @@ def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
 def test_ci_park_clears_operator_request(tmp_path):
     """Slice 15d: _park_for_ci clears operator_request; spec_path + ci_run_id preserved."""
     c = cfg(tmp_path)
-    wt = make_task(c, issue=42, operator_request=PlanApprovalRequest(".agent/plan-review.md"),
+    wt = make_task(c, issue=42, operator_request=PlanApprovalRequest(".agent/review.html"),
                    spec_path="docs/specs/design.md",
                    review_rounds=1, gate_rounds=0, e2e_rounds=0, ci_rounds=2)
     task = load(c.state_dir, "portfolio_eval", 42)
@@ -5157,7 +5163,7 @@ def test_login_park_clears_operator_request(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     make_task(c, stage=Stage.SPEC,
-              operator_request=PlanApprovalRequest(".agent/plan-review.md"),
+              operator_request=PlanApprovalRequest(".agent/review.html"),
               spec_path="docs/specs/design.md")
     sess = FakeSessions(alive=[42], idle={42: 999999.0}, tail=LOGIN_TAIL)
     d = deps(sess=sess)
@@ -5188,7 +5194,7 @@ def test_pr_closed_failed_clears_operator_request(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_teardown(monkeypatch)
     c = cfg(tmp_path)
-    pr_open_task(c, operator_request=PlanApprovalRequest(".agent/plan-review.md"),
+    pr_open_task(c, operator_request=PlanApprovalRequest(".agent/review.html"),
                  spec_path="docs/specs/design.md")
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(state="CLOSED")
@@ -5224,7 +5230,7 @@ def test_fail_task_crash_clears_operator_request(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
-              operator_request=PlanApprovalRequest(".agent/plan-review.md"),
+              operator_request=PlanApprovalRequest(".agent/review.html"),
               spec_path="docs/specs/design.md")
     main.run_pass(c, deps(FakeGitHub(), FakeSessions(spawn_raises=[42])))
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -5854,7 +5860,7 @@ def test_denied_retry_does_not_leave_the_changed_tickets_armed(tmp_path, monkeyp
 def _armed_gate(c, sess, monkeypatch):
     """A task that reached the gate through a pass: summary on disk, armed."""
     wt = _plan_ready_task(c)
-    (wt / PLAN_SUMMARY).write_text("# Plan review\n\nfirst plan\n")
+    (wt / PLAN_SUMMARY).write_text("<meta name=\"agent-ops-review\" content=\"1\">first plan")
     _gate_pass(c, sess, monkeypatch)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.AWAITING_PLAN_REVIEW and t.operator_request.fingerprint
@@ -5864,12 +5870,12 @@ def _armed_gate(c, sess, monkeypatch):
 def _rework_between_passes(wt, name):
     """What `name` selects changes with no `working` signal that a pass sees."""
     if name == "summary":
-        (wt / PLAN_SUMMARY).write_text("# Plan review\n\nsecond plan\n")
+        (wt / PLAN_SUMMARY).write_text("<meta name=\"agent-ops-review\" content=\"1\">second plan")
     elif name == "ticket":
         ticket = wt / ".agent" / "tickets" / "02-t2.md"
         ticket.write_text(ticket.read_text() + "\n- [ ] one more criterion\n")
     else:
-        (wt / ".agent" / "plan-v2.md").write_text("# Plan review\n\nsecond plan\n")
+        (wt / ".agent" / "plan-v2.md").write_text("<meta name=\"agent-ops-review\" content=\"1\">second plan")
     gate_signal(wt, ".agent/plan-v2.md" if name == "path" else PLAN_SUMMARY)
 
 
@@ -5930,7 +5936,7 @@ def test_plan_that_changes_every_pass_gets_two_new_rounds_then_parks(tmp_path, m
     for n in range(8):
         if load(c.state_dir, "portfolio_eval", 42).park:
             break
-        (wt / PLAN_SUMMARY).write_text(f"# Plan review\n\nplan {n}\n")
+        (wt / PLAN_SUMMARY).write_text(f"<meta name=\"agent-ops-review\" content=\"1\">plan {n}")
         _gate_pass(c, sess, monkeypatch, notifier=notifier)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert notifier.sent == ["awaiting_plan_review"] * 2 + ["plan_parked"]
@@ -6101,9 +6107,9 @@ def _plant_symlinked_ticket(wt, tmp_path):
 
 
 def _plant_symlinked_summary(wt, tmp_path):
-    (tmp_path / "outside-summary.md").write_text((wt / PLAN_SUMMARY).read_text())
+    (tmp_path / "outside-page.html").write_text((wt / PLAN_SUMMARY).read_text())
     (wt / PLAN_SUMMARY).unlink()
-    (wt / PLAN_SUMMARY).symlink_to(tmp_path / "outside-summary.md")
+    (wt / PLAN_SUMMARY).symlink_to(tmp_path / "outside-page.html")
 
 
 @pytest.mark.parametrize("plant", [_plant_fifo_summary, _plant_fifo_ticket,
@@ -6137,7 +6143,7 @@ def test_plan_file_that_cannot_be_read_this_pass_does_not_fail_the_task(
     real, calls = artifacts.read_regular, []
 
     def once(path, max_bytes):
-        if str(path).endswith("plan-review.md") and not calls:
+        if str(path).endswith("review.html") and not calls:
             calls.append(path)
             raise FileNotFoundError(path)
         return real(path, max_bytes)
@@ -6153,7 +6159,7 @@ def _armed_gate_with_spec_folder(c, sess, monkeypatch):
     folder.mkdir(parents=True)
     for name in ("proposal.md", "spec.md", "design.md"):
         (folder / name).write_text(f"# {name}\n\nfirst\n")
-    (wt / PLAN_SUMMARY).write_text("# Plan review\n\nfirst plan\n")
+    (wt / PLAN_SUMMARY).write_text("<meta name=\"agent-ops-review\" content=\"1\">first plan")
     _gate_pass(c, sess, monkeypatch)
     return wt, folder
 
@@ -6196,11 +6202,11 @@ def test_same_summary_bytes_at_another_path_is_a_new_review_round(tmp_path, monk
     c = cfg(tmp_path)
     sess = FakeSessions(alive={42})
     wt = _armed_gate(c, sess, monkeypatch)
-    other = wt / ".agent" / "v2" / "plan-review.md"
+    other = wt / ".agent" / "v2" / "review.html"
     other.parent.mkdir()
     other.write_bytes((wt / PLAN_SUMMARY).read_bytes())
-    gate_signal(wt, ".agent/v2/plan-review.md")
+    gate_signal(wt, ".agent/v2/review.html")
     d = _gate_pass(c, sess, monkeypatch)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert d.notifier.sent == ["awaiting_plan_review"]
-    assert t.operator_request.path == ".agent/v2/plan-review.md"
+    assert t.operator_request.path == ".agent/v2/review.html"

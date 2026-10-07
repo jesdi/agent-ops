@@ -27,17 +27,19 @@ ISSUE = 415
 BRANCH = "agent/415-export-label"
 FOLDER = "specs/2026-10-13-export-label"
 SPEC = f"{FOLDER}/spec.md"
-SUMMARY = ".agent/plan-review.md"
+SUMMARY = ".agent/review.html"
 GATE = "awaiting-plan-review"
 TITLE = "Fix a typo in the export button label"
 
-NONE_SUMMARY = ("# Plan review: Fix a typo\n\n## Tickets\n\n- 01 Fix label, "
-                "blocked by none, seam ExportButton\n\n## Open questions\n\n"
-                "None.\n\n## Corrections\n\nNone.\n")
-ONE_SUMMARY = NONE_SUMMARY.replace(
-    "None.\n\n## Corrections",
-    "- Which label wording? Recommend \"Export CSV\": it matches the menu.\n\n"
-    "## Corrections")
+def _page(questions):
+    """A review page with the template marker and `questions` question blocks."""
+    blocks = "".join(f'<div class="q" data-q="q{i}"></div>' for i in range(questions))
+    return ('<!doctype html><meta name="agent-ops-review" content="1">'
+            f"<title>Plan review: Fix a typo</title>{blocks}")
+
+
+NONE_SUMMARY = _page(0)
+ONE_SUMMARY = _page(1)
 assert NONE_SUMMARY != ONE_SUMMARY
 
 
@@ -87,7 +89,7 @@ def _task_at_ready(c, tmp_path, *, track="trivial", tickets=1, summary=NONE_SUMM
     (f / "proposal.md").write_text("# Proposal\n\n" + "w " * 400)
     (f / "spec.md").write_text("# Label: Spec\n\n" + "x " * 400)
     (f / "design.md").write_text("# Label: Design\n\n" + "d " * 400)
-    write_tickets(wt, tickets)
+    write_tickets(wt, tickets, page=False)
     if summary is not None:
         (wt / SUMMARY).write_text(summary)
     origin = tmp_path / "origin.git"
@@ -175,7 +177,7 @@ def test_bad_open_question_count_waits(tmp_path, monkeypatch, count):
     _wait_case(tmp_path, monkeypatch, report={"open_questions": count})
 
 
-# 6. The count is cross-checked against the summary.
+# 6. The count is cross-checked against the page.
 def test_zero_reported_but_summary_lists_one_question_waits(tmp_path, monkeypatch):
     _wait_case(tmp_path, monkeypatch, summary=ONE_SUMMARY,
                report={"open_questions": 0})
@@ -186,7 +188,7 @@ def test_one_reported_but_summary_says_none_waits(tmp_path, monkeypatch):
                report={"open_questions": 1})
 
 
-def test_missing_summary_file_waits(tmp_path, monkeypatch):
+def test_missing_review_page_waits(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _task_at_ready(c, tmp_path, summary=None)
     d = _pass(c, sess)

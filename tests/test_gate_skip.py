@@ -9,12 +9,12 @@ import pytest
 import dispatcher.main as main
 from dispatcher import intents as intents_mod
 from dispatcher import spec_publish
-from dispatcher.artifacts import SUMMARY_MAX_BYTES, count_open_questions
+from dispatcher.artifacts import REVIEW_PAGE_MARKER, REVIEW_PAGE_MAX_BYTES, count_open_questions
 from dispatcher.machine import SetTaskStage, SpawnStage, next_actions
 from dispatcher.state import Stage, StageSignal, TaskState, read_stage_signal, save
 
 from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
-                                             NONE_SUMMARY, ONE_SUMMARY, SUMMARY,
+                                             NONE_SUMMARY, ONE_SUMMARY, SUMMARY, _page,
                                              _assert_waits, _git, _implements,
                                              _pass, _ready, _setup, _task,
                                              _task_at_ready, _wait_case)
@@ -90,36 +90,11 @@ def test_gate_free_task_that_waited_starts_implement_on_approval(tmp_path, monke
     assert [s[0] for s in _implements(sess)] == [ISSUE]
 
 
-def _summary(section):
-    return f"# Plan review\n\n## Tickets\n\n- 01 A\n\n{section}\n## Corrections\n\nNone.\n"
-
-
-@pytest.mark.parametrize("section, count", [
-    ("## Open questions\n\nNone.\n", 0),
-    ("## Open questions\n\n- One? Recommend a.\n", 1),
-    ("## Open questions\n\n- One?\n  Recommend a: reason.\n\n- Two?\n", 2),
-    ("## Open questions\n\n1. One?\n2. Two?\n3. Three?\n", 3),
-    ("", None),                                              # no section
-    ("## Open questions\n\n", None),                         # empty section
-    ("## Open questions\n\nNone\n", None),                   # not the prescribed word
-    ("## Open questions\n\nNone.\n\nBut see ticket 02.\n", None),
-    ("## Open questions\n\nWhich wording?\n", None),         # prose, no list
-    ("## Open questions\n\n- One?\n\n### More\n\n- Two?\n", None),
-    ("## Open questions\n\nNone.\n\n## Open questions\n\n- One?\n", None),
-], ids=["none", "one", "two-with-continuation", "numbered", "no-section",
-        "empty", "none-without-period", "none-plus-prose", "prose",
-        "sub-heading", "two-sections"])
-def test_count_open_questions(tmp_path, section, count):
-    p = tmp_path / "plan-review.md"
-    p.write_text(_summary(section))
-    assert count_open_questions(p) == count
-
-
-def test_count_open_questions_of_an_unreadable_summary_is_unknown(tmp_path):
-    assert count_open_questions(tmp_path / "missing.md") is None
+def test_count_open_questions_of_an_unreadable_page_is_unknown(tmp_path):
+    assert count_open_questions(tmp_path / "missing.html") is None
     assert count_open_questions(tmp_path) is None            # a directory
-    (tmp_path / "bin.md").write_bytes(b"\xff\xfe## Open questions\n\nNone.\n")
-    assert count_open_questions(tmp_path / "bin.md") is None
+    (tmp_path / "bin.html").write_bytes(b"\xff\xfe" + REVIEW_PAGE_MARKER.encode())
+    assert count_open_questions(tmp_path / "bin.html") == 0  # the marker still shows
 
 
 @pytest.mark.parametrize("raw, parsed", [(0, 0), (3, 3), (-1, None), ("0", None),
@@ -174,12 +149,19 @@ def test_count_is_checked_against_the_summary_the_operator_would_see(tmp_path, m
     _assert_no_implement(c, sess)
 
 
-@pytest.mark.parametrize("artifact", ["", "specs", "/nonexistent/plan-review.md"])
-def test_ready_report_without_the_summary_as_artifact_waits(tmp_path, monkeypatch, artifact):
+def test_ready_report_without_an_artifact_waits_with_the_review_page(tmp_path, monkeypatch):
+    c = _setup(tmp_path, monkeypatch)
+    wt, sess = _task_at_ready(c, tmp_path, report={"artifact": ""})
+    _pass(c, sess)
+    _assert_no_implement(c, sess)
+
+
+@pytest.mark.parametrize("artifact", ["specs", "/nonexistent/review.html"])
+def test_ready_report_with_another_artifact_is_bounced(tmp_path, monkeypatch, artifact):
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _task_at_ready(c, tmp_path, report={"artifact": artifact})
     _pass(c, sess)
-    _assert_no_implement(c, sess)
+    assert _task(c).stage is Stage.PLAN and _implements(sess) == []
 
 
 def test_questionnaire_raised_by_the_plan_session_counts(tmp_path, monkeypatch):
@@ -235,32 +217,35 @@ def test_summary_is_not_read_when_another_condition_already_fails(tmp_path, monk
     _wait_case(tmp_path, monkeypatch, track="standard")
 
 
-def test_summary_above_the_size_cap_cannot_be_counted(tmp_path):
-    p = tmp_path / "plan-review.md"
-    pad = "- 01 " + "x" * SUMMARY_MAX_BYTES + "\n"
-    p.write_text(NONE_SUMMARY.replace("- 01 Fix label", pad + "- 01 Fix label"))
+def test_page_above_the_size_cap_cannot_be_counted(tmp_path):
+    p = tmp_path / "review.html"
+    p.write_text(NONE_SUMMARY + "x" * REVIEW_PAGE_MAX_BYTES)
     assert count_open_questions(p) is None
-    p.write_text(NONE_SUMMARY)
-    assert count_open_questions(p) == 0
+    p.write_text(NONE_SUMMARY + "x" * (REVIEW_PAGE_MAX_BYTES - len(NONE_SUMMARY)))
+    assert p.stat().st_size == REVIEW_PAGE_MAX_BYTES and count_open_questions(p) == 0
 
 
-def test_long_question_list_is_counted(tmp_path):
-    p = tmp_path / "plan-review.md"
-    p.write_text(_summary("## Open questions\n\n" + "- q?\n" * 20000))
-    assert count_open_questions(p) == 20000
+def test_every_question_block_is_counted(tmp_path):
+    p = tmp_path / "review.html"
+    p.write_text(_page(2000))
+    assert count_open_questions(p) == 2000
 
 
-@pytest.mark.parametrize("text", [
-    NONE_SUMMARY.replace("## Corrections", "## Notes"),
-    NONE_SUMMARY + "\n## Appendix\n\n- One more thing?\n",
-    NONE_SUMMARY.replace("## Tickets", "## Open questions\n\n- Hidden?\n\n## Tickets"),
-    NONE_SUMMARY.replace("## Corrections\n\nNone.", "## Corrections\n\nNone.\n\n# Second title"),
-    NONE_SUMMARY.replace("## Tickets", "## Corrections").replace(
-        "None.\n\n## Corrections", "None.\n\n## Tickets"),
-], ids=["renamed", "extra-section", "extra-open-questions", "two-titles", "wrong-order"])
-def test_summary_with_other_headings_cannot_be_counted(tmp_path, text):
-    p = tmp_path / "plan-review.md"
-    p.write_text(text)
+@pytest.mark.parametrize("body, count", [
+    ('<div data-q="a"></div><div data-q="b-2"></div>', 2),
+    ('<div data-q=""></div>', 0),                 # no id
+    ('<div data-qx="a"></div>', 0),               # another attribute
+    ('<div data-q="A B"></div>', 0),              # not an id
+])
+def test_count_reads_the_question_ids_only(tmp_path, body, count):
+    p = tmp_path / "review.html"
+    p.write_text(REVIEW_PAGE_MARKER + body)
+    assert count_open_questions(p) == count
+
+
+def test_page_without_the_marker_cannot_be_counted(tmp_path):
+    p = tmp_path / "review.html"
+    p.write_text('<div data-q="a"></div>')
     assert count_open_questions(p) is None
 
 
@@ -286,66 +271,25 @@ def test_failed_implement_launch_on_the_skip_path_resumes_into_implement(
     assert not [n for n in d.notifier.sent + d2.notifier.sent if "review" in n]
 
 
-def test_summary_padded_after_its_last_section_is_above_the_cap(tmp_path):
-    """Read only up to the cap, such a summary would look complete: an extra
-    section behind the padding would never be seen."""
-    p = tmp_path / "plan-review.md"
-    p.write_text(NONE_SUMMARY + "x" * SUMMARY_MAX_BYTES + "\n## Appendix\n\n- One more?\n")
-    assert count_open_questions(p) is None
-    p.write_text(NONE_SUMMARY + "x" * (SUMMARY_MAX_BYTES - len(NONE_SUMMARY)))
-    assert p.stat().st_size == SUMMARY_MAX_BYTES and count_open_questions(p) == 0
-
-
-def test_fifo_or_symlink_as_the_summary_cannot_be_counted(tmp_path):
+def test_fifo_or_symlink_as_the_page_cannot_be_counted(tmp_path):
     import os
     import threading
-    fifo = tmp_path / "fifo.md"
+    fifo = tmp_path / "fifo.html"
     os.mkfifo(fifo)
     out = []
     th = threading.Thread(target=lambda: out.append(count_open_questions(fifo)), daemon=True)
     th.start()
     th.join(2)
     assert not th.is_alive() and out == [None]
-    (tmp_path / "real.md").write_text(NONE_SUMMARY)
-    (tmp_path / "link.md").symlink_to(tmp_path / "real.md")
-    assert count_open_questions(tmp_path / "link.md") is None
+    (tmp_path / "real.html").write_text(NONE_SUMMARY)
+    (tmp_path / "link.html").symlink_to(tmp_path / "real.html")
+    assert count_open_questions(tmp_path / "link.html") is None
 
 
 def test_nul_character_in_the_ready_reports_artifact_waits_at_the_gate(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _task_at_ready(c, tmp_path, report={"artifact": ".agent/plan\u0000.md"})
     _pass(c, sess)
-    _assert_no_implement(c, sess)
-    assert _task(c).operator_request.path == SUMMARY
+    assert _task(c).stage is Stage.PLAN and _implements(sess) == []
 
 
-@pytest.mark.parametrize("heading", [
-    " ## Open questions", "   ## Open questions", "##\tOpen questions", "##",
-    "Open questions\n--------------", "Open questions\n-", " # Second title",
-    "#\tSecond title", "Second title\n===", "Second title\n   ==="],
-    ids=["h2-one-space", "h2-three-spaces", "h2-tab", "h2-empty", "setext-h2",
-         "setext-h2-short", "h1-one-space", "h1-tab", "setext-h1", "setext-indented"])
-def test_summary_with_a_heading_in_another_form_cannot_be_counted(tmp_path, heading):
-    """Markdown reads each of these as a heading: a section written this way
-    would hide its entries from a count that only knows `## ` at column 0."""
-    p = tmp_path / "plan-review.md"
-    p.write_text(NONE_SUMMARY + f"\n{heading}\n\n- Hidden?\n")
-    assert count_open_questions(p) is None
-
-
-def test_summary_rule_line_and_indented_code_are_not_headings(tmp_path):
-    p = tmp_path / "plan-review.md"
-    p.write_text(NONE_SUMMARY.replace(
-        "- 01 Fix label", "- 01 Fix label\n\n---\n\n    ## not a heading\n\n- 02 More"))
-    assert count_open_questions(p) == 0
-
-
-def test_one_very_long_line_does_not_slow_the_count(tmp_path):
-    """A summary at the size limit that is one line is counted at once: the
-    heading patterns stay linear (a pass must never wait on a summary)."""
-    import time
-    p = tmp_path / "plan-review.md"
-    p.write_text(NONE_SUMMARY + "x " * ((SUMMARY_MAX_BYTES - len(NONE_SUMMARY)) // 2))
-    start = time.monotonic()
-    assert count_open_questions(p) == 0
-    assert time.monotonic() - start < 2

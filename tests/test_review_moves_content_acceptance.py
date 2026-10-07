@@ -56,7 +56,7 @@ def _spawns(sess, stage):
 def _implement_started(c):
     wt = make_task(c, issue=ISSUE, stage=Stage("awaiting-plan-review"),
                    spec_path=SPEC,
-                   operator_request=PlanApprovalRequest(".agent/plan-review.md"))
+                   operator_request=PlanApprovalRequest(".agent/review.html"))
     save(c.state_dir, dc_replace(_task(c), branch=BRANCH,
                                  title="Export a portfolio as CSV"))
     write_tickets(wt, 4)

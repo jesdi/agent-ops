@@ -113,10 +113,11 @@ def test_triage_prompt_lists_the_tracks_and_the_label_rule():
     assert "track:<name>" in out and "exactly one" in out
 
 
-def test_plan_prompt_summary_is_headings_and_lists_without_tables():
-    """The console shows the summary on a phone and renders no tables."""
+def test_plan_prompt_review_page_fills_the_content_slots_only():
+    """The page comes from the template: the session never edits its script."""
     out = " ".join(render_stage_prompt(Stage.PLAN, CTX).split())
-    assert "headings and lists" in out and "no tables" in out
+    assert "content slots only" in out and "never touch the script" in out
+    assert "no tables" not in out
 
 
 def test_plan_prompt_signals_working_before_it_applies_feedback():

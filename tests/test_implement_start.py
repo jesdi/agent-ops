@@ -9,7 +9,7 @@ from dispatcher.state import (PlanApprovalRequest, Stage, load, read_stage_signa
                               resumable_crash)
 from tests.test_main import FakeSessions, cfg, deps, make_task, patch_usage, write_tickets
 
-REQUEST = PlanApprovalRequest(".agent/plan-review.md")
+REQUEST = PlanApprovalRequest(".agent/review.html")
 
 
 def _approved(tmp_path, tickets=3, sessions=None, **task_fields):

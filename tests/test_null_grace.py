@@ -19,7 +19,7 @@ from tests.test_main import (FakeGitHub, FakeSessions, arm_gate, cfg, deps,
                              write_tickets)
 
 # A task that waits at the gate has its request armed.
-ARMED = PlanApprovalRequest(".agent/plan-review.md")
+ARMED = PlanApprovalRequest(".agent/review.html")
 
 
 def test_null_grace_never_parks_after_12_hours(tmp_path, monkeypatch):

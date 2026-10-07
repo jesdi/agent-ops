@@ -217,7 +217,7 @@ def test_artifact_publication_reuses_remote_snapshot(wt, monkeypatch):
 
 
 @pytest.mark.parametrize("artifact", [
-    ".agent/plan-review.md",          # would push the summary and the tickets
+    ".agent/review.html",          # would push the summary and the tickets
     ".agent/specs/x/spec.md",
     ".Agent/tickets/spec.md",         # the same folder on a case-insensitive disk
     "specs/spec.md",                  # would commit every spec under specs/

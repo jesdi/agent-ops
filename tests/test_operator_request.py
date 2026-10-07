@@ -14,7 +14,7 @@ from web.sources import Sources
 
 
 @pytest.mark.parametrize("park", ["", "awaiting-review"], ids=["live-gate", "parked-gate"])
-def test_plan_gate_exposes_the_summary_as_an_approval_request(tmp_path, park):
+def test_plan_gate_exposes_the_review_page_as_an_approval_request(tmp_path, park):
     cfg = make_config(tmp_path)
     wt = tmp_path / "worktree"
     spec = wt / "specs" / "2026-10-12-login" / "spec.md"
@@ -22,7 +22,7 @@ def test_plan_gate_exposes_the_summary_as_an_approval_request(tmp_path, park):
     spec.write_text("# Login redirect\n\nUse the staging host.")
     agent_dir = wt / ".agent"
     agent_dir.mkdir()
-    (agent_dir / "plan-review.md").write_text("# Plan review\n\n## Tickets\n")
+    (agent_dir / "review.html").write_text('<meta name="agent-ops-review" content="1">## Tickets')
     (tmp_path / "task-alpha-7.json").write_text(json.dumps({
         "issue": 7, "target": "alpha", "stage": "awaiting-plan-review",
         "slot": -1 if park else 0, "worktree": str(wt),
@@ -30,7 +30,7 @@ def test_plan_gate_exposes_the_summary_as_an_approval_request(tmp_path, park):
         "updated_at": "2026-09-08T10:00:00+00:00",
         "park": park, "spec_path": "specs/2026-10-12-login/spec.md",
         "operator_request": {"kind": "plan-approval",
-                             "path": ".agent/plan-review.md"},
+                             "path": ".agent/review.html"},
     }))
     # This read requires neither a running session nor a GitHub request.
     sources = Sources(cfg, sessions=None, github=None)
@@ -38,14 +38,14 @@ def test_plan_gate_exposes_the_summary_as_an_approval_request(tmp_path, park):
         response = client.get("/api/task/alpha/7/request", headers=HEADERS)
 
     assert response.status_code == 200, response.text
-    # the summary, never the spec the task also records
+    # the review page, never the spec the task also records
     assert response.json() == {
         "kind": "plan-approval",
         "content": {
             "kind": "readable",
-            "path": ".agent/plan-review.md",
-            "media_type": "text/markdown",
-            "text": "# Plan review\n\n## Tickets\n",
+            "path": ".agent/review.html",
+            "media_type": "text/html",
+            "text": '<meta name="agent-ops-review" content="1">## Tickets',
         },
     }
 
@@ -118,7 +118,7 @@ def test_plan_approval_missing_file_returns_200_unavailable(tmp_path):
         "updated_at": "2026-09-08T10:00:00+00:00",
         "park": "awaiting-review",
         "operator_request": {"kind": "plan-approval",
-                             "path": ".agent/plan-review.md"},
+                             "path": ".agent/review.html"},
     }))
     sources = Sources(cfg, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:

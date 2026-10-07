@@ -67,10 +67,13 @@ def _page_problem(page: str | Path) -> tuple[str, str]:
     that carries the template marker."""
     if not os.path.lexists(page):
         return "review page missing", ""
-    raw = read_regular(page, REVIEW_PAGE_MAX_BYTES + 1)
+    try:
+        raw = read_regular(page, PLAN_FILE_MAX_BYTES)
+    except OSError:   # the page went away between the check and the read
+        raw = None
     if raw is None:
         return ("review page is not a readable regular file "
-                "(a symlink, a pipe, or a directory)"), ""
+                "(a symlink, a pipe, a directory, or above 1 MiB)"), ""
     if len(raw) > REVIEW_PAGE_MAX_BYTES:
         return "review page exceeds 256 KiB", ""
     text = raw.decode("utf-8", errors="replace")
@@ -136,12 +139,13 @@ class PlanRevision(NamedTuple):
 
 
 def _page_path(root: Path, artifact: str) -> str | None:
-    """The artifact, worktree-relative; None when it leaves the worktree
-    (stage.json is model-written)."""
+    """The artifact, worktree-relative; the prescribed page for an empty one,
+    None when it leaves the worktree (stage.json is model-written)."""
     try:
-        return (root / artifact).resolve().relative_to(root.resolve()).as_posix()
+        rel = (root / artifact).resolve().relative_to(root.resolve()).as_posix()
     except (OSError, ValueError, RuntimeError):
         return None
+    return REVIEW_PAGE if rel == "." else rel
 
 
 def _spec_folder_files(root: Path, spec_path: str) -> list[Path] | None:
