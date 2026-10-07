@@ -1153,8 +1153,12 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
     for task in woken:
         target = targets[task.target]
         launch = _resume_launch(cfg, target, task, admit, order)
-        if launch is None or (not task.resume_bypass_usage
-                              and not admit(launch.model).admitted):
+        if launch is None:
+            # Nothing admitted: wait. A ticket track that is still not
+            # pinned: back to the operator, with the reason.
+            _park_unpinned_ticket(cfg, deps, target, task)
+            continue
+        if not task.resume_bypass_usage and not admit(launch.model).admitted:
             continue  # this model's provider has no headroom; others may
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
@@ -1483,18 +1487,20 @@ def _park_extra_tickets(turn: _Turn, task: TaskState, act: object) -> bool:
     return True
 
 
-def _park_unpinned_ticket(turn: _Turn, policy: ModelPolicy,
+def _park_unpinned_ticket(cfg: Config, deps: Deps, target: Target,
                           task: TaskState) -> None:
     """A ticket whose track is no longer pinned starts on no other list: the
-    task parks for the operator. Not while a one-shot override is pending:
-    that launch is the override's, whenever the gate admits it."""
+    task parks for the operator (again, when a wake finds it still not
+    pinned). Not while a one-shot override is pending: that launch is the
+    override's, whenever the gate admits it."""
+    policy = _policy(cfg, target)
     ticket = launch_ticket(task)
     track = task.ticket_tracks.get(ticket, "")
-    override = execution_overrides.load(turn.cfg.state_dir, task.target, task.issue)
+    override = execution_overrides.load(cfg.state_dir, task.target, task.issue)
     if not track or track in policy.pinned or (override and override.model):
         return
     _park_for_input(
-        turn.cfg, turn.deps, turn.target, task,
+        cfg, deps, target, task,
         f"ticket {ticket:02d} names track {track!r}, which is no longer a "
         f"pinned track (pinned: {list(policy.pinned)}); pin it again in "
         f"targets.yaml and wake the task, or resume the task with a model "
@@ -1779,7 +1785,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                 else _choose_launch(cfg, target, task, stage, admit, order))
         if stage is not None and launch is None:
             if isinstance(act, StartTicket):
-                _park_unpinned_ticket(turn, policy, task)
+                _park_unpinned_ticket(cfg, deps, target, task)
             return  # no launch: the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)

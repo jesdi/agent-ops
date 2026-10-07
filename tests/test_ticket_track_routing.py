@@ -13,7 +13,8 @@ from tests.pinned import (ASTRA, DENY_FRONTEND, FABLE, IMPL_DONE, OPUS,
                           PLAN_DONE, SOL, ahead, deny, launched, make_cfg,
                           policy, raw, rewrite, saved, setup, step, task,
                           unpinned, usage_now, wake, write_ticket)
-from tests.test_main import GOOD_TICKET, FakeSessions, deps, make_task
+from tests.test_main import (GOOD_TICKET, FakeNotifier, FakeSessions, deps,
+                             make_task)
 
 POLICY = policy()
 
@@ -195,18 +196,24 @@ def test_a_wake_with_a_model_uses_up_a_stored_one_shot_override(
     assert launched(step(c, wt, IMPL_DONE)) == [(ASTRA, "medium")]   # ticket 3
 
 
-def test_a_wake_of_a_ticket_whose_track_is_not_pinned_waits_for_the_pin(
+def test_a_wake_of_a_ticket_whose_track_is_still_not_pinned_parks_again(
         tmp_path, monkeypatch):
+    """The wake cannot start the ticket: the task goes back to the operator
+    with the reason, and does not stay "resuming" with no model and no word."""
     c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)])
     step(c, wt, PLAN_DONE)
     step(unpinned(c), wt, IMPL_DONE)
-    save(c.state_dir, replace(saved(c), park=PARK_WAKE))
-    sess = FakeSessions()
-    main.run_pass(unpinned(c), deps(sess=sess))
+    save(c.state_dir, replace(saved(c), park=PARK_WAKE, park_note=""))
+    sess, notifier = FakeSessions(), FakeNotifier()
+    main.run_pass(unpinned(c), deps(sess=sess, notifier=notifier))
     assert sess.spawned == [] and sess.resumed == []
-    assert saved(c).park == PARK_WAKE
-    main.run_pass(c, deps(sess=sess))               # pinned again
-    assert launched(sess) == [(f"anthropic/{FABLE}", "medium")]
+    t = saved(c)
+    assert t.park == PARK_HUMAN and t.ticket_cursor == 1
+    assert "ticket 02" in t.park_note and "frontend" in t.park_note
+    assert notifier.sent == ["parked_question"]
+    main.run_pass(unpinned(c), deps(sess=sess, notifier=notifier))
+    assert notifier.sent == ["parked_question"]     # said once per wake
+    assert launched(wake(c)) == [(f"anthropic/{FABLE}", "medium")]  # pinned again
     assert saved(c).ticket_cursor == 2
 
 
