@@ -218,7 +218,7 @@ def test_override_must_match_the_picks_provider_once_the_stage_has_a_pick():
 
 def test_override_refusal_names_the_policy_stage_and_its_provider():
     assert override_refusal(FEEDBACK, "address-review", "openai/gpt-5-codex") == (
-        "stage implement runs on anthropic; pick a model from anthropic")
+        "PR feedback runs on anthropic; pick a model from anthropic")
     assert override_refusal(PICKS, "implement", "anthropic/claude-sonnet-5") == ""
     assert override_refusal(PICKS, "review", "openai/gpt-5-codex") == ""
 

@@ -117,7 +117,7 @@ def test_resume_on_a_parked_pr_open_task_is_checked_against_the_feedback_pick(
                     json={"model": "openai/gpt-5-codex"})
     assert r.status_code == 422
     assert r.json()["detail"] == (
-        "stage implement runs on anthropic; pick a model from anthropic")
+        "PR feedback runs on anthropic; pick a model from anthropic")
     assert fake.intents == []
 
 

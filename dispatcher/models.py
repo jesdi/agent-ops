@@ -92,8 +92,9 @@ def override_refusal(picks: Mapping[str, str], stage: str, model_id: str) -> str
     fixed = pick_provider(picks, stage)
     if not fixed or split_model_id(model_id)[0] == fixed:
         return ""
-    return (f"stage {policy_stage(stage)} runs on {fixed}; "
-            f"pick a model from {fixed}")
+    what = ("PR feedback" if pick_key(stage) == FEEDBACK_PICK
+            else f"stage {policy_stage(stage)}")
+    return f"{what} runs on {fixed}; pick a model from {fixed}"
 
 
 def override_allowed(picks: Mapping[str, str], stage: str, model_id: str) -> bool:

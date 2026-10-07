@@ -3,7 +3,7 @@ out: the pick key of a stage, and the halves of the read-time migration that
 remove the pick, keep it, and change nothing on a second read."""
 import pytest
 
-from dispatcher.models import pick_key, stage_pick
+from dispatcher.models import override_refusal, pick_key, stage_pick
 from dispatcher.state import Stage, load, save
 from tests.pinned import old_shape
 
@@ -22,6 +22,16 @@ def test_address_review_reads_the_feedback_pick_only():
     assert stage_pick({"implement": SOL}, "address-review") == ""
     assert stage_pick({"feedback": FABLE, "implement": SOL},
                       "address-review") == FABLE
+
+
+def test_the_refusal_for_pr_feedback_names_pr_feedback():
+    """The feedback pick fixes the provider, not the implement stage: its
+    tickets may have run on another one."""
+    picks = {"feedback": FABLE, "implement": SOL}
+    assert override_refusal(picks, "address-review", "openai/gpt-sol") == (
+        "PR feedback runs on anthropic; pick a model from anthropic")
+    assert override_refusal(picks, "implement", "anthropic/claude-opus-5") == (
+        "stage implement runs on openai; pick a model from openai")
 
 
 def test_old_shape_at_review_drops_the_pick_and_keeps_the_provider(tmp_path):
