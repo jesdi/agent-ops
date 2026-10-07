@@ -91,7 +91,7 @@ def test_draft_writes_the_file_and_wakes_nothing(tmp_path, monkeypatch):
     _drain(c)
 
     assert _file(wt) == {"v": 1, "stage": "plan", "submitted": None,
-                         "submitted_at": None, "actor": "jesdi",
+                         "submitted_at": None, "actor": "jesdi", "revision": REV,
                          "answers": {"format": "a"}}
     assert intents.list_intents(c.state_dir) == []
     (e,) = _events(c, "intent-applied")
