@@ -165,7 +165,7 @@ class FakeSessions:
         self.spawn_calls = []
         self.resume_calls = []
         # Issues whose launch explodes the way a vanished worktree does:
-        # containers.clone_root reads <worktree>/.git to find the clone to
+        # the launcher checks <worktree>/.git before it builds the command to
         # mount, so a swept or half-removed checkout raises here.
         self.resume_raises = set(resume_raises)
         self.spawn_raises = set(spawn_raises)
@@ -1608,7 +1608,7 @@ def test_broken_worktree_fails_that_task_and_pass_survives(tmp_path, monkeypatch
     """A woken task whose worktree vanished must not take the pass with it.
 
     The box wedged this way for hours: task-194's checkout was gone, so
-    clone_root raised inside sessions.resume, guarded_pass re-raised, and
+    the launch raised inside sessions.resume, guarded_pass re-raised, and
     _resume_woken never reached the tasks behind it — no claims, no spawns,
     nothing, every pass, until a human looked."""
     patch_usage(monkeypatch)

@@ -378,7 +378,7 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
         _mark_provisioned(wt)
     if target.setup_cmd:
         _sh(containers.setup_cmd(f"task-{target.name}-{issue}-setup", wt,
-                                 target.setup_cmd),
+                                 target.setup_cmd, target.clone_path),
             cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
 
     write_worktree_file(wt, ".agent", "task.json", json.dumps(

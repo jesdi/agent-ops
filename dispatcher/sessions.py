@@ -18,7 +18,9 @@ import json
 import shlex
 import subprocess
 import time
+import os
 from pathlib import Path
+from typing import Mapping
 
 from dispatcher import containers, herdr, workspace
 from dispatcher.models import Entry
@@ -31,10 +33,10 @@ def session_name(target: str, issue: int) -> str:
 
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
-               second: Entry | None = None) -> str:
+               second: Entry | None = None, clone: str = "") -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  second=second)
+                                  second=second, clone=clone)
 
 
 class Sessions:
@@ -43,11 +45,16 @@ class Sessions:
     mutation and each capture before the server is asked."""
 
     def __init__(self, dry_run: bool = False, memory: str = "2g",
-                 cpus: str = "2", state_dir: str | Path | None = None):
+                 cpus: str = "2", state_dir: str | Path | None = None,
+                 clones: Mapping[str, str] | None = None):
         self.dry_run = dry_run
         self.memory = memory
         self.cpus = cpus
         self.state_dir = Path(state_dir) if state_dir else None
+        # target name -> its configured clone path: the only source of the
+        # clone a session's container mounts. Without an entry for a target
+        # nothing is launched for it.
+        self.clones = clones if clones is not None else {}
 
     def _tab(self, target: str, issue: int) -> herdr.Tab | None:
         return herdr.Tab.find(session_name(target, issue))
@@ -64,15 +71,24 @@ class Sessions:
     def _launch(self, target: str, issue: int, worktree: str, model: str,
                 args: str, effort: str = "",
                 second: Entry | None = None) -> None:
-        # Build the command FIRST: containers.clone_root reads
-        # <worktree>/.git and raises on a vanished worktree (the case
-        # _fail_task_crash exists for). Doing it before Tab.ensure means
-        # that raise leaves no workspace and no empty tab behind for a task
-        # that will never launch.
+        # The clone comes from the target's configuration, never from the
+        # worktree's `.git` pointer, which the session can rewrite.
+        clone = self.clones.get(target)
+        if not clone:
+            raise RuntimeError(f"no configured clone for target {target!r}: "
+                               f"nothing is launched for {session_name(target, issue)}")
+        # A checkout with no `.git` entry is gone or half-removed. Only its
+        # presence is checked: what it says is the session's to write.
+        if not os.path.lexists(Path(worktree) / ".git"):
+            raise FileNotFoundError(f"{worktree}/.git: not a git worktree (any more)")
+        # Build the command FIRST, and write into the worktree before
+        # Tab.ensure: a raise (a path the command cannot carry, a vanished
+        # worktree: the case _fail_task_crash exists for) then leaves no
+        # workspace and no empty tab behind for a task that will never launch.
         runtime = runtime_for(model)
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
                          model, args, effort=effort,
-                         second=second)
+                         second=second, clone=clone)
         workspace.install_stop_hook(worktree)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,

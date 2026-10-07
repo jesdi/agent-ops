@@ -37,7 +37,11 @@ class Runtime:
         return f"/usr/local/bin/{self.cli}"
 
     def launch(self, name: str, worktree: str, model: str, effort: str) -> str:
-        return f"{self.cli} {self.launch_args(name, worktree, model, effort)}"
+        """Interactive shell line; name, model and effort are shell-quoted
+        here, and launch_args quotes whatever it builds from the worktree."""
+        return (f"{self.cli} " + self.launch_args(
+            shlex.quote(name), worktree, shlex.quote(model),
+            shlex.quote(effort) if effort else ""))
 
     def headless(self, prompt: str, model: str, effort: str) -> str:
         """One-shot shell line; model and effort are shell-quoted here."""
@@ -105,8 +109,10 @@ CODEX = Runtime(
         f"--model {model}"
         f"{' -c model_reasoning_effort=' + effort if effort else ''}"
         " --dangerously-bypass-approvals-and-sandbox"
-        f" -c 'notify=[\"{worktree}/.agent/stop-hook.sh\"]'"
-        f" -c 'projects={{\"{worktree}\"={{trust_level=\"trusted\"}}}}'"),
+        # Each -c value is one shell word; containers refuses a worktree
+        # path with a quote or a backslash, which TOML could not carry.
+        " -c " + shlex.quote(f'notify=["{worktree}/.agent/stop-hook.sh"]')
+        + " -c " + shlex.quote(f'projects={{"{worktree}"={{trust_level="trusted"}}}}')),
     # The newest Codex session for the cwd; a stage never changes provider,
     # so that is the stage's.
     resume_args="resume --last",

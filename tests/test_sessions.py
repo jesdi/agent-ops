@@ -119,8 +119,9 @@ LIVE = [(("tab", "list"), 0, TABS), (("pane", "list"), 0, PANES),
 
 
 def _worktree(tmp_path):
-    """A worktree whose .git points into a clone — containers.session_cmd
-    reads it to derive the clone mount."""
+    """A worktree whose .git points into a clone, as git makes it. The
+    launcher only checks that the entry is there; the clone it mounts is the
+    configured one (tests/conftest.py gives <tmp_path>/clone)."""
     (tmp_path / ".git").write_text(
         f"gitdir: {tmp_path}/clone/.git/worktrees/task-42\n")
     return str(tmp_path)
@@ -149,7 +150,7 @@ def test_podman_cmd_mounts_and_caps(tmp_path, monkeypatch):
     wt.mkdir(parents=True)
     (wt / ".git").write_text(f"gitdir: {clone}/.git/worktrees/task-42\n")
     cmd = podman_cmd("pe", 42, str(wt), "2g", "2", "claude-opus-4-8",
-                     '"$(cat .agent/prompt-spec.md)"')
+                     '"$(cat .agent/prompt-spec.md)"', clone=str(clone))
     assert "podman run --rm -it --name task-pe-42 " in cmd
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd
@@ -239,7 +240,8 @@ def test_spawn_stage_writes_the_prompt_and_runs_podman_in_a_new_tab(tmp_path, mo
     run = next(c for c in calls if c[:2] == ["pane", "run"])
     assert run[2] == "w1:p3"
     assert run[3] == podman_cmd("acme", 42, wt, "2g", "2", "claude-fable-5",
-                                '"$(cat .agent/prompt-spec.md)"')
+                                '"$(cat .agent/prompt-spec.md)"',
+                                clone=str(tmp_path / "clone"))
     assert "HERDR_AGENT" not in run[3]
 
 
@@ -269,10 +271,10 @@ def test_spawn_stage_on_a_busy_tab_reuses_it(tmp_path, monkeypatch):
 
 
 def test_spawn_stage_on_a_vanished_worktree_creates_no_tab(tmp_path, monkeypatch):
-    """containers.clone_root reads <worktree>/.git and raises when the
-    worktree is gone (_fail_task_crash owns that raise). The command is
-    built before Tab.ensure, so the raise leaves no orphan workspace or
-    empty tab behind for a task that will never launch."""
+    """A worktree with no `.git` entry is gone or half-removed: the launch
+    raises (_fail_task_crash owns that raise) before Tab.ensure, so it
+    leaves no orphan workspace or empty tab behind for a task that will
+    never launch."""
     wt = str(tmp_path / "gone")
     (tmp_path / "gone").mkdir()           # a worktree with no .git file
     calls = []
@@ -634,3 +636,30 @@ def test_agent_state_unknown_without_a_tab_or_in_dry_run(monkeypatch):
     assert Sessions().agent_state("acme", 42) is None
     assert Sessions(dry_run=True).agent_state("acme", 42) is None
 
+
+
+# --- the clone is the configured one, or nothing launches --------------------
+
+def test_launch_mounts_the_configured_clone_not_what_the_worktree_names(tmp_path, monkeypatch):
+    (tmp_path / ".git").write_text("gitdir: /a;id>x;/b/c/d\n")
+    calls = []
+    herdr_fake_creating(monkeypatch, calls)
+    s = Sessions(clones={"acme": "/srv/repos/acme"})
+    s.spawn_stage("acme", 42, str(tmp_path), "PROMPT", "spec", "claude-fable-5")
+    s.resume("acme", 42, str(tmp_path), "go on", "claude-fable-5")
+    runs = [c[3] for c in calls if c[:2] == ["pane", "run"]]
+    assert len(runs) == 2
+    for cmd in runs:
+        assert "-v /srv/repos/acme:/srv/repos/acme " in cmd
+        assert "id>x" not in cmd and "/a;" not in cmd
+
+
+def test_launch_for_a_target_with_no_configured_clone_raises_and_runs_nothing(
+        tmp_path, monkeypatch):
+    wt = _worktree(tmp_path)
+    calls = []
+    herdr_fake_creating(monkeypatch, calls)
+    with pytest.raises(RuntimeError, match="no configured clone"):
+        Sessions(clones={"other": "/srv/repos/other"}).spawn_stage(
+            "acme", 42, wt, "PROMPT", "spec", "claude-fable-5")
+    assert not [c for c in calls if c[:2] == ["pane", "run"]]

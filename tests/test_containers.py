@@ -14,11 +14,6 @@ def make_worktree(tmp_path: Path) -> tuple[str, str]:
     return str(wt), str(clone)
 
 
-def test_clone_root_reads_gitdir_pointer(tmp_path: Path):
-    wt, clone = make_worktree(tmp_path)
-    assert containers.clone_root(wt) == clone
-
-
 def test_image_env_override(monkeypatch):
     monkeypatch.delenv("AGENT_OPS_SESSION_IMAGE", raising=False)
     assert containers.image() == "agent-ops-session"
@@ -31,7 +26,7 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
-                                 "--continue 'hi'")
+                                 "--continue 'hi'", clone=clone)
     assert "podman run --rm -it --name task-42 " in cmd
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd and f"-w {wt}" in cmd
@@ -100,7 +95,7 @@ def test_session_cmd_carries_the_model_flag(tmp_path: Path, monkeypatch):
 def test_setup_cmd_is_one_shot_with_cache_volumes(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
-    argv = containers.setup_cmd("task-42-setup", wt, "scripts/provision-worktree.sh")
+    argv = containers.setup_cmd("task-42-setup", wt, "scripts/provision-worktree.sh", clone)
     assert argv[:3] == ["podman", "run", "--rm"]
     assert "-it" not in argv
     assert ["--name", "task-42-setup"] == argv[argv.index("--name"): argv.index("--name") + 2]
@@ -117,8 +112,8 @@ def test_setup_cmd_is_one_shot_with_cache_volumes(tmp_path: Path, monkeypatch):
 
 def test_setup_cmd_splits_multiword_commands(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    wt, _ = make_worktree(tmp_path)
-    argv = containers.setup_cmd("task-7-setup", wt, "bash scripts/provision.sh --fast")
+    wt, clone = make_worktree(tmp_path)
+    argv = containers.setup_cmd("task-7-setup", wt, "bash scripts/provision.sh --fast", clone)
     assert argv[-3:] == ["bash", "scripts/provision.sh", "--fast"]
 
 
@@ -321,3 +316,105 @@ def test_a_lone_codex_executable_is_refused_not_mounted_by_guess(tmp_path: Path,
     wt, _ = make_worktree(tmp_path)
     with pytest.raises(RuntimeError, match="not a Codex package"):
         containers.session_cmd("task-x", wt, "4g", "2", "openai/gpt-6-astra", "")
+
+
+# --- nothing in the command comes from the session-writable worktree ---------
+
+def _hostile_worktree(tmp_path, gitdir, task_json=None):
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {gitdir}\n")
+    if task_json is not None:
+        (wt / ".agent").mkdir()
+        (wt / ".agent" / "task.json").write_text(task_json)
+    return str(wt)
+
+
+@pytest.mark.parametrize("gitdir", ["/a;id>x;/b/c/d", "/home/x/.ssh/a/b/c",
+                                    "$(touch /tmp/pwned)/.git/worktrees/t"])
+def test_session_cmd_mounts_the_configured_clone_whatever_the_worktree_says(
+        tmp_path, monkeypatch, gitdir):
+    import shlex
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    wt = _hostile_worktree(tmp_path, gitdir)
+    clone = str(tmp_path / "configured-clone")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P",
+                                 clone=clone)
+    argv = shlex.split(cmd)
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert f"{clone}:{clone}" in mounts
+    for hostile in ("id>x", ".ssh", "pwned", "/a;", "/home/x"):
+        assert hostile not in cmd, hostile
+
+
+def test_session_cmd_without_a_clone_mounts_none(tmp_path, monkeypatch):
+    """The builder derives nothing: the launcher refuses to run without one."""
+    import shlex
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    wt, clone = make_worktree(tmp_path)
+    argv = shlex.split(containers.session_cmd("task-42", wt, "2g", "2",
+                                              "claude-fable-5", "P"))
+    assert f"{wt}:{wt}" in argv and not [a for a in argv if a.startswith(f"{clone}:")]
+
+
+@pytest.mark.parametrize("branch", ["x; touch /tmp/pwned", "agent/task-99", "$(id)",
+                                    "agent/task-42 --force", "main", 42, ["agent/task-42"]])
+def test_session_cmd_refuses_a_branch_that_is_not_the_tasks_own(tmp_path, monkeypatch, branch):
+    import json as _json
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    wt = _hostile_worktree(tmp_path, "/x/.git/worktrees/t",
+                           _json.dumps({"issue": 42, "branch": branch}))
+    cmd = containers.session_cmd("task-pe-42", wt, "2g", "2", "claude-fable-5", "P",
+                                 clone=str(tmp_path / "clone"))
+    assert "AGENT_OPS_TASK_BRANCH" not in cmd and "pwned" not in cmd
+
+
+def test_session_cmd_keeps_the_tasks_own_branch(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    wt = _hostile_worktree(tmp_path, "/x/.git/worktrees/t",
+                           '{"issue": 42, "branch": "agent/task-42"}')
+    cmd = containers.session_cmd("task-pe-42", wt, "2g", "2", "claude-fable-5", "P")
+    assert "-e AGENT_OPS_TASK_BRANCH=agent/task-42 " in cmd
+
+
+@pytest.mark.parametrize("model", ["claude-fable-5", "openai/gpt-5-codex"])
+def test_every_value_in_the_session_command_is_one_shell_word(tmp_path, monkeypatch,
+                                                              codex_package, model):
+    """Paths and values with spaces and shell characters stay single words."""
+    import shlex
+    state = tmp_path / "st ate;x"
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(state))
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "img;touch /tmp/pwned")
+    wt = tmp_path / "w t;echo x"
+    wt.mkdir()
+    clone = str(tmp_path / "cl one>y")
+    cmd = containers.session_cmd("task-pe-42;id", str(wt), "2g;id", "2|id", model, "P",
+                                 effort="high;id", clone=clone)
+    argv = shlex.split(cmd)
+    def after(flag):
+        return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
+    assert after("--name") == ["task-pe-42;id"]
+    assert after("--memory") == ["2g;id"] and after("--cpus") == ["2|id"]
+    assert after("-w") == [str(wt)]
+    assert f"{wt}:{wt}" in after("-v") and f"{clone}:{clone}" in after("-v")
+    assert f"{state}/wait:{state}/wait" in after("-v")
+    assert f"AGENT_OPS_STATE_DIR={state}" in after("-e")
+    assert "img;touch /tmp/pwned" in argv and "touch" not in argv
+    assert "high;id" in argv or "model_reasoning_effort=high;id" in argv
+    assert not [a for a in argv if a in (";", "id", "x", "echo")]
+
+
+@pytest.mark.parametrize("bad", ['/tmp/w"t', "/tmp/w't", "/tmp/w\\t", "/tmp/w\nt", "relative/wt"])
+def test_session_cmd_refuses_a_worktree_path_it_cannot_quote_everywhere(tmp_path, monkeypatch, bad):
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    with pytest.raises(ValueError, match="worktree"):
+        containers.session_cmd("task-42", bad, "2g", "2", "claude-fable-5", "P")
+
+
+def test_setup_cmd_mounts_the_configured_clone(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
+    wt = _hostile_worktree(tmp_path, "/home/x/.ssh/a/b/c")
+    clone = str(tmp_path / "configured-clone")
+    argv = containers.setup_cmd("task-42-setup", wt, "setup.sh", clone)
+    assert f"{clone}:{clone}" in argv and not [a for a in argv if ".ssh" in a]
+    assert not hasattr(containers, "clone_root")

@@ -1261,7 +1261,7 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
 
     Everything a task's turn touches is reachable through its worktree, and
     a worktree can simply be gone — swept, half-removed, or deleted by hand.
-    containers.clone_root then raises reading <worktree>/.git, and before
+    The launch then raises writing into the missing worktree, and before
     this the exception unwound all the way out of run_pass: guarded_pass
     filed a pass-crash and re-raised, so the unit failed and every task
     QUEUED BEHIND the broken one was never reached. One dead checkout stopped
@@ -2330,7 +2330,9 @@ def main() -> None:
         print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
               f"their entries are never admitted", file=sys.stderr)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
-                sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory, cpus=cfg.session_cpus, state_dir=cfg.state_dir),
+                sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
+                                  cpus=cfg.session_cpus, state_dir=cfg.state_dir,
+                                  clones={t.name: t.clone_path for t in cfg.targets}),
                 notifier=Notifier(dry_run=args.dry_run,
                                   console_url=cfg.console_url,
                                   multi_target=len(cfg.targets) > 1))
