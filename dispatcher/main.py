@@ -1380,8 +1380,8 @@ def _on_park_for_input(turn: _Turn, task: TaskState, act: ParkForInput,
 def _plan_approval(task: TaskState, artifact: str) -> PlanApprovalRequest:
     """The gate's request: the plan session's summary, bound to the plan
     revision that is on disk now."""
-    path, fingerprint = plan_revision(task.worktree, artifact)
-    return PlanApprovalRequest(path=path, fingerprint=fingerprint)
+    revision = plan_revision(task.worktree, artifact, task.spec_path)
+    return PlanApprovalRequest(path=revision.path, fingerprint=revision.fingerprint)
 
 
 def _on_disarm_plan_approval(turn: _Turn, task: TaskState,

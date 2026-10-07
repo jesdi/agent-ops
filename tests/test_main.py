@@ -6044,3 +6044,128 @@ def test_unusable_clone_git_dir_does_not_stop_a_resume(tmp_path, monkeypatch):
     assert [r[0] for r in sess.resumed] == [43]
     assert load(c.state_dir, "portfolio_eval", 43).park == ""
     assert list((outside / "info").iterdir()) == []
+
+
+# --- the plan revision is read defensively, and covers the spec folder -------
+
+def _pass_within(c, d, seconds=5):
+    import threading
+    th = threading.Thread(target=lambda: main.run_pass(c, d), daemon=True)
+    th.start()
+    th.join(seconds)
+    assert not th.is_alive(), "the pass blocks"
+
+
+def _assert_disarmed_and_resumed_once(c, sess, d):
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is not Stage.FAILED and t.park == ""
+    assert t.operator_request is None
+    assert len(sess.resumed) == 1 and d.notifier.sent == ["plan_retry"]
+
+
+def _plant_fifo_summary(wt, tmp_path):
+    (wt / PLAN_SUMMARY).unlink()
+    os.mkfifo(wt / PLAN_SUMMARY)
+
+
+def _plant_fifo_ticket(wt, tmp_path):
+    (wt / ".agent" / "tickets" / "02-t2.md").unlink()
+    os.mkfifo(wt / ".agent" / "tickets" / "02-t2.md")
+
+
+def _plant_symlinked_ticket(wt, tmp_path):
+    ticket = wt / ".agent" / "tickets" / "02-t2.md"
+    (tmp_path / "outside-ticket.md").write_text(ticket.read_text())
+    ticket.unlink()
+    ticket.symlink_to(tmp_path / "outside-ticket.md")
+
+
+def _plant_symlinked_summary(wt, tmp_path):
+    (tmp_path / "outside-summary.md").write_text((wt / PLAN_SUMMARY).read_text())
+    (wt / PLAN_SUMMARY).unlink()
+    (wt / PLAN_SUMMARY).symlink_to(tmp_path / "outside-summary.md")
+
+
+@pytest.mark.parametrize("plant", [_plant_fifo_summary, _plant_fifo_ticket,
+                                   _plant_symlinked_ticket, _plant_symlinked_summary],
+                         ids=["fifo-summary", "fifo-ticket", "symlinked-ticket",
+                              "symlinked-summary"])
+def test_plan_file_that_is_no_regular_file_disarms_and_resumes_the_session(
+        tmp_path, monkeypatch, plant):
+    """Never a blocked pass, never an exception, never an approval left armed."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    plant(wt, tmp_path)
+    monkeypatch.setattr(main.spec_publish, "ensure_published",
+                        lambda **k: spec_publish.PublishResult(url=SPEC_URL))
+    d = deps(sess=sess)
+    _pass_within(c, d)
+    _assert_disarmed_and_resumed_once(c, sess, d)
+    assert "regular file" in sess.resumed[0][1] or "contiguous" in sess.resumed[0][1]
+
+
+def test_plan_file_that_cannot_be_read_this_pass_does_not_fail_the_task(
+        tmp_path, monkeypatch):
+    """The summary went away between the listing and the read."""
+    from dispatcher import artifacts
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    _armed_gate(c, sess, monkeypatch)
+    real, calls = artifacts.read_regular, []
+
+    def once(path, max_bytes):
+        if str(path).endswith("plan-review.md") and not calls:
+            calls.append(path)
+            raise FileNotFoundError(path)
+        return real(path, max_bytes)
+    monkeypatch.setattr(artifacts, "read_regular", once)
+    d = _gate_pass(c, sess, monkeypatch)
+    assert calls
+    _assert_disarmed_and_resumed_once(c, sess, d)
+
+
+def _armed_gate_with_spec_folder(c, sess, monkeypatch):
+    wt = _plan_ready_task(c)
+    folder = wt / Path(SPEC_PATH).parent
+    folder.mkdir(parents=True)
+    for name in ("proposal.md", "spec.md", "design.md"):
+        (folder / name).write_text(f"# {name}\n\nfirst\n")
+    (wt / PLAN_SUMMARY).write_text("# Plan review\n\nfirst plan\n")
+    _gate_pass(c, sess, monkeypatch)
+    return wt, folder
+
+
+@pytest.mark.parametrize("name", ["design.md", "spec.md", "proposal.md"])
+def test_spec_folder_file_changed_under_an_armed_request_is_a_new_review_round(
+        tmp_path, monkeypatch, name):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt, folder = _armed_gate_with_spec_folder(c, sess, monkeypatch)
+    before = load(c.state_dir, "portfolio_eval", 42).operator_request.fingerprint
+    assert _gate_pass(c, sess, monkeypatch).notifier.sent == []      # unchanged: silent
+    (folder / name).write_text(f"# {name}\n\nsecond\n")
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+    assert t.operator_request.fingerprint not in ("", before)
+
+
+def test_same_summary_bytes_at_another_path_is_a_new_review_round(tmp_path, monkeypatch):
+    """The request names a path: the console reads that file. The same text
+    in another file is not what the operator was shown."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    sess = FakeSessions(alive={42})
+    wt = _armed_gate(c, sess, monkeypatch)
+    other = wt / ".agent" / "v2" / "plan-review.md"
+    other.parent.mkdir()
+    other.write_bytes((wt / PLAN_SUMMARY).read_bytes())
+    gate_signal(wt, ".agent/v2/plan-review.md")
+    d = _gate_pass(c, sess, monkeypatch)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+    assert t.operator_request.path == ".agent/v2/plan-review.md"

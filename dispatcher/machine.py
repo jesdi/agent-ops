@@ -13,7 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
-from dispatcher.artifacts import (PLAN_SUMMARY, TICKETS_DIR, CheckResult, check_spec,
+from dispatcher.artifacts import (PLAN_SUMMARY, TICKETS_DIR, CheckResult, PlanRevision,
+                                  check_spec,
                                   check_tickets, count_open_questions, plan_revision)
 from dispatcher.loops import (Decision, Loop, Outcome, ReportedRound, Retry, evaluate,
                               retry_left, unattended_rounds_used)
@@ -257,7 +258,8 @@ def _plan_ready_actions(task: TaskState, signal: StageSignal,
     """The plan stage's ready report: the gate skip or gate entry. Nothing
     reaches the operator, and no implement session starts, before the ticket
     check."""
-    result, failed = _checked_tickets(task)
+    revision = plan_revision(task.worktree, signal.artifact, task.spec_path)
+    result, failed = _checked_plan(task, revision)
     if failed:
         return failed
     if _skips_gate(task, signal, gate_free):
@@ -274,10 +276,11 @@ def _gate_ready_actions(task: TaskState, signal: StageSignal,
     resume or a rework cleared it), or the session changed the plan with no
     `working` signal that a pass saw, and what the console offers is stale.
     A task that waited at the gate never skips it."""
-    if task.operator_request and _armed_for(task, signal):
+    revision = plan_revision(task.worktree, signal.artifact, task.spec_path)
+    if task.operator_request and _armed_for(task.operator_request, revision):
         return [ParkForReview(ReviewPark.GRACE)] if grace_elapsed else [NoOp()]
     disarm: list[object] = [DisarmPlanApproval()] if task.operator_request else []
-    _result, failed = _checked_tickets(task)
+    _result, failed = _checked_plan(task, revision)
     if failed:
         return disarm + failed
     if unattended_rounds_used(task):
@@ -291,14 +294,14 @@ def _review_round(signal: StageSignal) -> list[object]:
             Notify("awaiting_plan_review", signal.note)]
 
 
-def _armed_for(task: TaskState, signal: StageSignal) -> bool:
-    """Is the armed request for the plan this ready report names? The summary
-    and the tickets are as they were when the request was armed (so the ticket
-    check they passed then still holds). A request with no fingerprint is for
-    no plan."""
-    request = task.operator_request
-    return bool(request.fingerprint) and (request.path, request.fingerprint) == (
-        plan_revision(task.worktree, signal.artifact))
+def _armed_for(request, revision: PlanRevision) -> bool:
+    """Is the armed request for the plan revision on disk? Then the summary,
+    the tickets and the spec folder are as they were when it was armed (so
+    the check they passed then still holds), at the path the console reads.
+    A request with no fingerprint is for no plan, and a revision that cannot
+    be told matches no request."""
+    return bool(revision.fingerprint) and (
+        (request.path, request.fingerprint) == (revision.path, revision.fingerprint))
 
 
 def _skips_gate(task: TaskState, signal: StageSignal,
@@ -321,15 +324,29 @@ def _skips_gate(task: TaskState, signal: StageSignal,
         return False   # a path that cannot be resolved (a NUL character, a loop)
 
 
+def _checked_plan(task: TaskState,
+                  revision: PlanRevision) -> tuple[CheckResult, list[object]]:
+    """The check of a ready report: the ticket set, and that the plan can be
+    read as one revision (what a request is armed for). Same outcome when
+    either fails."""
+    result = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    if result.ok and revision.problem:
+        result = CheckResult(False, revision.problem)
+    return result, _check_failed(task, result)
+
+
 def _checked_tickets(task: TaskState) -> tuple[CheckResult, list[object]]:
     """The ticket set's check, and the actions when it fails (else empty)."""
     result = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    return result, _check_failed(task, result)
+
+
+def _check_failed(task: TaskState, result: CheckResult) -> list[object]:
     if result.ok:
-        return result, []
+        return []
     if retry_left(task, Retry.PLAN_TICKETS):
-        return result, [RetryStage(Stage.PLAN, result.reason, Retry.PLAN_TICKETS)]
-    return result, [SetTaskStage(Stage.FAILED),
-                    Notify("artifact_failed", result.reason)]
+        return [RetryStage(Stage.PLAN, result.reason, Retry.PLAN_TICKETS)]
+    return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
 
 
 def _implement_actions(result: CheckResult) -> list[object]:

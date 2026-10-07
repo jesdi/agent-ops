@@ -46,9 +46,9 @@ def task(stage, worktree="/tmp/wt", issue=101, park=""):
 def armed_gate(tmp_path):
     """A task that waits at the gate: valid tickets, the request armed."""
     tickets(tmp_path)
-    path, fingerprint = plan_revision(tmp_path, ".agent/plan-review.md")
+    now = plan_revision(tmp_path, ".agent/plan-review.md")
     return replace(task(Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path)),
-                   operator_request=PlanApprovalRequest(path, fingerprint=fingerprint))
+                   operator_request=PlanApprovalRequest(now.path, fingerprint=now.fingerprint))
 
 
 def sig(stage, status, artifact="", run_id=0):
