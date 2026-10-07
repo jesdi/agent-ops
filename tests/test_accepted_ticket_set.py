@@ -16,7 +16,7 @@ from tests import webfakes
 from tests.pinned import (ASTRA, DENY_ARCHITECTURE, DENY_FRONTEND, FABLE,
                           IMPL_DONE, OPUS, PLAN_DONE, SOL, ahead, anthropic,
                           cards, deny, launched, legacy, make_cfg, openai,
-                          raw, rig, saved, setup, step, task, unpinned,
+                          raw, rewrite, rig, saved, setup, step, task, unpinned,
                           usage_now, wake, write_ticket)
 from tests.test_main import (FakeNotifier, FakeSessions, deps, make_task,
                              valid_spec)
@@ -133,10 +133,58 @@ def test_a_ticket_set_grown_after_acceptance_parks_before_review(
 def test_a_ticket_file_removed_after_acceptance_still_fails_the_task(
         tmp_path, monkeypatch):
     c, wt, _ = accepted(tmp_path, monkeypatch, admitted=True)
-    (wt / ".agent" / "tickets" / "02-t2.md").unlink()
+    (tickets_dir(wt) / "02-t2.md").unlink()
     step(c, wt, IMPL_DONE)
     t = saved(c)
     assert t.stage is Stage.FAILED and t.ticket_cursor == 1
+
+
+def tickets_dir(wt):
+    return wt / ".agent" / "tickets"
+
+
+def test_a_swapped_ticket_file_parks_before_the_ticket_starts(
+        tmp_path, monkeypatch):
+    """The count is the same, the set is not: file 02 left and a file 04
+    came. Ticket 2 does not run the file that now stands second."""
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), (), ()])
+    step(c, wt, PLAN_DONE)
+    assert saved(c).ticket_names == ["01-t1.md", "02-t2.md", "03-t3.md"]
+    (tickets_dir(wt) / "02-t2.md").unlink()
+    write_ticket(wt, 4)
+    assert step(c, wt, IMPL_DONE).spawned == []
+    t = saved(c)
+    assert (t.park, t.stage, t.ticket_cursor) == (PARK_HUMAN, Stage.IMPLEMENT, 1)
+    assert "ticket 02" in t.park_note
+    assert "added: 04-t4.md" in t.park_note
+    assert "removed: 02-t2.md" in t.park_note
+    assert wake(c).spawned == [] and saved(c).park == PARK_HUMAN   # still swapped
+    write_ticket(wt, 2)
+    (tickets_dir(wt) / "04-t4.md").unlink()
+    sess = wake(c)
+    assert "02-t2.md" in sess.spawned[0][3] and saved(c).ticket_cursor == 2
+
+
+def test_a_renamed_ticket_file_parks_before_review(tmp_path, monkeypatch):
+    c, wt, _ = accepted(tmp_path, monkeypatch, admitted=True)
+    step(c, wt, IMPL_DONE)                          # ticket 2 runs
+    (tickets_dir(wt) / "01-t1.md").rename(tickets_dir(wt) / "01-other.md")
+    assert step(c, wt, IMPL_DONE).spawned == []
+    t = saved(c)
+    assert t.park == PARK_HUMAN and t.stage is Stage.IMPLEMENT
+    assert "added: 01-other.md" in t.park_note
+    assert "removed: 01-t1.md" in t.park_note
+    assert [s[1] for s in wake(c).spawned] == ["review"]   # the wake accepts it
+
+
+def test_a_set_accepted_before_its_names_were_kept_is_not_checked(
+        tmp_path, monkeypatch):
+    c, wt, _ = accepted(tmp_path, monkeypatch, admitted=True)
+    rewrite(c.state_dir, "portfolio_eval", "ticket_names")
+    assert saved(c).ticket_names == []
+    (tickets_dir(wt) / "02-t2.md").rename(tickets_dir(wt) / "02-other.md")
+    assert "02-other.md" in step(c, wt, IMPL_DONE).spawned[0][3]
+    assert [s[1] for s in step(c, wt, IMPL_DONE).spawned] == ["review"]
 
 
 # --- 4: a turn that fails after it saved a stage with no session of its own -----

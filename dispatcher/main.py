@@ -1152,6 +1152,10 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
     )
     for task in woken:
         target = targets[task.target]
+        # A wake accepts a changed set before review (the park said so),
+        # never a ticket that would run another file.
+        if launch_ticket(task) and _park_changed_tickets(cfg, deps, target, task):
+            continue
         launch = _resume_launch(cfg, target, task, admit, order)
         if launch is None:
             # Nothing admitted: wait. A ticket track that is still not
@@ -1445,8 +1449,8 @@ def _step_done(turn: _Turn, task: TaskState, act: object) -> TaskState:
     its own, BEFORE the next launch is chosen and admitted: every reader of
     the state (state.next_launch) then names the launch that waits. Plan
     done with a valid set: the set is accepted — the task is in implement
-    with no ticket started and the set's count and ticket tracks, the
-    ticket files are not read for routing again, and the plan session is
+    with no ticket started and the set's count, file names and ticket
+    tracks, the ticket files are not read for routing again, and the plan session is
     ended so it cannot change the set while ticket 1 waits. A ticket done:
     no ticket is in progress and its pick is gone, so the next ticket
     chooses from its own list, or review starts after the last one. A task
@@ -1457,7 +1461,7 @@ def _step_done(turn: _Turn, task: TaskState, act: object) -> TaskState:
         _end_session(turn.cfg, turn.deps, task.target, task.issue)
         done = replace(task, stage=Stage.IMPLEMENT, ticket_cursor=0,
                        ticket_count=act.count, ticket_tracks=dict(act.tracks),
-                       updated_at=_now())
+                       ticket_names=_ticket_names(task), updated_at=_now())
     if (done.stage is Stage.IMPLEMENT and done.ticket_count
             and _action_stage(act) in (Stage.IMPLEMENT, Stage.REVIEW)):
         done = _without_ticket_pick(done)
@@ -1466,24 +1470,47 @@ def _step_done(turn: _Turn, task: TaskState, act: object) -> TaskState:
     return done
 
 
-def _park_extra_tickets(turn: _Turn, task: TaskState, act: object) -> bool:
-    """True when the task was parked instead of entering review: the last
-    ticket of the accepted set is done, but the tickets directory holds more
-    files than the set had. Someone added them after the plan stage; they
-    were not implemented, and review must not start as if they were."""
-    if not (task.stage is Stage.IMPLEMENT and task.ticket_count
-            and _action_stage(act) is Stage.REVIEW):
+def _ticket_names(task: TaskState) -> list[str]:
+    return [p.name for p in ticket_files(Path(task.worktree) / TICKETS_DIR)]
+
+
+def _ticket_set_intact(task: TaskState, ticket: int) -> bool:
+    """The tickets directory still holds what the launch needs of the
+    accepted set (TaskState.ticket_names). Before ticket `ticket` starts:
+    the file at its position has the accepted name, because the prompt
+    selects the file, and the stored ticket track is read, by position. A
+    file missing there is _start_ticket's failure, not a change. Before
+    review (`ticket` 0): the whole list of names is the accepted one. A set
+    accepted before its names were kept is not compared."""
+    now, accepted = _ticket_names(task), task.ticket_names
+    if not accepted or now == accepted:
+        return True
+    return bool(ticket) and now[ticket - 1:ticket] in (
+        [], accepted[ticket - 1:ticket])
+
+
+def _park_changed_tickets(cfg: Config, deps: Deps, target: Target,
+                          task: TaskState) -> bool:
+    """True when the task was parked instead of starting its next ticket or
+    entering review: someone added, removed or renamed a ticket file after
+    the plan stage. The ticket would run another file than the accepted one,
+    on that one's ticket track; review would start over tickets that were
+    never implemented."""
+    ticket = launch_ticket(task)
+    if _ticket_set_intact(task, ticket):
         return False
-    files = ticket_files(Path(task.worktree) / TICKETS_DIR)
-    extra = [p.name for p in files[task.ticket_count:]]
-    if not extra:
-        return False
+    now, accepted = _ticket_names(task), task.ticket_names
+    added = ", ".join(n for n in now if n not in accepted) or "none"
+    removed = ", ".join(n for n in accepted if n not in now) or "none"
+    then = (f"ticket {ticket:02d} is not started: restore the accepted file "
+            f"names, then wake the task" if ticket else
+            "restore the set or accept the change, then wake the task: it "
+            "enters review")
     _park_for_input(
-        turn.cfg, turn.deps, turn.target, task,
-        f"the accepted ticket set has {task.ticket_count} ticket(s), all "
-        f"done, but {TICKETS_DIR} now holds {len(files)}: {', '.join(extra)} "
-        f"came after the plan stage and were not implemented. Remove them "
-        f"or accept that, then wake the task: it enters review")
+        cfg, deps, target, task,
+        f"the accepted ticket set has {len(accepted)} ticket(s), but "
+        f"{TICKETS_DIR} changed after the plan stage (added: {added}; "
+        f"removed: {removed}; a renamed file counts as both); {then}")
     return True
 
 
@@ -1778,9 +1805,10 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             tracks=frozenset(policy.tracks),
                             ticket_tracks=ticket_track_names(policy, task.track)):
         task = _step_done(turn, task, act)
-        if _park_extra_tickets(turn, task, act):
-            return
         stage = _action_stage(act)
+        if (stage in (Stage.IMPLEMENT, Stage.REVIEW)
+                and _park_changed_tickets(cfg, deps, target, task)):
+            return
         launch, bypass_usage = ((None, False) if stage is None
                                 else _choose_launch(cfg, target, task, stage, admit, order))
         if stage is not None and launch is None:
