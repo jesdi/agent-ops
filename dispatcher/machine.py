@@ -170,16 +170,15 @@ def _loop_actions(task: TaskState, signal: StageSignal,
     return [ApplyDecision(decision)]
 
 
-def _track_actions(task: TaskState, signal: StageSignal,
-                   tracks: frozenset[str] | None) -> list[object]:
-    """Empty when the signal's track is valid (or validation is off). A plan
-    approval may leave the track out: the task keeps the one it has."""
-    at_gate = task.stage == Stage.AWAITING_PLAN_REVIEW
-    if tracks is None or signal.track in tracks or (at_gate and not signal.track):
-        return []
-    reason = (f"stage.json names track {signal.track!r}; it must be one of "
-              f"{sorted(tracks)}")
-    return _plan_bounce(task, reason) if at_gate else _spec_bounce(task, reason)
+def _bad_track(signal: StageSignal, tracks: frozenset[str] | None,
+               optional: bool) -> str | None:
+    """Why a `done` signal's track is rejected; None when it is a configured
+    one, when validation is off, or when it is left out where `optional` (a
+    plan approval: the task keeps the track it has)."""
+    if tracks is None or signal.track in tracks or (optional and not signal.track):
+        return None
+    return (f"stage.json names track {signal.track!r}; it must be one of "
+            f"{sorted(tracks)}")
 
 
 def _spec_bounce(task: TaskState, reason: str) -> list[object]:
@@ -242,23 +241,54 @@ def _working_actions(task: TaskState, signal: StageSignal, session_alive: bool,
 
 def _review_actions(task: TaskState, signal: StageSignal, grace_elapsed: bool,
                     gate_free: frozenset[str]) -> list[object]:
+    """A ready report (`awaiting-review`), by the stage it arrives in."""
+    if task.stage == Stage.PLAN:
+        return _plan_ready_actions(task, signal, gate_free)
     if task.stage == Stage.AWAITING_PLAN_REVIEW:
-        if task.operator_request:
-            if _armed_for(task, signal):
-                # Already notified on a previous pass: only the clock runs.
-                return [ParkForReview()] if grace_elapsed else [NoOp()]
-            # The session changed the plan with no `working` signal that a
-            # pass saw: what the console offers is stale.
-            return [DisarmPlanApproval()] + _gate_round_actions(task, signal, gate_free)
-        # No request armed: a resume or a rework cleared it, so this ready
-        # report is a new review round. It enters the gate again, with a
-        # fresh grace clock.
-    elif task.stage == Stage.SPEC:
+        return _gate_ready_actions(task, signal, grace_elapsed)
+    if task.stage == Stage.SPEC:
         # The spec stage has no review gate: nobody would answer this.
         return _spec_bounce(task, SPEC_NO_REVIEW)
-    elif task.stage != Stage.PLAN:
-        return [NoOp()]
-    return _gate_round_actions(task, signal, gate_free)
+    return [NoOp()]
+
+
+def _plan_ready_actions(task: TaskState, signal: StageSignal,
+                        gate_free: frozenset[str]) -> list[object]:
+    """The plan stage's ready report: the gate skip or gate entry. Nothing
+    reaches the operator, and no implement session starts, before the ticket
+    check."""
+    result, failed = _checked_tickets(task)
+    if failed:
+        return failed
+    if _skips_gate(task, signal, gate_free):
+        return [PublishSpec(review=False)] + _implement_actions(result)
+    return _review_round(signal)
+
+
+def _gate_ready_actions(task: TaskState, signal: StageSignal,
+                        grace_elapsed: bool) -> list[object]:
+    """A ready report of a task at the gate. With the request armed for this
+    plan the operator was told on a previous pass: only the clock runs.
+    Anything else is a new review round, which is checked, announced and
+    clocked again, while unattended rounds are left: no request is armed (a
+    resume or a rework cleared it), or the session changed the plan with no
+    `working` signal that a pass saw, and what the console offers is stale.
+    A task that waited at the gate never skips it."""
+    if task.operator_request and _armed_for(task, signal):
+        return [ParkForReview()] if grace_elapsed else [NoOp()]
+    disarm: list[object] = [DisarmPlanApproval()] if task.operator_request else []
+    _result, failed = _checked_tickets(task)
+    if failed:
+        return disarm + failed
+    if unattended_rounds_used(task):
+        return disarm + [ParkForReview(artifact=signal.artifact)]
+    return disarm + _review_round(signal)
+
+
+def _review_round(signal: StageSignal) -> list[object]:
+    return [SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=signal.artifact),
+            PublishSpec(),
+            Notify("awaiting_plan_review", signal.note)]
 
 
 def _armed_for(task: TaskState, signal: StageSignal) -> bool:
@@ -273,39 +303,22 @@ def _armed_for(task: TaskState, signal: StageSignal) -> bool:
 
 def _skips_gate(task: TaskState, signal: StageSignal,
                 gate_free: frozenset[str]) -> bool:
-    """The gate skip, decided by the dispatcher alone: a first ready report
-    on a gate-free track, no questionnaire asked, and a count of 0 open
-    questions that the summary confirms. The track is the task's own, never
-    one the ready report names. The summary is the prescribed file, and the
-    report must name that file: it is what the gate would show. It is read
-    last, only when everything else holds. Anything else waits at the gate."""
+    """The gate skip, decided by the dispatcher alone for a plan-stage ready
+    report: a task that never waited at the gate, on a gate-free track, no
+    questionnaire asked, and a count of 0 open questions that the summary
+    confirms. The track is the task's own, never one the ready report names.
+    The summary is the prescribed file, and the report must name that file:
+    it is what the gate would show. It is read last, only when everything
+    else holds. Anything else waits at the gate."""
     summary = Path(task.worktree) / PLAN_SUMMARY
     try:
-        return (task.stage == Stage.PLAN and not task.gated
+        return (not task.gated
                 and task.track in gate_free and not task.asked
                 and signal.open_questions == 0
                 and _artifact_path(task, signal).resolve() == summary.resolve()
                 and count_open_questions(summary) == 0)
     except (OSError, ValueError, RuntimeError):
         return False   # a path that cannot be resolved (a NUL character, a loop)
-
-
-def _gate_round_actions(task: TaskState, signal: StageSignal,
-                        gate_free: frozenset[str]) -> list[object]:
-    """A ready report: gate entry from the plan stage, a new round at the
-    gate, or the gate skip. Nothing reaches the operator, and no implement
-    session starts, before the ticket check."""
-    result, failed = _checked_tickets(task)
-    if failed:
-        return failed
-    if _skips_gate(task, signal, gate_free):
-        return [PublishSpec(review=False)] + _implement_actions(result)
-    if (task.stage == Stage.AWAITING_PLAN_REVIEW
-            and unattended_rounds_used(task)):
-        return [ParkForReview(artifact=signal.artifact)]
-    return [SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=signal.artifact),
-            PublishSpec(),
-            Notify("awaiting_plan_review", signal.note)]
 
 
 def _checked_tickets(task: TaskState) -> tuple[CheckResult, list[object]]:
@@ -330,18 +343,18 @@ def _plan_done_actions(task: TaskState, signal: StageSignal,
                        tracks: frozenset[str] | None) -> list[object]:
     """The operator's approval, reported by the plan session at the gate. A
     configured track it names is already on the task (main._adopt_track)."""
-    bounced = _track_actions(task, signal, tracks)
-    if bounced:
-        return bounced
+    reason = _bad_track(signal, tracks, optional=True)
+    if reason:
+        return _plan_bounce(task, reason)
     result, failed = _checked_tickets(task)
     return failed or _implement_actions(result)
 
 
 def _spec_done_actions(task: TaskState, signal: StageSignal,
                        tracks: frozenset[str] | None) -> list[object]:
-    bounced = _track_actions(task, signal, tracks)
-    if bounced:
-        return bounced
+    reason = _bad_track(signal, tracks, optional=False)
+    if reason:
+        return _spec_bounce(task, reason)
     result = check_spec(_artifact_path(task, signal))
     if not result.ok:
         return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]

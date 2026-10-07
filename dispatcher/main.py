@@ -1565,7 +1565,7 @@ def _adopt_track(cfg: Config, policy: ModelPolicy, task: TaskState,
     # (e.g. PLAN off a spec "done" signal) both need the fresh value, not
     # whatever was recorded when the task was last saved. Only a CONFIGURED
     # track is adopted here: an unknown/misspelled one must reach
-    # next_actions' bounce-then-park ladder (_track_actions) instead of being
+    # next_actions' bounce-then-park ladder (_bad_track) instead of being
     # written onto the task and mis-parked as "no longer configured".
     if (signal is not None and signal.status == "done"
             and task.stage in (Stage.SPEC, Stage.AWAITING_PLAN_REVIEW)
