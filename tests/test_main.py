@@ -3026,10 +3026,17 @@ def test_unparseable_timestamp_never_expires(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
-                   updated_at="not-a-timestamp")
+                   updated_at="not-a-timestamp", operator_request=ARMED)
+    write_tickets(wt, 2)
     gate_signal(wt)
-    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
-    assert load(c.state_dir, "portfolio_eval", 42).park == ""
+    arm_gate(c)
+    sess = FakeSessions(alive={42})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == "" and t.updated_at == "not-a-timestamp"
+    assert t.operator_request is not None and t.plan_retries == 0
+    assert sess.ended == [] and sess.resumed == [] and d.notifier.sent == []
 
 
 def test_grace_expiry_park_preserves_plan_approval_request(tmp_path, monkeypatch):
