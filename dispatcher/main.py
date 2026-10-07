@@ -1803,10 +1803,12 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 def _report_session_crash(cfg: Config, deps: Deps, target: Target,
                           task: TaskState, dry_run: bool) -> None:
-    # The stage's pick names its runtime. With no pick (no ticket in
-    # progress: the implement pick is gone) the session that died is the
-    # worktree's last launch. A pre-picks task ran on Claude, which is what
-    # a bare (here: empty) id resolves to.
+    # The stage's pick names its runtime. With no pick the session that
+    # died is the worktree's last launch: a ticket is done and the next one
+    # waits, so the implement pick is gone, and the done ticket's session,
+    # still open, signalled `working` again (an operator attached to it)
+    # before it died. A pre-picks task ran on Claude, which is what a bare
+    # (here: empty) id resolves to.
     pick = (stage_pick(task.picks, task.stage.value)
             or _last_launched(task.worktree))
     runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")

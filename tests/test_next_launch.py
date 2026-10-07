@@ -302,15 +302,24 @@ def test_a_pending_override_starts_a_ticket_whose_track_is_not_pinned(
 
 def test_a_crash_between_tickets_names_the_last_sessions_runtime(
         tmp_path, monkeypatch):
+    """Ticket 1 is done and ticket 2 waits, so the task has no implement
+    pick; the session of ticket 1 is still open. It writes `working` again
+    (the operator attached and gave it more to do), then dies: a crash with
+    no pick to name the runtime. The repro names the last launch's."""
     c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)],
                   usages=ahead())
     step(c, wt, PLAN_DONE)                      # ticket 1 on openai/gpt-astra
     usage_now(monkeypatch, deny(ahead(), *DENY_FRONTEND))
     step(c, wt, IMPL_DONE)                      # ticket 2 waits, no pick
+    assert "implement" not in saved(c).picks
     reports = []
     monkeypatch.setattr(failures, "report_failure",
                         lambda cfg, deps, rep, **kw: reports.append(rep))
-    main._report_session_crash(c, deps(), c.targets[0], saved(c), False)
+    step(c, wt, {"stage": "implement", "status": "working"}, alive=False)
+    t = saved(c)
+    assert (t.stage, t.crashed_stage, t.ticket_cursor) == (
+        Stage.FAILED, "implement", 1)
+    assert reports[0].klass == "session-crash"
     assert "codex" in reports[0].repro and "claude" not in reports[0].repro
 
 
