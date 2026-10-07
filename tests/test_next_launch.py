@@ -1,59 +1,27 @@
-"""Ticket 06, fix round 1: the next launch (stage, ticket) is read from the
-persisted state, never inferred from a missing pick. A legacy state with no
-pick is in the middle of its ticket (A); the pass writes from the saved
-state after the boundary (B); an accepted ticket set and a done last ticket
-are persisted before the next launch is admitted (C); a pending override
-wins over the park (D); the crash repro names the crashed session's runtime
-(E); the prompt texts (F); an attach wake between tickets (G)."""
+"""The next launch (stage, ticket) is read from the persisted state, never
+inferred from a missing pick. A legacy state with no pick is in the middle
+of its ticket; the pass writes from the saved state after the boundary; an
+accepted ticket set and a done last ticket are persisted before the next
+launch is admitted; a pending override wins over the park; the crash repro
+names the crashed session's runtime; the prompt texts; an attach wake
+between tickets."""
 import json
 from dataclasses import replace
 
 import dispatcher.main as main
-from dispatcher import execution_overrides, failures, intents, state
+from dispatcher import execution_overrides, failures
 from dispatcher.machine import Notify, StartTicket, next_actions
 from dispatcher.models import ticket_tracks_text
-from dispatcher.state import (PARK_HUMAN, PARK_WAKE, Stage, StageSignal,
-                              TaskState, launch_ticket, launch_track, load,
-                              next_launch, next_stage, save)
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, deps,
-                             make_task)
-from tests.test_pinned_tracks_order import (ASTRA, FABLE, OPUS, SOL, ahead,
-                                            deny, launched, make_cfg, policy)
-from tests.test_pinned_tracks_ticket_tracks import (IMPL_DONE, PLAN_DONE,
-                                                    setup, step, usage_now,
-                                                    write_ticket)
-from tests.test_web_pinned_tracks import (HEADERS, anthropic, cards, detail,
-                                          models, openai, rig)
+from dispatcher.state import (PARK_WAKE, Stage, StageSignal, launch_ticket,
+                              launch_track, load, next_launch, next_stage,
+                              save)
 from tests import webfakes
-
-DENY_FRONTEND = (FABLE, OPUS)
-
-
-def saved(c):
-    return load(c.state_dir, "portfolio_eval", 42)
-
-
-def raw(c):
-    return json.loads(state._path(c.state_dir, "portfolio_eval", 42).read_text())
-
-
-def wake(c, **kw):
-    save(c.state_dir, replace(saved(c), park=PARK_WAKE, **kw))
-    sess = FakeSessions()
-    main.run_pass(c, deps(sess=sess))
-    return sess
-
-
-def resume_intent(c, sess=None):
-    intents.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
-    sess = sess or FakeSessions()
-    main.run_pass(c, deps(FakeGitHub(), sess))
-    return sess
-
-
-def task(stage=Stage.IMPLEMENT, track="architecture", **kw):
-    return TaskState(issue=42, target="t", stage=stage, slot=1, worktree="",
-                     branch="b", title="", updated_at="u", track=track, **kw)
+from tests.pinned import (ASTRA, DENY_FRONTEND, FABLE, HEADERS, IMPL_DONE,
+                          OPUS, PLAN_DONE, SOL, ahead, anthropic, cards, deny,
+                          detail, launched, legacy, models, openai, policy,
+                          raw, resume_intent, rig, rewrite, saved, setup,
+                          step, task, unpinned, usage_now, wake, write_ticket)
+from tests.test_main import FakeNotifier, FakeSessions, deps
 
 
 # --- the one answer -------------------------------------------------------------
@@ -89,10 +57,7 @@ def test_a_state_file_from_before_the_field_marks_a_ticket_without_a_pick(
         tmp_path):
     def read(stage, picks, **over):
         save(tmp_path, task(stage, ticket_cursor=2, ticket_count=3, picks=picks))
-        p = state._path(tmp_path, "t", 42)
-        doc = json.loads(p.read_text())
-        del doc["ticket_without_pick"]
-        p.write_text(json.dumps({**doc, **over}))
+        rewrite(tmp_path, "t", "ticket_without_pick", **over)
         return load(tmp_path, "t", 42)
     assert read(Stage.IMPLEMENT, {}).ticket_without_pick
     assert read(Stage.FAILED, {}, crashed_stage="implement").ticket_without_pick
@@ -103,21 +68,6 @@ def test_a_state_file_from_before_the_field_marks_a_ticket_without_a_pick(
 
 
 # --- A: a legacy state with no pick is in the middle of its ticket -------------
-
-def legacy(tmp_path, monkeypatch, **kw):
-    """A state file from before picks existed: ticket 2 of 3 in progress."""
-    c = make_cfg(tmp_path, monkeypatch, ahead())
-    wt = make_task(c, issue=42, track="architecture", ticket_cursor=2,
-                   ticket_count=3, picks={}, **kw)
-    for n in (1, 2, 3):
-        write_ticket(wt, n)
-    p = state._path(c.state_dir, "portfolio_eval", 42)
-    doc = json.loads(p.read_text())
-    for key in ("implement_providers", "ticket_tracks", "ticket_without_pick"):
-        doc.pop(key, None)
-    p.write_text(json.dumps(doc))
-    return c, wt
-
 
 def test_a_wake_of_a_legacy_task_continues_its_ticket(tmp_path, monkeypatch):
     c, wt = legacy(tmp_path, monkeypatch, park=PARK_WAKE)
@@ -300,8 +250,7 @@ def test_a_pending_override_starts_a_ticket_whose_track_is_not_pinned(
     execution_overrides.save(
         c.state_dir, "portfolio_eval", 42,
         execution_overrides.ExecutionOverride(model=SOL, bypass_usage=False))
-    c2 = replace(c, models=policy(pinned=["security", "architecture"]))
-    assert launched(step(c2, wt, IMPL_DONE)) == [(SOL, "")]
+    assert launched(step(unpinned(c), wt, IMPL_DONE)) == [(SOL, "")]
     t = saved(c)
     assert not t.park and t.ticket_cursor == 2
     assert execution_overrides.load(c.state_dir, "portfolio_eval", 42) is None

@@ -1,9 +1,10 @@
-"""Console slices for ticket 06 of pinned-tracks: the pinned track of a
-ticket launch (web.app.launch_pinned_track), the limit a ticket's pick sets
-on the override list, and a ticket track that is no longer pinned."""
+"""The pin the console shows for a ticket launch
+(web.app.launch_pinned_track), the limit a ticket's pick sets on the override
+list, and a ticket track that is no longer pinned."""
 from dispatcher.state import PARK_HUMAN, Stage
-from tests.test_web_pinned_tracks import (HEADERS, anthropic, cards, detail,
-                                          models, openai, policy, rig)
+from tests.pinned import (HEADERS, anthropic, cards, detail, models, openai,
+                          rig)
+from tests.pinned import web_policy as policy
 from tests.webfakes import make_task
 from web.app import launch_pinned_track
 

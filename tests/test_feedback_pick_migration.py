@@ -1,29 +1,14 @@
 """Unit slices for ticket 04 of pinned-tracks that the acceptance tests leave
 out: the pick key of a stage, and the halves of the read-time migration that
 remove the pick, keep it, and change nothing on a second read."""
-import json
-
 import pytest
 
-from dispatcher import state
 from dispatcher.models import pick_key, stage_pick
-from dispatcher.state import Stage, TaskState, load, save
+from dispatcher.state import Stage, load, save
+from tests.pinned import old_shape
 
 SOL = "openai/gpt-sol@medium"
 FABLE = "anthropic/claude-fable-5-1@medium"
-
-
-def old_shape(tmp_path, stage, picks, **raw_over):
-    """A state file with no recorded provider, as before the record existed."""
-    save(tmp_path, TaskState(issue=42, target="t", stage=stage, slot=1,
-                             worktree="", branch="b", title="", updated_at="u",
-                             picks=picks))
-    p = state._path(tmp_path, "t", 42)
-    raw = json.loads(p.read_text())
-    raw.pop("implement_providers", None)
-    raw.update(raw_over)
-    p.write_text(json.dumps(raw))
-    return p
 
 
 @pytest.mark.parametrize("stage,key", [

@@ -1,28 +1,25 @@
-"""Ticket 06, fix round 2. Each test names the item it protects."""
+"""Nothing changes an accepted ticket set, and what follows from that: the
+legacy mark goes when its ticket is done; a denied override is no reason to
+park; a turn that fails after it saved a stage with no session stays
+resumable; a task from before tickets; the label and the models.log line
+name the launch."""
 import json
 from dataclasses import replace
 
-import pytest
-
 import dispatcher.main as main
-from dispatcher import execution_overrides, intents, state
+from dispatcher import execution_overrides, state
 from dispatcher.machine import Notify, SpawnStage, StartTicket, next_actions
-from dispatcher.state import (PARK_HUMAN, PARK_WAKE, Stage, StageSignal,
-                              TaskState, after_ticket, load, next_launch,
-                              resumable_crash, save, shown_stage)
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, deps,
-                             make_task, valid_spec)
-from tests.test_pinned_tracks_order import (ASTRA, FABLE, OPUS, SOL, ahead,
-                                            deny, launched, make_cfg, policy)
-from tests.test_pinned_tracks_ticket_tracks import (IMPL_DONE, PLAN_DONE,
-                                                    setup, step, usage_now,
-                                                    write_ticket)
-from tests.test_ticket_tracks_fix1 import (DENY_FRONTEND, legacy, raw, saved,
-                                           wake)
-from tests.test_web_pinned_tracks import anthropic, cards, openai, rig
+from dispatcher.state import (PARK_HUMAN, Stage, StageSignal, after_ticket,
+                              next_launch, resumable_crash, save,
+                              shown_stage)
 from tests import webfakes
-
-DENY_ARCHITECTURE = ("gpt-astra", FABLE)     # its implement and review lists
+from tests.pinned import (ASTRA, DENY_ARCHITECTURE, DENY_FRONTEND, FABLE,
+                          IMPL_DONE, OPUS, PLAN_DONE, SOL, ahead, anthropic,
+                          cards, deny, launched, legacy, make_cfg, openai,
+                          raw, rig, saved, setup, step, task, unpinned,
+                          usage_now, wake, write_ticket)
+from tests.test_main import (FakeNotifier, FakeSessions, deps, make_task,
+                             valid_spec)
 
 
 def log_lines(wt):
@@ -67,7 +64,7 @@ def test_a_denied_override_of_an_unpinned_ticket_waits_and_stays_stored(
     execution_overrides.save(
         c.state_dir, "portfolio_eval", 42,
         execution_overrides.ExecutionOverride(model=SOL, bypass_usage=False))
-    c2 = replace(c, models=policy(pinned=["security", "architecture"]))
+    c2 = unpinned(c)
     usage_now(monkeypatch, deny(ahead(), "gpt-sol"))
     assert step(c2, wt, IMPL_DONE).spawned == []
     assert not saved(c).park
@@ -200,15 +197,12 @@ def test_a_task_with_no_ticket_set_keeps_its_pick_while_review_waits(
 # --- 6: the label is the stage of the next launch ------------------------------------
 
 def test_shown_stage():
-    def t(stage=Stage.IMPLEMENT, **kw):
-        return TaskState(issue=1, target="t", stage=stage, slot=0, worktree="",
-                         branch="", title="", updated_at="", **kw)
-    assert shown_stage(t(ticket_cursor=2, ticket_count=2)) == "review"
-    assert shown_stage(t(ticket_cursor=0, ticket_count=2)) == "implement"
-    assert shown_stage(t(ticket_cursor=1, ticket_count=2)) == "implement"
-    assert shown_stage(t()) == "implement"
-    assert shown_stage(t(Stage.PR_OPEN)) == "pr-open"
-    assert shown_stage(t(Stage.FAILED, crashed_stage="implement")) == "failed"
+    assert shown_stage(task(ticket_cursor=2, ticket_count=2)) == "review"
+    assert shown_stage(task(ticket_cursor=0, ticket_count=2)) == "implement"
+    assert shown_stage(task(ticket_cursor=1, ticket_count=2)) == "implement"
+    assert shown_stage(task()) == "implement"
+    assert shown_stage(task(Stage.PR_OPEN)) == "pr-open"
+    assert shown_stage(task(Stage.FAILED, crashed_stage="implement")) == "failed"
 
 
 def test_the_status_line_labels_the_review_that_waits(tmp_path, monkeypatch):
@@ -279,10 +273,8 @@ def test_a_wake_of_a_ticket_in_progress_still_logs_its_resume(
 
 def test_after_ticket_and_the_machine_agree():
     def t(cursor, count):
-        return TaskState(issue=1, target="t", stage=Stage.IMPLEMENT, slot=0,
-                         worktree="", branch="", title="", updated_at="",
-                         ticket_cursor=cursor, ticket_count=count,
-                         picks={"implement": f"{ASTRA}@medium"})
+        return task(ticket_cursor=cursor, ticket_count=count,
+                    picks={"implement": f"{ASTRA}@medium"})
     done = StageSignal("implement", "done", note="n")
     assert after_ticket(t(1, 3)) == ("implement", 2)
     assert next_actions(t(1, 3), done, True) == [StartTicket(2, 3)]

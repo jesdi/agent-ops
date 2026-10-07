@@ -334,10 +334,10 @@ Order = Callable[[Sequence[Entry]], tuple[Entry, ...]]
 def candidates(policy: ModelPolicy, track: str, stage: str,
                avoid_provider: str = "", *, order: Order) -> tuple[Entry, ...]:
     """The ordered entries a stage may launch: the written list as `order`
-    arranges it (`tuple`: as written; a pinned track is always as written). Review prefers a provider other than
-    the one that ran implement: its entries move to the back, order otherwise
-    kept, so a track whose every entry shares one provider is unchanged
-    (preference, not a rule)."""
+    arranges it (`tuple`: as written; a pinned track is always as written).
+    Review prefers a provider other than the one that ran implement: its
+    entries move to the back, order otherwise kept, so a track whose every
+    entry shares one provider is unchanged (preference, not a rule)."""
     if track in policy.pinned:
         order = tuple   # a pinned track keeps its written order, whatever the mode
     entries = order(policy.tracks[track].stages.get(policy_stage(stage), ()))

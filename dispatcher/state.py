@@ -171,7 +171,9 @@ class TaskState:
     track: str = ""                      # configured track name (spec/2026-09-14-model-tracks)
     # providers that ran tickets: first use first, no repeats
     implement_providers: list[str] = field(default_factory=list)
-    picks: dict[str, str] = field(default_factory=dict)  # models.pick_key(stage) -> "provider/model[@effort]", sticky per key; "implement" only while a ticket is in progress
+    # models.pick_key(stage) -> "provider/model[@effort]", sticky per key;
+    # the implement pick only while a ticket is in progress
+    picks: dict[str, str] = field(default_factory=dict)
     spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track)
     plan_retries: int = 0                # in-session plan-format retries used
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved

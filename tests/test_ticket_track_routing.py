@@ -1,29 +1,20 @@
-"""Unit slices for ticket 06 of pinned-tracks that the acceptance tests leave
-out: the state round trip of the ticket tracks, the track a launch reads its
-list from, the ticket set the machine hands over, the two state writes at a
-ticket boundary, and the status line's entry for PR feedback."""
-import json
+"""The track a ticket launch reads its list from, and what carries it: the
+state round trip of the ticket tracks, the ticket set the machine hands over,
+the two state writes at a ticket boundary, a wake between two tickets, and
+the status line's entry for PR feedback."""
 from dataclasses import replace
 
 import dispatcher.main as main
-from dispatcher import state
 from dispatcher.machine import Notify, RetryStage, StartTicket, next_actions
-from dispatcher.models import parse_policy
-from dispatcher.state import (PARK_WAKE, Stage, StageSignal, TaskState,
-                              launch_track, load, save)
+from dispatcher.state import (PARK_WAKE, Stage, StageSignal, launch_track,
+                              load, save)
+from tests.pinned import (ASTRA, DENY_FRONTEND, FABLE, IMPL_DONE, PLAN_DONE,
+                          SOL, ahead, deny, launched, make_cfg, policy, raw,
+                          rewrite, saved, setup, step, task, unpinned, usage_now, wake,
+                          write_ticket)
 from tests.test_main import GOOD_TICKET, FakeSessions, deps, make_task
-from tests.test_pinned_tracks_order import (ASTRA, FABLE, OPUS, SOL, ahead,
-                                            deny, launched, make_cfg, policy)
-from tests.test_pinned_tracks_ticket_tracks import (IMPL_DONE, PLAN_DONE,
-                                                    setup, step, usage_now,
-                                                    write_ticket)
 
 POLICY = policy()
-
-
-def task(stage=Stage.IMPLEMENT, track="architecture", **kw):
-    return TaskState(issue=42, target="t", stage=stage, slot=1, worktree="",
-                     branch="b", title="", updated_at="u", track=track, **kw)
 
 
 # --- state ------------------------------------------------------------------
@@ -36,10 +27,7 @@ def test_ticket_tracks_round_trip_with_int_keys(tmp_path):
 
 def test_a_state_file_from_before_ticket_tracks_reads_as_none(tmp_path):
     save(tmp_path, task())
-    p = state._path(tmp_path, "t", 42)
-    raw = json.loads(p.read_text())
-    del raw["ticket_tracks"]
-    p.write_text(json.dumps(raw))
+    rewrite(tmp_path, "t", "ticket_tracks")
     assert load(tmp_path, "t", 42).ticket_tracks == {}
 
 
@@ -124,27 +112,25 @@ def test_a_done_ticket_drops_its_pick_before_the_next_one_is_chosen(
         writes.append(ts.picks.get("implement", "")), real(d, ts))[1])
     step(c, wt, IMPL_DONE)
     assert writes == ["", f"anthropic/{FABLE}@medium"]
-    assert load(c.state_dir, "portfolio_eval", 42).implement_providers == [
+    assert saved(c).implement_providers == [
         "openai", "anthropic"]
 
 
 def test_a_waiting_ticket_keeps_the_recorded_providers(tmp_path, monkeypatch):
     c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)])
     step(c, wt, PLAN_DONE)
-    usage_now(monkeypatch, deny(ahead(), FABLE, OPUS))
+    usage_now(monkeypatch, deny(ahead(), *DENY_FRONTEND))
     step(c, wt, IMPL_DONE)
     step(c, wt, IMPL_DONE)   # a second read of the saved state adds nothing
-    raw = json.loads(state._path(c.state_dir, "portfolio_eval", 42).read_text())
-    assert raw["implement_providers"] == ["openai"]
-    assert "implement" not in raw["picks"]
+    assert raw(c)["implement_providers"] == ["openai"]
+    assert "implement" not in raw(c)["picks"]
 
 
 def test_review_starts_without_the_last_tickets_pick(tmp_path, monkeypatch):
     c, wt = setup(tmp_path, monkeypatch, "architecture", [()])
     step(c, wt, PLAN_DONE)
     step(c, wt, IMPL_DONE)
-    raw = json.loads(state._path(c.state_dir, "portfolio_eval", 42).read_text())
-    assert raw["stage"] == "review" and "implement" not in raw["picks"]
+    assert raw(c)["stage"] == "review" and "implement" not in raw(c)["picks"]
 
 
 def test_a_ticket_whose_track_is_not_pinned_parks_with_no_implement_pick(
@@ -158,28 +144,13 @@ def test_a_ticket_whose_track_is_not_pinned_parks_with_no_implement_pick(
 
 # --- a wake between two tickets -------------------------------------------------
 
-def unpinned(c):
-    return replace(c, models=policy(pinned=["security", "architecture"]))
-
-
-def saved(c):
-    return load(c.state_dir, "portfolio_eval", 42)
-
-
-def wake(c, **kw):
-    save(c.state_dir, replace(saved(c), park=PARK_WAKE, **kw))
-    sess = FakeSessions()
-    main.run_pass(c, deps(sess=sess))
-    return sess
-
-
 def test_a_wake_between_tickets_starts_the_next_ticket_afresh(
         tmp_path, monkeypatch):
     """No ticket is in progress, so no session is continued and no pick is
     put back for the ticket before: the next ticket starts on its own list."""
     c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",), ()])
     step(c, wt, PLAN_DONE)
-    usage_now(monkeypatch, deny(ahead(), FABLE, OPUS))
+    usage_now(monkeypatch, deny(ahead(), *DENY_FRONTEND))
     step(c, wt, IMPL_DONE)              # ticket 2 waits; the operator parks it
     usage_now(monkeypatch, ahead())
     sess = wake(c)
@@ -196,7 +167,7 @@ def test_a_resume_override_between_tickets_covers_the_next_ticket_only(
     c, wt = setup(tmp_path, monkeypatch, "architecture",
                   [(), ("frontend",), ("frontend",)])
     step(c, wt, PLAN_DONE)
-    usage_now(monkeypatch, deny(ahead(), FABLE, OPUS))
+    usage_now(monkeypatch, deny(ahead(), *DENY_FRONTEND))
     step(c, wt, IMPL_DONE)
     assert launched(wake(c, resume_model_override=SOL)) == [(SOL, "")]
     assert saved(c).ticket_cursor == 2
@@ -235,7 +206,7 @@ def test_a_new_ticket_set_replaces_the_whole_copy(tmp_path, monkeypatch):
     write_ticket(wt, 1)
     write_ticket(wt, 2, "frontend")
     step(c, wt, PLAN_DONE)
-    assert load(c.state_dir, "portfolio_eval", 42).ticket_tracks == {
+    assert saved(c).ticket_tracks == {
         2: "frontend"}
 
 

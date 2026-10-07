@@ -1,12 +1,12 @@
 """A run request with no model arms the model the card names: the first
 entry of the next launch's list that the usage gate admits, not the list
 head. Black-box through TestClient; policy and usage from
-tests/test_web_pinned_tracks.py."""
+tests/pinned.py."""
 import pytest
 
 from dispatcher.state import NO_SLOT, Stage
-from tests.test_web_pinned_tracks import anthropic, cards, openai, rig
-from tests.webfakes import HEADERS, make_task
+from tests.pinned import HEADERS, anthropic, cards, openai, rig
+from tests.webfakes import make_task
 
 OPENAI_DENIED = lambda: {"anthropic": anthropic(), "openai": openai(0.99)}  # noqa: E731
 
