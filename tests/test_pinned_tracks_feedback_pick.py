@@ -7,6 +7,8 @@ tests/test_pinned_tracks_order.py (standard implement = sonnet, sol;
 architecture is pinned: astra, fable)."""
 import json
 
+import pytest
+
 import dispatcher.main as main
 from dispatcher import state
 from dispatcher.state import NO_SLOT, Stage, load
@@ -139,17 +141,18 @@ def test_old_shape_state_read_moves_the_pick_to_the_feedback_key(tmp_path):
     assert got.implement_providers == ["openai"]
 
 
+@pytest.mark.parametrize("implement", [
+    {"implement": "anthropic/claude-opus-5"}, {}], ids=["anthropic", "absent"])
 def test_crashed_address_review_is_reported_with_the_feedback_runtime(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, implement):
+    # One state dir per case: a failure is filed once per fingerprint.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    for implement in ({"implement": "anthropic/claude-opus-5"}, {}):
-        gh = FakeGitHub()
-        wt = make_task(c, issue=42, stage=Stage.ADDRESS_REVIEW, pr_number=12,
-                       picks={**implement,
-                              "feedback": "openai/gpt-5-codex@high"})
-        main.run_pass(c, deps(gh, FakeSessions(alive=set())))
-        body = gh.created_issues[0][2]
-        assert (f"- repro: `cd {wt} && codex resume --last  # inside "
-                "session image`") in body
+    gh = FakeGitHub()
+    wt = make_task(c, issue=42, stage=Stage.ADDRESS_REVIEW, pr_number=12,
+                   picks={**implement, "feedback": "openai/gpt-5-codex@high"})
+    main.run_pass(c, deps(gh, FakeSessions(alive=set())))
+    body = gh.created_issues[0][2]
+    assert (f"- repro: `cd {wt} && codex resume --last  # inside "
+            "session image`") in body
