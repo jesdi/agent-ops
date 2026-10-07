@@ -1318,10 +1318,6 @@ def _respawn(cfg: Config, deps: Deps, target: Target,
                           model=str(launch.entry), detail=detail)
 
 
-def _saved(cfg: Config, task: TaskState) -> TaskState:
-    return load(cfg.state_dir, task.target, task.issue) or task
-
-
 def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
                      task: TaskState, dry_run: bool = False) -> None:
     """One task's turn blew up. Fail THAT task; let the pass carry on.
@@ -1333,8 +1329,13 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
     filed a pass-crash and re-raised, so the unit failed and every task
     QUEUED BEHIND the broken one was never reached. One dead checkout stopped
     the whole box, every firing, until a human looked. A card in Failed is
-    the far cheaper outcome, and the report carries the traceback."""
+    the far cheaper outcome, and the report carries the traceback.
+
+    The failure is written from the saved state: the turn may have persisted
+    a step (a done ticket, a started one) before it failed, and the caller's
+    `task` predates that write."""
     error = traceback.format_exc()
+    task = load(cfg.state_dir, task.target, task.issue) or task
     # Best-effort teardown: the point of this function is that nothing in it
     # may raise, or we are back to killing the pass.
     try:
@@ -2415,9 +2416,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
             try:
                 _drive_task(eff, deps, target, task, admit, order, dry_run)
             except Exception:
-                # From the saved state: the turn may have persisted a done
-                # step before it failed, and `task` predates that write.
-                _fail_task_crash(eff, deps, target, _saved(eff, task), dry_run)
+                _fail_task_crash(eff, deps, target, task, dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
     _resume_woken(eff, deps, admit, order, dry_run)

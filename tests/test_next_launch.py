@@ -106,6 +106,31 @@ def test_a_failed_ticket_start_does_not_put_the_done_tickets_pick_back(
     assert saved(c).ticket_cursor == 2
 
 
+def test_a_wake_that_fails_after_the_ticket_started_keeps_what_it_saved(
+        tmp_path, monkeypatch):
+    """A wake between two tickets starts ticket 2 (cursor, pick and provider
+    saved), then the turn raises. The failure is written from the saved
+    state, not from the task object the wake began with."""
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)])
+    step(c, wt, PLAN_DONE)
+    usage_now(monkeypatch, deny(ahead(), *DENY_FRONTEND))
+    step(c, wt, IMPL_DONE)                      # ticket 2 waits
+    usage_now(monkeypatch, ahead())
+    real = main.eventlog.append_event
+
+    def append(state_dir, event, **kw):
+        if event == "stage-started":
+            raise OSError("disk full")
+        real(state_dir, event, **kw)
+    monkeypatch.setattr(main.eventlog, "append_event", append)
+    assert len(wake(c).spawned) == 1
+    t = saved(c)
+    assert (t.stage, t.crashed_stage, t.ticket_cursor) == (
+        Stage.FAILED, "implement", 2)
+    assert t.picks["implement"] == f"anthropic/{FABLE}@medium"
+    assert t.implement_providers == ["openai", "anthropic"]
+
+
 # --- C1: the accepted ticket set is persisted before ticket 1 is admitted --------
 
 def accepted_and_waiting(tmp_path, monkeypatch):
