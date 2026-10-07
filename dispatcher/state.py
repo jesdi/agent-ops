@@ -264,9 +264,9 @@ def _read(p: Path) -> TaskState | None:
         d["terminal_at"] = ""
     d["labels"] = tuple(d.get("labels", ()))
     d["picks"] = dict(d.get("picks") or {})
-    # Old shape: the implement pick's provider ran the tickets.
-    d.setdefault("implement_providers",
-                 list(filter(None, [pick_provider(d["picks"], "implement")])))
+    # Old shape: the implement pick's provider ran the tickets.  No recorded provider: the pick stands in.
+    if not d.get("implement_providers"):
+        d["implement_providers"] = list(filter(None, [pick_provider(d["picks"], "implement")]))
     d.pop("pending_reply", None)   # retired field, see original comment
     if "operator_request" not in d:
         # Legacy record: derive from unambiguous gate evidence.

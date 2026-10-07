@@ -705,3 +705,8 @@ def test_old_shape_without_an_implement_pick_records_nothing(tmp_path: Path):
     d.pop("implement_providers")
     (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
     assert load(tmp_path, "portfolio_eval", 101).implement_providers == []
+
+
+def test_empty_recorded_providers_with_an_implement_pick_count_the_pick(tmp_path: Path):
+    save(tmp_path, make(stage=Stage.IMPLEMENT, picks={"implement": "openai/gpt-sol@medium"}))
+    assert load(tmp_path, "portfolio_eval", 101).implement_providers == ["openai"]

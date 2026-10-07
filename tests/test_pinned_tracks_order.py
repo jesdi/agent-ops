@@ -18,7 +18,7 @@ import pytest
 import dispatcher.main as main
 from dispatcher import execution_overrides, priority, triage
 from dispatcher.config import load_config
-from dispatcher.models import parse_entry, parse_policy
+from dispatcher.models import parse_policy
 from dispatcher.state import PARK_WAKE, Stage, load
 from dispatcher.usage import PaceConfig
 from tests.test_config import SAMPLE
@@ -141,9 +141,7 @@ def implement_on(tmp_path, monkeypatch, track, usages, **kw):
 def review_on(tmp_path, monkeypatch, track, usages, implement_pick, **kw):
     c = make_cfg(tmp_path, monkeypatch, usages, **kw)
     enter(c, 42, track, Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
-          picks={"implement": implement_pick},
-          implement_providers=[parse_entry(implement_pick, "pick").provider]
-          if implement_pick else [])
+          picks={"implement": implement_pick})
     return c, run_pass(c, 42)
 
 
