@@ -163,14 +163,20 @@ def _execution_override_for(cfg: Config, task: TaskState,
     return override
 
 
+_STORED = object()   # _choose_launch: read the stored one-shot override
+
+
 def _choose_launch(cfg: Config, target: Target | None, task: TaskState,
-                   stage: Stage, admit: Admit,
-                   order: Order) -> tuple[Launch | None, bool]:
+                   stage: Stage, admit: Admit, order: Order,
+                   override: object = _STORED) -> tuple[Launch | None, bool]:
     """What a spawn site launches and whether usage is bypassed. A one-shot
     operator override names the entry outright; otherwise the sticky pick or
     the track decides, and a denied launch is (None, bypass): nothing
-    mutated, the signal persists, retried once headroom returns."""
-    override = _execution_override_for(cfg, task, stage)
+    mutated, the signal persists, retried once headroom returns.
+    `override`: the stored one-shot override, from a caller that has read
+    it (_execution_override_for) and needs it again."""
+    if override is _STORED:
+        override = _execution_override_for(cfg, task, stage)
     bypass = bool(override and override.bypass_usage)
     if override is not None and override.model:
         launch = Launch(stage, parse_entry(override.model, "override"))
@@ -1145,7 +1151,8 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
         if launch is None:
             # Nothing admitted: wait. A ticket track that is still not
             # pinned: back to the operator, with the reason.
-            _park_unpinned_ticket(cfg, deps, target, task)
+            _park_unpinned_ticket(cfg, deps, target, task, execution_overrides.load(
+                cfg.state_dir, task.target, task.issue))
             continue
         if not task.resume_bypass_usage and not admit(launch.model).admitted:
             continue  # this model's provider has no headroom; others may
@@ -1484,16 +1491,16 @@ def _park_changed_tickets(cfg: Config, deps: Deps, target: Target,
     return True
 
 
-def _park_unpinned_ticket(cfg: Config, deps: Deps, target: Target,
-                          task: TaskState) -> None:
+def _park_unpinned_ticket(
+        cfg: Config, deps: Deps, target: Target, task: TaskState,
+        override: execution_overrides.ExecutionOverride | None) -> None:
     """A ticket whose track is no longer pinned starts on no other list: the
     task parks for the operator (again, when a wake finds it still not
-    pinned). Not while a one-shot override is pending: that launch is the
-    override's, whenever the gate admits it."""
+    pinned). Not while a one-shot `override` (the stored one) is pending:
+    that launch is the override's, whenever the gate admits it."""
     policy = _policy(cfg, target)
     ticket = launch_ticket(task)
     track = task.ticket_tracks.get(ticket, "")
-    override = execution_overrides.load(cfg.state_dir, task.target, task.issue)
     if not track or track in policy.pinned or (override and override.model):
         return
     _park_for_input(
@@ -1779,11 +1786,12 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
         if (stage in (Stage.IMPLEMENT, Stage.REVIEW)
                 and _park_changed_tickets(cfg, deps, target, task)):
             return
-        launch, bypass_usage = ((None, False) if stage is None
-                                else _choose_launch(cfg, target, task, stage, admit, order))
+        override = stage and _execution_override_for(cfg, task, stage)
+        launch, bypass_usage = ((None, False) if stage is None else _choose_launch(
+            cfg, target, task, stage, admit, order, override))
         if stage is not None and launch is None:
             if isinstance(act, StartTicket):
-                _park_unpinned_ticket(cfg, deps, target, task)
+                _park_unpinned_ticket(cfg, deps, target, task, override)
             return  # no launch: the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)

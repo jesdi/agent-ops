@@ -143,13 +143,21 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         if refusal:
             raise HTTPException(422, refusal)
 
+    def _one_shot(t):
+        """The pending one-shot override of t's next launch, as (stored,
+        model): an execution override is stored for it (the dispatcher reads
+        it at the launch), and the model a queued resume names, else ""."""
+        return (sources.execution_override(t.target, t.issue) is not None,
+                t.resume_model_override if t.park == PARK_WAKE else "")
+
     def _choices(t, order):
         """The ordered entries the dispatcher would walk for t's next launch."""
         return launch_entries(t, _policy(t.target), order)
 
     def _model_for(t, order, usages=None, now=None):
-        if t.park == PARK_WAKE and t.resume_model_override:
-            return t.resume_model_override
+        _, resume_model = _one_shot(t)
+        if resume_model:
+            return resume_model
         pick = stage_pick(t.picks, next_stage(t))
         if pick:
             return parse_entry(pick, "pick").model_id
@@ -164,9 +172,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return choices[0].model_id
 
     def _task_admission(t, order, usages, now):
-        if t.stage in TERMINAL_STAGES or t.resume_bypass_usage:
-            return None
-        if sources.execution_override(t.target, t.issue) is not None:
+        if (t.stage in TERMINAL_STAGES or t.resume_bypass_usage
+                or _one_shot(t)[0]):
             return None
         stage = next_stage(t)
         pinned = _pinned_track(t)
@@ -179,9 +186,8 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             usages, now, pinned_track=pinned)
 
     def _pinned_track(t):
-        overridden = (sources.execution_override(t.target, t.issue) is not None
-                      or bool(t.park == PARK_WAKE and t.resume_model_override))
-        return launch_pinned_track(t, _policy(t.target), overridden=overridden)
+        return launch_pinned_track(t, _policy(t.target),
+                                   overridden=any(_one_shot(t)))
 
     def _admission_for_model(model, choices, usages, now, pinned_track=""):
         if not model:
