@@ -4,6 +4,11 @@ this one, works every ticket of the approved plan. The spec is `$spec_path`,
 with `proposal.md` and `design.md` beside it. You have no memory of earlier
 sessions and nobody is watching this chat.
 
+Before the tickets: when `.agent/review-answers.json` exists, read it. It
+holds the operator's decisions at the plan gate (`answers`, by question id;
+the questions are on `.agent/review.html`). Apply them over the tickets where
+they disagree. Never commit it.
+
 Read the skill file `~/.claude/skills/implement-spec/SKILL.md` (on Codex:
 `~/.codex/skills/implement-spec/SKILL.md`) and follow it over the tickets
 directory `$tickets_dir`, on the existing task branch `$branch`: that branch

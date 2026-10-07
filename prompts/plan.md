@@ -88,10 +88,12 @@ commit anything under `.agent/`: the tickets and the review page stay local.
 Then signal `awaiting-review` and stop.
 
 ## 6. The operator's reply
-- A reply that answers open questions or asks for changes is feedback, and
-  feedback is never an approval, even when it reads as agreement. It can
-  also reach you in this pane, typed by the operator. Before you change
-  anything, write `{"stage": "plan", "status": "working", "note": "applying feedback"}`:
+The reply is `.agent/review-answers.json`; you are resumed with "Answers in
+.agent/review-answers.json (changes|approve) ...". Its `answers` are keyed by
+question id; `answers.track` names a track.
+- `"submitted": "changes"` is feedback, never an approval, even when it reads
+  as agreement. Before you change anything, write
+  `{"stage": "plan", "status": "working", "note": "applying feedback"}`:
   while your signal still says `awaiting-review` the dispatcher may end
   this session in the middle of the rework. Then apply the feedback:
   a changed requirement changes `spec.md`, `design.md` and the tickets; a
@@ -99,9 +101,17 @@ Then signal `awaiting-review` and stop.
   that depends on the change, update the review page, commit, push, and report
   the plan ready again with `awaiting-review`. Never go back to an interview
   and never start over.
-- Only an explicit approval ("approved", "ship it", "go") with nothing left
-  to change ends the review: signal `done` and exit. When the approval names
-  another track ("approved, but run it as security"), write that name as
+- An answer you cannot map, because its id is no question of the current
+  page, is ignored. List it under Corrections of the next page ("answer `<id>` = `<value>` ignored:
+  no such question").
+- A reply typed in this pane or sent by the reply route is handled the same
+  way. First write the same file, `.agent/review-answers.json`, yourself with
+  `"actor": "text"`, `"submitted"` as the text says (`"changes"` or
+  `"approve"`) and the answers you could read; then proceed.
+- `"submitted": "approve"` is the approval that ends the review (an explicit
+  "approved", "ship it" or "go" in text, with nothing left to change, is the
+  same): signal `done` and exit. `answers.track` names the track for
+  `done`; when the approval names another track, write that name as
   `"track"`; implement and review then run on it. The tracks:
 
 $tracks
