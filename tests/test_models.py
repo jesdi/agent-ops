@@ -228,6 +228,19 @@ def test_tracks_text_lists_name_and_when_per_line():
     assert len(text.splitlines()) == 4
 
 
+def _rules(text):
+    return text.split("\n- ", 1)[0] if text.startswith("Pick") else ""
+
+
+def test_tracks_text_rules_name_the_untracked_track_only_when_a_track_is_pinned():
+    e = ["claude-sonnet-5@medium"]
+    track = {"when": "w", "spec": e, "plan": e, "implement": e, "review": e}
+    raw = {"triage": e, "untracked": "base",
+           "tracks": {"base": track, "sec": track}}
+    assert "pick base." in _rules(tracks_text(parse_policy({**raw, "pinned": ["sec"]})))
+    assert _rules(tracks_text(parse_policy(raw))) == ""
+
+
 def test_track_from_labels_takes_the_first_configured_track_label():
     p = policy()
     assert track_from_labels(["auto", "track:security"], p) == "security"

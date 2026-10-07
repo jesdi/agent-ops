@@ -71,10 +71,13 @@ loop_caps:
 # order breaks ties and ranks entries with no weekly reading, which go last.
 # A session-bound provider's entries (session_week_share above) go first.
 # A priority mode set in the console (`auto` or a provider) replaces this
-# order: a provider's name puts its entries first (see CONTEXT.md). The mode
-# does not reorder a pinned track (`pinned:` below): its lists stay as written.
+# order: a provider's name puts its entries first (see CONTEXT.md).
 # It launches the first entry in that order the usage gate admits, keeps that
 # pick for every session of the stage, and waits when none is admitted.
+# A pinned track (`pinned:` below) is the exception: required pace, the
+# session-bound rule and a provider-first mode do not apply to it. Its entries
+# are tried in the written order. The usage gate still applies; when no entry
+# of its list is admitted, the task waits.
 # Review moves the provider that ran implement to the back of its list.
 # A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
 # A target may carry its own `models:` block, which REPLACES this one.
@@ -102,7 +105,7 @@ models:
       implement: [claude-fable-5-1@medium, claude-opus-5@medium]
       review:    [openai/gpt-astra@medium, claude-opus-5@medium]
     architecture:
-      when: Heavy backend work, or a change to the architecture of the system.
+      when: Heavy backend work, or a change to the architecture (module boundaries, data model or schema, persistence, concurrency, a refactor across modules, a public interface other code depends on).
       spec:      [openai/gpt-astra@high, claude-fable-5-1@high]
       plan:      [openai/gpt-astra@high, claude-fable-5-1@high]
       implement: [openai/gpt-astra@medium, claude-fable-5-1@medium]
