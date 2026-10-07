@@ -12,6 +12,7 @@ Interface these tests define (the Seam):
   dispatcher passes it as the keyword `second`."""
 import json
 import os
+import shlex
 from dataclasses import replace
 from pathlib import Path
 

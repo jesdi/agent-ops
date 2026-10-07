@@ -73,14 +73,13 @@ def _wrapper() -> list[str]:
 
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
-                args: str, effort: str = "", runtime: Runtime | None = None,
+                args: str, effort: str = "",
                 second: Entry | None = None) -> str:
-    """The session's shell command, on the model's runtime. A caller that
-    already resolved it (Sessions._launch) passes it; otherwise it is
-    resolved here, and an unknown provider raises before anything runs.
+    """The session's shell command, resolved from its qualified model ID.
+    An unknown provider raises before anything runs.
     A granted `second` model (models.second_model) also gets its runtime's
     home, env and host binary: the mount is the permission."""
-    runtime = runtime or runtime_for(model)
+    runtime = runtime_for(model)
     extra = _runtime_args(runtime_for(second.model_id)) if second else []
     clone = clone_root(worktree)
     branch = task_branch(worktree)

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from dispatcher import containers, herdr, workspace
 from dispatcher.models import Entry
-from dispatcher.runtimes import Runtime, runtime_for
+from dispatcher.runtimes import runtime_for
 
 
 def session_name(target: str, issue: int) -> str:
@@ -31,10 +31,10 @@ def session_name(target: str, issue: int) -> str:
 
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
-               runtime: Runtime | None = None, second: Entry | None = None) -> str:
+               second: Entry | None = None) -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  runtime=runtime, second=second)
+                                  second=second)
 
 
 class Sessions:
@@ -62,15 +62,16 @@ class Sessions:
         return tab is not None and tab.alive
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
-                runtime: Runtime, args: str, effort: str = "",
+                args: str, effort: str = "",
                 second: Entry | None = None) -> None:
         # Build the command FIRST: containers.clone_root reads
         # <worktree>/.git and raises on a vanished worktree (the case
         # _fail_task_crash exists for). Doing it before Tab.ensure means
         # that raise leaves no workspace and no empty tab behind for a task
         # that will never launch.
+        runtime = runtime_for(model)
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
-                         model, args, effort=effort, runtime=runtime,
+                         model, args, effort=effort,
                          second=second)
         workspace.install_stop_hook(worktree)
         tab = herdr.Tab.ensure(
@@ -102,7 +103,7 @@ class Sessions:
         agent_dir = Path(worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)
-        self._launch(target, issue, worktree, model, runtime_for(model),
+        self._launch(target, issue, worktree, model,
                      f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort,
                      second=second)
 
@@ -113,7 +114,7 @@ class Sessions:
                   f"at {worktree}")
             return
         runtime = runtime_for(model)
-        self._launch(target, issue, worktree, model, runtime,
+        self._launch(target, issue, worktree, model,
                      runtime.resume(shlex.quote(message)), effort=effort,
                      second=second)
 
