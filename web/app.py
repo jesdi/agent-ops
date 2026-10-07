@@ -95,9 +95,14 @@ class ReadyReq(BaseModel):
     issue: int
 
 
-def launch_pinned_track(t: TaskState, policy: ModelPolicy) -> str:
+def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
+                        overridden: bool = False) -> str:
     """The pinned track t's next launch comes from, else "": the task track
-    when it is pinned. (A ticket with its own track is ticket 06's.)"""
+    when it is pinned, unless no launch comes from the list — a terminal
+    task or a pending one-shot override (`overridden`). A pick keeps the
+    pin. (A ticket with its own track is ticket 06's.)"""
+    if t.stage in TERMINAL_STAGES or overridden:
+        return ""
     return t.track if t.track in policy.pinned else ""
 
 
@@ -179,7 +184,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             usages, now, pinned_track=pinned)
 
     def _pinned_track(t):
-        return launch_pinned_track(t, _policy(t.target))
+        overridden = (sources.execution_override(t.target, t.issue) is not None
+                      or bool(t.park == PARK_WAKE and t.resume_model_override))
+        return launch_pinned_track(t, _policy(t.target), overridden=overridden)
 
     def _admission_for_model(model, choices, usages, now, pinned_track=""):
         if not model:

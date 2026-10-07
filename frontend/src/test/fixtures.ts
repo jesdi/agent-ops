@@ -176,17 +176,16 @@ export const usageRouted: UsageView = {
   priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic', pinned: [] },
 }
 
-// Pinned tracks: fields the generated api-types does not carry until the
-// console ships them, so these are spread-built (no excess-property check).
-export const pinnedCard = {
+// Pinned tracks (ticket 03).
+export const pinnedCard: TaskCard = {
   ...inProgressCard, issue: 51, title: 'Rework the settings screen',
   model: 'claude-fable-5-1', track: 'architecture', pinned_track: 'frontend',
-} as TaskCard
+}
 
-export const unpinnedCard = {
+export const unpinnedCard: TaskCard = {
   ...inProgressCard, issue: 52, title: 'Tidy the changelog',
   model: 'openai/gpt-sol', track: 'standard', pinned_track: '',
-} as TaskCard
+}
 
 export const pinnedWaitAdmission = {
   requested: { model: 'anthropic/claude-fable-5-1', provider: 'anthropic', admitted: false, note: 'week·Fable over pace' },
@@ -199,12 +198,12 @@ export const pinnedWaitAdmission = {
   pinned_track: 'frontend',
 }
 
-export const usagePinned = {
+export const usagePinned: UsageView = {
   ...usageRouted,
   priority: { ...usageRouted.priority, pinned: ['security', 'architecture', 'frontend'] },
-} as UsageView
+}
 
-export const usageUnpinned = {
+export const usageUnpinned: UsageView = {
   ...usageRouted,
   priority: { ...usageRouted.priority, pinned: [] },
-} as UsageView
+}
