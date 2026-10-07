@@ -239,7 +239,7 @@ def test_after_the_mode_changed_the_next_ticket_and_review_follow_the_mode(
                         ticket_cursor=1, ticket_count=2, picks=t.picks)
     assert launched(sess) == [LUNA_ID]            # the next ticket chooses again
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
-                        stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+                        stage=Stage.IMPLEMENT, ticket_cursor=2, ticket_count=2,
                         picks=t.picks)
     assert launched(sess) == [SOL_ID]             # fresh stage follows the mode
 

@@ -21,7 +21,8 @@ from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, consumes_capacity,
-                              holds_slot, max_slots, resumable_crash)
+                              holds_slot, max_slots, resumable_crash,
+                              shown_stage)
 
 FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
 
@@ -232,9 +233,9 @@ def task_card(t: TaskState, *, model: str,
               pinned_track: str = "") -> TaskCard:
     return TaskCard(
         issue=t.issue, target=t.target, title=t.title,
-        stage=t.stage.value, park=t.park,
+        stage=shown_stage(t), park=t.park,
         park_note=t.park_note,
-        column=column_for(t.stage.value, t.park),
+        column=column_for(shown_stage(t), t.park),
         slot=t.slot, branch=t.branch, model=model, track=t.track,
         pinned_track=pinned_track,
         # PARK_HUMAN only: it is the one park whose Telegram ping may be

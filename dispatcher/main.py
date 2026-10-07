@@ -57,7 +57,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               holds_slot, launch_ticket, launch_track, load,
                               load_all, max_slots,
                               next_stage, read_background, read_stage_signal,
-                              resumable_crash, ticket_in_progress,
+                              resumable_crash, shown_stage, ticket_in_progress,
                               save, task_key)
 from dispatcher.workspace import create_workspace, remove_workspace
 import telegram.inbound as inbound
@@ -347,7 +347,7 @@ def _status_lines(cfg: Config) -> list[str]:
     for t in tasks:
         model = _display_entry(cfg, by_name.get(t.target), t)
         slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
-        lines.append(f"{_ref(cfg, t)} {t.title} — {t.stage.value} [{model}]"
+        lines.append(f"{_ref(cfg, t)} {t.title} — {shown_stage(t)} [{model}]"
                      + (f" [{t.park}]" if t.park else "") + f" {slot}")
     lines = lines or ["(nothing in flight)"]
     # The sweep holds a real capacity unit that active() cannot see (its work
@@ -1193,19 +1193,13 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                 task: TaskState, launch: Launch) -> None:
     entry = launch.entry
     model = entry.model_id
-    agent_dir = Path(task.worktree) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    # Rewrite stage.json BEFORE resuming, or the next pass re-reads
-    # blocked/awaiting-ci and re-parks the freshly resumed session.
-    (agent_dir / "stage.json").write_text(json.dumps(
-        {"stage": task.stage.value, "status": "working", "model": model,
-         "effort": entry.effort}))
-    _log_model(task.worktree, task.stage, str(entry))
     # End first, unconditionally. Most parks already stopped the session,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
     # running session (the failure _retry_plan and SpawnStage guard).
     _end_session(cfg, deps, task.target, task.issue)
+    # The two fresh-spawn paths below write stage.json and the models.log
+    # line themselves (_spawn_stage), with the stage that is launched.
     if task.crashed_stage or _no_ticket_in_progress(task):
         _respawn(cfg, deps, target, task, launch)
         return
@@ -1224,6 +1218,14 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
                               model=str(entry))
         return
+    agent_dir = Path(task.worktree) / ".agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    # Rewrite stage.json BEFORE resuming, or the next pass re-reads
+    # blocked/awaiting-ci and re-parks the freshly resumed session.
+    (agent_dir / "stage.json").write_text(json.dumps(
+        {"stage": task.stage.value, "status": "working", "model": model,
+         "effort": entry.effort}))
+    _log_model(task.worktree, task.stage, str(entry))
     block, drained = _drain(cfg, task.target, task.issue)
     if task.hold_for_attach:
         text = ATTACH_TEXT
@@ -1253,9 +1255,17 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
                           model=str(entry))
 
 
+# A stage with no session of its own -> the stage a Resume respawns for it:
+# a turn can save such a stage (the PR is open, the spec waits at its gate)
+# and fail afterwards.
+_RESPAWN_AS = {Stage.PR_OPEN: Stage.ADDRESS_REVIEW,
+               Stage.AWAITING_SPEC_REVIEW: Stage.SPEC}
+
+
 def _crash_failed(task: TaskState) -> TaskState:
     """FAILED by a crash, remembering the stage so Resume can respawn it."""
-    crashed = task.stage.value if task.stage in RESPAWNABLE_STAGES else ""
+    stage = _RESPAWN_AS.get(task.stage, task.stage)
+    crashed = stage.value if stage in RESPAWNABLE_STAGES else ""
     return replace(task, stage=Stage.FAILED, crashed_stage=crashed, park="",
                    hold_for_attach=False, operator_request=None,
                    updated_at=_now())
@@ -1418,26 +1428,51 @@ def _without_ticket_pick(task: TaskState) -> TaskState:
                           if k != pick_key(Stage.IMPLEMENT.value)})
 
 
-def _step_done(cfg: Config, task: TaskState, act: object) -> TaskState:
+def _step_done(turn: _Turn, task: TaskState, act: object) -> TaskState:
     """The task with the step `act` says is complete persisted, in a write of
     its own, BEFORE the next launch is chosen and admitted: every reader of
     the state (state.next_launch) then names the launch that waits. Plan
     done with a valid set: the set is accepted — the task is in implement
-    with no ticket started and the set's count and ticket tracks, and the
-    ticket files are not read for routing again. A ticket done: no ticket
-    is in progress and its pick is gone, so the next ticket chooses from its
-    own list, or review starts after the last one."""
+    with no ticket started and the set's count and ticket tracks, the
+    ticket files are not read for routing again, and the plan session is
+    ended so it cannot change the set while ticket 1 waits. A ticket done:
+    no ticket is in progress and its pick is gone, so the next ticket
+    chooses from its own list, or review starts after the last one. A task
+    with no ticket set (from before tickets) has one implement session and
+    keeps its pick until review starts."""
     done = task
     if isinstance(act, StartTicket) and task.stage is Stage.PLAN:
+        _end_session(turn.cfg, turn.deps, task.target, task.issue)
         done = replace(task, stage=Stage.IMPLEMENT, ticket_cursor=0,
                        ticket_count=act.count, ticket_tracks=dict(act.tracks),
                        updated_at=_now())
-    if (done.stage is Stage.IMPLEMENT
+    if (done.stage is Stage.IMPLEMENT and done.ticket_count
             and _action_stage(act) in (Stage.IMPLEMENT, Stage.REVIEW)):
         done = _without_ticket_pick(done)
     if done != task:
-        save(cfg.state_dir, done)
+        save(turn.cfg.state_dir, done)
     return done
+
+
+def _park_extra_tickets(turn: _Turn, task: TaskState, act: object) -> bool:
+    """True when the task was parked instead of entering review: the last
+    ticket of the accepted set is done, but the tickets directory holds more
+    files than the set had. Someone added them after the plan stage; they
+    were not implemented, and review must not start as if they were."""
+    if not (task.stage is Stage.IMPLEMENT and task.ticket_count
+            and _action_stage(act) is Stage.REVIEW):
+        return False
+    files = ticket_files(Path(task.worktree) / TICKETS_DIR)
+    extra = [p.name for p in files[task.ticket_count:]]
+    if not extra:
+        return False
+    _park_for_input(
+        turn.cfg, turn.deps, turn.target, task,
+        f"the accepted ticket set has {task.ticket_count} ticket(s), all "
+        f"done, but {TICKETS_DIR} now holds {len(files)}: {', '.join(extra)} "
+        f"came after the plan stage and were not implemented. Remove them "
+        f"or accept that, then wake the task: it enters review")
+    return True
 
 
 def _park_unpinned_ticket(turn: _Turn, policy: ModelPolicy,
@@ -1476,7 +1511,10 @@ def _start_ticket(cfg: Config, deps: Deps, target: Target, task: TaskState,
         raise RuntimeError(
             f"ticket {number} of {task.ticket_count} missing "
             f"under {task.worktree}/{TICKETS_DIR}")
-    _end_session(cfg, deps, task.target, task.issue)
+    if task.ticket_cursor:
+        # The session of the ticket before. With no ticket started yet the
+        # plan session was ended when the set was accepted (_step_done).
+        _end_session(cfg, deps, task.target, task.issue)
     # A ticket's first session records its provider; a session of a ticket
     # in progress never gets here.
     providers = task.implement_providers
@@ -1725,7 +1763,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             grace_elapsed=_grace_elapsed(cfg, task),
                             tracks=frozenset(policy.tracks),
                             ticket_tracks=ticket_track_names(policy, task.track)):
-        task = _step_done(cfg, task, act)
+        task = _step_done(turn, task, act)
+        if _park_extra_tickets(turn, task, act):
+            return
         stage = _action_stage(act)
         launch, bypass_usage = ((None, False) if stage is None
                                 else _choose_launch(cfg, target, task, stage, admit, order))

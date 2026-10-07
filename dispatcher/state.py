@@ -66,10 +66,14 @@ def next_launch(t: "TaskState") -> tuple[str, int]:
         return Stage.ADDRESS_REVIEW.value, 0
     if stage != Stage.IMPLEMENT.value:
         return stage, 0
-    if ticket_in_progress(t):
-        return stage, t.ticket_cursor
+    return (stage, t.ticket_cursor) if ticket_in_progress(t) else after_ticket(t)
+
+
+def after_ticket(t: "TaskState") -> tuple[str, int]:
+    """The launch that follows the ticket at the cursor: the next ticket, or
+    review after the last one."""
     if t.ticket_cursor < t.ticket_count:
-        return stage, t.ticket_cursor + 1
+        return Stage.IMPLEMENT.value, t.ticket_cursor + 1
     return Stage.REVIEW.value, 0
 
 
@@ -82,6 +86,13 @@ def ticket_in_progress(t: "TaskState") -> bool:
     the implement stage is its one session."""
     return ("implement" in t.picks or t.ticket_without_pick
             or t.ticket_count == 0)
+
+
+def shown_stage(t: "TaskState") -> str:
+    """The stage a status line and a card label a task with: its own, but a
+    task in implement is labelled with its next launch, which is review once
+    its last ticket is done."""
+    return next_stage(t) if t.stage is Stage.IMPLEMENT else t.stage.value
 
 
 def next_stage(t: "TaskState") -> str:

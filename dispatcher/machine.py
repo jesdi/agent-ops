@@ -16,7 +16,7 @@ from typing import NamedTuple
 from dispatcher.artifacts import TICKETS_DIR, CheckResult, check_spec, check_tickets
 from dispatcher.loops import Decision, Loop, Outcome, ReportedRound, evaluate
 from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
-                              StageSignal, TaskState)
+                              StageSignal, TaskState, after_ticket)
 
 
 @dataclass(frozen=True)
@@ -26,10 +26,12 @@ class SpawnStage:
 
 @dataclass(frozen=True)
 class StartTicket:
-    """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
-    and session spawn happen together. The executor checks budget_ok first and
-    makes no state mutation when denied. `tracks` are the ticket tracks of
-    the ticket set the plan stage just had accepted; between tickets the
+    """Start ticket `cursor`. The executor first saves the step that is
+    complete (the accepted ticket set, or the ticket that is done), then
+    asks for admission; when the launch is denied nothing else changes and
+    the action comes again next pass. Cursor advance and session spawn
+    happen together. `count` and `tracks` describe the ticket set the plan
+    stage just had accepted and are read only then; between tickets the
     task's own copy stands."""
     cursor: int
     count: int
@@ -214,8 +216,8 @@ def _awaiting_review_actions(task: TaskState, signal: StageSignal,
 
 
 def _implement_done(task: TaskState, signal: StageSignal) -> list[object]:
-    if task.ticket_cursor < task.ticket_count:
-        nxt = task.ticket_cursor + 1
+    stage, nxt = after_ticket(task)
+    if stage == Stage.IMPLEMENT.value:
         start: list[object] = [StartTicket(nxt, task.ticket_count)]
         # Cursor 0: the set was accepted in an earlier pass and ticket 1
         # had to wait, so its ping was not sent then.
