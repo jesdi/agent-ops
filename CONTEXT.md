@@ -51,17 +51,33 @@ order, whatever the priority mode says; the usage gate, picks and one-shot
 overrides still apply. Triage and tracks the list does not name follow the mode.
 _Avoid_: locked track, fixed track
 
+**Ticket track**:
+The pinned track a ticket names with one `Track: <name>` line, written by the
+plan session. That ticket is implemented from the named track's `implement`
+list; a ticket with no such line, and the spec, plan, review and PR feedback
+of every task, use the task's own track. It must be a pinned track other than
+`security`, and no ticket of a `security` task may have one: the ticket check
+refuses any other ticket set. The accepted set's ticket tracks are copied to
+`TaskState.ticket_tracks`, and routing reads that copy, never the ticket
+files. A ticket whose track is no longer pinned when it starts parks the task.
+_Avoid_: ticket lane, per-ticket model
+
 **Entry**:
 One element of a track's stage list: `provider/model[@effort]`.
 _Avoid_: profile (a Claude Code term)
 
 **Pick**:
 The entry chosen when a task enters a stage, recorded in `TaskState.picks`
-and reused by every session of that stage. PR feedback has one pick of its
-own, under the key `feedback`: the first session that addresses PR feedback
-chooses it from the task track's `implement` list, and every later feedback
-round of the task reuses it. It does not read or write the implement pick.
-A denied pick waits.
+and reused by every session of that stage. For implement the pick is the
+pick of the ticket in progress: it is chosen when the ticket starts, from the
+ticket track's list or else the task track's, kept for that ticket's
+sessions (a gate-loop round, a resume after a park, a respawn after a crash)
+and dropped when the ticket is done. The next ticket chooses again, so a task
+that waits between two tickets has no implement pick, and a one-shot override
+covers one ticket. PR feedback has one pick of its own, under the key
+`feedback`: the first session that addresses PR feedback chooses it from the
+task track's `implement` list, and every later feedback round of the task
+reuses it. It does not read or write the implement pick. A denied pick waits.
 
 **Untracked**:
 A candidate with no `track:` label; it specs on `models.untracked`.
