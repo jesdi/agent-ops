@@ -3518,18 +3518,41 @@ def test_review_done_captures_pr_number(tmp_path, monkeypatch):
     assert got.stage is Stage.PR_OPEN and got.pr_number == 77
 
 
-def test_flush_deletes_only_old_done_tasks(tmp_path, monkeypatch):
+def test_flush_deletes_only_old_finished_tasks(tmp_path, monkeypatch):
+    """Done, failed and won't-do all expire on terminal_at; a fresh finish
+    and any unfinished task stay. Failed and canceled tasks lose their
+    worktree and local branch at the flush (done ones lost it at merge)."""
     patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
     c = cfg(tmp_path)
-    make_task(c, issue=1, stage=Stage.DONE, slot=NO_SLOT,
-              done_at="2026-07-01T00:00:00+00:00")   # ancient
+    make_task(c, issue=1, stage=Stage.DONE, slot=NO_SLOT)       # ancient
+    make_task(c, issue=4, stage=Stage.FAILED, slot=NO_SLOT)     # ancient
+    make_task(c, issue=5, stage=Stage.CANCELED, slot=NO_SLOT)   # ancient
     fresh = datetime.now(timezone.utc).isoformat()
-    make_task(c, issue=2, stage=Stage.DONE, slot=NO_SLOT, done_at=fresh)
+    make_task(c, issue=2, stage=Stage.DONE, slot=NO_SLOT, updated_at=fresh)
     make_task(c, issue=3, stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=0)
     main.run_pass(c, deps(FakeGitHub()))
-    assert load(c.state_dir, "portfolio_eval", 1) is None
+    for issue in (1, 4, 5):
+        assert load(c.state_dir, "portfolio_eval", issue) is None
     assert load(c.state_dir, "portfolio_eval", 2) is not None
     assert load(c.state_dir, "portfolio_eval", 3) is not None
+    assert sorted(branch for _wt, branch, _dry in removed) == [
+        "agent/task-1", "agent/task-4", "agent/task-5"]
+
+
+def test_claims_stop_at_max_open_even_with_capacity_free(tmp_path, monkeypatch):
+    """Parked and pr-open tasks hold no capacity but still hold a
+    worktree; max_open counts them so the box stops claiming."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(cfg(tmp_path), max_open=2)
+    make_task(c, issue=1, stage=Stage.SPEC, slot=NO_SLOT, park=PARK_REVIEW)
+    pr_open_task(c, issue=2)
+    gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    assert load(c.state_dir, "portfolio_eval", 42) is None
+    assert sess.spawned == []
 
 
 def test_pending_feedback_spawns_address_review_when_capacity_frees(
@@ -3766,13 +3789,11 @@ def test_dry_run_does_not_write_state_for_a_newly_claimed_task(
 
 
 def test_dry_run_does_not_flush_expired_done_tasks(tmp_path, monkeypatch):
-    """_flush_done deletes state files outright and takes no dry_run
-    parameter at all — the leak is not confined to the paths that thread
-    one."""
+    """The flush deletes state files outright; the sandboxed state dir is
+    what keeps a dry run from doing so for real."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    make_task(c, issue=1, stage=Stage.DONE, slot=NO_SLOT,
-              done_at="2026-07-01T00:00:00+00:00")   # ancient
+    make_task(c, issue=1, stage=Stage.DONE, slot=NO_SLOT)   # ancient
     main.run_pass(c, deps(FakeGitHub()), dry_run=True)
 
     assert load(c.state_dir, "portfolio_eval", 1) is not None
@@ -5234,7 +5255,8 @@ def test_resume_respawns_the_crashed_ticket_fresh(tmp_path, monkeypatch):
 def test_resume_of_a_killed_task_is_still_skipped(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    make_task(c, issue=42, stage=Stage.FAILED, slot=NO_SLOT)
+    make_task(c, issue=42, stage=Stage.FAILED, slot=NO_SLOT,
+              updated_at=datetime.now(timezone.utc).isoformat())  # inside retention
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
@@ -5248,3 +5270,38 @@ def test_a_launch_that_raises_on_resume_fails_resumable_again(tmp_path, monkeypa
     main.run_pass(c, deps(sess=FakeSessions(spawn_raises={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.crashed_stage) == (Stage.FAILED, "implement")
+
+
+def test_expired_fails_closed_on_bad_or_missing_terminal_at():
+    t = TaskState(issue=1, target="portfolio_eval", stage=Stage.DONE, slot=NO_SLOT,
+                  worktree="", branch="", title="", updated_at="")
+    assert not main._expired(dc_replace(t, terminal_at=""), 0)
+    assert not main._expired(dc_replace(t, terminal_at="not-a-date"), 0)
+    assert not main._expired(dc_replace(t, stage=Stage.PR_OPEN,
+                                        terminal_at="2026-07-01T00:00:00+00:00"), 0)
+    assert main._expired(dc_replace(t, terminal_at="2026-07-01T00:00:00"), 0)  # naive = UTC
+
+
+def test_flush_skips_teardown_for_a_task_whose_target_left_the_config(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, issue=1, stage=Stage.CANCELED, slot=NO_SLOT)   # ancient
+    from dispatcher.state import delete
+    save(c.state_dir, dc_replace(load(c.state_dir, "portfolio_eval", 1),
+                                 target="gone"))
+    delete(c.state_dir, "portfolio_eval", 1)
+    main.run_pass(c, deps(FakeGitHub()))
+    assert removed == []
+    assert load(c.state_dir, "gone", 1) is None
+
+
+def test_flush_skips_teardown_for_a_task_with_no_worktree(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, issue=1, stage=Stage.FAILED, slot=NO_SLOT)   # ancient
+    save(c.state_dir, dc_replace(load(c.state_dir, "portfolio_eval", 1), worktree=""))
+    main.run_pass(c, deps(FakeGitHub()))
+    assert removed == [] and load(c.state_dir, "portfolio_eval", 1) is None

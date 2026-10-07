@@ -169,7 +169,7 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
     def remove_workspace(*args, **kwargs):
         assert artifacts.content_path(state, task.target, task.issue, 'prototype')
         assert '/blob/abc123/' in artifacts.read(state, task.target, task.issue).items[0].publication.url
-        shutil.rmtree(task.worktree)
+        shutil.rmtree(task.worktree, ignore_errors=True)  # the flush calls it again
     monkeypatch.setattr(main, 'remove_workspace', remove_workspace)
     monkeypatch.setattr(main, '_notify', lambda *a, **kw: None)
     deps = SimpleNamespace(
@@ -178,7 +178,7 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
     )
     main._finish_merged(cfg, deps, target, task)
     main._sync_artifacts(cfg)
-    main._flush_done(cfg)
+    main._flush_finished(cfg)
     assert load(state, task.target, task.issue) is None
     assert load_archived(state, task.target, task.issue).stage == Stage.DONE
     assert artifacts.content_path(state, task.target, task.issue, 'prototype')

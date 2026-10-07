@@ -661,3 +661,10 @@ def test_routed_providers_are_the_global_triage_and_every_policys_stage_lists(
     p = tmp_path / "targets.yaml"
     p.write_text(text)
     assert routed_providers(load_config(p)) == frozenset(routed)
+
+
+def test_max_open_loaded_defaults_ten_and_must_cover_capacity(tmp_path):
+    assert load_config(write_yaml(tmp_path)).max_open == 10
+    assert load_config(write_yaml(tmp_path, top_extra={"max_open": 12})).max_open == 12
+    with pytest.raises(ValueError, match="max_open"):
+        load_config(write_yaml(tmp_path, top_extra={"max_open": 1}))
