@@ -856,15 +856,13 @@ export interface components {
             /** Target */
             target: string;
         };
-        /** TaskAdmissionView */
+        /**
+         * TaskAdmissionView
+         * @description Requested model and server-filtered, eligible alternatives.
+         */
         TaskAdmissionView: {
             /** Alternatives */
             alternatives: components["schemas"]["ModelAdmissionView"][];
-            /**
-             * Any Provider
-             * @default false
-             */
-            any_provider: boolean;
             requested: components["schemas"]["ModelAdmissionView"];
         };
         /** TaskCard */

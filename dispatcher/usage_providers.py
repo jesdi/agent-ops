@@ -222,11 +222,13 @@ _WEEKLY_MIN_SECONDS = 24 * 3600
 
 
 def _openai_window(w: object, reached: bool) -> Window | None:
-    if not isinstance(w, dict):
+    if w is None:
         return None
+    if not isinstance(w, dict):
+        raise ValueError("OpenAI usage window must be an object or null")
     used = _used(w.get("used_percent"), reached)
     if used is None or w.get("limit_window_seconds") is None or w.get("reset_at") is None:
-        return None
+        raise ValueError("OpenAI usage window is missing a required field")
     kind = (WindowKind.WEEKLY if w["limit_window_seconds"] >= _WEEKLY_MIN_SECONDS
             else WindowKind.SESSION)
     return Window(kind, None, used, datetime.fromtimestamp(w["reset_at"], timezone.utc))

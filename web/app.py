@@ -166,9 +166,9 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             _model_for(t, order, usages, now),
             [e.model_id for e in _choices(t, order)
              if override_allowed(t.picks, stage, e.model_id)],
-            usages, now, any_provider=not pick_provider(t.picks, stage))
+            usages, now)
 
-    def _admission_for_model(model, choices, usages, now, *, any_provider):
+    def _admission_for_model(model, choices, usages, now):
         if not model:
             return None
         requested = read_model.model_admission_view(
@@ -179,8 +179,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             usages, now=now, pace=cfg.pace, model=m)
             for m in dict.fromkeys(choices) if m != requested.model]
         return read_model.TaskAdmissionView(
-            requested=requested, alternatives=alternatives,
-            any_provider=any_provider)
+            requested=requested, alternatives=alternatives)
 
     def _candidate_choices(target, row, order):
         policy = policy_for(cfg, target)
@@ -199,7 +198,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 and (admission := _admission_for_model(
                     _candidate_model(target, row, order),
                     _candidate_choices(target, row, order),
-                    usages, now, any_provider=True))}
+                    usages, now))}
 
     def _known_target(target: str, tasks: list) -> bool:
         """A target is servable if it is still in the live config OR any

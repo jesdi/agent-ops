@@ -575,6 +575,23 @@ def test_openai_http_error_is_unavailable(tmp_path, monkeypatch):
     assert up.OpenAIUsage().fetch(tmp_path).source == "unavailable"
 
 
+@pytest.mark.parametrize("broken_window", [
+    {"used_percent": 100, "limit_window_seconds": 604800},
+    {"reset_at": 1790719147, "limit_window_seconds": 604800},
+    "unreadable",
+])
+def test_openai_malformed_window_invalidates_an_otherwise_valid_reading(
+        tmp_path, monkeypatch, broken_window):
+    codex_auth(tmp_path)
+    payload = {"rate_limit": {
+        "primary_window": openai_window(5 * 3600, used=1),
+        "secondary_window": broken_window}}
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: payload)
+    usage = up.OpenAIUsage().fetch(tmp_path)
+    assert usage.source == "unavailable"
+    assert usage.windows == ()
+
+
 @pytest.mark.parametrize("auth", [None, "not json", '{"tokens": {}}', '{"tokens": null}'])
 def test_openai_missing_or_broken_auth_is_unavailable_without_a_request(tmp_path, monkeypatch, auth):
     if auth is not None:
