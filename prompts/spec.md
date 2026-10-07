@@ -8,8 +8,10 @@ stuck.
 ## Signals (write `.agent/stage.json`, then do what the line says)
 - `{"stage": "spec", "status": "awaiting-answers", "artifact": "<path under .agent/>", "note": "<one line>"}`
   then STOP — end your turn. The task parks, the operator sees the file on
-  the console or their phone, and you are resumed with their answers as an
-  operator message.
+  the console or their phone, and you are resumed with their answers
+  (for the questionnaire: `.agent/questionnaire-answers.json`, step 3).
+  The questionnaire is the one case that always names
+  `"artifact": ".agent/questionnaire.html"`, and the prototype is the other.
 - `{"stage": "spec", "status": "done", "artifact": "specs/<today's date>-<topic>/spec.md", "track": "<name>", "note": "<one line>"}`
   once stage 1 is committed and pushed (step 4); then exit the session.
   Nobody approves the spec here and you do not wait for anyone: a fresh
@@ -40,15 +42,15 @@ A task that an earlier session worked on can also hold inputs from before
 the spec folder existed. Look for them now; each one replaces a part of
 steps 2 and 3. Operator messages below this prompt can be older than this
 session: they are what the operator told the earlier one, and they count.
-- An unanswered `.agent/questionnaire.md` (no answers in the file, none in
-  an operator message below this prompt, and none in the review file named
-  after this list): ask those questions again as they are. Do not rewrite,
-  extend or re-order the file; signal `awaiting-answers` with it as the
-  artifact and stop.
-- An answered `.agent/questionnaire.md`: the answers are in the file, in an
-  operator message below this prompt, or in the review file named after
-  this list. Take the answers as settled decisions and raise no new
-  questionnaire. Continue at step 4.
+- An unanswered `.agent/questionnaire.html` (no `.agent/questionnaire-answers.json`
+  with answers, none in an operator message below this prompt, and none in
+  the review file named after this list): ask those questions again
+  as they are. Do not rewrite, extend or re-order the page; signal `awaiting-answers`
+  with it as the artifact and stop.
+- An answered `.agent/questionnaire.html`: the answers are in
+  `.agent/questionnaire-answers.json`, in an operator message below this
+  prompt, or in the review file named after this list. Take the answers as
+  settled decisions and raise no new questionnaire. Continue at step 4.
 - Any file that this branch added under `docs/specs/`. The old flow kept
   its design there, as `docs/specs/<date>-<topic>-design.md`. List these
   files with
@@ -57,7 +59,7 @@ session: they are what the operator told the earlier one, and they count.
   list is empty there is nothing to do. A file that main already has is
   never an input and is never touched. Handle what the
   list shows as a `spec-ready` body (step 2), whatever the labels say and
-  whatever `.agent/questionnaire.md` holds, because the design already
+  whatever `.agent/questionnaire.html` holds, because the design already
   carries the answers: its decisions go into stage 1 word for word, and
   `spec.md` records the reconciliation with the code. An operator message
   below this prompt that asks for a change to that design overrides the
@@ -97,16 +99,27 @@ re-litigate the other settled decisions. Continue at step 4.
 
 ## 3. One questionnaire, not an interview
 Use the `to-questionnaire` skill to put every open decision into
-one questionnaire, `.agent/questionnaire.md`: for each question the
-context, the options, and your recommended answer with its reason. There is
-no cap on the number of questions; there is a cap of one round trip — ask
+one questionnaire: for each question the context, the options, and your
+recommended answer with its reason. Deliver it as `.agent/questionnaire.html`
+with the `review-page` skill in questionnaire mode: fill the content slots
+only, never the script of the template; one question block per decision,
+with its options and one recommended option. Register the page in
+`.agent/artifacts.json` (the format is in the artifacts note of this
+prompt). When the `review-page` skill is not installed (no
+`~/.claude/skills/review-page/template.html`; on Codex no
+`~/.codex/skills/review-page/`), signal
+`{"stage": "spec", "status": "blocked", "note": "review-page skill not installed"}`
+and stop. There is no cap on the number of questions; there is a cap of one round trip — ask
 everything now. Write nothing under `specs/` before the answers arrive.
 When the labels include `frontend`, one question must offer a prototype
 ("Should I build a single-page prototype of the variations before the spec
 is written?") with your recommendation. You never decide to build a
 prototype yourself.
-Signal `awaiting-answers` with `"artifact": ".agent/questionnaire.md"` and
-stop. On resume the answers arrive as an operator message.
+Signal `awaiting-answers` with `"artifact": ".agent/questionnaire.html"` and
+stop. On resume the answers are in `.agent/questionnaire-answers.json`:
+`answers` is keyed by question id, `<id>.note` holds a note, and
+`"submitted": "changes"` means the operator pressed "Send answers". An answer
+in the file beats an operator message for the same question.
 
 If — and only if — the operator answered yes to the prototype: use the
 `prototype` skill to build ONE self-contained HTML file at

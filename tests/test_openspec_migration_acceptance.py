@@ -239,9 +239,9 @@ def _rule(prompt, *needles):
 
 def test_spec_prompt_names_the_restart_inputs(tmp_path, monkeypatch):
     p = _spec_prompt(tmp_path, monkeypatch, ("auto",))
-    assert _rule(p, "unanswered", "questionnaire.md", "again", "as they are"), (
+    assert _rule(p, "unanswered", "questionnaire.html", "again", "as they are"), (
         "no one paragraph tells a session to ask an unanswered questionnaire again as it is")
-    settled = _rule(p, "answered", "questionnaire.md", "settled")
+    settled = _rule(p, "answered", "questionnaire.html", "settled")
     assert any(w in ch for ch in settled for w in ("no new", "raise no", "not raise")), (
         "no one paragraph takes answers as settled and raises no new questionnaire")
     assert _rule(p, "-design.md", "spec-ready", "remove"), (
