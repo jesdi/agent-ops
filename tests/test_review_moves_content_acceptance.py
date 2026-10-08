@@ -128,7 +128,7 @@ def test_review_starts_on_the_openai_entry_and_closes_the_issue(tmp_path, monkey
         "openai": session_usage(0.2, provider="openai")})
     spawn = _review_spawn(c)
     assert spawn[2] == "openai/gpt-5-codex"
-    assert _task(c).picks["implement"].startswith("anthropic/")
+    assert _task(c).implement_providers == ["anthropic"]  # implement's pick is gone
     (para, *_) = _rule(spawn[3], "gh pr create")
     assert "Closes #412" in " ".join(
         p for p in re.split(r"\n\s*\n", spawn[3]) if "gh pr create" in p)

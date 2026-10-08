@@ -24,6 +24,12 @@ once.
 - The implement session opens no pull request. The review stage alone does.
 - A dead implement session fails the task as any dead session does; there is
   no automatic restart.
+- Pinned tracks apply per task, for every stage. A ticket names no track of
+  its own and has no pick of its own: the ticket tracks, per-ticket picks and
+  per-ticket overrides of `specs/pinned-tracks` (requirements 7 to 9, and the
+  per-ticket parts of 10 and 13) were built while this change was open and
+  were removed when it was rebased onto them. The implement pick is dropped
+  when review starts, so PR feedback still chooses from its own list.
 
 ## Consequences
 

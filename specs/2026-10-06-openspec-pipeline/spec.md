@@ -101,6 +101,11 @@ folder `specs/2026-10-12-csv-export/`, on the `standard` track, and the tracks a
     and removed from the branch.
 22. **Tasks with an open pull request are not touched** by the migration or by this change.
 
+23. **Pinned tracks apply per task.** Every stage of a task, implement included, launches from
+    the task track's list; a pinned task track keeps its written order. A ticket names no track
+    of its own and has no pick of its own. The implement pick is dropped when review starts, so
+    the first PR feedback session chooses from its own list.
+
 ## Scenarios
 
 ### Scenario: the spec session ends without a review gate
@@ -355,6 +360,23 @@ folder `specs/2026-10-12-csv-export/`, on the `standard` track, and the tracks a
 - **When** the migration has run
 - **Then** the task is still in `pr-open` with the same pull request, and no session was started
   for it
+
+### Scenario: the implement session launches from a pinned task track in written order
+
+- **Given** a task on the pinned `architecture` track, whose implement list is
+  `[openai/gpt-astra@medium, claude-fable-5-1@medium]`, and the priority mode puts anthropic
+  first
+- **When** the operator approves its plan
+- **Then** one implement session starts on `openai/gpt-astra`, and no ticket file's content
+  changes which model runs it
+
+### Scenario: review waits after a done implement session
+
+- **Given** the implement session ran on `anthropic/claude-sonnet-5` and reported done, and
+  every review entry is denied by the usage gate
+- **When** the operator opens the task on the console
+- **Then** the task is labelled review with the first review entry as its model, and the task
+  has no implement pick
 
 ## Out of scope
 

@@ -58,28 +58,15 @@ no entry of its list is admitted, the task waits. Triage and the tracks the
 list does not name follow the mode.
 _Avoid_: locked track, fixed track
 
-**Ticket track**:
-The pinned track a ticket names with one `Track: <name>` line, written by the
-plan session. That ticket is implemented from the named track's `implement`
-list; a ticket with no such line, and the spec, plan, review and PR feedback
-of every task, use the task's own track. It must be a pinned track other than
-`security`, and no ticket of a `security` task may have one: the ticket check
-refuses any other ticket set. The ticket tracks are fixed when the ticket set
-is accepted: routing reads the copy the task keeps, never the ticket files. A
-ticket whose track is no longer pinned when it starts parks the task.
-_Avoid_: ticket lane, per-ticket model
-
 **Entry**:
 One element of a track's stage list: `provider/model[@effort]`.
 _Avoid_: profile (a Claude Code term)
 
 **Pick**:
 The entry chosen when a task enters a stage, reused by every later session of
-that stage. Implement has one pick per ticket: chosen when the ticket starts,
-kept for that ticket's sessions, dropped when the ticket is done; the next
-ticket chooses again. PR feedback has one pick of its own, chosen by the first
-session that addresses PR feedback and reused by every later round. A denied
-pick waits.
+that stage. The implement pick is dropped when review starts. PR feedback has
+one pick of its own, chosen by the first session that addresses PR feedback
+and reused by every later round. A denied pick waits.
 
 **Untracked**:
 A candidate with no `track:` label; it specs on `models.untracked`.
@@ -325,7 +312,7 @@ adapters, one per provider. The dispatcher fetches only the providers the
 model policy references; the console also shows any other provider whose
 adapter reads (Codex run by hand), and nothing admits on that reading. Loop policy stays independent of all of it: waiting for
 headroom does not spend a fix round, and a denial for one provider never
-prevents considering another. The router is `dispatcher/state.py::launch_entries`: the dispatcher launches the first admitted entry of the next launch's track (a ticket's own ticket track, else the task track) for the stage, tried in the order `dispatcher/priority.py::order` gives for the priority mode (a fixed mode: that provider's entries first; auto: a session-bound provider's entries first, then highest required pace); labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
+prevents considering another. The router is `dispatcher/state.py::launch_entries`: the dispatcher launches the first admitted entry of the task track for the stage, tried in the order `dispatcher/priority.py::order` gives for the priority mode (a fixed mode: that provider's entries first; auto: a session-bound provider's entries first, then highest required pace); labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
 changes provider, so cross-runtime session continuation is excluded by rule,
 not pending. See docs/specs/2026-09-24-codex-runtime-design.md.
 
@@ -394,7 +381,8 @@ discriminated `readable | unavailable` content union. One `RequestPanel` + media
 frontend. Approval is only possible on a `readable` plan-approval request.
 
 **Retired fields are dropped on load; nothing else is converted**: `state._read` drops the
-retired task fields (`pending_reply`, `artifact`, `ticket_cursor`) and rejects the retired
+retired task fields (`pending_reply`, `artifact`, `ticket_cursor`, `ticket_tracks`,
+`ticket_names`, `ticket_without_pick`) and rejects the retired
 `awaiting-spec-review` stage and `spec-approval` kind. `read_stage_signal` is the one parser of
 the session-written `.agent/stage.json`, for the dispatcher and the console.
 

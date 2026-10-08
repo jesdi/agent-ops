@@ -660,7 +660,7 @@ def test_forced_pick_is_used_for_the_implement_session(tmp_path, monkeypatch):
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
     assert [s[:3] + (s[4],) for s in sess.spawned] == [
-        (42, "implement", "anthropic/claude-opus-5", "medium")]
+        (42, "implement", "anthropic/claude-sonnet-5", "low")]
 
 
 def test_denied_pick_waits_and_never_re_walks_the_list(tmp_path, monkeypatch):

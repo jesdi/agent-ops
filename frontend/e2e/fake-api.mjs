@@ -31,7 +31,7 @@ const parkedCard = {
 const pinnedCards = () => [
   { ...parkedCard, issue: 51, title: 'Rework the settings screen layout', stage: 'implement',
     park: '', column: 'in-progress', slot: 1, model: 'claude-fable-5-1',
-    track: 'architecture', pinned_track: 'frontend', park_note_pending: false,
+    track: 'frontend', pinned_track: 'frontend', park_note_pending: false,
     park_note: '', consuming_capacity: true, wake_blocked: false },
   { ...parkedCard, issue: 52, title: 'Rebuild the navigation bar for small screens', stage: 'implement',
     park: 'awaiting-wake', column: 'parked', slot: -1, model: 'claude-fable-5-1',

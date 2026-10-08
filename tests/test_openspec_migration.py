@@ -82,6 +82,7 @@ def test_an_unreadable_task_file_refuses_the_whole_run(tmp_path, monkeypatch,
 def test_converted_task_is_queued_as_a_crashed_spec_stage(tmp_path, monkeypatch, capsys):
     c = cfg_(tmp_path, monkeypatch)
     gated_spec(c)
+    written = raw(c, 384)["updated_at"]
 
     status, text = migrate(c, capsys)
 
@@ -92,7 +93,7 @@ def test_converted_task_is_queued_as_a_crashed_spec_stage(tmp_path, monkeypatch,
     assert d["spec_path"] == ""
     assert (d["asked"], d["gated"]) == (True, False)
     assert "ticket_cursor" not in d
-    assert d["updated_at"] == "2026-09-20T00:00:00+00:00"   # keeps its place in the queue
+    assert d["updated_at"] == written                      # keeps its place in the queue
     assert any(ln.startswith("converted") and TARGET in ln and "#384" in ln
                for ln in text.splitlines()), text
 

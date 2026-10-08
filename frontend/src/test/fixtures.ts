@@ -179,7 +179,7 @@ export const usageRouted: UsageView = {
 // Pinned tracks (ticket 03).
 export const pinnedCard: TaskCard = {
   ...inProgressCard, issue: 51, title: 'Rework the settings screen',
-  model: 'claude-fable-5-1', track: 'architecture', pinned_track: 'frontend',
+  model: 'claude-fable-5-1', track: 'frontend', pinned_track: 'frontend',
 }
 
 export const unpinnedCard: TaskCard = {

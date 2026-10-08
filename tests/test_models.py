@@ -4,7 +4,7 @@ from dispatcher.models import (DEFAULT_MODEL, DEFAULT_POLICY, EFFORTS, STAGES,
                                Entry, ModelPolicy, bare_model_id, parse_entry,
                                override_allowed, override_refusal, parse_policy,
                                pick_provider, policy_stage, review_avoid, split_model_id,
-                               ticket_track_names, track_from_labels,
+                               track_from_labels,
                                tracks_text)
 
 RAW = {
@@ -405,16 +405,3 @@ def _pinned_policy(pinned):
     return parse_policy(raw)
 
 
-def test_a_ticket_may_name_the_pinned_tracks_other_than_security():
-    p = _pinned_policy(["security", "architecture", "frontend"])
-    assert ticket_track_names(p, "standard") == ("architecture", "frontend")
-    assert ticket_track_names(p, "frontend") == ("architecture", "frontend")
-
-
-def test_a_ticket_of_a_security_task_may_name_no_track():
-    p = _pinned_policy(["security", "architecture", "frontend"])
-    assert ticket_track_names(p, "security") == ()
-
-
-def test_with_no_pinned_track_a_ticket_may_name_none():
-    assert ticket_track_names(_pinned_policy([]), "standard") == ()

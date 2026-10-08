@@ -1,5 +1,12 @@
 # Pinned tracks: the kind of work chooses the model — Spec
 
+> Superseded in part by `specs/2026-10-06-openspec-pipeline/` and
+> `docs/adr/0003-implement-is-one-session.md`: implement is one session per
+> task, so requirements 7, 8 and 9 (ticket tracks and a pick per ticket) and
+> the per-ticket parts of requirements 10 and 13 no longer hold. A task's pin
+> is its own track, for every stage. This file is the record of the change
+> as it was built; the code is the present state.
+
 Terms:
 
 - The **pinned list** is `models.pinned` in `targets.yaml`: a list of track names. A **pinned

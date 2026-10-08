@@ -6,8 +6,7 @@ import hashlib
 import os
 import re
 import stat
-from collections.abc import Collection
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
@@ -30,8 +29,6 @@ _ABSENT, _DIRECTORY = b"\0absent", b"\0directory"
 # this too). Tickets follow to-tickets' per-file template.
 SPEC_PATTERNS = [r"^# .+", r"^## .+", r"^## .+[\s\S]*^## .+"]
 TICKET_PATTERNS = [r"(?i)what to build", r"(?im)^\W*blocked by", r"(?m)^- \[ \] "]
-# Read like the Blocked-by line: any line that starts with "Track:".
-_TRACK_LINE = re.compile(r"(?im)^\W*track:(.*)$")
 _TICKET_NAME = re.compile(r"^(\d{2})-[a-z0-9][a-z0-9._-]*\.md$")
 
 
@@ -40,9 +37,6 @@ class CheckResult:
     ok: bool
     reason: str = ""
     count: int = 0   # tickets in a valid set
-    # ticket number -> the track it names; only tickets that name one
-    tracks: dict[int, str] = field(default_factory=dict)
-    names: tuple[str, ...] = ()   # file names of a valid set, in ticket order
 
 
 def _check(path: str | Path, patterns: list[str],
@@ -136,27 +130,9 @@ def ticket_files(tickets_dir: str | Path) -> list[Path]:
     return [p for _, p in sorted(named, key=lambda t: (t[0], t[1].name))]
 
 
-def _ticket_track(p: Path, allowed: Collection[str]) -> tuple[str, str]:
-    """(the track the ticket's `Track: <name>` line names or "", "") — or
-    ("", reason) when it has two such lines or names a track not in `allowed`."""
-    number = p.name[:2]
-    names = [m.strip(" \t*`") for m in _TRACK_LINE.findall(p.read_text(errors="replace"))]
-    if len(names) > 1:
-        return "", (f"ticket {number} carries {len(names)} Track: lines; a "
-                    f"ticket names at most one track: {p}")
-    if names and names[0] not in allowed:
-        limit = (f"it must be one of {list(allowed)}" if allowed
-                 else "no ticket of this task may name a track")
-        return "", (f"ticket {number} names track {names[0]!r} on its Track: "
-                    f"line; {limit}: {p}")
-    return (names[0] if names else ""), ""
-
-
-def check_tickets(tickets_dir: str | Path,
-                  tracks: Collection[str] = ()) -> CheckResult:
+def check_tickets(tickets_dir: str | Path) -> CheckResult:
     """A valid set: ≥1 ticket, numbers contiguous from 01 with no duplicates,
-    every file carrying what-to-build, blocked-by and an unchecked criterion,
-    and at most one `Track:` line, naming one of `tracks`."""
+    every file carrying what-to-build, blocked-by and an unchecked criterion."""
     d = Path(tickets_dir)
     if not d.is_dir():
         return CheckResult(False, f"tickets dir missing: {d}")
@@ -171,8 +147,7 @@ def check_tickets(tickets_dir: str | Path,
         return CheckResult(False, f"duplicate ticket number(s) {dup} in {d}")
     if numbers != list(range(1, len(numbers) + 1)):
         return CheckResult(False, f"ticket numbers must be contiguous from 01, got {numbers} in {d}")
-    named = {}
-    for number, p in zip(numbers, files):
+    for p in files:
         r = _check(p, TICKET_PATTERNS, min_bytes=MIN_TICKET_BYTES)
         if not r.ok:
             return r

@@ -75,7 +75,8 @@ REQUESTS = ("answers", "plan-approval", OLD_REQUEST)
 # What would bounce, park or fail the fresh session on its first signal.
 COUNTERS = ("spec_retries", "plan_retries", "review_rounds", "gate_rounds",
             "e2e_rounds", "ci_rounds")
-RETIRED = ("ticket_cursor", "artifact")
+RETIRED = ("ticket_cursor", "ticket_tracks", "ticket_names",
+           "ticket_without_pick", "artifact")
 # The actor of a message does not tell an operator from the dispatcher: a
 # Telegram reply is queued as "dispatcher" too (main._wake's default). So
 # every message is queued again except the two texts the dispatcher itself

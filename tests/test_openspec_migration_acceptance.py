@@ -18,6 +18,7 @@ import json
 import subprocess
 import sys
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,12 @@ def task_file(c, issue):
     return Path(c.state_dir) / f"task-{TARGET}-{issue}.json"
 
 
+def _recent() -> str:
+    """Inside the retention window: a finished task is not flushed by the
+    pass the test runs after the migration."""
+    return (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+
 def old_task(c, issue, stage, **raw):
     """Write the task file as the pre-migration code wrote it: raw JSON, the old
     stage and request kinds, `ticket_cursor`, none of the new fields. Returns the
@@ -70,7 +77,7 @@ def old_task(c, issue, stage, **raw):
     (wt / ".agent").mkdir(parents=True, exist_ok=True)
     d = asdict(TaskState(issue=issue, target=TARGET, stage=Stage.QUEUED, slot=0,
                          worktree=str(wt), branch=f"agent/task-{issue}",
-                         title="old task", updated_at="2026-09-20T00:00:00+00:00",
+                         title="old task", updated_at=_recent(),
                          track="standard"))
     for k in NEW_ONLY:
         d.pop(k)

@@ -42,11 +42,9 @@ from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApprova
                                 RecordBackgroundWait, RetryStage, ReviewPark, SetTaskStage,
                                 SpawnStage, pass_actions)
 from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
-                               Order, candidates, override_refusal,
-                               parse_entry, pick_key, pick_provider,
-                               policy_stage, resolve, second_model,
-                               stage_pick, ticket_track_names,
-                               ticket_tracks_text,
+                               Order, override_refusal,
+                               parse_entry, pick_key, second_model,
+                               stage_pick,
                                track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
@@ -56,10 +54,10 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_turn_markers, delete, has_waiting,
-                              holds_slot, launch_entries, launch_ticket, load,
+                              holds_slot, launch_entries, load,
                               load_all, max_slots,
                               next_stage, read_background, read_stage_signal,
-                              resumable_crash, shown_stage, ticket_in_progress,
+                              implement_done, resumable_crash, shown_stage,
                               save, task_key)
 from dispatcher.workspace import (append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
@@ -526,23 +524,6 @@ def _notify(deps: Deps, target: Target, task: TaskState, template: str,
                        target=target.name)
 
 
-def _ticket_file(task: TaskState, number: int) -> Path:
-    """The file of ticket `number`: the one with its accepted name
-    (TaskState.ticket_names), so that a file added, removed or renamed since
-    cannot put another file in its place; by sorted position for a set
-    accepted before the names were kept. Raises when it is not there."""
-    files = ticket_files(Path(task.worktree) / TICKETS_DIR)
-    if task.ticket_names:
-        files = [p for p in files
-                 if [p.name] == task.ticket_names[number - 1:number]]
-    else:
-        files = files[number - 1:number]
-    if not files:
-        raise RuntimeError(f"ticket {number} of {task.ticket_count} missing "
-                           f"under {task.worktree}/{TICKETS_DIR}")
-    return files[0]
-
-
 def _heal_exclude(target: Target, task: TaskState) -> None:
     """Before a launch or a resume: a worktree made before the exclude lines
     existed gets them now. The path is the target's configured clone, never
@@ -575,6 +556,15 @@ def _write_working(worktree: str, stage: Stage, entry) -> None:
     _log_model(worktree, stage, str(entry))
 
 
+def _with_implement_provider(task: TaskState, stage: Stage, entry) -> list[str]:
+    """The providers that ran implement, with `entry`'s when it launches an
+    implement session: review reads them (models.review_avoid)."""
+    providers = task.implement_providers
+    if stage is Stage.IMPLEMENT and entry.provider not in providers:
+        providers = [*providers, entry.provider]
+    return providers
+
+
 def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                  launch: Launch, spec_path: str = "") -> TaskState:
     stage, entry = launch.stage, launch.entry
@@ -592,7 +582,6 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         reason=task.attention or "feedback",
         labels=", ".join(task.labels),
         tracks=tracks_text(_policy(cfg, target)),
-        ticket_tracks=ticket_tracks_text(_policy(cfg, target), task.track),
     )
     prompt = render_stage_prompt(stage, ctx)
     block, drained = _drain(cfg, task.target, task.issue)
@@ -609,7 +598,8 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     task = loops.reset(task, ResetCause.STAGE_STARTED)
     task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
                    operator_request=None, updated_at=_now(),
-                   picks={**task.picks, pick_key(stage.value): str(entry)})
+                   picks={**task.picks, pick_key(stage.value): str(entry)},
+                   implement_providers=_with_implement_provider(task, stage, entry))
     save(cfg.state_dir, task)
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
                           issue=task.issue, stage=stage.value, model=str(entry))
@@ -1205,21 +1195,13 @@ def _wake_launch(cfg: Config, deps: Deps, target: Target, task: TaskState,
     one-shot override is the model the resume named, else the stored
     execution override: "the next launch runs on this model" holds for a
     wake too. None: it waits (the gate denies the model; another task's may
-    be admitted), or it went back to the operator, with the reason, because
-    its next launch cannot start."""
-    if (_launch_needs_ticket_set(task)
-            and _park_changed_tickets(cfg, deps, target, task)):
-        return None
+    be admitted)."""
     stage = Stage(next_stage(task))
     override = execution_overrides.pending(
         _execution_override_for(cfg, task, stage),
         task.resume_model_override, task.resume_bypass_usage)
     launch, _ = _choose_launch(cfg, target, task, stage, admit, order, override)
-    if launch is None:
-        # Denied: wait. A ticket track that is still not pinned, and no
-        # override to launch instead: the park explains.
-        _park_unpinned_ticket(cfg, deps, target, task, override)
-    return launch
+    return launch  # None: denied, it waits
 
 
 ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
@@ -1261,7 +1243,10 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
     _heal_exclude(target, task)
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
-    if task.crashed_stage:
+    if task.crashed_stage or (task.stage is Stage.IMPLEMENT
+                              and implement_done(task)):
+        # No session to continue: the stage it died in, or review after a
+        # done implement session, starts afresh (state.next_launch).
         _respawn(cfg, deps, target, task, launch)
         return
     if task.stage is Stage.PR_OPEN:
@@ -1449,115 +1434,20 @@ def _action_stage(act: object) -> Stage | None:
     return act.stage if isinstance(act, SpawnStage) else None
 
 
-def _without_ticket_pick(task: TaskState) -> TaskState:
-    """No ticket in progress (state.ticket_in_progress): the implement pick
-    is the pick of the ticket in progress and goes when that ticket is done."""
-    return replace(task, ticket_without_pick=False,
-                   picks={k: v for k, v in task.picks.items()
-                          if k != IMPLEMENT_PICK})
-
-
 def _step_done(turn: _Turn, task: TaskState, act: object) -> TaskState:
     """The task with the step `act` says is complete persisted, in a write of
     its own, BEFORE the next launch is chosen and admitted: every reader of
-    the state (state.next_launch) then names the launch that waits. Plan
-    done with a valid set: the set is accepted — the task is in implement
-    with no ticket started and the set's count, file names and ticket
-    tracks, the ticket files are not read for routing again, and the plan session is
-    ended so it cannot change the set while ticket 1 waits. A ticket done:
-    no ticket is in progress and its pick is gone, so the next ticket
-    chooses from its own list, or review starts after the last one. A task
-    with no ticket set (from before tickets) has one implement session and
-    keeps its pick until review starts."""
-    done = task
-    if isinstance(act, StartTicket) and task.stage is Stage.PLAN:
-        _end_session(turn.cfg, turn.deps, task.target, task.issue)
-        done = replace(task, stage=Stage.IMPLEMENT, ticket_cursor=0,
-                       ticket_count=act.count, ticket_tracks=dict(act.tracks),
-                       ticket_names=list(act.names), updated_at=_now())
-    if (done.stage is Stage.IMPLEMENT and done.ticket_count
-            and _action_stage(act) in (Stage.IMPLEMENT, Stage.REVIEW)):
-        done = _without_ticket_pick(done)
-    if done != task:
-        save(turn.cfg.state_dir, done)
+    the state (state.next_launch) then names the launch that waits. The
+    implement session done: its pick is dropped as review is chosen, so the
+    first PR feedback session chooses from its own list (models.FEEDBACK_PICK)
+    and never inherits the implement provider."""
+    if (task.stage is not Stage.IMPLEMENT or _action_stage(act) is not Stage.REVIEW
+            or IMPLEMENT_PICK not in task.picks):
+        return task
+    done = replace(task, picks={k: v for k, v in task.picks.items()
+                                if k != IMPLEMENT_PICK})
+    save(turn.cfg.state_dir, done)
     return done
-
-
-def _ticket_set_diff(task: TaskState,
-                     now: list[str]) -> tuple[list[str], list[str]]:
-    """(added, removed): how the file names in the tickets directory, `now`,
-    differ from the accepted set (TaskState.ticket_names). A set accepted
-    before its names were kept has only its count: the files past it were
-    added. A task from before tickets has no set."""
-    accepted = task.ticket_names
-    if not accepted:
-        return (now[task.ticket_count:] if task.ticket_count else []), []
-    return ([n for n in now if n not in accepted],
-            [n for n in accepted if n not in now])
-
-
-def _ticket_renamed(task: TaskState, ticket: int, now: list[str]) -> bool:
-    """The accepted file of `ticket` is not in the directory, which still
-    holds as many files: it was renamed or replaced. With fewer files it is
-    missing, and that is the launch's own failure (_ticket_file)."""
-    name = task.ticket_names[ticket - 1:ticket]
-    return bool(name) and name[0] not in now and len(now) >= ticket
-
-
-def _park_changed_tickets(cfg: Config, deps: Deps, target: Target,
-                          task: TaskState) -> bool:
-    """True when the task was parked instead of launching: someone added,
-    removed or renamed a ticket file after the plan stage. A ticket launch
-    needs its own accepted file; review needs the whole accepted set, or it
-    would start over tickets that were never implemented. Nothing accepts a
-    changed set: the task parks again until the files are back."""
-    ticket = launch_ticket(task)
-    now = [p.name for p in ticket_files(Path(task.worktree) / TICKETS_DIR)]
-    added, removed = _ticket_set_diff(task, now)
-    if not (_ticket_renamed(task, ticket, now) if ticket else added or removed):
-        return False
-    if not ticket:
-        what = "review is not started"
-    elif ticket_in_progress(task):
-        what = f"ticket {ticket:02d} is in progress and is not continued"
-    else:
-        what = f"ticket {ticket:02d} is not started"
-    _park_for_input(
-        cfg, deps, target, task,
-        f"the accepted ticket set has {task.ticket_count} ticket(s), but "
-        f"{TICKETS_DIR} changed after the plan stage (added: "
-        f"{', '.join(added) or 'none'}; removed: {', '.join(removed) or 'none'}"
-        f"; a renamed file counts as both); {what}: restore the accepted "
-        f"files, then wake the task, or cancel the task")
-    return True
-
-
-def _launch_needs_ticket_set(task: TaskState) -> bool:
-    """A woken task's next launch depends on the accepted ticket set: a
-    ticket, or a review that starts. Not a review session that is continued."""
-    return bool(launch_ticket(task)) or (
-        next_stage(task) == Stage.REVIEW.value
-        and (bool(task.crashed_stage) or task.stage is not Stage.REVIEW))
-
-
-def _park_unpinned_ticket(
-        cfg: Config, deps: Deps, target: Target, task: TaskState,
-        override: execution_overrides.ExecutionOverride | None) -> None:
-    """A ticket whose track is no longer pinned starts on no other list: the
-    task parks for the operator (again, when a wake finds it still not
-    pinned). Not while a one-shot `override` (the stored one) is pending:
-    that launch is the override's, whenever the gate admits it."""
-    policy = _policy(cfg, target)
-    ticket = launch_ticket(task)
-    track = task.ticket_tracks.get(ticket, "")
-    if not track or track in policy.pinned or (override and override.model):
-        return
-    _park_for_input(
-        cfg, deps, target, task,
-        f"ticket {ticket:02d} names track {track!r}, which is no longer a "
-        f"pinned track (pinned: {list(policy.pinned)}); pin it again in "
-        f"targets.yaml and wake the task, or resume the task with a model "
-        f"override for this ticket")
 
 
 # Handlers return the task to keep driving, or None to end the task's turn.
@@ -1697,11 +1587,17 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         # approved or gate-free plan); only this launch failed. So the task
         # fails as crashed in the stage it could not start, and Resume starts
         # that stage: an implement task asks for no second approval, and no
-        # earlier stage runs again.
+        # earlier stage runs again. The hand-over is saved first: the failure
+        # is written from the saved state (_fail_task_crash).
         turn.launch_failed = True
-        _fail_task_crash(turn.cfg, turn.deps, turn.target,
-                         replace(task, stage=act.stage,
-                                 spec_path=spec_path or task.spec_path),
+        accepted = replace(task, stage=act.stage,
+                           spec_path=spec_path or task.spec_path)
+        try:
+            save(turn.cfg.state_dir, accepted)
+        except Exception as exc:
+            print(f"[warn] hand-over of #{task.issue} not saved: {exc}",
+                  file=sys.stderr)
+        _fail_task_crash(turn.cfg, turn.deps, turn.target, accepted,
                          turn.dry_run)
         return None
 
@@ -1843,15 +1739,10 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                 if not t.plan_review)):
         task = _step_done(turn, task, act)
         stage = _action_stage(act)
-        if (stage in (Stage.IMPLEMENT, Stage.REVIEW)
-                and _park_changed_tickets(cfg, deps, target, task)):
-            return
         override = stage and _execution_override_for(cfg, task, stage)
         launch, bypass_usage = ((None, False) if stage is None else _choose_launch(
             cfg, target, task, stage, admit, order, override))
         if stage is not None and launch is None:
-            if isinstance(act, StartTicket):
-                _park_unpinned_ticket(cfg, deps, target, task, override)
             return  # no launch: the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)

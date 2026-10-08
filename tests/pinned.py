@@ -4,25 +4,27 @@ definition of each helper those tests share.
 
 The fixtures in the first block are defined in the acceptance files, which
 stay as they were written; they are re-exported here so that no other test
-module imports from a test module."""
+module imports from a test module. A ticket names no track of its own: the
+helpers write plain ticket files."""
 import json
 from dataclasses import replace
 
 import dispatcher.main as main
 from dispatcher import intents, state
 from dispatcher.state import PARK_WAKE, Stage, TaskState, load, save
-from tests.test_main import FakeGitHub, FakeSessions, deps, make_task
+from tests.test_main import (GOOD_TICKET, FakeGitHub, FakeSessions, deps,
+                             make_task)
 from tests.test_pinned_tracks_order import (ASTRA, FABLE, OPUS, SOL,
                                             SONNET, ahead, deny, enter,
                                             launched, make_cfg, policy,
                                             policy_raw)
-from tests.test_pinned_tracks_ticket_tracks import (IMPL_DONE,
-                                                    PLAN_DONE, setup, step,
-                                                    usage_now, write_ticket)
 from tests.test_web_pinned_tracks import (HEADERS, anthropic,
                                           cards, detail, models, openai, rig)
 from tests.test_web_pinned_tracks import policy as web_policy
 
+PLAN_DONE = {"stage": "plan", "status": "done", "note": "tickets",
+             "artifact": ".agent/tickets"}
+IMPL_DONE = {"stage": "implement", "status": "done"}
 BOTH = ["openai", "anthropic"]
 DENY_FRONTEND = (FABLE, OPUS)                # its implement list
 DENY_ARCHITECTURE = ("gpt-astra", FABLE)     # its implement and review lists
@@ -60,16 +62,32 @@ def old_shape(state_dir, stage, picks, **raw_over):
     return rewrite(state_dir, "t", "implement_providers", **raw_over)
 
 
-def legacy(tmp_path, monkeypatch, **kw):
-    """A state file from before picks existed: ticket 2 of 3 in progress."""
-    c = make_cfg(tmp_path, monkeypatch, ahead())
-    wt = make_task(c, issue=42, track="architecture", ticket_cursor=2,
-                   ticket_count=3, picks={}, **kw)
-    for n in (1, 2, 3):
+def write_ticket(wt, n):
+    d = wt / ".agent" / "tickets"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{n:02d}-t{n}.md").write_text(GOOD_TICKET)
+
+
+def setup(tmp_path, monkeypatch, task_track, tickets, usages=None, **kw):
+    """A task at the plan review gate whose plan session wrote `tickets`
+    ticket files: PLAN_DONE is the operator's approval."""
+    c = make_cfg(tmp_path, monkeypatch, usages or ahead(), **kw)
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
+                   track=task_track)
+    for n in range(1, tickets + 1):
         write_ticket(wt, n)
-    rewrite(c.state_dir, "portfolio_eval", "implement_providers",
-            "ticket_tracks", "ticket_without_pick")
     return c, wt
+
+
+def usage_now(monkeypatch, usages):
+    monkeypatch.setattr(main, "fetch_all", lambda cfg, **k: usages)
+
+
+def step(c, wt, signal, alive=True):
+    (wt / ".agent" / "stage.json").write_text(json.dumps(signal))
+    sess = FakeSessions(alive={42} if alive else set())
+    main.run_pass(c, deps(sess=sess))
+    return sess
 
 
 def unpinned(c):

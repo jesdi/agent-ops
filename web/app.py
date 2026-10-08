@@ -98,8 +98,7 @@ class ReadyReq(BaseModel):
 def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
                         overridden: bool = False) -> str:
     """The pinned track t's next launch comes from, else "": the launch's
-    track (state.launch_track: the ticket track of a ticket that has one,
-    else the task track) when it is pinned, unless no launch comes from the
+    track (state.launch_track: the task track) when it is pinned, unless no launch comes from the
     list — a terminal task or a pending one-shot override (`overridden`). A
     pick keeps the pin."""
     if t.stage in TERMINAL_STAGES or overridden:
