@@ -29,18 +29,24 @@ async function open(page: Page, req: () => Req, url = ROUTE) {
 const frame = (page: Page) => page.frameLocator('[data-testid=review-frame]')
 const pickTrack = (page: Page, name: string) => frame(page).getByText(name, { exact: true }).click()
 
-test('the route shows only the sandboxed iframe, filling the viewport', async ({ page }) => {
+test('the route shows only the sandboxed iframe and the submit bar, filling the viewport', async ({ page }) => {
   await open(page, () => request(PAGE))
   const iframe = page.getByTestId('review-frame')
   await expect(iframe).toHaveAttribute('sandbox', 'allow-scripts')
   await expect(iframe).toHaveAttribute('title', 'review')
-  await expect(frame(page).locator('#send')).toBeVisible()
+  await expect(frame(page).locator('#state')).toBeVisible()
   await expect(page.getByTestId('request-panel')).toHaveCount(0)
   await expect(page.locator('nav')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Artifacts' })).toHaveCount(0)
   const vp = page.viewportSize()!
   const box = (await iframe.boundingBox())!
-  expect(box).toMatchObject({ x: 0, y: 0, width: vp.width, height: vp.height })
+  const bar = (await page.getByTestId('review-bar').boundingBox())!
+  expect(box).toMatchObject({ x: 0, y: 0, width: vp.width })
+  expect(bar).toMatchObject({ x: 0, y: box.height, width: vp.width })
+  expect(box.height + bar.height).toBe(vp.height)
+  // The buttons are the console's: the page has none.
+  await expect(frame(page).locator('button')).toHaveCount(0)
+  await expect(page.getByRole('button')).toHaveText(['Send changes', 'Approve'])
   expect(await page.evaluate('document.documentElement.scrollWidth')).toBeLessThanOrEqual(vp.width)
 })
 
@@ -49,9 +55,12 @@ for (const scheme of ['light', 'dark'] as const) {
     await page.setViewportSize({ width: 400, height: 800 })
     await page.emulateMedia({ colorScheme: scheme })
     await open(page, () => request(PAGE))
-    await expect(frame(page).locator('#send')).toBeVisible()
+    await expect(frame(page).locator('#state')).toBeVisible()
     expect(await page.evaluate('document.documentElement.scrollWidth')).toBeLessThanOrEqual(400)
-    expect(await page.getByTestId('review-frame').boundingBox()).toMatchObject({ width: 400, height: 800 })
+    const bar = (await page.getByTestId('review-bar').boundingBox())!
+    expect(bar.y + bar.height).toBe(800)
+    expect(await page.getByTestId('review-frame').boundingBox()).toMatchObject({ width: 400, height: 800 - bar.height })
+    for (const b of await page.getByRole('button').all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44)
     const f = frame(page)
     const inner = await f.locator('html').evaluate(() => innerHeight)
     expect(await f.locator('.bar').evaluate(el => el.getBoundingClientRect().bottom)).toBe(inner)
@@ -71,7 +80,7 @@ test('the task page links to the review route and has no approve button', async 
 
 test('a message from the console window itself is ignored', async ({ page }) => {
   const posts = await open(page, () => request(PAGE))
-  await expect(frame(page).locator('#send')).toBeVisible()
+  await expect(frame(page).locator('#state')).toBeVisible()
   await page.evaluate(() => window.postMessage({ type: 'answers', v: 1, answers: { format: 'a' }, submit: 'approve' }, '*'))
   await page.waitForTimeout(1500)
   expect(posts).toEqual([])
@@ -122,10 +131,41 @@ test('three selections in a second make one POST with the full set and the revis
 test('a button press with a pending draft posts once, at once, as a submission', async ({ page }) => {
   const posts = await open(page, () => request(PAGE, 'r7'))
   await frame(page).locator('input[name=format][value=a]').check()
-  await frame(page).locator('#send').click()
+  await page.getByRole('button', { name: 'Send changes' }).click()
   await expect.poll(() => posts.length, { timeout: 500 }).toBe(1)
   await page.waitForTimeout(1500)
   expect(posts).toEqual([{ answers: { format: 'a', track: 'standard' }, submit: 'changes', revision: 'r7' }])
+})
+
+test('a page that posts submit approve by itself approves nothing', async ({ page }) => {
+  const hostile = `<html><body><script>
+    parent.postMessage({type:'ready',v:1},'*');
+    parent.postMessage({type:'answers',v:1,answers:{format:'a'},submit:'approve'},'*');
+  </script></body></html>`
+  const posts = await open(page, () => request(hostile, 'r7'))
+  await expect.poll(() => posts.length, { timeout: 3000 }).toBe(1)
+  await page.waitForTimeout(1500)
+  expect(posts).toEqual([{ answers: { format: 'a' }, submit: null, revision: 'r7' }])
+})
+
+test('Approve needs a second tap, then posts the selections as an approval', async ({ page }) => {
+  const posts = await open(page, () => request(PAGE, 'r7'))
+  await frame(page).locator('input[name=format][value=b]').check()
+  await page.getByRole('button', { name: 'Approve' }).click()
+  await page.getByRole('button', { name: 'Tap again to approve' }).click()
+  await expect.poll(() => posts.length, { timeout: 500 }).toBe(1)
+  await page.waitForTimeout(1500)
+  expect(posts).toEqual([{ answers: { format: 'b', track: 'standard' }, submit: 'approve', revision: 'r7' }])
+  await expect(page.getByTestId('review-notice')).toHaveText('approved; implement starts with these answers')
+})
+
+test('a questionnaire has one button, Send answers', async ({ page }) => {
+  const posts = await open(page, () => ({ ...request(PAGE.replace('data-mode="plan"', 'data-mode="questionnaire"'), 'r7'), kind: 'answers' }))
+  await expect(page.getByRole('button')).toHaveText(['Send answers'])
+  await frame(page).locator('input[name=format][value=a]').check()
+  await page.getByRole('button', { name: 'Send answers' }).click()
+  await expect.poll(() => posts.length, { timeout: 500 }).toBe(1)
+  expect(posts[0]).toMatchObject({ answers: { format: 'a' }, submit: 'changes', revision: 'r7' })
 })
 
 test('pagehide with a pending draft posts at once', async ({ page }) => {

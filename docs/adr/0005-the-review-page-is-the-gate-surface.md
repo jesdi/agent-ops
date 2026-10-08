@@ -19,7 +19,10 @@ it for a second device or a later stage.
   fallback. The gate skip counts the page's `data-q` blocks.
 - The console shows the page on its own route, in an iframe with
   `sandbox="allow-scripts"` and `srcDoc`. The console trusts a message only
-  from that iframe's window, with `v` equal to 1. The page's buttons are
+  from that iframe's window, with `v` equal to 1, and takes it as a draft
+  only. The session writes the page and the page runs scripts, so the
+  buttons that submit ("Send changes", "Approve", "Send answers") are the
+  console's, outside the iframe: no script in a page can approve. They are
   the only approval.
 - The operator's selections travel as one `answers` intent, debounced on
   the console. The dispatcher, never the web layer, writes the answers file
@@ -45,5 +48,8 @@ it for a second device or a later stage.
   falling back: a configuration fault that is meant to be seen.
 - The page and the console move together through the skill pin; an old
   page on a new console shows a banner, it does not work.
+- The page still chooses the answers a submission carries: a page can
+  send a draft the operator did not pick. The operator approves what the
+  page shows; the gate's click is the operator's.
 - `restore` is sent once after the page's `ready`; a change on another
   device while a page is open is not pushed to it.

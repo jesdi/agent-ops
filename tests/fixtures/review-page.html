@@ -84,25 +84,19 @@ ol.tickets .by { color: var(--muted); font-size: 12px }
 .tracks label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px }
 .tracks input { position: absolute; opacity: 0; width: 0; height: 0 }
 
-/* Action bar: fixed to the bottom; two actions that never mean the same thing. */
+/* State bar: fixed to the bottom. The console owns the buttons: a page never submits. */
 .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--raised); border-top: 1px solid var(--border);
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)) }
 .bar .in { max-width: 680px; margin: 0 auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
 .bar .state { flex: 1 1 100%; font-size: 12px; color: var(--muted); min-width: 0 }
 .bar .state.saved { color: var(--running-fg) }
-.bar button { min-height: 44px; flex: 1 1 0; border-radius: 6px; font: 500 14px var(--sans); cursor: pointer; border: 1px solid var(--border) }
-.bar .send { background: var(--raised); color: var(--ink) }
-.bar .approve { background: var(--ink); color: var(--raised); border-color: var(--ink) }
-.bar button:disabled { opacity: .5; cursor: default }
-.bar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
 
 @media (prefers-reduced-motion: no-preference) { .opt, .tracks label { transition: background .12s, border-color .12s } }
 
-/* Questionnaire mode: questions only, one button. */
+/* Questionnaire mode: questions only. */
 body[data-mode="questionnaire"] section[data-slot="tickets"],
 body[data-mode="questionnaire"] section[data-slot="corrections"],
-body[data-mode="questionnaire"] section[data-slot="track"],
-body[data-mode="questionnaire"] #approve { display: none }
+body[data-mode="questionnaire"] section[data-slot="track"] { display: none }
 </style>
 </head>
 <body data-mode="plan">
@@ -164,23 +158,17 @@ body[data-mode="questionnaire"] #approve { display: none }
 
 <div class="bar">
   <div class="in">
-    <p class="state" id="state">0 of 0 questions answered · nothing sent</p>
-    <button class="send" id="send" type="button">Send changes</button>
-    <button class="approve" id="approve" type="button">Approve</button>
+    <p class="state" id="state">0 of 0 questions answered</p>
   </div>
 </div>
 
 <script>
 // Fixed part of the template: collect, post, restore. The session never edits this.
 const V = 1;
-const mode = document.body.dataset.mode;
-const bar = document.querySelector('.bar');   // the controls live here, never in a slot
-const state = bar.querySelector('#state'), send = bar.querySelector('#send');
-const approve = bar.querySelector('#approve');
+const state = document.querySelector('.bar #state');   // lives in the bar, never in a slot
 const embedded = window.parent !== window;
 const questions = () => [...document.querySelectorAll('.q[data-q]')];
-let armed = false, sent = 'nothing sent';
-if (mode === 'questionnaire') send.textContent = 'Send answers';
+let restored = false;
 
 function collect() {
   const answers = {};
@@ -196,9 +184,10 @@ function collect() {
   return answers;
 }
 
-function post(submit) {
-  // In the console this is the only way out of the sandbox.
-  if (embedded) window.parent.postMessage({ type: 'answers', v: V, answers: collect(), submit }, '*');
+function post() {
+  // In the console this is the only way out of the sandbox. Always a draft:
+  // the console's own buttons submit, so no page script can approve.
+  if (embedded) window.parent.postMessage({ type: 'answers', v: V, answers: collect(), submit: null }, '*');
   paint();
 }
 
@@ -212,8 +201,8 @@ function paint() {
     if (chip) { chip.textContent = done ? 'answered' : 'needs you'; chip.className = done ? 'chip rec' : 'chip waiting'; }
     if (done) n++;
   }
-  state.textContent = `${n} of ${all.length} questions answered · ${sent}`;
-  state.classList.toggle('saved', /^(saved|sent|approved)/.test(sent));
+  state.textContent = `${n} of ${all.length} questions answered` + (restored ? ' · saved answers restored' : '');
+  state.classList.toggle('saved', restored);
 }
 
 function restore(answers) {
@@ -226,28 +215,15 @@ function restore(answers) {
 }
 
 document.addEventListener('change', e => {
-  if (e.target.type !== 'radio') return;
-  armed = false; approve.textContent = 'Approve'; post(null);
+  if (e.target.type === 'radio') post();
 });
-document.addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') post(null); });
-
-send.addEventListener('click', () => {
-  armed = false; approve.textContent = 'Approve';
-  sent = mode === 'questionnaire' ? 'sent · the session continues with your answers' : 'sent as changes · the plan session will revise';
-  post('changes');
-});
-approve.addEventListener('click', () => {
-  if (!armed) { armed = true; approve.textContent = 'Tap again to approve'; return; }
-  armed = false; approve.textContent = 'Approve';
-  sent = 'approved · implement starts with these answers';
-  post('approve');
-});
+document.addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') post(); });
 
 // From the console: saved answers, when the page reopens on any device.
 window.addEventListener('message', e => {
   const d = e.data;
   if (e.source !== window.parent || !d || d.v !== V || d.type !== 'restore') return;
-  restore(d.answers); sent = 'saved answers restored'; paint();
+  restored = Object.keys(d.answers || {}).length > 0; restore(d.answers);
 });
 if (embedded) window.parent.postMessage({ type: 'ready', v: V }, '*');
 paint();
