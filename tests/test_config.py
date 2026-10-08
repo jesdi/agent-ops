@@ -289,13 +289,21 @@ def test_target_with_empty_models_block_opts_out_of_global_policy(tmp_path: Path
 def test_stall_after_seconds_defaults_to_600(tmp_path):
     p = tmp_path / "targets.yaml"
     p.write_text("state_dir: /tmp/s\ntargets: []\n")
-    assert load_config(p).stall_after_seconds == 600
+    cfg = load_config(p)
+    assert cfg.stall_after_seconds == 600
+    assert cfg.codex_stall_after_seconds == 1800
 
 
 def test_stall_after_seconds_configurable_and_zero_disables(tmp_path):
     p = tmp_path / "targets.yaml"
     p.write_text("state_dir: /tmp/s\nstall_after_seconds: 0\ntargets: []\n")
     assert load_config(p).stall_after_seconds == 0
+
+
+def test_codex_stall_after_seconds_configurable(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\ncodex_stall_after_seconds: 2400\ntargets: []\n")
+    assert load_config(p).codex_stall_after_seconds == 2400
 
 
 def test_spec_review_grace_minutes_defaults_to_15(tmp_path: Path):

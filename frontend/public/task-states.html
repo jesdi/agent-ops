@@ -146,7 +146,7 @@ flowchart TD
 <div class="card"><table>
 <tr><th>Park</th><th>Value</th><th>Causes</th><th>Session</th><th>How it ends</th></tr>
 <tr><td><span class="chip parked">Input</span></td><td><code>parked</code></td>
-  <td>Signal <code>blocked</code> or <code>awaiting-answers</code>.<br>The session stopped in the middle of a stage.<br>No session activity for 10 minutes.<br>Background work ran longer than 3 hours.<br>A round cap was reached.<br>The task's track is no longer configured.</td>
+  <td>Signal <code>blocked</code> or <code>awaiting-answers</code>.<br>The session stopped in the middle of a stage.<br>No session output for 10 minutes on Claude or 30 minutes on Codex.<br>Background work ran longer than 3 hours.<br>A round cap was reached.<br>The task's track is no longer configured.</td>
   <td>Ended</td><td>The operator replies or resumes.</td></tr>
 <tr><td><span class="chip waiting">Review</span></td><td><code>awaiting-review</code></td>
   <td>The spec waited 15 minutes for approval.</td><td>Ended</td><td>The operator approves or replies.</td></tr>
@@ -161,7 +161,7 @@ flowchart TD
 <div class="card"><table>
 <tr><th>Note</th><th>Cause</th></tr>
 <tr><td>(session stopped mid-stage waiting for input)</td><td>The session ended a turn with signal <code>working</code> and no background work.</td></tr>
-<tr><td>(no session output for 10m — likely login/trust prompt or hang)</td><td>The stall timer: the agent was not working for 10 minutes and did not end a turn.</td></tr>
+<tr><td>(no session output for 10m or 30m — likely login/trust prompt or hang)</td><td>The stall timer: no session output for 10 minutes on Claude or 30 minutes on Codex.</td></tr>
 <tr><td>(background work still running after 180m — cap reached)</td><td>The session waited for the same background work for more than 3 hours.</td></tr>
 </table></div>
 <p>All other notes on an input park come from the session itself.</p>
@@ -191,8 +191,8 @@ flowchart TD
   AL -->|yes| WM{Waiting marker?}
   WM -->|yes| PK([Park: session stopped mid-stage])
   WM -->|no| BM{Background marker?}
-  BM -->|no| ST{Agent not working<br/>for 10 minutes?}
-  ST -->|yes| PS([Park: no session output for 10m])
+  BM -->|no| ST{No session output for<br/>10m Claude / 30m Codex?}
+  ST -->|yes| PS([Park: no session output])
   ST -->|no| OK([Task stays in progress])
   BM -->|yes| SQ{Session started a new turn<br/>after the report?}
   SQ -->|yes: the wait is over| ST
@@ -210,7 +210,7 @@ flowchart TD
   <li>The pass asks herdr (the session layer) for the agent's status. <code>working</code> is never idle, however long the turn is.</li>
   <li>During a background wait the stall timer does not apply. The 3-hour clock starts again only when a turn end reports background work that the turn end before it did not report.</li>
   <li>When herdr cannot be asked, the pass does nothing and tries again on the next pass.</li>
-  <li>The two limits are settings: <code>stall_after_seconds</code> (600) and <code>background_wait_seconds</code> (10800).</li>
+  <li>The limits are settings: <code>stall_after_seconds</code> (600 for Claude), <code>codex_stall_after_seconds</code> (1800), and <code>background_wait_seconds</code> (10800).</li>
 </ul>
 
 <h2 id="loops">Round caps</h2>
