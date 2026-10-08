@@ -18,7 +18,7 @@ from dispatcher import spec_publish, state
 from dispatcher.state import TaskState
 
 log = logging.getLogger(__name__)
-RETENTION_DAYS = 30
+RETENTION_DAYS = 7
 MAX_BYTES = 20 * 1024 * 1024
 ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}\Z")
 
@@ -157,6 +157,8 @@ def _automatic_registrations(task: TaskState) -> list[Registration]:
     for artifact_id, name, path in (
         ("prototype", "Prototype", ".agent/prototype.html"),
         ("questionnaire", "Questionnaire", ".agent/questionnaire.md"),
+        ("review-answers", "Review answers", ".agent/review-answers.json"),
+        ("questionnaire-answers", "Questionnaire answers", ".agent/questionnaire-answers.json"),
     ):
         if (Path(task.worktree) / path).is_file():
             entries.append(Registration(artifact_id, name, path))
