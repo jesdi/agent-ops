@@ -26,7 +26,7 @@ from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
 ISSUE = 412
 BRANCH = "agent/412-csv-export"
 SPEC = "specs/2026-10-12-csv-export/spec.md"
-SUMMARY = ".agent/plan-review.md"
+SUMMARY = ".agent/review.html"
 GATE = "awaiting-plan-review"
 TICKETS = 4
 

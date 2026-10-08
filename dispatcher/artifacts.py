@@ -15,8 +15,9 @@ from dispatcher.state import read_regular
 MIN_BYTES = 1500
 MIN_TICKET_BYTES = 200   # a small ticket is legitimately short
 TICKETS_DIR = ".agent/tickets"
-PLAN_SUMMARY = ".agent/plan-review.md"   # what the operator reads at the gate
-SUMMARY_MAX_BYTES = 256 * 1024          # a larger summary is not counted
+REVIEW_PAGE = ".agent/review.html"      # what the operator reads at the gate
+REVIEW_PAGE_MAX_BYTES = 256 * 1024      # a larger page is bounced
+REVIEW_PAGE_MARKER = '<meta name="agent-ops-review" content="1">'
 # What a plan revision reads, and what the checks read: one bound per file,
 # and no more ticket files than NN can number.
 PLAN_FILE_MAX_BYTES = 1024 * 1024
@@ -57,61 +58,38 @@ def _check(path: str | Path, patterns: list[str],
     return CheckResult(True)
 
 
-_SUMMARY_SECTIONS = ["tickets", "open questions", "corrections"]
-_LIST_ITEM = re.compile(r"(?:[-*]|\d+\.) ")
-# Every form Markdown reads as a heading, and a little more (fail closed): up
-# to three spaces of indent, a tab after the hashes, an empty heading; and a
-# text line underlined with `===` or `---` (setext), which the prescribed
-# summary never has.
-_H1 = r"(?m)^ {0,3}#(?!#)"
-_H2 = r"(?m)^ {0,3}##(?!#)[ \t]*"
-_UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
+_QUESTION_BLOCK = re.compile(r'\bdata-q="[a-z0-9_-]{1,64}"')
 
 
-def _has_setext_heading(text: str) -> bool:
-    """A text line with an underline of `=` or `-` below it. Line by line:
-    one pattern over the whole text is quadratic on a very long line."""
-    lines = text.split("\n")
-    return any(_UNDERLINE.fullmatch(line) and lines[i].strip()
-               for i, line in enumerate(lines[1:]))
-
-
-def _open_questions_lines(summary: str | Path) -> list[str] | None:
-    """The non-blank lines of the summary's open-questions section. None for
-    a summary that is not the prescribed one: not a readable regular file
-    (state.read_regular: a FIFO never blocks the pass), above the size cap,
-    more than one title, level-2 headings other than the three, in order, or
-    a setext heading."""
-    raw = read_regular(summary, SUMMARY_MAX_BYTES)
+def _page_problem(page: str | Path) -> tuple[str, str]:
+    """(problem, text) of a review page: the problem is "" for a regular file
+    (state.read_regular: a FIFO never blocks the pass) of at most 256 KiB
+    that carries the template marker."""
     try:
-        text = raw.decode("utf-8")
-    except (AttributeError, UnicodeDecodeError):   # AttributeError: not readable
-        return None
-    headings = [h.strip().lower() for h in re.findall(_H2 + r"(.*)$", text)]
-    if (headings != _SUMMARY_SECTIONS or len(re.findall(_H1, text)) > 1
-            or _has_setext_heading(text)):
-        return None
-    section = re.split(_H2 + r".*$", text)[2]
-    return [ln.rstrip() for ln in section.splitlines() if ln.strip()]
+        size = os.lstat(page).st_size   # no follow: a symlink is read below, and refused
+    except (OSError, ValueError):
+        return "review page missing", ""
+    if size > REVIEW_PAGE_MAX_BYTES:
+        return "review page exceeds 256 KiB", ""
+    try:
+        raw = read_regular(page, REVIEW_PAGE_MAX_BYTES)
+    except OSError:   # the page went away between the check and the read
+        raw = None
+    if raw is None:
+        return ("review page is not a readable regular file "
+                "(a symlink, a pipe, a directory, or it grew)"), ""
+    text = raw.decode("utf-8", errors="replace")
+    if REVIEW_PAGE_MARKER not in text:
+        return "review page lacks the template marker", ""
+    return "", text
 
 
-def count_open_questions(summary: str | Path) -> int | None:
-    """The entries of the plan summary's open-questions section: its top-level
-    list items, or 0 when it says `None.`. None = cannot tell (see
-    _open_questions_lines, or anything but a list in the section): the
-    caller treats that as "questions are open"."""
-    lines = _open_questions_lines(summary)
-    if lines == ["None."]:
-        return 0
-    if not lines or not _LIST_ITEM.match(lines[0]):
-        return None
-    count = 0
-    for ln in lines:
-        if _LIST_ITEM.match(ln):
-            count += 1
-        elif not ln[0].isspace():   # not a continuation of the item above
-            return None
-    return count
+def count_open_questions(page: str | Path) -> int | None:
+    """The question blocks (`data-q="id"`) of the review page. None = cannot
+    tell (the page fails the shape check): the caller treats that as
+    "questions are open"."""
+    problem, text = _page_problem(page)
+    return None if problem else len(_QUESTION_BLOCK.findall(text))
 
 
 def check_spec(path: str | Path) -> CheckResult:
@@ -157,19 +135,22 @@ def check_tickets(tickets_dir: str | Path) -> CheckResult:
 class PlanRevision(NamedTuple):
     """What the operator is asked to approve at the plan gate. `fingerprint`
     is "" when the revision cannot be told; `problem` then says why."""
-    path: str            # the summary, worktree-relative
+    path: str            # the review page, worktree-relative
     fingerprint: str
     problem: str = ""
 
 
-def _summary_path(root: Path, artifact: str) -> str:
-    """stage.json is model-written, so a missing path or one outside the
-    worktree falls back to the path the plan prompt names."""
+def _page_path(root: Path, artifact: str) -> str | None:
+    """The artifact, worktree-relative and not resolved (the read refuses a
+    symlink); the prescribed page for an empty one, None when it leaves the
+    worktree (stage.json is model-written)."""
     try:
-        rel = (root / artifact).resolve().relative_to(root.resolve()).as_posix()
+        (root / artifact).resolve().relative_to(root.resolve())
+        rel = Path(os.path.normpath(root / artifact)).relative_to(
+            os.path.normpath(root)).as_posix()
     except (OSError, ValueError, RuntimeError):
-        rel = "."
-    return PLAN_SUMMARY if rel == "." else rel
+        return None
+    return REVIEW_PAGE if rel == "." else rel
 
 
 def _spec_folder_files(root: Path, spec_path: str) -> list[Path] | None:
@@ -206,13 +187,18 @@ def _read_plan_file(p: Path) -> bytes | None:
 
 def plan_revision(worktree: str | Path, artifact: str,
                   spec_path: str = "") -> PlanRevision:
-    """The plan revision on disk: the summary's path, and a digest over the
-    summary, the ticket files and the spec folder's three files (names and
+    """The plan revision on disk: the review page's path, and a digest over the
+    page, the ticket files and the spec folder's three files (names and
     bytes). Every file is read without following a symlink and without
     blocking, up to a size limit. Never raises: a file that is there and
     cannot be read that way makes the revision unavailable."""
     root = Path(worktree)
-    rel = _summary_path(root, artifact)
+    rel = _page_path(root, artifact)
+    if rel is None:
+        return PlanRevision(artifact, "", "review page is outside the worktree")
+    problem, _ = _page_problem(root / rel)
+    if problem:
+        return PlanRevision(rel, "", problem)
     tickets = ticket_files(root / TICKETS_DIR)
     if len(tickets) > MAX_TICKETS:
         return PlanRevision(rel, "", f"more than {MAX_TICKETS} ticket files")

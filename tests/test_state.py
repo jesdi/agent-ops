@@ -698,12 +698,12 @@ def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
         "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
         "updated_at": "2026-09-08T00:00:00+00:00",
         "review_rounds": 1, "gate_rounds": 2, "e2e_rounds": 3, "ci_rounds": 4,
-        "operator_request": {"kind": "plan-approval", "path": ".agent/plan-review.md"},
+        "operator_request": {"kind": "plan-approval", "path": ".agent/review.html"},
     }))
     got = load(tmp_path, "alpha", 10)
     assert (got.review_rounds, got.gate_rounds,
             got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
-    assert got.operator_request == PlanApprovalRequest(".agent/plan-review.md")
+    assert got.operator_request == PlanApprovalRequest(".agent/review.html")
     assert got.operator_request.fingerprint == "", "a request from before the field loads"
     save(tmp_path, replace(got, operator_request=PlanApprovalRequest("p.md", fingerprint="abc")))
     assert load(tmp_path, "alpha", 10).operator_request.fingerprint == "abc"
