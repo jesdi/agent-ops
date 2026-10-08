@@ -8,14 +8,15 @@ Every bounded loop (review fixes, gate fixes, e2e, ci) parks past its cap.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
 from dispatcher.artifacts import TICKETS_DIR, CheckResult, check_spec, check_tickets
 from dispatcher.loops import Decision, Loop, Outcome, ReportedRound, evaluate
 from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
-                              StageSignal, TaskState)
+                              StageSignal, TaskState, after_ticket)
 
 
 @dataclass(frozen=True)
@@ -25,11 +26,17 @@ class SpawnStage:
 
 @dataclass(frozen=True)
 class StartTicket:
-    """Atomic between-tickets IMPLEMENT start: admission check, cursor advance,
-    and session spawn happen together. The executor checks budget_ok first and
-    makes no state mutation when denied."""
+    """Start ticket `cursor`. The executor first saves the step that is
+    complete (the accepted ticket set, or the ticket that is done), then
+    asks for admission; when the launch is denied nothing else changes and
+    the action comes again next pass. Cursor advance and session spawn
+    happen together. `count`, `tracks` and `names` describe the ticket set
+    the plan stage just had accepted, all from the one read that checked it,
+    and are read only then; between tickets the task's own copy stands."""
     cursor: int
     count: int
+    tracks: dict[int, str] = field(default_factory=dict)
+    names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -167,6 +174,123 @@ def _track_actions(task: TaskState, signal: StageSignal,
     return [ParkForInput(reason)]
 
 
+def _stalled(signal: StageSignal | None, session_alive: bool, waiting: bool,
+             idle_seconds: float | None, stall_after: float) -> bool:
+    """Time-based liveness: gated statuses are idle by design and fall
+    through to their own rules."""
+    quiet = (session_alive and stall_after > 0
+             and idle_seconds is not None and idle_seconds > stall_after)
+    return quiet and (signal is None
+                      or (signal.status == "working" and not waiting))
+
+
+def _awaiting_ci_actions(signal: StageSignal) -> list[object]:
+    if signal.run_id <= 0:
+        return [SetTaskStage(Stage.FAILED),
+                Notify("artifact_failed", "awaiting-ci without run_id")]
+    return [ParkForCI(signal.run_id)]
+
+
+def _working_actions(task: TaskState, signal: StageSignal, session_alive: bool,
+                     waiting: bool, caps: LoopCaps) -> list[object]:
+    loop_acts = _loop_actions(task, signal, caps)
+    if waiting and session_alive:
+        return loop_acts + [ParkForInput("(session stopped mid-stage waiting for input)")]
+    return loop_acts or [NoOp()]
+
+
+def _awaiting_review_actions(task: TaskState, signal: StageSignal,
+                             grace_elapsed: bool,
+                             tracks: frozenset[str] | None) -> list[object]:
+    if task.stage == Stage.AWAITING_SPEC_REVIEW:
+        if grace_elapsed:
+            return [ParkForReview()]
+        if not task.operator_request:
+            return [ArmSpecApproval(artifact=signal.artifact)]
+        return [NoOp()]  # already notified on a previous pass
+    if task.stage != Stage.SPEC:
+        return [NoOp()]  # only the SPEC stage emits awaiting-review
+    return _track_actions(task, signal, tracks) or [
+        SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact=signal.artifact),
+        PublishSpec(artifact=signal.artifact),
+        Notify("awaiting_spec_review", signal.note)]
+
+
+def _implement_done(task: TaskState, signal: StageSignal) -> list[object]:
+    stage, nxt = after_ticket(task)
+    if stage == Stage.IMPLEMENT.value:
+        start: list[object] = [StartTicket(nxt, task.ticket_count)]
+        # Cursor 0: the set was accepted in an earlier pass and ticket 1
+        # had to wait, so its ping was not sent then.
+        return start + ([] if task.ticket_cursor else [
+            Notify("implement_started", f"{task.ticket_count} ticket(s)")])
+    return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
+
+
+def _plan_done(task: TaskState, ticket_tracks: Collection[str]) -> list[object]:
+    """`ticket_tracks`: the track names a ticket of this task may name."""
+    result: CheckResult = check_tickets(Path(task.worktree) / TICKETS_DIR,
+                                        ticket_tracks)
+    if not result.ok:
+        if task.plan_retries < PLAN_RETRY_LIMIT:
+            return [RetryStage(Stage.PLAN, result.reason)]
+        return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
+    return [StartTicket(1, result.count, result.tracks, result.names),
+            Notify("implement_started", f"{result.count} ticket(s)")]
+
+
+def _spec_done(task: TaskState, signal: StageSignal,
+               tracks: frozenset[str] | None) -> list[object]:
+    bounced = _track_actions(task, signal, tracks)
+    if bounced:
+        return bounced
+    result = check_spec(_artifact_path(task, signal))
+    if not result.ok:
+        return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
+    return [SpawnStage(Stage.PLAN)]
+
+
+def _done_actions(task: TaskState, signal: StageSignal,
+                  tracks: frozenset[str] | None,
+                  ticket_tracks: Collection[str]) -> list[object]:
+    if task.stage == Stage.IMPLEMENT:
+        return _implement_done(task, signal)
+    if task.stage == Stage.REVIEW:
+        return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]
+    if task.stage == Stage.ADDRESS_REVIEW:
+        # The PR is the artifact — nothing to format-check.
+        return [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", signal.note)]
+    if task.stage == Stage.PLAN:
+        return _plan_done(task, ticket_tracks)
+    if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
+        return _spec_done(task, signal, tracks)
+    return [NoOp()]   # done signal for a terminal/unknown stage — ignore
+
+
+def _signal_actions(task: TaskState, signal: StageSignal, session_alive: bool,
+                    waiting: bool, grace_elapsed: bool, caps: LoopCaps,
+                    tracks: frozenset[str] | None,
+                    ticket_tracks: Collection[str]) -> list[object]:
+    """What the stage signal's status asks for."""
+    if signal.status == "awaiting-ci":
+        return _awaiting_ci_actions(signal)
+    if signal.status == "blocked":
+        if task.stage == Stage.BLOCKED:
+            return [NoOp()]  # legacy escalate-in-place state
+        return [ParkForInput(signal.note)]
+    if signal.status == "awaiting-answers":
+        # Questionnaire, prototype or wizard: an input park that carries the
+        # file the operator must look at. The console serves it.
+        return [ParkForInput(signal.note, artifact=signal.artifact, is_answers=True)]
+    if signal.status == "working":
+        return _working_actions(task, signal, session_alive, waiting, caps)
+    if signal.status == "awaiting-review":
+        return _awaiting_review_actions(task, signal, grace_elapsed, tracks)
+    if signal.status == "done":
+        return _done_actions(task, signal, tracks, ticket_tracks)
+    return [NoOp()]
+
+
 def next_actions(
     task: TaskState,
     signal: StageSignal | None,
@@ -177,6 +301,7 @@ def next_actions(
     grace_elapsed: bool = False,
     caps: LoopCaps = LoopCaps(),
     tracks: frozenset[str] | None = None,
+    ticket_tracks: Collection[str] = (),
 ) -> list[object]:
     if task.park:
         return [NoOp()]  # wake/resume is dispatcher-side; never re-park
@@ -191,12 +316,7 @@ def next_actions(
         if task.stage in IN_FLIGHT_STAGES:
             return [HandleCrash()]
 
-    # Time-based liveness (unchanged): gated statuses are idle by design and
-    # fall through to their own rules below.
-    stalled = (session_alive and stall_after > 0
-               and idle_seconds is not None and idle_seconds > stall_after)
-    if stalled and (signal is None
-                    or (signal.status == "working" and not waiting)):
+    if _stalled(signal, session_alive, waiting, idle_seconds, stall_after):
         return [ParkForInput(
             f"(no session output for {int(stall_after) // 60}m — "
             f"likely login/trust prompt or hang)")]
@@ -204,73 +324,8 @@ def next_actions(
     if signal is None:
         return [NoOp()]
 
-    loop_acts = _loop_actions(task, signal, caps)
-
-    if signal.status == "awaiting-ci":
-        if signal.run_id <= 0:
-            return [SetTaskStage(Stage.FAILED),
-                    Notify("artifact_failed", "awaiting-ci without run_id")]
-        return [ParkForCI(signal.run_id)]
-
-    if signal.status == "blocked":
-        if task.stage == Stage.BLOCKED:
-            return [NoOp()]  # legacy escalate-in-place state
-        return [ParkForInput(signal.note)]
-
-    if signal.status == "awaiting-answers":
-        # Questionnaire, prototype or wizard: an input park that carries the
-        # file the operator must look at. The console serves it.
-        return [ParkForInput(signal.note, artifact=signal.artifact, is_answers=True)]
-
-    if signal.status == "working":
-        if waiting and session_alive:
-            return loop_acts + [ParkForInput("(session stopped mid-stage waiting for input)")]
-        return loop_acts or [NoOp()]
-
-    if signal.status == "awaiting-review":
-        if task.stage == Stage.AWAITING_SPEC_REVIEW:
-            if grace_elapsed:
-                return [ParkForReview()]
-            if not task.operator_request:
-                return [ArmSpecApproval(artifact=signal.artifact)]
-            return [NoOp()]  # already notified on a previous pass
-        if task.stage != Stage.SPEC:
-            return [NoOp()]  # only the SPEC stage emits awaiting-review
-        return _track_actions(task, signal, tracks) or [
-            SetTaskStage(Stage.AWAITING_SPEC_REVIEW, artifact=signal.artifact),
-            PublishSpec(artifact=signal.artifact),
-            Notify("awaiting_spec_review", signal.note)]
-
-    if done:
-        if task.stage == Stage.IMPLEMENT:
-            if task.ticket_cursor < task.ticket_count:
-                nxt = task.ticket_cursor + 1
-                return [StartTicket(nxt, task.ticket_count)]
-            return [SpawnStage(Stage.REVIEW), Notify("review_started", signal.note)]
-        if task.stage == Stage.REVIEW:
-            return [SetTaskStage(Stage.PR_OPEN), Notify("pr_opened", signal.note)]
-        if task.stage == Stage.ADDRESS_REVIEW:
-            # The PR is the artifact — nothing to format-check.
-            return [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", signal.note)]
-        if task.stage == Stage.PLAN:
-            result: CheckResult = check_tickets(Path(task.worktree) / TICKETS_DIR)
-            if not result.ok:
-                if task.plan_retries < PLAN_RETRY_LIMIT:
-                    return [RetryStage(Stage.PLAN, result.reason)]
-                return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-            return [StartTicket(1, result.count),
-                    Notify("implement_started", f"{result.count} ticket(s)")]
-        if task.stage in (Stage.SPEC, Stage.AWAITING_SPEC_REVIEW):
-            bounced = _track_actions(task, signal, tracks)
-            if bounced:
-                return bounced
-            result = check_spec(_artifact_path(task, signal))
-            if not result.ok:
-                return [SetTaskStage(Stage.FAILED), Notify("artifact_failed", result.reason)]
-            return [SpawnStage(Stage.PLAN)]
-        return [NoOp()]   # done signal for a terminal/unknown stage — ignore
-
-    return [NoOp()]
+    return _signal_actions(task, signal, session_alive, waiting, grace_elapsed,
+                           caps, tracks, ticket_tracks)
 
 
 def _in_wait(signal: StageSignal | None, session_alive: bool, waiting: bool,
@@ -311,6 +366,7 @@ def pass_actions(
     grace_elapsed: bool = False,
     caps: LoopCaps = LoopCaps(),
     tracks: frozenset[str] | None = None,
+    ticket_tracks: Collection[str] = (),
 ) -> list[object]:
     """next_actions, deferring to a background wait (design "Data model"):
     while the wait holds, neither the stall timer nor a park applies, bar
@@ -321,4 +377,4 @@ def pass_actions(
     return next_actions(task, signal, session_alive, waiting=waiting,
                         idle_seconds=idle_seconds, stall_after=stall_after,
                         grace_elapsed=grace_elapsed, caps=caps,
-                        tracks=tracks)
+                        tracks=tracks, ticket_tracks=ticket_tracks)

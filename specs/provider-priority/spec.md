@@ -56,7 +56,8 @@ hours, and the stage list is `[claude-sonnet-5-5, openai/gpt-6-luna@high]`.
 7. **Review independence wins.** For a review stage, the entries of the provider that ran
    implement are tried last, after the mode's ordering has been applied to the rest.
 8. **The mode covers every routed list.** It orders the stage lists of every track, of every
-   target's policy, and the `models.triage` list.
+   target's policy, and the `models.triage` list. (Amended by `specs/pinned-tracks`: the stage
+   lists of a pinned track are not reordered.)
 9. **The mode only affects launches that have no pick or override.** A stage that already has a
    pick keeps it. A one-shot operator override launches the model it names, whatever the mode.
 10. **The operator sets the mode in the console.** The console offers `auto` and one option per

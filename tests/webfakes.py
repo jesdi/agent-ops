@@ -1,6 +1,6 @@
 """Hand-written fakes and builders shared by the web/ test suite."""
 from dispatcher.config import Config, Target
-from dispatcher import state
+from dispatcher import execution_overrides, state
 from dispatcher.models import parse_policy
 from tests.usagefakes import session_usage
 from dispatcher.state import Stage, TaskState
@@ -103,7 +103,8 @@ class FakeSources:
         return self.usages
 
     def execution_override(self, target, issue):
-        return self.execution_overrides.get((target, issue))
+        stored = self.execution_overrides.get((target, issue))
+        return stored and execution_overrides.ExecutionOverride(*stored)
 
     def set_execution_override(self, target, issue, *, model, bypass_usage):
         self.execution_overrides[(target, issue)] = (model, bypass_usage)

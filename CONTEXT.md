@@ -45,13 +45,36 @@ Triage picks the track for the spec stage (label `track:<name>`); the spec
 session picks it for plan, implement and review and writes it in its signal.
 _Avoid_: tier, profile, rule
 
+**Pinned track**:
+A track named in `models.pinned`. Required pace, the session-bound rule and a
+provider-first priority mode do not apply to it: its entries are tried in the
+written order. The usage gate, picks and one-shot overrides still apply; when
+no entry of its list is admitted, the task waits. Triage and the tracks the
+list does not name follow the mode.
+_Avoid_: locked track, fixed track
+
+**Ticket track**:
+The pinned track a ticket names with one `Track: <name>` line, written by the
+plan session. That ticket is implemented from the named track's `implement`
+list; a ticket with no such line, and the spec, plan, review and PR feedback
+of every task, use the task's own track. It must be a pinned track other than
+`security`, and no ticket of a `security` task may have one: the ticket check
+refuses any other ticket set. The ticket tracks are fixed when the ticket set
+is accepted: routing reads the copy the task keeps, never the ticket files. A
+ticket whose track is no longer pinned when it starts parks the task.
+_Avoid_: ticket lane, per-ticket model
+
 **Entry**:
 One element of a track's stage list: `provider/model[@effort]`.
 _Avoid_: profile (a Claude Code term)
 
 **Pick**:
-The entry chosen when a task enters a stage, recorded in `TaskState.picks`
-and reused by every session of that stage. A denied pick waits.
+The entry chosen when a task enters a stage, reused by every later session of
+that stage. Implement has one pick per ticket: chosen when the ticket starts,
+kept for that ticket's sessions, dropped when the ticket is done; the next
+ticket chooses again. PR feedback has one pick of its own, chosen by the first
+session that addresses PR feedback and reused by every later round. A denied
+pick waits.
 
 **Untracked**:
 A candidate with no `track:` label; it specs on `models.untracked`.
@@ -234,7 +257,7 @@ adapters, one per provider. The dispatcher fetches only the providers the
 model policy references; the console also shows any other provider whose
 adapter reads (Codex run by hand), and nothing admits on that reading. Loop policy stays independent of all of it: waiting for
 headroom does not spend a fix round, and a denial for one provider never
-prevents considering another. The router is `dispatcher/models.py::resolve`: first admitted entry of the task's track for the stage, tried in the order `dispatcher/priority.py::order` gives for the priority mode (a fixed mode: that provider's entries first; auto: a session-bound provider's entries first, then highest required pace); labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
+prevents considering another. The router is `dispatcher/state.py::launch_entries`: the dispatcher launches the first admitted entry of the next launch's track (a ticket's own ticket track, else the task track) for the stage, tried in the order `dispatcher/priority.py::order` gives for the priority mode (a fixed mode: that provider's entries first; auto: a session-bound provider's entries first, then highest required pace); labels and board effort are not routing inputs. Each provider has a runtime (`dispatcher/runtimes.py`); a stage never
 changes provider, so cross-runtime session continuation is excluded by rule,
 not pending. See docs/specs/2026-09-24-codex-runtime-design.md.
 
@@ -242,7 +265,9 @@ A model-limited queue candidate or claimed task may carry a durable, one-shot
 execution override. Queue claims and active stage transitions store it under
 `execution-overrides/`; a parked task carries it through the existing resume
 intent and `TaskState.resume_model_override` / `resume_bypass_usage`. The
-requested model must belong to the target's configured policy. The choice
+requested model must belong to the target's configured policy. A wake that
+names no model launches on a stored execution override; a wake that names
+one wins, and the stored override is used up with that launch. The choice
 survives ordinary capacity, slot, or provisioning denial and is consumed only
 after the selected session starts. A usage bypass applies to that launch only;
 it never bypasses box capacity or slot allocation.

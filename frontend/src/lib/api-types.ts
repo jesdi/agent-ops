@@ -734,6 +734,11 @@ export interface components {
             mode: string;
             /** Options */
             options: string[];
+            /**
+             * Pinned
+             * @default []
+             */
+            pinned: string[];
         };
         /** ProviderUsageView */
         ProviderUsageView: {
@@ -863,6 +868,11 @@ export interface components {
         TaskAdmissionView: {
             /** Alternatives */
             alternatives: components["schemas"]["ModelAdmissionView"][];
+            /**
+             * Pinned Track
+             * @default
+             */
+            pinned_track: string;
             requested: components["schemas"]["ModelAdmissionView"];
         };
         /** TaskCard */
@@ -890,6 +900,11 @@ export interface components {
             park_note: string;
             /** Park Note Pending */
             park_note_pending: boolean;
+            /**
+             * Pinned Track
+             * @default
+             */
+            pinned_track: string;
             /** Score */
             score: number | null;
             /** Slot */

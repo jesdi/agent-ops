@@ -69,11 +69,17 @@ loop_caps:
 # tries them by REQUIRED PACE, highest first: the entry whose weekly quota
 # most needs spending before its reset (quota left / time left). The written
 # order breaks ties and ranks entries with no weekly reading, which go last.
-# A session-bound provider's entries (session_week_share above) go first.
+# A session-bound provider's entries (session_week_share above) go first,
+# except on a pinned track (below).
 # A priority mode set in the console (`auto` or a provider) replaces this
 # order: a provider's name puts its entries first (see CONTEXT.md).
 # It launches the first entry in that order the usage gate admits, keeps that
 # pick for every session of the stage, and waits when none is admitted.
+# A pinned track (`pinned:` below) is the exception: required pace, the
+# session-bound rule and a provider-first priority mode do not apply to it:
+# its entries are tried in the written order. The usage gate, picks and
+# one-shot overrides still apply; when no entry of its list is admitted, the
+# task waits.
 # Review moves the provider that ran implement to the back of its list.
 # A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
 # A target may carry its own `models:` block, which REPLACES this one.
@@ -95,19 +101,26 @@ models:
       implement: [claude-sonnet-5@medium, openai/gpt-sol@medium]
       review:    [openai/gpt-astra@medium, claude-opus-5@medium]
     frontend:
-      # Fable first for spec, plan and implement; review is still a
-      # different model, on another provider when one is admitted.
       when: Mostly UI or frontend work — components, styling, layout, client behaviour.
-      spec:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
-      plan:      [claude-fable-5-1@medium, openai/gpt-astra@medium]
+      spec:      [claude-fable-5-1@medium, claude-opus-5@medium]
+      plan:      [claude-fable-5-1@medium, claude-opus-5@medium]
       implement: [claude-fable-5-1@medium, claude-opus-5@medium]
       review:    [openai/gpt-astra@medium, claude-opus-5@medium]
+    architecture:
+      when: Heavy backend work, or a change to the architecture (module boundaries, data model or schema, persistence, concurrency, a refactor across modules, a public interface other code depends on).
+      spec:      [openai/gpt-astra@high, claude-fable-5-1@high]
+      plan:      [openai/gpt-astra@high, claude-fable-5-1@high]
+      implement: [openai/gpt-astra@medium, claude-fable-5-1@medium]
+      review:    [claude-fable-5-1@high, openai/gpt-astra@high]
     security:
       when: Touches auth, secrets, permissions, or input at a trust boundary. Never below this track.
-      spec:      [claude-fable-5-1@high, openai/gpt-astra@high]
-      plan:      [claude-fable-5-1@high, openai/gpt-astra@high]
-      implement: [claude-opus-5@medium, openai/gpt-sol@high]
-      review:    [openai/gpt-astra@high, claude-fable-5-1@high]
+      spec:      [openai/gpt-astra@high]
+      plan:      [openai/gpt-astra@high]
+      implement: [openai/gpt-astra@high]
+      review:    [claude-fable-5-1@high, openai/gpt-astra@high]
+  # Pinned tracks keep their written order: no priority mode reorders them.
+  # Listed first to the sessions that choose a track, in this order.
+  pinned: [security, architecture, frontend]
 
 targets:
   - name: example-app

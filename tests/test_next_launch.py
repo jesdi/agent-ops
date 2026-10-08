@@ -1,0 +1,412 @@
+"""The next launch (stage, ticket) is read from the persisted state, never
+inferred from a missing pick. A legacy state with no pick is in the middle
+of its ticket; the pass writes from the saved state after the boundary; an
+accepted ticket set and a done last ticket are persisted before the next
+launch is admitted; a pending override wins over the park; the crash repro
+names the crashed session's runtime; the prompt texts; an attach wake
+between tickets."""
+import json
+from dataclasses import replace
+
+import dispatcher.main as main
+from dispatcher import execution_overrides, failures, state
+from dispatcher.machine import Notify, StartTicket, next_actions
+from dispatcher.models import parse_policy, ticket_tracks_text
+from dispatcher.state import (NO_SLOT, PARK_WAKE, Stage, StageSignal,
+                              launch_entries, launch_ticket, launch_track,
+                              load, next_launch, next_stage, save)
+from tests import webfakes
+from tests.pinned import (ASTRA, DENY_FRONTEND, FABLE, HEADERS, IMPL_DONE,
+                          OPUS, PLAN_DONE, SOL, ahead, anthropic, cards, deny,
+                          detail, launched, legacy, make_cfg, models, openai,
+                          policy, policy_raw, raw, resume_intent, rig,
+                          rewrite, saved, setup, step, task, unpinned,
+                          usage_now, wake, write_ticket)
+from tests.test_main import FakeNotifier, FakeSessions, deps, make_task
+
+
+# --- the one answer -------------------------------------------------------------
+
+PICK = {"implement": f"{ASTRA}@medium"}
+
+
+def test_next_launch_of_each_implement_state():
+    assert next_launch(task(ticket_cursor=2, ticket_count=3,
+                            picks=PICK)) == ("implement", 2)
+    assert next_launch(task(ticket_cursor=2, ticket_count=3,
+                            ticket_without_pick=True)) == ("implement", 2)
+    assert next_launch(task(ticket_cursor=2, ticket_count=3)) == ("implement", 3)
+    assert next_launch(task(ticket_cursor=0, ticket_count=3)) == ("implement", 1)
+    assert next_launch(task(ticket_cursor=3, ticket_count=3)) == ("review", 0)
+    assert next_launch(task(Stage.PLAN)) == ("plan", 0)
+    assert next_launch(task(Stage.PR_OPEN)) == ("address-review", 0)
+    assert next_launch(task(Stage.AWAITING_SPEC_REVIEW)) == ("spec", 0)
+    assert next_launch(task(Stage.PLAN)).stage == "plan"
+    crashed = task(Stage.FAILED, crashed_stage="implement", ticket_cursor=3,
+                   ticket_count=3)
+    assert next_launch(crashed) == ("review", 0)
+    assert (next_stage(crashed), launch_ticket(crashed)) == ("review", 0)
+
+
+def test_the_launch_track_is_the_next_launchs():
+    between = task(ticket_cursor=1, ticket_count=3, ticket_tracks={2: "frontend"})
+    assert launch_track(between, policy()) == "frontend"
+    assert launch_track(replace(between, picks=PICK), policy()) == "architecture"
+    last = task(ticket_cursor=2, ticket_count=2, ticket_tracks={2: "frontend"})
+    assert launch_track(last, policy()) == "architecture"       # review
+
+
+def test_a_state_file_from_before_the_field_marks_a_ticket_without_a_pick(
+        tmp_path):
+    def read(stage, picks, **over):
+        save(tmp_path, task(stage, ticket_cursor=2, ticket_count=3, picks=picks))
+        rewrite(tmp_path, "t", "ticket_without_pick", **over)
+        return load(tmp_path, "t", 42)
+    assert read(Stage.IMPLEMENT, {}).ticket_without_pick
+    assert read(Stage.FAILED, {}, crashed_stage="implement").ticket_without_pick
+    assert not read(Stage.IMPLEMENT, PICK).ticket_without_pick
+    assert not read(Stage.PLAN, {}).ticket_without_pick
+    save(tmp_path, task(ticket_cursor=2, ticket_count=3))    # new shape
+    assert not load(tmp_path, "t", 42).ticket_without_pick
+
+
+def test_a_task_with_no_track_is_untracked_work_for_the_status_line_too(
+        tmp_path, monkeypatch):
+    """The status line names the entry the dispatcher launches: the task has
+    no track (claimed before tracks existed, parked ever since), the
+    untracked track is pinned, mode `openai` does not reorder it."""
+    c = make_cfg(tmp_path, monkeypatch, ahead(), pinned=["standard"],
+                 mode="openai")
+    make_task(c, issue=42, stage=Stage.PLAN, track="", park=PARK_WAKE)
+    assert f"plan [anthropic/{FABLE}@medium]" in main._status_lines(c)[0]
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert [(r[2], r[3]) for r in sess.resumed] == [(f"anthropic/{FABLE}", "medium")]
+
+
+def test_launch_entries_reads_the_list_of_the_stage_it_is_given():
+    """The drive loop starts the stage after a done one, which the saved
+    state does not name yet: spec done reads the plan list, the last ticket
+    done reads the review list (with the review avoid)."""
+    raw_policy = policy_raw()
+    raw_policy["tracks"]["standard"]["plan"] = [f"{OPUS}@low"]
+    pol = parse_policy(raw_policy)
+    spec = task(Stage.AWAITING_SPEC_REVIEW, track="standard")
+    assert [str(e) for e in launch_entries(spec, pol, tuple, "plan")] == [
+        f"anthropic/{OPUS}@low"]
+    assert [str(e) for e in launch_entries(spec, pol, tuple)] == [
+        f"anthropic/{FABLE}@medium", f"{ASTRA}@medium"]
+    last = task(picks=PICK, implement_providers=["anthropic"])   # no ticket set
+    assert [str(e) for e in launch_entries(last, pol, tuple, "review")] == [
+        f"{ASTRA}@high", f"anthropic/{FABLE}@high"]
+    assert [str(e) for e in launch_entries(last, pol, tuple)] == [
+        f"{ASTRA}@medium", f"anthropic/{FABLE}@medium"]
+
+
+class Corrupting(FakeSessions):
+    """The turn leaves the state file unreadable, then raises."""
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+
+    def is_alive(self, target, issue):
+        self.path.write_text("{not json")
+        raise RuntimeError("boom")
+
+
+def test_a_crash_over_an_unreadable_state_file_does_not_stop_the_pass(
+        tmp_path, monkeypatch):
+    c = make_cfg(tmp_path, monkeypatch, ahead())
+    make_task(c, issue=42, track="architecture", picks=PICK)
+    make_task(c, issue=43, track="architecture", picks=PICK, park=PARK_WAKE)
+    sess = Corrupting(state._path(c.state_dir, "portfolio_eval", 42))
+    main.run_pass(c, deps(sess=sess))
+    t = saved(c)
+    assert t.stage is Stage.FAILED and t.crashed_stage == "implement"
+    assert len(sess.resumed) == 1                   # task 43 was still reached
+
+
+# --- A: a legacy state with no pick is in the middle of its ticket -------------
+
+def test_a_wake_of_a_legacy_task_continues_its_ticket(tmp_path, monkeypatch):
+    c, wt = legacy(tmp_path, monkeypatch, park=PARK_WAKE)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.spawned == [] and len(sess.resumed) == 1
+    assert saved(c).ticket_cursor == 2
+
+
+def test_a_crash_resume_of_a_legacy_task_respawns_its_ticket(
+        tmp_path, monkeypatch):
+    c, wt = legacy(tmp_path, monkeypatch, stage=Stage.FAILED,
+                   crashed_stage="implement",
+                   updated_at="2026-10-01T11:00:00+00:00")
+    sess = resume_intent(c)
+    assert [s[1] for s in sess.spawned] == ["implement"]
+    assert "02-t2.md" in sess.spawned[0][3]
+    assert saved(c).ticket_cursor == 2
+
+
+# --- B: a failed start of the next ticket ----------------------------------------
+
+def test_a_failed_ticket_start_does_not_put_the_done_tickets_pick_back(
+        tmp_path, monkeypatch):
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)])
+    step(c, wt, PLAN_DONE)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(IMPL_DONE))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42}, spawn_raises=[42])))
+    t = saved(c)
+    assert (t.stage, t.crashed_stage, t.ticket_cursor) == (
+        Stage.FAILED, "implement", 1)
+    assert "implement" not in raw(c)["picks"]
+    sess = resume_intent(c)
+    assert "02-t2.md" in sess.spawned[0][3]
+    assert launched(sess) == [(f"anthropic/{FABLE}", "medium")]
+    assert saved(c).ticket_cursor == 2
+
+
+def test_a_wake_that_fails_after_the_ticket_started_keeps_what_it_saved(
+        tmp_path, monkeypatch):
+    """A wake between two tickets starts ticket 2 (cursor, pick and provider
+    saved), then the turn raises. The failure is written from the saved
+    state, not from the task object the wake began with."""
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)])
+    step(c, wt, PLAN_DONE)
+    usage_now(monkeypatch, deny(ahead(), *DENY_FRONTEND))
+    step(c, wt, IMPL_DONE)                      # ticket 2 waits
+    usage_now(monkeypatch, ahead())
+    real = main.eventlog.append_event
+
+    def append(state_dir, event, **kw):
+        if event == "stage-started":
+            raise OSError("disk full")
+        real(state_dir, event, **kw)
+    monkeypatch.setattr(main.eventlog, "append_event", append)
+    assert len(wake(c).spawned) == 1
+    t = saved(c)
+    assert (t.stage, t.crashed_stage, t.ticket_cursor) == (
+        Stage.FAILED, "implement", 2)
+    assert t.picks["implement"] == f"anthropic/{FABLE}@medium"
+    assert t.implement_providers == ["openai", "anthropic"]
+
+
+# --- C1: the accepted ticket set is persisted before ticket 1 is admitted --------
+
+def accepted_and_waiting(tmp_path, monkeypatch):
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [("frontend",), ()],
+                  usages=deny(ahead(), *DENY_FRONTEND))
+    sess = step(c, wt, PLAN_DONE)
+    assert sess.spawned == [] and sess.resumed == []
+    return c, wt
+
+
+def test_an_accepted_set_is_saved_although_ticket_1_waits(tmp_path, monkeypatch):
+    c, wt = accepted_and_waiting(tmp_path, monkeypatch)
+    t = saved(c)
+    assert (t.stage, t.ticket_cursor, t.ticket_count) == (Stage.IMPLEMENT, 0, 2)
+    assert t.ticket_tracks == {1: "frontend"}
+    assert next_launch(t) == ("implement", 1)
+
+
+def test_an_accepted_set_is_not_read_again(tmp_path, monkeypatch):
+    c, wt = accepted_and_waiting(tmp_path, monkeypatch)
+    write_ticket(wt, 1, "standard")          # would be refused; would reroute
+    usage_now(monkeypatch, ahead())
+    sess = step(c, wt, PLAN_DONE)
+    assert sess.resumed == []
+    assert launched(sess) == [(f"anthropic/{FABLE}", "medium")]
+    assert saved(c).plan_retries == 0
+
+
+def test_the_implement_started_ping_comes_when_ticket_1_starts():
+    t = task(ticket_cursor=0, ticket_count=2)
+    assert next_actions(t, StageSignal("plan", "done"), True) == [
+        StartTicket(1, 2), Notify("implement_started", "2 ticket(s)")]
+    later = replace(t, ticket_cursor=1)
+    assert next_actions(later, StageSignal("implement", "done"), True) == [
+        StartTicket(2, 2)]
+
+
+def test_the_status_line_names_ticket_1s_entry(tmp_path, monkeypatch):
+    c, wt = accepted_and_waiting(tmp_path, monkeypatch)
+    assert f"implement [anthropic/{FABLE}@medium]" in main._status_lines(c)[0]
+
+
+def test_a_wake_of_an_accepted_task_starts_ticket_1(tmp_path, monkeypatch):
+    c, wt = accepted_and_waiting(tmp_path, monkeypatch)
+    usage_now(monkeypatch, ahead())
+    sess = wake(c)
+    assert sess.resumed == [] and "01-t1.md" in sess.spawned[0][3]
+    assert launched(sess) == [(f"anthropic/{FABLE}", "medium")]
+    assert saved(c).ticket_cursor == 1
+
+
+def test_an_override_of_another_provider_runs_ticket_1(tmp_path, monkeypatch):
+    c, wt = accepted_and_waiting(tmp_path, monkeypatch)
+    execution_overrides.save(
+        c.state_dir, "portfolio_eval", 42,
+        execution_overrides.ExecutionOverride(model=SOL, bypass_usage=False))
+    assert launched(step(c, wt, PLAN_DONE)) == [(SOL, "")]
+
+
+def waiting_card(tmp_path, **kw):
+    fake, client = rig(tmp_path, {"anthropic": anthropic("Fable", "Opus"),
+                                  "openai": openai()})
+    fake.tasks_list = [webfakes.make_task(
+        issue=7, track="architecture", stage=Stage.IMPLEMENT,
+        picks={"plan": "openai/gpt-astra@high"}, **kw)]
+    return fake, client
+
+
+def test_the_console_shows_ticket_1_of_an_accepted_task(tmp_path):
+    fake, client = waiting_card(tmp_path, ticket_cursor=0, ticket_count=2,
+                                ticket_tracks={1: "frontend"})
+    card = cards(client)[7]
+    assert card["model"].endswith("claude-fable-5-1")
+    assert card["pinned_track"] == "frontend"
+    admission = detail(client, 7)["card"]["admission"]
+    assert models(admission)["openai/gpt-sol"] is True
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS,
+                    json={"model": "anthropic/claude-sonnet-5"})
+    assert r.status_code == 200
+
+
+# --- C2: the last ticket is done before review is admitted -----------------------
+
+def review_waits(tmp_path, monkeypatch):
+    """A standard task whose one ticket ran on sonnet; review (astra, opus
+    with anthropic moved back) is denied."""
+    c, wt = setup(tmp_path, monkeypatch, "standard", [()])
+    assert launched(step(c, wt, PLAN_DONE)) == [("anthropic/claude-sonnet-5",
+                                                 "medium")]
+    usage_now(monkeypatch, deny(ahead(), "gpt-astra", OPUS))
+    sess = step(c, wt, IMPL_DONE)
+    assert sess.spawned == [] and sess.resumed == []
+    return c, wt
+
+
+def test_the_last_tickets_pick_is_dropped_although_review_waits(
+        tmp_path, monkeypatch):
+    c, wt = review_waits(tmp_path, monkeypatch)
+    assert "implement" not in raw(c)["picks"]
+    t = saved(c)
+    assert t.stage is Stage.IMPLEMENT and next_launch(t) == ("review", 0)
+    assert f"[{ASTRA}@medium]" in main._status_lines(c)[0]
+
+
+def test_a_wake_after_the_last_ticket_starts_review(tmp_path, monkeypatch):
+    c, wt = review_waits(tmp_path, monkeypatch)
+    usage_now(monkeypatch, ahead())
+    sess = wake(c)
+    assert sess.resumed == []
+    assert [(s[1], s[2]) for s in sess.spawned] == [("review", ASTRA)]
+    assert saved(c).stage is Stage.REVIEW
+
+
+def test_a_crash_resume_after_the_last_ticket_starts_review(
+        tmp_path, monkeypatch):
+    c, wt = review_waits(tmp_path, monkeypatch)
+    save(c.state_dir, replace(saved(c), stage=Stage.FAILED,
+                              crashed_stage="implement",
+                              updated_at="2026-10-01T11:00:00+00:00"))
+    usage_now(monkeypatch, ahead())
+    sess = resume_intent(c)
+    assert [(s[1], s[2]) for s in sess.spawned] == [("review", ASTRA)]
+
+
+def test_the_console_names_review_after_the_last_ticket(tmp_path):
+    fake, client = rig(tmp_path, {"anthropic": anthropic(), "openai": openai()})
+    fake.tasks_list = [webfakes.make_task(
+        issue=7, track="standard", stage=Stage.IMPLEMENT,
+        ticket_cursor=2, ticket_count=2, ticket_tracks={2: "frontend"},
+        implement_providers=["openai"])]
+    card = cards(client)[7]
+    assert card["model"] == "anthropic/claude-opus-5"   # review, openai back
+    assert card["pinned_track"] == ""
+
+
+# --- D: a pending override wins over the park -------------------------------------
+
+def test_a_pending_override_starts_a_ticket_whose_track_is_not_pinned(
+        tmp_path, monkeypatch):
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)])
+    step(c, wt, PLAN_DONE)
+    execution_overrides.save(
+        c.state_dir, "portfolio_eval", 42,
+        execution_overrides.ExecutionOverride(model=SOL, bypass_usage=False))
+    assert launched(step(unpinned(c), wt, IMPL_DONE)) == [(SOL, "")]
+    t = saved(c)
+    assert not t.park and t.ticket_cursor == 2
+    assert execution_overrides.load(c.state_dir, "portfolio_eval", 42) is None
+
+
+# --- E: the crash repro names the crashed session's runtime -----------------------
+
+def test_a_crash_between_tickets_names_the_last_sessions_runtime(
+        tmp_path, monkeypatch):
+    """Ticket 1 is done and ticket 2 waits, so the task has no implement
+    pick; the session of ticket 1 is still open. It writes `working` again
+    (the operator attached and gave it more to do), then dies: a crash with
+    no pick to name the runtime. The repro names the last launch's."""
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)],
+                  usages=ahead())
+    step(c, wt, PLAN_DONE)                      # ticket 1 on openai/gpt-astra
+    usage_now(monkeypatch, deny(ahead(), *DENY_FRONTEND))
+    step(c, wt, IMPL_DONE)                      # ticket 2 waits, no pick
+    assert "implement" not in saved(c).picks
+    reports = []
+    monkeypatch.setattr(failures, "report_failure",
+                        lambda cfg, deps, rep, **kw: reports.append(rep))
+    step(c, wt, {"stage": "implement", "status": "working"}, alive=False)
+    t = saved(c)
+    assert (t.stage, t.crashed_stage, t.ticket_cursor) == (
+        Stage.FAILED, "implement", 1)
+    assert reports[0].klass == "session-crash"
+    assert "codex" in reports[0].repro and "claude" not in reports[0].repro
+
+
+# --- F: the prompt texts ------------------------------------------------------------
+
+def test_the_plan_prompt_says_what_a_track_line_may_not_be():
+    text = ticket_tracks_text(policy(), "standard")
+    para = text.split("\n\n")[0]
+    assert "No other line of a ticket may start with `Track:`" in para
+    assert "omit the line" in para and "`Track: none`" in para
+
+
+def test_the_plan_retry_says_what_a_track_line_may_not_be(tmp_path, monkeypatch):
+    c, wt = setup(tmp_path, monkeypatch, "standard", [("standard",)])
+    text = step(c, wt, PLAN_DONE).resumed[0][1]
+    assert "no other line may start with 'Track:'" in text
+    assert "omit the line" in text
+
+
+# --- G: an attach wake between two tickets ---------------------------------------------
+
+def test_an_attach_wake_between_tickets_tells_the_new_session_to_wait(
+        tmp_path, monkeypatch):
+    c, wt = setup(tmp_path, monkeypatch, "architecture", [(), ("frontend",)])
+    step(c, wt, PLAN_DONE)
+    usage_now(monkeypatch, deny(ahead(), *DENY_FRONTEND))
+    step(c, wt, IMPL_DONE)
+    usage_now(monkeypatch, ahead())
+    save(c.state_dir, replace(saved(c), park=PARK_WAKE, hold_for_attach=True))
+    sess, notifier = FakeSessions(), FakeNotifier()
+    main.run_pass(c, deps(sess=sess, notifier=notifier))
+    assert "The operator is attaching to talk to you directly" in sess.spawned[0][3]
+    assert "resumed_for_attach" in notifier.sent
+    assert not saved(c).hold_for_attach
+
+
+def test_an_attach_wake_of_a_pr_open_task_tells_the_new_session_to_wait(
+        tmp_path, monkeypatch):
+    """One place queues the attach notice for every resume path."""
+    c = make_cfg(tmp_path, monkeypatch, ahead())
+    make_task(c, issue=42, stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=12,
+              track="architecture", park=PARK_WAKE, hold_for_attach=True)
+    sess, notifier = FakeSessions(), FakeNotifier()
+    main.run_pass(c, deps(sess=sess, notifier=notifier))
+    assert sess.spawned[0][1] == "address-review"
+    assert "The operator is attaching to talk to you directly" in sess.spawned[0][3]
+    assert "resumed_for_attach" in notifier.sent

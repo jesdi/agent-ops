@@ -27,9 +27,12 @@ line and at least one unchecked `- [ ]` acceptance criterion phrased as
 observable behaviour. Each ticket is a vertical slice sized for one fresh
 context window; prefactoring tickets come first. The dispatcher checks the
 set mechanically before implement starts: numbers contiguous from 01, no
-gaps, no duplicates, every file carrying those three parts. No file paths
-or code in tickets. Do not copy the spec's testing decisions into tickets —
-implement sessions read them from the spec.
+gaps, no duplicates, every file carrying those three parts, and the
+ticket-track rule below. No file paths or code in tickets. Do not copy the
+spec's testing decisions into tickets — implement sessions read them from
+the spec.
+
+$ticket_tracks
 
 ## 3. Review four ways
 Dispatch four reviewer subagents if you can dispatch subagents; otherwise

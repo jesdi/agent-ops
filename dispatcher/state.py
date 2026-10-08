@@ -10,6 +10,11 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
+from typing import NamedTuple
+
+from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
+                               ModelPolicy, Order, candidates, pick_provider,
+                               review_avoid)
 
 
 class Stage(str, Enum):
@@ -50,13 +55,67 @@ def resumable_crash(t: "TaskState") -> bool:
     return t.stage is Stage.FAILED and bool(t.crashed_stage)
 
 
+class NextLaunch(NamedTuple):
+    stage: str        # runtime stage
+    ticket: int = 0   # the ticket it works; 0 for a launch that is no ticket
+
+
+# A stage with no session of its own -> the stage its next launch runs: a
+# parked pr-open task wakes into an address-review round, and a spec that
+# waits at its gate is continued, or respawned, as the spec stage.
+_LAUNCHED_AS = {Stage.PR_OPEN.value: Stage.ADDRESS_REVIEW.value,
+                Stage.AWAITING_SPEC_REVIEW.value: Stage.SPEC.value}
+
+
+def next_launch(t: "TaskState") -> NextLaunch:
+    """A task's next launch, read from the persisted state: the one answer
+    the dispatcher, the status lines and the console share. A crashed task
+    resumes the stage it crashed in. In implement the launch runs a ticket:
+    the one in progress, or, when none is (ticket_in_progress), the next
+    one; after the last ticket the next launch is review."""
+    stage = t.crashed_stage if resumable_crash(t) else t.stage.value
+    stage = _LAUNCHED_AS.get(stage, stage)
+    if stage != Stage.IMPLEMENT.value:
+        return NextLaunch(stage)
+    if ticket_in_progress(t):
+        return NextLaunch(stage, t.ticket_cursor)
+    return after_ticket(t)
+
+
+def after_ticket(t: "TaskState") -> NextLaunch:
+    """The launch that follows the ticket at the cursor: the next ticket, or
+    review after the last one."""
+    if t.ticket_cursor < t.ticket_count:
+        return NextLaunch(Stage.IMPLEMENT.value, t.ticket_cursor + 1)
+    return NextLaunch(Stage.REVIEW.value)
+
+
+def ticket_in_progress(t: "TaskState") -> bool:
+    """A ticket has started and is not done. The implement pick says so: it
+    is written when a ticket starts and dropped, in a write of its own, when
+    the ticket is done. A state from before picks existed has a ticket in
+    progress with no pick; the state read marks it (`ticket_without_pick`).
+    With no ticket set at all (`ticket_count` 0, a task from before tickets)
+    the implement stage is its one session."""
+    return (IMPLEMENT_PICK in t.picks or t.ticket_without_pick
+            or t.ticket_count == 0)
+
+
+def shown_stage(t: "TaskState") -> str:
+    """The stage a status line and a card label a task with: its own, but a
+    task in implement is labelled with its next launch, which is review once
+    its last ticket is done."""
+    return next_stage(t) if t.stage is Stage.IMPLEMENT else t.stage.value
+
+
 def next_stage(t: "TaskState") -> str:
-    """The runtime stage a task's next launch runs: a crashed task resumes
-    the stage it crashed in, and a parked pr-open task wakes into an
-    address-review round."""
-    if resumable_crash(t):
-        return t.crashed_stage
-    return Stage.ADDRESS_REVIEW.value if t.stage is Stage.PR_OPEN else t.stage.value
+    """The runtime stage a task's next launch runs (next_launch)."""
+    return next_launch(t).stage
+
+
+def launch_ticket(t: "TaskState") -> int:
+    """The ticket a task's next launch runs, 0 when it runs none (next_launch)."""
+    return next_launch(t).ticket
 
 
 @dataclass(frozen=True)
@@ -123,7 +182,11 @@ class TaskState:
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time
     track: str = ""                      # configured track name (spec/2026-09-14-model-tracks)
-    picks: dict[str, str] = field(default_factory=dict)  # policy stage -> "provider/model[@effort]", sticky per stage
+    # providers that ran tickets: first use first, no repeats
+    implement_providers: list[str] = field(default_factory=list)
+    # models.pick_key(stage) -> "provider/model[@effort]", sticky per key;
+    # the implement pick only while a ticket is in progress
+    picks: dict[str, str] = field(default_factory=dict)
     spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track)
     plan_retries: int = 0                # in-session plan-format retries used
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
@@ -134,6 +197,17 @@ class TaskState:
     spec_path: str = ""                  # approved spec, worktree-relative or absolute
     ticket_cursor: int = 0               # 1-based ticket the implement session works; 0 = none yet
     ticket_count: int = 0                # size of .agent/tickets/ at plan done
+    # ticket number -> its ticket track, only tickets that name one: the copy
+    # of the accepted ticket set that routing reads, never the ticket files
+    ticket_tracks: dict[int, str] = field(default_factory=dict)
+    # File names of the accepted ticket set, in ticket order: its identity.
+    # Empty for a set accepted before the names were kept: only the count
+    # can be compared.
+    ticket_names: list[str] = field(default_factory=list)
+    # A ticket is in progress although the task has no implement pick: only
+    # a state from before picks existed, marked when it is read. Cleared
+    # when that ticket is done. See ticket_in_progress.
+    ticket_without_pick: bool = False
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
     review_rounds: int = 0
@@ -160,6 +234,37 @@ class TaskState:
     # worktree-contained path resolves — so an answers request never exists
     # without a valid path.
     operator_request: "OperatorRequest | None" = None
+
+
+def launch_track(t: TaskState, policy: ModelPolicy) -> str:
+    """The track whose list t's next launch (next_launch) reads, or "" when
+    it has none. A ticket that names a ticket track is implemented from it,
+    as long as that track is still pinned; it never falls to another list.
+    A ticket that names none, and every other launch (PR feedback too), uses
+    the task track. A task with no track (claimed before tracks existed) is
+    untracked work."""
+    named = t.ticket_tracks.get(launch_ticket(t), "")
+    if named:
+        return named if named in policy.pinned else ""
+    track = t.track or policy.untracked
+    return track if track in policy.tracks else ""
+
+
+def launch_entries(t: TaskState, policy: ModelPolicy, order: Order,
+                   stage: str = "") -> tuple[Entry, ...]:
+    """The entries t's next launch walks, in the order they are tried: the
+    launch track's list as models.candidates arranges it, the one provider
+    that ran the tickets moved back for review. Empty when the launch has no
+    usable track. The one definition: the dispatcher launches the first
+    admitted entry, the status line names the first, the console offers all.
+    `stage`: the runtime stage, for a launch the persisted state does not
+    name yet (the stage that follows one just done); else next_stage."""
+    track = launch_track(t, policy)
+    if not track:
+        return ()
+    stage = stage or next_stage(t)
+    return candidates(policy, track, stage,
+                      review_avoid(t.implement_providers, stage), order=order)
 
 
 @dataclass(frozen=True)
@@ -201,8 +306,17 @@ def _legacy_path(state_dir: str | Path, issue: int) -> Path:
     return Path(state_dir) / f"task-{issue}.json"
 
 
+def _previous(state_dir: str | Path, ts: TaskState) -> TaskState | None:
+    """The state a save replaces; None also when the file cannot be read:
+    the save is what repairs it."""
+    try:
+        return load(state_dir, ts.target, ts.issue)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
 def save(state_dir: str | Path, ts: TaskState) -> None:
-    previous = load(state_dir, ts.target, ts.issue)
+    previous = _previous(state_dir, ts)
     if ts.stage in TERMINAL_STAGES:
         stamp = (previous.terminal_at
                  if previous and previous.stage in TERMINAL_STAGES else ts.updated_at)
@@ -250,6 +364,54 @@ def _write_task(p: Path, ts: TaskState) -> None:
     tmp.replace(p)
 
 
+# The next launch of a task at one of these is a PR feedback round.
+_PR_OPEN_STAGES = frozenset({Stage.PR_OPEN, Stage.ADDRESS_REVIEW})
+_PAST_IMPLEMENT = _PR_OPEN_STAGES | {Stage.REVIEW}
+
+
+def _effective_stage(d: dict) -> Stage:
+    """A crashed task counts as the stage it resumes."""
+    if d["stage"] is Stage.FAILED and d.get("crashed_stage"):
+        return Stage(d["crashed_stage"])
+    return d["stage"]
+
+
+def _migrate_ticket_without_pick(d: dict) -> None:
+    """A file from before the field was written by code that kept no state
+    for "no ticket in progress": a task in implement was always in the
+    middle of its ticket. With no implement pick (a task from before picks
+    existed) nothing else says so; mark it, so the task continues that
+    ticket and never skips to the next one."""
+    if "ticket_without_pick" not in d:
+        d["ticket_without_pick"] = (_effective_stage(d) is Stage.IMPLEMENT
+                                    and IMPLEMENT_PICK not in d["picks"])
+
+
+def _migrate_implement_pick(d: dict) -> None:
+    """State from before this change. No recorded provider: the implement
+    pick's provider ran the tickets. Past implement the implement pick is no
+    ticket's any more: it becomes the feedback pick when the PR is open and
+    there is none yet, so the next feedback round stays on its provider, and
+    is dropped otherwise. A crashed task counts as the stage it resumes.
+    Afterwards there is a provider and no such pick, so a second read (or a
+    read after a save) changes nothing."""
+    picks = d["picks"]
+    if not d.get("implement_providers"):
+        d["implement_providers"] = list(
+            filter(None, [pick_provider(picks, Stage.IMPLEMENT.value)]))
+    stage = _effective_stage(d)
+    if stage not in _PAST_IMPLEMENT or IMPLEMENT_PICK not in picks:
+        return
+    pick = picks.pop(IMPLEMENT_PICK)
+    if stage in _PR_OPEN_STAGES:
+        picks.setdefault(FEEDBACK_PICK, pick)
+
+
+def _ticket_tracks(raw: dict | None) -> dict[int, str]:
+    """JSON object keys are strings: the ticket numbers come back as int."""
+    return {int(number): track for number, track in (raw or {}).items()}
+
+
 def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
@@ -261,6 +423,9 @@ def _read(p: Path) -> TaskState | None:
         d["terminal_at"] = ""
     d["labels"] = tuple(d.get("labels", ()))
     d["picks"] = dict(d.get("picks") or {})
+    _migrate_ticket_without_pick(d)
+    _migrate_implement_pick(d)
+    d["ticket_tracks"] = _ticket_tracks(d.get("ticket_tracks"))
     d.pop("pending_reply", None)   # retired field, see original comment
     if "operator_request" not in d:
         # Legacy record: derive from unambiguous gate evidence.

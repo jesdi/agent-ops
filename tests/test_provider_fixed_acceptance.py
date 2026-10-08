@@ -105,19 +105,19 @@ def test_resume_with_no_pick_accepts_a_cross_provider_model(tmp_path):
     assert fake.intents[-1][3] == {"model": "openai/gpt-5-codex"}
 
 
-# --- criterion: a parked pr-open task is checked against the implement pick
+# --- criterion: a parked pr-open task is checked against the feedback pick
 
-def test_resume_on_a_parked_pr_open_task_is_checked_against_the_implement_pick(
+def test_resume_on_a_parked_pr_open_task_is_checked_against_the_feedback_pick(
         tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(
         issue=7, stage=Stage.PR_OPEN, park=PARK_HUMAN,
-        picks={"implement": "anthropic/claude-opus-5"})]
+        picks={"feedback": "anthropic/claude-opus-5"})]
     r = client.post("/api/task/alpha/7/resume", headers=HEADERS,
                     json={"model": "openai/gpt-5-codex"})
     assert r.status_code == 422
     assert r.json()["detail"] == (
-        "stage implement runs on anthropic; pick a model from anthropic")
+        "PR feedback runs on anthropic; pick a model from anthropic")
     assert fake.intents == []
 
 

@@ -13,6 +13,7 @@ CTX = dict(
     ticket_path=".agent/tickets/02-widget-api.md", pr_number=12,
     reason="check-failed", labels="auto, frontend",
     tracks="- `trivial`: Rote edits.\n- `standard`: Else.",
+    ticket_tracks="A ticket may carry one line `Track: <name>`: `frontend`.",
 )
 
 STAGES = [Stage.SPEC, Stage.PLAN, Stage.IMPLEMENT, Stage.REVIEW, Stage.ADDRESS_REVIEW]

@@ -130,7 +130,9 @@ def test_plan_done_valid_tickets_starts_ticket_one(tmp_path):
     tickets(tmp_path, n=3)
     acts = next_actions(task(Stage.PLAN, worktree=str(tmp_path)),
                         sig("plan", "done", ".agent/tickets"), True)
-    assert acts == [StartTicket(1, 3), Notify("implement_started", "3 ticket(s)")]
+    names = ("01-t1.md", "02-t2.md", "03-t3.md")
+    assert acts == [StartTicket(1, 3, names=names),
+                    Notify("implement_started", "3 ticket(s)")]
 
 
 def test_plan_done_malformed_tickets_retries_then_fails(tmp_path):
