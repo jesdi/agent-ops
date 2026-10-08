@@ -233,9 +233,13 @@ def test_every_question_block_is_counted(tmp_path):
 
 @pytest.mark.parametrize("body, count", [
     ('<div data-q="a"></div><div data-q="b-2"></div>', 2),
-    ('<div data-q=""></div>', 0),                 # no id
+    ("<div data-q='format'></div>", 1),           # single quotes
+    ('<div data-q=format></div>', 1),             # no quotes
+    ('<div data-q="a"></div><div data-q=\'b\'></div>', 2),
     ('<div data-qx="a"></div>', 0),               # another attribute
-    ('<div data-q="A B"></div>', 0),              # not an id
+    ('<div data-q=""></div>', None),              # no id: cannot tell
+    ('<div data-q="A B"></div>', None),           # not an id: cannot tell
+    ("<div data-q='a' ></div><div data-q='x!'></div>", None),
 ])
 def test_count_reads_the_question_ids_only(tmp_path, body, count):
     p = tmp_path / "review.html"

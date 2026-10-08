@@ -738,7 +738,7 @@ export interface components {
         OperatorRequest: {
             /** Answers */
             answers: {
-                [key: string]: unknown;
+                [key: string]: string | string[] | boolean;
             };
             /** Content */
             content: components["schemas"]["ReadableContent"] | components["schemas"]["UnavailableContent"];

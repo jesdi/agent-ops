@@ -9,7 +9,7 @@ from pathlib import Path
 
 from typing import Annotated, Collection, Literal, Mapping
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool, StrictStr
 
 from dispatcher import messages as msgq
 from dispatcher import priority
@@ -471,11 +471,16 @@ class UnavailableContent(BaseModel):
     reason: str      # "file-missing" | "not-utf8" | "path-escapes-worktree"
 
 
+# The selections of a review page: a question id (or "<id>.note", or
+# "track") to its value.
+Answers = dict[str, StrictStr | list[StrictStr] | StrictBool]
+
+
 class OperatorRequest(BaseModel):
     kind: Literal["plan-approval", "answers"]
     content: Annotated[ReadableContent | UnavailableContent, Field(discriminator="kind")]
     revision: str
-    answers: dict
+    answers: Answers
 
 
 class PaneHistory(BaseModel):

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
+from dispatcher.answers import QUESTION_ID
 from dispatcher.state import read_regular
 
 MIN_BYTES = 1500
@@ -58,38 +59,60 @@ def _check(path: str | Path, patterns: list[str],
     return CheckResult(True)
 
 
-_QUESTION_BLOCK = re.compile(r'\bdata-q="[a-z0-9_-]{1,64}"')
+# A `data-q` attribute in any quote style (or none): the value is checked
+# against the id grammar after the match, so no question block is missed.
+_QUESTION_ATTR = re.compile(r"""\bdata-q\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]*)""")
+_QUESTION_ID = re.compile(QUESTION_ID)
 
 
-def _page_problem(page: str | Path) -> tuple[str, str]:
-    """(problem, text) of a review page: the problem is "" for a regular file
-    (state.read_regular: a FIFO never blocks the pass) of at most 256 KiB
-    that carries the template marker."""
+def _read_page(page: str | Path) -> tuple[str, bytes]:
+    """(problem, bytes) of a page a session wrote: the problem is "" for a
+    regular file (state.read_regular: a FIFO never blocks the pass) of at
+    most 256 KiB."""
     try:
         size = os.lstat(page).st_size   # no follow: a symlink is read below, and refused
     except (OSError, ValueError):
-        return "review page missing", ""
+        return "review page missing", b""
     if size > REVIEW_PAGE_MAX_BYTES:
-        return "review page exceeds 256 KiB", ""
+        return "review page exceeds 256 KiB", b""
     try:
         raw = read_regular(page, REVIEW_PAGE_MAX_BYTES)
     except OSError:   # the page went away between the check and the read
         raw = None
     if raw is None:
         return ("review page is not a readable regular file "
-                "(a symlink, a pipe, a directory, or it grew)"), ""
-    text = raw.decode("utf-8", errors="replace")
-    if REVIEW_PAGE_MARKER not in text:
-        return "review page lacks the template marker", ""
-    return "", text
+                "(a symlink, a pipe, a directory, or it grew)"), b""
+    return "", raw
+
+
+def _page_problem(page: str | Path) -> tuple[str, bytes]:
+    """(problem, bytes) of a review page: the problem is "" for a page
+    _read_page accepts that carries the template marker."""
+    problem, raw = _read_page(page)
+    if problem:
+        return problem, b""
+    if REVIEW_PAGE_MARKER.encode() not in raw:
+        return "review page lacks the template marker", b""
+    return "", raw
+
+
+def page_revision(page: str | Path) -> tuple[str, str]:
+    """(revision, problem) of a review page: the SHA-256 hex of its bytes,
+    or "" with the problem when it fails the shape check."""
+    problem, raw = _page_problem(page)
+    return ("", problem) if problem else (hashlib.sha256(raw).hexdigest(), "")
 
 
 def count_open_questions(page: str | Path) -> int | None:
-    """The question blocks (`data-q="id"`) of the review page. None = cannot
-    tell (the page fails the shape check): the caller treats that as
-    "questions are open"."""
-    problem, text = _page_problem(page)
-    return None if problem else len(_QUESTION_BLOCK.findall(text))
+    """The question blocks (`data-q` attributes) of the review page. None =
+    cannot tell (the page fails the shape check, or a `data-q` value is no
+    question id): the caller treats that as "questions are open"."""
+    problem, raw = _page_problem(page)
+    if problem:
+        return None
+    text = raw.decode("utf-8", errors="replace")
+    ids = [m[1:-1] if m[:1] in "\"'" else m for m in _QUESTION_ATTR.findall(text)]
+    return None if any(not _QUESTION_ID.fullmatch(i) for i in ids) else len(ids)
 
 
 def check_spec(path: str | Path) -> CheckResult:

@@ -23,6 +23,7 @@ def test_spec_prompt_uses_questionnaire_page():
                   ".agent/questionnaire.html", ".agent/questionnaire-answers.json"):
         assert token in out, token
     assert ".agent/questionnaire.md" not in out
+    assert "review-page skill not installed" in out
     assert re.search(r"awaiting-answers[^\n]*\.agent/questionnaire\.html|"
                      r"\.agent/questionnaire\.html[^\n]*awaiting-answers", out)
 

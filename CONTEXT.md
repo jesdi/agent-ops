@@ -111,8 +111,11 @@ It is the request the console shows. Never committed.
 (spec). The dispatcher writes it from an `answers` intent; the session writes
 it from a text reply, with `"actor": "text"`. It is the one record that the
 plan, implement and review sessions read. Fields: `v`, `stage`, `submitted`
-(`null`, `"changes"` or `"approve"`), `submitted_at`, `actor`, `answers` (by
-question id; `<id>.note` for a note; `track`). Never committed.
+(`null`, `"changes"` or `"approve"`), `submitted_at`, `actor`, `revision` (the
+request revision the answers were made on; absent when a session wrote the
+file), `answers` (by question id; `<id>.note` for a note; `track`). Arming a
+new request removes the file unless it is a draft of that request's revision
+(`dispatcher/answers.py` owns the file and the drain's rules). Never committed.
 
 **Open question**:
 What the plan session reports at its end: a red-team finding the design
@@ -349,8 +352,11 @@ address-review. Worktree-relative path.
 
 **Operator request** = `TaskState.operator_request`: `None` (no request),
 `{"kind": "plan-approval", "path": "<worktree-relative path>"}` (the plan session's review page,
-`.agent/review.html`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. The dispatcher owns
-its lifecycle writes:
+`.agent/review.html`), or `{"kind": "answers", "path": "<worktree-relative path>"}`. An `answers`
+request's `fingerprint` is the SHA-256 of the page bytes when it is armed (`artifacts.page_revision`;
+"" for a page that fails the shape check, which matches no intent).
+The console calls the fingerprint `revision`; an `answers` intent must name it, and the revision on disk
+must still match when the intent is drained. The dispatcher owns its lifecycle writes:
 
 - Establish on entering AWAITING-PLAN-REVIEW (plan-approval).
 - Set answers kind when a valid answers artifact is signalled.

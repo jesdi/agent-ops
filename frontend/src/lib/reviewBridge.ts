@@ -1,7 +1,7 @@
 import type { components } from './api-types'
 
 export type AnswersBody = components['schemas']['AnswersReq']
-type Answers = AnswersBody['answers']
+export type Answers = AnswersBody['answers']
 
 /** The console side of the review page protocol (v 1). It trusts a message only
  *  when it comes from the iframe's window, debounces drafts, and posts a
@@ -35,7 +35,7 @@ export function createBridge({ frameWindow, revision, post, onNotice, onReady, d
       clearTimeout(timer)
       timer = setTimeout(flush, debounceMs)
     },
-    restore(answers: unknown) {
+    restore(answers: Answers) {
       frameWindow.postMessage({ type: 'restore', v: 1, answers }, '*')
     },
     flush,

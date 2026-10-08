@@ -45,17 +45,31 @@ export function RequestPanel({ target, issue }: { target: string; issue: number 
           </Link>
         </div>
       </header>
-      {kind === 'plan-approval' && artifacts.data && !spec?.github_url && (
+      {kind === 'plan-approval' && <SpecNotice artifacts={artifacts} published={!!spec?.github_url}
+        readable={content.kind === 'readable'} />}
+      {/* A review page (text/html) is shown and answered on the review route only. */}
+      {!(content.kind === 'readable' && content.media_type === 'text/html') && (
+        <RequestContent content={content} boxed={kind !== 'plan-approval'} />
+      )}
+    </section>
+  )
+}
+
+/** Why the GitHub spec link is missing, when it is. */
+function SpecNotice({ artifacts, published, readable }: {
+  artifacts: ReturnType<typeof useTaskArtifacts>; published: boolean; readable: boolean
+}) {
+  return (
+    <>
+      {artifacts.data && !published && (
         <p className={`mb-3 ${banner.waiting}`}>
-          Spec hasn’t been published to GitHub yet. {content.kind === 'readable' && 'You can still open the review.'}
+          Spec hasn’t been published to GitHub yet. {readable && 'You can still open the review.'}
         </p>
       )}
-      {kind === 'plan-approval' && artifacts.isError && (
+      {artifacts.isError && (
         <p className="mb-3 text-sm text-waiting-fg">Could not load the GitHub spec link. Local review is still available.</p>
       )}
-      {/* The plan summary is the review document: it flows with the page. */}
-      <RequestContent content={content} boxed={kind !== 'plan-approval'} />
-    </section>
+    </>
   )
 }
 
@@ -90,9 +104,6 @@ function RequestContent({ content, boxed }: { content: OperatorRequest['content'
           <ReactMarkdown components={{ code: Code }}>{content.text}</ReactMarkdown>
         </div>
       )
-    case 'text/html':
-      // The page's buttons work only on the review route, behind its bridge.
-      return null
     default:
       return (
         <a download={name} href={`data:${content.media_type};charset=utf-8,${encodeURIComponent(content.text)}`}

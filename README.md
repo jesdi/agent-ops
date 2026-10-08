@@ -391,7 +391,8 @@ and [Actions API permissions](https://docs.github.com/en/rest/actions/workflow-r
 ### Task artifacts
 
 The task page keeps review artifacts accessible across sessions on desktop and
-mobile. Open the spec on GitHub beside **Approve plan**, or use **Artifacts**
+mobile. Open the spec on GitHub beside **open review** (the plan is approved
+on the review route), or use **Artifacts**
 to revisit prototypes, diagrams, questionnaires, answers and other review files.
 Links open the latest published content in a new tab. If GitHub publication
 fails, local review and approval remain available.

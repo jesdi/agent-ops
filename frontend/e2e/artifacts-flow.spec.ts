@@ -11,7 +11,7 @@ for (const width of [390, 1280]) {
       updated_at: '2026-09-13T00:00:00Z', stage: 'spec', status: 'published',
       url: '/api/task/widget/42/artifacts/spec', github_url: 'https://github.com/o/r/blob/task/42/docs/spec.md' }
     await page.route('**/api/task/widget/42/request', route => route.fulfill({ json: reviewing ? {
-      kind: 'plan-approval', content: { kind: 'readable', path: '.agent/plan-review.md', media_type: 'text/markdown', text: '# Task artifacts\nKeep review material accessible across sessions.' },
+      kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Task artifacts\nKeep review material accessible across sessions.' },
     } : null }))
     await page.route('**/api/task/widget/42/artifacts', route => route.fulfill({ json: {
       items: [{ ...spec, github_url: published ? spec.github_url : '', status: published ? 'published' : 'local' },

@@ -167,7 +167,7 @@ def test_approve_wakes_and_parks_a_gate_task_that_has_not_parked(tmp_path, monke
 def test_a_parked_answers_request_writes_the_questionnaire_file(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = make_task(c, issue=ISSUE, stage=Stage.SPEC)
-    page = b"<p>questions</p>"
+    page = b'<meta name="agent-ops-review" content="1"><p>questions</p>'
     (wt / ".agent" / "questionnaire.html").write_bytes(page)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "awaiting-answers", "note": "q",
@@ -213,7 +213,7 @@ def test_an_intent_while_the_session_works_on_the_feedback_is_dropped(tmp_path, 
 
     assert _file(wt) is None
     (e,) = _events(c, "intent-dropped")
-    assert "session busy" in e["detail"] or "no open request" in e["detail"]
+    assert "no open request" in e["detail"]   # the rework cleared the request
     assert len(_events(c, "intent-applied")) == before
 
 
@@ -264,7 +264,7 @@ def test_an_answers_request_revision_is_the_sha256_of_the_page(tmp_path, monkeyp
     wt = make_task(c, issue=ISSUE, stage=Stage.SPEC)
     page = wt / ".agent" / "questionnaire.html"
     revisions = []
-    for body in ("<p>one</p>", "<p>two</p>"):
+    for body in ('<meta name="agent-ops-review" content="1"><p>one</p>', '<meta name="agent-ops-review" content="1"><p>two</p>'):
         page.write_text(body)
         (wt / ".agent" / "stage.json").write_text(json.dumps(
             {"stage": "spec", "status": "awaiting-answers", "note": "q",

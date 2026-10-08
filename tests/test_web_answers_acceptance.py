@@ -24,7 +24,7 @@ def rig(tmp_path, request=None, file=None, name=".agent/questionnaire-answers.js
     return fake, TestClient(create_app(make_config(tmp_path), fake))
 
 
-def answers_req(fp="fp-a"):
+def answers_req(fp="r1"):   # the pending intents of these tests are at revision r1
     return AnswersRequest(path=".agent/questionnaire.md", fingerprint=fp)
 
 
