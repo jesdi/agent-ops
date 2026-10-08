@@ -126,6 +126,10 @@ flowchart LR
   (`docs/adr/`) and `CONTEXT.md`, and removes `proposal.md` and `design.md`.
   Main keeps only `spec.md` of a change: `specs/` is a change log, the code
   and `CONTEXT.md` are the present state.
+  The review page (`review-page` skill) is the gate surface: the questionnaire
+  in spec, the plan review in plan. The operator's answers land in
+  `.agent/review-answers.json`, the one record that the plan, implement and
+  review sessions read. A fresh box needs `to-questionnaire` installed.
 - **Sessions** run in rootless Podman containers (the `agent-ops-session`
   image: Node + Claude Code CLI, git, gh, Python/pipenv, pnpm), one per task,
   each in a tab of the box's [herdr](https://herdr.dev) server — the agent-aware multiplexer that gives the dispatcher the agent's real lifecycle (`working` / `idle` / `blocked`) instead of screen-activity heuristics, plus TTY persistence and reply injection. Sessions are

@@ -29,7 +29,7 @@ def test_renders_without_leftover_placeholders(stage):
 
 def test_spec_prompt_speaks_answers_and_done_signals():
     out = render_stage_prompt(Stage.SPEC, CTX)
-    for token in ("awaiting-answers", ".agent/questionnaire.md", ".agent/prototype.html",
+    for token in ("awaiting-answers", ".agent/questionnaire.html", ".agent/prototype.html",
                   '"status": "done"', "docs: spec for #42 (agent-ops)", "auto, frontend"):
         assert token in out
     assert "awaiting-review" not in out     # the spec stage has no review gate
@@ -209,7 +209,7 @@ def test_spec_prompt_applies_an_operator_change_request_to_the_old_design():
 
 
 def test_spec_prompt_reads_answers_from_messages_and_the_old_review_copy():
-    item = _spec_item("answered", "questionnaire.md", "settled")
+    item = _spec_item("answered", "questionnaire.html", "settled")
     assert "operator message" in item and "the review file" in item
     assert "raise no new questionnaire" in item
     review = _spec_item("docs/review/")                  # a paragraph of its own
