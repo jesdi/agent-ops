@@ -5,7 +5,7 @@ state_dir: /home/agent/agent-ops-state
 # Unset -> those failures degrade to a Telegram ping + stderr log only.
 infra_repo: example/agent-ops
 # Optional: web console base URL (https://<box>.<tailnet>.ts.net). When set,
-# the spec-review Telegram ping carries a "read & approve" deep link.
+# the plan-review Telegram ping carries a "read & approve" deep link.
 # console_url: https://box.tailnet.ts.net
 budget_threshold: 0.8
 racing_minutes: 30
@@ -41,8 +41,9 @@ codex_stall_after_seconds: 1800
 # new work; past this many seconds the task parks for the operator and the
 # session is ended. Integer >= 1; default 10800 (3 hours).
 background_wait_seconds: 10800
-# How long a finished spec waits at the review gate for the operator. Once it
-# expires the task parks: the spec session ends and BOTH its capacity unit and
+# How long a finished plan waits at the plan review gate for the operator (the
+# key keeps its old name). Once it
+# expires the task parks: the plan session ends and BOTH its capacity unit and
 # its E2E slot are freed, so the dispatcher keeps claiming and speccing the
 # rest of the Ready queue overnight. Reply to the Telegram park message (or
 # resume from the web console) to pick the review back up. 0 = park on the
@@ -57,10 +58,11 @@ max_open: 10
 # worktree and local branch before the flush removes them.
 done_retention_days: 7
 # Rounds each bounded loop may run before the task parks for the operator
-# (never fails). Defaults shown; every key is optional.
+# (never fails). Defaults shown; every key is optional. A round that an
+# implement session reports is never counted: implement-spec has its own limits.
 loop_caps:
   review: 2   # review-stage fix rounds
-  gate: 2     # gate_cmd failures per ticket
+  gate: 2     # rounds of a session-reported gate loop
   e2e: 3      # failed end-to-end runs
   ci: 3       # fixes on an open PR (red check, conflict, failed run)
 # Which model, at which effort, runs which stage. A TRACK is a kind of work
@@ -91,6 +93,11 @@ models:
   # review_second: openai/gpt-sol   # the gated second model (ticket 10, not yet built): validated, not yet consumed
   tracks:
     trivial:
+      # plan_review: false makes this track gate-free. The plan-review gate is skipped only
+      # when all three hold: the track is gate-free, neither the spec session nor the
+      # plan session raised a questionnaire, and stage 2 reported no open question.
+      # Otherwise the gate runs.
+      plan_review: false
       when: Rote rename, typo, formatting, dependency bump, doc edit with no product decision.
       spec:      [claude-sonnet-5@low]
       plan:      [claude-sonnet-5@medium]
@@ -141,6 +148,12 @@ targets:
     # Run by the session after every ticket and again in the review stage.
     # The repo decides what "green" means (tests, lint, the CRAP gate).
     # Required — a target with no gate_cmd fails config load.
+    # The implement session keeps its ticket worktrees under .agent/worktrees/
+    # in the task worktree: a check tool that scans dot-directories (ESLint 9,
+    # for one) must exclude that path, or it checks every ticket checkout too.
+    # The dispatcher writes only into real directories (fail closed): a
+    # target whose worktrees have `.agent` or `.claude` as a symlink, or whose
+    # clone has no real `.git` directory, fails its launches or its claims.
     gate_cmd: "make gate"
     project_number: 1
     project_owner: example

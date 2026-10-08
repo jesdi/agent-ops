@@ -40,12 +40,12 @@ test('text/html readable request renders a sandboxed iframe with allow-scripts o
   expect(iframe.getAttribute('sandbox')).not.toContain('allow-same-origin')
 })
 
-// Cycle 19a: unavailable spec-approval — recovery visible, no approve, panel stays
-test('spec-approval with unavailable content shows recovery, no approve button', async () => {
+// Cycle 19a: unavailable plan-approval — recovery visible, no approve, panel stays
+test('plan-approval with unavailable content shows recovery, no approve button', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        kind: 'spec-approval',
+        kind: 'plan-approval',
         content: {
           kind: 'unavailable',
           path: 'ops/42/spec.md',
@@ -98,7 +98,7 @@ test('non-markdown non-html readable request renders a download link with a data
 })
 
 // Cycle 21: same-path spec revision clears the armed approval confirmation
-test('spec-approval revision at same path clears armed state', async () => {
+test('plan-approval revision at same path clears armed state', async () => {
   const user = userEvent.setup()
   const initialText = '# Spec v1\nInitial content.'
   const revisedText = '# Spec v2\nRevised content.'
@@ -106,7 +106,7 @@ test('spec-approval revision at same path clears armed state', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        kind: 'spec-approval',
+        kind: 'plan-approval',
         content: {
           kind: 'readable',
           media_type: 'text/markdown',
@@ -120,7 +120,7 @@ test('spec-approval revision at same path clears armed state', async () => {
   const { queryClient } = renderPanel()
 
   // Arm the approve button
-  const approveBtn = await screen.findByRole('button', { name: /approve spec/i })
+  const approveBtn = await screen.findByRole('button', { name: /approve plan/i })
   await user.click(approveBtn)
   expect(screen.getByRole('button', { name: /tap again to approve/i })).toBeInTheDocument()
 
@@ -128,7 +128,7 @@ test('spec-approval revision at same path clears armed state', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
-        kind: 'spec-approval',
+        kind: 'plan-approval',
         content: {
           kind: 'readable',
           media_type: 'text/markdown',
@@ -142,10 +142,55 @@ test('spec-approval revision at same path clears armed state', async () => {
   // Trigger refetch
   await queryClient.invalidateQueries({ queryKey: queryKeys.request('widget', 42) })
 
-  // Armed must reset — button shows "approve spec" again
-  expect(await screen.findByRole('button', { name: /approve spec/i })).toBeInTheDocument()
+  // Armed must reset — button shows "approve plan" again
+  expect(await screen.findByRole('button', { name: /approve plan/i })).toBeInTheDocument()
 
   // A second tap re-arms rather than approving
-  await user.click(screen.getByRole('button', { name: /approve spec/i }))
+  await user.click(screen.getByRole('button', { name: /approve plan/i }))
   expect(screen.getByRole('button', { name: /tap again to approve/i })).toBeInTheDocument()
+})
+
+// The plan summary is a document: its headings and lists go through the
+// shared markdown style (index.css `.markdown`), not bare unstyled tags.
+test('markdown request renders headings and lists inside the markdown style', async () => {
+  server.use(
+    http.get('/api/task/widget/42/request', () =>
+      HttpResponse.json({
+        kind: 'plan-approval',
+        content: {
+          kind: 'readable',
+          media_type: 'text/markdown',
+          path: '.agent/plan-review.md',
+          text: '# Plan review\n\n## Tickets\n\n1. **01 Export endpoint**\n2. **02 Owner check**\n\n## Open questions\n\nNone.\n',
+        },
+      }),
+    ),
+  )
+  renderPanel()
+  const heading = await screen.findByRole('heading', { name: 'Tickets', level: 2 })
+  const doc = heading.closest('.markdown')
+  expect(doc).not.toBeNull()
+  expect(within(doc as HTMLElement).getAllByRole('listitem')).toHaveLength(2)
+  expect(within(doc as HTMLElement).getByRole('heading', { name: 'Open questions', level: 2 })).toBeInTheDocument()
+})
+
+// The plan summary is the review document and flows with the page; other
+// requests keep their scroll box.
+test('only a plan-approval request loses the scroll box', async () => {
+  const request = (kind: string) => http.get('/api/task/widget/42/request', () =>
+    HttpResponse.json({
+      kind,
+      content: { kind: 'readable', media_type: 'text/markdown', path: 'x.md', text: '## Heading\n\ntext `a_b.c`' },
+    }))
+  server.use(request('plan-approval'))
+  const plan = renderPanel()
+  const flowing = (await screen.findByRole('heading', { name: 'Heading' })).closest('.markdown')
+  expect(flowing).not.toHaveClass('max-h-96')
+  // inline code may break after a separator
+  expect(flowing?.querySelectorAll('code wbr')).toHaveLength(2)
+  plan.unmount()
+  server.use(request('answers'))
+  renderPanel()
+  const boxed = (await screen.findByRole('heading', { name: 'Heading' })).closest('.markdown')
+  expect(boxed).toHaveClass('max-h-96')
 })

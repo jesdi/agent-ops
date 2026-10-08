@@ -714,7 +714,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "spec-approval" | "answers";
+            kind: "plan-approval" | "answers";
         };
         /** PaneHistory */
         PaneHistory: {
@@ -939,6 +939,8 @@ export interface components {
             delivery_contract: string;
             /** Effort */
             effort: number | null;
+            /** Implement Progress */
+            implement_progress?: string | null;
             /** Labels */
             labels: string[];
             /** Messages */

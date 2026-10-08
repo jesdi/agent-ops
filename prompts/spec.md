@@ -10,46 +10,97 @@ stuck.
   then STOP — end your turn. The task parks, the operator sees the file on
   the console or their phone, and you are resumed with their answers as an
   operator message.
-- `{"stage": "spec", "status": "awaiting-review", "artifact": "<spec path>", "track": "<name>", "note": "<one line>"}`
-  once the spec is committed and pushed (step 4), then wait for approval.
-- `{"stage": "spec", "status": "done", "artifact": "<spec path>", "track": "<name>", "note": "approved"}`
-  only after the operator explicitly approves; then exit the session.
+- `{"stage": "spec", "status": "done", "artifact": "specs/<today's date>-<topic>/spec.md", "track": "<name>", "note": "<one line>"}`
+  once stage 1 is committed and pushed (step 4); then exit the session.
+  Nobody approves the spec here and you do not wait for anyone: a fresh
+  plan session starts at once, and the operator reviews spec and plan
+  together there. This stage has no review signal.
 - `{"stage": "spec", "status": "blocked", "note": "<what blocks you>"}` when
   you cannot proceed at all (missing access, a contradiction no answer can
   resolve), then stop.
 
+## The spec folder
+This stage writes one folder, `specs/<today's date>-<topic>/` (the date as
+YYYY-MM-DD, the topic in kebab-case), holding exactly two files:
+`proposal.md` and `spec.md`. That is stage 1 of the `to-openspec` skill,
+with `<today's date>-<topic>` as its slug. Run stage 1 only. Stage 2
+(`design.md` and the tickets) belongs to the plan session: never run it
+here, and never invoke the skill with `all`. The skill's sources here are
+the issue with its comments, the operator's answers and the code; there is
+no `discovery.md`. Write no code beyond what the `bug` case below asks for.
+
 ## 1. Explore
 Read the issue — body and full comment thread —
 (`gh issue view $issue_number --repo $repo --comments`), then `CONTEXT.md`,
-`docs/adr/`, and the code the issue touches. If a draft spec for this issue
-already exists on $branch or in the worktree (a restarted session), resume
-from it instead of starting over.
+`docs/adr/`, and the code the issue touches. If the spec folder for this
+issue already exists on $branch or in the worktree (a restarted session),
+resume from it instead of starting over.
+
+A task that an earlier session worked on can also hold inputs from before
+the spec folder existed. Look for them now; each one replaces a part of
+steps 2 and 3. Operator messages below this prompt can be older than this
+session: they are what the operator told the earlier one, and they count.
+- An unanswered `.agent/questionnaire.md` (no answers in the file, none in
+  an operator message below this prompt, and none in the review file named
+  after this list): ask those questions again as they are. Do not rewrite,
+  extend or re-order the file; signal `awaiting-answers` with it as the
+  artifact and stop.
+- An answered `.agent/questionnaire.md`: the answers are in the file, in an
+  operator message below this prompt, or in the review file named after
+  this list. Take the answers as settled decisions and raise no new
+  questionnaire. Continue at step 4.
+- Any file that this branch added under `docs/specs/`. The old flow kept
+  its design there, as `docs/specs/<date>-<topic>-design.md`. List these
+  files with
+  `git diff --name-only --diff-filter=A origin/main...HEAD -- docs/specs/`
+  (take the repository's default branch when it is not `main`). When the
+  list is empty there is nothing to do. A file that main already has is
+  never an input and is never touched. Handle what the
+  list shows as a `spec-ready` body (step 2), whatever the labels say and
+  whatever `.agent/questionnaire.md` holds, because the design already
+  carries the answers: its decisions go into stage 1 word for word, and
+  `spec.md` records the reconciliation with the code. An operator message
+  below this prompt that asks for a change to that design overrides the
+  design for that point: apply it and record it in `spec.md`. Then remove
+  every listed file from the branch (`git rm`)
+  in the commit that adds the spec folder.
+
+The review file: a session of the old flow can have left the questions with
+the operator's answers on $branch under `docs/review/`. List the files that
+this branch added or changed there with
+`git diff --name-only --diff-filter=AM origin/main...HEAD -- docs/review/`
+(take the repository's default branch when it is not `main`). A listed file
+is a source of answers for the two questionnaire rules above. A file under
+`docs/review/` that this branch did not add or change belongs to another
+task: it is never a source of answers. Do not edit these files.
 
 ## 2. Branch on the labels
-**`bug`** — run the `diagnosing-bugs` skill. Write a failing end-to-end test
-that reproduces the bug where this repo keeps such tests, commit it, and
-write the root cause up as `docs/specs/<today>-<topic>-diagnosis.md` with a
-title, a `## Reproduction` section, a `## Root cause` section and a
-`## Testing decisions` section naming the seams the fix must be tested at.
-That document is this stage's spec: continue at step 4 with it.
+**`bug`** — run the `diagnosing-bugs` skill. Write a
+failing end-to-end test that reproduces the bug where this repo keeps such
+tests, and commit it FIRST, before anything under `specs/`. Then write
+stage 1 from the diagnosis: the root cause goes under **Why** in
+`proposal.md`, and the reproduction, with the expected correct result, is
+the first scenario of `spec.md`. Write no separate diagnosis document.
+Continue at step 4.
 
 **`spec-ready`** — the issue body already carries a design the operator
-settled on the mac. Do NOT interview. Reconcile that design against the
-current code: for every decision it makes, check the code still matches the
-assumptions it rests on. Write it to `docs/specs/<today>-<topic>-design.md`
-with the `to-spec` skill (file destination), carrying the settled decisions
-verbatim plus a `## Reconciliation` section listing what moved underneath
-and how the design absorbs it. Raise a questionnaire (step 3) ONLY for a
-real contradiction between the settled design and the code — never to
-re-litigate a settled decision. Continue at step 4.
+settled on the mac. Do NOT interview: raise no questionnaire. Reconcile
+that design against the current code: for every decision it makes, check
+the code still matches the assumptions it rests on. Carry the settled
+decisions into stage 1 word for word, and record in `spec.md` what moved in
+the code underneath them and how the design absorbs it. The one exception:
+when the code contradicts a settled decision, raise a questionnaire (step
+3) about that one decision only, with your recommended answer — never to
+re-litigate the other settled decisions. Continue at step 4.
 
-**Otherwise** — step 3.
+**Otherwise** — step 3 when a decision is open; step 4 when none is.
 
 ## 3. One questionnaire, not an interview
-Use the `to-questionnaire` skill to put EVERY open decision into ONE file,
-`.agent/questionnaire.md`: for each question the context, the options, and
-your recommended answer with its reason. There is no cap on the number of
-questions; there is a cap of one round trip — ask everything now.
+Use the `to-questionnaire` skill to put every open decision into
+one questionnaire, `.agent/questionnaire.md`: for each question the
+context, the options, and your recommended answer with its reason. There is
+no cap on the number of questions; there is a cap of one round trip — ask
+everything now. Write nothing under `specs/` before the answers arrive.
 When the labels include `frontend`, one question must offer a prototype
 ("Should I build a single-page prototype of the variations before the spec
 is written?") with your recommendation. You never decide to build a
@@ -70,29 +121,19 @@ stage's fresh session can read it, then continue.
 Now that the scope is settled, pick the track the plan, implement and
 review stages run on. Judge how hard and how risky the work is; do not
 guess at models or budgets — the operator maps tracks to models. Pick one
-name from this list and write it as `"track"` in the signals of steps 4
-and 5. A signal without a configured track name is bounced back to you.
+name from this list and write it as `"track"` in the `done` signal. A
+signal without a configured track name is bounced back to you.
 Security-tagged work is never below the security track.
 
 $tracks
 
-If the operator's approval names a track ("approved, but run it as
-security"), use that one in the `done` signal.
-
 ## 4. Write, commit, push, signal
-Use the `to-spec` skill (file destination) to write
-`docs/specs/<today>-<topic>-design.md`. The dispatcher's mechanical check
-needs a title line, at least two `## ` sections and a body well over 1500
-bytes. The `## Testing decisions` section MUST name the seams — the
-functions, modules or interfaces tests drive — because the implement
-sessions treat it as the agreed test plan and cannot ask.
-Commit with `docs: draft spec for #$issue_number`, push the branch with
-`-u origin $branch`, then signal `awaiting-review` with the spec path and
-wait.
-
-## 5. Approval
-The operator reviews on GitHub, on the console, or here. Apply their
-feedback; commit and push after each revision so the GitHub view stays
-current. Only when they explicitly approve: commit the final spec with
-`docs: spec for #$issue_number (agent-ops)`, push, signal `done`, and exit.
-Do not start planning — a fresh session handles the plan stage.
+Run `to-openspec` stage 1 to write `proposal.md` and `spec.md` into the
+spec folder. The dispatcher's mechanical check of `spec.md` needs a title
+line, at least two `## ` sections and a body well over 1500 bytes. Every
+requirement must be testable and map to at least one scenario, because the
+plan and implement sessions build on it and cannot ask you.
+Commit both files with `docs: spec for #$issue_number (agent-ops)`, push
+the branch with `-u origin $branch`, signal `done` with the path of
+`spec.md` and the track, and exit. Do not write the design or the tickets —
+a fresh session handles the plan stage.

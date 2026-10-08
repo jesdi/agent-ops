@@ -24,12 +24,12 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
 
 // Keys MUST be real `Stage` values from dispatcher/state.py — stageLabel is
 // called with card.stage, so a key matching no stage renders the raw slug.
-// Stages deliberately absent (queued, plan, blocked, failed,
+// Stages deliberately absent (queued, blocked, failed,
 // stalled-on-budget) fall through to their slug, which reads fine as-is.
 const STAGE_LABELS: Record<string, string> = {
   spec: 'Writing spec',
-  'awaiting-spec-review': 'Spec review',
-  plan: 'Writing tickets',
+  plan: 'Writing plan',
+  'awaiting-plan-review': 'Plan review',
   implement: 'Implementing',
   review: 'Reviewing',
   'pr-open': 'PR open',
@@ -46,4 +46,17 @@ export function stageLabel(stage: string): string {
 export function providerOf(modelId: string): string {
   const slash = modelId.indexOf('/')
   return slash < 0 ? 'anthropic' : modelId.slice(0, slash)
+}
+
+/** `text` cut after each `_`, `.` and `/`: the places a long name may wrap.
+ *  A capture group, not a lookbehind, which Safari before 16.4 cannot parse
+ *  (the whole chunk then fails to load). */
+export function breakAfterSeparators(text: string): string[] {
+  const pieces = text.split(/([_./])/)   // [word, separator, word, separator, …]
+  const parts: string[] = []
+  for (let i = 0; i < pieces.length; i += 2) {
+    const part = pieces[i] + (pieces[i + 1] ?? '')
+    if (part) parts.push(part)
+  }
+  return parts
 }

@@ -34,7 +34,7 @@ agent-ops closes both gaps:
   provider whose usage can't be read fails safe and spawns nothing. Which model runs is a **track**: triage picks one for the spec stage, the spec session picks one for the rest, and each track lists models per stage, so the box takes the one with headroom whose weekly quota most needs spending before its reset and keeps it for the whole stage (in implement: for one ticket; a ticket can name a pinned track of its own). A session-bound provider's entries go first, and a priority mode set in the console (`auto` or a provider) replaces this order (see CONTEXT.md).
 - **24-hour access from your phone, PC off.** The box is reachable over
   Tailscale only. The web console and Telegram bot are always on — you can
-  check progress, answer an agent's question, or approve a spec from anywhere.
+  check progress, answer an agent's question, or approve a plan from anywhere.
 - **A board that answers "what needs me?" at a glance.** The board is two
   zones. **Needs you** comes first — Needs review, PR review, Parked, Failed,
   Stalled on budget — and everything in the pipeline zone (Queued, In
@@ -84,11 +84,13 @@ flowchart LR
 ```mermaid
 flowchart LR
     queued["Queued"] --> gate{"Usage (pace) &<br/>capacity gate"}
-    gate --> spec["Spec stage"]
-    spec --> review{"Human review<br/>(from your phone)"}
-    review -- approved --> plan["Plan stage<br/>(tickets)"]
-    plan --> implement["Implement<br/>(one session per ticket)"]
-    implement -- last ticket --> codereview["Review stage<br/>(rebase, gates, PR)"]
+    gate --> spec["Spec stage<br/>(proposal, spec)"]
+    spec --> plan["Plan stage<br/>(design, tickets)"]
+    plan --> review{"Plan review gate<br/>(from your phone)"}
+    plan -- "gate skip" --> implement
+    review -- feedback --> plan
+    review -- approved --> implement["Implement<br/>(one session, every ticket)"]
+    implement -- every ticket merged --> codereview["Review stage<br/>(review, ADRs, only spec.md stays,<br/>rebase, gates, PR)"]
     codereview --> pr["PR open"]
     pr -- "CI green, you merge" --> done(["Merged"])
 
@@ -104,13 +106,26 @@ flowchart LR
   launches a Claude Code session for it. Capacity is box-wide: work already in
   flight runs first, then each free unit goes to the target with the fewest
   active tasks.
-- **Staged pipeline** — each task moves through **spec → plan → implement (one fresh session per ticket) → review**,
+- **Staged pipeline** — each task moves through **spec → plan → implement (one session works every ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
-  artifact. Specs pause at a human review gate before implementation spends
-  real tokens on them.
-- **Bounded loops** — review fixes, gate failures, end-to-end fixes and CI
-  fixes on an open PR each have a configured cap; hitting it parks the task
-  with the finished tickets intact and pings you, it never fails the task.
+  artifact. The plan stage pauses at one human review gate, where you read
+  the spec and the plan, before implementation spends real tokens on them. The dispatcher skips that gate
+  only for a task on a track with `plan_review: false` whose spec and plan
+  sessions asked no questionnaire and whose plan has no open question. An
+  `untracked:` default that names such a track makes every unlabelled task
+  gate-free.
+- **Bounded loops** — review fixes, end-to-end fixes and CI fixes on an open
+  PR each have a configured cap; hitting it parks the task and pings you, it
+  never fails the task. The implement session's own fix loops are bounded by
+  the `implement-spec` skill, not by the dispatcher.
+- **Skills per stage** — spec: `to-openspec` stage 1 (`proposal.md`,
+  `spec.md`), with `to-questionnaire` and `prototype` when a decision is
+  open. Plan: checks stage 1, then `to-openspec` stage 2 (`design.md`,
+  tickets). Implement: `implement-spec`. Review: `review-diff`, then the
+  session moves the why and the decisions into the PR description, ADRs
+  (`docs/adr/`) and `CONTEXT.md`, and removes `proposal.md` and `design.md`.
+  Main keeps only `spec.md` of a change: `specs/` is a change log, the code
+  and `CONTEXT.md` are the present state.
 - **Sessions** run in rootless Podman containers (the `agent-ops-session`
   image: Node + Claude Code CLI, git, gh, Python/pipenv, pnpm), one per task,
   each in a tab of the box's [herdr](https://herdr.dev) server — the agent-aware multiplexer that gives the dispatcher the agent's real lifecycle (`working` / `idle` / `blocked`) instead of screen-activity heuristics, plus TTY persistence and reply injection. Sessions are
@@ -241,6 +256,102 @@ The maintained VPS deployment has moved to the private
 It owns the host configuration, bootstrap/updater, systemd units, session image,
 Claude-home seed, and operational runbooks. Access requires repository permission.
 
+### Deploying the openspec pipeline
+
+Done once. `<state_dir>` is the `state_dir` of the box's `targets.yaml`. Run
+every command as the dispatcher's user, from the dispatcher's checkout, with
+its virtualenv python (`.venv/bin/python`).
+
+1. **Seeds.** Make sure the Claude-home seed and the Codex-home seed in the
+   infra repository carry the `implement-spec`, `to-openspec` and
+   `red-team-data-model` skills: the stage prompts read them from
+   `~/.claude/skills/` and `~/.codex/skills/`.
+2. **Drain, before the deploy.** Let every task in plan, implement or review
+   finish. Tasks in the spec stage, at the spec review gate, or with an open
+   pull request can stay. This check needs no new code; it prints `[]` when
+   the box is drained:
+
+   ```
+   .venv/bin/python -c "import sys; from dispatcher.state import load_all; print([(t.target, t.issue, t.stage.value) for t in load_all(sys.argv[1]) if t.stage.value in ('plan', 'implement', 'review')])" <state_dir>
+   ```
+
+3. **Stop.** Stop the dispatcher and the updater, and keep them stopped
+   until step 8:
+   `systemctl stop agent-ops-dispatcher.timer agent-ops-dispatcher.service agent-ops-update.timer`.
+   `agent-ops-web.service` and `agent-ops-waitd.service` can stay up: they
+   write no task file. Stop `agent-ops-triage.timer` too if you want a quiet
+   box; a triage sweep writes no task file either. The unit names are those
+   of the infra repository and were not verified from this repository: check
+   them with `systemctl list-units 'agent-ops-*'`. Run the check of step 2
+   once more: a task can enter plan between the check and the stop.
+4. **Back up.** `cp -a <state_dir> <state_dir>.pre-openspec`
+5. **Deploy** the new code. Do not start anything.
+6. **Check.** `.venv/bin/python -m dispatcher.openspec_migration --check <state_dir>`
+   reads only: no lock, no write. It prints what step 7 would do and has the
+   same exit status.
+7. **Migrate.**
+   `.venv/bin/python -m dispatcher.openspec_migration <state_dir> | tee openspec-migration.log`
+   Keep the output: a second run prints every task as `untouched`.
+8. **Start** the units of step 3.
+
+Output, one line per task, then a summary line:
+
+| Label | Meaning |
+|---|---|
+| `converted` (`would-convert` with `--check`) | Was in the spec stage or at the old spec review gate. It starts a fresh spec session on the next pass. The operator's earlier messages for it are queued again and arrive with the new session's prompt. |
+| `untouched` | Not changed: an open pull request, a finished task, a task of the new flow. `(failed, not resumable)` is a failed task that Resume cannot start, for example one that failed at the old spec review gate: move its issue back to Ready to start it again. |
+| `do-not-resume` | An old task that failed in plan, implement or review. A new session would work on the old artifacts, so the command makes it not resumable: the console offers no Resume for it, and its note says which stage it failed in. Cancel it, or move its issue back to Ready. |
+| `must-drain` | An old task still in plan, implement or review. The run is refused. |
+| `not converted` | Would be converted, but the run is refused. |
+| `unreadable` | A task file or a message file that cannot be read. The run is refused. |
+| `unknown-value` | A task file with a stage, park or request that the command does not know; the line names the file, the field and the value. The run is refused. Do not delete the file. |
+| `stopped at <file>` | A write failed. The tasks printed before it are converted; run the command again. |
+
+Exit status: `0` done (or, with `--check`, would be done); `1` refused or
+stopped, read the last line; `2` not started: the lock
+`<state_dir>/convergence.lock` is held (a pass or the updater runs), the
+directory does not exist, or the arguments are wrong. A refused run changes
+nothing. A second run changes nothing.
+
+What to know:
+
+- **The trap.** If step 6 or 7 prints `must-drain`, do not start the new
+  dispatcher. It refuses to run anyway: while a task file of the old flow is
+  on disk, `python -m dispatcher.main` exits with status 1 and names this
+  command. Roll the deploy back, start the old dispatcher, let the named
+  tasks finish, and start again at step 3. Step 2 is there to avoid this.
+- **Rollback after a successful step 7.** Never run the old dispatcher on
+  migrated state: the old code cannot read a migrated task file and skips
+  every such task with no sign. Stop the units of step 3, then put the
+  backup back and start the old code:
+
+  ```
+  mv <state_dir> <state_dir>.migrated
+  cp -a <state_dir>.pre-openspec <state_dir>
+  ```
+
+  What the new dispatcher did after step 8 (new sessions, replies, new
+  tasks) is lost by this restore.
+- Every migrated task waits at the plan review gate, also on a track that
+  has no plan review.
+- A spec session of the old flow that is still live keeps running, and is
+  not counted against capacity, until its task gets its turn; the dispatcher
+  ends it then. You can close such panes by hand while the dispatcher is
+  stopped.
+- The console does not show a task at the old gate between step 5 and
+  step 7.
+
+After the deploy, delete together: `dispatcher/openspec_migration.py`;
+`tests/test_openspec_migration.py` and
+`tests/test_openspec_migration_acceptance.py`; `_refuse_old_flow` and its two
+calls in `dispatcher/main.py`; the `blocking` parameter of `pass_lock` in
+`dispatcher/convergence.py`, with the two docstring sentences there that
+name it; the restart-inputs list in step 1 of `prompts/spec.md` and the
+review-file paragraph after it, with their tests in `tests/test_prompts.py`;
+`_blocks` and `_assert_no_write_under_docs_specs` in
+`tests/test_spec_stage_without_gate_acceptance.py` (their two callers then
+assert `"docs/specs" not in prompt` again); this section.
+
 Deployments may set `AGENT_OPS_COMMAND_WRAPPER` to an executable path that
 prepares credentials and then executes its arguments. Without it, sessions call
 Podman directly. Use `AGENT_OPS_SESSION_IMAGE` to select your session image.
@@ -276,7 +387,7 @@ and [Actions API permissions](https://docs.github.com/en/rest/actions/workflow-r
 ### Task artifacts
 
 The task page keeps review artifacts accessible across sessions on desktop and
-mobile. Open the spec on GitHub beside **Approve spec**, or use **Artifacts**
+mobile. Open the spec on GitHub beside **Approve plan**, or use **Artifacts**
 to revisit prototypes, diagrams, questionnaires, answers and other review files.
 Links open the latest published content in a new tab. If GitHub publication
 fails, local review and approval remain available.

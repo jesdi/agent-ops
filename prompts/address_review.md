@@ -7,6 +7,14 @@ merges into main), or `operator` (the operator woke a parked task; their
 message is appended below). You have no memory of earlier sessions and
 nobody is watching this chat.
 
+Spec path of this task: "$spec_path". Read that file if it exists. A
+`spec.md` in a folder under `specs/` is the whole spec left on the branch;
+the why, the decisions and the open rulings of the change are in the pull
+request description (`gh pr view $pr_number --repo $repo --json body`). A
+task from before the spec folders has one older design file there, or an
+empty path and no spec: then the issue and the pull request are all you
+have.
+
 ## Signals (write `.agent/stage.json`, then do what the line says)
 ${e2e_signal}- `{"stage": "address-review", "status": "done", "note": "<one line>"}` then exit.
 - `{"stage": "address-review", "status": "blocked", "note": "<specific>"}` then stop.

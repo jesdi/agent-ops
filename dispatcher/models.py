@@ -19,8 +19,7 @@ PROVIDER_EFFORTS: Mapping[str, tuple[str, ...]] = {
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-opus-5"
 TRACK_LABEL_PREFIX = "track:"
-SECURITY_TRACK = "security"   # no ticket names it, and its tasks take no ticket track
-_POLICY_STAGES = {"queued": "spec", "awaiting-spec-review": "spec",
+_POLICY_STAGES = {"queued": "spec", "awaiting-plan-review": "plan",
                   "address-review": "implement"}
 _OLD_KEYS = ("default", "rules")
 _TOP_KEYS = frozenset({"triage", "untracked", "tracks", "review_second", "pinned"})
@@ -51,15 +50,15 @@ def policy_stage(stage: str) -> str:
 
 
 # The two keys of `TaskState.picks` that are not simply a stage's own name.
-IMPLEMENT_PICK = "implement"   # the pick of the ticket in progress
+IMPLEMENT_PICK = "implement"   # the pick of the implement session
 FEEDBACK_PICK = "feedback"     # the one pick of every PR feedback round
 
 
 def pick_key(stage: str) -> str:
     """Runtime stage -> its key in `TaskState.picks`: the policy stage, but
     PR feedback has its own. Address-review chooses from the implement list
-    (policy_stage) and keeps that one choice under FEEDBACK_PICK, so the
-    implement pick stays the tickets'."""
+    (policy_stage) and keeps that one choice under FEEDBACK_PICK, so it
+    never inherits the implement session's pick."""
     return FEEDBACK_PICK if stage == "address-review" else policy_stage(stage)
 
 
@@ -77,7 +76,8 @@ def pick_provider(picks: Mapping[str, str], stage: str) -> str:
 
 def review_avoid(implement_providers: Sequence[str], stage: str) -> str:
     """The provider review moves to the back: the one provider that ran the
-    task's tickets. Two or more, or none: nothing to avoid. The one rule the
+    task's implement session. Two or more (a resume on another provider), or
+    none: nothing to avoid. The one rule the
     dispatcher and the console share."""
     one = len(implement_providers) == 1 and policy_stage(stage) == "review"
     return implement_providers[0] if one else ""
@@ -153,6 +153,7 @@ class Track:
     name: str
     when: str
     stages: Mapping[str, tuple[Entry, ...]]  # every STAGES key present
+    plan_review: bool = True  # False = gate-free track: the plan-review gate can be skipped
 
 
 @dataclass(frozen=True)
@@ -192,10 +193,10 @@ def _track(name: str, raw: object) -> Track:
                          f"whitespace or ':' (it becomes the label track:<name>)")
     if not isinstance(raw, dict):
         raise ValueError(f"models: track {name!r} must be a mapping, got {raw!r}")
-    unknown = set(raw) - set(STAGES) - {"when"}
+    unknown = set(raw) - set(STAGES) - {"when", "plan_review"}
     if unknown:
         raise ValueError(f"models: track {name!r} has unknown key(s) "
-                         f"{sorted(unknown)}; expected when: plus {list(STAGES)}")
+                         f"{sorted(unknown)}; expected when:, plan_review: plus {list(STAGES)}")
     missing = [s for s in STAGES if s not in raw]
     if missing:
         raise ValueError(f"models: track {name!r} names no {missing} list; "
@@ -203,8 +204,13 @@ def _track(name: str, raw: object) -> Track:
     when = raw.get("when")
     if not isinstance(when, str) or not when.strip():
         raise ValueError(f"models: track {name!r} needs a non-empty when: sentence")
+    plan_review = raw.get("plan_review", True)
+    if not isinstance(plan_review, bool):
+        raise ValueError(f"models: track {name!r} plan_review: must be true or "
+                         f"false, got {plan_review!r}")
     return Track(name, when.strip(),
-                 {s: _entries(raw[s], f"track {name!r} {s}:") for s in STAGES})
+                 {s: _entries(raw[s], f"track {name!r} {s}:") for s in STAGES},
+                 plan_review)
 
 
 def _review_second(raw: object) -> str:
@@ -292,33 +298,6 @@ def tracks_text(policy: ModelPolicy) -> str:
     lines += [f"- `{t.name}` (pinned): {t.when}" for t in pinned]
     lines += [f"- `{t.name}`: {t.when}" for t in rest]
     return "\n".join(lines)
-
-
-def ticket_track_names(policy: ModelPolicy, track: str) -> tuple[str, ...]:
-    """The tracks a ticket of a task on `track` may name as its ticket track:
-    the pinned tracks other than `security`, in pinned order; none for a
-    security task, whose every ticket stays on the security list."""
-    if track == SECURITY_TRACK:
-        return ()
-    return tuple(n for n in policy.pinned if n != SECURITY_TRACK)
-
-
-def ticket_tracks_text(policy: ModelPolicy, track: str) -> str:
-    """What the plan prompt says about the `Track:` line of a ticket of a
-    task on `track`: one paragraph, with the names a ticket may use."""
-    names = ticket_track_names(policy, track)
-    if not names:
-        return ("No ticket of this task may carry a `Track:` line: every "
-                "ticket is implemented on the task's own track.")
-    return "\n".join([
-        "A ticket may carry one line `Track: <name>`, on a line of its own "
-        "like the Blocked by line, and never more than one. That ticket is "
-        "implemented on the named track's models; a ticket without the line "
-        "is implemented on the task's own track. Name a track only when the "
-        "ticket's work clearly fits its sentence; when none fits, omit the "
-        "line (do not write `Track: none`). No other line of a ticket may "
-        "start with `Track:`. The names a ticket may use:",
-        *(f"- `{n}`: {policy.tracks[n].when}" for n in names)])
 
 
 def track_from_labels(labels: Sequence[str], policy: ModelPolicy) -> str:

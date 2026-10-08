@@ -23,28 +23,28 @@ def saved(c, issue=42):
 
 def review_after(tmp_path, monkeypatch, track, mode, implement_pick,
                  providers):
-    """A task whose last ticket signalled done, providers given in state."""
+    """A task whose implement session signalled done, providers given in state."""
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode=mode)
-    enter(c, 42, track, Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+    enter(c, 42, track, Stage.IMPLEMENT, ticket_count=1,
           picks={"implement": implement_pick},
           implement_providers=list(providers))
     return c, run_pass(c, 42)
 
 
-def test_three_real_tickets_on_one_provider_review_on_the_other(
+def test_implement_on_one_provider_reviews_on_the_other(
         tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="openai")
-    wt = make_task(c, issue=42, stage=Stage.PLAN, track="standard")
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
+                   track="standard")
     write_tickets(wt, 3)
     sess = FakeSessions(alive={42})
     signals = [{"stage": "plan", "status": "done", "note": "3 tickets",
-                "artifact": ".agent/tickets"}] + [
-        {"stage": "implement", "status": "done"}] * 3
+                "artifact": ".agent/tickets"},
+               {"stage": "implement", "status": "done"}]
     for sig in signals:
         (wt / ".agent" / "stage.json").write_text(json.dumps(sig))
         main.run_pass(c, deps(sess=sess))
-    assert launched(sess) == [(SOL, "medium")] * 3 + [
-        (f"anthropic/{OPUS}", "medium")]
+    assert launched(sess) == [(SOL, "medium"), (f"anthropic/{OPUS}", "medium")]
     assert saved(c).implement_providers == ["openai"]
 
 
@@ -72,17 +72,17 @@ def test_standard_both_providers_mode_openai_follows_mode(
 
 def test_two_models_of_one_provider_record_one_provider(
         tmp_path, monkeypatch):
-    # No per-ticket pick exists yet (ticket 06): the state is given.
     c, sess = review_after(tmp_path, monkeypatch, "frontend", None,
                            f"anthropic/{OPUS}@medium", ["anthropic"])
     assert launched(sess) == [(ASTRA, "medium")]
     assert saved(c).implement_providers == ["anthropic"]
 
 
-def test_parked_ticket_resumes_on_its_pick_without_a_second_provider(
+def test_a_parked_implement_session_resumes_on_its_pick_without_a_second_provider(
         tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="openai")
-    wt = make_task(c, issue=42, stage=Stage.PLAN, track="standard")
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
+                   track="standard")
     write_tickets(wt, 2)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done", "note": "2 tickets",
@@ -102,7 +102,7 @@ def test_parked_ticket_resumes_on_its_pick_without_a_second_provider(
 def test_old_shape_state_enters_review_with_openai_moved_back(
         tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="openai")
-    enter(c, 42, "standard", Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+    enter(c, 42, "standard", Stage.IMPLEMENT, ticket_count=1,
           picks={"implement": f"{SOL}@medium"})
     p = state._path(c.state_dir, "portfolio_eval", 42)
     raw = json.loads(p.read_text())

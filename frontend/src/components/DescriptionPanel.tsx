@@ -40,7 +40,7 @@ export function DescriptionPanel({ target, issue, defaultOpen = false }: {
             <p className="text-sm text-failed-fg">description unavailable: {desc.data.error}</p>
           )}
           {desc.data && desc.data.error === '' && (
-            <div className="max-h-96 overflow-auto text-sm">
+            <div className="markdown max-h-96 overflow-auto text-sm">
               <ReactMarkdown>{desc.data.body || '_no description_'}</ReactMarkdown>
             </div>
           )}

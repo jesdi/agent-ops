@@ -4,7 +4,7 @@ Design notes (not implemented here):
 - Loop eligibility (is another fix attempt allowed?) and execution admission
   (which runtime has allowance / should it wait?) are SEPARATE decisions;
   a WITHIN_LIMIT outcome is eligibility to retry, NOT permission to launch.
-- Reset causes describe LOGICAL work (new stage/ticket, operator intervention,
+- Reset causes describe LOGICAL work (new stage, operator intervention,
   new PR cycle) — a model switch / subscription reset is NOT by itself a fresh
   fix-loop allowance.
 - This module must stay independent of model IDs, runtime/provider names,
@@ -103,10 +103,40 @@ _RESET_FIELDS: dict[ResetCause, tuple[str, ...]] = {
 }
 
 
+# What a task at the plan gate may do with no operator action: respawn a dead
+# session, or start a new review round (each one a notification and a fresh
+# grace clock). Past this many the task parks for review instead, so neither
+# loop runs without a human.
+UNATTENDED_ROUND_LIMIT = 2
+# What an operator wake leaves in `unattended_rounds`: the operator acted, so
+# the round that answers them is theirs and brings the count to 0, not 1.
+_OPERATOR_ACTED = -1
+
+
 def reset(task: TaskState, cause: ResetCause) -> TaskState:
     """Return a new TaskState with only the counters owned by cause zeroed.
     Every other field (cursors, stage, metadata) is preserved. Input is not mutated."""
-    return replace(task, **{f: 0 for f in _RESET_FIELDS[cause]})
+    task = replace(task, **{f: 0 for f in _RESET_FIELDS[cause]})
+    if cause is ResetCause.OPERATOR_WAKE:
+        task = replace(task, unattended_rounds=_OPERATOR_ACTED)
+    return task
+
+
+def gate_fields(task: TaskState) -> dict[str, object]:
+    """What a step at the plan gate records on the task, for the executor to
+    save. The task has waited there (`gated`, never cleared: also a task that
+    leaves the gate by a respawn has waited). A step taken from the gate, a
+    new review round or the respawn of a dead session, is one more unattended
+    round; gate entry from the plan stage is not a round."""
+    if task.stage is Stage.AWAITING_PLAN_REVIEW:
+        rounds = task.unattended_rounds + 1
+    else:
+        rounds = max(task.unattended_rounds, 0)   # an operator's round is one at the gate
+    return {"gated": True, "unattended_rounds": rounds}
+
+
+def unattended_rounds_used(task: TaskState) -> bool:
+    return task.unattended_rounds >= UNATTENDED_ROUND_LIMIT
 
 
 def _threshold(n: int, cap: int) -> Outcome:
@@ -128,7 +158,10 @@ def evaluate(task: TaskState, observation: object, caps: LoopCaps) -> Decision:
         field = _LOOP_FIELD[loop]
         stored = getattr(task, field)
         cap = getattr(caps, loop.value)
-        if observation.round <= stored:
+        # An implement session runs implement-spec, which owns its loops and
+        # their limits: no round it names is counted here, whatever the loop.
+        own_loop = task.stage == Stage.IMPLEMENT
+        if own_loop or observation.round <= stored:
             return Decision(
                 outcome=Outcome.UNCHANGED,
                 loop=loop,
@@ -169,3 +202,33 @@ def evaluate(task: TaskState, observation: object, caps: LoopCaps) -> Decision:
             detail=observation.detail,
         )
     raise TypeError(f"Unknown observation type: {type(observation)!r}")
+
+
+class Retry(Enum):
+    """What an in-session retry answers: the session is resumed with the
+    reason its signal was rejected. Each kind has a counter of its own on the
+    task, so one kind never spends another's retry."""
+    SPEC_SIGNAL = "spec-signal"     # no configured track, or `awaiting-review`
+    PLAN_TICKETS = "plan-tickets"   # the ticket set failed its mechanical check
+    PLAN_SIGNAL = "plan-signal"     # a `done` nobody approved, an unknown track
+
+
+# Private mapping: retry kind → (TaskState counter field, retries allowed).
+# A rejected signal or ticket set is usually a slip, not a judgment: one
+# resume with the reason, then the task parks or fails. Gate entry resets
+# both plan counters (the gate phase has retries of its own).
+_RETRY_BUDGET: dict[Retry, tuple[str, int]] = {
+    Retry.SPEC_SIGNAL: ("spec_retries", 1),
+    Retry.PLAN_TICKETS: ("plan_retries", 1),
+    Retry.PLAN_SIGNAL: ("plan_slips", 1),
+}
+
+
+def retry_left(task: TaskState, retry: Retry) -> bool:
+    field, limit = _RETRY_BUDGET[retry]
+    return getattr(task, field) < limit
+
+
+def spend_retry(task: TaskState, retry: Retry) -> TaskState:
+    field, _limit = _RETRY_BUDGET[retry]
+    return replace(task, **{field: getattr(task, field) + 1})

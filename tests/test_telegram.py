@@ -9,7 +9,7 @@ def test_templates_carry_url_session_and_attach_hint():
     # The tmux session name is now task-<target>-<issue> (Task 2's rekey); a
     # legacy-adopted session is renamed to this on first touch, so this is
     # the correct name for the operator-facing text to print.
-    for name in ["awaiting_spec_review", "stage_blocked", "pr_opened",
+    for name in ["awaiting_plan_review", "stage_blocked", "pr_opened",
                  "artifact_failed", "session_crashed"]:
         msg = render(name, issue=42, title="Add widget",
                      url="https://github.com/x/y/issues/42", note="n",
@@ -93,17 +93,17 @@ def test_queue_template_joins_lines():
     assert text == "📊 agent-ops queue\n1. [5.00] #2 B\nBlocked: #4"
 
 
-def test_awaiting_spec_review_includes_console_link_when_configured():
-    msg = render("awaiting_spec_review", issue=42, title="Add widget",
+def test_awaiting_plan_review_includes_console_link_when_configured():
+    msg = render("awaiting_plan_review", issue=42, title="Add widget",
                  url="https://github.com/x/y/issues/42", note="n",
                  target="acme", console="https://box.tail.ts.net")
     assert "read & approve: https://box.tail.ts.net/task/acme/42" in msg
 
 
-def test_awaiting_spec_review_unchanged_without_console():
-    with_empty = render("awaiting_spec_review", issue=42, title="t",
+def test_awaiting_plan_review_unchanged_without_console():
+    with_empty = render("awaiting_plan_review", issue=42, title="t",
                         url="u", note="n", target="acme", console="")
-    without = render("awaiting_spec_review", issue=42, title="t",
+    without = render("awaiting_plan_review", issue=42, title="t",
                      url="u", note="n", target="acme")
     assert with_empty == without
     assert "read & approve" not in with_empty
@@ -116,7 +116,7 @@ def test_notifier_injects_console_url(monkeypatch):
     monkeypatch.setattr(notify, "_http_post",
                         lambda url, payload: seen.update(payload=payload) or {})
     notify.Notifier(console_url="https://box.tail.ts.net").send(
-        "awaiting_spec_review", issue=42, title="t", url="u", note="",
+        "awaiting_plan_review", issue=42, title="t", url="u", note="",
         target="acme")
     assert "read & approve: https://box.tail.ts.net/task/acme/42" in seen["payload"]["text"]
 
@@ -132,8 +132,8 @@ def test_needs_relogin_template():
     assert "Reply to THIS message" in text
 
 
-def test_spec_parked_message_explains_the_park_and_the_way_back():
-    msg = render("spec_parked", issue=42, title="Add widget",
+def test_plan_parked_message_explains_the_park_and_the_way_back():
+    msg = render("plan_parked", issue=42, title="Add widget",
                  url="https://github.com/x/y/issues/42", note="…pane tail…",
                  target="acme")
     assert "#42" in msg and "https://github.com/x/y/issues/42" in msg
@@ -141,8 +141,19 @@ def test_spec_parked_message_explains_the_park_and_the_way_back():
     assert "task-acme-42" in msg            # /attach hint carries the session
 
 
-def test_spec_parked_carries_the_console_deep_link_when_configured():
-    msg = render("spec_parked", issue=42, title="t", url="u", note="n",
+def test_plan_session_stopped_message_claims_no_ready_plan_and_names_the_way_back():
+    msg = render("plan_session_stopped", issue=42, title="Add widget",
+                 url="https://github.com/x/y/issues/42", note="…pane tail…",
+                 target="acme", rounds=2, console="https://box.ts.net")
+    assert "ready" not in msg
+    assert "plan session stopped at the review gate" in msg and "2 unattended" in msg
+    assert "Reply to THIS message to continue" in msg and "task-acme-42" in msg
+    # Nothing is armed: no link that offers to approve.
+    assert "approve" not in msg and "https://box.ts.net/task/acme/42" not in msg
+
+
+def test_plan_parked_carries_the_console_deep_link_when_configured():
+    msg = render("plan_parked", issue=42, title="t", url="u", note="n",
                  target="acme", console="https://box.ts.net")
     assert "https://box.ts.net/task/acme/42" in msg
 

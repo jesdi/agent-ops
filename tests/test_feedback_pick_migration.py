@@ -13,7 +13,7 @@ FABLE = "anthropic/claude-fable-5-1@medium"
 
 @pytest.mark.parametrize("stage,key", [
     ("address-review", "feedback"), ("implement", "implement"),
-    ("queued", "spec"), ("awaiting-spec-review", "spec"), ("review", "review")])
+    ("queued", "spec"), ("awaiting-plan-review", "plan"), ("review", "review")])
 def test_pick_key_of_a_stage(stage, key):
     assert pick_key(stage) == key
 

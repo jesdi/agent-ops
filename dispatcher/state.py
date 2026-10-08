@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -20,7 +21,7 @@ from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
 class Stage(str, Enum):
     QUEUED = "queued"
     SPEC = "spec"
-    AWAITING_SPEC_REVIEW = "awaiting-spec-review"
+    AWAITING_PLAN_REVIEW = "awaiting-plan-review"
     PLAN = "plan"
     IMPLEMENT = "implement"
     REVIEW = "review"           # fresh-eyes review; rebases, verifies, opens the PR
@@ -39,7 +40,7 @@ TERMINAL_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
 # Stages that occupy capacity and an E2E slot. BLOCKED and
 # STALLED_ON_BUDGET still hold a live session/worktree, so they count.
 IN_FLIGHT_STAGES = frozenset({
-    Stage.QUEUED, Stage.SPEC, Stage.AWAITING_SPEC_REVIEW, Stage.PLAN,
+    Stage.QUEUED, Stage.SPEC, Stage.PLAN, Stage.AWAITING_PLAN_REVIEW,
     Stage.IMPLEMENT, Stage.REVIEW, Stage.ADDRESS_REVIEW, Stage.BLOCKED,
     Stage.STALLED_ON_BUDGET,
 })
@@ -57,54 +58,38 @@ def resumable_crash(t: "TaskState") -> bool:
 
 class NextLaunch(NamedTuple):
     stage: str        # runtime stage
-    ticket: int = 0   # the ticket it works; 0 for a launch that is no ticket
 
 
 # A stage with no session of its own -> the stage its next launch runs: a
-# parked pr-open task wakes into an address-review round, and a spec that
-# waits at its gate is continued, or respawned, as the spec stage.
+# parked pr-open task wakes into an address-review round, and a plan that
+# waits at its review gate is continued, or respawned, as the plan stage.
 _LAUNCHED_AS = {Stage.PR_OPEN.value: Stage.ADDRESS_REVIEW.value,
-                Stage.AWAITING_SPEC_REVIEW.value: Stage.SPEC.value}
+                Stage.AWAITING_PLAN_REVIEW.value: Stage.PLAN.value}
 
 
 def next_launch(t: "TaskState") -> NextLaunch:
     """A task's next launch, read from the persisted state: the one answer
     the dispatcher, the status lines and the console share. A crashed task
-    resumes the stage it crashed in. In implement the launch runs a ticket:
-    the one in progress, or, when none is (ticket_in_progress), the next
-    one; after the last ticket the next launch is review."""
+    resumes the stage it crashed in. After the implement session is done
+    the next launch is review, also while review waits for the gate."""
     stage = t.crashed_stage if resumable_crash(t) else t.stage.value
-    stage = _LAUNCHED_AS.get(stage, stage)
-    if stage != Stage.IMPLEMENT.value:
-        return NextLaunch(stage)
-    if ticket_in_progress(t):
-        return NextLaunch(stage, t.ticket_cursor)
-    return after_ticket(t)
+    if stage == Stage.IMPLEMENT.value and implement_done(t):
+        return NextLaunch(Stage.REVIEW.value)
+    return NextLaunch(_LAUNCHED_AS.get(stage, stage))
 
 
-def after_ticket(t: "TaskState") -> NextLaunch:
-    """The launch that follows the ticket at the cursor: the next ticket, or
-    review after the last one."""
-    if t.ticket_cursor < t.ticket_count:
-        return NextLaunch(Stage.IMPLEMENT.value, t.ticket_cursor + 1)
-    return NextLaunch(Stage.REVIEW.value)
-
-
-def ticket_in_progress(t: "TaskState") -> bool:
-    """A ticket has started and is not done. The implement pick says so: it
-    is written when a ticket starts and dropped, in a write of its own, when
-    the ticket is done. A state from before picks existed has a ticket in
-    progress with no pick; the state read marks it (`ticket_without_pick`).
-    With no ticket set at all (`ticket_count` 0, a task from before tickets)
-    the implement stage is its one session."""
-    return (IMPLEMENT_PICK in t.picks or t.ticket_without_pick
-            or t.ticket_count == 0)
+def implement_done(t: "TaskState") -> bool:
+    """The implement session reported done and review has not started: a
+    provider ran implement and its pick is gone (dropped, in a write of its
+    own, when review is chosen). Before the first implement launch there is
+    no provider; while the session runs, or waits parked, it has its pick."""
+    return bool(t.implement_providers) and IMPLEMENT_PICK not in t.picks
 
 
 def shown_stage(t: "TaskState") -> str:
     """The stage a status line and a card label a task with: its own, but a
     task in implement is labelled with its next launch, which is review once
-    its last ticket is done."""
+    the implement session is done."""
     return next_stage(t) if t.stage is Stage.IMPLEMENT else t.stage.value
 
 
@@ -113,23 +98,27 @@ def next_stage(t: "TaskState") -> str:
     return next_launch(t).stage
 
 
-def launch_ticket(t: "TaskState") -> int:
-    """The ticket a task's next launch runs, 0 when it runs none (next_launch)."""
-    return next_launch(t).ticket
-
-
 @dataclass(frozen=True)
 class LoopCaps:
     """Rounds each bounded loop may run before the task parks. Defaults are
     the spec's; targets.yaml `loop_caps:` overrides any of them."""
     review: int = 2   # review-stage fix rounds
-    gate: int = 2     # gate_cmd failures per ticket
+    gate: int = 2     # rounds of a session-reported gate loop
     e2e: int = 3      # failed end-to-end runs (implement/review)
     ci: int = 3       # fixes on an open PR (red check, conflict, failed run)
 
 @dataclass(frozen=True)
-class SpecApprovalRequest:
-    kind: str = "spec-approval"
+class PlanApprovalRequest:
+    path: str   # the plan session's review summary, worktree-relative
+    kind: str = "plan-approval"
+    # The plan revision the operator is asked to approve (see
+    # artifacts.plan_revision). "" = unknown: such a request matches no plan.
+    # Not part of the request's identity, and not sent to the console.
+    fingerprint: str = field(default="", compare=False)
+
+    def __post_init__(self):
+        if not self.path:
+            raise ValueError("plan-approval request requires a non-empty path")
 
 
 @dataclass(frozen=True)
@@ -142,7 +131,7 @@ class AnswersRequest:
             raise ValueError("answers request requires a non-empty path")
 
 
-OperatorRequest = SpecApprovalRequest | AnswersRequest  # type alias
+OperatorRequest = PlanApprovalRequest | AnswersRequest  # type alias
 
 
 # A task that holds no E2E slot. Every session-ending park releases its slot
@@ -161,7 +150,7 @@ PARK_HUMAN = "parked"            # waiting for operator input
 PARK_CI = "awaiting-ci"          # waiting for a GitHub Actions run
 PARK_WAKE = "unpark-requested"   # wake event arrived; resume when slot free
 PARK_LOGIN = "parked-login"      # live session sitting at a /login prompt
-PARK_REVIEW = "awaiting-review"  # spec done, parked for review at leisure
+PARK_REVIEW = "awaiting-review"  # plan ready, parked for review at leisure
 
 
 @dataclass(frozen=True)
@@ -182,32 +171,33 @@ class TaskState:
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time
     track: str = ""                      # configured track name (spec/2026-09-14-model-tracks)
-    # providers that ran tickets: first use first, no repeats
+    # providers that ran implement: first use first, no repeats
     implement_providers: list[str] = field(default_factory=list)
     # models.pick_key(stage) -> "provider/model[@effort]", sticky per key;
-    # the implement pick only while a ticket is in progress
+    # the implement pick until review starts
     picks: dict[str, str] = field(default_factory=dict)
-    spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track)
+    spec_retries: int = 0                # in-session spec-signal retries used (bad/missing track, awaiting-review)
     plan_retries: int = 0                # in-session plan-format retries used
+    plan_slips: int = 0                  # in-session plan-signal retries used (unapproved done, bad track)
+    # Plan gate: respawns of a dead session plus review rounds started since
+    # the operator last acted. Owned by dispatcher/loops.py (gate_fields
+    # counts, reset on an operator wake, UNATTENDED_ROUND_LIMIT caps).
+    unattended_rounds: int = 0
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
     feedback_pending: bool = False       # feedback seen, address-review deferred
     terminal_at: str = ""                # first terminal transition; cleared on reopening
     done_at: str = ""                    # merge-detection time; drives the flush
     spec_path: str = ""                  # approved spec, worktree-relative or absolute
-    ticket_cursor: int = 0               # 1-based ticket the implement session works; 0 = none yet
-    ticket_count: int = 0                # size of .agent/tickets/ at plan done
-    # ticket number -> its ticket track, only tickets that name one: the copy
-    # of the accepted ticket set that routing reads, never the ticket files
-    ticket_tracks: dict[int, str] = field(default_factory=dict)
-    # File names of the accepted ticket set, in ticket order: its identity.
-    # Empty for a set accepted before the names were kept: only the count
-    # can be compared.
-    ticket_names: list[str] = field(default_factory=list)
-    # A ticket is in progress although the task has no implement pick: only
-    # a state from before picks existed, marked when it is read. Cleared
-    # when that ticket is done. See ticket_in_progress.
-    ticket_without_pick: bool = False
+    ticket_count: int = 0                # size of .agent/tickets/ when implement started
+    # The task entered the plan review gate. Set only through
+    # loops.gate_fields, never cleared: a task that waited for the operator
+    # once never skips the gate, whatever stage a respawn puts it back in.
+    gated: bool = False
+    # A spec- or plan-stage session parked for answers. Set only by
+    # _park_for_input in dispatcher/main.py, never cleared: it outlives the
+    # session that asked.
+    asked: bool = False
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
     review_rounds: int = 0
@@ -229,7 +219,7 @@ class TaskState:
     # counter at that moment. A different counter later means a new turn.
     background_reported: float = 0.0
     background_seq: int = 0
-    # None=no request; SpecApprovalRequest while at gate; AnswersRequest written
+    # None=no request; PlanApprovalRequest while at gate; AnswersRequest written
     # ONLY by _park_for_input in dispatcher/main.py, and only when a
     # worktree-contained path resolves — so an answers request never exists
     # without a valid path.
@@ -238,14 +228,8 @@ class TaskState:
 
 def launch_track(t: TaskState, policy: ModelPolicy) -> str:
     """The track whose list t's next launch (next_launch) reads, or "" when
-    it has none. A ticket that names a ticket track is implemented from it,
-    as long as that track is still pinned; it never falls to another list.
-    A ticket that names none, and every other launch (PR feedback too), uses
-    the task track. A task with no track (claimed before tracks existed) is
-    untracked work."""
-    named = t.ticket_tracks.get(launch_ticket(t), "")
-    if named:
-        return named if named in policy.pinned else ""
+    it has none: the task track. A task with no track (claimed before tracks
+    existed) is untracked work."""
     track = t.track or policy.untracked
     return track if track in policy.tracks else ""
 
@@ -254,7 +238,7 @@ def launch_entries(t: TaskState, policy: ModelPolicy, order: Order,
                    stage: str = "") -> tuple[Entry, ...]:
     """The entries t's next launch walks, in the order they are tried: the
     launch track's list as models.candidates arranges it, the one provider
-    that ran the tickets moved back for review. Empty when the launch has no
+    that ran implement moved back for review. Empty when the launch has no
     usable track. The one definition: the dispatcher launches the first
     admitted entry, the status line names the first, the console offers all.
     `stage`: the runtime stage, for a launch the persisted state does not
@@ -276,7 +260,10 @@ class StageSignal:
     run_id: int = 0
     loop: str = ""    # bounded loop a working session is in: review | gate
     round: int = 0    # 1-based round of that loop
-    track: str = ""   # spec stage only: the track for plan/implement/review
+    track: str = ""   # spec done: the track for plan/implement/review; plan done may rename it
+    # Plan ready report: the open questions the session counted in its
+    # summary. None = missing or not a non-negative integer.
+    open_questions: int | None = None
 
 
 # The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
@@ -376,21 +363,10 @@ def _effective_stage(d: dict) -> Stage:
     return d["stage"]
 
 
-def _migrate_ticket_without_pick(d: dict) -> None:
-    """A file from before the field was written by code that kept no state
-    for "no ticket in progress": a task in implement was always in the
-    middle of its ticket. With no implement pick (a task from before picks
-    existed) nothing else says so; mark it, so the task continues that
-    ticket and never skips to the next one."""
-    if "ticket_without_pick" not in d:
-        d["ticket_without_pick"] = (_effective_stage(d) is Stage.IMPLEMENT
-                                    and IMPLEMENT_PICK not in d["picks"])
-
-
 def _migrate_implement_pick(d: dict) -> None:
     """State from before this change. No recorded provider: the implement
-    pick's provider ran the tickets. Past implement the implement pick is no
-    ticket's any more: it becomes the feedback pick when the PR is open and
+    pick's provider ran implement. Past implement the implement pick is no
+    the implement session's any more: it becomes the feedback pick when the PR is open and
     there is none yet, so the next feedback round stays on its provider, and
     is dropped otherwise. A crashed task counts as the stage it resumes.
     Afterwards there is a provider and no such pick, so a second read (or a
@@ -407,11 +383,6 @@ def _migrate_implement_pick(d: dict) -> None:
         picks.setdefault(FEEDBACK_PICK, pick)
 
 
-def _ticket_tracks(raw: dict | None) -> dict[int, str]:
-    """JSON object keys are strings: the ticket numbers come back as int."""
-    return {int(number): track for number, track in (raw or {}).items()}
-
-
 def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
@@ -423,30 +394,23 @@ def _read(p: Path) -> TaskState | None:
         d["terminal_at"] = ""
     d["labels"] = tuple(d.get("labels", ()))
     d["picks"] = dict(d.get("picks") or {})
-    _migrate_ticket_without_pick(d)
     _migrate_implement_pick(d)
-    d["ticket_tracks"] = _ticket_tracks(d.get("ticket_tracks"))
     d.pop("pending_reply", None)   # retired field, see original comment
-    if "operator_request" not in d:
-        # Legacy record: derive from unambiguous gate evidence.
-        if d["stage"] is Stage.AWAITING_SPEC_REVIEW:
-            d["operator_request"] = SpecApprovalRequest()
-            # Backfill spec_path so the /request endpoint can resolve content
-            # without reading the overloaded artifact field (slice 14).
-            if not d.get("spec_path"):
-                d["spec_path"] = d.get("artifact", "")
-        else:
-            d["operator_request"] = None
-    elif d["operator_request"] is not None:
+    if d.get("operator_request") is not None:
         raw = d["operator_request"]
         kind = raw.get("kind")
-        if kind == "spec-approval":
-            d["operator_request"] = SpecApprovalRequest()
+        if kind == "plan-approval":
+            d["operator_request"] = PlanApprovalRequest(
+                path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
         elif kind == "answers":
             d["operator_request"] = AnswersRequest(path=raw.get("path", ""))
         else:
             raise ValueError(f"unrecognized operator_request kind {kind!r}")
-    d.pop("artifact", None)        # retired field (slice 24); backfill above used it
+    d.pop("artifact", None)        # retired field (slice 24)
+    # Retired fields: one implement session, no cursor and no ticket tracks.
+    for retired in ("ticket_cursor", "ticket_tracks", "ticket_names",
+                    "ticket_without_pick"):
+        d.pop(retired, None)
     return TaskState(**d)
 
 
@@ -513,23 +477,69 @@ def allocate_slot(existing: list[TaskState], max_slots: int) -> int | None:
     return None
 
 
+def _open_questions(raw: object) -> int | None:
+    """Tolerant on purpose: a bad count must not make the signal unreadable.
+    `type() is int` keeps bool out (True is an int in Python)."""
+    return raw if type(raw) is int and raw >= 0 else None
+
+
+STAGE_SIGNAL_MAX_BYTES = 64 * 1024
+_SIGNAL_INT_MAX = 2 ** 53   # what JSON carries exactly; far above any run id
+
+
+def _signal_int(d: dict, key: str) -> int:
+    """A number field of the signal: 0 when left out or null, else an integer
+    in range, also written as a string of digits (sessions do that). Anything
+    else (a float, also 1e400; a bool; other text) raises ValueError: the
+    signal is unreadable, as for any other malformed one."""
+    raw = d.get(key)
+    if raw is None or raw == "":
+        return 0
+    if isinstance(raw, str) and raw.isascii() and raw.isdigit() and len(raw) <= 16:
+        raw = int(raw)
+    if type(raw) is not int or not 0 <= raw <= _SIGNAL_INT_MAX:
+        raise ValueError(f"{key} is not a sane integer: {raw!r}")
+    return raw
+
+
+def read_regular(path: str | Path, max_bytes: int) -> bytes | None:
+    """The bytes of a regular file a session wrote; None for anything else:
+    missing, unreadable, a symlink (not followed), a FIFO or a device (the
+    open never blocks), or larger than max_bytes."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        with os.fdopen(os.open(path, flags), "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return None
+            raw = f.read(max_bytes + 1)
+    except (OSError, ValueError):   # ValueError: a NUL character in the path
+        return None
+    return raw if len(raw) <= max_bytes else None
+
+
 def read_stage_signal(worktree: str | Path) -> StageSignal | None:
-    p = Path(worktree) / ".agent" / "stage.json"
-    if not p.exists():
+    """The session-written .agent/stage.json, read defensively for the
+    dispatcher and the console alike: whatever a model put at that path, the
+    answer is a signal or None, never a hang or an exception."""
+    raw = read_regular(Path(worktree) / ".agent" / "stage.json", STAGE_SIGNAL_MAX_BYTES)
+    if raw is None:
         return None
     try:
-        d = json.loads(p.read_text())
+        d = json.loads(raw)
+        note = d.get("note", "")
         return StageSignal(
             stage=str(d["stage"]),
             status=str(d["status"]),
-            note=str(d.get("note", "")),
+            note=note if isinstance(note, str) else "",
             artifact=str(d.get("artifact", "")),
-            run_id=int(d.get("run_id", 0) or 0),
+            run_id=_signal_int(d, "run_id"),
             loop=str(d.get("loop", "") or ""),
-            round=int(d.get("round", 0) or 0),
+            round=_signal_int(d, "round"),
             track=str(d.get("track", "") or ""),
+            open_questions=_open_questions(d.get("open_questions")),
         )
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError,
+            OverflowError):
         return None
 
 

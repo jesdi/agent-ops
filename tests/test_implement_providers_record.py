@@ -1,5 +1,4 @@
-"""The provider record of ticket 05 is written when a ticket's first session
-launches. These tests read the RAW state file, not `state.load`: the reader
+"""The provider record is written when the implement session launches. These tests read the RAW state file, not `state.load`: the reader
 derives a missing record from the implement pick, which hides a lost one."""
 import json
 
@@ -16,23 +15,25 @@ def raw_providers(c, issue=42):
     return json.loads(p.read_text()).get("implement_providers")
 
 
-def test_first_ticket_records_its_provider(tmp_path, monkeypatch):
+def test_the_implement_session_records_its_provider(tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="openai")
     enter(c, 42, "standard", Stage.PLAN)
     run_pass(c, 42)
     assert raw_providers(c) == ["openai"]
 
 
-def test_three_tickets_on_one_provider_record_it_once(tmp_path, monkeypatch):
+def test_a_provider_is_recorded_once_through_review(tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="openai")
-    wt = make_task(c, issue=42, stage=Stage.PLAN, track="standard")
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
+                   track="standard")
     write_tickets(wt, 3)
     sess = FakeSessions(alive={42})
     for sig in [{"stage": "plan", "status": "done", "note": "3 tickets",
-                 "artifact": ".agent/tickets"}] + [
-            {"stage": "implement", "status": "done"}] * 2:
+                 "artifact": ".agent/tickets"},
+                {"stage": "implement", "status": "done"}]:
         (wt / ".agent" / "stage.json").write_text(json.dumps(sig))
         main.run_pass(c, deps(sess=sess))
+    assert [s[1] for s in sess.spawned] == ["implement", "review"]
     assert raw_providers(c) == ["openai"]
 
 
@@ -46,7 +47,7 @@ def test_an_override_records_the_overriding_provider(tmp_path, monkeypatch):
     assert raw_providers(c) == ["anthropic"]
 
 
-def test_a_ticket_whose_spawn_raises_records_nothing(tmp_path, monkeypatch):
+def test_an_implement_launch_that_raises_records_nothing(tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="openai")
     enter(c, 42, "standard", Stage.PLAN)
     main.run_pass(c, deps(sess=FakeSessions(alive={42}, spawn_raises=[42])))

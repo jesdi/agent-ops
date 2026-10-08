@@ -13,7 +13,7 @@ STAGE_COLUMNS = {
     Stage.PLAN: "in-progress",
     Stage.IMPLEMENT: "in-progress",
     Stage.REVIEW: "in-progress",
-    Stage.AWAITING_SPEC_REVIEW: "needs-review",
+    Stage.AWAITING_PLAN_REVIEW: "needs-review",
     Stage.PR_OPEN: "pr-open",
     Stage.ADDRESS_REVIEW: "in-progress",
     Stage.DONE: "done",
@@ -200,7 +200,7 @@ def test_task_card_carries_feedback_pending():
 
 
 def test_review_park_shows_in_the_needs_review_column():
-    t = make_task(issue=9, stage=Stage.AWAITING_SPEC_REVIEW, slot=NO_SLOT,
+    t = make_task(issue=9, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT,
                   park=PARK_REVIEW, park_msg_id=77)
     card = task_card(t, model="m")
     assert card.column == "needs-review"
@@ -210,7 +210,7 @@ def test_review_park_shows_in_the_needs_review_column():
 
 def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
-             make_task(issue=2, stage=Stage.AWAITING_SPEC_REVIEW,
+             make_task(issue=2, stage=Stage.AWAITING_PLAN_REVIEW,
                        slot=NO_SLOT, park=PARK_REVIEW)]
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
@@ -253,7 +253,7 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
         make_task(issue=1, stage=Stage.IMPLEMENT),
         make_task(issue=2, stage=Stage.SPEC, park=PARK_LOGIN),
         make_task(issue=3, stage=Stage.IMPLEMENT, park=PARK_CI),
-        make_task(issue=4, stage=Stage.AWAITING_SPEC_REVIEW, park=PARK_REVIEW),
+        make_task(issue=4, stage=Stage.AWAITING_PLAN_REVIEW, park=PARK_REVIEW),
         make_task(issue=5, stage=Stage.DONE),
         make_task(issue=6, stage=Stage.FAILED),
         make_task(issue=7, stage=Stage.QUEUED),
@@ -1042,3 +1042,4 @@ def test_usage_view_reports_the_mode_options_and_one_decimal_pace():
         "mode": "openai", "options": ["auto", "anthropic", "openai"],
         "first": "openai", "pinned": []}
     assert view.providers[0].windows[0].required_pace == 1.6
+

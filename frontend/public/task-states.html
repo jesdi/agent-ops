@@ -43,6 +43,7 @@
   main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 64px; }
   h1 { font-size: 24px; font-weight: 600; margin: 0 0 4px; }
   h2 { font-size: 18px; font-weight: 600; margin: 40px 0 8px; }
+  h3 { font-size: 15px; font-weight: 600; margin: 24px 0 8px; }
   p, li { max-width: 72ch; }
   ul { padding-left: 20px; }
   .muted { color: var(--ink-muted); }
@@ -100,13 +101,12 @@
 <div class="card"><pre class="mermaid">
 flowchart TD
   Q([queued]) -->|session launched| SP[spec]
-  SP -->|signal awaiting-review| ASR[awaiting-spec-review]
-  ASR -->|operator approves| PL[plan]
-  SP -->|signal done| PL
-  PL -->|tickets valid| IM[implement]
+  SP -->|signal done| PL[plan]
+  PL -->|signal awaiting-review, tickets valid| APR[awaiting-plan-review]
   PL -->|tickets invalid: one retry| PL
-  IM -->|next ticket| IM
-  IM -->|last ticket done| RV[review]
+  APR -->|operator gives feedback: the plan session applies it| APR
+  APR -->|operator approves: signal done| IM[implement]
+  IM -->|signal done: every ticket merged| RV[review]
   RV -->|signal done: PR opened| PR[pr-open]
   PR -->|PR feedback, red check or conflict| AR[address-review]
   AR -->|signal done| PR
@@ -122,10 +122,10 @@ flowchart TD
   classDef you fill:#fef3c7,stroke:#92400e,color:#92400e
   class D ok
   class F,C bad
-  class ASR,PR you
+  class APR,PR you
 </pre></div>
 <ul>
-  <li><b>Amber</b> stages wait for you: a spec to approve, or a PR to review and merge.</li>
+  <li><b>Amber</b> stages wait for you: a spec and its plan to approve, or a PR to review and merge.</li>
   <li><code>done</code>, <code>failed</code> and <code>canceled</code> are final. A task that failed because its session crashed can be resumed.</li>
   <li><code>blocked</code> is an old stage that current code does not set. <code>stalled-on-budget</code> exists as a stage value and a board column, but current code does not set it.</li>
 </ul>
@@ -135,8 +135,8 @@ flowchart TD
 <div class="card"><table>
 <tr><th>Status</th><th>Meaning</th><th>What the pass does</th></tr>
 <tr><td><code>working</code></td><td>The session is doing the stage.</td><td>Nothing, unless a turn-end marker or a timer applies. See <a href="#pass">Dispatcher pass</a>.</td></tr>
-<tr><td><code>done</code></td><td>The stage is complete.</td><td>Checks the stage's output, then starts the next stage or the next ticket.</td></tr>
-<tr><td><code>awaiting-review</code></td><td>The spec is ready for the operator.</td><td>Moves the task to <code>awaiting-spec-review</code> and publishes the spec. After 15 minutes with no approval, parks the task for review.</td></tr>
+<tr><td><code>done</code></td><td>The stage is complete.</td><td>Checks the stage's output, then starts the next stage.</td></tr>
+<tr><td><code>awaiting-review</code></td><td>The plan session has the spec and the plan ready for the operator.</td><td>Checks the ticket set, moves the task to <code>awaiting-plan-review</code>, publishes the spec folder and shows the plan summary in the console. After 15 minutes with no approval, parks the task for review.</td></tr>
 <tr><td><code>blocked</code></td><td>The session cannot continue.</td><td>Parks the task for input with the session's note.</td></tr>
 <tr><td><code>awaiting-answers</code></td><td>The session has a questionnaire, a prototype or a wizard for the operator.</td><td>Parks the task for input and shows the file in the console.</td></tr>
 <tr><td><code>awaiting-ci</code></td><td>The session waits for a GitHub Actions run.</td><td>Parks the task until the run completes.</td></tr>
@@ -214,20 +214,29 @@ flowchart TD
 </ul>
 
 <h2 id="loops">Round caps</h2>
-<p>Some loops can run only a fixed number of rounds. When a loop reaches its cap, the task parks for input. The <code>loop_caps</code> setting in <code>targets.yaml</code> changes the numbers.</p>
+<p>Some loops can run only a fixed number of rounds. When a loop reaches its cap, the task parks for input. A round that an implement session reports is never counted: its skill has its own limits. The <code>loop_caps</code> setting in <code>targets.yaml</code> changes the numbers.</p>
 <div class="card"><table>
 <tr><th>Loop</th><th>Cap</th><th>One round is</th></tr>
 <tr><td><code>review</code></td><td>2</td><td>One fix round in the review stage.</td></tr>
-<tr><td><code>gate</code></td><td>2</td><td>One failure of the gate command on a ticket.</td></tr>
+<tr><td><code>gate</code></td><td>2</td><td>One gate-loop round that a session reports.</td></tr>
 <tr><td><code>e2e</code></td><td>3</td><td>One failed end-to-end run in implement or review.</td></tr>
 <tr><td><code>ci</code></td><td>3</td><td>One fix on an open PR: a red check, a conflict or a failed run.</td></tr>
 </table></div>
+
+<h3>Review rounds at the plan gate</h3>
+<p>The task waits at <code>awaiting-plan-review</code> with an approval request for one plan: the review summary and the ticket files as they were when the request was made.</p>
+<ul>
+  <li>Signal <code>working</code> at the gate removes the request. The session changes the plan, and the old summary must not be approved.</li>
+  <li>The next signal <code>awaiting-review</code> starts a new review round: the dispatcher checks the ticket set again, publishes the spec folder, sends a new notification and starts the 15 minutes again.</li>
+  <li>A new round also starts when the summary or a ticket file changed and no pass saw the signal <code>working</code>.</li>
+  <li>With no action from the operator, the task has a budget of two steps. A new review round uses one step, and a new start of a stopped plan session uses one step: the two kinds share the budget. When the budget is used, the next step parks the task for review. A reply from the operator gives the full budget back, and the round that answers the reply uses no step.</li>
+</ul>
 
 <h2 id="board">Board columns</h2>
 <p>The park decides the column when the task is parked. If the task is not parked, the stage decides.</p>
 <div class="card"><table>
 <tr><th>Column</th><th>Zone</th><th>Shows tasks with</th></tr>
-<tr><td>Needs review</td><td>Needs you</td><td>Stage <code>awaiting-spec-review</code>, or park <code>awaiting-review</code></td></tr>
+<tr><td>Needs review</td><td>Needs you</td><td>Stage <code>awaiting-plan-review</code>, or park <code>awaiting-review</code></td></tr>
 <tr><td>PR review</td><td>Needs you</td><td>Stage <code>pr-open</code></td></tr>
 <tr><td>Parked</td><td>Needs you</td><td>Park <code>parked</code> or <code>parked-login</code></td></tr>
 <tr><td>Failed</td><td>Needs you</td><td>Stage <code>failed</code> or <code>blocked</code></td></tr>

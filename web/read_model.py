@@ -20,9 +20,9 @@ from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               required_pace, verdict_note)
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
-                              Stage, TaskState, active, consumes_capacity,
-                              holds_slot, max_slots, resumable_crash,
-                              shown_stage)
+                              Stage, StageSignal, TaskState, active,
+                              consumes_capacity, holds_slot, max_slots,
+                              resumable_crash, shown_stage)
 
 FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
 
@@ -50,7 +50,7 @@ COLUMNS: tuple[tuple[str, str, Zone], ...] = (
 # and the card keeps the exact park kind so the board can tell them apart.
 # Without the mapping it fell through to the stage column and a session stuck
 # at a /login prompt rendered as healthy "In progress" work.
-# PARK_REVIEW maps to Needs review — a finished spec waiting for a human is
+# PARK_REVIEW maps to Needs review — a finished plan waiting for a human is
 # exactly that column's meaning, parked or not.
 _PARK_COLUMN = {PARK_HUMAN: "parked", PARK_CI: "awaiting-ci",
                 PARK_WAKE: "resuming", PARK_LOGIN: "parked",
@@ -61,7 +61,7 @@ _STAGE_COLUMN = {
     Stage.PLAN.value: "in-progress",
     Stage.IMPLEMENT.value: "in-progress",
     Stage.REVIEW.value: "in-progress",
-    Stage.AWAITING_SPEC_REVIEW.value: "needs-review",
+    Stage.AWAITING_PLAN_REVIEW.value: "needs-review",
     Stage.PR_OPEN.value: "pr-open",
     Stage.ADDRESS_REVIEW.value: "in-progress",
     Stage.DONE.value: "done",
@@ -394,10 +394,26 @@ class TaskDetail(BaseModel):
     labels: list[str]
     timeline: list[TimelineEntry]
     track_when: str = ""
+    implement_progress: str | None = None
+
+
+PROGRESS_MAX_CHARS = 200  # the session writes this text: bound what the page shows
+
+
+def _implement_progress(t: TaskState,
+                        signal: StageSignal | None) -> str | None:
+    if t.stage != Stage.IMPLEMENT or signal is None \
+            or signal.stage != Stage.IMPLEMENT or signal.status != "working":
+        return None  # blocked / question / CI notes are not progress
+    note = signal.note.strip()
+    if len(note) > PROGRESS_MAX_CHARS:
+        note = note[:PROGRESS_MAX_CHARS - 1].rstrip() + "…"
+    return note or None
 
 
 def task_detail(t: TaskState, *, model: str,
                 pane_tail: str, session_alive: bool,
+                signal: StageSignal | None = None,
                 events: list[dict], now: datetime,
                 messages: list[msgq.Message] | None = None,
                 pending_sends: list[dict] | None = None,
@@ -420,7 +436,8 @@ def task_detail(t: TaskState, *, model: str,
         delivery_contract=delivery_contract(t, wake_blocked=wake_blocked),
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
         timeline=stage_timeline(events, t.target, t.issue, now=now),
-        track_when=track_when)
+        track_when=track_when,
+        implement_progress=_implement_progress(t, signal))
 
 
 class IssueDescription(BaseModel):
@@ -455,7 +472,7 @@ class UnavailableContent(BaseModel):
 
 
 class OperatorRequest(BaseModel):
-    kind: Literal["spec-approval", "answers"]
+    kind: Literal["plan-approval", "answers"]
     content: Annotated[ReadableContent | UnavailableContent, Field(discriminator="kind")]
 
 

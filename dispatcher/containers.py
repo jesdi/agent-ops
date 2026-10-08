@@ -1,32 +1,55 @@
 """Podman command construction shared by session runs (sessions.py) and
 one-shot setup runs (workspace.py). Both mount the worktree AND the main
 clone at their host paths — a worktree's .git is a file pointing into
-<clone>/.git/worktrees/<name>, so git inside the container needs both."""
+<clone>/.git/worktrees/<name>, so git inside the container needs both. The
+clone path is always the target's configured one, handed in by the caller:
+that pointer is session-writable and is never read here."""
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 from pathlib import Path
 
 from dispatcher.models import Entry, bare_model_id
 from dispatcher.runtimes import Runtime, runtime_for
+from dispatcher.state import read_regular
 
 
-def clone_root(worktree: str) -> str:
-    gitdir = (Path(worktree) / ".git").read_text().split("gitdir:", 1)[1].strip()
-    return str(Path(gitdir).parents[2])
+_TASK_BRANCH = re.compile(r"agent/task-(\d+)")
+TASK_JSON_MAX_BYTES = 64 * 1024
 
 
-def task_branch(worktree: str) -> str:
-    """The branch create_workspace recorded in .agent/task.json — injected
+def task_branch(worktree: str, name: str) -> str:
+    """The branch create_workspace recorded in .agent/task.json, injected
     into the session as AGENT_OPS_TASK_BRANCH for the guardrail's lease-push
-    exception. "" for a worktree provisioned before the field existed."""
+    exception. That file is session-writable, so the value is taken only
+    when it is exactly the branch the dispatcher gives the task that the
+    container `name` ends in (`agent/task-<issue>`). "" otherwise, also for
+    a worktree provisioned before the field existed: the guardrail then
+    fails closed on lease pushes."""
+    raw = read_regular(Path(worktree) / ".agent" / "task.json", TASK_JSON_MAX_BYTES)
     try:
-        d = json.loads((Path(worktree) / ".agent" / "task.json").read_text())
-    except (OSError, ValueError):
+        branch = json.loads(raw).get("branch") if raw is not None else None
+    except (ValueError, AttributeError, RecursionError):
         return ""
-    return str(d.get("branch") or "")
+    m = _TASK_BRANCH.fullmatch(branch) if isinstance(branch, str) else None
+    return branch if m and name.endswith(f"-{m.group(1)}") else ""
+
+
+def _host_path(what: str, path: str) -> str:
+    """A host path as one shell word. Refused when it is not absolute or
+    holds a character that the Codex launch arguments (a TOML string inside
+    a shell word) cannot carry."""
+    if not path.startswith("/") or any(c in path for c in "\"'\\\n\r\0"):
+        raise ValueError(f"unusable {what} path for a container command: {path!r}")
+    return path
+
+
+def _mount(source: str, dest: str, mode: str = "") -> str:
+    """One `-v` flag with its value as one shell word."""
+    return "-v " + shlex.quote(f"{source}:{dest}" + (f":{mode}" if mode else ""))
 
 
 def image() -> str:
@@ -74,42 +97,52 @@ def _wrapper() -> list[str]:
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 args: str, effort: str = "",
-                second: Entry | None = None) -> str:
+                second: Entry | None = None, clone: str = "") -> str:
     """The session's shell command, resolved from its qualified model ID.
     An unknown provider raises before anything runs.
     A granted `second` model (models.second_model) also gets its runtime's
-    home, env and host binary: the mount is the permission."""
+    home, env and host binary: the mount is the permission.
+
+    The string runs in a host shell, so every value in it is one quoted
+    shell word; only `args` is shell text, and its caller quotes it. `clone`
+    is the target's configured clone path: nothing here is read from the
+    worktree (its `.git` pointer is session-writable) except the task
+    branch, which task_branch validates. With no clone none is mounted; the
+    launcher refuses to launch without one."""
     runtime = runtime_for(model)
     extra = _runtime_args(runtime_for(second.model_id)) if second else []
-    clone = clone_root(worktree)
-    branch = task_branch(worktree)
+    worktree = _host_path("worktree", worktree)
+    state = _state_dir()
+    branch = task_branch(worktree, name)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
+    clone_mount = (_mount(_host_path("clone", clone), clone) + " ") if clone else ""
     home = str(Path.home())
     # podman errors on a missing bind source; waitd only creates the dir
     # when it (re)starts with the new socket path, which a spawn can race
     # right after deploy. Best-effort: if the dir really can't exist,
     # podman fails loudly on the mount anyway.
     try:
-        Path(_state_dir(), "wait").mkdir(parents=True, exist_ok=True)
+        Path(state, "wait").mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
     return (
-        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {name} "
-        f"--memory {memory} --cpus {cpus} "
+        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {shlex.quote(name)} "
+        f"--memory {shlex.quote(memory)} --cpus {shlex.quote(cpus)} "
         f"{shlex.join(_runtime_args(runtime) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's
         # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its
         # curl dies against a nonexistent path and the `|| true` swallows
         # it, so waiting parks only ever happened via the stall timer.
         # Mount only the wait dir: the state dir also holds op-token.env.
-        f"-e AGENT_OPS_STATE_DIR={_state_dir()} "
+        f"-e {shlex.quote('AGENT_OPS_STATE_DIR=' + state)} "
         f"{branch_env}"
-        f"-v {_state_dir()}/wait:{_state_dir()}/wait "
-        f"-v {worktree}:{worktree} -w {worktree} "
-        f"-v {clone}:{clone} "
-        f"-v {home}/.config/gh:/root/.config/gh:ro "
-        f"-v {home}/.gitconfig:/root/.gitconfig:ro "
-        f"{image()} {runtime.launch(name, worktree, bare_model_id(model), effort)}"
+        f"{_mount(f'{state}/wait', f'{state}/wait')} "
+        f"{_mount(worktree, worktree)} -w {shlex.quote(worktree)} "
+        f"{clone_mount}"
+        f"{_mount(f'{home}/.config/gh', '/root/.config/gh', 'ro')} "
+        f"{_mount(f'{home}/.gitconfig', '/root/.gitconfig', 'ro')} "
+        f"{shlex.quote(image())} "
+        f"{runtime.launch(name, worktree, bare_model_id(model), effort)}"
         f" {args}"
     )
 
@@ -154,8 +187,9 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     ]
 
 
-def setup_cmd(name: str, worktree: str, setup: str) -> list[str]:
-    clone = clone_root(worktree)
+def setup_cmd(name: str, worktree: str, setup: str, clone: str) -> list[str]:
+    """One-shot provisioning container: argv, never a shell line. `clone` is
+    the target's configured clone path."""
     return [
         "podman", "run", "--rm", "--name", name,
         "-v", f"{worktree}:{worktree}", "-w", worktree,

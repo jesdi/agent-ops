@@ -110,9 +110,11 @@ def make_cfg(tmp_path, monkeypatch, usages, pinned=PINNED, mode=None, pace=PACE,
 
 
 def enter(c, issue, track, stage, **kw):
-    """A task whose previous stage just signalled done: PLAN done enters
-    implement; IMPLEMENT done (one ticket) enters review."""
-    wt = make_task(c, issue=issue, stage=stage, track=track, **kw)
+    """A task whose previous stage just signalled done: PLAN done (the
+    operator's approval at the plan review gate) enters implement;
+    IMPLEMENT done enters review."""
+    gate = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN else stage
+    wt = make_task(c, issue=issue, stage=gate, track=track, **kw)
     write_tickets(wt, 1)
     if stage is Stage.PLAN:
         sig = {"stage": "plan", "status": "done", "note": "1 ticket",
@@ -140,7 +142,7 @@ def implement_on(tmp_path, monkeypatch, track, usages, **kw):
 
 def review_on(tmp_path, monkeypatch, track, usages, implement_pick, **kw):
     c = make_cfg(tmp_path, monkeypatch, usages, **kw)
-    enter(c, 42, track, Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+    enter(c, 42, track, Stage.IMPLEMENT, ticket_count=1,
           picks={"implement": implement_pick})
     return c, run_pass(c, 42)
 
@@ -234,8 +236,7 @@ def test_a_provider_first_mode_does_not_reorder_a_pinned_track(
 def test_mode_anthropic_does_not_reorder_the_plan_stage_of_a_pinned_track(
         tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="anthropic")
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_SPEC_REVIEW,
-                   track="architecture")
+    wt = make_task(c, issue=42, stage=Stage.SPEC, track="architecture")
     valid_spec(wt)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "done", "artifact": "spec.md",
@@ -257,7 +258,7 @@ def test_an_unpinned_track_is_ordered_by_the_mode_in_the_same_pass(
         tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead())
     for issue, track in ((42, "architecture"), (43, "standard")):
-        enter(c, issue, track, Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1)
+        enter(c, issue, track, Stage.IMPLEMENT, ticket_count=1)
     sess = run_pass(c, 42, 43)
     assert launched(sess, 42) == [(f"anthropic/{FABLE}", "high")]
     assert launched(sess, 43) == [(f"anthropic/{OPUS}", "medium")]

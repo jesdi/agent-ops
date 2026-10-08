@@ -5,11 +5,13 @@ import subprocess
 import pytest
 
 from dispatcher.spec_publish import (PublishResult, ensure_published,
-                                     relative_artifact, spec_url)
+                                     folder_url, relative_artifact, spec_url)
 
 BRANCH = "agent/task-7"
 REPO = "jesdi/portfolio_eval"
-SPEC_REL = "docs/superpowers/specs/2026-07-31-widget-design.md"
+FOLDER = "specs/2026-07-31-widget"
+SPEC_REL = f"{FOLDER}/spec.md"
+FOLDER_URL = f"https://github.com/{REPO}/tree/{BRANCH}/{FOLDER}"
 
 
 def _git(cwd, *args) -> str:
@@ -51,6 +53,10 @@ def test_spec_url_shape():
             == f"https://github.com/{REPO}/blob/{BRANCH}/{SPEC_REL}")
 
 
+def test_folder_url_shape():
+    assert folder_url(REPO, BRANCH, FOLDER) == FOLDER_URL
+
+
 def test_relative_artifact_passthrough_and_absolute(tmp_path):
     assert relative_artifact(str(tmp_path), SPEC_REL) == SPEC_REL
     assert relative_artifact(str(tmp_path),
@@ -63,13 +69,25 @@ def test_uncommitted_spec_gets_committed_and_pushed(wt, origin):
     (wt / SPEC_REL).write_text("# design\n")
     res = _publish(wt)
     assert res.error == ""
-    assert res.url == spec_url(REPO, BRANCH, SPEC_REL)
-    # committed with the draft message, only the artifact staged
-    assert _git(wt, "log", "-1", "--pretty=%s") == "docs: draft spec for #7"
+    assert res.url == FOLDER_URL
+    # committed with the backstop message, only the spec folder staged
+    assert _git(wt, "log", "-1", "--pretty=%s") == "docs: spec folder for #7"
     assert _git(wt, "status", "--porcelain", "--", SPEC_REL) == ""
     # pushed: origin tip == local tip
     assert (_git(origin, "rev-parse", f"refs/heads/{BRANCH}")
             == _git(wt, "rev-parse", "HEAD"))
+
+
+def test_the_whole_folder_is_published_when_any_file_is_uncommitted(wt, origin):
+    (wt / SPEC_REL).write_text("# spec\n")
+    (wt / FOLDER / "proposal.md").write_text("# proposal\n")
+    _git(wt, "add", "."); _git(wt, "commit", "-m", "stage 1")
+    (wt / SPEC_REL).write_text("# spec, corrected\n")
+    (wt / FOLDER / "design.md").write_text("# design\n")
+    assert _publish(wt).url == FOLDER_URL
+    shown = _git(origin, "ls-tree", "-r", "--name-only", BRANCH)
+    assert {f"{FOLDER}/{n}" for n in ("proposal.md", "spec.md", "design.md")} <= set(shown.split())
+    assert _git(origin, "show", f"{BRANCH}:{SPEC_REL}") == "# spec, corrected"
 
 
 def test_other_dirty_files_are_not_swept_into_the_commit(wt):
@@ -97,7 +115,7 @@ def test_already_pushed_is_a_noop(wt, origin):
     _git(wt, "push", "origin", f"HEAD:refs/heads/{BRANCH}")
     before = _git(wt, "rev-parse", "HEAD")
     res = _publish(wt)
-    assert res == PublishResult(url=spec_url(REPO, BRANCH, SPEC_REL))
+    assert res == PublishResult(url=FOLDER_URL)
     assert _git(wt, "rev-parse", "HEAD") == before
 
 
@@ -108,24 +126,27 @@ def test_push_failure_reports_local_only_error(wt, tmp_path):
     assert res.url == ""
     assert res.error.startswith("git push failed:")
     # the commit itself survives — review from the attached session still works
-    assert _git(wt, "log", "-1", "--pretty=%s") == "docs: draft spec for #7"
+    assert _git(wt, "log", "-1", "--pretty=%s") == "docs: spec folder for #7"
 
 
 def test_absolute_artifact_path_is_normalized(wt, origin):
     (wt / SPEC_REL).write_text("# design\n")
     res = _publish(wt, artifact=str(wt / SPEC_REL))
-    assert res.url == spec_url(REPO, BRANCH, SPEC_REL)
+    assert res.url == FOLDER_URL
 
 
 def test_unusable_artifact_is_an_error_not_a_crash(wt):
     assert _publish(wt, artifact="").error != ""
     assert _publish(wt, artifact="/outside/wt.md").error != ""
+    # a spec with no folder of its own would publish the whole worktree
+    assert _publish(wt, artifact="spec.md").error != ""
+    assert _publish(wt, artifact="../elsewhere/spec.md").error != ""
 
 
 def test_dry_run_runs_no_git(wt, origin):
     (wt / SPEC_REL).write_text("# design\n")
     res = _publish(wt, dry_run=True)
-    assert res.url == spec_url(REPO, BRANCH, SPEC_REL)
+    assert res.url == FOLDER_URL
     # nothing committed, nothing pushed
     assert _git(wt, "log", "-1", "--pretty=%s") == "init"
     proc = subprocess.run(["git", "-C", str(origin), "show-ref"],
@@ -150,7 +171,7 @@ def test_gitignored_artifact_returns_error_not_success(wt, origin):
     ensure_published must detect the file is untracked and return an error
     rather than claiming a URL for a path that does not exist on GitHub."""
     # Write a .gitignore that covers the spec directory.
-    (wt / ".gitignore").write_text("docs/superpowers/\n")
+    (wt / ".gitignore").write_text("specs/\n")
     _git(wt, "add", ".gitignore")
     _git(wt, "commit", "-m", "chore: ignore spec dir")
     # Write the file — git will ignore it.
@@ -193,3 +214,28 @@ def test_artifact_publication_reuses_remote_snapshot(wt, monkeypatch):
     assert publisher.reference(SPEC_REL, path.read_bytes()) is not None
     assert publisher.reference(SPEC_REL, b'unpublished') is None
     assert sum(args[0] == 'ls-remote' for args in calls) == 1
+
+
+@pytest.mark.parametrize("artifact", [
+    ".agent/plan-review.md",          # would push the summary and the tickets
+    ".agent/specs/x/spec.md",
+    ".Agent/tickets/spec.md",         # the same folder on a case-insensitive disk
+    "specs/spec.md",                  # would commit every spec under specs/
+])
+def test_spec_outside_a_folder_of_its_own_is_refused(wt, origin, artifact):
+    path = wt / artifact
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# spec\n")
+    (path.parent / "other.md").write_text("# other\n")
+    res = _publish(wt, artifact=artifact)
+    assert res.url == "" and "unusable" in res.error
+    assert _git(wt, "log", "-1", "--pretty=%s") == "init"   # nothing committed
+
+
+def test_missing_spec_md_is_an_error_although_the_folder_is_tracked(wt, origin):
+    (wt / SPEC_REL).write_text("# spec\n")
+    (wt / FOLDER / "design.md").write_text("# design\n")
+    _git(wt, "add", "."); _git(wt, "commit", "-m", "plan")
+    (wt / SPEC_REL).unlink()
+    res = _publish(wt)
+    assert res.url == "" and SPEC_REL in res.error

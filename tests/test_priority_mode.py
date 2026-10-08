@@ -180,7 +180,7 @@ def test_mode_openai_review_avoids_an_openai_implement_pick(
         tmp_path, monkeypatch):
     save_mode(tmp_path)
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
-                        stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+                        stage=Stage.IMPLEMENT, ticket_count=1,
                         picks={"implement": LUNA})
     assert launched(sess) == [OPUS_ID]
 
@@ -189,7 +189,7 @@ def test_mode_openai_review_after_a_sonnet_implement_pick_goes_to_openai(
         tmp_path, monkeypatch):
     save_mode(tmp_path)
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
-                        stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+                        stage=Stage.IMPLEMENT, ticket_count=1,
                         picks={"implement": SONNET})
     assert launched(sess) == [SOL_ID]
 
@@ -211,7 +211,7 @@ def test_mode_openai_orders_a_targets_own_policy(tmp_path, monkeypatch):
             return NOW
     monkeypatch.setattr(main, "datetime", Frozen)
     from tests.test_main import FakeSessions, deps, write_tickets
-    wt = make_task(c, issue=42, stage=Stage.PLAN, picks={})
+    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, picks={})
     write_tickets(wt, 1)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "plan", "status": "done", "note": "1 ticket",
@@ -235,11 +235,10 @@ def test_after_the_mode_changed_the_next_ticket_and_review_follow_the_mode(
     assert launched(sess) == [SONNET_ID]
     assert t.picks["implement"] == SONNET_ID
     save_mode(tmp_path)
-    sess, _ = go_hungry(tmp_path, monkeypatch, stage=Stage.IMPLEMENT,
-                        ticket_cursor=1, ticket_count=2, picks=t.picks)
-    assert launched(sess) == [LUNA_ID]            # the next ticket chooses again
+    sess, _ = go_hungry(tmp_path, monkeypatch, picks=t.picks)
+    assert launched(sess) == [SONNET_ID]          # the pick sticks
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
-                        stage=Stage.IMPLEMENT, ticket_cursor=2, ticket_count=2,
+                        stage=Stage.IMPLEMENT, ticket_count=1,
                         picks=t.picks)
     assert launched(sess) == [SOL_ID]             # fresh stage follows the mode
 

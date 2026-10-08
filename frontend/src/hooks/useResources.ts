@@ -76,7 +76,7 @@ export function useIssueDescription(target: string, issue: number, enabled: bool
   })
 }
 
-/** The unified operator request (spec-approval or answers). retry:false —
+/** The unified operator request (plan-approval or answers). retry:false —
  *  null = no request, not a transient failure. Participates in the same
  *  fallback polling as task-detail so an out-of-band clear is eventually
  *  reflected. */

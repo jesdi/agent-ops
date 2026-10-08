@@ -15,7 +15,7 @@ export const parkedCard: TaskCard = {
 
 export const reviewCard: TaskCard = {
   issue: 44, target: 'widget', title: 'Add search feature',
-  stage: 'awaiting-spec-review', park: 'awaiting-review', column: 'needs-review',
+  stage: 'awaiting-plan-review', park: 'awaiting-review', column: 'needs-review',
   slot: -1,
   branch: 'feat/search', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: 'spec ready for review', feedback_pending: false,
@@ -179,7 +179,7 @@ export const usageRouted: UsageView = {
 // Pinned tracks (ticket 03).
 export const pinnedCard: TaskCard = {
   ...inProgressCard, issue: 51, title: 'Rework the settings screen',
-  model: 'claude-fable-5-1', track: 'architecture', pinned_track: 'frontend',
+  model: 'claude-fable-5-1', track: 'frontend', pinned_track: 'frontend',
 }
 
 export const unpinnedCard: TaskCard = {

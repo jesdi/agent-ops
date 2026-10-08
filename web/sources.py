@@ -274,6 +274,9 @@ class Sources:
         except (OSError, ValueError):
             return {}
 
+    def stage_signal(self, worktree: str) -> state.StageSignal | None:
+        return state.read_stage_signal(worktree)
+
     def pane_tail(self, target: str, issue: int) -> str:
         try:
             if self._sessions.is_alive(target, issue):
