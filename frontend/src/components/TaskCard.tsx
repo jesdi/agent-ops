@@ -67,7 +67,8 @@ function TaskCardDetail({ card }: { card: TaskCard }) {
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-ink-muted">
       <span>{stageLabel(card.stage)}</span>
       <span>{card.model}</span>
-      {card.track && <span>track {card.track}</span>}
+      {card.pinned_track && <span title="The priority mode does not apply to this track.">pinned to {card.pinned_track}</span>}
+      {card.track && card.track !== card.pinned_track && <span>track {card.track}</span>}
       {card.score != null && <span className={chip.neutral}>score {card.score}</span>}
       {card.slot >= 0 && (
         <span data-testid="slot-chip" className={`${CHIP_SHAPE} ${slotChip(card.slot)}`}>

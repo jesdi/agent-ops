@@ -3,8 +3,9 @@ import pytest
 from dispatcher.models import (DEFAULT_MODEL, DEFAULT_POLICY, EFFORTS, STAGES,
                                Entry, ModelPolicy, bare_model_id, parse_entry,
                                override_allowed, override_refusal, parse_policy,
-                               pick_provider, policy_stage, split_model_id,
-                               track_from_labels, tracks_text)
+                               pick_provider, policy_stage, review_avoid, split_model_id,
+                               ticket_track_names, track_from_labels,
+                               tracks_text)
 
 RAW = {
     "triage": ["anthropic/claude-sonnet-5@medium"],
@@ -152,6 +153,21 @@ def test_parse_rejects_untracked_naming_no_track():
         parse_policy({**RAW, "untracked": "nope"})
 
 
+def test_pinned_defaults_to_empty():
+    assert policy().pinned == ()
+
+
+@pytest.mark.parametrize("bad, message", [
+    ("frontend", "must be a list of track names"),
+    ([1], "must be a list of track names"),
+    ([["a"]], "must be a list of track names"),
+    (["nope"], "'nope' is not a defined track"),
+    (["security", "security"], "'security' is named twice")])
+def test_parse_rejects_bad_pinned(bad, message):
+    with pytest.raises(ValueError, match=f"pinned: {message}"):
+        parse_policy({**RAW, "pinned": bad})
+
+
 def test_parse_rejects_missing_triage_list():
     raw = dict(RAW)
     del raw["triage"]
@@ -185,11 +201,15 @@ def test_policy_stage_maps_runtime_stages():
 
 
 PICKS = {"implement": "anthropic/claude-opus-5@high"}
+# PR feedback has its own pick; the implement pick is on the other provider.
+FEEDBACK = {"implement": "openai/gpt-5-codex@high",
+            "feedback": "anthropic/claude-opus-5@high"}
 
 
 def test_pick_provider_is_the_provider_of_the_stages_pick_or_empty():
     assert pick_provider(PICKS, "implement") == "anthropic"
-    assert pick_provider(PICKS, "address-review") == "anthropic"
+    assert pick_provider(PICKS, "address-review") == ""
+    assert pick_provider(FEEDBACK, "address-review") == "anthropic"
     assert pick_provider(PICKS, "review") == ""
 
 
@@ -197,12 +217,13 @@ def test_override_must_match_the_picks_provider_once_the_stage_has_a_pick():
     assert override_allowed(PICKS, "implement", "anthropic/claude-sonnet-5")
     assert override_allowed(PICKS, "implement", "claude-sonnet-5")
     assert not override_allowed(PICKS, "implement", "openai/gpt-5-codex")
-    assert not override_allowed(PICKS, "address-review", "openai/gpt-5-codex")
+    assert override_allowed(PICKS, "address-review", "openai/gpt-5-codex")
+    assert not override_allowed(FEEDBACK, "address-review", "openai/gpt-5-codex")
 
 
 def test_override_refusal_names_the_policy_stage_and_its_provider():
-    assert override_refusal(PICKS, "address-review", "openai/gpt-5-codex") == (
-        "stage implement runs on anthropic; pick a model from anthropic")
+    assert override_refusal(FEEDBACK, "address-review", "openai/gpt-5-codex") == (
+        "PR feedback runs on anthropic; pick a model from anthropic")
     assert override_refusal(PICKS, "implement", "anthropic/claude-sonnet-5") == ""
     assert override_refusal(PICKS, "review", "openai/gpt-5-codex") == ""
 
@@ -216,6 +237,19 @@ def test_tracks_text_lists_name_and_when_per_line():
     text = tracks_text(policy())
     assert text.splitlines()[0] == "- `trivial`: Rote rename, typo, formatting, dependency bump."
     assert len(text.splitlines()) == 4
+
+
+def _rules(text):
+    return text.split("\n- ", 1)[0] if text.startswith("Pick") else ""
+
+
+def test_tracks_text_rules_name_the_untracked_track_only_when_a_track_is_pinned():
+    e = ["claude-sonnet-5@medium"]
+    track = {"when": "w", "spec": e, "plan": e, "implement": e, "review": e}
+    raw = {"triage": e, "untracked": "base",
+           "tracks": {"base": track, "sec": track}}
+    assert "pick base." in _rules(tracks_text(parse_policy({**raw, "pinned": ["sec"]})))
+    assert _rules(tracks_text(parse_policy(raw))) == ""
 
 
 def test_track_from_labels_takes_the_first_configured_track_label():
@@ -354,3 +388,33 @@ def test_parse_rejects_tracks_not_a_mapping_or_empty():
         parse_policy({**RAW, "tracks": []})
     with pytest.raises(ValueError, match="tracks: must be a non-empty mapping"):
         parse_policy({**RAW, "tracks": {}})
+
+
+def test_review_avoid_names_the_single_implement_provider_for_review_only():
+    assert review_avoid(["openai"], "review") == "openai"
+    assert review_avoid(["openai", "anthropic"], "review") == ""
+    assert review_avoid([], "review") == ""
+    assert review_avoid(["openai"], "implement") == ""
+
+
+def _pinned_policy(pinned):
+    raw = {"triage": ["claude-sonnet-5"], "untracked": "standard",
+           "pinned": pinned,
+           "tracks": {n: {"when": f"{n} work.", **{s: ["claude-sonnet-5"] for s in STAGES}}
+                      for n in ("standard", "frontend", "architecture", "security")}}
+    return parse_policy(raw)
+
+
+def test_a_ticket_may_name_the_pinned_tracks_other_than_security():
+    p = _pinned_policy(["security", "architecture", "frontend"])
+    assert ticket_track_names(p, "standard") == ("architecture", "frontend")
+    assert ticket_track_names(p, "frontend") == ("architecture", "frontend")
+
+
+def test_a_ticket_of_a_security_task_may_name_no_track():
+    p = _pinned_policy(["security", "architecture", "frontend"])
+    assert ticket_track_names(p, "security") == ()
+
+
+def test_with_no_pinned_track_a_ticket_may_name_none():
+    assert ticket_track_names(_pinned_policy([]), "standard") == ()

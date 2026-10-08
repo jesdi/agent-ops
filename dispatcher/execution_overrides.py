@@ -15,6 +15,19 @@ class ExecutionOverride:
     bypass_usage: bool = False
 
 
+def pending(stored: ExecutionOverride | None, resume_model: str,
+            resume_bypass: bool) -> ExecutionOverride | None:
+    """The one-shot override of a task's next launch, None when there is
+    none: what a queued resume named, else the stored one. The one rule the
+    dispatcher's wake and the console share; a resume's usage bypass holds
+    for the launch whichever of the two names the model."""
+    if resume_model:
+        return ExecutionOverride(resume_model, resume_bypass)
+    if stored is None:
+        return ExecutionOverride("", True) if resume_bypass else None
+    return ExecutionOverride(stored.model, stored.bypass_usage or resume_bypass)
+
+
 def _path(state_dir: str | Path, target: str, issue: int) -> Path:
     return Path(state_dir) / DIR / f"{target}-{issue}.json"
 

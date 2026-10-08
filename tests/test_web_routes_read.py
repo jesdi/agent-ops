@@ -194,18 +194,20 @@ def test_card_model_is_the_first_admitted_entry_when_no_pick_yet(tmp_path):
 
 
 def test_task_admission_is_none_when_track_is_unconfigured(tmp_path):
-    """A task carrying a track the policy doesn't know (e.g. the legacy
-    track="" default, or a renamed/removed track) has no candidates to
-    launch on — _model_for is "". That must never be fed to the usage gate
-    as a bare model id (it defaults to anthropic and fabricates a false
-    "blocked on capacity" verdict); it must show no admission at all."""
+    """A task carrying a track the policy doesn't know (a renamed or
+    removed track) has no candidates to launch on — _model_for is "". That
+    must never be fed to the usage gate as a bare model id (it defaults to
+    anthropic and fabricates a false "blocked on capacity" verdict); it must
+    show no admission at all. A task with no track at all is untracked work,
+    as it is for the dispatcher: see
+    test_a_task_with_no_track_shows_the_untracked_tracks_model_and_pin."""
     from tests.webfakes import tracks_policy
     from tests.usagefakes import session_usage
     fake = FakeSources()
     cfg = replace(make_config(tmp_path), models=tracks_policy())
     client = TestClient(create_app(cfg, fake))
     fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_SPEC_REVIEW,
-                                 park=PARK_WAKE, track="")]
+                                 park=PARK_WAKE, track="removed")]
     fake.usages = {"anthropic": session_usage(0.99)}
     body = client.get("/api/task/alpha/7", headers=HEADERS).json()
     assert body["card"]["model"] == ""

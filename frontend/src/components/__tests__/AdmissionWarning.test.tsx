@@ -21,6 +21,7 @@ function admission(overrides: Partial<Admission> = {}): Admission {
       { model: 'openai/gpt-5-codex', provider: 'openai',
         admitted: true, note: 'capacity available' },
     ],
+    pinned_track: '',
     ...overrides,
   }
 }
