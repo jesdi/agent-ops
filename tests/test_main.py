@@ -2616,6 +2616,53 @@ def test_stalled_working_session_parks(tmp_path, monkeypatch):
     assert "parked_question" in d.notifier.sent
 
 
+@pytest.mark.parametrize("stage", [Stage.SPEC, Stage.IMPLEMENT, Stage.REVIEW])
+def test_codex_session_stalls_after_30_minutes(tmp_path, monkeypatch, stage):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=stage,
+                   picks={stage.value: "openai/gpt-sol@high"})
+    (wt / ".agent" / "stage.json").write_text(
+        json.dumps({"stage": stage.value, "status": "working"}))
+    sess = FakeSessions(alive=[42], idle={42: 601.0})
+    d = deps(sess=sess)
+    for idle in (601.0, 1800.0):
+        sess.idle[42] = idle
+        main.run_pass(c, d)
+        assert load(c.state_dir, "portfolio_eval", 42).park == ""
+    sess.idle[42] = 1801.0
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN
+    assert "no session output for 30m" in t.park_note
+
+
+def test_codex_stall_uses_last_launch_when_ticket_pick_is_cleared(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.IMPLEMENT)
+    (wt / ".agent" / "models.log").write_text(
+        "2026-10-08T00:00:00Z implement openai/gpt-sol@high\n")
+    (wt / ".agent" / "stage.json").write_text(
+        json.dumps({"stage": "implement", "status": "working"}))
+    sess = FakeSessions(alive=[42], idle={42: 601.0})
+    main.run_pass(c, deps(sess=sess))
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
+
+
+def test_codex_session_without_stage_signal_waits_30_minutes(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC, picks={"spec": "openai/gpt-sol@high"})
+    sess = FakeSessions(alive=[42], idle={42: 601.0})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
+    sess.idle[42] = 1801.0
+    main.run_pass(c, d)
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
+
+
 def test_no_signal_stalled_session_parks(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -2625,10 +2672,13 @@ def test_no_signal_stalled_session_parks(tmp_path, monkeypatch):
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
 
 
-def test_stall_disabled_never_queries_idle(tmp_path, monkeypatch):
+@pytest.mark.parametrize("picks", [
+    {}, {"implement": "openai/gpt-sol@high"},
+])
+def test_stall_disabled_never_queries_idle(tmp_path, monkeypatch, picks):
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), stall_after_seconds=0)
-    wt = make_task(c, stage=Stage.IMPLEMENT)
+    wt = make_task(c, stage=Stage.IMPLEMENT, picks=picks)
     (wt / ".agent" / "stage.json").write_text(
         json.dumps({"stage": "implement", "status": "working"}))
     sess = FakeSessions(alive=[42], idle={42: 999999.0})

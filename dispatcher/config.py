@@ -46,6 +46,7 @@ class Config:
     models: ModelPolicy = DEFAULT_POLICY
     console_url: str = ""  # web console base URL for Telegram deep links; "" = no link line
     stall_after_seconds: int = 600  # 0 disables stall detection entirely
+    codex_stall_after_seconds: int = 1800  # temporary allowance for quiet Codex turns
     # Cap on a background wait: a session stopped on background work is
     # parked for the operator once the work has run this long.
     background_wait_seconds: int = 10800
@@ -185,6 +186,7 @@ def load_config(path: str | Path) -> Config:
         models=parse_policy(raw.get("models")),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
+        codex_stall_after_seconds=int(raw.get("codex_stall_after_seconds", 1800)),
         background_wait_seconds=_background_wait_seconds(raw),
         spec_review_grace_minutes=_grace_minutes(raw),
         done_retention_days=int(raw.get("done_retention_days", 7)),
