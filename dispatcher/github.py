@@ -3,13 +3,13 @@ and the board is the double-dispatch guard."""
 from __future__ import annotations
 
 import json
-import os
 import re
 import logging
 import shlex
 import subprocess
 from dataclasses import dataclass
 
+from dispatcher import board
 from dispatcher.config import Target
 from dispatcher.pr_poll import CIStatus
 
@@ -24,13 +24,7 @@ def _run(args: list[str], cwd: str | None = None,
     ).stdout
 
 
-def _project_env() -> dict[str, str] | None:
-    """User-owned Projects v2 are invisible to fine-grained PATs, so `gh
-    project` runs with GH_TOKEN set to the classic project-scope token
-    (GH_PROJECT_TOKEN); every other gh call keeps the stored fine-grained
-    auth."""
-    token = os.environ.get("GH_PROJECT_TOKEN")
-    return {**os.environ, "GH_TOKEN": token} if token else None
+_project_env = board.project_env
 
 
 @dataclass(frozen=True)
@@ -175,22 +169,21 @@ class GitHubClient:
         return self._project_node_ids[key]
 
     def _item_id(self, target: Target, issue: int) -> str:
-        out = _run(["gh", "project", "item-list", str(target.project_number),
-                    "--owner", target.project_owner, "--format", "json",
-                    "--limit", "200"], env=_project_env())
-        items = json.loads(out)["items"]
+        items = board.fetch_items(
+            self._project_node_id(target),
+            lambda args: _run(["gh"] + args, env=_project_env()))
         for item in items:
-            if (item.get("content") or {}).get("number") == issue:
-                return item["id"]
+            if item.number == issue:
+                return item.id
         # The project-scope token cannot expand linked issues of a private
-        # repo (no "content" in item-list). GitHub syncs linked-item titles
+        # repo (the item has no number). GitHub syncs linked-item titles
         # to issue titles, so the title — fetched with the stored repo auth —
         # is the join key.
         title = json.loads(_run(["gh", "issue", "view", str(issue),
                                  "--repo", target.repo,
                                  "--json", "title"]))["title"]
-        matches = [item["id"] for item in items
-                   if not item.get("content") and item.get("title") == title]
+        matches = [item.id for item in items
+                   if item.number is None and item.title == title]
         if len(matches) == 1:
             return matches[0]
         raise LookupError(f"issue #{issue} not on project {target.project_number}"

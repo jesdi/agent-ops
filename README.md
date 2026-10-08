@@ -124,15 +124,35 @@ flowchart LR
   infrastructure repository owns systemd units, provisioning, session images,
   credentials integration, and the selected application revision.
 
-### Daily backlog triage
+### Nightly backlog triage
 
-An `agent-ops-triage.timer` fires at 07:30 Europe/Madrid and enqueues a triage
-request; the dispatcher runs it in a real capacity slot (skipping the day if no
-slot frees within 2 h). Per repo, a **read-only** Claude session reads the
-issues touched since that repo's cursor and records decisions to a file;
-deterministic Python (`dispatcher/triage_apply.py`) is the only GitHub write
-path, applying labels and author questions. Closes are never executed — only
-suggested in the single Telegram report that closes the sweep.
+An `agent-ops-triage.timer` fires at 04:00 Europe/Madrid and enqueues a triage
+request; the dispatcher runs it in a real capacity slot (skipping the night if
+no slot frees within 2 h). Per repo, a **read-only** session reads two sets of
+issues and records decisions to a file: the issues touched since that repo's
+cursor, and the open issues nobody has scored yet (however old). Deterministic
+Python is the only GitHub write path:
+
+- `dispatcher/triage_apply.py` applies labels and author questions. Closes are
+  never executed — only suggested in the single Telegram report that closes
+  the sweep.
+- `dispatcher/board.py` prioritizes. For an unscored issue it writes Impact,
+  Effort, Score (impact ÷ effort) and Area, and sets `Status: Ready` — so an
+  issue the sweep also labels `auto` becomes claimable the same night, with no
+  person in between. A score a person set is shown to the session but never
+  overwritten. It also repairs stale cards (a closed issue still showing an
+  open status becomes Done or Wont do), without a session.
+
+Scoring needs the target clone to carry `.backlog/project-meta.json` (written
+by the backlog skill's `setup`, committed in the target repo) and the sweep to
+have `GH_PROJECT_TOKEN`. A repo without that file gets labels only, and so
+does any repo on a night the board cannot be read. An open issue that is not
+on the board cannot be scored; the report names it (enable the board's
+"Auto-add to project" workflow).
+
+Board reads use a narrow GraphQL query (about 1 rate-limit point per 100
+items). Never reintroduce `gh project item-list` on a hot path: it costs on
+the order of 100 of the 5000 points GitHub allows per user per hour.
 
 **Prerequisite — once per triaged repo, before its first sweep.** Triage
 records `auto` (routine enough to automate) or `human-required` (needs heavy

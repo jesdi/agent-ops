@@ -1,4 +1,4 @@
-"""Daily backlog triage: request/cursor state, repo enumeration, and the
+"""Nightly backlog triage: request/cursor state, repo enumeration, and the
 sweep runner. The systemd timer enqueues a request; each dispatcher pass
 launches the sweep in a herdr tab labelled `triage` (in the `agent-ops`
 workspace) via `Tab.ensure`; the tab's liveness is the capacity signal."""
@@ -12,7 +12,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher import claims, containers, herdr, priority, triage_apply, triage_prefetch
+from dispatcher import (board, claims, containers, herdr, priority,
+                        triage_apply, triage_prefetch)
 from dispatcher.config import Config, policy_for, routed_providers
 from dispatcher.models import Entry, triage_entry, tracks_text
 from dispatcher.prompts import render_triage_prompt
@@ -219,12 +220,35 @@ def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
 
 
 def _summary(repo: str, result: triage_apply.ApplyResult) -> list[str]:
-    lines = [f"{repo}: {result.labeled} labeled, {result.comments} "
+    lines = [f"{repo}: {result.labeled} labeled, {result.scored} scored, "
+             f"{result.comments} "
              f"comment(s), {len(result.closes)} close(s) suggested, "
              f"{len(result.rejected)} rejected"]
     lines += [f"  {c}" for c in result.closes]
     lines += [f"  rejected: {r}" for r in result.rejected]
     return lines
+
+
+def _board(cfg: Config, repo: str, lines: list[str], run):
+    """The repo's board, with stale cards repaired and what the sweep cannot
+    reach reported. None for a repo without a board, and when the board cannot
+    be read: labels are still worth triaging without it."""
+    target = next((t for t in cfg.targets if t.repo == repo), None)
+    if target is None:
+        return None
+    try:
+        brd = board.read(repo, target.clone_path, run=run)
+    except Exception as e:  # noqa: BLE001 — degrade to label-only triage
+        lines.append(f"{repo}: board unavailable, labels only — {e}")
+        return None
+    if brd is None:
+        return None
+    lines.extend(f"{repo}: {line}" for line in brd.repair())
+    missing = brd.off_board()
+    if missing:
+        lines.append(f"{repo}: not on the board, cannot be scored: "
+                     + ", ".join(f"#{n}" for n in missing))
+    return brd
 
 
 def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
@@ -251,14 +275,18 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
             lines.append(f"{repo}: cursor seeded, nothing triaged")
             continue
         try:
+            brd = _board(cfg, repo, lines, run)
             blob = triage_prefetch.prefetch(repo, cursor, run=run)
+            if brd is not None:
+                triage_prefetch.add_board(blob, brd, run=run)
             if not blob["issues"]:
                 cursors[repo] = started
                 lines.append(f"{repo}: nothing new")
                 continue
             decisions = _run_session(cfg, repo, blob, started_date, entry, run=run)
             inventory = frozenset(l["name"] for l in blob["labels"])
-            result = triage_apply.apply(repo, decisions, inventory, run=run)
+            result = triage_apply.apply(repo, decisions, inventory, run=run,
+                                        board=brd)
             lines.extend(_summary(repo, result))
             # apply() no longer raises on a failed write, so a repo whose every
             # write GitHub refused (expired token, rate limit) would otherwise
@@ -286,7 +314,7 @@ def guarded_sweep(cfg: Config, deps) -> None:
 
 
 LAUNCH_ENV_VARS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-                   "AGENT_OPS_STATE_DIR")
+                   "AGENT_OPS_STATE_DIR", "GH_PROJECT_TOKEN")
 
 
 def _repo_dir() -> str:
@@ -300,7 +328,8 @@ def _launch_env() -> dict[str, str]:
 
     Sessions.launch only ever starts podman, whose credentials arrive
     through mounted volumes; the sweep runner is a dispatcher *Python*
-    process and needs the Telegram credentials the pass got from `op run`.
+    process and needs the Telegram credentials the pass got from `op run`,
+    and the project-scope token its board reads and writes run with.
     A pane's shell inherits the herdr *server's* environment, and that
     server is the agent-ops-herdr user unit — no `op run`, no Telegram
     credentials — so without forwarding the only symptom is a silent sweep.
