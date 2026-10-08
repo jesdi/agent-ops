@@ -30,18 +30,15 @@ ISSUE = 412
 BRANCH = "agent/412-csv-export"
 FOLDER = "specs/2026-10-12-csv-export"
 SPEC = f"{FOLDER}/spec.md"
-SUMMARY = ".agent/plan-review.md"
+SUMMARY = ".agent/review.html"
 FOLDER_URL = f"https://github.com/jesdi/portfolio_eval/tree/{BRANCH}/{FOLDER}"
 GATE = "awaiting-plan-review"
 
 SUMMARY_TEXT = (
-    "# Plan review: Export a portfolio as CSV\n\n## Tickets\n\n"
-    "| Number | Title | Blocked by | Seam |\n|---|---|---|---|\n"
-    "| 01 | Export endpoint | None | GET /api/export |\n"
-    "| 02 | Owner check | 01 | GET /api/export |\n"
-    "| 03 | Column order | 01 | CsvWriter |\n"
-    "| 04 | Console button | 02, 03 | ExportButton |\n\n"
-    "## Open questions\n\nNone.\n\n## Corrections\n\nNone.\n")
+    '<!doctype html><meta name="agent-ops-review" content="1">'
+    "<title>Plan review: Export a portfolio as CSV</title>"
+    "<ol class=\"tickets\"><li>01 Export endpoint</li><li>02 Owner check</li>"
+    "<li>03 Column order</li><li>04 Console button</li></ol>")
 
 
 def _policy():
@@ -76,6 +73,8 @@ def _signal(wt, **kw):
 
 
 def _ready(wt, **kw):
+    if not (wt / SUMMARY).exists():
+        (wt / SUMMARY).write_text(SUMMARY_TEXT)
     _signal(wt, **{"stage": "plan", "status": "awaiting-review",
                    "note": "plan ready", "artifact": SUMMARY,
                    "open_questions": 0, **kw})
@@ -100,14 +99,13 @@ def _folder_files(wt, design=True):
 
 def _plan_task(c, tmp_path, stage=Stage.PLAN, *, tickets=4, git=True,
                origin_ok=True, **kw):
-    """Issue 412 with its folder, tickets and summary in the worktree; a real
+    """Issue 412 with its folder and tickets in the worktree; a real
     git repo on the task branch with a bare origin when `git` is true."""
     wt = make_task(c, issue=ISSUE, stage=stage, spec_path=SPEC, **kw)
     save(c.state_dir, dc_replace(load(c.state_dir, "portfolio_eval", ISSUE),
                                  branch=BRANCH, title="Export a portfolio as CSV"))
     _folder_files(wt)
-    write_tickets(wt, tickets)
-    (wt / SUMMARY).write_text(SUMMARY_TEXT)
+    write_tickets(wt, tickets, page=False)
     if git:
         origin = tmp_path / "origin.git"
         subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)],
@@ -211,7 +209,7 @@ def test_gate_commits_and_pushes_the_whole_folder_but_not_the_tickets(tmp_path, 
     for name in ("proposal.md", "spec.md", "design.md"):
         assert _blob(tmp_path, f"{FOLDER}/{name}") is not None, name
     assert "CORRECTION-MARKER" in _blob(tmp_path, SPEC)
-    assert _blob(tmp_path, ".agent/plan-review.md") is None
+    assert _blob(tmp_path, ".agent/review.html") is None
     assert _blob(tmp_path, ".agent/tickets/01-t1.md") is None
 
 
@@ -426,7 +424,7 @@ def _section_from(p, pattern):
 
 
 def _summary_bullets(p):
-    """The bullets of the part that says what .agent/plan-review.md contains."""
+    """The bullets of the part that says what .agent/review.html contains."""
     part = _section_from(p, r"write\s+`?\.agent/plan-review\.md")
     return [b.replace("\n", " ") for b in part.split("\n- ")[1:]]
 
@@ -448,18 +446,17 @@ def test_prompt_has_the_session_check_and_correct_stage_1(tmp_path, monkeypatch)
     for invented in ("invented", "price", "policy", "deadline", "permission"):
         assert invented in checks, invented
     assert "correct" in checks and "spec.md" in checks
-    assert "every correction" in checks and "summary" in checks
-    _bullet(p, "correction", "spec.md")      # the summary lists them
+    assert "every correction" in checks and "review page" in checks
 
 
-def test_prompt_has_stage_2_and_the_summary_contents(tmp_path, monkeypatch):
+def test_prompt_has_stage_2_and_the_review_page_contents(tmp_path, monkeypatch):
     p = _plan_prompt(tmp_path, monkeypatch)
     stage2 = [para for para in p.split("\n\n")
               if "to-openspec" in para and "stage 2" in para]
     assert stage2, "no paragraph runs to-openspec stage 2"
-    _bullet(p, "ticket", "number", "title", "blocked by", "seam")
-    _bullet(p, "open questions", "recommendation", "none.")
-    _bullet(p, "correction", "none.")
+    page = " ".join(_section_from(p, r"## 5\.").split())
+    for part in ("tickets", "open questions", "recommended option", "corrections"):
+        assert part in page, part
     assert "awaiting-review" in p
 
 

@@ -1,6 +1,6 @@
 import pytest
 
-from dispatcher.prompts import render_stage_prompt, render_triage_prompt
+from dispatcher.prompts import PROMPTS_DIR, render_stage_prompt, render_triage_prompt
 from dispatcher.state import Stage
 
 CTX = dict(
@@ -29,7 +29,7 @@ def test_renders_without_leftover_placeholders(stage):
 
 def test_spec_prompt_speaks_answers_and_done_signals():
     out = render_stage_prompt(Stage.SPEC, CTX)
-    for token in ("awaiting-answers", ".agent/questionnaire.md", ".agent/prototype.html",
+    for token in ("awaiting-answers", ".agent/questionnaire.html", ".agent/prototype.html",
                   '"status": "done"', "docs: spec for #42 (agent-ops)", "auto, frontend"):
         assert token in out
     assert "awaiting-review" not in out     # the spec stage has no review gate
@@ -114,10 +114,11 @@ def test_triage_prompt_lists_the_tracks_and_the_label_rule():
     assert "track:<name>" in out and "exactly one" in out
 
 
-def test_plan_prompt_summary_is_headings_and_lists_without_tables():
-    """The console shows the summary on a phone and renders no tables."""
+def test_plan_prompt_review_page_fills_the_content_slots_only():
+    """The page comes from the template: the session never edits its script."""
     out = " ".join(render_stage_prompt(Stage.PLAN, CTX).split())
-    assert "headings and lists" in out and "no tables" in out
+    assert "content slots only" in out and "never touch the script" in out
+    assert "no tables" not in out
 
 
 def test_plan_prompt_signals_working_before_it_applies_feedback():
@@ -208,7 +209,7 @@ def test_spec_prompt_applies_an_operator_change_request_to_the_old_design():
 
 
 def test_spec_prompt_reads_answers_from_messages_and_the_old_review_copy():
-    item = _spec_item("answered", "questionnaire.md", "settled")
+    item = _spec_item("answered", "questionnaire.html", "settled")
     assert "operator message" in item and "the review file" in item
     assert "raise no new questionnaire" in item
     review = _spec_item("docs/review/")                  # a paragraph of its own
@@ -223,3 +224,16 @@ def test_spec_prompt_reads_answers_from_messages_and_the_old_review_copy():
 def test_spec_prompt_says_an_empty_list_of_old_design_files_is_no_work():
     item = _spec_item("-design.md", "spec-ready", "remove")
     assert "When the list is empty there is nothing to do." in item
+
+
+def test_implement_and_review_share_the_answers_paragraph():
+    note = (PROMPTS_DIR / "answers.md").read_text().rstrip("\n")
+    for stage in (Stage.IMPLEMENT, Stage.REVIEW):
+        assert note in render_stage_prompt(stage, CTX)
+
+
+def test_spec_prompt_has_a_text_answer_write_the_questionnaire_file():
+    out = render_stage_prompt(Stage.SPEC, CTX)
+    paras = [p for p in out.split("\n\n")
+             if '"actor": "text"' in p and "questionnaire-answers.json" in p]
+    assert paras and '"submitted": "changes"' in paras[0]

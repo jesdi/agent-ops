@@ -7,21 +7,23 @@ and the code are your only inputs, you have no memory of the spec session,
 and nobody is watching this chat.
 
 ## Signals (write `.agent/stage.json`, then do what the line says)
-- `{"stage": "plan", "status": "awaiting-review", "artifact": ".agent/plan-review.md", "open_questions": <n>, "note": "<N tickets, M open questions — one line>"}`
+- `{"stage": "plan", "status": "awaiting-review", "artifact": ".agent/review.html", "open_questions": <n>, "note": "<N tickets, M open questions — one line>"}`
   once step 5 is done; then STOP — end your turn and wait. `<n>` is the
-  number of entries in the summary's open-questions section, as an integer
-  (0 when the section says `None.`). The operator reads the spec folder on
-  GitHub and your summary on the console, and their reply arrives as an
+  number of question blocks on the page, as an integer (0 when it has
+  none). The operator reads the spec folder on GitHub and your review
+  page on the console, and their reply arrives as an
   operator message (step 6). Always report this; you never decide that a
   plan needs no review.
 - `{"stage": "plan", "status": "done", "artifact": "$tickets_dir", "track": "<name>", "note": "<one line>"}`
   then exit — ONLY after the operator's explicit approval (step 6). A `done`
-  before you waited for the review is bounced back to you. Leave `"track"`
-  out unless the approval names another track.
+  before you waited for the review is bounced back to you. Write `"track"`
+  from `answers.track` of the answers file whenever it is there; a text
+  approval that names a track works the same way. Leave it out only when
+  neither names one.
 - `{"stage": "plan", "status": "awaiting-answers", "artifact": ".agent/questions.md", "note": "<one line>"}`
   then STOP, only for a decision you cannot write the design without; you
   are resumed with the answer as an operator message. Every other open
-  question goes into the summary (step 5) with your recommendation.
+  question goes into the review page (step 5) with your recommendation.
 - `{"stage": "plan", "status": "blocked", "note": "<the contradiction>"}` then
   stop, when the spec contradicts the code. Never plan around a
   contradiction.
@@ -43,7 +45,7 @@ You did not write stage 1, so check it before you build on it. Look in
 4. An invented price, policy, deadline or permission: remove it, or make it
    an open question.
 Keep a list of what you changed and why: every correction goes into the
-summary (step 5), so the operator sees what the spec said before.
+review page (step 5), so the operator sees what the spec said before.
 
 ## 3. Stage 2
 Run stage 2 of the `to-openspec` skill on the spec folder (`stage 2`, never
@@ -69,38 +71,50 @@ findings back into `design.md` and the tickets:
 4. Prefactoring — where making the change easy first would shrink later
    tickets, and whether that ticket exists and comes first.
 Anything that needs human judgment (a scope call, a contradiction a
-reviewer found) becomes an open question in the summary.
+reviewer found) becomes an open question on the review page.
 
-## 5. Summary, commit, push, report
-Write `.agent/plan-review.md`, one Markdown file the operator reads on a
-phone. Use headings and lists only, no tables: one `## ` heading for each
-of these three sections, in this order:
-- **Tickets** — one list item per ticket: number, title, blocked by, seam.
-- **Open questions** — one list item per decision only the operator can
-  make, each with your recommendation and its reason; write `None.` and
-  nothing else when there is none.
-- **Corrections** — every correction of step 2: what `spec.md` said, what it
-  says now, and why; write `None.` when there is none.
+## 5. Review page, commit, push, report
+Write `.agent/review.html` with the `review-page` skill in plan mode: the
+tickets, the open questions (each with its options and one recommended
+option), the corrections of step 2 (what `spec.md` said, what it says now,
+and why) and the track pills. Fill the content slots only; never touch the
+script of the template. Register the page in `.agent/artifacts.json` (the
+format is in the artifacts note of this prompt). When the `review-page`
+skill is not installed (no `~/.claude/skills/review-page/template.html`; on
+Codex no `~/.codex/skills/review-page/`), write
+`{"stage": "plan", "status": "blocked", "note": "review-page skill not installed"}`
+and stop.
 Commit `design.md` and your corrections to `spec.md` with
 `docs: plan for #$issue_number (agent-ops)` and push the branch. Never
-commit anything under `.agent/`: the tickets and the summary stay local.
+commit anything under `.agent/`: the tickets and the review page stay local.
 Then signal `awaiting-review` and stop.
 
 ## 6. The operator's reply
-- A reply that answers open questions or asks for changes is feedback, and
-  feedback is never an approval, even when it reads as agreement. It can
-  also reach you in this pane, typed by the operator. Before you change
-  anything, write `{"stage": "plan", "status": "working", "note": "applying feedback"}`:
+The reply is `.agent/review-answers.json`; you are resumed with "Answers in
+.agent/review-answers.json (changes|approve) ...". Its `answers` are keyed by
+question id; `answers.track` names a track.
+- `"submitted": "changes"` is feedback, never an approval, even when it reads
+  as agreement. Before you change anything, write
+  `{"stage": "plan", "status": "working", "note": "applying feedback"}`:
   while your signal still says `awaiting-review` the dispatcher may end
   this session in the middle of the rework. Then apply the feedback:
   a changed requirement changes `spec.md`, `design.md` and the tickets; a
   changed decision changes `design.md` and the tickets. Rewrite everything
-  that depends on the change, update the summary, commit, push, and report
+  that depends on the change, update the review page, commit, push, and report
   the plan ready again with `awaiting-review`. Never go back to an interview
   and never start over.
-- Only an explicit approval ("approved", "ship it", "go") with nothing left
-  to change ends the review: signal `done` and exit. When the approval names
-  another track ("approved, but run it as security"), write that name as
+- An answer you cannot map, because its id is no question of the current
+  page, is ignored. List it under Corrections of the next page ("answer `<id>` = `<value>` ignored:
+  no such question"). A `<id>.note` of an unknown id is ignored with it.
+  `track` is not a question id: never ignore it.
+- A reply typed in this pane or sent by the reply route is handled the same
+  way. First write the same file, `.agent/review-answers.json`, yourself with
+  `"actor": "text"`, `"submitted"` as the text says (`"changes"` or
+  `"approve"`) and the answers you could read; then proceed.
+- `"submitted": "approve"` is the approval that ends the review (an explicit
+  "approved", "ship it" or "go" in text, with nothing left to change, is the
+  same): signal `done` and exit. `answers.track` names the track for
+  `done`; when the approval names another track, write that name as
   `"track"`; implement and review then run on it. The tracks:
 
 $tracks

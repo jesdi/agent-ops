@@ -12,7 +12,7 @@ Maintain `.agent/artifacts.json` as an array, preserving existing entries:
 [
   {"id": "spec", "name": "Specification", "path": "specs/2026-10-12-task/spec.md"},
   {"id": "prototype", "name": "Task page prototype", "path": ".agent/prototype.html"},
-  {"id": "plan-questions", "name": "Plan questions and answers", "path": ".agent/questions.md"}
+  {"id": "plan-review", "name": "Plan review page", "path": ".agent/review.html"}
 ]
 ```
 

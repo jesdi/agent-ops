@@ -22,7 +22,7 @@ test('persistent artifacts open stable URLs in new tabs without an approval requ
   const link = await screen.findByRole('link', { name: 'Open Specification' })
   expect(link).toHaveAttribute('href', spec.url)
   expect(link).toHaveAttribute('target', '_blank')
-  expect(screen.getByText(/30 days after completion/)).toBeInTheDocument()
+  expect(screen.getByText(/7 days after completion/)).toBeInTheDocument()
 })
 
 test('expired copies have no open link while GitHub artifacts remain', async () => {
@@ -33,24 +33,24 @@ test('expired copies have no open link while GitHub artifacts remain', async () 
   expect(screen.getByText('Expired')).toBeInTheDocument()
 })
 
-test('approval panel links to published spec beside the existing approval button', async () => {
+test('approval panel links to published spec beside the review link', async () => {
   seed()
   server.use(http.get('/api/task/widget/42/request', () => HttpResponse.json({
-    kind: 'plan-approval', content: { kind: 'readable', path: '.agent/plan-review.md', media_type: 'text/markdown', text: '# Design' },
+    kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Design' },
   })))
-  renderWithProviders(<RequestPanel target="widget" issue={42} busy={false} onApprove={() => {}} />)
+  renderWithProviders(<RequestPanel target="widget" issue={42} />)
   expect(await screen.findByRole('link', { name: 'View spec on GitHub ↗' })).toHaveAttribute('href', spec.url)
-  expect(screen.getByRole('button', { name: 'approve plan' })).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'open review' })).toBeInTheDocument()
 })
 
-test('publication failure preserves local review and approval', async () => {
+test('publication failure preserves local review', async () => {
   seed([{ ...spec, status: 'local', github_url: '' }])
   server.use(http.get('/api/task/widget/42/request', () => HttpResponse.json({
-    kind: 'plan-approval', content: { kind: 'readable', path: '.agent/plan-review.md', media_type: 'text/markdown', text: '# Design' },
+    kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Design' },
   })))
-  renderWithProviders(<RequestPanel target="widget" issue={42} busy={false} onApprove={() => {}} />)
+  renderWithProviders(<RequestPanel target="widget" issue={42} />)
   expect(await screen.findByText(/hasn’t been published/)).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'approve plan' })).toBeEnabled()
+  expect(screen.getByRole('link', { name: 'open review' })).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: 'View spec on GitHub ↗' })).not.toBeInTheDocument()
 })
 
@@ -83,15 +83,15 @@ test('active task has latest-version guidance without cleanup date', async () =>
   expect(await screen.findByText('Links open the latest version in a new tab.')).toBeInTheDocument()
 })
 
-test('failed artifact query preserves approval and local request content', async () => {
+test('failed artifact query preserves the review link and local request content', async () => {
   server.use(
     http.get('/api/task/widget/42/artifacts', () => HttpResponse.json({ detail: 'registry offline' }, { status: 500 })),
     http.get('/api/task/widget/42/request', () => HttpResponse.json({
-      kind: 'plan-approval', content: { kind: 'readable', path: '.agent/plan-review.md', media_type: 'text/markdown', text: '# Local design' },
+      kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Local design' },
     })),
   )
-  renderWithProviders(<RequestPanel target="widget" issue={42} busy={false} onApprove={() => {}} />)
+  renderWithProviders(<RequestPanel target="widget" issue={42} />)
   expect(await screen.findByText(/Could not load the GitHub spec link/)).toBeInTheDocument()
   expect(screen.getByRole('heading', { name: 'Local design' })).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'approve plan' })).toBeEnabled()
+  expect(screen.getByRole('link', { name: 'open review' })).toBeInTheDocument()
 })

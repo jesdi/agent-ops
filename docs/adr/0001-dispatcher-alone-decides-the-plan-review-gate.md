@@ -39,3 +39,11 @@ plan is a model, and it is the party whose work the gate reviews.
   through the session.
 - A miscount or a strict-format miss on a gate-free track costs one review,
   never a skipped one.
+
+## Amendment (2026-10-07)
+
+The review page replaces the summary; the dispatcher counts the page's
+question blocks. The skip condition on `open_questions` now reads: the
+integer 0, equal to the number of `data-q` question blocks of
+`.agent/review.html` (`artifacts.count_open_questions`). A block whose id is
+not a question id makes the count unknown, so the gate applies.

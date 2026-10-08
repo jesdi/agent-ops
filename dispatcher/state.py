@@ -109,7 +109,7 @@ class LoopCaps:
 
 @dataclass(frozen=True)
 class PlanApprovalRequest:
-    path: str   # the plan session's review summary, worktree-relative
+    path: str   # the plan session's review page, worktree-relative
     kind: str = "plan-approval"
     # The plan revision the operator is asked to approve (see
     # artifacts.plan_revision). "" = unknown: such a request matches no plan.
@@ -125,6 +125,9 @@ class PlanApprovalRequest:
 class AnswersRequest:
     path: str
     kind: str = "answers"
+    # SHA-256 of the page bytes when the request was armed: the revision an
+    # answers intent must name. "" = unknown: such a request matches nothing.
+    fingerprint: str = field(default="", compare=False)
 
     def __post_init__(self):
         if not self.path:
@@ -132,7 +135,6 @@ class AnswersRequest:
 
 
 OperatorRequest = PlanApprovalRequest | AnswersRequest  # type alias
-
 
 # A task that holds no E2E slot. Every session-ending park releases its slot
 # back to the pool; only PARK_LOGIN keeps a slot because it keeps a live
@@ -261,8 +263,8 @@ class StageSignal:
     loop: str = ""    # bounded loop a working session is in: review | gate
     round: int = 0    # 1-based round of that loop
     track: str = ""   # spec done: the track for plan/implement/review; plan done may rename it
-    # Plan ready report: the open questions the session counted in its
-    # summary. None = missing or not a non-negative integer.
+    # Plan ready report: the question blocks the session counted in its
+    # review page. None = missing or not a non-negative integer.
     open_questions: int | None = None
 
 
@@ -403,7 +405,8 @@ def _read(p: Path) -> TaskState | None:
             d["operator_request"] = PlanApprovalRequest(
                 path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
         elif kind == "answers":
-            d["operator_request"] = AnswersRequest(path=raw.get("path", ""))
+            d["operator_request"] = AnswersRequest(
+                path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
         else:
             raise ValueError(f"unrecognized operator_request kind {kind!r}")
     d.pop("artifact", None)        # retired field (slice 24)

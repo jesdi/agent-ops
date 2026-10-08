@@ -126,6 +126,10 @@ flowchart LR
   (`docs/adr/`) and `CONTEXT.md`, and removes `proposal.md` and `design.md`.
   Main keeps only `spec.md` of a change: `specs/` is a change log, the code
   and `CONTEXT.md` are the present state.
+  The review page (`review-page` skill) is the gate surface: the questionnaire
+  in spec, the plan review in plan. The operator's answers land in
+  `.agent/review-answers.json`, the one record that the plan, implement and
+  review sessions read. A fresh box needs `to-questionnaire` installed.
 - **Sessions** run in rootless Podman containers (the `agent-ops-session`
   image: Node + Claude Code CLI, git, gh, Python/pipenv, pnpm), one per task,
   each in a tab of the box's [herdr](https://herdr.dev) server — the agent-aware multiplexer that gives the dispatcher the agent's real lifecycle (`working` / `idle` / `blocked`) instead of screen-activity heuristics, plus TTY persistence and reply injection. Sessions are
@@ -387,7 +391,8 @@ and [Actions API permissions](https://docs.github.com/en/rest/actions/workflow-r
 ### Task artifacts
 
 The task page keeps review artifacts accessible across sessions on desktop and
-mobile. Open the spec on GitHub beside **Approve plan**, or use **Artifacts**
+mobile. Open the spec on GitHub beside **open review** (the plan is approved
+on the review route), or use **Artifacts**
 to revisit prototypes, diagrams, questionnaires, answers and other review files.
 Links open the latest published content in a new tab. If GitHub publication
 fails, local review and approval remain available.
@@ -397,7 +402,7 @@ Sessions register files automatically using the policy in
 Markdown is committed and pushed to the task branch. On merge, GitHub links
 switch to the last verified commit so deleting the branch does not break them.
 
-Stored box copies expire 30 days after done, failed or canceled, on the next
+Stored box copies expire 7 days after done, failed or canceled, on the next
 dispatcher pass. Paused tasks never start that countdown; reopening cancels it.
 GitHub files and artifact metadata remain, including on archived task pages.
 

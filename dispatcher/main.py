@@ -27,14 +27,14 @@ from dispatcher.config import (Config, Target, load_config, policy_for,
                                referenced_providers, routed_providers)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
-from dispatcher import (claims, eventlog, execution_overrides, failures, intents, loops,
+from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, loops,
                         messages, pr_poll, priority, queue_ops, relogin, tmux_migration,
                         triage)
 from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import openspec_migration, spec_publish, task_artifacts
-from dispatcher.artifacts import TICKETS_DIR, plan_revision
+from dispatcher.artifacts import TICKETS_DIR, page_revision, plan_revision
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
@@ -56,7 +56,8 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               clear_turn_markers, delete, has_waiting,
                               holds_slot, launch_entries, load,
                               load_all, max_slots,
-                              next_stage, read_background, read_stage_signal,
+                              next_stage, read_background,
+                              read_stage_signal,
                               implement_done, resumable_crash, shown_stage,
                               save, task_key)
 from dispatcher.workspace import (append_worktree_file, create_workspace,
@@ -696,10 +697,17 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         wt_abs = Path(task.worktree).resolve()
         try:
             wt_rel = str(Path(resolved).resolve().relative_to(wt_abs))
-            answers_request = AnswersRequest(path=wt_rel)
+            fingerprint, problem = page_revision(resolved)
+            if problem:
+                print(f"[warn] #{task.issue} answers page {wt_rel}: {problem}",
+                      file=sys.stderr)
+            answers_request = AnswersRequest(path=wt_rel, fingerprint=fingerprint)
         except ValueError:
             # Path escapes the worktree — treat as unusable reference.
             resolved = ""
+    if answers_request is not None:
+        answers.discard_stale(task.worktree, answers_request.kind,
+                              answers_request.fingerprint)
     if is_answers and answers_request is None:
         note = (note + "\n\n[malformed awaiting-answers: no usable artifact path]").strip()
     msg_id = deps.notifier.send(
@@ -1473,9 +1481,11 @@ def _on_park_for_input(turn: _Turn, task: TaskState, act: ParkForInput,
 
 
 def _plan_approval(task: TaskState, artifact: str) -> PlanApprovalRequest:
-    """The gate's request: the plan session's summary, bound to the plan
-    revision that is on disk now."""
+    """Arm the gate's request: the plan session's review page, bound to the
+    plan revision that is on disk now. The answers of an earlier round go
+    (answers.discard_stale)."""
     revision = plan_revision(task.worktree, artifact, task.spec_path)
+    answers.discard_stale(task.worktree, "plan-approval", revision.fingerprint)
     return PlanApprovalRequest(path=revision.path, fingerprint=revision.fingerprint)
 
 
@@ -1963,18 +1973,38 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
         return
     _queue_message(cfg, target, intent.issue, intent.payload.get("text", ""),
                    intent.actor or "operator")
-    if (task is not None and not task.park
-            and task.stage is Stage.AWAITING_PLAN_REVIEW):
-        # A gate task that has not parked yet waits for exactly this reply,
+    if task is not None:
+        _wake_for_queued_message(cfg, deps, task)
+
+
+def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
+    """Wake a task that waits for the operator, so its session reads the
+    message just queued. Any other task reads it on its next resume."""
+    if not task.park and task.stage is Stage.AWAITING_PLAN_REVIEW:
+        # A gate task that has not parked yet waits for exactly this message,
         # and only a resume hands the queue to its session: without the wake
-        # the grace park would end the session with the reply undelivered.
+        # the grace park would end the session with the message undelivered.
         # So it parks now, as the grace park would (session ended, slot
         # freed), and wakes below.
         _end_session(cfg, deps, task.target, task.issue)
         task = replace(task, park=PARK_REVIEW, slot=NO_SLOT)
-    if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
+    if task.park in (PARK_HUMAN, PARK_REVIEW):
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
         save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
+
+
+def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
+                          intent: intents.Intent) -> None:
+    """Write the answers file of the task's open request; a submission
+    then wakes the session to read it."""
+    reason = answers.drop_reason(task, intent)
+    if reason:
+        raise IntentDropped(reason)
+    assert task is not None
+    wake = answers.record(task, intent)
+    if wake:
+        _queue_message(cfg, task.target, task.issue, wake, intent.actor or "operator")
+        _wake_for_queued_message(cfg, deps, task)
 
 
 def _parkable_task(deps: Deps, task: TaskState | None, issue: int) -> bool:
@@ -2155,6 +2185,8 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         _apply_retry_intent(cfg, issue)
     elif intent.action == "resume":
         _apply_resume_intent(cfg, by_name, task, intent)
+    elif intent.action == "answers":
+        _apply_answers_intent(cfg, deps, task, intent)
     else:
         print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
               file=sys.stderr)
@@ -2174,7 +2206,9 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
     noted to stderr, and never aborts the pass or the remaining intents."""
     by_name = {t.name: t for t in cfg.targets}
-    for intent in intents.list_intents(cfg.state_dir):
+    pending = answers.without_superseded(intents.list_intents(cfg.state_dir),
+                                         lambda i: _task_for_intent(cfg, i))
+    for intent in pending:
         try:
             _apply_one_intent(cfg, deps, by_name, intent)
             eventlog.append_event(cfg.state_dir, "intent-applied",

@@ -334,7 +334,8 @@ class Sources:
                         "actor": d.get("actor", ""),
                         "created_at": d.get("created_at", ""),
                         "id": p.name,
-                        "text": str((d.get("payload") or {}).get("text", ""))})
+                        "text": str((d.get("payload") or {}).get("text", "")),
+                        "payload": d.get("payload") or {}})
         return out
 
     def state_fingerprint(self) -> str:
