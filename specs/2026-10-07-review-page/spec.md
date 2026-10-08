@@ -19,15 +19,17 @@ Terms:
   session, lowercase letters, digits, hyphens and underscores, at most 64 characters.
 - A **draft** is a set of answers sent before a button press (`submit` is `null`). A
   **submission** is a set sent by a button press (`submit` is `"changes"` or `"approve"`).
+  The buttons are the console's, outside the page: the session writes the page, so a page
+  sends drafts only.
 - The **snapshot** of a registered file is the copy the dispatcher takes into
   `~/agent-ops-state/artifacts/<target>/<issue>/content/` on each pass.
 
 Message schema (version `v` is the integer `1`; every message carries it):
 
 - Page to console, once, when its script listens: `{"type": "ready", "v": 1}`.
-- Page to console, on every change and on every button:
-  `{"type": "answers", "v": 1, "answers": {...}, "submit": null | "changes" | "approve"}`.
-  The console adds the request's `revision` when it posts the set to the box.
+- Page to console, on every change: `{"type": "answers", "v": 1, "answers": {...}, "submit": null}`.
+  The console ignores any other `submit` in a message. It adds the request's `revision`, and
+  the `submit` of its own button (`"changes"` or `"approve"`), when it posts the set to the box.
 - Console to page, after `ready` and whenever saved answers arrive:
   `{"type": "restore", "v": 1, "answers": {...}}`.
 
@@ -77,13 +79,17 @@ plan session has three questions with ids `format`, `limit` and `headers`, each 
    is told what failed and retries; the stage fails after the same number of retries).
 4. **The console shows the page on its own route.** `/task/<target>/<issue>/review` shows
    the review page of the open request, full screen, in an iframe with `sandbox="allow-scripts"`
-   and `srcDoc`, with no other panel. The task page links to that route while a request is
-   open. The request panel's own "approve plan" button is gone; the page's buttons are the
-   only ones.
+   and `srcDoc`, and below it the console's submit bar, with no other panel: "Send changes"
+   and "Approve" for a plan review, where "Approve" needs a second tap, and one button "Send
+   answers" for a questionnaire. The task page links to that route while a request is open.
+   The request panel's own "approve plan" button is gone; the bar's buttons are the only
+   ones, and the page has none.
 5. **The bridge trusts the iframe window and nothing else.** The console handles a window
    message only when its source is the review page's own iframe window and its `v` is `1`.
    A message from any other window is ignored. A message from the iframe with another `v`
-   is ignored and the route shows "this review page needs a newer console".
+   is ignored and the route shows "this review page needs a newer console". A message from
+   the iframe is a draft whatever its `submit` says: only a press on the console's own
+   buttons makes a submission, so no script in the page can approve.
 6. **Saved answers go back to the page.** The console sends `restore` once after the page's
    `ready`, with the `answers` the request route returns: the answers file in the worktree,
    overlaid with the newest pending `answers` intent of the task. When neither exists,
@@ -92,7 +98,8 @@ plan session has three questions with ids `format`, `limit` and `headers`, each 
    says "the plan changed; your selections were reset to the saved ones".
 7. **A selection becomes one intent, debounced.** The bridge collects `answers` messages for
    about one second and posts the last one to `POST /api/task/<target>/<issue>/answers`. A
-   message with `submit` set is posted at once. On `pagehide` the pending message is posted at
+   button press posts at once the last set the page sent (or, when it sent none, the set it
+   was restored with) with `submit` set. On `pagehide` the pending message is posted at
    once. The route validates the body, writes one intent with action `answers` and payload
    `{"answers", "submit"}`, and returns 202 with the intent name, like the reply route. A
    body whose `answers` is not a flat object of the schema's types, or whose JSON is larger
@@ -133,10 +140,9 @@ plan session has three questions with ids `format`, `limit` and `headers`, each 
     runs a plan stage with the new prompt.
 15. **The prototype is the reference for the look.** The template renders the layout of the
     accepted prototype (artifact `4R6Ryt3LhQpWRYdREa4Mp8`): tickets, boxed questions with a
-    recommended chip and a note field, corrections, track pills, a fixed bottom bar with "Send
-    changes" and "Approve" where "Approve" needs a second tap; in questionnaire mode the
-    tickets, corrections and track sections are absent and the bar has one button, "Send
-    answers". It works at 400 px width without a horizontal scroll, in light and dark theme,
+    recommended chip and a note field, corrections, track pills, a fixed bottom bar with the
+    count of answered questions and no button (the console's bar sits below it); in
+    questionnaire mode the tickets, corrections and track sections are absent. It works at 400 px width without a horizontal scroll, in light and dark theme,
     with the console's colors.
 
 ## Scenarios
@@ -194,6 +200,14 @@ plan session has three questions with ids `format`, `limit` and `headers`, each 
   `{"type": "answers", "v": 1, "answers": {"format": "a"}, "submit": "approve"}` to the window
 - **Then** no request reaches the answers route and no intent is written.
 
+### Scenario: a page that posts a submission approves nothing
+
+- **Given** the review route is open on a page whose script posts
+  `{"type": "answers", "v": 1, "answers": {"format": "a"}, "submit": "approve"}` on load
+- **When** one second passes
+- **Then** the console posts one request with `"answers": {"format": "a"}` and `"submit": null`,
+  and no request with `"submit": "approve"`.
+
 ### Scenario: a message with an unknown version is ignored
 
 - **Given** the review route is open
@@ -227,7 +241,7 @@ plan session has three questions with ids `format`, `limit` and `headers`, each 
 ### Scenario: a button press is posted at once
 
 - **Given** the operator picked `format` `a` 200 ms ago and the debounce is pending
-- **When** they press "Send changes"
+- **When** they press "Send changes" on the console's bar
 - **Then** the console posts one request at once with `"submit": "changes"` and the pending
   draft is not posted separately.
 
@@ -377,8 +391,8 @@ plan session has three questions with ids `format`, `limit` and `headers`, each 
 
 - **Given** the spec session parked with `.agent/questionnaire.html`
 - **When** the operator opens the review route
-- **Then** the page shows the questions, no tickets, no corrections, no track pills, and one
-  button "Send answers"; pressing it posts `"submit": "changes"`.
+- **Then** the page shows the questions, no tickets, no corrections and no track pills, and
+  the console's bar has one button "Send answers"; pressing it posts `"submit": "changes"`.
 
 ### Scenario: the page at phone width in dark theme
 

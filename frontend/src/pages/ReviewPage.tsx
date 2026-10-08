@@ -7,11 +7,17 @@ import { createBridge } from '../lib/reviewBridge'
 const NEWER = 'this review page needs a newer console'
 const CHANGED = 'the plan changed; your selections were reset to the saved ones'
 const UNSAVED = 'could not save your selection; try again'
+const SENT = {
+  changes: 'sent as changes; the plan session will revise',
+  approve: 'approved; implement starts with these answers',
+  answers: 'sent; the session continues with your answers',
+}
+const BUTTON = 'min-h-11 flex-1 rounded-md border px-3 text-sm font-medium'
 
 type Shown = { revision: string; text: string }
 
-/** The review page of the open request, full screen. Only the sandboxed iframe
- *  and, when there is one, a notice: no shell, no panels. */
+/** The review page of the open request, full screen: the sandboxed iframe, the
+ *  console's own submit bar and, when there is one, a notice. No shell, no panels. */
 export function ReviewPage() {
   // The route always carries both params.
   const { target, issue } = useParams() as { target: string; issue: string }
@@ -20,7 +26,7 @@ export function ReviewPage() {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const shown = useShownPage(req.data, () => setNotice(CHANGED))
-  useBridge(frameRef, shown, req.data, target, Number(issue), setNotice)
+  const bridge = useBridge(frameRef, shown, req.data, target, Number(issue), setNotice)
   // The changed and unsaved notices cover the page's top: they go after a
   // while or on tap (the page keeps its selections). The newer-console notice
   // is an error and stays.
@@ -35,10 +41,14 @@ export function ReviewPage() {
     <>
       {!shown && <Empty data={req.data} />}
       {shown && (
-        // A new window per revision: a late message of the old page then
-        // fails the bridge's source check instead of posting on the new one.
-        <iframe key={shown.revision} ref={frameRef} data-testid="review-frame" title="review" sandbox="allow-scripts"
-          srcDoc={shown.text} className="fixed inset-0 h-full w-full border-0" />
+        <div className="fixed inset-0 flex flex-col">
+          {/* A new window per revision: a late message of the old page then
+              fails the bridge's source check instead of posting on the new one. */}
+          <iframe key={shown.revision} ref={frameRef} data-testid="review-frame" title="review" sandbox="allow-scripts"
+            srcDoc={shown.text} className="min-h-0 w-full flex-1 border-0" />
+          <SubmitBar key={`bar-${shown.revision}`} plan={req.data?.kind === 'plan-approval'}
+            onSubmit={(submit, sent) => { bridge.current?.submit(submit); setNotice(sent) }} />
+        </div>
       )}
       {notice && (
         <p data-testid="review-notice" role="status" onClick={dismiss}
@@ -47,6 +57,28 @@ export function ReviewPage() {
         </p>
       )}
     </>
+  )
+}
+
+/** The buttons that submit. They are the console's, outside the iframe: the
+ *  session writes the page, so a button in it could press itself. */
+function SubmitBar({ plan, onSubmit }: { plan: boolean; onSubmit: (submit: 'changes' | 'approve', sent: string) => void }) {
+  const [armed, setArmed] = useState(false)
+  return (
+    <div data-testid="review-bar" className="bg-surface-raised px-4 pb-[calc(0.625rem+env(safe-area-inset-bottom,0px))]">
+      <div className="mx-auto flex max-w-[680px] gap-2">
+        <button type="button" className={`${BUTTON} border-border bg-surface-raised text-ink`}
+          onClick={() => { setArmed(false); onSubmit('changes', plan ? SENT.changes : SENT.answers) }}>
+          {plan ? 'Send changes' : 'Send answers'}
+        </button>
+        {plan && (
+          <button type="button" className={`${BUTTON} border-ink bg-ink text-surface-raised`}
+            onClick={() => { setArmed(!armed); if (armed) onSubmit('approve', SENT.approve) }}>
+            {armed ? 'Tap again to approve' : 'Approve'}
+          </button>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -77,6 +109,7 @@ function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown |
   // restore sends the latest saved answers, not the ones of the first load.
   const latest = useRef({ data, onNotice })
   latest.current = { data, onNotice }
+  const current = useRef<ReturnType<typeof createBridge> | null>(null)
 
   useEffect(() => {
     const frameWindow = frameRef.current?.contentWindow
@@ -88,6 +121,7 @@ function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown |
       onNotice: () => latest.current.onNotice(NEWER),
       onReady: () => bridge.restore(latest.current.data?.answers ?? {}),
     })
+    current.current = bridge
     // A draft the page sent just before pagehide can arrive after it: while
     // hidden, every message flushes at once.
     let hidden = false
@@ -98,6 +132,7 @@ function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown |
     window.addEventListener('pagehide', onHide)
     window.addEventListener('pageshow', onShow)
     return () => {
+      current.current = null
       window.removeEventListener('message', onMessage)
       window.removeEventListener('pagehide', onHide)
       window.removeEventListener('pageshow', onShow)
@@ -106,4 +141,5 @@ function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown |
       bridge.flush()
     }
   }, [frameRef, shown, target, issue])
+  return current
 }

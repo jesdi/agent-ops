@@ -2,8 +2,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 // Interface under test (lib/reviewBridge.ts):
 //   createBridge({ frameWindow, revision, post, onNotice, onReady?, debounceMs })
-//   -> { handleMessage(event), restore(answers), flush() }
-// post receives { answers, submit, revision }. restore posts
+//   -> { handleMessage(event), restore(answers), submit(kind), flush() }
+// post receives { answers, submit, revision }. A frame message is always a
+// draft; only submit(kind), the console's own buttons, posts a submission. restore posts
 // { type: 'restore', v: 1, answers } to frameWindow. onReady fires on a v1 ready.
 // A variable path: the import fails inside each test, not at collection or tsc.
 const MODULE = '../reviewBridge'
@@ -28,7 +29,7 @@ async function setup() {
 
 it('ignores an event from another window', async () => {
   const { answers, send, post, onNotice, onReady } = await setup()
-  answers({ format: 'a' }, 'approve')
+  answers({ format: 'a' })
   const other = {} as Window
   send({ type: 'answers', v: 1, answers: { format: 'a' }, submit: 'approve' }, other)
   send({ type: 'ready', v: 1 }, other)
@@ -65,14 +66,29 @@ it('debounces drafts into one post with the last full set and the revision', asy
   expect(post).toHaveBeenCalledTimes(1)
 })
 
-it('posts a submission at once and drops the pending draft', async () => {
+it('a submit in a frame message is ignored: the page can only send drafts', async () => {
   const { answers, post } = await setup()
+  answers({ format: 'a' }, 'approve')
+  answers({ format: 'b' }, 'changes')
+  expect(post).not.toHaveBeenCalled()
+  vi.advanceTimersByTime(1000)
+  expect(post.mock.calls).toEqual([[{ answers: { format: 'b' }, submit: null, revision: 'r1' }]])
+})
+
+it('submit posts the last set of the page at once and drops the pending draft', async () => {
+  const { bridge, answers, post } = await setup()
   answers({ format: 'a' })
-  answers({ format: 'a' }, 'changes')
-  expect(post).toHaveBeenCalledTimes(1)
-  expect(post).toHaveBeenCalledWith({ answers: { format: 'a' }, submit: 'changes', revision: 'r1' })
+  bridge.submit('changes')
+  expect(post.mock.calls).toEqual([[{ answers: { format: 'a' }, submit: 'changes', revision: 'r1' }]])
   vi.advanceTimersByTime(5000)
   expect(post).toHaveBeenCalledTimes(1)
+})
+
+it('submit with no draft posts the restored set', async () => {
+  const { bridge, post } = await setup()
+  bridge.restore({ format: 'b' })
+  bridge.submit('approve')
+  expect(post.mock.calls).toEqual([[{ answers: { format: 'b' }, submit: 'approve', revision: 'r1' }]])
 })
 
 it('flush posts a pending draft once, and nothing when none is pending', async () => {

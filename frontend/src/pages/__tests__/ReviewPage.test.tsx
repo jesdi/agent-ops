@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
 import { vi } from 'vitest'
@@ -39,14 +39,36 @@ async function renderReview() {
   return { ...view, frame, win, send }
 }
 
-test('restores the saved answers after ready and posts a submission at once', async () => {
+test('restores the saved answers after ready; Approve needs a second tap and posts the page\'s last set', async () => {
   const { frame, win, send } = await renderReview()
   expect(frame).toHaveAttribute('srcdoc', '<p>page</p>')
   const restore = vi.spyOn(win, 'postMessage')
   send({ type: 'ready', v: 1 })
   expect(restore).toHaveBeenCalledWith({ type: 'restore', v: 1, answers: { format: 'b' } }, '*')
-  send({ type: 'answers', v: 1, answers: { format: 'a' }, submit: 'approve' })
+  send({ type: 'answers', v: 1, answers: { format: 'a' }, submit: null })
+  fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+  expect(posts).toEqual([])
+  fireEvent.click(screen.getByRole('button', { name: 'Tap again to approve' }))
   await waitFor(() => expect(posts).toEqual([{ answers: { format: 'a' }, submit: 'approve', revision: 'r1' }]))
+  expect(screen.getByTestId('review-notice')).toHaveTextContent('approved; implement starts with these answers')
+  expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
+})
+
+test('a page that posts submit approve approves nothing: it is saved as a draft', async () => {
+  const { send } = await renderReview()
+  send({ type: 'answers', v: 1, answers: { format: 'a' }, submit: 'approve' })
+  act(() => { window.dispatchEvent(new Event('pagehide')) })
+  await waitFor(() => expect(posts).toEqual([{ answers: { format: 'a' }, submit: null, revision: 'r1' }]))
+})
+
+test('Send changes posts at once; a questionnaire has one button, Send answers', async () => {
+  const first = await renderReview()
+  fireEvent.click(screen.getByRole('button', { name: 'Send changes' }))
+  await waitFor(() => expect(posts).toEqual([{ answers: {}, submit: 'changes', revision: 'r1' }]))
+  first.unmount()
+  req = { ...request('r1'), kind: 'answers' }
+  await renderReview()
+  expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual(['Send answers'])
 })
 
 test('pagehide flushes the draft, and a draft that arrives after it', async () => {
@@ -129,7 +151,8 @@ test('a new revision gets a new frame window: a late message of the old page pos
   await waitFor(() => expect(screen.getByTestId('review-frame')).toHaveAttribute('srcdoc', '<p>second</p>'))
   const next = screen.getByTestId('review-frame')
   expect(next).not.toBe(frame)
-  send({ type: 'answers', v: 1, answers: { format: 'old' }, submit: 'approve' })
+  send({ type: 'answers', v: 1, answers: { format: 'old' }, submit: null })
+  act(() => { window.dispatchEvent(new Event('pagehide')) })
   await new Promise((r) => setTimeout(r, 50))
   expect(posts).toEqual([])
 })
@@ -140,14 +163,16 @@ test('a request that closes clears the page and its bridge', async () => {
   await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.request('widget', 42) }))
   expect(await screen.findByText('no open request')).toBeInTheDocument()
   expect(screen.queryByTestId('review-frame')).not.toBeInTheDocument()
-  send({ type: 'answers', v: 1, answers: { format: 'a' }, submit: 'approve' })
+  expect(screen.queryByTestId('review-bar')).not.toBeInTheDocument()
+  send({ type: 'answers', v: 1, answers: { format: 'a' }, submit: null })
+  act(() => { window.dispatchEvent(new Event('pagehide')) })
   await new Promise((r) => setTimeout(r, 50))
   expect(posts).toEqual([])
 })
 
 test('a post that fails shows the unsaved notice', async () => {
   server.use(http.post('/api/task/widget/42/answers', () => HttpResponse.json({ detail: 'x' }, { status: 500 })))
-  const { send } = await renderReview()
-  send({ type: 'answers', v: 1, answers: { format: 'a' }, submit: 'changes' })
+  await renderReview()
+  fireEvent.click(screen.getByRole('button', { name: 'Send changes' }))
   expect(await screen.findByTestId('review-notice')).toHaveTextContent('could not save your selection; try again')
 })
