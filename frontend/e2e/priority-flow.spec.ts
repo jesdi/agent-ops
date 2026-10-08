@@ -63,8 +63,12 @@ async function phone(page: import('@playwright/test').Page) {
 test('at 390px every radio is a 44px tap target and none overlap', async ({ page }) => {
   await phone(page)
   const radios = control(page).getByRole('radio')
-  const boxes: Box[] = []
-  for (let i = 0; i < (await radios.count()); i++) boxes.push((await radios.nth(i).boundingBox())!)
+  // One read for all the boxes: a reflow between two reads (the web font
+  // arrives, the header settles) makes boxes of two layouts overlap.
+  const boxes: Box[] = await radios.evaluateAll((els) => els.map((el) => {
+    const { x, y, width, height } = el.getBoundingClientRect()
+    return { x, y, width, height }
+  }))
   expect(boxes.length).toBeGreaterThanOrEqual(3)
   for (const b of boxes) {
     expect(b.height).toBeGreaterThanOrEqual(44)
