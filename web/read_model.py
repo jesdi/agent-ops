@@ -2,6 +2,8 @@
 Pydantic responses. NO I/O in this module — construction only."""
 from __future__ import annotations
 
+import sys
+
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -11,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from dispatcher import messages as msgq
 from dispatcher import priority
-from dispatcher.claims import box_free, pick_target
+from dispatcher.claims import claim_room, pick_target
 from dispatcher.models import Entry
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
@@ -19,7 +21,8 @@ from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
 from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
                               PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
                               Stage, TaskState, active, consumes_capacity,
-                              holds_slot, max_slots, resumable_crash)
+                              holds_slot, max_slots, resumable_crash,
+                              shown_stage)
 
 FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
 
@@ -136,11 +139,11 @@ class ModelAdmissionView(BaseModel):
 
 
 class TaskAdmissionView(BaseModel):
+    """Requested model and server-filtered, eligible alternatives."""
     requested: ModelAdmissionView
     alternatives: list[ModelAdmissionView]
-    # False once the stage has a pick: only the requested (picked) model's
-    # provider may then be chosen. True when nothing is picked yet.
-    any_provider: bool = False
+    # The pinned track the waiting launch comes from; "" when none.
+    pinned_track: str = ""
 
 
 class TaskCard(BaseModel):
@@ -155,6 +158,8 @@ class TaskCard(BaseModel):
     branch: str
     model: str
     track: str
+    # The pinned track the next launch comes from; "" when it is not pinned.
+    pinned_track: str = ""
     park_note_pending: bool
     feedback_pending: bool
     updated_at: str
@@ -224,13 +229,15 @@ def task_card(t: TaskState, *, model: str,
               score: float | None = None,
               undelivered_messages: int = 0,
               wake_blocked: bool = False,
-              admission: TaskAdmissionView | None = None) -> TaskCard:
+              admission: TaskAdmissionView | None = None,
+              pinned_track: str = "") -> TaskCard:
     return TaskCard(
         issue=t.issue, target=t.target, title=t.title,
-        stage=t.stage.value, park=t.park,
+        stage=shown_stage(t), park=t.park,
         park_note=t.park_note,
-        column=column_for(t.stage.value, t.park),
+        column=column_for(shown_stage(t), t.park),
         slot=t.slot, branch=t.branch, model=model, track=t.track,
+        pinned_track=pinned_track,
         # PARK_HUMAN only: it is the one park whose Telegram ping may be
         # missing, and the console is then the only way to answer it. A login
         # park always has a message id (a failed send degrades to PARK_HUMAN),
@@ -256,7 +263,8 @@ def _task_cards(tasks: list[TaskState], *,
                 scores: dict[tuple[str, int], float | None],
                 mail: dict[tuple[str, int], int],
                 blocked: set[tuple[str, int]],
-                admissions: dict[tuple[str, int], TaskAdmissionView]
+                admissions: dict[tuple[str, int], TaskAdmissionView],
+                pinned: dict[tuple[str, int], str]
                 ) -> list[TaskCard]:
     cards = []
     for task in tasks:
@@ -266,7 +274,8 @@ def _task_cards(tasks: list[TaskState], *,
             task, model=models.get(key, ""), claimed_at=at,
             cycle_seconds=cycle_seconds(at, task.done_at),
             score=scores.get(key), undelivered_messages=mail.get(key, 0),
-            wake_blocked=key in blocked, admission=admissions.get(key)))
+            wake_blocked=key in blocked, admission=admissions.get(key),
+            pinned_track=pinned.get(key, "")))
     return cards
 
 
@@ -292,7 +301,8 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                          undelivered: dict[tuple[str, int], int] | None = None,
                          wake_blocked: set[tuple[str, int]] | None = None,
                          admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
-                         ghosts: list[GhostCard] | None = None
+                         ghosts: list[GhostCard] | None = None,
+                         pinned_tracks: dict[tuple[str, int], str] | None = None
                          ) -> BoardSnapshot:
     """Cards and capacity without any live-service dependencies; `ghosts`
     join the Queued column."""
@@ -302,7 +312,8 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
     claimed = claimed_at_index(events)
     cards = _task_cards(tasks, models=models, claimed=claimed,
                         scores=_score_index(queues), mail=mail,
-                        blocked=blocked, admissions=task_admissions)
+                        blocked=blocked, admissions=task_admissions,
+                        pinned=pinned_tracks or {})
     by_column = _cards_by_column(cards)
     in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
     # Which numbers, not just how many: the console colours a card by its
@@ -339,6 +350,8 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 candidate_admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
                 max_active: Mapping[str, int | None],
                 last_claimed: Mapping[str, str],
+                max_open: int = sys.maxsize,
+                pinned_tracks: dict[tuple[str, int], str] | None = None,
                 ) -> BoardView:
     # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-target candidates
@@ -354,7 +367,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
         undelivered=undelivered, wake_blocked=wake_blocked,
-        admissions=admissions, ghosts=ghosts)
+        admissions=admissions, ghosts=ghosts, pinned_tracks=pinned_tracks)
     return BoardView(
         columns=snapshot.columns, capacity=snapshot.capacity,
         median_cycle_seconds=snapshot.median_cycle_seconds,
@@ -365,7 +378,8 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                               claims_paused=claims_paused,
                               triage_running=triage_running,
                               max_active=max_active,
-                              last_claimed=last_claimed))
+                              last_claimed=last_claimed,
+                              max_open=max_open))
 
 
 class TaskDetail(BaseModel):
@@ -389,11 +403,12 @@ def task_detail(t: TaskState, *, model: str,
                 pending_sends: list[dict] | None = None,
                 wake_blocked: bool = False,
                 admission: TaskAdmissionView | None = None,
-                track_when: str = "") -> TaskDetail:
+                track_when: str = "",
+                pinned_track: str = "") -> TaskDetail:
     at = claimed_at(claimed_at_index(events), t.target, t.issue)
     msgs = messages or []
     return TaskDetail(
-        card=task_card(t, model=model,
+        card=task_card(t, model=model, pinned_track=pinned_track,
                        claimed_at=at,
                        cycle_seconds=cycle_seconds(at, t.done_at),
                        undelivered_messages=len(
@@ -486,6 +501,7 @@ class PriorityView(BaseModel):
     mode: str            # "auto" or a routed provider
     options: list[str]   # "auto", then the routed providers sorted by name
     first: str           # the provider the mode puts first; "" when none is routed
+    pinned: list[str] = []  # the tracks the mode does not apply to, in policy order
 
 
 class UsageView(BaseModel):
@@ -521,10 +537,12 @@ def model_admission_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
 
 def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                pace: PaceConfig, default_model: str, mode: str,
-               routed: Collection[str]) -> UsageView:
+               routed: Collection[str],
+               pinned: Collection[str] = ()) -> UsageView:
     """Every provider's windows, sorted by provider name, one gate (the
     verdict for the policy default model), and what the priority `mode` is
-    doing over the `routed` providers. The mode changes no window's numbers.
+    doing over the `routed` providers, minus the `pinned` tracks it never
+    reorders. The mode changes no window's numbers.
     `first` is the dispatcher's own order over one model-less entry per routed
     provider: a provider-level summary on unscoped windows only, so it can
     differ from the entry a task gets when a model has its own weekly window.
@@ -545,7 +563,8 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                       binding=binding),
         priority=PriorityView(
             mode=mode, options=[priority.AUTO, *sorted(routed)],
-            first=ranked[0].provider if ranked else ""))
+            first=ranked[0].provider if ranked else "",
+            pinned=list(pinned)))
 
 
 class QuarantineEntry(BaseModel):
@@ -746,7 +765,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                claims_paused: bool = False,
                triage_running: bool = False,
                max_active: Mapping[str, int | None],
-               last_claimed: Mapping[str, str]) -> NextClaimView:
+               last_claimed: Mapping[str, str],
+               max_open: int = sys.maxsize) -> NextClaimView:
     """A forecast of what the claim round (dispatcher main._claim_new)
     consumes next, from data already on the board request. The target comes
     from the same claims.pick_target the dispatcher uses, over box-wide free
@@ -786,7 +806,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     running = active(tasks)
     counts = {n: sum(t.target == n for t in running) for n in heads}
     name = (pick_target(list(heads), counts, last_claimed, max_active)
-            if box_free(capacity, tasks, triage_running) > 0 else None)
+            if claim_room(capacity, max_open, tasks, triage_running) > 0
+            else None)
     if name is None:
         return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
     return NextClaimView(verdict="will-claim", next_pass_eta=eta,

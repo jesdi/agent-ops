@@ -101,7 +101,7 @@ test('a capacity-blocked queued card can force its first claim', async () => {
           note: 'Fable weekly capacity is low',
         },
         alternatives: [],
-        any_provider: true,
+        pinned_track: '',
       },
     }} isNext busy={false} onBoost={() => {}} onNext={() => {}} onReady={() => {}} />,
   )
@@ -127,7 +127,7 @@ test('a queued card has no pick yet, so it offers another provider too', async (
           model: 'openai/gpt-5-codex', provider: 'openai', admitted: true,
           note: 'capacity available',
         }],
-        any_provider: true,
+        pinned_track: '',
       },
     }} isNext busy={false} onBoost={() => {}} onNext={() => {}} onReady={() => {}} />,
   )

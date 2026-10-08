@@ -30,8 +30,8 @@ what may run.
   are untouched. A priority provider that is over its pace is still denied.
 - Review independence is kept. Review still moves the provider that ran implement to the back,
   whatever the mode.
-- No "as written in `targets.yaml`" mode and no per-track opt-out. A track that must stay on one
-  provider lists only that provider's entries.
+- No "as written in `targets.yaml`" mode. (Amended by `specs/pinned-tracks`: a pinned track is
+  not reordered by the mode.)
 - No per-target mode. The mode is one value for the whole box.
 - No automatic expiry of a fixed mode. It stays until the operator changes it.
 - No projection from recent burn rate. The box keeps no usage history, and auto ranks on the

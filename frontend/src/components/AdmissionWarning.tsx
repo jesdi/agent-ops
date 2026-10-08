@@ -31,12 +31,7 @@ export function AdmissionWarning({ target, issue, admission }: {
     },
     onError: (err) => setError(err instanceof ApiError ? err.detail : String(err)),
   })
-  // Once the stage has a pick its provider is fixed (the server 422s any
-  // other); only a stage with no pick yet may switch provider.
-  const alternatives = admission.any_provider
-    ? admission.alternatives
-    : admission.alternatives.filter((a) => a.provider === admission.requested.provider)
-  const choices = [admission.requested, ...alternatives]
+  const choices = [admission.requested, ...admission.alternatives]
 
   return (
     <div className="relative mt-2">
@@ -57,6 +52,11 @@ export function AdmissionWarning({ target, issue, admission }: {
           {/* Banner shape, card-sized text. */}
           <div className="text-xs">
             <p>{admission.requested.note}</p>
+            {admission.pinned_track && (
+              <p className="mt-2">
+                Pinned to {admission.pinned_track}: the priority mode does not apply.
+              </p>
+            )}
             <p className="mt-2 text-ink-muted">
               Keep waiting, run despite the usage limit, or process this task with another configured model.
             </p>
@@ -73,7 +73,7 @@ export function AdmissionWarning({ target, issue, admission }: {
                     className="rounded border border-waiting-fg/30 bg-surface-raised px-2 py-1 text-left disabled:opacity-50"
                   >
                     {bypassUsage ? 'Run anyway with ' : 'Run with '}
-                    {shortModel(choice.model)}
+                    <span className="whitespace-nowrap">{shortModel(choice.model)}</span>
                     <span className="ml-1 text-ink-muted">
                       ({choice.admitted ? 'capacity available' : 'limited'})
                     </span>

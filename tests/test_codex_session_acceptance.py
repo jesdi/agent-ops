@@ -34,9 +34,8 @@ def test_codex_spawn_mounts_host_binary_and_codex_home(tmp_path, monkeypatch,
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
-    runtime = _openai_runtime()
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "gpt-5-codex", "P",
-                                 effort="high", runtime=runtime)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-5-codex", "P",
+                                 effort="high")
 
     import os as _os
     mount = f"{_os.path.realpath(codex_package)}:/opt/codex:ro"
@@ -54,9 +53,8 @@ def test_codex_spawn_command_shape(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
-    runtime = _openai_runtime()
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "gpt-5-codex", "P",
-                                 effort="high", runtime=runtime)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-5-codex", "P",
+                                 effort="high")
 
     assert "--model gpt-5-codex" in cmd
     assert "-c model_reasoning_effort=high" in cmd
@@ -72,9 +70,8 @@ def test_codex_spawn_omits_effort_flag_when_unset(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
-    runtime = _openai_runtime()
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "gpt-5-codex", "P",
-                                 effort="", runtime=runtime)
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-5-codex", "P",
+                                 effort="")
     assert "model_reasoning_effort" not in cmd
     assert "--model gpt-5-codex" in cmd
 

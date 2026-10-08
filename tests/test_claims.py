@@ -74,3 +74,19 @@ def test_last_claims_skips_non_row_lines_that_mention_claimed(tmp_path):
         '{"event": "unclaimed", "note": "claimed"}\n'
         '{"event": "claimed", "target": "a", "ts": "2026-09-24T08:00:00+00:00"}\n')
     assert last_claims(tmp_path) == {"a": "2026-09-24T08:00:00+00:00"}
+
+
+def test_claim_room_counts_parked_and_pr_open_tasks_against_max_open():
+    from dispatcher.claims import claim_room
+    from dispatcher.state import NO_SLOT, PARK_REVIEW, Stage, TaskState
+
+    def task(issue, stage, park=""):
+        return TaskState(issue=issue, target="a", stage=stage, slot=NO_SLOT,
+                         worktree="", branch="", title="", updated_at="", park=park)
+
+    tasks = [task(1, Stage.SPEC, PARK_REVIEW), task(2, Stage.PR_OPEN),
+             task(3, Stage.DONE), task(4, Stage.CANCELED)]
+    # none consumes capacity, two are unfinished
+    assert claim_room(3, 10, tasks, triage_running=False) == 3
+    assert claim_room(3, 2, tasks, triage_running=False) == 0
+    assert claim_room(3, 3, tasks, triage_running=True) == 1

@@ -198,6 +198,11 @@ function PrioritySelector({ priority }: { priority: UsageView['priority'] }) {
         })}
       </div>
       {error && <p role="alert" className="w-full min-w-0 break-words text-xs text-failed-fg">{error}</p>}
+      {priority.pinned.length > 0 && (
+        <p className="w-full min-w-0 text-[11px] text-ink-muted">
+          Does not apply to the pinned tracks {priority.pinned.join(', ')}.
+        </p>
+      )}
     </div>
   )
 }

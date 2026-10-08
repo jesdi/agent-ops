@@ -228,7 +228,7 @@ def test_mode_openai_beats_a_session_bound_anthropic(tmp_path, monkeypatch):
     assert launched(sess) == [LUNA_ID]
 
 
-def test_a_pick_made_before_the_mode_changed_is_kept_and_review_follows_the_mode(
+def test_after_the_mode_changed_the_next_ticket_and_review_follow_the_mode(
         tmp_path, monkeypatch):
     # auto: anthropic 6.3x wins implement; then the operator switches to openai
     sess, t = go_hungry(tmp_path, monkeypatch)
@@ -237,9 +237,9 @@ def test_a_pick_made_before_the_mode_changed_is_kept_and_review_follows_the_mode
     save_mode(tmp_path)
     sess, _ = go_hungry(tmp_path, monkeypatch, stage=Stage.IMPLEMENT,
                         ticket_cursor=1, ticket_count=2, picks=t.picks)
-    assert launched(sess) == [SONNET_ID]          # the pick sticks
+    assert launched(sess) == [LUNA_ID]            # the next ticket chooses again
     sess, _ = go_hungry(tmp_path, monkeypatch, review=[OPUS, SOL],
-                        stage=Stage.IMPLEMENT, ticket_cursor=1, ticket_count=1,
+                        stage=Stage.IMPLEMENT, ticket_cursor=2, ticket_count=2,
                         picks=t.picks)
     assert launched(sess) == [SOL_ID]             # fresh stage follows the mode
 

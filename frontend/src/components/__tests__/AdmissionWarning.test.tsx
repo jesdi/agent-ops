@@ -5,11 +5,7 @@ import type { ReactNode } from 'react'
 import { AdmissionWarning } from '../AdmissionWarning'
 import type { TaskCard } from '../../lib/api'
 
-// Ticket 05: a stage's provider is fixed once it has a pick, so an operator
-// choosing from the capacity-limited alternatives must never be offered a
-// model of another provider than the one the requested (picked) model runs
-// on — that would silently resume the wrong provider's session. The 422 on
-// the HTTP routes is a backstop; this list is the actual UX.
+// The server supplies the eligible model choices.
 
 type Admission = NonNullable<TaskCard['admission']>
 
@@ -19,13 +15,13 @@ function admission(overrides: Partial<Admission> = {}): Admission {
       model: 'anthropic/claude-opus-5', provider: 'anthropic',
       admitted: false, note: 'over pace',
     },
-    any_provider: false,
     alternatives: [
       { model: 'anthropic/claude-sonnet-5', provider: 'anthropic',
         admitted: true, note: 'capacity available' },
       { model: 'openai/gpt-5-codex', provider: 'openai',
         admitted: true, note: 'capacity available' },
     ],
+    pinned_track: '',
     ...overrides,
   }
 }
@@ -39,20 +35,15 @@ function renderWarning(a: Admission) {
     <AdmissionWarning target="widget" issue={42} admission={a} />, { wrapper })
 }
 
-it('the model picker offers only the requested model\'s provider, ' +
-   'never a cross-provider alternative', async () => {
+it('renders eligible alternatives from the server, including another provider', async () => {
   renderWarning(admission())
   await userEvent.click(screen.getByRole('button', { name: /capacity limited/i }))
 
   expect(screen.getByText(/sonnet/i)).toBeInTheDocument()
-  expect(screen.queryByText(/gpt-5-codex/i)).not.toBeInTheDocument()
+  expect(screen.getByText(/gpt-5-codex/i)).toBeInTheDocument()
 })
 
-it('offers every alternative when the requested model is not a fixed pick ' +
-   '(no cross-provider alternatives configured)', async () => {
-  // Same-provider-only alternatives is indistinguishable, from this
-  // component's props alone, between "no pick yet" and "pick enforced" —
-  // both cases legitimately show only same-provider choices here.
+it('renders only the alternatives supplied by the server', async () => {
   renderWarning(admission({
     alternatives: [
       { model: 'anthropic/claude-sonnet-5', provider: 'anthropic',
@@ -62,4 +53,5 @@ it('offers every alternative when the requested model is not a fixed pick ' +
   await userEvent.click(screen.getByRole('button', { name: /capacity limited/i }))
 
   expect(screen.getByText(/sonnet/i)).toBeInTheDocument()
+  expect(screen.queryByText(/gpt-5-codex/i)).not.toBeInTheDocument()
 })

@@ -154,7 +154,6 @@ def test_wake_blocked_by_model_exposes_reason_and_alternatives(tmp_path):
     assert "week·Fable" in admission["requested"]["note"]
     assert [(x["model"], x["admitted"]) for x in admission["alternatives"]] == [
         ("anthropic/claude-opus-5", True)]
-    assert admission["any_provider"] is False, "the spec pick fixes the provider"
     assert body["card"]["model"] == "anthropic/claude-fable-5-1"
     assert body["card"]["track"] == "standard"
     assert body["track_when"] == "Everything."
@@ -178,7 +177,6 @@ def test_a_picked_stage_offers_no_cross_provider_alternative(tmp_path):
         "card"]["admission"]
     assert [x["model"] for x in admission["alternatives"]] == [
         "anthropic/claude-opus-5"]
-    assert admission["any_provider"] is False
 
 
 def test_card_model_is_the_first_admitted_entry_when_no_pick_yet(tmp_path):
@@ -196,18 +194,20 @@ def test_card_model_is_the_first_admitted_entry_when_no_pick_yet(tmp_path):
 
 
 def test_task_admission_is_none_when_track_is_unconfigured(tmp_path):
-    """A task carrying a track the policy doesn't know (e.g. the legacy
-    track="" default, or a renamed/removed track) has no candidates to
-    launch on — _model_for is "". That must never be fed to the usage gate
-    as a bare model id (it defaults to anthropic and fabricates a false
-    "blocked on capacity" verdict); it must show no admission at all."""
+    """A task carrying a track the policy doesn't know (a renamed or
+    removed track) has no candidates to launch on — _model_for is "". That
+    must never be fed to the usage gate as a bare model id (it defaults to
+    anthropic and fabricates a false "blocked on capacity" verdict); it must
+    show no admission at all. A task with no track at all is untracked work,
+    as it is for the dispatcher: see
+    test_a_task_with_no_track_shows_the_untracked_tracks_model_and_pin."""
     from tests.webfakes import tracks_policy
     from tests.usagefakes import session_usage
     fake = FakeSources()
     cfg = replace(make_config(tmp_path), models=tracks_policy())
     client = TestClient(create_app(cfg, fake))
     fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_SPEC_REVIEW,
-                                 park=PARK_WAKE, track="")]
+                                 park=PARK_WAKE, track="removed")]
     fake.usages = {"anthropic": session_usage(0.99)}
     body = client.get("/api/task/alpha/7", headers=HEADERS).json()
     assert body["card"]["model"] == ""
@@ -345,13 +345,14 @@ def test_capacity_blocked_queue_candidate_exposes_force_choices(tmp_path):
     from tests.webfakes import tracks_policy
     fake = FakeSources()
     cfg = replace(make_config(tmp_path), models=tracks_policy(
-        spec=["claude-fable-5-1", "claude-opus-5"]))
+        spec=["claude-fable-5-1", "claude-opus-5", "openai/gpt-5-codex"]))
     fake.rank["alpha"] = ([{
         "number": 73, "title": "t73", "url": "u", "status": "Ready",
         "labels": ["auto"], "blocked": False, "score": 2.0, "boost": 0,
     }], "now", False)
     from tests.usagefakes import session_usage
-    fake.usages = {"anthropic": session_usage(0.2, fable=0.9)}
+    fake.usages = {"anthropic": session_usage(0.2, fable=0.9),
+                   "openai": session_usage(0.2, provider="openai")}
     # A fixed mode keeps the written order; auto would rank opus first (the
     # Fable window's required pace is the lower one) and launch it.
     from datetime import datetime, timezone
@@ -365,8 +366,7 @@ def test_capacity_blocked_queue_candidate_exposes_force_choices(tmp_path):
     assert admission["requested"]["admitted"] is False
     assert [(x["model"], x["admitted"])
             for x in admission["alternatives"]] == [
-                ("anthropic/claude-opus-5", True)]
-    assert admission["any_provider"] is True, "a candidate has no pick yet"
+                ("anthropic/claude-opus-5", True), ("openai/gpt-5-codex", True)]
 
 
 def test_board_next_claim_claims_paused(tmp_path):

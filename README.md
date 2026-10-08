@@ -31,7 +31,7 @@ agent-ops closes both gaps:
   (relaxed when the reset is close). The weekly windows follow a spending
   schedule that counts weekend hours at half weight, so the box holds back
   on Saturday and Sunday and spends the saved share Monday to Friday. A
-  provider whose usage can't be read fails safe and spawns nothing. Which model runs is a **track**: triage picks one for the spec stage, the spec session picks one for the rest, and each track lists models per stage, so the box takes the one with headroom whose weekly quota most needs spending before its reset and keeps it for the whole stage. A session-bound provider's entries go first, and a priority mode set in the console (`auto` or a provider) replaces this order (see CONTEXT.md).
+  provider whose usage can't be read fails safe and spawns nothing. Which model runs is a **track**: triage picks one for the spec stage, the spec session picks one for the rest, and each track lists models per stage, so the box takes the one with headroom whose weekly quota most needs spending before its reset and keeps it for the whole stage (in implement: for one ticket; a ticket can name a pinned track of its own). A session-bound provider's entries go first, and a priority mode set in the console (`auto` or a provider) replaces this order (see CONTEXT.md).
 - **24-hour access from your phone, PC off.** The box is reachable over
   Tailscale only. The web console and Telegram bot are always on — you can
   check progress, answer an agent's question, or approve a spec from anywhere.
@@ -289,4 +289,13 @@ switch to the last verified commit so deleting the branch does not break them.
 Stored box copies expire 30 days after done, failed or canceled, on the next
 dispatcher pass. Paused tasks never start that countdown; reopening cancels it.
 GitHub files and artifact metadata remain, including on archived task pages.
-Existing failed-task worktrees are still preserved for autopsy.
+
+### Disk on the box
+
+Every unfinished task keeps a worktree on the box. `max_open` caps how many
+unfinished tasks (running, parked, awaiting review or CI, pr-open) the box
+holds: the claim round stops at it even with capacity free. A finished task
+(done, failed, won't do) keeps its card, worktree and local branch for
+`done_retention_days`, then the flush removes all three; the remote branch,
+PR and issue are the record. A failed task's worktree is there for autopsy
+only inside that window.

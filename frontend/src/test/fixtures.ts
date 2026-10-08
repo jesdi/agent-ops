@@ -10,7 +10,7 @@ export const parkedCard: TaskCard = {
   park_note: 'Should I use the staging redirect URL or prod?', feedback_pending: false,
   updated_at: '2026-07-25T10:00:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
-  undelivered_messages: 0, wake_blocked: false,
+  undelivered_messages: 0, wake_blocked: false, pinned_track: '',
 }
 
 export const reviewCard: TaskCard = {
@@ -21,7 +21,7 @@ export const reviewCard: TaskCard = {
   park_note: 'spec ready for review', feedback_pending: false,
   updated_at: '2026-07-25T09:00:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
-  undelivered_messages: 0, wake_blocked: false,
+  undelivered_messages: 0, wake_blocked: false, pinned_track: '',
 }
 
 export const inProgressCard: TaskCard = {
@@ -31,7 +31,7 @@ export const inProgressCard: TaskCard = {
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T11:30:00Z', consuming_capacity: true,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
-  undelivered_messages: 0, wake_blocked: false,
+  undelivered_messages: 0, wake_blocked: false, pinned_track: '',
 }
 
 // The motivating pair: both sit in the Parked column, only one holds a unit.
@@ -42,7 +42,7 @@ export const loginParkedCard: TaskCard = {
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T11:00:00Z', consuming_capacity: true,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
-  undelivered_messages: 0, wake_blocked: false,
+  undelivered_messages: 0, wake_blocked: false, pinned_track: '',
 }
 
 export const ciParkedCard: TaskCard = {
@@ -52,7 +52,7 @@ export const ciParkedCard: TaskCard = {
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T10:30:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
-  undelivered_messages: 0, wake_blocked: false,
+  undelivered_messages: 0, wake_blocked: false, pinned_track: '',
 }
 
 export const board: BoardView = {
@@ -93,7 +93,7 @@ export const usage: UsageView = {
     note: 'anthropic week: 13% used, allowance 29%, headroom 16 pts, resets in 5d 2h',
     minutes_to_reset: 7320, binding: weekAll,
   },
-  priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic' },
+  priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic', pinned: [] },
 }
 
 export const usageUnavailable: UsageView = {
@@ -102,7 +102,7 @@ export const usageUnavailable: UsageView = {
     model: 'claude-opus-4-8', provider: 'anthropic', admitted: false,
     note: 'anthropic: usage unavailable', minutes_to_reset: 0, binding: null,
   },
-  priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic' },
+  priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic', pinned: [] },
 }
 
 export const usageCcusage: UsageView = {
@@ -112,7 +112,7 @@ export const usageCcusage: UsageView = {
     note: 'anthropic session: 62% used, allowance 80%, headroom 18 pts, resets in 45m',
     minutes_to_reset: 45, binding: ccusageSession,
   },
-  priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic' },
+  priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic', pinned: [] },
 }
 
 export const taskDetail: TaskDetail = {
@@ -173,5 +173,37 @@ export const usageRouted: UsageView = {
     { provider: 'openai', source: 'oauth', windows: [openaiWeek] },
   ],
   gate: usage.gate,
-  priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic' },
+  priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic', pinned: [] },
+}
+
+// Pinned tracks (ticket 03).
+export const pinnedCard: TaskCard = {
+  ...inProgressCard, issue: 51, title: 'Rework the settings screen',
+  model: 'claude-fable-5-1', track: 'architecture', pinned_track: 'frontend',
+}
+
+export const unpinnedCard: TaskCard = {
+  ...inProgressCard, issue: 52, title: 'Tidy the changelog',
+  model: 'openai/gpt-sol', track: 'standard', pinned_track: '',
+}
+
+export const pinnedWaitAdmission = {
+  requested: { model: 'anthropic/claude-fable-5-1', provider: 'anthropic', admitted: false, note: 'week·Fable over pace' },
+  alternatives: [
+    { model: 'anthropic/claude-opus-5', provider: 'anthropic', admitted: false, note: 'limited' },
+    { model: 'anthropic/claude-sonnet-5', provider: 'anthropic', admitted: true, note: 'capacity available' },
+    { model: 'openai/gpt-astra', provider: 'openai', admitted: true, note: 'capacity available' },
+    { model: 'openai/gpt-sol', provider: 'openai', admitted: true, note: 'capacity available' },
+  ],
+  pinned_track: 'frontend',
+}
+
+export const usagePinned: UsageView = {
+  ...usageRouted,
+  priority: { ...usageRouted.priority, pinned: ['security', 'architecture', 'frontend'] },
+}
+
+export const usageUnpinned: UsageView = {
+  ...usageRouted,
+  priority: { ...usageRouted.priority, pinned: [] },
 }

@@ -54,9 +54,13 @@ class Config:
     # speccing the rest of the Ready queue overnight. 0 parks on the next
     # pass; None (targets.yaml `null`) means never auto-park.
     spec_review_grace_minutes: int | None = 15
-    # Days a merged task's Done card stays on the console before its state
-    # file is flushed. The durable record (merged PR, closed issue, board
-    # item, event log) outlives the card.
+    # Box-wide cap on UNFINISHED tasks (running, parked, awaiting review or
+    # CI, pr-open): the claim round stops at it even with capacity free.
+    # Every unfinished task keeps a worktree on disk; this bounds that.
+    max_open: int = 10
+    # Days a finished task (done, failed, won't do) keeps its console card,
+    # worktree and local branch before the flush removes them. The durable
+    # record (PR, remote branch, issue, board item, event log) outlives it.
     done_retention_days: int = 7
     # Minutes between dispatcher passes. Paired with OnUnitActiveSec in
     # agent-ops-infra/provision/agent-ops-dispatcher.timer — change both together; the web
@@ -157,6 +161,13 @@ def _background_wait_seconds(raw: dict) -> int:
     return v
 
 
+def _max_open(raw: dict, capacity: int) -> int:
+    v = raw.get("max_open", 10)
+    if type(v) is not int or v < capacity:
+        raise ValueError(f"max_open: must be an integer >= capacity ({capacity}), got {v!r}")
+    return v
+
+
 def load_config(path: str | Path) -> Config:
     raw = yaml.safe_load(Path(path).read_text())
     if "triage_model" in raw:
@@ -166,6 +177,7 @@ def load_config(path: str | Path) -> Config:
     cfg = Config(
         state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
         capacity=capacity,
+        max_open=_max_open(raw, capacity),
         session_memory=str(raw.get("session_memory", "2g")),
         session_cpus=str(raw.get("session_cpus", "2")),
         targets=[_target(t, capacity) for t in raw.get("targets", [])],

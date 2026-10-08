@@ -160,7 +160,8 @@ function TaskHeader({ card, intents, target, issue }: {
     <h1 className="text-lg font-semibold">{card.title}</h1>
     <span className="text-sm text-ink-muted">
       {card.target}#{card.issue} · {stageLabel(card.stage)} · {card.model}
-      {card.track && <> · track {card.track}</>} ·
+      {card.pinned_track && <> · <span className="whitespace-nowrap">pinned to {card.pinned_track}</span></>}
+      {card.track && card.track !== card.pinned_track && <> · track {card.track}</>} ·
       branch {card.branch} · updated {relativeTime(card.updated_at)}
     </span>
     {card.park !== '' && (

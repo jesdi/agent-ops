@@ -799,7 +799,7 @@ def test_pass_skips_claims_and_reduces_capacity_while_triage(tmp_path,
     monkeypatch.setattr(triage, "tick", lambda *a, **k: None)
     monkeypatch.setattr(dmain, "fetch_all", lambda *a, **k: OK_USAGE)
     for fn in ("_handle_telegram", "_budget_edge", "_wake_ci", "_poll_prs",
-               "_spawn_feedback", "_flush_done",
+               "_spawn_feedback", "_flush_finished",
                "_prune_snapshots", "_apply_intents"):
         monkeypatch.setattr(dmain, fn, lambda *a, **k: None)
     seen_claim = {}

@@ -19,10 +19,11 @@ PROVIDER_EFFORTS: Mapping[str, tuple[str, ...]] = {
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = "claude-opus-5"
 TRACK_LABEL_PREFIX = "track:"
+SECURITY_TRACK = "security"   # no ticket names it, and its tasks take no ticket track
 _POLICY_STAGES = {"queued": "spec", "awaiting-spec-review": "spec",
                   "address-review": "implement"}
 _OLD_KEYS = ("default", "rules")
-_TOP_KEYS = frozenset({"triage", "untracked", "tracks", "review_second"})
+_TOP_KEYS = frozenset({"triage", "untracked", "tracks", "review_second", "pinned"})
 
 
 def split_model_id(model_id: str) -> tuple[str, str]:
@@ -49,16 +50,37 @@ def policy_stage(stage: str) -> str:
     return _POLICY_STAGES.get(stage, stage)
 
 
+# The two keys of `TaskState.picks` that are not simply a stage's own name.
+IMPLEMENT_PICK = "implement"   # the pick of the ticket in progress
+FEEDBACK_PICK = "feedback"     # the one pick of every PR feedback round
+
+
+def pick_key(stage: str) -> str:
+    """Runtime stage -> its key in `TaskState.picks`: the policy stage, but
+    PR feedback has its own. Address-review chooses from the implement list
+    (policy_stage) and keeps that one choice under FEEDBACK_PICK, so the
+    implement pick stays the tickets'."""
+    return FEEDBACK_PICK if stage == "address-review" else policy_stage(stage)
+
+
 def stage_pick(picks: Mapping[str, str], stage: str) -> str:
     """The entry that ran `stage` (runtime vocabulary), or "" when the stage
     has no pick yet."""
-    return picks.get(policy_stage(stage), "")
+    return picks.get(pick_key(stage), "")
 
 
 def pick_provider(picks: Mapping[str, str], stage: str) -> str:
     """The provider that ran `stage`, or "" when the stage has no pick yet."""
     pick = stage_pick(picks, stage)
     return parse_entry(pick, "pick").provider if pick else ""
+
+
+def review_avoid(implement_providers: Sequence[str], stage: str) -> str:
+    """The provider review moves to the back: the one provider that ran the
+    task's tickets. Two or more, or none: nothing to avoid. The one rule the
+    dispatcher and the console share."""
+    one = len(implement_providers) == 1 and policy_stage(stage) == "review"
+    return implement_providers[0] if one else ""
 
 
 def override_refusal(picks: Mapping[str, str], stage: str, model_id: str) -> str:
@@ -70,8 +92,9 @@ def override_refusal(picks: Mapping[str, str], stage: str, model_id: str) -> str
     fixed = pick_provider(picks, stage)
     if not fixed or split_model_id(model_id)[0] == fixed:
         return ""
-    return (f"stage {policy_stage(stage)} runs on {fixed}; "
-            f"pick a model from {fixed}")
+    what = ("PR feedback" if pick_key(stage) == FEEDBACK_PICK
+            else f"stage {policy_stage(stage)}")
+    return f"{what} runs on {fixed}; pick a model from {fixed}"
 
 
 def override_allowed(picks: Mapping[str, str], stage: str, model_id: str) -> bool:
@@ -138,6 +161,7 @@ class ModelPolicy:
     untracked: str          # the track a candidate with no track: label specs on
     tracks: Mapping[str, Track]
     review_second: str = ""  # provider/model a Claude review session's codex exec runs on, "" = unset
+    pinned: tuple[str, ...] = ()  # tracks whose entries the priority mode never reorders
 
     def entries(self) -> list[Entry]:
         out = list(self.triage)
@@ -209,6 +233,21 @@ def _triage(raw: dict) -> tuple[Entry, ...]:
     return _entries(raw["triage"], "triage:")
 
 
+def _pinned(raw: object, tracks: Mapping[str, Track]) -> tuple[str, ...]:
+    """`models.pinned:` -> a list of distinct defined track names."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(n, str) for n in raw):
+        raise ValueError(f"models: pinned: must be a list of track names, got {raw!r}")
+    for name in raw:
+        if name not in tracks:
+            raise ValueError(f"models: pinned: {name!r} is not a defined track "
+                             f"{sorted(tracks)}")
+        if raw.count(name) > 1:
+            raise ValueError(f"models: pinned: {name!r} is named twice")
+    return tuple(raw)
+
+
 def parse_policy(raw: dict | None) -> ModelPolicy:
     """Validate the `models:` block. Raises ValueError so a typo kills the
     pass loudly at config load instead of silently mis-routing."""
@@ -234,12 +273,52 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
         raise ValueError(f"models: untracked: must name a defined track "
                          f"{sorted(tracks)}, got {untracked!r}")
     return ModelPolicy(triage=_triage(raw), untracked=untracked, tracks=tracks,
-                       review_second=_review_second(raw.get("review_second")))
+                       review_second=_review_second(raw.get("review_second")),
+                       pinned=_pinned(raw.get("pinned"), tracks))
 
 
 def tracks_text(policy: ModelPolicy) -> str:
-    """The track list as the prompts show it: one line per track."""
-    return "\n".join(f"- `{t.name}`: {t.when}" for t in policy.tracks.values())
+    """The track list as the prompts show it: one line per track. The rules for
+    choosing come first when a track is pinned, then pinned tracks in pinned
+    order, marked, then the rest."""
+    pinned = [policy.tracks[n] for n in policy.pinned]
+    rest = [t for t in policy.tracks.values() if t.name not in policy.pinned]
+    lines = []
+    if pinned:
+        lines.append(
+            "Pick a pinned track only when the work clearly fits its "
+            f"sentence. When it is not clear, pick {policy.untracked}. "
+            "When more than one pinned track fits, pick the one listed first.")
+    lines += [f"- `{t.name}` (pinned): {t.when}" for t in pinned]
+    lines += [f"- `{t.name}`: {t.when}" for t in rest]
+    return "\n".join(lines)
+
+
+def ticket_track_names(policy: ModelPolicy, track: str) -> tuple[str, ...]:
+    """The tracks a ticket of a task on `track` may name as its ticket track:
+    the pinned tracks other than `security`, in pinned order; none for a
+    security task, whose every ticket stays on the security list."""
+    if track == SECURITY_TRACK:
+        return ()
+    return tuple(n for n in policy.pinned if n != SECURITY_TRACK)
+
+
+def ticket_tracks_text(policy: ModelPolicy, track: str) -> str:
+    """What the plan prompt says about the `Track:` line of a ticket of a
+    task on `track`: one paragraph, with the names a ticket may use."""
+    names = ticket_track_names(policy, track)
+    if not names:
+        return ("No ticket of this task may carry a `Track:` line: every "
+                "ticket is implemented on the task's own track.")
+    return "\n".join([
+        "A ticket may carry one line `Track: <name>`, on a line of its own "
+        "like the Blocked by line, and never more than one. That ticket is "
+        "implemented on the named track's models; a ticket without the line "
+        "is implemented on the task's own track. Name a track only when the "
+        "ticket's work clearly fits its sentence; when none fits, omit the "
+        "line (do not write `Track: none`). No other line of a ticket may "
+        "start with `Track:`. The names a ticket may use:",
+        *(f"- `{n}`: {policy.tracks[n].when}" for n in names)])
 
 
 def track_from_labels(labels: Sequence[str], policy: ModelPolicy) -> str:
@@ -261,10 +340,12 @@ Order = Callable[[Sequence[Entry]], tuple[Entry, ...]]
 def candidates(policy: ModelPolicy, track: str, stage: str,
                avoid_provider: str = "", *, order: Order) -> tuple[Entry, ...]:
     """The ordered entries a stage may launch: the written list as `order`
-    arranges it (`tuple`: as written). Review prefers a provider other than
-    the one that ran implement: its entries move to the back, order otherwise
-    kept, so a track whose every entry shares one provider is unchanged
-    (preference, not a rule)."""
+    arranges it (`tuple`: as written; a pinned track is always as written).
+    Review prefers a provider other than the one that ran implement: its
+    entries move to the back, order otherwise kept, so a track whose every
+    entry shares one provider is unchanged (preference, not a rule)."""
+    if track in policy.pinned:
+        order = tuple   # a pinned track keeps its written order, whatever the mode
     entries = order(policy.tracks[track].stages.get(policy_stage(stage), ()))
     if not avoid_provider:
         return entries
