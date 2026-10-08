@@ -35,6 +35,7 @@ export interface PendingIntent {
   issue: number
   actor: string
   created_at: string
+  payload?: Record<string, unknown>
 }
 export interface PendingIntentsView { intents: PendingIntent[] }
 export interface QueueActionResult { ok: true; reason: string }

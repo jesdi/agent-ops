@@ -54,7 +54,7 @@ from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
-                              RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
+                              RESPAWNABLE_STAGES, ANSWERS_FILES, AnswersRequest, PlanApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_turn_markers, delete, has_waiting,
                               holds_slot, launch_entries, load,
@@ -1990,9 +1990,6 @@ def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
         save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
 
 
-# The answers file of each operator request kind, and the stage it answers.
-ANSWERS_FILES = {"plan-approval": ("review-answers.json", "plan"),
-                 "answers": ("questionnaire-answers.json", "spec")}
 ANSWERS_WAKE = {"changes": "Apply them as feedback.", "approve": "Approved."}
 
 
