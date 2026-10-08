@@ -45,6 +45,7 @@ answer writes it in the same shape):
   "submitted": "changes",
   "submitted_at": "2026-10-12T10:12:03+00:00",
   "actor": "jesdi",
+  "revision": "9f2c…",
   "answers": {"debounce": "draft", "debounce.note": "flush on pagehide", "track": "standard"}
 }
 ```
@@ -287,7 +288,7 @@ plan session has three questions with ids `format`, `limit` and `headers`, each 
 - **Given** the plan session was resumed with "changes" at 10:00 and reports `working`
 - **When** an `answers` intent with `submit` `"approve"` is drained at 10:01
 - **Then** no file is written, the session gets no message, and an `intent-dropped` event
-  says "session busy".
+  says "no open request" (the rework cleared the request).
 
 ### Scenario: a draft never overwrites a submission
 

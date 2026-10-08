@@ -6,11 +6,14 @@ systemd timer; one invocation = one pass."""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,7 +37,7 @@ from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import openspec_migration, spec_publish, task_artifacts
-from dispatcher.artifacts import TICKETS_DIR, plan_revision
+from dispatcher.artifacts import PLAN_FILE_MAX_BYTES, TICKETS_DIR, plan_revision
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
@@ -56,7 +59,8 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_C
                               clear_turn_markers, delete, has_waiting,
                               holds_slot, launch_entries, load,
                               load_all, max_slots,
-                              next_stage, read_background, read_stage_signal,
+                              next_stage, read_background, read_regular,
+                              read_stage_signal,
                               implement_done, resumable_crash, shown_stage,
                               save, task_key)
 from dispatcher.workspace import (append_worktree_file, create_workspace,
@@ -696,7 +700,10 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         wt_abs = Path(task.worktree).resolve()
         try:
             wt_rel = str(Path(resolved).resolve().relative_to(wt_abs))
-            answers_request = AnswersRequest(path=wt_rel)
+            page = read_regular(resolved, PLAN_FILE_MAX_BYTES)
+            answers_request = AnswersRequest(
+                path=wt_rel,
+                fingerprint=hashlib.sha256(page).hexdigest() if page is not None else "")
         except ValueError:
             # Path escapes the worktree — treat as unusable reference.
             resolved = ""
@@ -1963,18 +1970,101 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
         return
     _queue_message(cfg, target, intent.issue, intent.payload.get("text", ""),
                    intent.actor or "operator")
-    if (task is not None and not task.park
-            and task.stage is Stage.AWAITING_PLAN_REVIEW):
-        # A gate task that has not parked yet waits for exactly this reply,
+    if task is not None:
+        _wake_for_queued_message(cfg, deps, task)
+
+
+def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
+    """Wake a task that waits for the operator, so its session reads the
+    message just queued. Any other task reads it on its next resume."""
+    if not task.park and task.stage is Stage.AWAITING_PLAN_REVIEW:
+        # A gate task that has not parked yet waits for exactly this message,
         # and only a resume hands the queue to its session: without the wake
-        # the grace park would end the session with the reply undelivered.
+        # the grace park would end the session with the message undelivered.
         # So it parks now, as the grace park would (session ended, slot
         # freed), and wakes below.
         _end_session(cfg, deps, task.target, task.issue)
         task = replace(task, park=PARK_REVIEW, slot=NO_SLOT)
-    if task is not None and task.park in (PARK_HUMAN, PARK_REVIEW):
+    if task.park in (PARK_HUMAN, PARK_REVIEW):
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
         save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
+
+
+# The answers file of each operator request kind, and the stage it answers.
+ANSWERS_FILES = {"plan-approval": ("review-answers.json", "plan"),
+                 "answers": ("questionnaire-answers.json", "spec")}
+ANSWERS_WAKE = {"changes": "Apply them as feedback.", "approve": "Approved."}
+
+
+def _waits_for_operator(task: TaskState) -> bool:
+    """Parked for input or review, or at the gate before the grace park."""
+    return (task.park in (PARK_HUMAN, PARK_REVIEW)
+            or (not task.park and task.stage is Stage.AWAITING_PLAN_REVIEW))
+
+
+def _answers_drop_reason(task: TaskState | None,
+                         intent: intents.Intent) -> str | None:
+    """Why an answers intent must not be applied; None when it may be. A
+    draft against a submitted file is stale whatever the task does now, so
+    that reason comes before "session busy" (the submission's own wake
+    makes the task busy)."""
+    if intent.payload.get("submit") not in (None, *ANSWERS_WAKE):
+        return f"unknown submit {intent.payload.get('submit')!r}"
+    if task is None or task.operator_request is None:
+        return "no open request"
+    name, _ = ANSWERS_FILES[task.operator_request.kind]
+    if (intent.payload.get("submit") is None
+            and _submitted_on_disk(task.worktree, name,
+                                   intent.payload.get("revision"))):
+        return "already submitted"
+    if not _waits_for_operator(task):
+        return "session busy"
+    revision = task.operator_request.fingerprint
+    if not revision or intent.payload.get("revision") != revision:
+        return "stale revision"
+    return None
+
+
+def _submitted_on_disk(worktree: str, name: str, revision: object) -> bool:
+    """The file on disk is a submission that a draft must not overwrite:
+    one made on this page revision, or one with no revision (a session
+    wrote it from a text answer). Only a submission made on another
+    revision lets a draft on the page shown now through."""
+    raw = read_regular(Path(worktree) / ".agent" / name, PLAN_FILE_MAX_BYTES)
+    try:
+        doc = json.loads(raw or b"{}")
+        return (doc.get("submitted") is not None
+                and doc.get("revision") in (None, revision))
+    except (ValueError, AttributeError):
+        return False   # garbage on disk is no submission
+
+
+def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
+                          intent: intents.Intent) -> None:
+    """Write the answers file of the task's open request; a submission
+    then wakes the session to read it."""
+    reason = _answers_drop_reason(task, intent)
+    if reason:
+        raise IntentDropped(reason)
+    assert task is not None and task.operator_request is not None
+    name, stage = ANSWERS_FILES[task.operator_request.kind]
+    submit = intent.payload.get("submit")
+    actor = intent.actor or "operator"
+    doc = {"v": 1, "stage": stage, "submitted": submit,
+           "submitted_at": intent.created_at if submit else None,
+           "actor": actor, "revision": intent.payload.get("revision"),
+           "answers": intent.payload.get("answers")}
+    # write_worktree_file creates a missing .agent/; an answers file is
+    # written only into one the session made (lstat: a symlink is refused).
+    if not stat.S_ISDIR(os.lstat(Path(task.worktree) / ".agent").st_mode):
+        raise OSError(f"{task.worktree}/.agent is not a directory")
+    write_worktree_file(task.worktree, ".agent", name, json.dumps(doc, indent=2))
+    if submit is None:
+        return
+    _queue_message(cfg, task.target, task.issue,
+                   f"Answers in .agent/{name} ({submit}). {ANSWERS_WAKE[submit]}",
+                   actor)
+    _wake_for_queued_message(cfg, deps, task)
 
 
 def _parkable_task(deps: Deps, task: TaskState | None, issue: int) -> bool:
@@ -2155,6 +2245,8 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         _apply_retry_intent(cfg, issue)
     elif intent.action == "resume":
         _apply_resume_intent(cfg, by_name, task, intent)
+    elif intent.action == "answers":
+        _apply_answers_intent(cfg, deps, task, intent)
     else:
         print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
               file=sys.stderr)
@@ -2169,12 +2261,53 @@ def _intent_target(cfg: Config, intent: intents.Intent) -> str:
     return intent.target or (resolved.target if resolved is not None else "")
 
 
+def _competes(cfg: Config, intent: intents.Intent) -> bool:
+    """An answers intent valid for its task's open request: right revision
+    and a known submit value. Only these can supersede one another. A task
+    file that does not load leaves the intent to the drain, which fails it
+    on its own."""
+    if intent.action != "answers":
+        return False
+    try:
+        task = _task_for_intent(cfg, intent)
+    except Exception:
+        return False
+    req = task.operator_request if task is not None else None
+    return (req is not None and bool(req.fingerprint)
+            and intent.payload.get("revision") == req.fingerprint
+            and intent.payload.get("submit") in (None, *ANSWERS_WAKE))
+
+
+def _without_superseded_answers(cfg: Config,
+                                pending: list[intents.Intent]) -> list[intents.Intent]:
+    """Per task, only one valid answers intent of a pass is applied: the
+    newest submission, else the newest draft. The other valid ones are
+    deleted unapplied; an invalid one stays and drops with its reason (a
+    stale tab never costs a current answer)."""
+    competing = {i.path: i for i in pending if _competes(cfg, i)}
+    winners: dict[tuple[str, int], intents.Intent] = {}
+    for i in competing.values():
+        key = (i.target, i.issue)
+        winners[key] = max(winners.get(key, i), i, key=lambda x: (
+            x.payload.get("submit") is not None, x.created_at, x.path.name))
+    kept = []
+    for i in pending:
+        win = winners[(i.target, i.issue)] if i.path in competing else i
+        if win is i:
+            kept.append(i)
+        else:
+            print(f"[info] intent {i.path.name} superseded by {win.path.name}",
+                  file=sys.stderr)
+            intents.delete_intent(i)
+    return kept
+
+
 def _apply_intents(cfg: Config, deps: Deps) -> None:
     """Drain operator intents (web console writes) at the top of the pass.
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
     noted to stderr, and never aborts the pass or the remaining intents."""
     by_name = {t.name: t for t in cfg.targets}
-    for intent in intents.list_intents(cfg.state_dir):
+    for intent in _without_superseded_answers(cfg, intents.list_intents(cfg.state_dir)):
         try:
             _apply_one_intent(cfg, deps, by_name, intent)
             eventlog.append_event(cfg.state_dir, "intent-applied",
