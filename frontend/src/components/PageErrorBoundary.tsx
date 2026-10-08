@@ -1,4 +1,4 @@
-import { Component, type ReactNode } from 'react'
+import { Component, Suspense, type ReactNode } from 'react'
 import { useLocation } from 'react-router'
 
 type State = { failed: boolean }
@@ -27,6 +27,11 @@ class Boundary extends Component<{ children: ReactNode }, State> {
   }
 }
 
+/** Wraps a lazy page: its loading state and its load failure. */
 export function PageErrorBoundary({ children }: { children: ReactNode }) {
-  return <Boundary key={useLocation().pathname}>{children}</Boundary>
+  return (
+    <Boundary key={useLocation().pathname}>
+      <Suspense fallback={<p className="p-4 text-ink-muted">loading page…</p>}>{children}</Suspense>
+    </Boundary>
+  )
 }

@@ -1,15 +1,13 @@
 import { screen, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
 import { renderWithProviders } from '../../test/render'
-import { queryKeys } from '../../hooks/queryKeys'
 import { RequestPanel } from '../RequestPanel'
 
 function renderPanel() {
   return renderWithProviders(
-    <RequestPanel target="widget" issue={42} busy={false} onApprove={() => {}} />,
+    <RequestPanel target="widget" issue={42} />,
   )
 }
 
@@ -17,8 +15,8 @@ beforeEach(() => {
   server.use(...defaultHandlers)
 })
 
-// Cycle 1: HTML variant — sandboxed iframe
-test('text/html readable request renders a sandboxed iframe with allow-scripts only', async () => {
+// An HTML page answers only on the review route, behind the bridge: no embed here.
+test('text/html readable request links to the review route and embeds no page', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
@@ -33,11 +31,8 @@ test('text/html readable request renders a sandboxed iframe with allow-scripts o
     ),
   )
   renderPanel()
-  const iframe = await screen.findByTitle('question.html')
-  expect(iframe.tagName).toBe('IFRAME')
-  expect(iframe).toHaveAttribute('sandbox', 'allow-scripts')
-  // No allow-same-origin: that attribute value must not be present
-  expect(iframe.getAttribute('sandbox')).not.toContain('allow-same-origin')
+  expect(await screen.findByRole('link', { name: 'open review' })).toHaveAttribute('href', '/task/widget/42/review')
+  expect(document.querySelector('iframe')).toBeNull()
 })
 
 // Cycle 19a: unavailable plan-approval — recovery visible, no approve, panel stays
@@ -97,57 +92,19 @@ test('non-markdown non-html readable request renders a download link with a data
   expect(link.getAttribute('href')).toContain(encodeURIComponent(text))
 })
 
-// Cycle 21: same-path spec revision clears the armed approval confirmation
-test('plan-approval revision at same path clears armed state', async () => {
-  const user = userEvent.setup()
-  const initialText = '# Spec v1\nInitial content.'
-  const revisedText = '# Spec v2\nRevised content.'
-
+// The operator answers on the review route; the panel links there.
+test('an open request links to its review route and has no approve button', async () => {
   server.use(
     http.get('/api/task/widget/42/request', () =>
       HttpResponse.json({
         kind: 'plan-approval',
-        content: {
-          kind: 'readable',
-          media_type: 'text/markdown',
-          path: 'ops/42/spec.md',
-          text: initialText,
-        },
+        content: { kind: 'readable', media_type: 'text/markdown', path: 'ops/42/spec.md', text: '# Spec' },
       }),
     ),
   )
-
-  const { queryClient } = renderPanel()
-
-  // Arm the approve button
-  const approveBtn = await screen.findByRole('button', { name: /approve plan/i })
-  await user.click(approveBtn)
-  expect(screen.getByRole('button', { name: /tap again to approve/i })).toBeInTheDocument()
-
-  // Update handler: same path, different text (revision)
-  server.use(
-    http.get('/api/task/widget/42/request', () =>
-      HttpResponse.json({
-        kind: 'plan-approval',
-        content: {
-          kind: 'readable',
-          media_type: 'text/markdown',
-          path: 'ops/42/spec.md',
-          text: revisedText,
-        },
-      }),
-    ),
-  )
-
-  // Trigger refetch
-  await queryClient.invalidateQueries({ queryKey: queryKeys.request('widget', 42) })
-
-  // Armed must reset — button shows "approve plan" again
-  expect(await screen.findByRole('button', { name: /approve plan/i })).toBeInTheDocument()
-
-  // A second tap re-arms rather than approving
-  await user.click(screen.getByRole('button', { name: /approve plan/i }))
-  expect(screen.getByRole('button', { name: /tap again to approve/i })).toBeInTheDocument()
+  renderPanel()
+  expect(await screen.findByRole('link', { name: 'open review' })).toHaveAttribute('href', '/task/widget/42/review')
+  expect(screen.queryByRole('button', { name: /approve plan/i })).not.toBeInTheDocument()
 })
 
 // The plan summary is a document: its headings and lists go through the

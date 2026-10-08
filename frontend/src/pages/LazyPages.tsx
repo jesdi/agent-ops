@@ -4,3 +4,4 @@ import { lazy } from 'react'
 export const FailuresPage = lazy(() => import('./FailuresPage').then((m) => ({ default: m.FailuresPage })))
 export const HistoryPage = lazy(() => import('./HistoryPage').then((m) => ({ default: m.HistoryPage })))
 export const TaskPage = lazy(() => import('./TaskPage').then((m) => ({ default: m.TaskPage })))
+export const ReviewPage = lazy(() => import('./ReviewPage').then((m) => ({ default: m.ReviewPage })))
