@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="agent-ops-review" content="1">
+<title>Review</title>
+<style>
+/* Layout: one column, phone first; the console's own token system so the page
+   reads as part of the console, not as a foreign document. */
+:root {
+  --surface: #f5f7fa; --raised: #ffffff; --ink: #1e293b; --muted: #5b6577;
+  --border: #dce1e8; --attention: #fbf6ec;
+  --waiting-bg: #fef3c7; --waiting-fg: #92400e;
+  --running-bg: #dcfce7; --running-fg: #166534;
+  --parked-bg: #ede9fe; --parked-fg: #5b21b6;
+  --accent: #1e40af; --accent-bg: #dbeafe;
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --surface: #0f141a; --raised: #181e27; --ink: #e4e8ee; --muted: #98a2b1;
+  --border: #2b3340; --attention: #1f1b15;
+  --waiting-bg: #372812; --waiting-fg: #fcd34d;
+  --running-bg: #10301e; --running-fg: #86efac;
+  --parked-bg: #291f45; --parked-fg: #c4b5fd;
+  --accent: #93c5fd; --accent-bg: #1e293b; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --surface: #0f141a; --raised: #181e27; --ink: #e4e8ee; --muted: #98a2b1;
+  --border: #2b3340; --attention: #1f1b15;
+  --waiting-bg: #372812; --waiting-fg: #fcd34d;
+  --running-bg: #10301e; --running-fg: #86efac;
+  --parked-bg: #291f45; --parked-fg: #c4b5fd;
+  --accent: #93c5fd; --accent-bg: #1e293b; color-scheme: dark }
+
+* { box-sizing: border-box }
+body { margin: 0; background: var(--surface); color: var(--ink); font: 14px/1.5 var(--sans) }
+main { max-width: 680px; margin: 0 auto; padding: 16px 16px 112px }
+h1 { font-size: 18px; font-weight: 600; margin: 0; text-wrap: balance; line-height: 1.3 }
+h2 { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 }
+section { display: grid; gap: 10px; margin-top: 24px }
+p { margin: 0 }
+code { font: 12px var(--mono); overflow-wrap: anywhere }
+.eyebrow { font: 500 12px var(--mono); color: var(--muted); margin-bottom: 6px; overflow-wrap: anywhere }
+.lede { color: var(--muted); margin-top: 6px }
+.chip { display: inline-block; border-radius: 4px; padding: 0 6px; font-size: 11px; font-weight: 500; white-space: nowrap }
+.chip.waiting { background: var(--waiting-bg); color: var(--waiting-fg) }
+.chip.rec { background: var(--running-bg); color: var(--running-fg) }
+.chip.parked { background: var(--parked-bg); color: var(--parked-fg) }
+
+/* Tickets: a plain list, numbered because the order is the build order. */
+ol.tickets { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px }
+ol.tickets li { display: grid; grid-template-columns: 28px 1fr; gap: 8px; align-items: baseline }
+ol.tickets .n { font: 500 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums }
+ol.tickets .by { color: var(--muted); font-size: 12px }
+
+/* Questions: the one boxed element, because it takes input. */
+.q { background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 12px }
+.q.answered { border-color: color-mix(in srgb, var(--running-fg) 40%, var(--border)) }
+.q header { display: flex; justify-content: space-between; gap: 8px; align-items: baseline }
+.q h3 { font-size: 14px; font-weight: 600; margin: 0; text-wrap: balance }
+.q .why { color: var(--muted); margin-top: 4px }
+.opts { display: grid; gap: 6px; margin-top: 10px }
+.opt { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: start;
+  border: 1px solid var(--border); border-radius: 6px; padding: 10px; cursor: pointer; min-height: 44px }
+.opt input { margin: 3px 0 0; width: 16px; height: 16px; accent-color: var(--accent) }
+.opt:has(input:checked) { border-color: var(--accent); background: var(--accent-bg) }
+.opt:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px }
+.opt .t { font-weight: 500 }
+.opt .d { color: var(--muted); font-size: 13px }
+.q textarea { width: 100%; margin-top: 10px; min-height: 44px; border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; font: 13px/1.5 var(--sans); background: var(--surface); color: var(--ink); resize: vertical }
+.q textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+
+/* Corrections: before / after pairs. */
+.corr { display: grid; gap: 4px; padding-left: 10px; border-left: 2px solid var(--border) }
+.corr .was { color: var(--muted); text-decoration: line-through }
+
+/* Track selector: a row of pills. */
+.tracks { display: flex; flex-wrap: wrap; gap: 6px }
+.tracks label { border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; min-height: 36px;
+  display: inline-flex; align-items: center; cursor: pointer; background: var(--raised) }
+.tracks label:has(input:checked) { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); font-weight: 500 }
+.tracks label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px }
+.tracks input { position: absolute; opacity: 0; width: 0; height: 0 }
+
+/* State bar: fixed to the bottom. The console owns the buttons: a page never submits. */
+.bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--raised); border-top: 1px solid var(--border);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)) }
+.bar .in { max-width: 680px; margin: 0 auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+.bar .state { flex: 1 1 100%; font-size: 12px; color: var(--muted); min-width: 0 }
+.bar .state.saved { color: var(--running-fg) }
+
+@media (prefers-reduced-motion: no-preference) { .opt, .tracks label { transition: background .12s, border-color .12s } }
+
+/* Questionnaire mode: questions only. */
+body[data-mode="questionnaire"] section[data-slot="tickets"],
+body[data-mode="questionnaire"] section[data-slot="corrections"],
+body[data-mode="questionnaire"] section[data-slot="track"] { display: none }
+</style>
+</head>
+<body data-mode="plan">
+<main>
+  <!-- slot: header -->
+  <div class="eyebrow">plan review · owner/repo #123 · branch task/123-example</div>
+  <h1>Title of the plan</h1>
+  <p class="lede">2 tickets · 1 open question · 1 correction. Pick an option under each question, then send.</p>
+  <!-- /slot -->
+
+  <section data-slot="tickets">
+    <!-- slot: tickets -->
+    <h2>Tickets</h2>
+    <ol class="tickets">
+      <li><span class="n">01</span><span>First ticket title <span class="by">· seam: module.py</span></span></li>
+      <li><span class="n">02</span><span>Second ticket title <span class="by">· blocked by 01 · seam: other.py</span></span></li>
+    </ol>
+    <!-- /slot -->
+  </section>
+
+  <section data-slot="questions">
+    <!-- slot: questions -->
+    <h2>Open questions</h2>
+    <div class="q" data-q="format">
+      <header><h3>Which format does the export use?</h3><span class="chip waiting">needs you</span></header>
+      <p class="why">One sentence on why the answer matters.</p>
+      <div class="opts">
+        <label class="opt"><input type="radio" name="format" value="a"><span><span class="t">Option A <span class="chip rec">recommended</span></span><br><span class="d">What A costs and gives.</span></span></label>
+        <label class="opt"><input type="radio" name="format" value="b"><span><span class="t">Option B</span><br><span class="d">What B costs and gives.</span></span></label>
+      </div>
+      <textarea id="note-format" placeholder="Note (optional)"></textarea>
+    </div>
+    <!-- /slot -->
+  </section>
+
+  <section data-slot="corrections">
+    <!-- slot: corrections -->
+    <h2>Corrections</h2>
+    <div class="corr">
+      <p class="was">The old statement.</p>
+      <p>The corrected statement.</p>
+      <p class="why" style="color:var(--muted)">Why: the reason.</p>
+    </div>
+    <!-- /slot -->
+  </section>
+
+  <section data-slot="track">
+    <!-- slot: track -->
+    <h2>Track</h2>
+    <p class="why" style="color:var(--muted)">The plan session proposed <strong>standard</strong>. Change it only when needed.</p>
+    <div class="tracks" role="radiogroup" aria-label="track">
+      <label><input type="radio" name="track" value="trivial">trivial</label>
+      <label><input type="radio" name="track" value="standard" checked>standard</label>
+      <label><input type="radio" name="track" value="security">security</label>
+    </div>
+    <!-- /slot -->
+  </section>
+</main>
+
+<div class="bar">
+  <div class="in">
+    <p class="state" id="state">0 of 0 questions answered</p>
+  </div>
+</div>
+
+<script>
+// Fixed part of the template: collect, post, restore. The session never edits this.
+const V = 1;
+const state = document.querySelector('.bar #state');   // lives in the bar, never in a slot
+const embedded = window.parent !== window;
+const questions = () => [...document.querySelectorAll('.q[data-q]')];
+let restored = false;
+
+function collect() {
+  const answers = {};
+  for (const el of questions()) {
+    const q = el.dataset.q;
+    const picked = [...document.getElementsByName(q)].find(i => i.checked);
+    if (picked) answers[q] = picked.value;
+    const note = document.getElementById('note-' + q);
+    if (note && note.value.trim()) answers[q + '.note'] = note.value.trim();
+  }
+  const track = document.querySelector('input[name="track"]:checked');
+  if (track) answers.track = track.value;
+  return answers;
+}
+
+function post() {
+  // In the console this is the only way out of the sandbox. Always a draft:
+  // the console's own buttons submit, so no page script can approve.
+  if (embedded) window.parent.postMessage({ type: 'answers', v: V, answers: collect(), submit: null }, '*');
+  paint();
+}
+
+function paint() {
+  let n = 0;
+  const all = questions();
+  for (const el of all) {
+    const done = [...document.getElementsByName(el.dataset.q)].some(i => i.checked);
+    el.classList.toggle('answered', done);
+    const chip = el.querySelector('header .chip.waiting, header .chip.rec');
+    if (chip) { chip.textContent = done ? 'answered' : 'needs you'; chip.className = done ? 'chip rec' : 'chip waiting'; }
+    if (done) n++;
+  }
+  state.textContent = `${n} of ${all.length} questions answered` + (restored ? ' · saved answers restored' : '');
+  state.classList.toggle('saved', restored);
+}
+
+function restore(answers) {
+  for (const [k, v] of Object.entries(answers || {})) {
+    if (k.endsWith('.note')) { const t = document.getElementById('note-' + k.slice(0, -5)); if (t) t.value = v; continue; }
+    const input = [...document.getElementsByName(k)].find(i => i.value === v);
+    if (input) input.checked = true;
+  }
+  paint();
+}
+
+document.addEventListener('change', e => {
+  if (e.target.type === 'radio') post();
+});
+document.addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') post(); });
+
+// From the console: saved answers, when the page reopens on any device.
+window.addEventListener('message', e => {
+  const d = e.data;
+  if (e.source !== window.parent || !d || d.v !== V || d.type !== 'restore') return;
+  restored = Object.keys(d.answers || {}).length > 0; restore(d.answers);
+});
+if (embedded) window.parent.postMessage({ type: 'ready', v: V }, '*');
+paint();
+</script>
+</body>
+</html>

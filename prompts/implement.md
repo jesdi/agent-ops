@@ -4,6 +4,8 @@ this one, works every ticket of the approved plan. The spec is `$spec_path`,
 with `proposal.md` and `design.md` beside it. You have no memory of earlier
 sessions and nobody is watching this chat.
 
+$answers_note
+
 Read the skill file `~/.claude/skills/implement-spec/SKILL.md` (on Codex:
 `~/.codex/skills/implement-spec/SKILL.md`) and follow it over the tickets
 directory `$tickets_dir`, on the existing task branch `$branch`: that branch

@@ -713,3 +713,31 @@ def test_claude_state_file_keeps_its_mode_and_a_new_one_is_private(tmp_path, mon
     workspace._seed_claude_state("/wt/b")
     assert f.stat().st_mode & 0o777 == 0o640           # replaced: mode kept
     assert set(json.loads(f.read_text())["projects"]) == {"/wt/a", "/wt/b"}
+
+
+def test_remove_worktree_file_removes_the_file_and_tolerates_a_missing_one(tmp_path: Path):
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "a.json").write_text("{}")
+    workspace.remove_worktree_file(tmp_path, ".agent", "a.json")
+    assert not (tmp_path / ".agent" / "a.json").exists()
+    workspace.remove_worktree_file(tmp_path, ".agent", "a.json")    # missing file
+    workspace.remove_worktree_file(tmp_path, "gone", "a.json")      # missing dir
+    assert not (tmp_path / "gone").exists()
+
+
+def test_remove_worktree_file_never_follows_a_symlink(tmp_path: Path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a.json").write_text("keep")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".agent").symlink_to(outside)
+    with pytest.raises(OSError):
+        workspace.remove_worktree_file(wt, ".agent", "a.json")
+    assert (outside / "a.json").read_text() == "keep"
+    (wt / ".agent").unlink()
+    (wt / ".agent").mkdir()
+    (wt / ".agent" / "a.json").symlink_to(outside / "a.json")
+    workspace.remove_worktree_file(wt, ".agent", "a.json")
+    assert not (wt / ".agent" / "a.json").is_symlink()
+    assert (outside / "a.json").read_text() == "keep"

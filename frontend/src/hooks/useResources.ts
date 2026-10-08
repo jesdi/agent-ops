@@ -79,11 +79,12 @@ export function useIssueDescription(target: string, issue: number, enabled: bool
 /** The unified operator request (plan-approval or answers). retry:false —
  *  null = no request, not a transient failure. Participates in the same
  *  fallback polling as task-detail so an out-of-band clear is eventually
- *  reflected. */
+ *  reflected. `pollMs` polls even while live updates are connected (no live
+ *  event carries the request). */
 // ponytail: fires unconditionally (no enabled guard); add `enabled` if
 //   request traffic matters (e.g. many concurrent task panes).
-export function useTaskRequest(target: string, issue: number) {
-  const refetchInterval = useFallbackInterval()
+export function useTaskRequest(target: string, issue: number, pollMs?: number) {
+  const refetchInterval = useFallbackInterval() || pollMs || false
   return useQuery({
     queryKey: queryKeys.request(target, issue),
     queryFn: () => api.taskRequest(target, issue),

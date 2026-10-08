@@ -31,7 +31,7 @@ function ArtifactRow({ artifact }: { artifact: ArtifactsView['items'][number] })
       <div className="min-w-0 flex-1">
         <h3 className="break-words text-sm font-medium text-ink">{artifact.name}</h3>
         <p className="mt-1 break-words text-xs text-ink-muted">
-          {artifact.status === 'expired' ? 'Box copy removed after 30 days'
+          {artifact.status === 'expired' ? 'Box copy removed after 7 days'
             : artifact.status === 'unavailable' ? 'Content unavailable'
             : artifact.github_url ? 'GitHub'
             : artifact.media_type === 'text/markdown' ? 'Not published · local copy'
@@ -51,7 +51,7 @@ function ArtifactRow({ artifact }: { artifact: ArtifactsView['items'][number] })
 }
 
 function ArtifactRetention({ data }: { data: ArtifactsView }) {
-  if (data.expired) return 'Box copies were removed after 30 days. GitHub artifacts remain available.'
-  if (data.expires_at) return `Box copies will be removed on ${new Date(data.expires_at).toLocaleDateString()} — 30 days after completion. GitHub artifacts will remain available.`
+  if (data.expired) return 'Box copies were removed after 7 days. GitHub artifacts remain available.'
+  if (data.expires_at) return `Box copies will be removed on ${new Date(data.expires_at).toLocaleDateString()} — 7 days after completion. GitHub artifacts will remain available.`
   return 'Links open the latest version in a new tab.'
 }

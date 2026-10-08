@@ -85,7 +85,7 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
   showHistory: boolean
   setShowHistory: Dispatch<SetStateAction<boolean>>
 }) {
-  const { busy, actionError, runIntent } = actions
+  const { actionError } = actions
   const { card, pane_tail, session_alive, worktree, messages, delivery_contract } = detail
 
   return (
@@ -104,14 +104,7 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
 
       <DescriptionPanel target={target} issue={issue} />
 
-      <RequestPanel
-        target={target}
-        issue={issue}
-        busy={busy}
-        onApprove={() =>
-          runIntent(() => api.reply(target, issue, 'Approved — proceed.'))
-        }
-      />
+      <RequestPanel target={target} issue={issue} />
 
       <ArtifactsPanel target={target} issue={issue} />
 

@@ -84,6 +84,13 @@
       "agents": [
         "claude"
       ]
+    },
+    "review-page": {
+      "version": "0.1.0",
+      "package": "0.0.28",
+      "agents": [
+        "claude"
+      ]
     }
   }
 }
