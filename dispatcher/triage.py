@@ -286,7 +286,7 @@ def guarded_sweep(cfg: Config, deps) -> None:
 
 
 LAUNCH_ENV_VARS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-                   "AGENT_OPS_STATE_DIR")
+                   "AGENT_OPS_STATE_DIR", "AGENT_OPS_COMMAND_WRAPPER")
 
 
 def _repo_dir() -> str:
@@ -304,6 +304,13 @@ def _launch_env() -> dict[str, str]:
     A pane's shell inherits the herdr *server's* environment, and that
     server is the agent-ops-herdr user unit — no `op run`, no Telegram
     credentials — so without forwarding the only symptom is a silent sweep.
+
+    AGENT_OPS_COMMAND_WRAPPER rides along for the same reason: the runner
+    composes the triage container's argv itself (containers.triage_cmd reads
+    the wrapper from ITS environment), and without it the triage `claude -p`
+    ran with no CLAUDE_CODE_OAUTH_TOKEN — authenticating from, and near
+    expiry refreshing, the mounted claude-home login: a second refresher of
+    a single-use refresh token next to the keepalive (infra#10).
 
     A variable that is unset is simply not forwarded — the runner's own
     fallbacks (containers._state_dir, Notifier's missing-credential warning)
