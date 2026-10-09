@@ -1571,27 +1571,33 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
                           time.time(), cfg.background_wait_seconds)
 
 
+def _session_evidence(cfg: Config, deps: Deps, task: TaskState, alive: bool):
+    runtime_view = getattr(deps.sessions, "runtime_view", None)
+    if runtime_view is not None and runtime_view(task.target, task.issue) is not None:
+        # Managed launches never inherit legacy marker, inventory or idle
+        # evidence. Automatic stopped-turn retirement is added separately.
+        return False, None, None
+    waiting = has_waiting(cfg.state_dir, task.target, task.issue)
+    # Read background state before idle: a wake between reads must hold.
+    view = _background_view(cfg, deps, task, alive)
+    idle = (deps.sessions.idle_seconds(task.target, task.issue)
+            if alive and cfg.stall_after_seconds > 0 else None)
+    return waiting, view, idle
+
+
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 admit: Admit, order: Order, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
     policy = policy_for(cfg, target)
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
     alive = deps.sessions.is_alive(task.target, task.issue)
-    waiting = has_waiting(cfg.state_dir, task.target, task.issue)
     if task.track not in policy.tracks:
         _park_for_input(cfg, deps, target, task,
                         f"track {task.track!r} is no longer configured (have "
                         f"{sorted(policy.tracks)}); restore it in targets.yaml or "
                         f"run the task with a model override")
         return
-    # herdr's view of a background wait BEFORE the idle reading: a session
-    # waking between the two reads must look still-waiting (held), never
-    # woken-with-a-stale-idle (stall-parked mid-turn).
-    view = _background_view(cfg, deps, task, alive)
-    # Query idle only when it can matter: detection enabled and the
-    # session alive (the crash path owns dead sessions).
-    idle = (deps.sessions.idle_seconds(task.target, task.issue)
-            if alive and cfg.stall_after_seconds > 0 else None)
+    waiting, view, idle = _session_evidence(cfg, deps, task, alive)
     turn = _Turn(cfg, deps, target, signal, dry_run)
     for act in pass_actions(task, signal, alive, waiting, view,
                             caps=cfg.loop_caps,

@@ -23,6 +23,7 @@ from pathlib import Path
 from dispatcher import containers, herdr, workspace
 from dispatcher.models import Entry
 from dispatcher.runtimes import Runtime, runtime_for
+from dispatcher.runtime_control import RuntimeControl
 from dispatcher.state import clear_session
 
 
@@ -52,6 +53,12 @@ class Sessions:
 
     def _tab(self, target: str, issue: int) -> herdr.Tab | None:
         return herdr.Tab.find(session_name(target, issue))
+
+    def runtime_view(self, target: str, issue: int) -> dict | None:
+        """Read the host snapshot; legacy sessions have no prepared launch."""
+        if self.state_dir is None:
+            return None
+        return RuntimeControl(self.state_dir).view(target, issue)
 
     def is_alive(self, target: str, issue: int) -> bool:
         """Alive means the tab exists AND its shell is busy — a CLI that

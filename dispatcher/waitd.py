@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import UnixStreamServer
 
+from dispatcher.runtime_control import RuntimeControl
 from dispatcher.state import (SessionRecord, load, mark_background,
                               mark_waiting, write_session)
 
@@ -94,6 +95,10 @@ def handle_ping(body: bytes, state_dir) -> None:
         target = str(rec.get("target", ""))
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         print(f"waitd: dropping corrupt ping: {body!r}", file=sys.stderr)
+        return
+    # Prepared launches accept only their authoritative bound lifecycle.
+    # Keep the legacy recording/marker path for sessions not yet migrated.
+    if RuntimeControl(state_dir).view(target, issue) is not None:
         return
     if rec.get("runtime") == "codex":
         _handle_codex_ping(rec, state_dir, target, issue)
