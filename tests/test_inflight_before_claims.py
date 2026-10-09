@@ -6,7 +6,7 @@ resulting claims/resumes/spawns and wake-blocked markers — never on
 main.py internals.
 """
 from dispatcher.github import Candidate
-from dispatcher.state import PARK_WAKE, Stage
+from dispatcher.state import PARK_WAKE, Stage, SessionRecord, write_session
 
 from tests.test_main import FakeGitHub, FakeSessions, deps, patch_usage, patch_workspace
 from tests.test_multi_project_capacity import (mk_task, two_target_cfg,
@@ -19,6 +19,7 @@ def test_woken_task_resumes_before_other_target_claims(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = two_target_cfg(tmp_path)  # portfolio_eval listed first, factorial second
+    write_session(c.state_dir, "factorial", 42, SessionRecord("factorial-42", "implement"))
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
     mk_task(c, "factorial", 42, stage=Stage.IMPLEMENT, park=PARK_WAKE, slot=2)
@@ -42,6 +43,8 @@ def test_woken_tasks_resume_in_wake_order_across_targets(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = two_target_cfg(tmp_path)  # portfolio_eval listed first, factorial second
+    write_session(c.state_dir, "factorial", 42, SessionRecord("factorial-42", "implement"))
+    write_session(c.state_dir, "portfolio_eval", 3, SessionRecord("portfolio-3", "implement"))
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
     mk_task(c, "portfolio_eval", 3, stage=Stage.IMPLEMENT, park=PARK_WAKE, slot=2,

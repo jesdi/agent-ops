@@ -36,6 +36,14 @@ every ticket. Review: an independent review, then the content move and the
 PR.
 _Avoid_: phase, step
 
+**Session record**:
+The task's recorded conversation ID and continued stage, stored in
+`<state_dir>/session-<target>-<issue>` and written only by waitd after a root
+turn ends. A resume names that ID when its stage matches (`plan` for
+`awaiting-plan-review`); otherwise the continued stage starts a new conversation.
+Every fresh stage launch and the task's flush remove the
+record. A park, session end, and resume retain it.
+
 **Ticket**:
 One vertical slice of the implementation, produced by the plan stage as
 `.agent/tickets/NN-slug.md`. One implement session works every ticket of a

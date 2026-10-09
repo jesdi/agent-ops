@@ -13,7 +13,7 @@ from tests import webfakes
 from tests.pinned import (ASTRA, OPUS, PLAN_DONE, SOL, ahead, anthropic,
                           cards, deny, detail, openai, rig, saved, setup, step,
                           usage_now, wake)
-from tests.test_main import FakeNotifier, FakeSessions, deps
+from tests.test_main import FakeNotifier, FakeSessions, deps, record_session
 
 LUNA = "openai/gpt-luna"
 ATTACHING = "The operator is attaching to talk to you directly"
@@ -34,6 +34,7 @@ def implementing(tmp_path, monkeypatch):
     first entry of the pinned architecture track's implement list."""
     c, wt = setup(tmp_path, monkeypatch, "architecture", 2)
     step(c, wt, PLAN_DONE)
+    record_session(c, "implement")
     return c, wt
 
 

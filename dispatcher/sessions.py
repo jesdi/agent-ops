@@ -4,9 +4,9 @@ runtime (claude or codex; see runtimes.py). The session is a herdr tab —
 `Tab(session_name(target, issue))` in the workspace labelled `<target>` —
 whose root pane hosts the `podman run`; the container is the isolation
 layer. Tab and container die together at park and are recreated together
-at resume (`claude --continue` / `codex resume --last` read transcripts from
-the mounted runtime home, keyed by the worktree cwd, which is mounted at the
-same path inside the container).
+at resume (`claude --resume <id>` / `codex resume <id>` read the recorded
+conversation from the mounted runtime home). Fresh launches discard the
+task's state-dir session record before the tab starts.
 
 Tabs are resolved by label on every call and never persisted, so a herdr
 restart or renumbering cannot strand a task. Every herdr failure degrades
@@ -25,6 +25,7 @@ from typing import Mapping
 from dispatcher import containers, herdr, workspace
 from dispatcher.models import Entry
 from dispatcher.runtimes import runtime_for
+from dispatcher.state import clear_session
 
 
 def session_name(target: str, issue: int) -> str:
@@ -112,10 +113,14 @@ class Sessions:
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "",
                     second: Entry | None = None) -> None:
+        """Start a fresh conversation; real launches require state_dir."""
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
                   f"{session_name(target, issue)} at {worktree}")
             return
+        if self.state_dir is None:
+            raise ValueError("state_dir is required for a fresh session launch")
+        clear_session(self.state_dir, target, issue)
         workspace.write_worktree_file(worktree, ".agent",
                                       f"prompt-{stage_name}.md", prompt)
         self._launch(target, issue, worktree, model,
@@ -123,14 +128,15 @@ class Sessions:
                      second=second)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
-               model: str, effort: str = "", second: Entry | None = None) -> None:
+               model: str, effort: str = "", second: Entry | None = None,
+               *, session_id: str) -> None:
         if self.dry_run:
             print(f"[dry-run] resume {session_name(target, issue)} on {model} "
                   f"at {worktree}")
             return
         runtime = runtime_for(model)
         self._launch(target, issue, worktree, model,
-                     runtime.resume(shlex.quote(message)), effort=effort,
+                     runtime.resume(session_id, shlex.quote(message)), effort=effort,
                      second=second)
 
     def capture_tail(self, target: str, issue: int, lines: int = 25) -> str:

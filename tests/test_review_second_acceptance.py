@@ -21,7 +21,7 @@ import pytest
 import dispatcher.main as main
 from dispatcher import containers, execution_overrides, herdr, sessions
 from dispatcher.models import Entry, parse_policy
-from dispatcher.state import PARK_WAKE, Stage, TaskState, load, save
+from dispatcher.state import PARK_WAKE, Stage, TaskState, load, save, SessionRecord, write_session
 from tests.test_containers import make_worktree
 from tests.test_main import FakeSessions, cfg, deps, make_task
 from tests.usagefakes import session_usage
@@ -107,8 +107,9 @@ class GrantSessions(FakeSessions):
         self.spawn_seconds.append((stage_name, second))
 
     def resume(self, target, issue, worktree, message, model, effort="",
-               second=None):
-        super().resume(target, issue, worktree, message, model, effort)
+               second=None, *, session_id=None):
+        super().resume(target, issue, worktree, message, model, effort,
+                       session_id=session_id)
         self.resume_seconds.append(second)
 
 
@@ -168,6 +169,7 @@ def test_bypassed_review_spawn_gets_second_only_if_gate_admits_it(
 
 def test_bypassed_review_resume_gets_second_only_if_gate_admits_it(tmp_path):
     c = _cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("review-42", "review"))
     make_task(c, issue=42, stage=Stage.REVIEW, park=PARK_WAKE,
               resume_bypass_usage=True)
     sess = GrantSessions()
@@ -226,11 +228,13 @@ def test_sessions_spawn_and_resume_carry_the_grant_to_the_command(tmp_path, monk
     wt, _ = make_worktree(tmp_path)
     cmds = []
     monkeypatch.setattr(herdr.Tab, "ensure", lambda *a, **k: _Tab(cmds))
-    s = sessions.Sessions()
+    s = sessions.Sessions(state_dir=tmp_path)
     s.spawn_stage("acme", 42, wt, "P", "review", "anthropic/claude-opus-5",
                   second=SECOND)
-    s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5", second=SECOND)
-    s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5")
+    s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5", second=SECOND,
+             session_id="recorded-session")
+    s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5",
+             session_id="recorded-session")
     assert len(cmds) == 3
     _assert_granted(cmds[0], tmp_path, codex_mount)
     _assert_granted(cmds[1], tmp_path, codex_mount)
@@ -271,6 +275,7 @@ def test_review_resume_re_asks_the_gate_each_time(tmp_path, monkeypatch):
     assert _review_spawns(sess) == [("review", SECOND)]
     # ...resumed after OpenAI ran out: no stored grant carries over.
     task = load(c.state_dir, "portfolio_eval", 2)
+    write_session(c.state_dir, "portfolio_eval", 2, SessionRecord("review-2", "review"))
     save(c.state_dir, replace(task, park=PARK_WAKE))
     main._resume_woken(c, deps(sess=sess), admit=_verdict(openai_ok=False), order=tuple)
     # ...and resumed again once it is back: granted afresh.

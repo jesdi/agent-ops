@@ -21,7 +21,7 @@ class Runtime:
     env: tuple[str, ...]    # extra -e flags: NAME passes the host's value, NAME=v sets it
     herdr_agent: str        # herdr's hint for the agent behind the podman wrapper
     launch_args: Callable[[str, str, str, str], str]  # (name, worktree, bare model, effort)
-    resume_args: str        # what continues the stage's own session
+    resume_args: Callable[[str], str]  # raw session ID -> shell args with a literal ID
     # (prompt, bare model, effort) -> one-shot non-interactive args; the
     # prompt is a shell word the caller already quoted or substitutes.
     headless_args: Callable[[str, str, str], str]
@@ -47,13 +47,13 @@ class Runtime:
         """One-shot shell line; model and effort are shell-quoted here."""
         return f"{self.cli} {self.headless_args(prompt, shlex.quote(model), shlex.quote(effort) if effort else '')}"
 
-    def resume(self, message: str) -> str:
+    def resume(self, session_id: str, message: str) -> str:
         """The args a launch takes to continue with the (quoted) message."""
-        return f"{self.resume_args} {message}"
+        return " ".join(filter(None, (self.resume_args(session_id), message)))
 
-    def resume_cmd(self, message: str = "") -> str:
+    def resume_cmd(self, session_id: str, message: str = "") -> str:
         """The whole resume command line, e.g. for a crash repro."""
-        return " ".join(filter(None, (self.cli, self.resume_args, message)))
+        return f"{self.cli} {self.resume(session_id, message)}"
 
 
 CLAUDE = Runtime(
@@ -79,11 +79,14 @@ CLAUDE = Runtime(
     # identifiable there. Remote Control is interactive-only (the headless -p
     # keepalive cannot and need not use it) and needs the claude-home OAuth
     # login, which the mounted store provides. It is a session-config flag,
-    # orthogonal to --continue on the resume path.
+    # orthogonal to --resume on the resume path.
     launch_args=lambda name, worktree, model, effort: (
         f"--remote-control {name} --permission-mode auto --model {model}"
         f"{' --effort ' + effort if effort else ''}"),
-    resume_args="--continue",
+    # Commander treats a dash-prefixed optional value as a new option unless
+    # it is attached with '='. Shell quoting alone cannot make it a value.
+    resume_args=lambda session_id: (
+        f"--resume{'=' if session_id.startswith('-') else ' '}{shlex.quote(session_id)}"),
     headless_args=lambda prompt, model, effort: (
         f"-p {prompt} --permission-mode auto --model {model}"
         f"{' --effort ' + effort if effort else ''}"),
@@ -99,7 +102,7 @@ CODEX = Runtime(
     # No approval prompts and no sandbox: the container is the isolation
     # layer and nobody is attached to answer. `notify` fires on
     # agent-turn-complete — Codex's Stop hook — running the worktree's own
-    # stop-hook.sh (it ignores Codex's JSON argument). The trust override
+    # stop-hook.sh (it forwards Codex's thread ID). The trust override
     # pre-empts the first-run trust prompt that would stall an unattended
     # pane; it is an inline table because -c keeps the quotes of a dotted
     # key segment (projects."<wt>".trust_level never matches). Both are
@@ -113,9 +116,9 @@ CODEX = Runtime(
         # path with a quote or a backslash, which TOML could not carry.
         " -c " + shlex.quote(f'notify=["{worktree}/.agent/stop-hook.sh"]')
         + " -c " + shlex.quote(f'projects={{"{worktree}"={{trust_level="trusted"}}}}')),
-    # The newest Codex session for the cwd; a stage never changes provider,
-    # so that is the stage's.
-    resume_args="resume --last",
+    # Clap's '--' ends option parsing, making even '--last' a literal ID.
+    resume_args=lambda session_id: (
+        f"resume {'-- ' if session_id.startswith('-') else ''}{shlex.quote(session_id)}"),
     # `codex exec`: one turn, no TTY. Same bypass as launch_args (the
     # container is the isolation); exec's default read-only sandbox could
     # not write the caller's output file or reach `gh`.

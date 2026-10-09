@@ -21,7 +21,8 @@ from dispatcher.state import (PARK_HUMAN, PlanApprovalRequest, Stage, TaskState,
                               load, load_all, save)
 
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
-                             patch_usage, patch_workspace, write_tickets)
+                             patch_usage, patch_workspace, record_session,
+                             write_tickets)
 
 ISSUE = 412
 BRANCH = "agent/412-csv-export"
@@ -68,6 +69,7 @@ def _started(c, tmp_path_unused=None):
     sess = FakeSessions(alive={ISSUE})
     main.run_pass(c, deps(sess=sess))
     assert _task(c).stage is Stage.IMPLEMENT
+    record_session(c, "implement", ISSUE)
     sess.ended.clear()   # the plan session's end is not under test
     return wt, sess
 

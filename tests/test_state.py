@@ -51,6 +51,18 @@ def test_save_load_roundtrip(tmp_path: Path):
     assert loaded.stage is Stage.SPEC
 
 
+@pytest.mark.parametrize("stage,continued", [
+    (Stage.AWAITING_PLAN_REVIEW, Stage.PLAN),
+    (Stage.SPEC, Stage.SPEC),
+    (Stage.PLAN, Stage.PLAN),
+    (Stage.IMPLEMENT, Stage.IMPLEMENT),
+    (Stage.REVIEW, Stage.REVIEW),
+    (Stage.ADDRESS_REVIEW, Stage.ADDRESS_REVIEW),
+])
+def test_continued_stage_preserves_conversation_stage(stage, continued):
+    assert make(stage=stage).continued_stage is continued
+
+
 def test_load_missing_returns_none(tmp_path: Path):
     assert load(tmp_path, "portfolio_eval", 999) is None
 

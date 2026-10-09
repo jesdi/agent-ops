@@ -223,11 +223,24 @@ def test_is_alive_true_when_process_info_is_unknown(monkeypatch):
 
 # --- spawn_stage / resume ----------------------------------------------------
 
+def test_fresh_launch_without_state_directory_fails_before_any_io(tmp_path, monkeypatch):
+    wt = _worktree(tmp_path)
+    calls = []
+    _fake_podman(monkeypatch, calls)
+    herdr_fake_creating(monkeypatch, calls)
+
+    with pytest.raises(ValueError, match="state_dir.*fresh"):
+        Sessions().spawn_stage("acme", 42, wt, "P", "review", "claude-fable-5")
+
+    assert not (tmp_path / ".agent").exists()
+    assert calls == []
+
+
 def test_spawn_stage_writes_the_prompt_and_runs_podman_in_a_new_tab(tmp_path, monkeypatch):
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake_creating(monkeypatch, calls)
-    Sessions().spawn_stage("acme", 42, wt, "PROMPT BODY", "spec",
+    Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "PROMPT BODY", "spec",
                            "claude-fable-5")
 
     assert (tmp_path / ".agent" / "prompt-spec.md").read_text() == "PROMPT BODY"
@@ -251,7 +264,7 @@ def test_spawn_stage_closes_an_idle_tab_and_creates_a_fresh_one(tmp_path, monkey
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake_creating(monkeypatch, calls, tabs=TABS, workspaces=WS)
-    Sessions().spawn_stage("acme", 42, wt, "P", "spec", "claude-fable-5")
+    Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "spec", "claude-fable-5")
 
     close_i = next(i for i, c in enumerate(calls) if c[:2] == ["tab", "close"])
     create_i = next(i for i, c in enumerate(calls) if c[:2] == ["tab", "create"])
@@ -264,7 +277,7 @@ def test_spawn_stage_on_a_busy_tab_reuses_it(tmp_path, monkeypatch):
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
-    Sessions().spawn_stage("acme", 42, wt, "P", "plan", "claude-opus-4-8")
+    Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "plan", "claude-opus-4-8")
     assert not any(c[:2] in (["workspace", "create"], ["tab", "create"],
                              ["tab", "close"]) for c in calls)
     assert calls[-1][:3] == ["pane", "run", "w1:p2"]
@@ -280,7 +293,7 @@ def test_spawn_stage_on_a_vanished_worktree_creates_no_tab(tmp_path, monkeypatch
     calls = []
     herdr_fake_creating(monkeypatch, calls)
     with pytest.raises(OSError):
-        Sessions().spawn_stage("acme", 42, wt, "P", "spec", "claude-fable-5")
+        Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "spec", "claude-fable-5")
     assert calls == []
 
 
@@ -291,7 +304,7 @@ def test_spawn_stage_when_the_server_is_down_raises_and_runs_nothing(tmp_path, m
     calls = []
     herdr_fake(monkeypatch, [], calls)
     with pytest.raises(RuntimeError, match="no tab for task-acme-42"):
-        Sessions().spawn_stage("acme", 42, wt, "P", "spec", "m")
+        Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "spec", "m")
     assert not any(c[:2] == ["pane", "run"] for c in calls)
 
 
@@ -300,17 +313,18 @@ def test_a_refused_launch_command_raises(tmp_path, monkeypatch):
     calls = []
     herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 1, "")], calls)
     with pytest.raises(RuntimeError, match="refused the launch"):
-        Sessions().spawn_stage("acme", 42, wt, "P", "spec", "m")
+        Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "spec", "m")
 
 
 def test_resume_passes_the_quoted_message_and_the_model(tmp_path, monkeypatch):
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
-    Sessions().resume("acme", 42, wt, 'run said: "failure"', "claude-sonnet-4-6")
+    Sessions().resume("acme", 42, wt, 'run said: "failure"', "claude-sonnet-4-6",
+                      session_id="recorded-session")
     run = next(c for c in calls if c[:2] == ["pane", "run"])
     assert "--model claude-sonnet-4-6" in run[3]
-    assert """--continue 'run said: "failure"'""" in run[3]
+    assert """--resume recorded-session 'run said: "failure"'""" in run[3]
 
 
 def test_spawn_stage_on_an_openai_model_launches_codex(tmp_path, monkeypatch):
@@ -318,7 +332,7 @@ def test_spawn_stage_on_an_openai_model_launches_codex(tmp_path, monkeypatch):
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake_creating(monkeypatch, calls)
-    Sessions().spawn_stage("acme", 42, wt, "P", "implement",
+    Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "implement",
                            "openai/gpt-5-codex", effort="high")
     assert ["tab", "create", "--workspace", "w1", "--label", "task-acme-42",
             "--cwd", wt, "--env", "HERDR_AGENT=codex", "--no-focus"] in calls
@@ -336,19 +350,20 @@ def test_resume_on_an_openai_model_resumes_the_last_codex_session(tmp_path,
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
-    Sessions().resume("acme", 42, wt, "it's done", "openai/gpt-5-codex")
+    Sessions().resume("acme", 42, wt, "it's done", "openai/gpt-5-codex",
+                      session_id="recorded-session")
     cmd = next(c for c in calls if c[:2] == ["pane", "run"])[3]
     assert cmd.endswith(
         " agent-ops-session codex --model gpt-5-codex"
         " --dangerously-bypass-approvals-and-sandbox"
         f""" -c 'notify=["{wt}/.agent/stop-hook.sh"]'"""
         f""" -c 'projects={{"{wt}"={{trust_level="trusted"}}}}'"""
-        """ resume --last 'it'"'"'s done'""")
+        """ resume recorded-session 'it'"'"'s done'""")
 
 
 def test_resume_dry_run_announces_the_session(capsys):
     Sessions(dry_run=True).resume("acme", 42, "/tmp/wt", 'run said: "failure"',
-                                  "claude-opus-4-8")
+                                  "claude-opus-4-8", session_id="recorded-session")
     assert "[dry-run] resume task-acme-42" in capsys.readouterr().out
 
 
@@ -369,7 +384,8 @@ def test_dry_run_touches_no_herdr_and_no_podman(tmp_path, monkeypatch, capsys):
     s = Sessions(dry_run=True, state_dir=tmp_path)
 
     s.spawn_stage("acme", 42, str(tmp_path), "P", "spec", "claude-opus-4-8")
-    s.resume("acme", 42, str(tmp_path), "carry on", "claude-opus-4-8")
+    s.resume("acme", 42, str(tmp_path), "carry on", "claude-opus-4-8",
+             session_id="recorded-session")
     assert s.capture_tail("acme", 42) == ""
     assert s.capture_history("acme", 42) == ""
     assert s.idle_seconds("acme", 42) is None
@@ -644,9 +660,10 @@ def test_launch_mounts_the_configured_clone_not_what_the_worktree_names(tmp_path
     (tmp_path / ".git").write_text("gitdir: /a;id>x;/b/c/d\n")
     calls = []
     herdr_fake_creating(monkeypatch, calls)
-    s = Sessions(clones={"acme": "/srv/repos/acme"})
+    s = Sessions(clones={"acme": "/srv/repos/acme"}, state_dir=tmp_path / "state")
     s.spawn_stage("acme", 42, str(tmp_path), "PROMPT", "spec", "claude-fable-5")
-    s.resume("acme", 42, str(tmp_path), "go on", "claude-fable-5")
+    s.resume("acme", 42, str(tmp_path), "go on", "claude-fable-5",
+             session_id="recorded-session")
     runs = [c[3] for c in calls if c[:2] == ["pane", "run"]]
     assert len(runs) == 2
     for cmd in runs:
@@ -660,6 +677,6 @@ def test_launch_for_a_target_with_no_configured_clone_raises_and_runs_nothing(
     calls = []
     herdr_fake_creating(monkeypatch, calls)
     with pytest.raises(RuntimeError, match="no configured clone"):
-        Sessions(clones={"other": "/srv/repos/other"}).spawn_stage(
+        Sessions(clones={"other": "/srv/repos/other"}, state_dir=tmp_path).spawn_stage(
             "acme", 42, wt, "PROMPT", "spec", "claude-fable-5")
     assert not [c for c in calls if c[:2] == ["pane", "run"]]
