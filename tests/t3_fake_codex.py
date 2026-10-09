@@ -72,6 +72,41 @@ def thread_response(identity):
                 sandbox={"type": "dangerFullAccess"}, reasoningEffort="high")
 
 
+def listed_threads(params):
+    """Native thread/list returns scoped metadata, never hydrated turns."""
+    def source_kind(row):
+        source = row["source"]
+        if isinstance(source, str):
+            return source
+        subagent = source.get("subAgent")
+        if isinstance(subagent, dict) and "thread_spawn" in subagent:
+            return "subAgentThreadSpawn"
+        return {"review": "subAgentReview", "compact": "subAgentCompact"}.get(
+            subagent if isinstance(subagent, str) else None, "subAgentOther")
+
+    def descendant(row, ancestor):
+        seen = {row["id"]}
+        parent = row.get("parentThreadId")
+        while parent and parent not in seen:
+            if parent == ancestor:
+                return True
+            seen.add(parent)
+            parent = THREADS.get(parent, {}).get("parentThreadId")
+        return False
+
+    sources = params.get("sourceKinds") or ["cli", "vscode", "appServer"]
+    rows = []
+    for row in THREADS.values():
+        if source_kind(row) not in sources:
+            continue
+        if params.get("ancestorThreadId") and not descendant(row, params["ancestorThreadId"]):
+            continue
+        if params.get("parentThreadId") and row.get("parentThreadId") != params["parentThreadId"]:
+            continue
+        rows.append(dict(row, turns=[]))
+    return rows
+
+
 async def broadcast(method, params):
     message = json.dumps(dict(method=method, params=params))
     for client in list(CLIENTS.values()):
@@ -115,10 +150,17 @@ async def request(socket):
                 result = thread_response(params["threadId"])
             elif method == "thread/read":
                 result = {"thread": thread(params["threadId"])}
-            elif method in {"thread/list", "thread/loaded/list"}:
+            elif method == "thread/list":
+                result = {"data": listed_threads(params), "nextCursor": None}
+            elif method == "thread/loaded/list":
                 result = {"data": list(THREADS.values()), "nextCursor": None}
-            elif method in {"thread/turns/list", "thread/items/list"}:
+            elif method == "thread/turns/list":
                 result = {"data": thread(params["threadId"])["turns"], "nextCursor": None}
+            elif method == "thread/items/list":
+                result = {"data": [{"turnId": turn["id"], "item": item}
+                                   for turn in thread(params["threadId"])["turns"]
+                                   if not params.get("turnId") or turn["id"] == params["turnId"]
+                                   for item in turn["items"]], "nextCursor": None}
             elif method == "thread/backgroundTerminals/list":
                 CLIENTS[connection]["controller"] = True
                 mode = (ROOT / "mode").read_text()

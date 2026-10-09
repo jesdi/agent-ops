@@ -7,6 +7,9 @@ from pathlib import Path
 import tempfile
 from uuid import UUID
 
+from dispatcher.runtime_work import (valid_stored_worker, valid_completions, valid_checkpoint,
+    valid_identity, identity_key)
+
 
 def task_path(state_dir, target, issue):
     key = hashlib.sha256(f"{target}\0{issue}".encode()).hexdigest()
@@ -85,7 +88,13 @@ def valid_wait(wait):
         return True
     if not isinstance(wait, dict) or not number(wait.get("since")):
         return False
-    return isinstance(wait.get("workers"), list) and all(text(w) for w in wait["workers"])
+    return (isinstance(wait.get("workers"), list) and all(text(w) for w in wait["workers"])
+            and valid_reported_identities(wait.get("ever_reported", [])))
+
+
+def valid_reported_identities(identities):
+    return (isinstance(identities, list)
+            and all(text(identity) or valid_identity(identity) for identity in identities))
 
 
 def valid_native_worker(worker):
@@ -100,7 +109,8 @@ def valid_native_workers(workers):
 def _supported_workers(snapshot):
     workers = snapshot.get("workers")
     if snapshot["binding"]["runtime"] == "codex":
-        return workers == []  # Codex worker schemas belong to the inventory integration.
+        return (isinstance(workers, list) and all(valid_stored_worker(w, snapshot) for w in workers)
+                and len({identity_key(w["identity"]) for w in workers}) == len(workers))
     return valid_native_workers(workers)
 
 
@@ -124,9 +134,10 @@ def valid_snapshot(snapshot):
     if not valid_binding(snapshot.get("binding")) or not valid_main(snapshot.get("main")):
         return False
     # Later worker/delivery tickets must explicitly extend these reserved schemas.
-    reserved = ("completions", "deliveries")
+    reserved = ("deliveries",)
     fields_valid = all((valid_status_fields(snapshot), _supported_workers(snapshot),
                 all(snapshot.get(key) == [] for key in reserved),
+                valid_work_extensions(snapshot),
                 valid_alerts(snapshot.get("alerts")), valid_inputs(snapshot.get("inputs")),
                 "wait" in snapshot, valid_wait(snapshot.get("wait"))))
     return fields_valid and valid_provenance(snapshot)
@@ -236,3 +247,12 @@ def valid_conversation_provenance(snapshot):
         return True
     return (not snapshot["main"]["seen_turns"]
             and all(receipt["turn_id"] is None for receipt in snapshot["inputs"].values()))
+
+
+def valid_work_extensions(snapshot):
+    if not _supported_workers(snapshot):
+        return False
+    if snapshot["binding"]["runtime"] == "claude":
+        return snapshot.get("completions") == []
+    return (valid_completions(snapshot) and valid_checkpoint(
+        snapshot.get("history_checkpoint"), snapshot["binding"]["launch_id"]))

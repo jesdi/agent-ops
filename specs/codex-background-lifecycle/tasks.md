@@ -67,7 +67,7 @@ All tickets are sequential because their runtime boundary overlaps. See design.m
   main._session_evidence/_bound_task_stage/_drive_task/_admit_automatic_park;
   sessions.Sessions.end.
   Blocked by: T3.
-- [ ] T5 — Owned commands and descendants keep sessions alive with strict cap boundaries.
+- [x] T5 — Owned commands and descendants keep sessions alive with strict cap boundaries.
   Commands use owner thread/initial item and qualify only after surviving matching normal
   main Stop in authoritative inventory; previously qualified workers remain deliverable during
   later active turns. Acceptance includes foreground-output-no-redelivery for commands ending
@@ -76,8 +76,58 @@ All tickets are sequential because their runtime boundary overlaps. See design.m
   resets it. Same/subset work, foreground input, partial completion, delivery/reconnect preserve it.
   Exact cap holds, greater-than parks; foreground main is never capped. Nonworking stage gates win.
   Seam: RuntimeControl.event/view/retire; controller inventory; main.run_pass.
-  Touches: runtime_control; controller inventory; main runtime decision.
-  Blocked by: T4.
+  Public contract: runtime-contract.md (typed ownership, qualification, outcomes, checkpoint and clock).
+  Touches (implemented): runtime_control.RuntimeControl.retire, _apply_event,
+  _native_inventory, _retirement_eligible, _retirement_work, _past_cap;
+  runtime_snapshots.valid_snapshot, valid_wait, _supported_workers, valid_work_extensions;
+  codex_supervisor.Controller.__init__, notification, lifecycle, start, seed, inventory;
+  main._session_evidence, _managed_background_view, _drive_task, _admit_automatic_park;
+  machine.ManagedBackgroundView, _in_wait, _wait_actions, _managed_wait_actions, pass_actions.
+  New runtime_work module: nonempty, identity_key, valid_identity, valid_node, valid_root,
+  valid_link, valid_ancestry, nullable, valid_command_outcome, valid_agent_outcome, valid_outcome,
+  valid_command, valid_agent, valid_observation, valid_worker_outcome, matching_stop, valid_stop,
+  valid_stored_worker, valid_completion, valid_completions, valid_scope, valid_turn_identity,
+  valid_checkpoint, running_workers, inputs_resolved.
+  New runtime_inventory module: previously_reported, wait_label, report_wait, merge_checkpoint,
+  baseline_worker, qualify, retain_command_identity, retain_previous, merge_worker,
+  collect_completions, checkpoint_completions, reconcile_workers, resolved_inventory,
+  resolved_worker, report_stopped_work, inventory_alert, apply_inventory.
+  New codex_inventory module: require, pages, native_status, native_thread, native_turn, native_item,
+  native_terminal, ownership_node, ancestry_for, command_observation, agent_outcome,
+  agent_observation, NativeInventory.__init__, NativeInventory.remember_item,
+  NativeInventory.remember_end, NativeInventory.notification, NativeInventory.discover,
+  NativeInventory.read_thread, NativeInventory.loaded_history, NativeInventory.remember_turns,
+  NativeInventory.remember_entries, NativeInventory.history,
+  NativeInventory.commands, NativeInventory.partial, NativeInventory.ended_agents,
+  NativeInventory.owning_stops,
+  NativeInventory.owner_inventory, NativeInventory.scan, incomplete_turn_history, missing_current_turn,
+  turn_items, initial_checkpoint,
+  scan_checkpoint, stored_commands, unique_identities.
+  Review fix round 3: codex_inventory.NativeInventory.remember_item, discover, history,
+  ended_agents; incomplete_turn_history, missing_current_turn. Required failed-turn history
+  recovers or holds unknown, continuing notLoaded holds without losing definite failures,
+  validated discovery metadata survives an unreadable first history read, and every initial
+  command cache update rejects a contradictory initiating turn.
+  Review fix round 4: codex_inventory.NativeInventory.history. Every exact owner history
+  requires complete opaque-paged thread/turns/list evidence, including launch seeding;
+  reduced full reads cannot hide later same-status or no-item outcomes. Unreadable turn
+  pages hold unknown while preserving definite older outcomes and the established baseline.
+  A still-unloaded owner retains readable older terminal outcomes and exact item messages
+  before rejecting its current history as unknown; it supplies no main Stop.
+  Failed item-page queries still retain independently readable full-turn outcomes and
+  messages before reporting unknown; both required query scopes must succeed for known inventory.
+  CRAP fix helpers: codex_supervisor.main_lifecycle_turn;
+  runtime_snapshots.valid_reported_identities.
+  CRAP regression seam: tests/test_t5_crap_regressions.py (RuntimeControl and run_pass).
+  Regression seams: tests/test_t5_inventory_regressions.py, test_t5_review_regressions.py,
+  and t5_observed_session.py
+  (public supervisor main with real external listener/native provider); update the historical
+  test_runtime_persistence reappearing-subset expectation to the approved cumulative clock.
+  Merged after independent review and a green full make gate. One same-scan result-fidelity
+  defect remains open under T6: an available message in the first full-turn response can be
+  lost when an earlier item query succeeded. Final reviewers recorded APPROVE and REQUEST
+  CHANGES (Important/P2); the round-four cap ruling accepted merge with that finding retained
+  as a T6 obligation. No delivery transmission.
 - [ ] T6 — Successful and failed outcomes promptly reach idle/active main turns. Batch available
   outcomes without waiting for other workers. Preserve command output/exit and child errors.
   Active delivery uses exact-turn precondition; idle uses same-conversation continuation. Confirmed

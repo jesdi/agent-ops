@@ -206,6 +206,25 @@ must reconcile a matching client message ID in history before further transmissi
 Unknown acceptance holds the result and alerts once; acknowledgment/history resolves it.
 Native child-result notifications are supplementary and never create extra batches.
 
+### Owned inventory and background clock
+
+[Runtime contract](runtime-contract.md) declares the T5 normalized public worker
+identities, ancestry, inventory events, available outcomes, launch history checkpoint
+and wait clock. Commands retain their initiating owner/initial item through later
+interactions. Qualification requires a complete inventory observation begun after
+the owning normal Stop; a delayed response does not change that causal ordering.
+Child commands use exact owning-child completion evidence, which cannot end the
+main turn. Descendant discovery validates every link and complete scoped pages;
+unreadable inventory preserves known work and remains unknown.
+
+Known outcomes cannot be overwritten by stale running observations. Fresh physical
+resume seeds prior work before its prompt; same-launch reconnect retains that
+checkpoint and current results. Only new eligible running work reported while the
+main turn is stopped resets the clock. The durable ever-reported union prevents an
+old worker's reappearance from resetting it. Exact cap equality holds; automatic
+background retirement requires stopped, live, known work and elapsed time strictly
+greater than the configured cap. Pending input/results continue to hold retirement.
+
 ## Compatibility and verification
 
 Baselines: Codex 0.156.1 and Claude 2.1.288. Other versions require passing capability

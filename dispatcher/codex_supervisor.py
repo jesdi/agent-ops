@@ -13,6 +13,7 @@ from websockets.exceptions import ConnectionClosed
 from dispatcher.codex_transport import Gateway, ProtocolError, connect, admit_input, input_response
 from dispatcher.runtime_http import BoundClient
 from dispatcher.runtime_snapshots import valid_snapshot
+from dispatcher.codex_inventory import NativeInventory
 
 
 class Controller:
@@ -23,6 +24,7 @@ class Controller:
         self.initial_submitted = False
         self.initial_input_id = f"agent-ops-bootstrap:{binding['launch_id']}"
         self.ready = asyncio.Event()
+        self.work = NativeInventory()
 
     async def event(self, **event):
         return await asyncio.to_thread(self.client.event, self.binding, event)
@@ -31,26 +33,27 @@ class Controller:
         await self.event(type="control/unknown", message=message)
 
     async def notification(self, packet):
+        try:
+            changed = self.work.notification(packet, self.conversation)
+        except (ProtocolError, KeyError, TypeError, ValueError) as exc:
+            await self.problem(f"Codex worker compatibility: {exc}")
+            return
+        if changed:
+            await self.event(type="inventory", certainty="unknown", workers=[])
         method = packet.get("method")
         if method not in ("turn/started", "turn/completed"):
             return
-        params = packet.get("params")
-        if not isinstance(params, dict):
-            await self.problem("Malformed lifecycle payload")
+        try:
+            turn = main_lifecycle_turn(packet.get("params"), method, self.conversation)
+        except ProtocolError as exc:
+            await self.problem(str(exc))
             return
-        if params.get("threadId") != self.conversation:
-            return
-        turn = params.get("turn")
-        if not isinstance(turn, dict) or not isinstance(turn.get("id"), str) or not turn["id"]:
-            await self.problem("Malformed main turn payload")
-            return
-        expected = "inProgress" if method == "turn/started" else "completed"
-        if turn.get("status") != expected:
-            await self.problem("Main turn did not report a normal lifecycle status")
-            return
-        await self.lifecycle(method, turn)
+        if turn is not None:
+            await self.lifecycle(method, turn)
 
     async def lifecycle(self, method, turn):
+        self.work.activity += 1
+        await self.event(type="inventory", certainty="unknown", workers=[])
         accepted = await self.event(type=method, thread_id=self.conversation,
                                     turn_id=turn["id"], status=turn["status"])
         if accepted and self.initial_submitted and method == "turn/started":
@@ -79,6 +82,7 @@ class Controller:
         self.initial_attempted = True
         await self.bind(rpc)
         await self.event(type="service", status="live")
+        await self.seed(rpc)
         params = {"threadId": self.conversation, "model": self.arguments.model,
                   "clientUserMessageId": self.initial_input_id,
                   "input": [{"type": "text", "text": self.arguments.prompt}]}
@@ -93,12 +97,26 @@ class Controller:
     async def initial_ack(self, result):
         await input_response(self.client, self.binding, self.initial_input_id, {"result": result})
 
-    async def inventory(self, rpc):
-        result = await rpc.call("thread/backgroundTerminals/list", {"threadId": self.conversation})
-        if not valid_inventory(result):
-            raise ProtocolError("Unreadable required inventory payload")
-        # T5 owns the complete terminal + descendant reconciliation. Even
-        # an empty terminal list alone is not proof of an empty worker set.
+    async def seed(self, rpc):
+        checkpoint = dict(launch_id=self.binding["launch_id"], seeded=False,
+                          baseline_turns=[], baseline_workers=[], seen_completions=[], scopes=[])
+        await self.event(type="inventory", certainty="unknown", workers=[], history_checkpoint=checkpoint)
+        await self.inventory(rpc, seed=True)
+
+    async def inventory(self, rpc, *, seed=False):
+        snapshot = await asyncio.to_thread(self.client.view)
+        activity = self.work.activity
+        try:
+            event = await self.work.scan(rpc, snapshot, seed=seed)
+            if activity != self.work.activity:
+                event["certainty"] = "unknown"
+            await self.event(**event)
+        except (ProtocolError, KeyError, TypeError, ValueError) as exc:
+            await self.event(type="inventory", certainty="unknown", workers=self.work.partial(snapshot),
+                             message=f"Codex inventory compatibility: {exc}")
+            checkpoint = snapshot.get("history_checkpoint")
+            if not checkpoint or not checkpoint["seeded"]:
+                await self.problem(f"Codex inventory compatibility: {exc}")
 
     async def recover(self, response):
         identity = selected_conversation(response, self.conversation)
@@ -189,17 +207,18 @@ def has_user_message(turn, client_id):
                and item.get("clientId") == client_id for item in items)
 
 
-def valid_inventory(result):
-    if not isinstance(result, dict) or not isinstance(result.get("data"), list):
-        return False
-    return all(valid_terminal(row) for row in result["data"])
-
-
-def valid_terminal(row):
-    if not isinstance(row, dict):
-        return False
-    return all(isinstance(row.get(field), str) and bool(row[field])
-               for field in ("itemId", "processId", "command", "cwd"))
+def main_lifecycle_turn(params, method, conversation):
+    if not isinstance(params, dict):
+        raise ProtocolError("Malformed lifecycle payload")
+    if params.get("threadId") != conversation:
+        return None
+    turn = params.get("turn")
+    if not isinstance(turn, dict) or not isinstance(turn.get("id"), str) or not turn["id"]:
+        raise ProtocolError("Malformed main turn payload")
+    expected = "inProgress" if method == "turn/started" else "completed"
+    if turn.get("status") != expected:
+        raise ProtocolError("Main turn did not report a normal lifecycle status")
+    return turn
 
 
 def backend_command(arguments, path, worktree):

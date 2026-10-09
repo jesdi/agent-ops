@@ -29,7 +29,11 @@ def commands(name):
 
 async def backend(path):
     peers = set()
-    thread = {"id": THREAD, "status": {"type": "idle"}, "turns": []}
+    thread = {"id": THREAD, "sessionId": THREAD, "projectId": None,
+              "preview": "", "ephemeral": False, "modelProvider": "openai",
+              "createdAt": 1, "updatedAt": 1, "cwd": os.getcwd(),
+              "cliVersion": "0.156.1", "source": "cli",
+              "status": {"type": "idle"}, "turns": []}
     next_turn = 0
 
     async def send(peer, packet):
@@ -55,6 +59,20 @@ async def backend(path):
             while control().get("hold_reads"):
                 await asyncio.sleep(0.01)
             result = {"thread": copy.deepcopy(thread)}
+        elif method == "thread/list":
+            sources = params.get("sourceKinds") or ["cli", "vscode", "appServer"]
+            included = (not params.get("ancestorThreadId") and not params.get("parentThreadId")
+                        and thread["source"] in sources)
+            result = {"data": [dict(copy.deepcopy(thread), turns=[])] if included else [],
+                      "nextCursor": None}
+        elif method == "thread/turns/list":
+            result = {"data": copy.deepcopy(thread["turns"]) if params["threadId"] == THREAD else [],
+                      "nextCursor": None}
+        elif method == "thread/items/list":
+            result = {"data": [{"turnId": turn["id"], "item": copy.deepcopy(item)}
+                               for turn in thread["turns"] if params["threadId"] == THREAD
+                               and (not params.get("turnId") or turn["id"] == params["turnId"])
+                               for item in turn["items"]], "nextCursor": None}
         elif method == "thread/backgroundTerminals/list":
             result = {"data": [], "nextCursor": None}
         elif method in ("turn/start", "turn/steer"):
@@ -78,7 +96,7 @@ async def backend(path):
                 turn = thread["turns"][-1]
                 turn["items"].append({"type": "userMessage", "id": f"steer-{ident}",
                                       "clientId": client_id, "content": params.get("input", [])})
-            thread["status"] = {"type": "active"}
+            thread["status"] = {"type": "active", "activeFlags": []}
             if behavior == "lose":
                 await peer.close()
                 return

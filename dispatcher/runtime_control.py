@@ -6,6 +6,8 @@ from uuid import uuid4
 from dispatcher.runtime_snapshots import (number, read_current, task_path, text,
                                           valid_native_workers, valid_snapshot, write_snapshot)
 from dispatcher.runtime_http import RuntimeClient  # public host client
+from dispatcher.runtime_inventory import apply_inventory, report_wait
+from dispatcher.runtime_work import current_stop_follows_inputs, inputs_resolved, running_workers
 
 
 def _bind(snapshot, event):
@@ -23,15 +25,6 @@ def _service(snapshot, event):
     if status not in ("unknown", "live", "dead"):
         return False
     snapshot["service"] = status
-    return True
-
-
-def _empty_inventory(snapshot, event):
-    # Owned-worker reconciliation belongs to the controller integration.
-    if event.get("certainty") != "known" or event.get("workers") != []:
-        return False
-    snapshot["inventory"] = "known"
-    snapshot["workers"] = []
     return True
 
 
@@ -117,7 +110,7 @@ def _input_receipt(snapshot, event):
 
 _EVENTS = {"input/accepted": _input_receipt, "input/rejected": _input_receipt,
            "control/unknown": _control_unknown, "turn/recovered": _recover_turn,
-           "bound": _bind, "service": _service, "inventory": _empty_inventory,
+           "bound": _bind, "service": _service,
            "turn/started": _start_turn, "turn/completed": _complete_turn}
 
 
@@ -131,15 +124,15 @@ def _native_inventory(snapshot, event, now):
     identities = sorted({w["id"] for w in workers})
     if not identities:
         return
-    previous = snapshot["wait"]
-    since = previous["since"] if previous and set(identities).issubset(previous["workers"]) else now
-    snapshot["wait"] = {"since": since, "workers": identities}
+    report_wait(snapshot, identities, now)
 
 
 def _apply_event(snapshot, event, now):
     event_type = event.get("type")
     if not isinstance(event_type, str):
         return False
+    if event_type == "inventory":
+        return apply_inventory(snapshot, event, time.time() if now is None else now)
     handler = _EVENTS.get(event_type)
     if handler is None or not handler(snapshot, event):
         return False
@@ -215,7 +208,7 @@ class RuntimeControl:
             return "unknown"
         if snapshot["retired"]:
             return "retired"
-        if not _retirement_eligible(snapshot, revision, reason):
+        if not _retirement_eligible(snapshot, revision, reason, now, cap):
             return "held"
         snapshot["retired"] = True
         return "retired" if self._save(snapshot) else "unknown"
@@ -231,12 +224,25 @@ class RuntimeControl:
         return self._save(snapshot)
 
 
-def _retirement_eligible(snapshot, revision, reason):
+def _retirement_eligible(snapshot, revision, reason, now, cap):
     if reason == "forced":
         return True
-    return all((snapshot["revision"] == revision, reason == "stopped", not snapshot["workers"],
+    permitted = all((snapshot["revision"] == revision,
                 snapshot["service"] == "live", snapshot["main"]["status"] == "stopped",
                 snapshot["inventory"] == "known", not snapshot["completions"],
-                not snapshot["deliveries"],
-                all(receipt["status"] in ("settled", "rejected")
-                    for receipt in snapshot["inputs"].values())))
+                not snapshot["deliveries"], inputs_resolved(snapshot), current_stop_follows_inputs(snapshot)))
+    return permitted and _retirement_work(snapshot, reason, now, cap)
+
+
+def _retirement_work(snapshot, reason, now, cap):
+    running = running_workers(snapshot)
+    if reason == "stopped":
+        return not running and all(w.get("status") not in ("running", "unknown") for w in snapshot["workers"])
+    if reason != "background" or not running or snapshot["wait"] is None:
+        return False
+    now = time.time() if now is None else now
+    return _past_cap(snapshot["wait"], now, cap)
+
+
+def _past_cap(wait, now, cap):
+    return number(now) and number(cap) and cap >= 0 and now - wait["since"] > cap

@@ -59,7 +59,7 @@ def test_listener_rejects_malformed_event_without_dying(listener, payload):
     assert status == 403
 
 
-def test_reappearing_work_resets_clock_after_subset_report(tmp_path):
+def test_reappearing_work_preserves_clock_after_subset_report(tmp_path):
     from tests.test_bound_turns_t2_acceptance import prepare, start, stop, worker, clock, TARGET, ISSUE
     control = RuntimeControl(tmp_path)
     binding = prepare(control)["binding"]
@@ -69,7 +69,8 @@ def test_reappearing_work_resets_clock_after_subset_report(tmp_path):
     stop(control, binding, turn="B", work=[worker("two")], now=200)
     start(control, binding, turn="C")
     stop(control, binding, turn="C", work=[worker("one"), worker("two")], now=300)
-    assert clock(control.view(TARGET, ISSUE)) == 300
+    assert clock(control.view(TARGET, ISSUE)) == 100
+    assert set(control.view(TARGET, ISSUE)["wait"]["ever_reported"]) == {"one", "two"}
 
 
 def test_native_stop_records_bound_stage_before_task_transition_is_saved(native_hooks, listener):

@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 from dispatcher import spec_publish, task_artifacts
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
-from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
+from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView, ManagedBackgroundView,
                                 HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
                                 RecordBackgroundWait, RetryStage, SetTaskStage,
@@ -51,6 +51,7 @@ from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
 from dispatcher.runtime_http import RuntimeClient
 from dispatcher.runtime_snapshots import valid_snapshot
+from dispatcher.runtime_work import running_workers
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
@@ -1583,13 +1584,20 @@ def _session_evidence(cfg: Config, deps: Deps, task: TaskState, alive: bool):
         # conditional retirement before it can perform any park effects.
         waiting = (valid_snapshot(snapshot) and _bound_task_stage(snapshot["binding"], task)
                    and snapshot["main"]["status"] == "stopped")
-        return waiting, None, None, snapshot
+        view = _managed_background_view(cfg, snapshot) if waiting else None
+        return waiting and view is None, view, None, snapshot
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
     # Read background state before idle: a wake between reads must hold.
     view = _background_view(cfg, deps, task, alive)
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and cfg.stall_after_seconds > 0 else None)
     return waiting, view, idle, None
+
+
+def _managed_background_view(cfg, snapshot):
+    if snapshot["inventory"] != "known" or snapshot["wait"] is None or not running_workers(snapshot):
+        return None
+    return ManagedBackgroundView(snapshot["wait"]["since"], time.time(), cfg.background_wait_seconds)
 
 
 def _bound_task_stage(binding, task):
@@ -1620,7 +1628,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             stall_after=cfg.stall_after_seconds,
                             grace_elapsed=_grace_elapsed(cfg, task),
                             tracks=frozenset(policy.tracks)):
-        if not _admit_automatic_park(cfg, act, signal, snapshot, dry_run):
+        observed_at = view.now if isinstance(view, ManagedBackgroundView) else None
+        if not _admit_automatic_park(cfg, act, signal, snapshot, dry_run, observed_at):
             return
         stage = _action_stage(act)
         launch, bypass_usage = ((None, False) if stage is None
@@ -1635,7 +1644,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             return
 
 
-def _admit_automatic_park(cfg, act, signal, snapshot, dry_run):
+def _admit_automatic_park(cfg, act, signal, snapshot, dry_run, observed_at=None):
     if snapshot is None or not isinstance(act, ParkForInput):
         return True
     if signal is None or signal.status != "working":
@@ -1644,7 +1653,9 @@ def _admit_automatic_park(cfg, act, signal, snapshot, dry_run):
         return False
     try:
         return RuntimeClient(cfg.state_dir).retire(
-            snapshot["binding"], snapshot["revision"]) == "retired"
+            snapshot["binding"], snapshot["revision"],
+            reason="background" if running_workers(snapshot) else "stopped",
+            now=observed_at, cap=cfg.background_wait_seconds) == "retired"
     except (OSError, RuntimeError, ValueError):
         return False
 
