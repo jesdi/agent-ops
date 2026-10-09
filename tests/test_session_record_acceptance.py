@@ -68,11 +68,11 @@ def test_turn_end_records_the_session_id_and_current_stage(tmp_path):
 
 
 def test_awaiting_spec_review_records_the_continued_spec_stage(tmp_path):
-    _task(tmp_path, stage=Stage.AWAITING_SPEC_REVIEW)
+    _task(tmp_path, stage=Stage.AWAITING_PLAN_REVIEW)
 
     _ping(tmp_path, session_id=FIRST_ID)
 
-    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "spec")
+    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "plan")
 
 
 def test_later_turn_end_replaces_the_recorded_conversation(tmp_path):
@@ -113,7 +113,7 @@ def test_turn_end_for_a_task_without_state_creates_no_record(tmp_path):
 
 @pytest.mark.parametrize("fields,stage", [
     pytest.param({"session_id": FIRST_ID}, Stage.IMPLEMENT, id="implement"),
-    pytest.param({"session_id": FIRST_ID}, Stage.AWAITING_SPEC_REVIEW, id="spec-review"),
+    pytest.param({"session_id": FIRST_ID}, Stage.AWAITING_PLAN_REVIEW, id="plan-review"),
     pytest.param({"session_id": SECOND_ID}, Stage.IMPLEMENT, id="later-id"),
     *[pytest.param(p.values[0], Stage.IMPLEMENT, id=p.id) for p in INVALID_PINGS],
     pytest.param({"session_id": FIRST_ID}, None, id="missing-state"),
@@ -156,7 +156,7 @@ def test_session_identity_keeps_existing_turn_marker_behavior(
 
     if (expects_background and stage is not None
             and isinstance(fields.get("session_id"), str) and fields["session_id"]):
-        recorded_stage = "spec" if stage is Stage.AWAITING_SPEC_REVIEW else "implement"
+        recorded_stage = "plan" if stage is Stage.AWAITING_PLAN_REVIEW else "implement"
         assert read_session(with_identity, TARGET, ISSUE) == SessionRecord(
             fields["session_id"], recorded_stage)
 

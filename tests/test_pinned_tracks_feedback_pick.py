@@ -152,7 +152,7 @@ def test_crashed_address_review_is_reported_with_the_feedback_runtime(
                    picks={**implement, "feedback": "openai/gpt-5-codex@high"})
     main.run_pass(c, deps(gh, FakeSessions(alive=set())))
     body = gh.created_issues[0][2]
-    assert (f"- repro: `cd {wt} && codex resume --last  # inside "
+    assert (f"- repro: `cd {wt} && codex resume recorded-session  # inside "
             "session image`") in body
 
 

@@ -4,7 +4,7 @@ Terms:
 
 - A **conversation** is what a runtime keeps for one session and can continue: a Codex thread, a
   Claude Code session. Its **session ID** is the runtime's own identifier for it.
-- A **fresh launch** starts a stage, or one implement ticket, with a stage prompt and a new
+- A **fresh launch** starts a stage with a stage prompt and a new
   conversation. A **resume** relaunches the runtime to continue a conversation, with a message.
 - A **root session** is the session the dispatcher launched. A **subagent** is a session that a
   root session started itself.
@@ -12,8 +12,8 @@ Terms:
   program.
 - The **session record** is what the box holds for a task about the conversation of its current
   fresh launch: the session ID, and the stage that launch belongs to. A session cannot write it.
-- The **continued stage** of a resume is the stage whose session it continues: `spec` for a task
-  in `awaiting-spec-review`, the task's own stage otherwise.
+- The **continued stage** of a resume is the stage whose session it continues: `plan` for a task
+  in `awaiting-plan-review`, the task's own stage otherwise.
 - A session record is **valid** for a resume when it exists, is readable, names a session ID, and
   its stage is the resume's continued stage.
 
@@ -26,7 +26,7 @@ Terms:
    resumed, the resume command names exactly the recorded session ID. No resume command, on
    either runtime, asks for the newest or last conversation.
 3. **A fresh launch discards the record.** Every fresh launch removes the task's session record
-   before the session starts, so a record never outlives the stage or the ticket that wrote it.
+   before the session starts, so a record never outlives the stage that wrote it.
 4. **Without a valid record the stage starts again.** When a task without a valid session record
    is resumed, no conversation is continued. The resume's continued stage starts again with a
    fresh launch in the same worktree. The message the resume would have delivered, queued operator
@@ -79,8 +79,8 @@ Terms:
 
 ### Scenario: a Codex resume names the recorded thread
 
-- **Given** #384 parked in `awaiting-spec-review` on `openai/gpt-6-astra`, its session record
-  naming `01a0fc74-9f0c-75f3-8b77-a5b5e6dfb884` and stage `spec`
+- **Given** #384 parked in `awaiting-plan-review` on `openai/gpt-6-astra`, its session record
+  naming `01a0fc74-9f0c-75f3-8b77-a5b5e6dfb884` and stage `plan`
 - **When** the operator replies "Approved, go on" and a dispatcher pass runs
 - **Then** the command launched in #384's worktree resumes `01a0fc74-9f0c-75f3-8b77-a5b5e6dfb884`
   with the reply, and does not contain `--last`
@@ -117,12 +117,12 @@ Terms:
 - **When** the dispatcher starts #384's `plan` stage
 - **Then** #384 has no session record when the plan session starts
 
-### Scenario: the next implement ticket discards the record
+### Scenario: the review launch discards the implement record
 
-- **Given** #370 in `implement`, ticket 3 of 4 done, its session record naming the ticket-3
+- **Given** #370 in `implement`, 4 of 4 tickets merged, its session record naming the implement
   session
-- **When** the dispatcher starts ticket 4
-- **Then** #370 has no session record when the ticket-4 session starts
+- **When** the dispatcher starts review
+- **Then** #370 has no session record when the review session starts
 
 ### Scenario: a task parked before this change starts its stage again
 
@@ -199,12 +199,12 @@ Terms:
 - **When** Codex runs #384's hook with thread ID `01a0fd57-…`
 - **Then** the hook exits 0, a waiting ping for #384 is sent, and #384 still has no session record
 
-### Scenario: a resume in awaiting-spec-review without a record
+### Scenario: a resume in awaiting-plan-review without a record
 
-- **Given** #384 parked in `awaiting-spec-review` with no session record, and a queued operator
+- **Given** #384 parked in `awaiting-plan-review` with no session record, and a queued operator
   message "Drop the second endpoint"
 - **When** the operator's wake is applied
-- **Then** a fresh `spec` session starts in #384's worktree, its prompt contains "Drop the second
+- **Then** a fresh `plan` session starts in #384's worktree, its prompt contains "Drop the second
   endpoint", and no resume command is launched
 
 ### Scenario: a Codex turn end with no thread ID

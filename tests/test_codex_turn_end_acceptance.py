@@ -83,7 +83,7 @@ def _seed_record(state_dir, session_id=OLD_ID, issue=ISSUE):
 @pytest.mark.parametrize("source", ["cli", "exec"])
 @pytest.mark.parametrize("stage,recorded_stage", [
     pytest.param(Stage.REVIEW, "review", id="review"),
-    pytest.param(Stage.AWAITING_SPEC_REVIEW, "spec", id="continued-spec"),
+    pytest.param(Stage.AWAITING_PLAN_REVIEW, "plan", id="continued-plan"),
 ])
 @pytest.mark.parametrize("existing_record", [False, True], ids=["absent", "existing"])
 def test_own_root_turn_records_its_id_and_writes_waiting(

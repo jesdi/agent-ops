@@ -39,9 +39,9 @@ _Avoid_: phase, step
 **Session record**:
 The task's recorded conversation ID and continued stage, stored in
 `<state_dir>/session-<target>-<issue>` and written only by waitd after a root
-turn ends. A resume names that ID when its stage matches (`spec` for
-`awaiting-spec-review`); otherwise the continued stage starts a new conversation.
-Every fresh stage or implement-ticket launch and the task's flush remove the
+turn ends. A resume names that ID when its stage matches (`plan` for
+`awaiting-plan-review`); otherwise the continued stage starts a new conversation.
+Every fresh stage launch and the task's flush remove the
 record. A park, session end, and resume retain it.
 
 **Ticket**:

@@ -18,8 +18,8 @@ from dispatcher.state import (
 )
 from telegram.inbound import Command
 from tests.test_main import (
-    FakeGitHub, FakeNotifier, FakeSessions, cfg, make_task, patch_events,
-    write_tickets,
+    REVIEW_PAGE_STUB, FakeGitHub, FakeNotifier, FakeSessions, cfg, gate_signal,
+    make_task, patch_events, write_tickets,
 )
 from tests.usagefakes import session_usage
 
@@ -87,7 +87,7 @@ def _arrange(tmp_path, monkeypatch, model, kind="wake", record="absent",
     park = (PARK_HUMAN if attach_command else PARK_WAKE
             if kind in ("wake", "attach") else "")
     wt = make_task(
-        c, issue=issue, stage=stage, park=park,
+        c, issue=issue, stage=stage, park=park, session=False,
         park_note="the old conversation needed operator input" if park else "",
         updated_at=datetime.now(timezone.utc).isoformat(),
         spec_path=SPEC_PATH,
@@ -95,7 +95,7 @@ def _arrange(tmp_path, monkeypatch, model, kind="wake", record="absent",
         spec_retries=0 if kind == "spec-retry" else 1,
         review_rounds=1, gate_rounds=2, e2e_rounds=3, ci_rounds=4,
         picks={name: model for name in ("spec", "plan", "implement", "review")},
-        ticket_cursor=3, ticket_count=4,
+        ticket_count=4,
         resume_model_override=model if bypass else "",
         resume_bypass_usage=bypass,
         hold_for_attach=kind == "attach" and not attach_command,
@@ -116,17 +116,19 @@ def _arrange(tmp_path, monkeypatch, model, kind="wake", record="absent",
             "# 01: malformed ticket\n\n**Blocked by:** None\n\n"
             "- [ ] The operator observes the completed behavior.\n\n"
             + "Synthetic behavior detail. " * 40)
-        signal = {"stage": "plan", "status": "done", "artifact": ".agent/tickets"}
+        (wt / ".agent" / "review.html").write_text(REVIEW_PAGE_STUB)
+        gate_signal(wt)
     elif kind == "spec-retry":
-        signal = {"stage": "spec", "status": "awaiting-review",
+        signal = {"stage": "spec", "status": "done",
                   "artifact": SPEC_PATH, "track": "tivial"}
+        (wt / ".agent" / "stage.json").write_text(json.dumps(signal))
     else:
-        continued = "spec" if stage is Stage.AWAITING_SPEC_REVIEW else stage.value
+        continued = "plan" if stage is Stage.AWAITING_PLAN_REVIEW else stage.value
         signal = {"stage": continued, "status": "working"}
-    (wt / ".agent" / "stage.json").write_text(json.dumps(signal))
+        (wt / ".agent" / "stage.json").write_text(json.dumps(signal))
 
     record_path = Path(c.state_dir) / f"session-portfolio_eval-{issue}"
-    continued = "spec" if stage is Stage.AWAITING_SPEC_REVIEW else stage.value
+    continued = "plan" if stage is Stage.AWAITING_PLAN_REVIEW else stage.value
     wrong_stage = "review" if continued == "spec" else "spec"
     if record == "truncated":
         record_path.write_text('{"session_id":')
@@ -185,7 +187,7 @@ def _assert_stage_prompt(launch, before, stage):
 
 def _assert_retained_context(before, after):
     for field in ("review_rounds", "gate_rounds", "e2e_rounds", "ci_rounds",
-                  "ticket_cursor", "ticket_count", "track", "picks", "spec_path",
+                  "ticket_count", "track", "picks", "spec_path",
                   "worktree", "branch", "labels", "effort"):
         assert getattr(after, field) == getattr(before, field), field
 
@@ -242,33 +244,30 @@ def test_truncated_record_has_the_same_fresh_review_behavior_as_no_record(
 
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("record", RECORDS)
-def test_awaiting_spec_review_restarts_spec_with_the_operator_reply(
+def test_awaiting_plan_review_restarts_plan_with_the_operator_reply(
         tmp_path, monkeypatch, model, record):
     c, d, before, queued = _arrange(
         tmp_path, monkeypatch, model, record=record,
-        stage=Stage.AWAITING_SPEC_REVIEW, issue=384,
+        stage=Stage.AWAITING_PLAN_REVIEW, issue=384,
         operator_text="Drop the second endpoint")
     launch, after = _pass(c, d, before)
-    _assert_stage_prompt(launch, before, "spec")
+    _assert_stage_prompt(launch, before, "plan")
     _assert_delivered(c, before, queued, launch["prompt"])
-    assert after.stage is Stage.SPEC
+    assert after.stage is Stage.PLAN
     assert after.spec_path == before.spec_path
     _assert_retained_context(before, after)
 
 
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("record", RECORDS)
-def test_implement_restart_keeps_ticket_three_of_four_and_its_cursor(
+def test_implement_restart_keeps_its_four_tickets(
         tmp_path, monkeypatch, model, record):
     c, d, before, queued = _arrange(
         tmp_path, monkeypatch, model, record=record, stage=Stage.IMPLEMENT, issue=370)
     launch, after = _pass(c, d, before)
     _assert_stage_prompt(launch, before, "implement")
     _assert_delivered(c, before, queued, launch["prompt"])
-    assert "ticket 3 of 4" in launch["prompt"]
-    assert "03-t3.md" in launch["prompt"]
-    assert "04-t4.md" not in launch["prompt"]
-    assert (after.ticket_cursor, after.ticket_count) == (3, 4)
+    assert after.ticket_count == 4
     assert after.stage is Stage.IMPLEMENT
     _assert_retained_context(before, after)
 

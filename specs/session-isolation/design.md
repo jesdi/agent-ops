@@ -30,13 +30,13 @@
 - **A subagent ping is dropped whole.** No waiting marker, no background marker, no record, and
   the existing markers stay as they were.
 - **The record's stage is the continued stage of the task at the ping.** waitd reads the task's
-  state file; `awaiting-spec-review` maps to `spec`, every other stage to itself — a ping for a
+  state file; `awaiting-plan-review` maps to `plan`, every other stage to itself — a ping for a
   task with no state file, or with an empty `target`, records nothing and parks as today.
 - **Only a fresh launch and the task's flush remove the record.** `Sessions.spawn_stage` removes
   it before the session starts; a park, a session end and a resume keep it. Every caller ends the
   old session before a fresh launch, so a ping still in flight inside waitd at that moment is the
   only way an old ID can be written after the removal (ceiling: one request; the stage in the
-  record catches it unless the next launch is the same stage, as between two implement tickets).
+  record catches it unless the next launch is the same stage).
 - **The latest root turn end wins.** Each recorded turn end replaces the record, so a runtime
   that gives a resumed conversation a new ID is followed.
 - **A resume takes the session ID as an argument; nothing asks for "the newest".** The runtime
@@ -48,9 +48,10 @@
   otherwise the continued stage is launched fresh through the ordinary stage launch, with the
   resume's message appended to the stage prompt — the fresh session re-reads the stage prompt
   and has no memory, so a plan or spec retry without a record redoes that stage, and a wake in
-  `awaiting-spec-review` without a record returns the task to `spec`.
-- **A restart keeps the task's counters and ticket.** The implement ticket is the task's current
-  one, and a retry still counts as a retry — only the conversation is new.
+  `awaiting-plan-review` without a record returns the task to `plan`, where the new session
+  reports ready and waits for the operator's approval again.
+- **A restart keeps the task's counters.** A retry still counts as a retry — only the
+  conversation is new.
 - **The event log carries the reason.** The `resumed` event gets the detail `new conversation: no
   session recorded` or `new conversation: session recorded for <stage>`; a resume by ID keeps
   today's empty detail.
@@ -70,7 +71,7 @@ No database. Files in the dispatcher's state dir and fields of the ping.
 | `session-<target>-<issue>` (record file, written only by waitd) | `session_id` | non-empty string | the conversation a resume names |
 | | `stage` | the task's continued stage when the turn end was recorded | a record of another stage is not valid |
 | | whole file | written atomically (temporary file, then rename); an unreadable file, or one missing a field, reads as absent | the dispatcher never resumes from half a record |
-| | lifetime | removed only by a fresh launch and by the task's flush | a record never outlives the stage or ticket that wrote it, and survives a park |
+| | lifetime | removed only by a fresh launch and by the task's flush | a record never outlives the stage that wrote it, and survives a park |
 | ping body (hook to waitd) | `session_id` | optional string | the turn end's conversation |
 | | `runtime` | optional; `"codex"` or absent | selects the Codex classification |
 | Codex rollout file (read only, owned by Codex) | first line `payload.source`, `payload.cwd` | read, never written | root or subagent, and whose worktree |

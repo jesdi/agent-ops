@@ -80,7 +80,7 @@ def _config(tmp_path, monkeypatch, model=CODEX_MODEL):
 
 def _task(c, issue, stage, *, session_id=CODEX_ID, park=PARK_HUMAN,
           slot=NO_SLOT, model=CODEX_MODEL, **kw):
-    continued_stage = "spec" if stage is Stage.AWAITING_SPEC_REVIEW else stage.value
+    continued_stage = "plan" if stage is Stage.AWAITING_PLAN_REVIEW else stage.value
     wt = make_task(c, issue=issue, stage=stage, park=park, slot=slot,
                    picks={continued_stage: model}, **kw)
     (wt / ".git").write_text(
@@ -149,10 +149,10 @@ def test_claude_tab_command_names_the_recorded_id_and_quotes_the_message(
     assert "--last" not in command
 
 
-def test_operator_approval_resumes_the_recorded_spec_in_its_worktree(
+def test_operator_approval_resumes_the_recorded_plan_in_its_worktree(
         tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
-    wt = _task(c, 384, Stage.AWAITING_SPEC_REVIEW)
+    wt = _task(c, 384, Stage.AWAITING_PLAN_REVIEW)
     _reply(c, 384, "Approved, go on")
     sessions = RecordingSessions(c.state_dir)
     main.run_pass(c, deps(sess=sessions))
@@ -257,7 +257,7 @@ def test_resume_by_id_retains_its_record_and_logs_an_empty_detail(
 def test_plan_fresh_launch_clears_the_spec_record_before_the_tab_starts(
         tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
-    wt = _task(c, 384, Stage.AWAITING_SPEC_REVIEW, park="", slot=0)
+    wt = _task(c, 384, Stage.SPEC, park="", slot=0)
     (wt / "spec.md").write_text("# t — design\n\n## Problem\n\n" + "x " * 400
                                + "\n\n## Decisions\n\n" + "y " * 400)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
@@ -274,22 +274,21 @@ def test_plan_fresh_launch_clears_the_spec_record_before_the_tab_starts(
     assert observed[0][0] == ["tab", "create"]
 
 
-def test_ticket_four_fresh_launch_clears_ticket_threes_record_before_the_tab_starts(
+def test_review_fresh_launch_clears_the_implement_record_before_the_tab_starts(
         tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
-    wt = _task(c, 370, Stage.IMPLEMENT, park="", slot=0,
-               ticket_cursor=3, ticket_count=4)
+    wt = _task(c, 370, Stage.IMPLEMENT, park="", slot=0, ticket_count=4)
     write_tickets(wt, 4)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
-        "stage": "implement", "status": "done", "note": "ticket 3 green",
+        "stage": "implement", "status": "done", "note": "4/4 tickets merged",
     }))
     observed = []
     _tab_fake(monkeypatch, [], target=TARGET, issue=370,
               on_start=lambda phase: observed.append((phase, read_session(c.state_dir, TARGET, 370))))
     sessions = RecordingSessions(c.state_dir, alive={370}, launch_real=True)
     main.run_pass(c, deps(sess=sessions))
-    assert load(c.state_dir, TARGET, 370).ticket_cursor == 4
-    assert "04-t4.md" in sessions.spawned[0][3]
+    assert load(c.state_dir, TARGET, 370).stage is Stage.REVIEW
+    assert sessions.spawned[0][1] == "review"
     assert observed and all(record is None for _, record in observed)
     assert observed[0][0] == ["tab", "create"]
 

@@ -47,7 +47,9 @@ def _assert_pending_at_launch(sessions, before, queued):
     launch = sessions.at_launch[0]
     assert (launch["target"], launch["issue"], launch["worktree"]) == (
         before.target, before.issue, before.worktree)
-    assert {message.id for message in launch["messages"]} == {
+    # An attach wake queues the dispatcher's own notice beside them.
+    assert {message.id for message in launch["messages"]
+            if message.actor != "dispatcher"} == {
         message.id for message in queued}
     assert all(not message.delivered_at for message in launch["messages"]), (
         "Queued messages must remain pending at the fresh launch boundary")

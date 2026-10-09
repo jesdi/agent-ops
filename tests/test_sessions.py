@@ -660,9 +660,10 @@ def test_launch_mounts_the_configured_clone_not_what_the_worktree_names(tmp_path
     (tmp_path / ".git").write_text("gitdir: /a;id>x;/b/c/d\n")
     calls = []
     herdr_fake_creating(monkeypatch, calls)
-    s = Sessions(clones={"acme": "/srv/repos/acme"})
+    s = Sessions(clones={"acme": "/srv/repos/acme"}, state_dir=tmp_path / "state")
     s.spawn_stage("acme", 42, str(tmp_path), "PROMPT", "spec", "claude-fable-5")
-    s.resume("acme", 42, str(tmp_path), "go on", "claude-fable-5")
+    s.resume("acme", 42, str(tmp_path), "go on", "claude-fable-5",
+             session_id="recorded-session")
     runs = [c[3] for c in calls if c[:2] == ["pane", "run"]]
     assert len(runs) == 2
     for cmd in runs:
@@ -676,6 +677,6 @@ def test_launch_for_a_target_with_no_configured_clone_raises_and_runs_nothing(
     calls = []
     herdr_fake_creating(monkeypatch, calls)
     with pytest.raises(RuntimeError, match="no configured clone"):
-        Sessions(clones={"other": "/srv/repos/other"}).spawn_stage(
+        Sessions(clones={"other": "/srv/repos/other"}, state_dir=tmp_path).spawn_stage(
             "acme", 42, wt, "PROMPT", "spec", "claude-fable-5")
     assert not [c for c in calls if c[:2] == ["pane", "run"]]

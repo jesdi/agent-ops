@@ -279,14 +279,25 @@ def deps(gh=None, sess=None, notifier=None):
 
 
 def make_task(c, issue=42, stage=Stage.IMPLEMENT, slot=0,
-              updated_at="2026-07-21T00:00:00+00:00", track="standard", **kw):
+              updated_at="2026-07-21T00:00:00+00:00", track="standard",
+              session=True, **kw):
+    """A saved task. Its session has ended a turn, so its conversation is
+    recorded and a continuation resumes it; `session=False` leaves no record."""
     wt = Path(c.targets[0].worktrees_path) / f"task-{issue}"
     (wt / ".agent").mkdir(parents=True, exist_ok=True)
     ts = TaskState(issue=issue, target="portfolio_eval", stage=stage, slot=slot,
                    worktree=str(wt), branch=f"agent/task-{issue}", title="t",
                    updated_at=updated_at, track=track, **kw)
     save(c.state_dir, ts)
+    if session:
+        record_session(c, ts.continued_stage.value, issue)
     return wt
+
+
+def record_session(c, stage, issue=42):
+    """What the stop hook does when the task's session ends a turn."""
+    write_session(c.state_dir, "portfolio_eval", issue,
+                  SessionRecord("recorded-session", stage))
 
 
 def replace_capacity(c, n):
@@ -3439,6 +3450,8 @@ def test_overnight_drain_parks_every_ready_plan_then_one_reply_advances_one(
         [(t.issue, t.stage.value, t.park) for t in tasks]
     assert all(t.slot == NO_SLOT for t in tasks)
     assert sorted(gh.claimed) == [1, 2, 3, 4, 5]   # capacity 2 did NOT cap it
+    for t in tasks:
+        record_session(c, "plan", t.issue)
 
     # Morning: one reply resumes exactly one task, onto a real slot, and it
     # advances to IMPLEMENT once the session signals the approved plan done.

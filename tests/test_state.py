@@ -52,7 +52,7 @@ def test_save_load_roundtrip(tmp_path: Path):
 
 
 @pytest.mark.parametrize("stage,continued", [
-    (Stage.AWAITING_SPEC_REVIEW, Stage.SPEC),
+    (Stage.AWAITING_PLAN_REVIEW, Stage.PLAN),
     (Stage.SPEC, Stage.SPEC),
     (Stage.PLAN, Stage.PLAN),
     (Stage.IMPLEMENT, Stage.IMPLEMENT),
