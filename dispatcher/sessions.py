@@ -23,6 +23,7 @@ from dispatcher import containers, herdr, workspace
 from dispatcher.models import Entry, bare_model_id
 from dispatcher.runtimes import Runtime, SessionLaunch, runtime_for
 from dispatcher.runtime_control import RuntimeClient
+from dispatcher.runtime_snapshots import valid_snapshot
 from dispatcher.state import clear_session, load
 
 
@@ -287,6 +288,11 @@ class Sessions:
         if self.dry_run:
             print(f"[dry-run] end session {session_name(target, issue)}")
             return
+        snapshot = self.runtime_view(target, issue)
+        if snapshot is not None:
+            if not valid_snapshot(snapshot) or RuntimeClient(self.state_dir).retire(
+                    snapshot["binding"], snapshot["revision"], reason="forced") != "retired":
+                raise RuntimeError("cannot fence the current physical launch")
         name = session_name(target, issue)
         self._snapshot(target, issue)
         tab = self._tab(target, issue)

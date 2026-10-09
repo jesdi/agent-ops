@@ -49,6 +49,8 @@ from dispatcher.models import (Admitted, Entry, ModelPolicy, Order, candidates,
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
+from dispatcher.runtime_http import RuntimeClient
+from dispatcher.runtime_snapshots import valid_snapshot
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
@@ -1575,16 +1577,25 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
 
 def _session_evidence(cfg: Config, deps: Deps, task: TaskState, alive: bool):
     runtime_view = getattr(deps.sessions, "runtime_view", None)
-    if runtime_view is not None and runtime_view(task.target, task.issue) is not None:
-        # Managed launches never inherit legacy marker, inventory or idle
-        # evidence. Automatic stopped-turn retirement is added separately.
-        return False, None, None
+    snapshot = runtime_view(task.target, task.issue) if runtime_view is not None else None
+    if snapshot is not None:
+        # Evidence is read-only. The actual automatic park action must win
+        # conditional retirement before it can perform any park effects.
+        waiting = (valid_snapshot(snapshot) and _bound_task_stage(snapshot["binding"], task)
+                   and snapshot["main"]["status"] == "stopped")
+        return waiting, None, None, snapshot
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
     # Read background state before idle: a wake between reads must hold.
     view = _background_view(cfg, deps, task, alive)
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and cfg.stall_after_seconds > 0 else None)
-    return waiting, view, idle
+    return waiting, view, idle, None
+
+
+def _bound_task_stage(binding, task):
+    stage = task.continued_stage
+    return (binding["stage"] == stage.value
+            and (stage != Stage.IMPLEMENT or binding["ticket"] == str(task.ticket_cursor)))
 
 
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -1599,7 +1610,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                         f"{sorted(policy.tracks)}); restore it in targets.yaml or "
                         f"run the task with a model override")
         return
-    waiting, view, idle = _session_evidence(cfg, deps, task, alive)
+    waiting, view, idle, snapshot = _session_evidence(cfg, deps, task, alive)
+    if valid_snapshot(snapshot) and snapshot["service"] == "dead":
+        alive = False
     turn = _Turn(cfg, deps, target, signal, dry_run)
     for act in pass_actions(task, signal, alive, waiting, view,
                             caps=cfg.loop_caps,
@@ -1607,6 +1620,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             stall_after=cfg.stall_after_seconds,
                             grace_elapsed=_grace_elapsed(cfg, task),
                             tracks=frozenset(policy.tracks)):
+        if not _admit_automatic_park(cfg, act, signal, snapshot, dry_run):
+            return
         stage = _action_stage(act)
         launch, bypass_usage = ((None, False) if stage is None
                                 else _choose_launch(cfg, target, task, stage, admit, order))
@@ -1618,6 +1633,20 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             _consume_execution_choice(cfg, *choice_key)
         if task is None:
             return
+
+
+def _admit_automatic_park(cfg, act, signal, snapshot, dry_run):
+    if snapshot is None or not isinstance(act, ParkForInput):
+        return True
+    if signal is None or signal.status != "working":
+        return True
+    if dry_run or not valid_snapshot(snapshot):
+        return False
+    try:
+        return RuntimeClient(cfg.state_dir).retire(
+            snapshot["binding"], snapshot["revision"]) == "retired"
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _report_session_crash(cfg: Config, deps: Deps, target: Target,

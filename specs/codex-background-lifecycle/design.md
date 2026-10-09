@@ -139,6 +139,37 @@ and crash handling retain existing authority. A cap only applies to a stopped tu
 known running owned work, and strictly after 10800 seconds by default. A stopped report
 containing new work resets the clock; foreground input, outcomes, delivery and reconnect do not.
 
+### Input admission and retirement wire contract
+
+`RuntimeClient.accept_input(binding, client_message_id) -> bool` and
+`RuntimeClient.retire(binding, revision, *, reason='stopped', now=None, cap=10800) -> str`
+use the same sole-writer listener. `BoundClient.accept_input(binding, client_message_id)`
+has no host credential and requires its owning target, issue and launch to match the
+explicit binding. `/runtime/input` accepts `{binding,client_message_id}` and returns a
+JSON boolean. Host-authenticated `/runtime/retire` accepts
+`{binding,revision,reason,now,cap}` and returns a JSON string.
+
+Successful admission is durable before forwarding upstream and invalidates older stopped
+evidence even when a new turn-start notification has not arrived. Independent admitted
+inputs retain separate receipts; acknowledging or rejecting one cannot release another.
+Per-connection JSON-RPC request IDs are not durable input identity. Uncertain receipts
+survive listener restart and remain held, without blind retransmission. A repeated native
+prompt callback cannot establish another input or main turn.
+
+Retirement reasons are `stopped`, `background` (cap), and `forced` (explicit physical
+closure). Automatic retirement requires live, known stopped main state, known inventory,
+no pending input/results, and current binding/revision; unknown evidence holds. Forced
+closure preserves explicit stage/cancellation authority despite running work, but still
+requires the exact current launch. A successful fence rejects all later terminal,
+controller-bootstrap, result and native main input before physical closure.
+
+The installed Claude UserPromptSubmit command identifies its native event kind separately
+from stdin and exits 2 when admission is rejected or uncertain, including malformed or
+mismatching main payloads. Accepted main input exits 0. Supplementary child hooks do not
+gain main lifecycle authority, and unmanaged legacy hooks retain their existing behavior.
+The acceptance seam executes the command installed by `workspace.install_stop_hook`,
+rather than prescribing its internal argument spelling.
+
 ## Controlled Codex session
 
 A container supervisor starts app-server, the runtime controller, a local Unix WebSocket

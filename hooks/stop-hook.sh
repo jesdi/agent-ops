@@ -4,7 +4,7 @@
 # waitd owns binding validation, background inventory and the cap clock. Legacy
 # launches retain the Stop/notify marker path below. Codex notify alone never
 # supplies authoritative lifecycle evidence for a prepared launch.
-# Must never fail the session, so: always exit 0.
+# Managed main input fails closed; supplementary and legacy hooks remain best effort.
 #
 # Self-locating: the CLI fires the hook with the session's current cwd,
 # which is NOT guaranteed to be the worktree root (the agent may have left
@@ -13,7 +13,15 @@
 # cwd-relative read would silently miss and the waiting ping would never
 # fire, hanging the task unparked.
 set -u
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 0
+FAIL_CODE=0
+if [[ "${1:-}" == "--native-event" ]]; then
+  export AGENT_OPS_NATIVE_EVENT="${2:-}"
+  shift 2
+fi
+if [[ -n "${AGENT_OPS_LAUNCH_ID:-}" && "${AGENT_OPS_NATIVE_EVENT:-}" == "UserPromptSubmit" ]]; then
+  FAIL_CODE=2
+fi
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit "$FAIL_CODE"
 # Pass paths as arguments and serialize the whole ping, so quotes and
 # backslashes in the task identity or conversation ID remain valid JSON.
 PING=$(python3 -c '
@@ -42,6 +50,10 @@ except (ValueError, RecursionError):
 if not isinstance(hook_in, dict):
     hook_in = {}
 if os.environ.get("AGENT_OPS_LAUNCH_ID") and not codex:
+    declared = os.environ.get("AGENT_OPS_NATIVE_EVENT")
+    if declared:
+        supplied = hook_in.get("hook_event_name", declared)
+        hook_in["hook_event_name"] = declared if supplied == declared else "invalid"
     ping.update({key: hook_in[key] for key in
                  ("hook_event_name", "session_id", "prompt_id", "agent_id", "background_tasks")
                  if key in hook_in})
@@ -68,10 +80,16 @@ else:
     except (OSError, ValueError, AttributeError, RecursionError):
         pass
 print(json.dumps(ping))
-' "$HERE" "$@" 2>/dev/null) || exit 0
+' "$HERE" "$@" 2>/dev/null) || exit "$FAIL_CODE"
 SOCK="${AGENT_OPS_STATE_DIR:-$HOME/agent-ops-state}/wait/wait.sock"
-curl --silent --max-time 5 --unix-socket "$SOCK" \
+if [[ "$FAIL_CODE" == 2 ]] && python3 -c 'import json,sys; sys.exit(not bool(json.loads(sys.argv[1]).get("agent_id")))' "$PING"; then
+  FAIL_CODE=0
+fi
+RECEIPT=$(curl --fail --silent --max-time 5 --unix-socket "$SOCK" \
   -X POST "http://localhost/waiting" \
   -H 'Content-Type: application/json' \
-  -d "$PING" >/dev/null 2>&1 || true
+  -d "$PING" 2>/dev/null) || exit "$FAIL_CODE"
+if [[ "$FAIL_CODE" == 2 && "$RECEIPT" != true ]]; then
+  exit 2
+fi
 exit 0

@@ -10,7 +10,7 @@ import tempfile
 from websockets.asyncio.server import unix_serve
 from websockets.exceptions import ConnectionClosed
 
-from dispatcher.codex_transport import Gateway, ProtocolError, connect
+from dispatcher.codex_transport import Gateway, ProtocolError, connect, admit_input, input_response
 from dispatcher.runtime_http import BoundClient
 from dispatcher.runtime_snapshots import valid_snapshot
 
@@ -84,9 +84,14 @@ class Controller:
                   "input": [{"type": "text", "text": self.arguments.prompt}]}
         if self.arguments.effort:
             params["effort"] = self.arguments.effort
+        if not await admit_input(self.client, self.binding, self.initial_input_id):
+            raise RuntimeError("listener rejected bootstrap admission")
         self.initial_submitted = True
-        await rpc.call("turn/start", params)
+        await rpc.call("turn/start", params, on_result=self.initial_ack)
         self.ready.set()
+
+    async def initial_ack(self, result):
+        await input_response(self.client, self.binding, self.initial_input_id, {"result": result})
 
     async def inventory(self, rpc):
         result = await rpc.call("thread/backgroundTerminals/list", {"threadId": self.conversation})
@@ -106,6 +111,9 @@ class Controller:
         # Acceptance permits attachment regardless of the turn's eventual
         # outcome. It never fabricates normal completion or retries the prompt.
         if self.initial_submitted and has_initial_input(response["thread"], self.initial_input_id):
+            for accepted_turn in response["thread"]["turns"]:
+                if has_user_message(accepted_turn, self.initial_input_id):
+                    await self.initial_ack({"turn": accepted_turn})
             self.ready.set()
 
     async def connected(self, rpc):
@@ -234,10 +242,10 @@ async def run(arguments, client, binding, directory):
     ready = asyncio.create_task(controller.ready.wait())
     terminal = None
     try:
-        done, _ = await asyncio.wait([ready, service_end], return_when=asyncio.FIRST_COMPLETED)
-        if service_end in done:
+        done, _ = await asyncio.wait([ready, service_end, observation], return_when=asyncio.FIRST_COMPLETED)
+        if service_end in done or observation in done:
             return 1
-        gateway = Gateway(backend_path, controller.conversation)
+        gateway = Gateway(backend_path, controller.conversation, client, controller.binding)
         async with unix_serve(gateway.serve, path=gateway_path):
             terminal = await asyncio.create_subprocess_exec(
                 "codex", "--remote", f"unix://{gateway_path}", "-C", binding["worktree"],
@@ -266,8 +274,9 @@ def main(argv=None):
     client = BoundClient(os.environ["AGENT_OPS_STATE_DIR"], os.environ["AGENT_OPS_TARGET"],
                          int(os.environ["AGENT_OPS_ISSUE"]), os.environ["AGENT_OPS_LAUNCH_ID"])
     snapshot = client.view()
-    if not valid_snapshot(snapshot) or snapshot["binding"]["runtime"] != "codex":
-        raise RuntimeError("supervisor requires a current prepared Codex launch")
+    if (not valid_snapshot(snapshot) or snapshot["retired"]
+            or snapshot["binding"]["runtime"] != "codex"):
+        raise RuntimeError("supervisor requires a current non-retired Codex launch")
     binding = snapshot["binding"]
     if binding["conversation_id"] != arguments.resume:
         raise RuntimeError("resume must match the prepared conversation")

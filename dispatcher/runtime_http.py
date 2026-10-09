@@ -77,26 +77,37 @@ class RuntimeClient:
     def event(self, binding, event, *, now=None):
         return self._post("/runtime/event", dict(binding=binding, event=event, now=now))
 
+    def accept_input(self, binding, client_message_id):
+        return self._post("/runtime/input", dict(binding=binding, client_message_id=client_message_id))
+
+    def retire(self, binding, revision, *, reason="stopped", now=None, cap=10800):
+        return self._post("/runtime/retire", dict(binding=binding, revision=revision,
+                                                reason=reason, now=now, cap=cap))
+
 
 def dispatch(state_dir, route, payload, token):
     from dispatcher.runtime_control import RuntimeControl
     control = RuntimeControl(state_dir)
     host = authorized(state_dir, token)
-    if route == "/runtime/prepare":
-        if not host:
-            return 403, None
-        return 200, control.prepare(**payload)
-    if route == "/runtime/view":
-        if not host and not payload.get("launch_id"):
-            return 403, None
-        return 200, control.view(**payload)
+    if route in ("/runtime/prepare", "/runtime/retire") and not host:
+        return 403, None
+    if route == "/runtime/view" and not host and not payload.get("launch_id"):
+        return 403, None
+    operation = {"/runtime/prepare": control.prepare, "/runtime/retire": control.retire,
+                 "/runtime/input": control.accept_input, "/runtime/view": control.view}.get(route)
+    if operation is not None:
+        return 200, operation(**payload)
     if route == "/runtime/event":
-        accepted = control.event(**payload)
-        if accepted and payload["event"].get("type") == "turn/completed":
-            from dispatcher.waitd import record_control_session
-            record_control_session(state_dir, payload["binding"])
-        return 200, accepted
+        return 200, _dispatch_event(control, payload, state_dir)
     return 404, None
+
+
+def _dispatch_event(control, payload, state_dir):
+    accepted = control.event(**payload)
+    if accepted and payload["event"].get("type") == "turn/completed":
+        from dispatcher.waitd import record_control_session
+        record_control_session(state_dir, payload["binding"])
+    return accepted
 
 
 class BoundClient:
@@ -123,3 +134,8 @@ class BoundClient:
 
     def event(self, binding, event):
         return self._post("/runtime/event", dict(binding=binding, event=event))
+
+    def accept_input(self, binding, client_message_id):
+        if not isinstance(binding, dict) or any(binding.get(k) != v for k, v in self.identity.items()):
+            return False
+        return self._post("/runtime/input", dict(binding=binding, client_message_id=client_message_id))

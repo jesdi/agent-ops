@@ -48,11 +48,24 @@ All tickets are sequential because their runtime boundary overlaps. See design.m
   runtime_control._control_unknown/_recover_turn; runtime_snapshots.valid_alerts/valid_snapshot;
   waitd.record_control_session; pyproject websocket dependency.
   Blocked by: T2.
-- [ ] T4 — Gateway orders operator input against conditional retirement. Accepted input prevents
+- [x] T4 — Gateway orders operator input against conditional retirement. Accepted input prevents
   old-stop park; revision change/unknown state holds; retired rejects later main input. All terminal
   turn RPCs and controller input traverse the same launch fence. Crash and stage gates remain.
   Seam: RuntimeControl.accept_input/retire; gateway RPC; main.run_pass.
-  Touches: runtime_control; gateway; main._drive_task.
+  Touches: runtime_control.RuntimeControl.prepare/event/accept_input/retire/_save,
+  _complete_turn/_input_receipt/_retirement_eligible;
+  runtime_snapshots.valid_main/valid_snapshot/valid_inputs/valid_input/
+  valid_completed_turns/valid_turn_history/valid_current_turn/valid_provenance/
+  valid_input_provenance/valid_conversation_provenance;
+  runtime_http.RuntimeClient.accept_input/retire, BoundClient.accept_input,
+  dispatch/_dispatch_event;
+  codex_transport.Gateway.__init__/serve/_upstream/_downstream/_input/_foreign,
+  admit_input/input_response/input_receipt;
+  codex_supervisor.Controller.start/initial_ack/recover and run/main;
+  waitd.handle_ping/_native_ping/_native_identity/_admit_native_prompt/_native_event;
+  workspace.install_stop_hook; hooks/stop-hook.sh;
+  main._session_evidence/_bound_task_stage/_drive_task/_admit_automatic_park;
+  sessions.Sessions.end.
   Blocked by: T3.
 - [ ] T5 — Owned commands and descendants keep sessions alive with strict cap boundaries.
   Commands use owner thread/initial item and qualify only after surviving matching normal

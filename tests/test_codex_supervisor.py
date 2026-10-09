@@ -337,7 +337,7 @@ def test_recovery_rejects_old_turns_and_restores_latest_or_new_active_turn(tmp_p
     assert control.event(binding, {"type": "control/unknown", "message": "Control reconnect"})
     assert control.event(binding, dict(recover, turn_id="new-while-offline"))
     main = control.view("project-a", 370)["main"]
-    assert main == {"status": "active", "turn_id": "new-while-offline", "seen_turns": ["old", "current", "new-while-offline"]}
+    assert main == {"status": "active", "turn_id": "new-while-offline", "seen_turns": ["old", "current", "new-while-offline"], "completed_turns": {}}
 
 
 def test_completed_output_item_does_not_end_or_invalidate_main_turn(isolated, monkeypatch):

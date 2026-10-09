@@ -73,12 +73,11 @@ def valid_main(main):
         return False
     if main.get("status") not in ("unknown", "active", "stopped"):
         return False
-    seen = main.get("seen_turns")
-    if not isinstance(seen, list) or not all(text(turn) for turn in seen):
+    if not valid_turn_history(main):
         return False
     if main["status"] == "unknown":
         return "turn_id" in main and main["turn_id"] is None
-    return text(main.get("turn_id")) and main["turn_id"] in seen
+    return valid_current_turn(main)
 
 
 def valid_wait(wait):
@@ -126,10 +125,11 @@ def valid_snapshot(snapshot):
         return False
     # Later worker/delivery tickets must explicitly extend these reserved schemas.
     reserved = ("completions", "deliveries")
-    return all((valid_status_fields(snapshot), _supported_workers(snapshot),
+    fields_valid = all((valid_status_fields(snapshot), _supported_workers(snapshot),
                 all(snapshot.get(key) == [] for key in reserved),
-                valid_alerts(snapshot.get("alerts")),
+                valid_alerts(snapshot.get("alerts")), valid_inputs(snapshot.get("inputs")),
                 "wait" in snapshot, valid_wait(snapshot.get("wait"))))
+    return fields_valid and valid_provenance(snapshot)
 
 
 def unknown_view():
@@ -168,3 +168,71 @@ def _missing_current(directory):
     except FileNotFoundError:
         return None
     return unknown_view()
+
+
+def valid_inputs(inputs):
+    return isinstance(inputs, dict) and all(
+        text(identity) and valid_input(receipt) for identity, receipt in inputs.items())
+
+
+def valid_input(receipt):
+    if not isinstance(receipt, dict):
+        return False
+    return all((receipt.get("status") in ("pending", "accepted", "settled", "rejected"),
+                "turn_id" in receipt,
+                receipt.get("turn_id") is None or text(receipt["turn_id"]),
+                type(receipt.get("revision")) is int, receipt.get("revision", -1) >= 0))
+
+
+def valid_completed_turns(turns):
+    return isinstance(turns, dict) and all(
+        text(turn) and type(revision) is int and revision >= 0
+        for turn, revision in turns.items())
+
+
+def valid_turn_history(main):
+    seen = main.get("seen_turns")
+    return (valid_completed_turns(main.get("completed_turns"))
+            and isinstance(seen, list) and all(text(turn) for turn in seen)
+            and len(seen) == len(set(seen)))
+
+
+def valid_current_turn(main):
+    turn = main.get("turn_id")
+    seen = main["seen_turns"]
+    if not text(turn) or not seen or turn != seen[-1]:
+        return False
+    return (turn in main["completed_turns"]) == (main["status"] == "stopped")
+
+
+def valid_provenance(snapshot):
+    if not valid_conversation_provenance(snapshot):
+        return False
+    main = snapshot["main"]
+    ends = main["completed_turns"]
+    if not all(turn in main["seen_turns"] and 0 < revision <= snapshot["revision"]
+               for turn, revision in ends.items()):
+        return False
+    return all(valid_input_provenance(receipt, ends, snapshot["revision"])
+               for receipt in snapshot["inputs"].values())
+
+
+def valid_input_provenance(receipt, ends, revision):
+    if not 0 < receipt["revision"] <= revision:
+        return False
+    turn = receipt["turn_id"]
+    if receipt["status"] in ("pending", "rejected"):
+        return turn is None
+    if not text(turn):
+        return False
+    if receipt["status"] == "settled":
+        return ends.get(turn, -1) > receipt["revision"]
+    # An accepted ACK may arrive before its turn/started notification.
+    return True
+
+
+def valid_conversation_provenance(snapshot):
+    if snapshot["binding"]["conversation_id"] is not None:
+        return True
+    return (not snapshot["main"]["seen_turns"]
+            and all(receipt["turn_id"] is None for receipt in snapshot["inputs"].values()))

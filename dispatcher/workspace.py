@@ -210,7 +210,7 @@ def install_stop_hook(wt: str) -> None:
     for event in ("SessionStart", "UserPromptSubmit", "Stop"):
         hooks[event] = [{"hooks": [{
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]}]
+            "command": f"$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh --native-event {event}"}]}]
     _write_json_atomic(path, settings)   # a live session may read it mid-resume
 
 

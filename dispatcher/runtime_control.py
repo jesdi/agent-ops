@@ -3,8 +3,8 @@
 import time
 from uuid import uuid4
 
-from dispatcher.runtime_snapshots import (number, read_current, task_path, valid_native_workers,
-                                          valid_snapshot, write_snapshot)
+from dispatcher.runtime_snapshots import (number, read_current, task_path, text,
+                                          valid_native_workers, valid_snapshot, write_snapshot)
 from dispatcher.runtime_http import RuntimeClient  # public host client
 
 
@@ -76,6 +76,10 @@ def _complete_turn(snapshot, event):
     if main["status"] != "active" or main["turn_id"] != event["turn_id"]:
         return False
     main["status"] = "stopped"
+    main["completed_turns"][event["turn_id"]] = snapshot["revision"] + 1
+    for receipt in snapshot["inputs"].values():
+        if receipt["status"] == "accepted" and receipt["turn_id"] == event["turn_id"]:
+            receipt["status"] = "settled"
     return True
 
 
@@ -91,7 +95,29 @@ def _control_unknown(snapshot, event):
     return True
 
 
-_EVENTS = {"control/unknown": _control_unknown, "turn/recovered": _recover_turn,"bound": _bind, "service": _service, "inventory": _empty_inventory,
+def _input_receipt(snapshot, event):
+    identity = event.get("client_message_id")
+    if not text(identity):
+        return False
+    receipt = snapshot["inputs"].get(identity)
+    if receipt is None or receipt["status"] != "pending":
+        return False
+    if event["type"] == "input/rejected":
+        receipt["status"] = "rejected"
+        return True
+    turn = event.get("turn_id")
+    if not text(turn):
+        return False
+    receipt.update(status="accepted", turn_id=turn)
+    main = snapshot["main"]
+    if main["completed_turns"].get(turn, -1) > receipt["revision"]:
+        receipt["status"] = "settled"
+    return True
+
+
+_EVENTS = {"input/accepted": _input_receipt, "input/rejected": _input_receipt,
+           "control/unknown": _control_unknown, "turn/recovered": _recover_turn,
+           "bound": _bind, "service": _service, "inventory": _empty_inventory,
            "turn/started": _start_turn, "turn/completed": _complete_turn}
 
 
@@ -137,9 +163,10 @@ class RuntimeControl:
                         "conversation_id": conversation_id, "worktree": worktree,
                         "launch_id": str(uuid4())},
             "revision": 0, "service": "unknown",
-            "main": {"status": "unknown", "turn_id": None, "seen_turns": []},
+            "main": {"status": "unknown", "turn_id": None, "seen_turns": [], "completed_turns": {}},
             "inventory": "unknown", "workers": [], "completions": [],
             "deliveries": [], "wait": None, "alerts": [], "retired": False,
+            "inputs": {},
         }
         if not valid_snapshot(snapshot):
             raise ValueError("invalid launch binding")
@@ -160,9 +187,15 @@ class RuntimeControl:
         snapshot = self._current(binding)
         if snapshot is None:
             return False
-        if not _apply_event(snapshot, event, now) or not valid_snapshot(snapshot):
+        if not _apply_event(snapshot, event, now):
             return False
+        return self._save(snapshot)
+
+    def _save(self, snapshot):
+        binding = snapshot["binding"]
         snapshot["revision"] += 1
+        if not valid_snapshot(snapshot):
+            return False
         directory = task_path(self.state_dir, binding["target"], binding["issue"])
         write_snapshot(directory / f"{binding['launch_id']}.json", snapshot)
         return True
@@ -175,7 +208,35 @@ class RuntimeControl:
 
     def retire(self, binding, revision, *, reason="stopped", now=None,
                cap=10800) -> str:
-        raise NotImplementedError("RuntimeControl.retire lifecycle behavior is missing")
+        if not isinstance(binding, dict) or type(revision) is not int:
+            return "unknown"
+        snapshot = self.view(binding.get("target"), binding.get("issue"))
+        if not valid_snapshot(snapshot) or snapshot["binding"] != binding:
+            return "unknown"
+        if snapshot["retired"]:
+            return "retired"
+        if not _retirement_eligible(snapshot, revision, reason):
+            return "held"
+        snapshot["retired"] = True
+        return "retired" if self._save(snapshot) else "unknown"
 
     def accept_input(self, binding, client_message_id) -> bool:
-        raise NotImplementedError("RuntimeControl.accept_input lifecycle behavior is missing")
+        if not isinstance(binding, dict) or not text(client_message_id):
+            return False
+        snapshot = self._current(binding)
+        if snapshot is None or client_message_id in snapshot["inputs"]:
+            return False
+        snapshot["inputs"][client_message_id] = {
+            "status": "pending", "turn_id": None, "revision": snapshot["revision"] + 1}
+        return self._save(snapshot)
+
+
+def _retirement_eligible(snapshot, revision, reason):
+    if reason == "forced":
+        return True
+    return all((snapshot["revision"] == revision, reason == "stopped", not snapshot["workers"],
+                snapshot["service"] == "live", snapshot["main"]["status"] == "stopped",
+                snapshot["inventory"] == "known", not snapshot["completions"],
+                not snapshot["deliveries"],
+                all(receipt["status"] in ("settled", "rejected")
+                    for receipt in snapshot["inputs"].values())))

@@ -109,6 +109,8 @@ def handle_ping(body: bytes, state_dir) -> bool | None:
     snapshot = control.view(target, issue)
     if snapshot is not None:
         return _native_ping(control, snapshot, rec, state_dir)
+    if "launch_id" in rec:
+        return False
     if rec.get("runtime") == "codex":
         _handle_codex_ping(rec, state_dir, target, issue)
         return
@@ -122,19 +124,36 @@ def handle_ping(body: bytes, state_dir) -> bool | None:
 
 def _native_ping(control, snapshot, rec, state_dir):
     binding = snapshot["binding"]
-    if binding.get("runtime") != "claude" or rec.get("agent_id"):
-        return False
-    identity = {"launch_id": "launch_id", "conversation_id": "session_id",
-                "stage": "stage", "ticket": "ticket"}
-    if any(binding[key] != rec.get(native) for key, native in identity.items()):
+    if not _native_identity(binding, rec):
         return False
     event = _native_event(rec)
-    if event is None or not control.event(binding, event):
+    if event is None or not _admit_native_prompt(control, binding, rec):
+        return False
+    if not control.event(binding, event):
         return False
     if rec["hook_event_name"] == "Stop":
         write_session(state_dir, binding["target"], binding["issue"],
                       SessionRecord(binding["conversation_id"], binding["stage"]))
     return True
+
+
+
+def _native_identity(binding, rec):
+    if binding.get("runtime") != "claude" or rec.get("agent_id"):
+        return False
+    identity = {"launch_id": "launch_id", "conversation_id": "session_id",
+                "stage": "stage", "ticket": "ticket"}
+    return all(binding[key] == rec.get(native) for key, native in identity.items())
+
+
+def _admit_native_prompt(control, binding, rec):
+    if rec["hook_event_name"] != "UserPromptSubmit":
+        return True
+    if not control.accept_input(binding, rec.get("prompt_id")):
+        return False
+    return control.event(binding, {"type": "input/accepted",
+                                   "client_message_id": rec["prompt_id"],
+                                   "turn_id": rec["prompt_id"]})
 
 
 def _native_event(rec):
@@ -145,7 +164,8 @@ def _native_event(rec):
     if not isinstance(name, str) or name not in types:
         return None
     return {"type": types[name], "thread_id": rec.get("session_id"),
-            "turn_id": rec.get("prompt_id"), "status": "completed",
+            "turn_id": rec.get("prompt_id"),
+            "status": "inProgress" if name == "UserPromptSubmit" else "completed",
             "background_tasks": rec.get("background_tasks")}
 
 

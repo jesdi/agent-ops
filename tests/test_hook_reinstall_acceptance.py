@@ -22,7 +22,7 @@ from tests.test_workspace import target
 REPO_HOOK = Path(__file__).resolve().parent.parent / "hooks" / "stop-hook.sh"
 STOP = {"hooks": {event: [{"hooks": [{
     "type": "command",
-    "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]}]
+    "command": f"$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh --native-event {event}"}]}]
     for event in ("SessionStart", "UserPromptSubmit", "Stop")}}
 
 

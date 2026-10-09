@@ -584,7 +584,7 @@ sys.exit(subprocess.call(["/usr/bin/curl", *args]))
            "AGENT_OPS_TICKET": "03-api", "T2_WAIT_SOCKET": str(waitd.sock_path(listener)),
            "T2_CAPTURE": str(capture)}
 
-    def emit(event_name, *, session=CONVERSATION, prompt=PROMPT_A, **extra):
+    def emit(event_name, *, session=CONVERSATION, prompt=PROMPT_A, expected_status=0, **extra):
         entries = settings.get("hooks", {}).get(event_name, [])
         assert entries, f"native {event_name} hook must be installed"
         payload = {"hook_event_name": event_name, "session_id": session,
@@ -607,7 +607,7 @@ sys.exit(subprocess.call(["/usr/bin/curl", *args]))
                 result = subprocess.run(["/bin/bash", "-c", hook["command"]], cwd=wt,
                                         env=env, input=json.dumps(payload), text=True,
                                         capture_output=True, timeout=5)
-                assert result.returncode == 0, f"native {event_name} hook failed: {result.stderr}"
+                assert result.returncode == expected_status, f"native {event_name} hook failed: {result.stderr}"
         return payload
 
     return control, binding, emit, wt, capture
@@ -630,7 +630,7 @@ def test_native_session_start_only_establishes_selected_session_health(native_ho
 def test_native_foreign_child_or_unidentified_prompt_cannot_start_main_turn(native_hooks, foreign):
     control, _, emit, _, _ = native_hooks
     before = control.view(TARGET, ISSUE)
-    emit("UserPromptSubmit", **foreign)
+    emit("UserPromptSubmit", expected_status=0 if foreign.get("agent_id") else 2, **foreign)
     assert control.view(TARGET, ISSUE) == before
     emit("UserPromptSubmit")
     assert control.view(TARGET, ISSUE)["main"]["status"] == "active"

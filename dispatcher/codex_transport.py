@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+from uuid import uuid4
 
 from websockets.asyncio.client import unix_connect
 from websockets.exceptions import ConnectionClosed
@@ -89,16 +90,18 @@ class Gateway:
     cannot replace that connection or swallow its response/approval traffic.
     The input lock is shared with controller submissions for later admission.
     """
-    def __init__(self, backend_path, conversation):
+    def __init__(self, backend_path, conversation, client, binding):
         self.backend_path = backend_path
         self.conversation = conversation
         self.input_lock = asyncio.Lock()
+        self.client, self.binding = client, binding
 
     async def serve(self, terminal):
         try:
             async with unix_connect(path=self.backend_path) as backend:
-                tasks = [asyncio.create_task(self._upstream(terminal, backend)),
-                         asyncio.create_task(self._downstream(backend, terminal))]
+                pending = {}
+                tasks = [asyncio.create_task(self._upstream(terminal, backend, pending)),
+                         asyncio.create_task(self._downstream(backend, terminal, pending))]
                 try:
                     await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 finally:
@@ -108,11 +111,16 @@ class Gateway:
         except (OSError, ConnectionClosed):
             await terminal.close()
 
-    async def _downstream(self, backend, terminal):
+    async def _downstream(self, backend, terminal, pending):
         async for raw in backend:
+            packet = json.loads(raw)
+            if "method" not in packet:
+                identity = pending.pop(packet.get("id"), None)
+                if identity is not None:
+                    await input_response(self.client, self.binding, identity, packet)
             await terminal.send(raw)
 
-    async def _upstream(self, terminal, backend):
+    async def _upstream(self, terminal, backend, pending):
         async for raw in terminal:
             packet = json.loads(raw)
             method = packet.get("method", "")
@@ -122,13 +130,53 @@ class Gateway:
                     "code": -32602, "message": "terminal is bound to one conversation"}}))
             elif method in ("turn/start", "turn/steer"):
                 async with self.input_lock:
-                    await backend.send(raw)
+                    await self._input(packet, terminal, backend, pending)
             else:
                 await backend.send(raw)
 
+    async def _input(self, packet, terminal, backend, pending):
+        params = packet["params"]
+        identity = params.setdefault("clientUserMessageId", str(uuid4()))
+        if packet.get("id") in pending or not await admit_input(self.client, self.binding, identity):
+            await terminal.send(json.dumps({"id": packet.get("id"), "error": {
+                "code": -32602, "message": "main input admission rejected or uncertain"}}))
+            return
+        pending[packet.get("id")] = identity
+        await backend.send(json.dumps(packet))
+
     def _foreign(self, method, params):
-        if method == "thread/start":
+        if method in ("thread/start", "thread/fork"):
+            return True
+        if method == "thread/resume" and (params.get("path") or params.get("history") is not None):
             return True
         if method == "thread/resume" or method.startswith("turn/"):
             return params.get("threadId") != self.conversation
         return False
+
+
+async def admit_input(client, binding, identity):
+    try:
+        return await asyncio.to_thread(client.accept_input, binding, identity) is True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+async def input_response(client, binding, identity, packet):
+    event = input_receipt(identity, packet)
+    if event is not None:
+        await asyncio.to_thread(client.event, binding, event)
+
+
+def input_receipt(identity, packet):
+    error = packet.get("error")
+    if isinstance(error, dict) and error.get("code") in (-32600, -32601, -32602):
+        return {"type": "input/rejected", "client_message_id": identity}
+    result = packet.get("result")
+    if not isinstance(result, dict):
+        return None
+    turn = result.get("turnId")
+    if isinstance(result.get("turn"), dict):
+        turn = result["turn"].get("id")
+    if not isinstance(turn, str) or not turn:
+        return None
+    return {"type": "input/accepted", "client_message_id": identity, "turn_id": turn}
