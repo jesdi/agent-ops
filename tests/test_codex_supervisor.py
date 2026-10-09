@@ -79,6 +79,15 @@ def test_accepted_initial_turn_attaches_terminal_despite_lost_ack(isolated, monk
         assert len(starts) == 1
         assert starts[0]["params"]["input"] == [{"type": "text", "text": PROMPT}]
         assert starts[0]["params"]["threadId"] == identity
+        snapshot = running.snapshot()
+        receipt = snapshot["inputs"][starts[0]["params"]["clientUserMessageId"]]
+        assert receipt["status"] == "accepted"
+        assert receipt["turn_id"] == snapshot["main"]["turn_id"]
+        assert receipt["history_receipt"] == {
+            "thread_id": identity, "turn_id": receipt["turn_id"], "item_id": "initial-input",
+            "revision": receipt["history_receipt"]["revision"],
+        }
+        assert receipt["revision"] < receipt["history_receipt"]["revision"] <= snapshot["revision"]
         assert len(running.records("backend-started")) == 1
         assert len(running.records("terminal-started")) == 1
         assert running.snapshot()["main"]["status"] == "active"

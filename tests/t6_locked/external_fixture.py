@@ -134,6 +134,7 @@ class ExternalFixture:
             for pgid in groups:
                 try:os.killpg(pgid,0);live.append(pgid)
                 except ProcessLookupError:pass
+                except PermissionError:live.append(pgid)
             if not live:break
             assert time.monotonic()<deadline,('OWNED_GROUP_NOT_GONE',live)
             await asyncio.sleep(.025)

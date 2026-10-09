@@ -162,6 +162,10 @@ def test_uncertain_ack_preserves_pending_batch_while_operator_and_new_batch_prog
                 'clientUserMessageId': 'operator-start', 'input': [{'type': 'text', 'text': 'operator start'}]})
         method = 'turn/steer' if active else 'turn/start'
         session.backend('fault_next', matches={'method': method, 'threadId': session.root}, fault=fault)
+        # Keep acceptance genuinely unknown while testing independent progress.
+        # T7 may otherwise recover this exact receipt from readable active history.
+        session.backend('fault_next', matches={'method': 'thread/items/list', 'threadId': session.root},
+            fault={'result': {'data': [], 'nextCursor': None}}, times=1000)
         finish_command(session)
         assert session.until(lambda: len(result_requests(session)) == 1)
         assert session.until(lambda: any(r['kind'] == 'rpc_response' and r['method'] == method
@@ -189,6 +193,14 @@ def test_uncertain_ack_preserves_pending_batch_while_operator_and_new_batch_prog
         assert requests[1]['method'] == 'turn/steer'
         assert requests[1]['params']['expectedTurnId'] == current_turn
         assert requests[1]['params']['threadId'] == session.root
+        session.backend('clear_faults')
+        assert session.until(lambda: session.view()['deliveries'][0]['status'] == 'confirmed')
+        recovered = session.view()['deliveries'][0]
+        assert recovered['attempts'][0]['receipt']['source'] == 'history'
+        assert recovered['attempts'][0]['attempt_id'] == attempt['attempt_id']
+        assert recovered['attempts'][0]['admission_revision'] == attempt['admission_revision']
+        assert recovered['input'] == first['input']
+        assert len(result_requests(session)) == 2
 
 
 @pytest.mark.parametrize('content', [None, [], [{'type': 'image', 'text': 'not a result'}]])

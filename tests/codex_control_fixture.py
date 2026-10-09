@@ -44,7 +44,7 @@ class Socket:
         global receipt_reads
         packet = json.loads(raw)
         mode = (fake.ROOT / "mode").read_text()
-        if mode.startswith("bootstrap-recover") and self.methods.get(packet.get("id")) == "turn/start":
+        if (mode.startswith("bootstrap-recover") or mode == "bootstrap-lost-ack") and self.methods.get(packet.get("id")) == "turn/start":
             turn = fake.thread(self.initial_input["threadId"])["turns"][-1]
             turn["items"] = [{"type": "userMessage", "id": "initial-input",
                               "clientId": self.initial_input.get("clientUserMessageId"),
@@ -66,9 +66,6 @@ class Socket:
                 thread["turns"].append({"id": "later-native-turn", "status": "inProgress", "items": []})
             fake.record("bootstrap-start-dropped")
             await self.socket.close(code=1012, reason="initial reply and lifecycle lost")
-            return
-        if mode == "bootstrap-lost-ack" and self.methods.get(packet.get("id")) == "turn/start":
-            fake.record("bootstrap-ack-dropped")
             return
         if (mode.startswith("bootstrap-recover-") and self.controller and fake.NEXT_TURN
                 and self.methods.get(packet.get("id")) == "thread/resume"):

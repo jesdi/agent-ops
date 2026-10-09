@@ -1,0 +1,8 @@
+{
+  "own_provider_preparation_manifest_sha256": "a3b8dc2df044a61761cf28d8a41162ed4349fc2cd84bc07609973f47a8432567",
+  "base": "1afde4f9cbbe2f616e49c25d2e118b977b694e70",
+  "reuse": "Only original writer own T6 helpers/provider/schema and off-repo preparation; no inherited other-owner fixtures",
+  "provider_source_sha256": "4af3bf9255a921d9d5ac76056da4c6740f4d3f2d1312914d6d9ca0f5b6fffece",
+  "native_base_source_sha256": "33ab3bc08d4c7571c77eda2db40abd520321e4c85f2271b365b71e6790ac8d80",
+  "own_extensions": "Root before/after acceptance barriers, bounded opaque page fixture cap, typed foreign observation faults, explicit schema-negative persistent history and wrong/malformed ACK faults, and generic terminal native-input/HTTP fault adapters. No real native execution or provider-ID dedup assumptions."
+}

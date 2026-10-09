@@ -77,8 +77,9 @@ class RuntimeClient:
     def event(self, binding, event, *, now=None):
         return self._post("/runtime/event", dict(binding=binding, event=event, now=now))
 
-    def accept_input(self, binding, client_message_id):
-        return self._post("/runtime/input", dict(binding=binding, client_message_id=client_message_id))
+    def accept_input(self, binding, client_message_id, *, native_input=None):
+        return self._post("/runtime/input", dict(binding=binding, client_message_id=client_message_id,
+                                               native_input=native_input))
 
     def retire(self, binding, revision, *, reason="stopped", now=None, cap=10800):
         return self._post("/runtime/retire", dict(binding=binding, revision=revision,
@@ -135,7 +136,8 @@ class BoundClient:
     def event(self, binding, event):
         return self._post("/runtime/event", dict(binding=binding, event=event))
 
-    def accept_input(self, binding, client_message_id):
+    def accept_input(self, binding, client_message_id, *, native_input=None):
         if not isinstance(binding, dict) or any(binding.get(k) != v for k, v in self.identity.items()):
             return False
-        return self._post("/runtime/input", dict(binding=binding, client_message_id=client_message_id))
+        return self._post("/runtime/input", dict(binding=binding, client_message_id=client_message_id,
+                                               native_input=native_input))

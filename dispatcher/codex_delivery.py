@@ -9,6 +9,7 @@ from dispatcher.codex_transport import ProtocolError
 from dispatcher.codex_inventory import native_thread, native_turn, require
 from dispatcher.runtime_delivery import unassigned, known_rejection
 from dispatcher.runtime_snapshots import valid_snapshot
+from dispatcher.codex_ownership import listener_call
 
 
 def selection(response, root):
@@ -63,11 +64,14 @@ class DeliveryPump:
         self.pending = set()
 
     async def view(self):
-        return await asyncio.to_thread(self.client.view)
+        snapshot = await listener_call(self.client.view)
+        require(valid_snapshot(snapshot) and snapshot['binding'] == self.binding,
+                'Unreadable or replaced delivery launch')
+        return snapshot
 
     async def event(self, event):
         try:
-            return await asyncio.to_thread(self.client.event, self.binding, event) is True
+            return await listener_call(self.client.event, self.binding, event) is True
         except (OSError, RuntimeError, ValueError):
             # Durable uncertainty never authorizes transmission or repetition.
             return False
@@ -75,15 +79,22 @@ class DeliveryPump:
     async def poll(self, rpc):
         async with self.input_lock:
             snapshot = await self.view()
-            if not valid_snapshot(snapshot) or snapshot['retired']:
+            if (not valid_snapshot(snapshot) or snapshot['retired']
+                    or snapshot['binding'] != self.binding or snapshot['service'] != 'live'):
                 return
             records = unassigned(snapshot)
             if records:
                 await self.propose(snapshot, records)
                 snapshot = await self.view()
             for batch in snapshot['deliveries']:
-                if batch['status'] == 'pending' and all(a['status'] == 'rejected' for a in batch['attempts']):
-                    await self.forward(rpc, batch)
+                await self.poll_batch(rpc, batch)
+
+    async def poll_batch(self, rpc, batch):
+        if batch['status'] == 'pending' and all(a['status'] == 'rejected' for a in batch['attempts']):
+            await self.forward(rpc, batch)
+        for attempt in batch['attempts']:
+            if attempt['status'] == 'sent-unconfirmed':
+                await self.uncertain(dict(attempt, batch_id=batch['batch_id']))
 
     async def propose(self, snapshot, records):
         return await self.event(dict(type='delivery/proposed', observed_revision=snapshot['revision'],
@@ -92,16 +103,19 @@ class DeliveryPump:
 
     async def forward(self, rpc, batch):
         root = self.binding['conversation_id']
+        snapshot = await self.view()
         chosen = selection(await rpc.call('thread/read', dict(threadId=root, includeTurns=True)), root)
         if chosen is None:
             return
         method, turn = chosen
-        if method == 'turn/steer':
+        if method == 'turn/steer' and snapshot['main'] != dict(snapshot['main'], status='active', turn_id=turn):
             await self.event(dict(type='turn/recovered', thread_id=root, turn_id=turn, status='inProgress'))
-        snapshot = await self.view()
+            return
         attempt = dict(type='delivery/sent', observed_revision=snapshot['revision'], batch_id=batch['batch_id'],
             attempt_id=str(uuid4()), client_message_id=str(uuid4()), method=method,
             thread_id=root, expected_turn_id=turn)
+        if method == 'turn/start':
+            attempt['selection'] = dict(source='thread/read', thread_id=root, status='idle')
         if not await self.event(attempt):
             return
         params = dict(threadId=root, clientUserMessageId=attempt['client_message_id'], input=batch['input'])
@@ -115,13 +129,20 @@ class DeliveryPump:
     async def receipt(self, rpc, request, attempt):
         try:
             event = response_event(attempt, await rpc.finish(request))
-            if event is not None:
-                await self.event(event)
+            if event is not None and await self.event(event):
+                return
         except (OSError, ConnectionError, ConnectionClosed, TimeoutError, ProtocolError, ValueError, KeyError, TypeError):
             # Persisted sent-unconfirmed is retained, including after connection loss.
-            return
+            pass
+        await self.uncertain(attempt)
+
+    async def uncertain(self, attempt):
+        await self.event(dict(type='delivery/uncertain',
+            **{k: attempt[k] for k in ('batch_id', 'attempt_id', 'client_message_id')},
+            message='Native acceptance is unconfirmed; automatic resend is held.'))
 
     async def close(self):
-        for task in self.pending:
+        tasks = list(self.pending)
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self.pending, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)

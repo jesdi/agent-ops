@@ -149,7 +149,9 @@ class Gateway:
     async def _input(self, packet, terminal, backend, pending):
         params = packet["params"]
         identity = params.setdefault("clientUserMessageId", str(uuid4()))
-        if packet.get("id") in pending or not await admit_input(self.client, self.binding, identity):
+        provenance = dict(method=packet['method'], thread_id=params.get('threadId'),
+                          expected_turn_id=params.get('expectedTurnId'), input=params.get('input'))
+        if packet.get("id") in pending or not await admit_input(self.client, self.binding, identity, native_input=provenance):
             await terminal.send(json.dumps({"id": packet.get("id"), "error": {
                 "code": -32602, "message": "main input admission rejected or uncertain"}}))
             return
@@ -166,9 +168,10 @@ class Gateway:
         return False
 
 
-async def admit_input(client, binding, identity):
+async def admit_input(client, binding, identity, *, native_input=None):
     try:
-        return await asyncio.to_thread(client.accept_input, binding, identity) is True
+        kwargs = {} if native_input is None else dict(native_input=native_input)
+        return await asyncio.to_thread(client.accept_input, binding, identity, **kwargs) is True
     except (OSError, RuntimeError, ValueError):
         return False
 

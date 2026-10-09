@@ -213,9 +213,10 @@ class NativeInventory:
 
     def remember_entries(self, owner, thread, entries):
         for entry in entries:
-            previous = self.items.get((owner, entry["item"]["id"]))
-            if previous and previous[0] == entry["turnId"]:
-                self.remember_item(owner, entry["turnId"], entry["item"])
+            # Full scoped history can discover a startup missed before this
+            # observer subscribed. remember_item retains its initial identity;
+            # only the separate owning-Stop rules can qualify it as work.
+            self.remember_item(owner, entry["turnId"], entry["item"])
         for turn in thread["turns"]:
             items = turn_items(entries, turn["id"])
             self.messages[(owner, turn["id"])] = items
@@ -243,7 +244,7 @@ class NativeInventory:
         thread["turns"] = await pages(rpc, "thread/turns/list",
             dict(threadId=owner, sortDirection="asc", itemsView="full"), native_turn)
         self.remember_turns(owner, thread)
-        entries = merge_history_entries(entries, thread["turns"], messages_only=item_error is None)
+        entries = merge_history_entries(entries, thread["turns"])
         self.remember_entries(owner, thread, entries)
         if item_error is not None:
             raise item_error

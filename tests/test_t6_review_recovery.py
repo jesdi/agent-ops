@@ -102,6 +102,11 @@ async def view_recovery(mode):
         await flow.start()
         command = await flow.command()
         await flow.qualify([command])
+        # A transient unreadable view must not consume a batch. Keep the idle
+        # route held by an independent receipt while healthy polling resumes;
+        # T7 intentionally permits fresh native idle after a transient fault.
+        assert flow.host.accept_input(flow.binding, 'view-independent-hold')
+        independent = flow.view()['inputs']['view-independent-hold']
         with view_fault_proxy(flow, mode) as (fired, wire):
             identity = await flow.finish(command)
             await eventually(fired.is_set, 'SETUP_POSTPROPOSAL_VIEW_FAULT_NOT_REACHED')
@@ -124,6 +129,7 @@ async def view_recovery(mode):
             assert after['deliveries'][0]['completion_ids'] == [identity]
             assert len(after['deliveries'][0]['attempts']) == 1
             assert len(flow.result_requests()) == 1
+            assert after['inputs']['view-independent-hold'] == independent
             (ARTIFACTS / (flow.name + '-evidence.json')).write_text(json.dumps({
                 'wire': wire, 'held': held, 'after': after,
                 'native_results': flow.result_requests()}, indent=2))

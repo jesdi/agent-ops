@@ -91,7 +91,11 @@ def valid_confirmation(attempt, input_receipt):
     receipt = attempt.get('receipt')
     if not isinstance(receipt, dict) or attempt.get('rejection', '') is not None:
         return False
-    return all((receipt.get('source') == 'ack', receipt.get('item_id', '') is None,
+    source = ((receipt.get('source') == 'ack' and receipt.get('item_id', '') is None)
+              or (receipt.get('source') == 'history' and nonempty(receipt.get('item_id'))
+                  and all(input_receipt.get('history_receipt', {}).get(k) == receipt.get(k)
+                          for k in ('thread_id', 'turn_id', 'item_id'))))
+    return all((source,
         receipt.get('thread_id') == attempt['thread_id'], nonempty(receipt.get('turn_id')),
         receipt.get('turn_id') == input_receipt.get('turn_id'),
         input_receipt.get('status') in ('accepted', 'settled'),

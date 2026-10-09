@@ -432,3 +432,13 @@ provenance. A newly observed command that demonstrably survives its own previous
 accepted normal Stop can qualify during a later active main turn; the clock still
 starts/resets only from a stopped-main report of new running eligible owned work.
 No main Stop is fabricated from history.
+
+
+## T7 recovery and controller ownership
+
+The approved [receipt contract](runtime-receipt-contract.md) and
+[controller ownership declaration](t7-public/controller-attachment-public-declarations.md)
+extend the T4-T6 boundaries with durable bootstrap attempts, exact history receipts,
+receipt-local settlement and quiescent controller replacement.
+[Reconciliation declarations](t7-public/public-reconciliation-declarations.md) preserve
+same-launch terminal service death. Native idle routing supplies no parking authority.

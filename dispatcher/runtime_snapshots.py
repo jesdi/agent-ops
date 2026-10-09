@@ -8,6 +8,8 @@ import tempfile
 from uuid import UUID
 
 from dispatcher.runtime_delivery_schema import valid_deliveries
+from dispatcher.runtime_bootstrap import valid_bootstrap, valid_initial_start
+from dispatcher.runtime_history import valid_extensions, valid_settlement
 
 from dispatcher.runtime_work import (valid_stored_worker, valid_completions, valid_checkpoint,
     valid_identity, identity_key)
@@ -125,9 +127,19 @@ def valid_status_fields(snapshot):
 
 
 def valid_alerts(alerts):
-    return (isinstance(alerts, list) and all(
-        isinstance(alert, dict) and alert.get("kind") == "compatibility"
-        and text(alert.get("message")) for alert in alerts))
+    if not isinstance(alerts, list) or not all(valid_alert(alert) for alert in alerts):
+        return False
+    batches = [a['batch_id'] for a in alerts if a['kind'] == 'delivery-uncertain']
+    return len(batches) == len(set(batches))
+
+
+def valid_alert(alert):
+    if not isinstance(alert, dict) or not text(alert.get('message')):
+        return False
+    if alert.get('kind') == 'compatibility':
+        return True
+    return (alert.get('kind') == 'delivery-uncertain' and text(alert.get('batch_id'))
+            and alert.get('status') in ('pending', 'resolved'))
 
 
 def valid_snapshot(snapshot):
@@ -140,7 +152,7 @@ def valid_snapshot(snapshot):
                 valid_work_extensions(snapshot),
                 valid_alerts(snapshot.get("alerts")), valid_inputs(snapshot.get("inputs")),
                 "wait" in snapshot, valid_wait(snapshot.get("wait"))))
-    return fields_valid and valid_provenance(snapshot)
+    return fields_valid and valid_bootstrap(snapshot) and valid_initial_start(snapshot) and valid_provenance(snapshot)
 
 
 def unknown_view():
@@ -225,7 +237,8 @@ def valid_provenance(snapshot):
                for turn, revision in ends.items()):
         return False
     return all(valid_input_provenance(receipt, ends, snapshot["revision"])
-               for receipt in snapshot["inputs"].values())
+               and valid_extensions(snapshot, identity, receipt)
+               for identity, receipt in snapshot["inputs"].items())
 
 
 def valid_input_provenance(receipt, ends, revision):
@@ -237,7 +250,7 @@ def valid_input_provenance(receipt, ends, revision):
     if not text(turn):
         return False
     if receipt["status"] == "settled":
-        return ends.get(turn, -1) > receipt["revision"]
+        return ends.get(turn, -1) > receipt["revision"] or valid_settlement(receipt, revision)
     # An accepted ACK may arrive before its turn/started notification.
     return True
 

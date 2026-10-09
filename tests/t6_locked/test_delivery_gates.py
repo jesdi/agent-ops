@@ -80,7 +80,12 @@ def make_gate_case(kind,phase):
             def restore_gate():f.signal()
         elif kind=='service-dead':
             def break_gate():f.apply({'type':'service','status':'dead'})
-            def restore_gate():f.apply({'type':'service','status':'live'})
+            def restore_gate():
+                dead=f.view();self.assertEqual(dead['service'],'dead')
+                self.assertFalse(f.control.event(f.binding,{'type':'service','status':'live'}));self.assertEqual(f.view(),dead);self.assertEqual(f.view()['revision'],dead['revision'])
+                fresh=ContractFixture();self.addCleanup(fresh.close);self.assertNotEqual(fresh.binding['launch_id'],f.binding['launch_id']);self.assertEqual(fresh.view()['deliveries'],[]);fresh.completion(item='command-fresh-service')
+                if phase=='send':fresh.active();fresh.propose()
+                self.assertEqual(f.view(),dead);self.f=fresh
         self.held_then_restored(break_gate,restore_gate,phase)
     return test
 for _kind in ['task-missing','task-malformed','task-malformed-record','park','task-stage','worktree','signal-missing','signal-malformed','signal-stage','signal-nonworking','service-dead']:

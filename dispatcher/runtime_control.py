@@ -8,23 +8,23 @@ from dispatcher.runtime_snapshots import (number, read_current, task_path, text,
                                           valid_native_workers, valid_snapshot, write_snapshot)
 from dispatcher.runtime_http import RuntimeClient  # public host client
 from dispatcher.runtime_inventory import apply_inventory, report_wait
+from dispatcher.runtime_bootstrap import record_initial_start
 from dispatcher.runtime_work import current_stop_follows_inputs, inputs_resolved, running_workers
 from dispatcher.runtime_delivery import apply_delivery, results_resolved
+from dispatcher.runtime_bootstrap import attempt_root, bind_root, send_initial
+from dispatcher.runtime_input import valid_native_input
+from dispatcher.runtime_history import accept_history, settle_history
 
 
 def _bind(snapshot, event):
-    conversation = event.get("conversation_id")
-    if snapshot["binding"]["conversation_id"] is not None:
-        return False
-    if not isinstance(conversation, str) or not conversation:
-        return False
-    snapshot["binding"]["conversation_id"] = conversation
-    return True
+    return bind_root(snapshot, event)
 
 
 def _service(snapshot, event):
     status = event.get("status")
     if status not in ("unknown", "live", "dead"):
+        return False
+    if snapshot['service'] == 'dead' and status != 'dead':
         return False
     snapshot["service"] = status
     return True
@@ -38,7 +38,7 @@ def _main_turn(snapshot, event):
             and isinstance(turn, str) and bool(turn))
 
 
-def _start_turn(snapshot, event):
+def _start_turn(snapshot, event, *, recovered=False):
     if not _main_turn(snapshot, event):
         return False
     main = snapshot["main"]
@@ -48,6 +48,8 @@ def _start_turn(snapshot, event):
     main["status"] = "active"
     main["turn_id"] = turn
     main["seen_turns"].append(turn)
+    if not recovered:
+        record_initial_start(snapshot, turn)
     return True
 
 
@@ -57,7 +59,7 @@ def _recover_turn(snapshot, event):
     main = snapshot["main"]
     turn = event["turn_id"]
     if turn not in main["seen_turns"]:
-        return _start_turn(snapshot, event)
+        return _start_turn(snapshot, event, recovered=True)
     if main["status"] == "active" and main["turn_id"] == turn:
         return not inputs_resolved(snapshot)
     if main["status"] != "unknown" or main["seen_turns"][-1] != turn:
@@ -105,6 +107,9 @@ def _input_receipt(snapshot, event):
     turn = event.get("turn_id")
     if not text(turn):
         return False
+    expected = receipt.get('native_input', {}).get('expected_turn_id')
+    if expected is not None and turn != expected:
+        return False
     receipt.update(status="accepted", turn_id=turn)
     main = snapshot["main"]
     if main["completed_turns"].get(turn, -1) > receipt["revision"]:
@@ -113,6 +118,8 @@ def _input_receipt(snapshot, event):
 
 
 _EVENTS = {"input/accepted": _input_receipt, "input/rejected": _input_receipt,
+           "input/history": accept_history, "input/history-settled": settle_history,
+           "bootstrap/root-attempted": attempt_root, "bootstrap/sent": send_initial,
            "control/unknown": _control_unknown, "turn/recovered": _recover_turn,
            "bound": _bind, "service": _service,
            "turn/started": _start_turn, "turn/completed": _complete_turn}
@@ -165,6 +172,9 @@ class RuntimeControl:
             "deliveries": [], "wait": None, "alerts": [], "retired": False,
             "inputs": {},
         }
+        if runtime == 'codex':
+            snapshot['bootstrap'] = None
+            snapshot['history_checkpoint'] = None
         if not valid_snapshot(snapshot):
             raise ValueError("invalid launch binding")
         directory = task_path(self.state_dir, target, issue)
@@ -187,6 +197,8 @@ class RuntimeControl:
         return self._apply_current_event(snapshot, event, now)
 
     def _apply_current_event(self, snapshot, event, now):
+        if snapshot['service'] == 'dead' and event.get('type') != 'service':
+            return False
         before = deepcopy(snapshot)
         delivery = str(event.get("type", "")).startswith("delivery/")
         if delivery:
@@ -195,7 +207,8 @@ class RuntimeControl:
             accepted = _apply_event(snapshot, event, now)
         if not accepted:
             return False
-        return (delivery and snapshot == before) or self._save(snapshot)
+        replay = delivery or _replayable_event(event)
+        return (replay and snapshot == before) or self._save(snapshot)
 
     def _save(self, snapshot):
         binding = snapshot["binding"]
@@ -226,15 +239,30 @@ class RuntimeControl:
         snapshot["retired"] = True
         return "retired" if self._save(snapshot) else "unknown"
 
-    def accept_input(self, binding, client_message_id) -> bool:
+    def accept_input(self, binding, client_message_id, *, native_input=None) -> bool:
         if not isinstance(binding, dict) or not text(client_message_id):
             return False
         snapshot = self._current(binding)
-        if snapshot is None or client_message_id in snapshot["inputs"]:
+        if snapshot is None or snapshot['service'] == 'dead' or client_message_id in snapshot["inputs"]:
+            return False
+        if not _valid_input_provenance(binding, native_input):
             return False
         snapshot["inputs"][client_message_id] = {
             "status": "pending", "turn_id": None, "revision": snapshot["revision"] + 1}
+        if native_input is not None:
+            snapshot['inputs'][client_message_id]['native_input'] = deepcopy(native_input)
         return self._save(snapshot)
+
+
+def _replayable_event(event):
+    return (event.get('type') in ('bootstrap/root-attempted', 'bootstrap/sent', 'bound',
+                                 'input/history', 'input/history-settled')
+            or (event.get('type') == 'service' and event.get('status') == 'dead'))
+
+
+def _valid_input_provenance(binding, native_input):
+    return (native_input is None or (binding['runtime'] == 'codex'
+            and valid_native_input(native_input, binding['conversation_id'])))
 
 
 def _retirement_eligible(snapshot, revision, reason, now, cap):

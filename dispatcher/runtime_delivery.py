@@ -116,8 +116,17 @@ def send_selection(snapshot, event):
     main = snapshot['main']
     if event.get('method') == 'turn/steer':
         return main['status'] == 'active' and event.get('expected_turn_id') == main['turn_id']
+    return start_selection(snapshot, event)
+
+
+def start_selection(snapshot, event):
+    main = snapshot['main']
+    idle = event.get('selection') == dict(source='thread/read',
+        thread_id=snapshot['binding']['conversation_id'], status='idle')
+    if 'selection' in event and not idle:
+        return False
     return (event.get('method') == 'turn/start' and event.get('expected_turn_id', '') is None
-            and main['status'] == 'stopped' and inputs_resolved(snapshot))
+            and (main['status'] == 'stopped' or idle) and inputs_resolved(snapshot))
 
 
 ATTEMPT_FIELDS = ('attempt_id', 'client_message_id', 'method', 'thread_id', 'expected_turn_id')
@@ -192,7 +201,17 @@ def resolve(snapshot, event):
         return False
     if event['type'] == 'delivery/ack':
         return acknowledge(snapshot, batch, attempt, event)
-    return reject(snapshot, attempt, event)
+    if event['type'] == 'delivery/uncertain':
+        return uncertain(snapshot, batch, attempt, event)
+    return reject_uncertain(snapshot, batch, attempt, event)
+
+
+def reject_uncertain(snapshot, batch, attempt, event):
+    was_uncertain = attempt['status'] == 'sent-unconfirmed'
+    accepted = reject(snapshot, attempt, event)
+    if accepted and was_uncertain:
+        resolve_condition(snapshot, batch['batch_id'])
+    return accepted
 
 
 def acknowledge(snapshot, batch, attempt, event):
@@ -200,13 +219,32 @@ def acknowledge(snapshot, batch, attempt, event):
     if receipt is None or attempt['status'] == 'rejected':
         return False
     if attempt['status'] == 'confirmed':
-        return attempt['receipt'] == receipt
+        return all(attempt['receipt'][k] == receipt[k] for k in ('thread_id', 'turn_id'))
     input_receipt = snapshot['inputs'][attempt['client_message_id']]
     turn = receipt['turn_id']
     settled = snapshot['main']['completed_turns'].get(turn, -1) > input_receipt['revision']
     input_receipt.update(status='settled' if settled else 'accepted', turn_id=turn)
     attempt.update(status='confirmed', receipt=receipt)
     batch['status'] = 'confirmed'
+    resolve_condition(snapshot, batch['batch_id'])
+    return True
+
+
+def resolve_condition(snapshot, batch_id):
+    for alert in snapshot['alerts']:
+        if alert.get('kind') == 'delivery-uncertain' and alert.get('batch_id') == batch_id:
+            alert['status'] = 'resolved'
+
+
+def uncertain(snapshot, batch, attempt, event):
+    if attempt['status'] != 'sent-unconfirmed' or not nonempty(event.get('message')):
+        return False
+    for alert in snapshot['alerts']:
+        if alert.get('kind') == 'delivery-uncertain' and alert.get('batch_id') == batch['batch_id']:
+            alert.update(status='pending', message=event['message'])
+            return True
+    snapshot['alerts'].append(dict(kind='delivery-uncertain', batch_id=batch['batch_id'],
+                                  status='pending', message=event['message']))
     return True
 
 
@@ -227,6 +265,6 @@ def apply_delivery(snapshot, event, state_dir):
         if not gate_open(snapshot, state_dir):
             return False
         return propose(snapshot, event) if kind == 'delivery/proposed' else send(snapshot, event)
-    if kind in ('delivery/ack', 'delivery/rejected'):
+    if kind in ('delivery/ack', 'delivery/rejected', 'delivery/uncertain'):
         return resolve(snapshot, event)
     return False

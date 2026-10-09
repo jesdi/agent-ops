@@ -1,0 +1,957 @@
+{
+  "base": "1afde4f9cbbe2f616e49c25d2e118b977b694e70",
+  "contract": "specs/codex-background-lifecycle/runtime-receipt-contract.md",
+  "criterion_count": 16,
+  "additional_public_criterion_groups": 2,
+  "collected_count": 155,
+  "product_case_count": 146,
+  "infrastructure_case_count": 9,
+  "criterion_cases": {
+    "Controller/dispatcher reinstantiation": [
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_actual_control_socket_reconnect_keeps_attachment_open_and_exact_root",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_context_exit_cancels_missing_ack_tasks_without_killing_terminal_or_resending_on_b",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_context_owner_cancellation_is_quiescent_without_killing_terminal_or_rolling_back_held_input",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_d_uncertain_while_distinct_e_and_operator_progress_then_only_d_history_resolves",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_dead_same_launch_attachment_both_modes_cannot_revive_or_forward_then_fresh_prepare_is_distinct",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_default_attachment_does_not_read_or_forward_its_prompt",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_dispatcher_reinstantiation_retains_same_physical_launch_and_pending_inputs",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_first_launch_fully_exits_then_a_b_share_same_gateway_terminal_backend_and_lock",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_listener_process_restart_preserves_exact_pending_delivery_and_live_terminal",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_lost_root_reply_and_all_correlation_never_creates_second_root_or_prompt",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_waiter_cancellation_alone_does_not_close_attachment_gateway_or_terminal",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_dispatcher_reinstantiation_with_receipt_only_acceptance_retains_clock_and_ordinary_cap_hold",
+      "tests/t7_locked/test_genuine_cli_reconnect.py::GenuineCLIReconnectTests::test_actual_cli_control_reconnect_retains_initial_receipt_same_session_and_live_remote_terminal"
+    ],
+    "Lost root-ID reply": [
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_accepted_root_attempt_with_lost_listener_response_is_held_before_native_forward",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_lost_root_reply_and_all_correlation_never_creates_second_root_or_prompt",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_identical_root_attempt_replay_changes_nothing_and_conflicts_cannot_replace_it",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_start_named_resume_root_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_root_attempt_retains_exact_immutable_initial_input_before_root_forward",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_stale_revision_and_foreign_root_attempt_are_atomic_then_fresh_succeeds",
+      "tests/t7_locked/test_cli_bootstrap.py::SupervisorBootstrapCLITests::test_genuine_cli_root_operation_is_durable_before_initial_native_root_acceptance",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_explicit_prepared_resume_uses_exact_selected_root_even_with_newer_foreign_thread",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_late_still_correlated_root_reply_binds_exact_original_operation_without_reissue"
+    ],
+    "Initial prompt uncertainty": [
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_accepted_initial_reservation_with_lost_listener_response_is_held_before_native_forward",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_bootstrap_ack_uses_existing_receipt_and_preserves_provenance",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_bootstrap_sent_atomically_reserves_existing_pending_receipt",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_root_unbound_or_unattempted_cannot_send_initial_prompt",
+      "tests/t7_locked/test_cli_bootstrap.py::SupervisorBootstrapCLITests::test_genuine_cli_initial_pending_input_exists_before_native_validation_and_prompt_is_once",
+      "tests/t7_locked/test_cli_bootstrap.py::SupervisorBootstrapCLITests::test_genuine_cli_root_operation_is_durable_before_initial_native_root_acceptance",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_explicit_prepared_resume_uses_exact_selected_root_even_with_newer_foreign_thread",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_late_still_correlated_root_reply_binds_exact_original_operation_without_reissue",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_lost_initial_reply_and_start_completed_exact_history_releases_same_root_readiness",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_lost_initial_reply_failed_exact_history_can_prove_acceptance_without_normal_stop",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_lost_initial_reply_interrupted_exact_history_can_prove_acceptance_without_normal_stop",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_unrelated_or_changed_initial_history_stays_held_until_exact_receipt"
+    ],
+    "Durable result uncertainty": [
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_accepted_initial_reservation_with_lost_listener_response_is_held_before_native_forward",
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_accepted_root_attempt_with_lost_listener_response_is_held_before_native_forward",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_context_exit_cancels_missing_ack_tasks_without_killing_terminal_or_resending_on_b",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_listener_process_restart_preserves_exact_pending_delivery_and_live_terminal",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_blocked_help_wins_recovered_receipt_and_fences_before_physical_end",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_ci_wins_recovered_receipt_and_fences_before_physical_end",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_dead_physical_terminal_keeps_failed_stage_and_does_not_prepare_result_restart",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_dispatcher_reinstantiation_with_receipt_only_acceptance_retains_clock_and_ordinary_cap_hold",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_history_local_settlement_has_no_automatic_cap_retirement_or_clock_reset",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_loop_cap_wins_recovered_receipt_without_reopening_old_attempt",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_review_done_pr_open_gate_prevents_new_result_while_retained_receipt_stays_exact"
+    ],
+    "Lost ACK recovery": [
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_generic_invalid_request_after_native_acceptance_is_not_known_rejection",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_lost_socket_ack_after_native_acceptance_recovers_only_exact_original_attempt",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_malformed_success_is_uncertain_not_accepted_or_retried",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_schema_valid_wrong_turn_success_is_uncertain_not_accepted_or_retried",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_unsupported_error_after_native_acceptance_is_not_known_rejection",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_context_exit_cancels_missing_ack_tasks_without_killing_terminal_or_resending_on_b",
+      "tests/t7_locked/test_gateway_provenance.py::GatewayOrdinaryProvenanceTests::test_lost_ordinary_text_ack_recovers_existing_receipt_without_new_admission_or_resend",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_completed_own_turn_settles_old_a_without_stopping_current_b",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_exact_history_confirms_only_matching_existing_input_attempt_and_batch",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_confirmation_cannot_revive_forced_retired_binding",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_changed_whitespace_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_empty_item_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_extra_input_element_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_root_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_scan_root_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_scan_turn_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_missing_client_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_nonempty_text_elements_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_nonfinal_cursor_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_null_client_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_null_turn_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_partial_scan_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_skipped_prefix_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_unknown_generic_field_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_unsupported_direction_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_wrong_steer_turn_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_legacy_operator_without_durable_content_is_not_confirmed_by_guessed_history",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_matching_history_corroborates_ack_without_another_attempt_or_input_admission",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_native_empty_text_elements_normalization_preserves_original_batch_input",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_receipt_replay_no_change_and_conflicting_identity_cannot_replace_confirmation",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_recorded_exact_normal_stop_settles_history_without_fabricated_relation",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_changed_input_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_different_client_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_different_item_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_failed_turn_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_foreign_root_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_interrupted_turn_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_non_null_error_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_other_turn_end_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_summary_items_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_missing_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_partial_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_wrong_scope_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_unsupported_source_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_runtime_control_reinstantiation_preserves_history_provenance_clock_and_batch",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_whole_root_full_turn_paging_can_supply_own_end_relation"
+    ],
+    "Ordinary operator provenance": [
+      "tests/t7_locked/test_gateway_provenance.py::GatewayOrdinaryProvenanceTests::test_actual_gateway_pending_exact_text_provenance_exists_before_native_validation",
+      "tests/t7_locked/test_gateway_provenance.py::GatewayOrdinaryProvenanceTests::test_lost_ordinary_text_ack_recovers_existing_receipt_without_new_admission_or_resend",
+      "tests/t7_locked/test_gateway_provenance.py::GatewayOrdinaryProvenanceTests::test_richer_native_operator_input_keeps_actual_admission_forward_and_ack_access",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_completed_text_history_recovers_only_that_exact_operator_receipt",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_exact_ordinary_provenance_and_pending_receipt_persist_atomically",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_foreign_root_never_reserves_partial_input",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_malformed_user_input_never_reserves_partial_input",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_start_nonnull_precondition_never_reserves_partial_input",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_steer_missing_precondition_never_reserves_partial_input",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_unknown_method_never_reserves_partial_input",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_new_codex_provenance_keeps_ordinary_claude_two_argument_admission_access",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_richer_schema_valid_input_retains_admission_and_correlated_ack_access",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_schema_valid_empty_input_is_stored_but_cannot_invent_user_message_receipt",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_start_provenance_has_null_precondition_and_learns_matching_turn",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_text_whitespace_order_and_nonempty_spans_do_not_match",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_two_argument_and_null_provenance_access_remain_ordinary_and_cannot_upgrade",
+      "tests/t7_locked/test_listener_input_transport.py::ListenerInputTransportTests::test_boundclient_optional_provenance_uses_real_existing_listener_input_route",
+      "tests/t7_locked/test_listener_input_transport.py::ListenerInputTransportTests::test_host_runtimeclient_optional_provenance_uses_real_existing_listener_input_route"
+    ],
+    "Text normalization and access": [
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_richer_initial_input_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_gateway_provenance.py::GatewayOrdinaryProvenanceTests::test_richer_native_operator_input_keeps_actual_admission_forward_and_ack_access",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_native_empty_text_elements_normalization_preserves_original_batch_input",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_completed_text_history_recovers_only_that_exact_operator_receipt",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_new_codex_provenance_keeps_ordinary_claude_two_argument_admission_access",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_richer_schema_valid_input_retains_admission_and_correlated_ack_access",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_schema_valid_empty_input_is_stored_but_cannot_invent_user_message_receipt",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_text_whitespace_order_and_nonempty_spans_do_not_match",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_two_argument_and_null_provenance_access_remain_ordinary_and_cannot_upgrade"
+    ],
+    "Scope/pages/input identity": [
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_changed_whitespace_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_empty_item_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_extra_input_element_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_root_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_scan_root_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_scan_turn_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_missing_client_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_nonempty_text_elements_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_nonfinal_cursor_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_null_client_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_null_turn_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_partial_scan_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_skipped_prefix_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_unknown_generic_field_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_unsupported_direction_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_wrong_steer_turn_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_changed_input_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_different_client_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_different_item_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_failed_turn_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_foreign_root_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_interrupted_turn_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_non_null_error_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_other_turn_end_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_summary_items_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_missing_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_partial_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_wrong_scope_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_unsupported_source_without_lifecycle_authority",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_unrelated_or_changed_initial_history_stays_held_until_exact_receipt",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_changed_exact_text_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_malformed_items_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_missing_client_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_missing_cursor_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_null_client_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_repeated_cursor_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_repeated_same_item_observation_is_idempotent_after_exact_history_confirmation",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_two_distinct_native_items_with_attempted_client_id_remain_ambiguous_without_provider_dedup",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_unreadable_items_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_wrong_owning_turn_keeps_d_held_while_e_and_operator_progress"
+    ],
+    "ACK/rejection boundary": [
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_generic_invalid_request_after_native_acceptance_is_not_known_rejection",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_lost_socket_ack_after_native_acceptance_recovers_only_exact_original_attempt",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_malformed_success_is_uncertain_not_accepted_or_retried",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_schema_valid_wrong_turn_success_is_uncertain_not_accepted_or_retried",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_unsupported_error_after_native_acceptance_is_not_known_rejection",
+      "tests/t7_locked/test_idle_uncertainty_service.py::UncertaintyConditionTests::test_proven_rejection_resolves_condition_without_confirming_batch_then_safe_attempt_reopens_same_record",
+      "tests/t7_locked/test_known_rejection_recovery.py::KnownRejectionRecoveryTests::test_obsolete_active_expected_turn_proved_rejection_allows_one_fresh_active_attempt",
+      "tests/t7_locked/test_known_rejection_recovery.py::KnownRejectionRecoveryTests::test_obsolete_expected_turn_with_native_idle_proved_rejection_allows_one_fresh_start"
+    ],
+    "Native IDs/duplicates": [
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_identical_root_attempt_replay_changes_nothing_and_conflicts_cannot_replace_it",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_exact_history_confirms_only_matching_existing_input_attempt_and_batch",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_receipt_replay_no_change_and_conflicting_identity_cannot_replace_confirmation",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_repeated_same_item_observation_is_idempotent_after_exact_history_confirmation",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_two_distinct_native_items_with_attempted_client_id_remain_ambiguous_without_provider_dedup"
+    ],
+    "Independent held work": [
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_d_uncertain_while_distinct_e_and_operator_progress_then_only_d_history_resolves",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_idle_selection_never_clears_unrelated_pending_or_accepted_input_barriers",
+      "tests/t7_locked/test_missed_stop_idle.py::MissedStopIdleFlowTests::test_unrelated_pending_input_blocks_idle_continuation_until_its_independent_rejection",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_changed_exact_text_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_malformed_items_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_missing_client_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_missing_cursor_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_null_client_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_repeated_cursor_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_repeated_same_item_observation_is_idempotent_after_exact_history_confirmation",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_two_distinct_native_items_with_attempted_client_id_remain_ambiguous_without_provider_dedup",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_unreadable_items_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_wrong_owning_turn_keeps_d_held_while_e_and_operator_progress"
+    ],
+    "Missed Stop A during active B": [
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_context_exit_cancels_missing_ack_tasks_without_killing_terminal_or_resending_on_b",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_history_local_settlement_has_no_automatic_cap_retirement_or_clock_reset",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_completed_own_turn_settles_old_a_without_stopping_current_b",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_recorded_exact_normal_stop_settles_history_without_fabricated_relation",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_whole_root_full_turn_paging_can_supply_own_end_relation"
+    ],
+    "Missed Stop plus known native idle": [
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_idle_selection_does_not_bypass_current_task_or_stage_gate",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_idle_selection_never_clears_unrelated_pending_or_accepted_input_barriers",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_intervening_revision_invalidates_preread_selection",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_active_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_cached_resume_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_foreign_root_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_historical_turn_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_notloaded_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_system_error_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_old_history_uncertainty_does_not_negate_independent_current_native_idle",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_positive_native_idle_routes_start_without_normal_main_stop_or_clock_reset",
+      "tests/t7_locked/test_missed_stop_idle.py::MissedStopIdleFlowTests::test_foreign_current_read_is_not_idle_authority_then_healthy_exact_read_can_continue",
+      "tests/t7_locked/test_missed_stop_idle.py::MissedStopIdleFlowTests::test_receipt_local_missed_stop_with_fresh_exact_idle_admits_same_root_start_without_lifecycle_rewrite",
+      "tests/t7_locked/test_missed_stop_idle.py::MissedStopIdleFlowTests::test_unrelated_pending_input_blocks_idle_continuation_until_its_independent_rejection"
+    ],
+    "Missed outcomes/owned work": [
+      "tests/t7_locked/test_offline_owned_outcomes.py::OfflineOwnedOutcomesTests::test_five_depth_child_and_command_offline_outcomes_recover_exactly_once_without_baseline_reset",
+      "tests/t7_locked/test_offline_owned_outcomes.py::OfflineOwnedOutcomesTests::test_readable_absence_does_not_erase_previously_known_worker_or_available_outcome"
+    ],
+    "Uncertainty condition": [
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_generic_invalid_request_after_native_acceptance_is_not_known_rejection",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_lost_socket_ack_after_native_acceptance_recovers_only_exact_original_attempt",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_malformed_success_is_uncertain_not_accepted_or_retried",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_schema_valid_wrong_turn_success_is_uncertain_not_accepted_or_retried",
+      "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_unsupported_error_after_native_acceptance_is_not_known_rejection",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_d_uncertain_while_distinct_e_and_operator_progress_then_only_d_history_resolves",
+      "tests/t7_locked/test_idle_uncertainty_service.py::UncertaintyConditionTests::test_ack_resolves_only_its_batch_condition_and_stale_uncertainty_cannot_republish",
+      "tests/t7_locked/test_idle_uncertainty_service.py::UncertaintyConditionTests::test_foreign_or_nonpending_attempt_never_creates_condition",
+      "tests/t7_locked/test_idle_uncertainty_service.py::UncertaintyConditionTests::test_proven_rejection_resolves_condition_without_confirming_batch_then_safe_attempt_reopens_same_record",
+      "tests/t7_locked/test_idle_uncertainty_service.py::UncertaintyConditionTests::test_repoll_reword_and_runtime_restart_keep_one_pending_logical_batch_condition",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_changed_exact_text_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_malformed_items_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_missing_client_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_missing_cursor_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_null_client_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_repeated_cursor_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_repeated_same_item_observation_is_idempotent_after_exact_history_confirmation",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_two_distinct_native_items_with_attempted_client_id_remain_ambiguous_without_provider_dedup",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_unreadable_items_keeps_d_held_while_e_and_operator_progress",
+      "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_wrong_owning_turn_keeps_d_held_while_e_and_operator_progress"
+    ],
+    "Clock/gates/death": [
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_dead_same_launch_attachment_both_modes_cannot_revive_or_forward_then_fresh_prepare_is_distinct",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_blocked_help_wins_recovered_receipt_and_fences_before_physical_end",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_ci_wins_recovered_receipt_and_fences_before_physical_end",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_dead_physical_terminal_keeps_failed_stage_and_does_not_prepare_result_restart",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_dispatcher_reinstantiation_with_receipt_only_acceptance_retains_clock_and_ordinary_cap_hold",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_history_local_settlement_has_no_automatic_cap_retirement_or_clock_reset",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_loop_cap_wins_recovered_receipt_without_reopening_old_attempt",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_review_done_pr_open_gate_prevents_new_result_while_retained_receipt_stays_exact",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_runtime_control_reinstantiation_preserves_history_provenance_clock_and_batch",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_idle_selection_does_not_bypass_current_task_or_stage_gate",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_idle_selection_never_clears_unrelated_pending_or_accepted_input_barriers",
+      "tests/t7_locked/test_idle_uncertainty_service.py::TerminalServiceDeathTests::test_dead_same_physical_launch_rejects_live_and_unknown_without_revision_change"
+    ],
+    "Additional attachment entry/ownership criteria": [
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_absent_retained_bootstrap_is_unknown_in_both_modes_and_never_retrofilled",
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_accepted_initial_reservation_with_lost_listener_response_is_held_before_native_forward",
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_accepted_root_attempt_with_lost_listener_response_is_held_before_native_forward",
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_malformed_public_view_fails_entry_before_subscription_or_mutation",
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_missing_public_view_fails_entry_before_subscription_or_mutation",
+      "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_unknown_boundless_default_attachment_never_consumes_explicit_null_first_launch_permission",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_context_owner_cancellation_is_quiescent_without_killing_terminal_or_rolling_back_held_input",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_default_attachment_does_not_read_or_forward_its_prompt",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_first_launch_fully_exits_then_a_b_share_same_gateway_terminal_backend_and_lock",
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_waiter_cancellation_alone_does_not_close_attachment_gateway_or_terminal"
+    ],
+    "Atomic immutable bootstrap validation": [
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_attempted_root_requires_exact_operation_owned_binding",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_bootstrap_ack_uses_existing_receipt_and_preserves_provenance",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_bootstrap_sent_atomically_reserves_existing_pending_receipt",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_identical_root_attempt_replay_changes_nothing_and_conflicts_cannot_replace_it",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_initial_resume_names_exact_selected_root",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_empty_client_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_empty_input_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_empty_operation_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_missing_text_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_nonempty_initial_spans_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_null_input_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_richer_initial_input_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_start_named_resume_root_attempt_is_atomic_then_valid_attempt_records",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_new_codex_prepare_has_explicit_unattempted_null",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_root_attempt_retains_exact_immutable_initial_input_before_root_forward",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_root_unbound_or_unattempted_cannot_send_initial_prompt",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_stale_or_foreign_bootstrap_send_never_partially_admits_input",
+      "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_stale_revision_and_foreign_root_attempt_are_atomic_then_fresh_succeeds"
+    ]
+  },
+  "case_criteria": {
+    "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_generic_invalid_request_after_native_acceptance_is_not_known_rejection": [
+      "Lost ACK recovery",
+      "ACK/rejection boundary",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_lost_socket_ack_after_native_acceptance_recovers_only_exact_original_attempt": [
+      "Lost ACK recovery",
+      "ACK/rejection boundary",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_malformed_success_is_uncertain_not_accepted_or_retried": [
+      "Lost ACK recovery",
+      "ACK/rejection boundary",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_schema_valid_wrong_turn_success_is_uncertain_not_accepted_or_retried": [
+      "Lost ACK recovery",
+      "ACK/rejection boundary",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_ack_boundary.py::NativeACKBoundaryTests::test_unsupported_error_after_native_acceptance_is_not_known_rejection": [
+      "Lost ACK recovery",
+      "ACK/rejection boundary",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_absent_retained_bootstrap_is_unknown_in_both_modes_and_never_retrofilled": [
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_accepted_initial_reservation_with_lost_listener_response_is_held_before_native_forward": [
+      "Initial prompt uncertainty",
+      "Durable result uncertainty",
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_accepted_root_attempt_with_lost_listener_response_is_held_before_native_forward": [
+      "Lost root-ID reply",
+      "Durable result uncertainty",
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_malformed_public_view_fails_entry_before_subscription_or_mutation": [
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_missing_public_view_fails_entry_before_subscription_or_mutation": [
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_attachment_entry_guards.py::AttachmentEntryGuardTests::test_unknown_boundless_default_attachment_never_consumes_explicit_null_first_launch_permission": [
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_actual_control_socket_reconnect_keeps_attachment_open_and_exact_root": [
+      "Controller/dispatcher reinstantiation"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_context_exit_cancels_missing_ack_tasks_without_killing_terminal_or_resending_on_b": [
+      "Controller/dispatcher reinstantiation",
+      "Durable result uncertainty",
+      "Lost ACK recovery",
+      "Missed Stop A during active B"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_context_owner_cancellation_is_quiescent_without_killing_terminal_or_rolling_back_held_input": [
+      "Controller/dispatcher reinstantiation",
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_d_uncertain_while_distinct_e_and_operator_progress_then_only_d_history_resolves": [
+      "Controller/dispatcher reinstantiation",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_dead_same_launch_attachment_both_modes_cannot_revive_or_forward_then_fresh_prepare_is_distinct": [
+      "Controller/dispatcher reinstantiation",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_default_attachment_does_not_read_or_forward_its_prompt": [
+      "Controller/dispatcher reinstantiation",
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_dispatcher_reinstantiation_retains_same_physical_launch_and_pending_inputs": [
+      "Controller/dispatcher reinstantiation"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_first_launch_fully_exits_then_a_b_share_same_gateway_terminal_backend_and_lock": [
+      "Controller/dispatcher reinstantiation",
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_listener_process_restart_preserves_exact_pending_delivery_and_live_terminal": [
+      "Controller/dispatcher reinstantiation",
+      "Durable result uncertainty"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_lost_root_reply_and_all_correlation_never_creates_second_root_or_prompt": [
+      "Controller/dispatcher reinstantiation",
+      "Lost root-ID reply"
+    ],
+    "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_waiter_cancellation_alone_does_not_close_attachment_gateway_or_terminal": [
+      "Controller/dispatcher reinstantiation",
+      "Additional attachment entry/ownership criteria"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_attempted_root_requires_exact_operation_owned_binding": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_bootstrap_ack_uses_existing_receipt_and_preserves_provenance": [
+      "Initial prompt uncertainty",
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_bootstrap_sent_atomically_reserves_existing_pending_receipt": [
+      "Initial prompt uncertainty",
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_identical_root_attempt_replay_changes_nothing_and_conflicts_cannot_replace_it": [
+      "Lost root-ID reply",
+      "Native IDs/duplicates",
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_initial_resume_names_exact_selected_root": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_empty_client_attempt_is_atomic_then_valid_attempt_records": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_empty_input_attempt_is_atomic_then_valid_attempt_records": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_empty_operation_attempt_is_atomic_then_valid_attempt_records": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_missing_text_attempt_is_atomic_then_valid_attempt_records": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_nonempty_initial_spans_attempt_is_atomic_then_valid_attempt_records": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_null_input_attempt_is_atomic_then_valid_attempt_records": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_richer_initial_input_attempt_is_atomic_then_valid_attempt_records": [
+      "Text normalization and access",
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_invalid_start_named_resume_root_attempt_is_atomic_then_valid_attempt_records": [
+      "Lost root-ID reply",
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_new_codex_prepare_has_explicit_unattempted_null": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_root_attempt_retains_exact_immutable_initial_input_before_root_forward": [
+      "Lost root-ID reply",
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_root_unbound_or_unattempted_cannot_send_initial_prompt": [
+      "Initial prompt uncertainty",
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_stale_or_foreign_bootstrap_send_never_partially_admits_input": [
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_bootstrap_contract.py::BootstrapContractTests::test_stale_revision_and_foreign_root_attempt_are_atomic_then_fresh_succeeds": [
+      "Lost root-ID reply",
+      "Atomic immutable bootstrap validation"
+    ],
+    "tests/t7_locked/test_cli_bootstrap.py::SupervisorBootstrapCLITests::test_genuine_cli_initial_pending_input_exists_before_native_validation_and_prompt_is_once": [
+      "Initial prompt uncertainty"
+    ],
+    "tests/t7_locked/test_cli_bootstrap.py::SupervisorBootstrapCLITests::test_genuine_cli_root_operation_is_durable_before_initial_native_root_acceptance": [
+      "Lost root-ID reply",
+      "Initial prompt uncertainty"
+    ],
+    "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_blocked_help_wins_recovered_receipt_and_fences_before_physical_end": [
+      "Durable result uncertainty",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_ci_wins_recovered_receipt_and_fences_before_physical_end": [
+      "Durable result uncertainty",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_dead_physical_terminal_keeps_failed_stage_and_does_not_prepare_result_restart": [
+      "Durable result uncertainty",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_dispatcher_reinstantiation_with_receipt_only_acceptance_retains_clock_and_ordinary_cap_hold": [
+      "Controller/dispatcher reinstantiation",
+      "Durable result uncertainty",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_history_local_settlement_has_no_automatic_cap_retirement_or_clock_reset": [
+      "Durable result uncertainty",
+      "Missed Stop A during active B",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_loop_cap_wins_recovered_receipt_without_reopening_old_attempt": [
+      "Durable result uncertainty",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_review_done_pr_open_gate_prevents_new_result_while_retained_receipt_stays_exact": [
+      "Durable result uncertainty",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_gateway_provenance.py::GatewayOrdinaryProvenanceTests::test_actual_gateway_pending_exact_text_provenance_exists_before_native_validation": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_gateway_provenance.py::GatewayOrdinaryProvenanceTests::test_lost_ordinary_text_ack_recovers_existing_receipt_without_new_admission_or_resend": [
+      "Lost ACK recovery",
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_gateway_provenance.py::GatewayOrdinaryProvenanceTests::test_richer_native_operator_input_keeps_actual_admission_forward_and_ack_access": [
+      "Ordinary operator provenance",
+      "Text normalization and access"
+    ],
+    "tests/t7_locked/test_genuine_cli_reconnect.py::GenuineCLIReconnectTests::test_actual_cli_control_reconnect_retains_initial_receipt_same_session_and_live_remote_terminal": [
+      "Controller/dispatcher reinstantiation"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_completed_own_turn_settles_old_a_without_stopping_current_b": [
+      "Lost ACK recovery",
+      "Missed Stop A during active B"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_exact_history_confirms_only_matching_existing_input_attempt_and_batch": [
+      "Lost ACK recovery",
+      "Native IDs/duplicates"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_confirmation_cannot_revive_forced_retired_binding": [
+      "Lost ACK recovery"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_changed_whitespace_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_empty_item_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_extra_input_element_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_root_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_scan_root_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_scan_turn_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_missing_client_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_nonempty_text_elements_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_nonfinal_cursor_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_null_client_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_null_turn_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_partial_scan_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_skipped_prefix_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_unknown_generic_field_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_unsupported_direction_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_wrong_steer_turn_then_valid_receipt_confirms": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_legacy_operator_without_durable_content_is_not_confirmed_by_guessed_history": [
+      "Lost ACK recovery"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_matching_history_corroborates_ack_without_another_attempt_or_input_admission": [
+      "Lost ACK recovery"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_native_empty_text_elements_normalization_preserves_original_batch_input": [
+      "Lost ACK recovery",
+      "Text normalization and access"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_receipt_replay_no_change_and_conflicting_identity_cannot_replace_confirmation": [
+      "Lost ACK recovery",
+      "Native IDs/duplicates"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_recorded_exact_normal_stop_settles_history_without_fabricated_relation": [
+      "Lost ACK recovery",
+      "Missed Stop A during active B"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_changed_input_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_different_client_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_different_item_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_failed_turn_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_foreign_root_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_interrupted_turn_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_non_null_error_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_other_turn_end_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_summary_items_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_missing_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_partial_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_wrong_scope_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_unsupported_source_without_lifecycle_authority": [
+      "Lost ACK recovery",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_runtime_control_reinstantiation_preserves_history_provenance_clock_and_batch": [
+      "Lost ACK recovery",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_whole_root_full_turn_paging_can_supply_own_end_relation": [
+      "Lost ACK recovery",
+      "Missed Stop A during active B"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_idle_selection_does_not_bypass_current_task_or_stage_gate": [
+      "Missed Stop plus known native idle",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_idle_selection_never_clears_unrelated_pending_or_accepted_input_barriers": [
+      "Independent held work",
+      "Missed Stop plus known native idle",
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_intervening_revision_invalidates_preread_selection": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_active_selection_holds_then_fresh_idle_admits": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_cached_resume_selection_holds_then_fresh_idle_admits": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_foreign_root_selection_holds_then_fresh_idle_admits": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_historical_turn_selection_holds_then_fresh_idle_admits": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_notloaded_selection_holds_then_fresh_idle_admits": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_system_error_selection_holds_then_fresh_idle_admits": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_old_history_uncertainty_does_not_negate_independent_current_native_idle": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_positive_native_idle_routes_start_without_normal_main_stop_or_clock_reset": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::UncertaintyConditionTests::test_ack_resolves_only_its_batch_condition_and_stale_uncertainty_cannot_republish": [
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::UncertaintyConditionTests::test_foreign_or_nonpending_attempt_never_creates_condition": [
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::UncertaintyConditionTests::test_proven_rejection_resolves_condition_without_confirming_batch_then_safe_attempt_reopens_same_record": [
+      "ACK/rejection boundary",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::UncertaintyConditionTests::test_repoll_reword_and_runtime_restart_keep_one_pending_logical_batch_condition": [
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_idle_uncertainty_service.py::TerminalServiceDeathTests::test_dead_same_physical_launch_rejects_live_and_unknown_without_revision_change": [
+      "Clock/gates/death"
+    ],
+    "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_explicit_prepared_resume_uses_exact_selected_root_even_with_newer_foreign_thread": [
+      "Lost root-ID reply",
+      "Initial prompt uncertainty"
+    ],
+    "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_late_still_correlated_root_reply_binds_exact_original_operation_without_reissue": [
+      "Lost root-ID reply",
+      "Initial prompt uncertainty"
+    ],
+    "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_lost_initial_reply_and_start_completed_exact_history_releases_same_root_readiness": [
+      "Initial prompt uncertainty"
+    ],
+    "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_lost_initial_reply_failed_exact_history_can_prove_acceptance_without_normal_stop": [
+      "Initial prompt uncertainty"
+    ],
+    "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_lost_initial_reply_interrupted_exact_history_can_prove_acceptance_without_normal_stop": [
+      "Initial prompt uncertainty"
+    ],
+    "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_unrelated_or_changed_initial_history_stays_held_until_exact_receipt": [
+      "Initial prompt uncertainty",
+      "Scope/pages/input identity"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_completed_text_history_recovers_only_that_exact_operator_receipt": [
+      "Ordinary operator provenance",
+      "Text normalization and access"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_exact_ordinary_provenance_and_pending_receipt_persist_atomically": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_foreign_root_never_reserves_partial_input": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_malformed_user_input_never_reserves_partial_input": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_start_nonnull_precondition_never_reserves_partial_input": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_steer_missing_precondition_never_reserves_partial_input": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_invalid_unknown_method_never_reserves_partial_input": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_new_codex_provenance_keeps_ordinary_claude_two_argument_admission_access": [
+      "Ordinary operator provenance",
+      "Text normalization and access"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_richer_schema_valid_input_retains_admission_and_correlated_ack_access": [
+      "Ordinary operator provenance",
+      "Text normalization and access"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_schema_valid_empty_input_is_stored_but_cannot_invent_user_message_receipt": [
+      "Ordinary operator provenance",
+      "Text normalization and access"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_start_provenance_has_null_precondition_and_learns_matching_turn": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_text_whitespace_order_and_nonempty_spans_do_not_match": [
+      "Ordinary operator provenance",
+      "Text normalization and access"
+    ],
+    "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_two_argument_and_null_provenance_access_remain_ordinary_and_cannot_upgrade": [
+      "Ordinary operator provenance",
+      "Text normalization and access"
+    ],
+    "tests/t7_locked/test_known_rejection_recovery.py::KnownRejectionRecoveryTests::test_obsolete_active_expected_turn_proved_rejection_allows_one_fresh_active_attempt": [
+      "ACK/rejection boundary"
+    ],
+    "tests/t7_locked/test_known_rejection_recovery.py::KnownRejectionRecoveryTests::test_obsolete_expected_turn_with_native_idle_proved_rejection_allows_one_fresh_start": [
+      "ACK/rejection boundary"
+    ],
+    "tests/t7_locked/test_listener_input_transport.py::ListenerInputTransportTests::test_boundclient_optional_provenance_uses_real_existing_listener_input_route": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_listener_input_transport.py::ListenerInputTransportTests::test_host_runtimeclient_optional_provenance_uses_real_existing_listener_input_route": [
+      "Ordinary operator provenance"
+    ],
+    "tests/t7_locked/test_missed_stop_idle.py::MissedStopIdleFlowTests::test_foreign_current_read_is_not_idle_authority_then_healthy_exact_read_can_continue": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_missed_stop_idle.py::MissedStopIdleFlowTests::test_receipt_local_missed_stop_with_fresh_exact_idle_admits_same_root_start_without_lifecycle_rewrite": [
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_missed_stop_idle.py::MissedStopIdleFlowTests::test_unrelated_pending_input_blocks_idle_continuation_until_its_independent_rejection": [
+      "Independent held work",
+      "Missed Stop plus known native idle"
+    ],
+    "tests/t7_locked/test_offline_owned_outcomes.py::OfflineOwnedOutcomesTests::test_five_depth_child_and_command_offline_outcomes_recover_exactly_once_without_baseline_reset": [
+      "Missed outcomes/owned work"
+    ],
+    "tests/t7_locked/test_offline_owned_outcomes.py::OfflineOwnedOutcomesTests::test_readable_absence_does_not_erase_previously_known_worker_or_available_outcome": [
+      "Missed outcomes/owned work"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_changed_exact_text_keeps_d_held_while_e_and_operator_progress": [
+      "Scope/pages/input identity",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_malformed_items_keeps_d_held_while_e_and_operator_progress": [
+      "Scope/pages/input identity",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_missing_client_keeps_d_held_while_e_and_operator_progress": [
+      "Scope/pages/input identity",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_missing_cursor_keeps_d_held_while_e_and_operator_progress": [
+      "Scope/pages/input identity",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_null_client_keeps_d_held_while_e_and_operator_progress": [
+      "Scope/pages/input identity",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_repeated_cursor_keeps_d_held_while_e_and_operator_progress": [
+      "Scope/pages/input identity",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_repeated_same_item_observation_is_idempotent_after_exact_history_confirmation": [
+      "Scope/pages/input identity",
+      "Native IDs/duplicates",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_two_distinct_native_items_with_attempted_client_id_remain_ambiguous_without_provider_dedup": [
+      "Scope/pages/input identity",
+      "Native IDs/duplicates",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_unreadable_items_keeps_d_held_while_e_and_operator_progress": [
+      "Scope/pages/input identity",
+      "Independent held work",
+      "Uncertainty condition"
+    ],
+    "tests/t7_locked/test_raw_history_recovery.py::RawHistoryRecoveryTests::test_wrong_owning_turn_keeps_d_held_while_e_and_operator_progress": [
+      "Scope/pages/input identity",
+      "Independent held work",
+      "Uncertainty condition"
+    ]
+  },
+  "infrastructure_cases": [
+    "tests/t7_locked/test_additional_provider_conformance.py::AdditionalConformanceTests::test_new_t7_preparation_capabilities",
+    "tests/t7_locked/test_extended_provider_conformance.py::ExtendedProviderConformanceTests::test_before_root_acceptance_barrier_allows_independent_operator_progress",
+    "tests/t7_locked/test_extended_provider_conformance.py::ExtendedProviderConformanceTests::test_bounded_opaque_pages_preserve_exact_items_and_persistent_bad_packets_are_explicit",
+    "tests/t7_locked/test_extended_provider_conformance.py::ExtendedProviderConformanceTests::test_explicit_active_history_visibility_fault_keeps_completed_receipt_exact",
+    "tests/t7_locked/test_extended_provider_conformance.py::ExtendedProviderConformanceTests::test_explicit_wrong_ack_and_malformed_history_are_marked_after_normal_validation",
+    "tests/t7_locked/test_extended_provider_conformance.py::ExtendedProviderConformanceTests::test_failed_and_interrupted_completion_keep_exact_schema_and_receipt_identity",
+    "tests/t7_locked/test_extended_provider_conformance.py::ExtendedProviderConformanceTests::test_typed_foreign_thread_and_turn_observations_do_not_mutate_native_ownership",
+    "tests/t7_locked/test_provider_conformance.py::ProviderConformanceTests::test_own_provider_native_schema_and_concurrent_race_conformance",
+    "tests/t7_locked/test_transport_proxy_conformance.py::TransportProxyConformanceTests::test_own_proxy_preserves_real_exact_launch_http_and_drops_only_selected_response"
+  ],
+  "baseline_rule": "Each product case must fail as an explicit behavioral AssertionError on the immutable base after healthy public setup. Infrastructure GREEN is conformance only; any product GREEN requires root-mediated meaningful mutation before lock.",
+  "state_observation_supplement": {
+    "declaration": "/tmp/agent-ops-stage2-t7-intake/state-observation-public-declarations.md",
+    "sha256": "1a893fc3d1e9d9b749949df8d5dad33c81d6a0530141800c614f895cd94cc080",
+    "public_accessors": [
+      "dispatcher.state.read_session",
+      "dispatcher.state.has_waiting",
+      "dispatcher.state.SessionRecord"
+    ],
+    "owned_read_only_artifacts": [
+      "session-{target}-{issue}",
+      "waiting-{target}-{issue}",
+      "waiting-{issue}"
+    ],
+    "observed_cases": [
+      "tests/t7_locked/test_attachment_flow.py::ControllerAttachmentFlowTests::test_context_exit_cancels_missing_ack_tasks_without_killing_terminal_or_resending_on_b",
+      "tests/t7_locked/test_dispatcher_recovery.py::DispatcherRecoveryTests::test_history_local_settlement_has_no_automatic_cap_retirement_or_clock_reset",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_completed_own_turn_settles_old_a_without_stopping_current_b",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_exact_history_confirms_only_matching_existing_input_attempt_and_batch",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_confirmation_cannot_revive_forced_retired_binding",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_changed_whitespace_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_empty_item_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_extra_input_element_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_root_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_scan_root_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_foreign_scan_turn_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_missing_client_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_nonempty_text_elements_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_nonfinal_cursor_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_null_client_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_null_turn_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_partial_scan_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_skipped_prefix_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_unknown_generic_field_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_unsupported_direction_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_history_rejects_wrong_steer_turn_then_valid_receipt_confirms",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_legacy_operator_without_durable_content_is_not_confirmed_by_guessed_history",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_matching_history_corroborates_ack_without_another_attempt_or_input_admission",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_native_empty_text_elements_normalization_preserves_original_batch_input",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_receipt_replay_no_change_and_conflicting_identity_cannot_replace_confirmation",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_recorded_exact_normal_stop_settles_history_without_fabricated_relation",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_changed_input_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_different_client_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_different_item_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_failed_turn_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_foreign_root_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_interrupted_turn_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_non_null_error_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_other_turn_end_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_summary_items_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_missing_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_partial_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_turn_scan_wrong_scope_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_relation_rejects_unsupported_source_without_lifecycle_authority",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_runtime_control_reinstantiation_preserves_history_provenance_clock_and_batch",
+      "tests/t7_locked/test_history_contract.py::HistoryReceiptContractTests::test_whole_root_full_turn_paging_can_supply_own_end_relation",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_idle_selection_does_not_bypass_current_task_or_stage_gate",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_idle_selection_never_clears_unrelated_pending_or_accepted_input_barriers",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_intervening_revision_invalidates_preread_selection",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_active_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_cached_resume_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_foreign_root_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_historical_turn_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_notloaded_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_invalid_system_error_selection_holds_then_fresh_idle_admits",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_old_history_uncertainty_does_not_negate_independent_current_native_idle",
+      "tests/t7_locked/test_idle_uncertainty_service.py::NativeIdleSelectionTests::test_positive_native_idle_routes_start_without_normal_main_stop_or_clock_reset",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_lost_initial_reply_and_start_completed_exact_history_releases_same_root_readiness",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_lost_initial_reply_failed_exact_history_can_prove_acceptance_without_normal_stop",
+      "tests/t7_locked/test_initial_recovery.py::InitialRecoveryFlowTests::test_lost_initial_reply_interrupted_exact_history_can_prove_acceptance_without_normal_stop",
+      "tests/t7_locked/test_input_provenance.py::OrdinaryInputProvenanceTests::test_completed_text_history_recovers_only_that_exact_operator_receipt",
+      "tests/t7_locked/test_missed_stop_idle.py::MissedStopIdleFlowTests::test_receipt_local_missed_stop_with_fresh_exact_idle_admits_same_root_start_without_lifecycle_rewrite"
+    ],
+    "rule": "Compare public accessors and exact OWN artifact existence/content before and after receipt-local proof/native idle admission. Fresh missed initial Stop cases additionally prove all artifacts absent; malformed artifacts never count as absence. These assertions remain post-capability, not claimed executed on the missing-capability base."
+  }
+}
