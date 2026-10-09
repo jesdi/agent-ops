@@ -187,7 +187,7 @@ class FakeSessions:
     def send_text(self, target, issue, text):
         self.sent_text.append((issue, text))
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None, ticket=""):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
@@ -1051,7 +1051,7 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
             self.ops.append(("end", issue))
             super().end(target, issue)
 
-        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
+        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None, ticket=""):
             self.ops.append(("spawn", stage_name))
             super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
 
@@ -3229,7 +3229,7 @@ class LiveUntilEnded(FakeSessions):
     frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
     express across a dozen passes."""
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None, ticket=""):
         super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
         self.alive_set.add(issue)
 

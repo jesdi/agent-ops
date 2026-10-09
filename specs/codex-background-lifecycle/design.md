@@ -13,7 +13,11 @@ A binding contains target, issue, stage, ticket, launch_id, runtime, worktree an
 conversation_id. A conversation can be bound once; resumed conversations are explicit.
 The snapshot is outside every container mount; only the existing wait socket directory
 is shared. Listener requests are serialized and snapshot replacement is atomic and
-fsynced. Invalid/unreadable versions yield unknown views, never empty inventory.
+fsynced. The runtime_snapshots store keeps one complete document per launch under a
+hashed task directory, with an atomic current.json pointer. Missing or malformed documents
+behind an existing pointer remain managed unknown; an existing task runtime directory also
+retains managed ownership when its pointer is lost or preparation was interrupted before
+pointer publication. Obsolete launch IDs cannot select current state. Invalid/unreadable versions yield unknown views, never empty inventory.
 
 Main turns carry an ID, status and seen-turn identities. Commands are identified by
 owning thread and initial command item; descendants by child thread and turn. Ancestry
@@ -36,6 +40,29 @@ binding is the returned snapshot's `binding`. Main status is unknown/active/stop
 service is unknown/live/dead; inventory is unknown/known. Event types initially are
 `bound` (conversation_id), `turn/started` (thread_id, turn_id), `turn/completed`
 (thread_id, turn_id, status=completed), and `service` (status).
+
+`RuntimeClient(state_dir)` exposes the same preparation/view/event contract over the
+existing Unix HTTP listener. Host-only prepare requests require a listener-owned
+credential outside the mounted wait directory; container events require their exact
+prepared launch binding. Socket view requests need either the host credential or the exact
+current launch ID. RuntimeClient is the host transport (re-exported by runtime_control);
+its view reads atomic snapshots without mutating them. A listener restart preserves snapshots. A managed unreadable
+snapshot remains a managed unknown view at the Sessions boundary.
+
+For Claude, SessionStart establishes service health only for the explicitly selected
+conversation. UserPromptSubmit maps native session_id/prompt_id to main thread/turn.
+Stop maps to normal completion and atomically reports its background_tasks in that same
+snapshot; missing/unreadable background inventory is unknown. Child agent_id callbacks
+cannot end the main turn. `turn/completed` events for runtime Claude accept a
+`background_tasks` list; its first nonempty stopped report starts wait.since, and new
+work alone resets it. Native hooks obtain launch identity from immutable launch
+environment, never a mutable worktree file. `Sessions.spawn_stage` takes an optional
+keyword `ticket=''`, passed explicitly by main._launch_stage for implementation slices.
+Every real launch requires state_dir. The main dispatcher passes the implementation cursor
+as the ticket string before saving updated task state; resume preserves a matching previous
+binding's ticket, otherwise it uses the known continued task stage/cursor. Native session
+records use the binding's stage even while the saved task still names its previous stage.
+Dry runs create no runtime snapshot.
 
 `RuntimeClient` uses the existing listener's Unix HTTP socket for mutations. Reads
 can use the immutable atomic snapshot. `waitd.handle_ping` accepts launch-bound Claude
@@ -60,7 +87,13 @@ WebSocket dependency are mounted read-only. No host runtime snapshot is mounted.
 Service death exits the session; controller disconnect reconnects without replacing it.
 
 The controller reads authoritative lifecycle, complete background-terminal inventory,
-thread history and descendant ancestry. It batches already available results promptly.
+thread history and descendant ancestry. Newly observed commands become eligible background
+workers only when a complete authoritative inventory confirms they survive the matching
+normal main Stop. Codex 0.156.1 lists foreground processes in backgroundTerminals/list too;
+its tested command/hook stream exposes no supported initial-yield receipt. Commands ending
+before that qualification must not be redelivered as independent background results.
+Eligibility persists for confirmed workers during subsequent active main turns. It batches
+already available eligible results promptly.
 It steers an active exact turn or starts an idle continuation in the same conversation.
 A confirmed turn mismatch retries after a fresh authoritative read; a lost acknowledgment
 must reconcile a matching client message ID in history before further transmission.

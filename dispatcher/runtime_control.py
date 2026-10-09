@@ -1,21 +1,11 @@
 """Listener-owned snapshots of a task's authoritative main-turn lifecycle."""
 
-import hashlib
-import json
-from pathlib import Path
+import time
 from uuid import uuid4
 
-
-def _snapshot_path(state_dir, target, issue):
-    key = hashlib.sha256(f"{target}\0{issue}".encode()).hexdigest()
-    return Path(state_dir) / "runtime" / f"{key}.json"
-
-
-def _write_snapshot(path, snapshot):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(snapshot), encoding="utf-8")
-    temporary.replace(path)
+from dispatcher.runtime_snapshots import (number, read_current, task_path, valid_native_workers,
+                                          valid_snapshot, write_snapshot)
+from dispatcher.runtime_http import RuntimeClient  # public host client
 
 
 def _bind(snapshot, event):
@@ -80,12 +70,31 @@ _EVENTS = {"bound": _bind, "service": _service, "inventory": _empty_inventory,
            "turn/started": _start_turn, "turn/completed": _complete_turn}
 
 
-def _apply_event(snapshot, event):
+def _native_inventory(snapshot, event, now):
+    workers = event.get("background_tasks")
+    if not valid_native_workers(workers):
+        snapshot["inventory"] = "unknown"
+        return
+    snapshot["inventory"] = "known"
+    snapshot["workers"] = workers
+    identities = sorted({w["id"] for w in workers})
+    if not identities:
+        return
+    previous = snapshot["wait"]
+    since = previous["since"] if previous and set(identities).issubset(previous["workers"]) else now
+    snapshot["wait"] = {"since": since, "workers": identities}
+
+
+def _apply_event(snapshot, event, now):
     event_type = event.get("type")
     if not isinstance(event_type, str):
         return False
     handler = _EVENTS.get(event_type)
-    return handler is not None and handler(snapshot, event)
+    if handler is None or not handler(snapshot, event):
+        return False
+    if event_type == "turn/completed" and snapshot["binding"]["runtime"] == "claude":
+        _native_inventory(snapshot, event, time.time() if now is None else now)
+    return True
 
 
 class RuntimeControl:
@@ -107,33 +116,37 @@ class RuntimeControl:
             "inventory": "unknown", "workers": [], "completions": [],
             "deliveries": [], "wait": None, "alerts": [], "retired": False,
         }
-        _write_snapshot(_snapshot_path(self.state_dir, target, issue), snapshot)
+        if not valid_snapshot(snapshot):
+            raise ValueError("invalid launch binding")
+        directory = task_path(self.state_dir, target, issue)
+        launch_id = snapshot["binding"]["launch_id"]
+        write_snapshot(directory / f"{launch_id}.json", snapshot)
+        write_snapshot(directory / "current.json", {"launch_id": launch_id})
         return snapshot
 
     def view(self, target, issue, launch_id=None) -> dict | None:
-        try:
-            snapshot = json.loads(_snapshot_path(self.state_dir, target, issue)
-                                  .read_text(encoding="utf-8"))
-            if snapshot["version"] != 1:
-                return None
-            if launch_id is not None and snapshot["binding"]["launch_id"] != launch_id:
-                return None
-            return snapshot
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
+        return read_current(task_path(self.state_dir, target, issue), target, issue, launch_id)
 
     def event(self, binding, event, *, now=None) -> bool:
         if not isinstance(binding, dict) or not isinstance(event, dict):
             return False
-        snapshot = self.view(binding.get("target"), binding.get("issue"))
-        if snapshot is None or snapshot["binding"] != binding or snapshot["retired"]:
+        if now is not None and not number(now):
             return False
-        if not _apply_event(snapshot, event):
+        snapshot = self._current(binding)
+        if snapshot is None:
+            return False
+        if not _apply_event(snapshot, event, now) or not valid_snapshot(snapshot):
             return False
         snapshot["revision"] += 1
-        _write_snapshot(_snapshot_path(self.state_dir, binding["target"], binding["issue"]),
-                        snapshot)
+        directory = task_path(self.state_dir, binding["target"], binding["issue"])
+        write_snapshot(directory / f"{binding['launch_id']}.json", snapshot)
         return True
+
+    def _current(self, binding):
+        snapshot = self.view(binding.get("target"), binding.get("issue"))
+        if not valid_snapshot(snapshot) or snapshot["binding"] != binding or snapshot["retired"]:
+            return None
+        return snapshot
 
     def retire(self, binding, revision, *, reason="stopped", now=None,
                cap=10800) -> str:

@@ -11,6 +11,7 @@ from pathlib import Path
 from socketserver import UnixStreamServer
 
 from dispatcher.runtime_control import RuntimeControl
+from dispatcher.runtime_http import dispatch, ensure_credential
 from dispatcher.state import (SessionRecord, load, mark_background,
                               mark_waiting, write_session)
 
@@ -88,18 +89,20 @@ def _handle_codex_ping(rec: dict, state_dir, target: str, issue: int) -> None:
     _mark_waiting(state_dir, target, issue)
 
 
-def handle_ping(body: bytes, state_dir) -> None:
+def handle_ping(body: bytes, state_dir) -> bool | None:
     try:
         rec = json.loads(body)
         issue = int(rec["issue"])
         target = str(rec.get("target", ""))
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError, RecursionError):
         print(f"waitd: dropping corrupt ping: {body!r}", file=sys.stderr)
         return
     # Prepared launches accept only their authoritative bound lifecycle.
     # Keep the legacy recording/marker path for sessions not yet migrated.
-    if RuntimeControl(state_dir).view(target, issue) is not None:
-        return
+    control = RuntimeControl(state_dir)
+    snapshot = control.view(target, issue)
+    if snapshot is not None:
+        return _native_ping(control, snapshot, rec, state_dir)
     if rec.get("runtime") == "codex":
         _handle_codex_ping(rec, state_dir, target, issue)
         return
@@ -109,6 +112,35 @@ def handle_ping(body: bytes, state_dir) -> None:
         mark_background(state_dir, target, issue, bg)
     else:
         _mark_waiting(state_dir, target, issue)
+
+
+def _native_ping(control, snapshot, rec, state_dir):
+    binding = snapshot["binding"]
+    if binding.get("runtime") != "claude" or rec.get("agent_id"):
+        return False
+    identity = {"launch_id": "launch_id", "conversation_id": "session_id",
+                "stage": "stage", "ticket": "ticket"}
+    if any(binding[key] != rec.get(native) for key, native in identity.items()):
+        return False
+    event = _native_event(rec)
+    if event is None or not control.event(binding, event):
+        return False
+    if rec["hook_event_name"] == "Stop":
+        write_session(state_dir, binding["target"], binding["issue"],
+                      SessionRecord(binding["conversation_id"], binding["stage"]))
+    return True
+
+
+def _native_event(rec):
+    name = rec.get("hook_event_name")
+    if name == "SessionStart":
+        return {"type": "service", "status": "live"}
+    types = {"UserPromptSubmit": "turn/started", "Stop": "turn/completed"}
+    if not isinstance(name, str) or name not in types:
+        return None
+    return {"type": types[name], "thread_id": rec.get("session_id"),
+            "turn_id": rec.get("prompt_id"), "status": "completed",
+            "background_tasks": rec.get("background_tasks")}
 
 
 class _Server(UnixStreamServer):
@@ -121,10 +153,27 @@ class _Server(UnixStreamServer):
 
 class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        handle_ping(self.rfile.read(length), self.server.state_dir)
-        self.send_response(200)
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if not 0 <= length <= 1024 * 1024:
+                raise ValueError("invalid request length")
+            body = self.rfile.read(length)
+            status, result = self._route(body)
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+            status, result = 400, None
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
         self.end_headers()
+        self.wfile.write(json.dumps(result).encode())
+
+    def _route(self, body):
+        if self.path == "/waiting":
+            return 200, handle_ping(body, self.server.state_dir)
+        payload = json.loads(body)
+        if not isinstance(payload, dict):
+            return 400, None
+        return dispatch(self.server.state_dir, self.path, payload,
+                        self.headers.get("X-Runtime-Host"))
 
     def log_message(self, *args):
         pass
@@ -143,6 +192,7 @@ def sock_path(state_dir: str | Path) -> Path:
 
 
 def serve(path: str | Path, state_dir: str | Path) -> None:
+    ensure_credential(state_dir)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     if p.exists():

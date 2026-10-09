@@ -22,6 +22,9 @@
    progress, its session alive, and its capacity slot held. The ordinary stall timer does not
    park a confirmed background wait. Agent descendants at any depth count; unrelated or
    internal helper threads do not. Unknown inventory is not empty inventory.
+   A command becomes eligible background work only when authoritative inventory confirms
+   that it survives the matching normal main Stop. Terminal inventory while its initiating
+   main turn is active includes foreground commands and cannot alone prove eligibility.
 5. **Codex remains available in the task terminal.** Run its app-server behind the existing
    task terminal, with a control client for the bound conversation. The operator can attach,
    watch results, and submit input through the existing task flows. Control-client recovery
@@ -31,7 +34,10 @@
    already available into one delivery. If the main conversation is idle, continue that same
    conversation with the results. Pending completions must be considered before an idle main
    turn is treated as stopped waiting for operator input. Completion delivery must not depend
-   on the next 10-minute dispatcher pass.
+   on the next 10-minute dispatcher pass. Previously confirmed background commands remain
+   eligible for delivery during later active main turns. Commands that start and finish
+   before their first qualifying Stop are not independently redelivered: the supported
+   protocol cannot distinguish their outcomes from already consumed foreground output.
 7. **Deliver into an active main turn without interrupting it.** If a main turn is working,
    send the result into that turn with its exact turn-ID precondition, without a second turn
    or interruption. If the turn changes before acceptance, read current state again and choose

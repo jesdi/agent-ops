@@ -44,7 +44,7 @@ class RecordingSessions(FakeSessions):
         self.continuations = []
 
     def spawn_stage(self, target, issue, worktree, prompt, stage_name,
-                    model, effort="", second=None):
+                    model, effort="", second=None, ticket=""):
         self.launches.append({
             "target": target, "issue": issue, "worktree": worktree,
             "prompt": prompt, "stage": stage_name, "model": model,

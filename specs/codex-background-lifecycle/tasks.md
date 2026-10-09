@@ -3,7 +3,7 @@
 Each ticket begins with isolated locked black-box acceptance tests and ends with `make gate`.
 All tickets are sequential because their runtime boundary overlaps. See design.md for contracts.
 
-- [ ] T1 — Stale and foreign events cannot park a current turn. Prepare a bound launch; reject old
+- [x] T1 — Stale and foreign events cannot park a current turn. Prepare a bound launch; reject old
   turns, foreign conversations, unidentified legacy Codex notify, previous launches and concurrent
   tasks' callbacks. New bound turn/input invalidates old stopped evidence. Normal bound stop alone
   can establish stopped evidence; failed/malformed events cannot.
@@ -15,7 +15,12 @@ All tickets are sequential because their runtime boundary overlaps. See design.m
   UserPromptSubmit and Stop carry explicit session/prompt identity; late hooks cannot alter current
   turns. Listener is sole writer; stage/ticket bindings and host-only snapshots survive restart.
   Seam: RuntimeControl; waitd HTTP listener; Sessions.spawn_stage/resume; hook subprocess.
-  Touches: runtime_control; runtime_client; waitd._Handler; sessions._launch; workspace.install_stop_hook; hooks.
+  Touches: runtime_control.RuntimeControl.prepare/view/event and native inventory application;
+  runtime_snapshots atomic storage/current pointer/schema validation; runtime_http.RuntimeClient
+  prepare/view/event and authenticated HTTP dispatch; waitd._Handler.do_POST/_route,
+  handle_ping/_native_ping/_native_event/serve; sessions.podman_cmd and
+  Sessions._launch/spawn_stage/resume/_resume_context/runtime_view; containers.session_cmd;
+  main._launch_stage; workspace.install_stop_hook; hooks/stop-hook.sh.
   Blocked by: T1.
 - [ ] T3 — Controlled Codex backend and real terminal share one bound conversation. Supervisor
   launches app-server/controller/remote TUI inside task container, with read-only relay/dependency
@@ -32,7 +37,10 @@ All tickets are sequential because their runtime boundary overlaps. See design.m
   Touches: runtime_control; gateway; main._drive_task.
   Blocked by: T3.
 - [ ] T5 — Owned commands and descendants keep sessions alive with strict cap boundaries.
-  Commands use owner thread/initial item; descendants require validated ancestry at every depth.
+  Commands use owner thread/initial item and qualify only after surviving matching normal
+  main Stop in authoritative inventory; previously qualified workers remain deliverable during
+  later active turns. Acceptance includes foreground-output-no-redelivery for commands ending
+  before first qualifying Stop. Descendants require validated ancestry at every depth.
   Unknown/missing inventory holds. First stopped report starts clock; only newly reported work
   resets it. Same/subset work, foreground input, partial completion, delivery/reconnect preserve it.
   Exact cap holds, greater-than parks; foreground main is never capped. Nonworking stage gates win.

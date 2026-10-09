@@ -514,7 +514,9 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     stage, entry = launch.stage, launch.entry
     model = entry.model_id
     ticket_path = ""
+    ticket_id = ""
     if ticket:
+        ticket_id = str(ticket)
         files = ticket_files(Path(task.worktree) / TICKETS_DIR)
         if ticket > len(files):
             raise RuntimeError(f"ticket {ticket} of {task.ticket_count} missing "
@@ -549,7 +551,7 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     _log_model(task.worktree, stage, str(entry))
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
-                              second=launch.second)
+                              second=launch.second, ticket=ticket_id)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
                    operator_request=None, updated_at=_now(),

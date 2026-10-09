@@ -2,10 +2,15 @@
 drives the real `Sessions` over a faked `herdr._run` (an argv-prefix ->
 (returncode, stdout) table), so both the degrade contract and the exact
 CLI calls are asserted."""
+from tests.runtime_listener import launch_listener, seed_resume_task  # noqa: F401
+
 import json as _json
 import subprocess as _sp
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("launch_listener")
+
 
 import dispatcher.sessions as sessions
 from dispatcher import herdr
@@ -251,8 +256,12 @@ def test_spawn_stage_writes_the_prompt_and_runs_podman_in_a_new_tab(tmp_path, mo
             "--cwd", wt, "--env", "HERDR_AGENT=claude", "--no-focus"] in calls
     run = next(c for c in calls if c[:2] == ["pane", "run"])
     assert run[2] == "w1:p3"
+    binding = Sessions(state_dir=tmp_path).runtime_view("acme", 42)["binding"]
+    launch_env = {f"AGENT_OPS_{key.upper()}": str(binding[key] or "")
+                  for key in ("target", "issue", "launch_id", "conversation_id", "stage", "ticket")}
     assert run[3] == podman_cmd("acme", 42, wt, "2g", "2", "claude-fable-5",
-                                '"$(cat .agent/prompt-spec.md)"')
+                                f'--session-id {binding["conversation_id"]} "$(cat .agent/prompt-spec.md)"',
+                                launch_env=launch_env)
     assert "HERDR_AGENT" not in run[3]
 
 
@@ -318,7 +327,8 @@ def test_resume_passes_the_quoted_message_and_the_model(tmp_path, monkeypatch):
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
-    Sessions().resume("acme", 42, wt, 'run said: "failure"', "claude-sonnet-4-6",
+    seed_resume_task(tmp_path, wt)
+    Sessions(state_dir=tmp_path).resume("acme", 42, wt, 'run said: "failure"', "claude-sonnet-4-6",
                       session_id="recorded-session")
     run = next(c for c in calls if c[:2] == ["pane", "run"])
     assert "--model claude-sonnet-4-6" in run[3]
@@ -348,7 +358,8 @@ def test_resume_on_an_openai_model_resumes_the_last_codex_session(tmp_path,
     wt = _worktree(tmp_path)
     calls = []
     herdr_fake(monkeypatch, LIVE + [(("pane", "run"), 0, "")], calls)
-    Sessions().resume("acme", 42, wt, "it's done", "openai/gpt-5-codex",
+    seed_resume_task(tmp_path, wt)
+    Sessions(state_dir=tmp_path).resume("acme", 42, wt, "it's done", "openai/gpt-5-codex",
                       session_id="recorded-session")
     cmd = next(c for c in calls if c[:2] == ["pane", "run"])[3]
     assert cmd.endswith(

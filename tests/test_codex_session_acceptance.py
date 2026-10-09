@@ -6,7 +6,12 @@ openai/... entry (spawn and resume) and the console's task view. Skips "On
 the box" (manual)."""
 from pathlib import Path
 
+from tests.runtime_listener import launch_listener, seed_resume_task  # noqa: F401
+
 import pytest
+
+pytestmark = pytest.mark.usefixtures("launch_listener")
+
 
 from dispatcher import containers, sessions
 from dispatcher.prompts import render_stage_prompt
@@ -99,8 +104,9 @@ def test_codex_session_resume_tab_gets_herdr_agent_codex(tmp_path, monkeypatch):
                      # that's fine, we only need to see the call it made.
 
     monkeypatch.setattr(herdr.Tab, "ensure", fake_ensure)
+    seed_resume_task(tmp_path, wt)
     with pytest.raises(RuntimeError):
-        sessions.Sessions().resume("acme", 42, wt, "go", "openai/gpt-5-codex",
+        sessions.Sessions(state_dir=tmp_path).resume("acme", 42, wt, "go", "openai/gpt-5-codex",
                                    session_id="recorded-session")
     assert calls, "Tab.ensure was never called"
     assert calls[0].get("env") == {"HERDR_AGENT": "codex"}

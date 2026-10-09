@@ -19,12 +19,13 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from dispatcher import containers, herdr, workspace
 from dispatcher.models import Entry
 from dispatcher.runtimes import Runtime, runtime_for
-from dispatcher.runtime_control import RuntimeControl
-from dispatcher.state import clear_session
+from dispatcher.runtime_control import RuntimeClient
+from dispatcher.state import clear_session, load
 
 
 def session_name(target: str, issue: int) -> str:
@@ -33,10 +34,11 @@ def session_name(target: str, issue: int) -> str:
 
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
-               runtime: Runtime | None = None, second: Entry | None = None) -> str:
+               runtime: Runtime | None = None, second: Entry | None = None,
+               launch_env: dict | None = None) -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  runtime=runtime, second=second)
+                                  runtime=runtime, second=second, launch_env=launch_env)
 
 
 class Sessions:
@@ -58,7 +60,7 @@ class Sessions:
         """Read the host snapshot; legacy sessions have no prepared launch."""
         if self.state_dir is None:
             return None
-        return RuntimeControl(self.state_dir).view(target, issue)
+        return RuntimeClient(self.state_dir).view(target, issue)
 
     def is_alive(self, target: str, issue: int) -> bool:
         """Alive means the tab exists AND its shell is busy — a CLI that
@@ -71,7 +73,9 @@ class Sessions:
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
                 runtime: Runtime, args: str, effort: str = "",
-                second: Entry | None = None) -> None:
+                second: Entry | None = None, *, binding: dict) -> None:
+        launch_env = {f"AGENT_OPS_{key.upper()}": str(binding[key] or "")
+                      for key in ("target", "issue", "launch_id", "conversation_id", "stage", "ticket")}
         # Build the command FIRST: containers.clone_root reads
         # <worktree>/.git and raises on a vanished worktree (the case
         # _fail_task_crash exists for). Doing it before Tab.ensure means
@@ -79,7 +83,7 @@ class Sessions:
         # that will never launch.
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
                          model, args, effort=effort, runtime=runtime,
-                         second=second)
+                         second=second, launch_env=launch_env)
         workspace.install_stop_hook(worktree)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,
@@ -102,7 +106,7 @@ class Sessions:
 
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "",
-                    second: Entry | None = None) -> None:
+                    second: Entry | None = None, *, ticket: str = "") -> None:
         """Start a fresh conversation; real launches require state_dir."""
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
@@ -114,9 +118,16 @@ class Sessions:
         agent_dir = Path(worktree) / ".agent"
         agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)
-        self._launch(target, issue, worktree, model, runtime_for(model),
-                     f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort,
-                     second=second)
+        runtime = runtime_for(model)
+        conversation = str(uuid4()) if runtime.cli == "claude" else None
+        binding = RuntimeClient(self.state_dir).prepare(
+            target, issue, stage_name, ticket=ticket, runtime=runtime.cli,
+            conversation_id=conversation, worktree=worktree)["binding"]
+        args = f'"$(cat .agent/prompt-{stage_name}.md)"'
+        if runtime.cli == "claude":
+            args = f"--session-id {conversation} {args}"
+        self._launch(target, issue, worktree, model, runtime, args, effort=effort,
+                     second=second, binding=binding)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
                model: str, effort: str = "", second: Entry | None = None,
@@ -126,9 +137,29 @@ class Sessions:
                   f"at {worktree}")
             return
         runtime = runtime_for(model)
+        if self.state_dir is None:
+            raise ValueError("state_dir is required for a resumed session launch")
+        stage, ticket = self._resume_context(target, issue, worktree, session_id)
+        binding = RuntimeClient(self.state_dir).prepare(
+            target, issue, stage, ticket=ticket, runtime=runtime.cli,
+            conversation_id=session_id, worktree=worktree)["binding"]
         self._launch(target, issue, worktree, model, runtime,
                      runtime.resume(session_id, shlex.quote(message)), effort=effort,
-                     second=second)
+                     second=second, binding=binding)
+
+    def _resume_context(self, target, issue, worktree, session_id):
+        task = load(self.state_dir, target, issue)
+        previous = (self.runtime_view(target, issue) or {}).get("binding", {})
+        stage = task.continued_stage.value if task else previous.get("stage")
+        same = (previous.get("worktree") == worktree,
+                previous.get("conversation_id") == session_id,
+                previous.get("stage") == stage)
+        if all(same):
+            return stage, previous["ticket"]
+        if task is None:
+            raise ValueError("resume requires a known task stage")
+        ticket = str(task.ticket_cursor) if stage == "implement" else ""
+        return stage, ticket
 
     def capture_tail(self, target: str, issue: int, lines: int = 25) -> str:
         if self.dry_run:

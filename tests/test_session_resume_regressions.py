@@ -1,8 +1,13 @@
 """Continuation regressions through the dispatcher and runtime public seams."""
+from tests.runtime_listener import launch_listener  # noqa: F401
+
 import json
 import shlex
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("launch_listener")
+
 
 import dispatcher.main as main
 from dispatcher import messages, runtimes

@@ -10,12 +10,17 @@ Interface these tests define (the Seam):
   `Sessions.spawn_stage(..., second: Entry | None = None)` and
   `Sessions.resume(..., second: Entry | None = None)` carry the grant; the
   dispatcher passes it as the keyword `second`."""
+from tests.runtime_listener import launch_listener, seed_resume_task  # noqa: F401
+
 import json
 import os
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("launch_listener")
+
 
 import dispatcher.main as main
 from dispatcher import containers, execution_overrides, herdr, sessions
@@ -101,7 +106,7 @@ class GrantSessions(FakeSessions):
         self.spawn_seconds, self.resume_seconds = [], []
 
     def spawn_stage(self, target, issue, worktree, prompt, stage_name, model,
-                    effort="", second=None):
+                    effort="", second=None, ticket=""):
         super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
         self.spawn_seconds.append((stage_name, second))
 
@@ -227,6 +232,7 @@ def test_sessions_spawn_and_resume_carry_the_grant_to_the_command(tmp_path, monk
     wt, _ = make_worktree(tmp_path)
     cmds = []
     monkeypatch.setattr(herdr.Tab, "ensure", lambda *a, **k: _Tab(cmds))
+    seed_resume_task(tmp_path, wt)
     s = sessions.Sessions(state_dir=tmp_path)
     s.spawn_stage("acme", 42, wt, "P", "review", "anthropic/claude-opus-5",
                   second=SECOND)
