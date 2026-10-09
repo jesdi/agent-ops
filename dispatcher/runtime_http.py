@@ -91,5 +91,35 @@ def dispatch(state_dir, route, payload, token):
             return 403, None
         return 200, control.view(**payload)
     if route == "/runtime/event":
-        return 200, control.event(**payload)
+        accepted = control.event(**payload)
+        if accepted and payload["event"].get("type") == "turn/completed":
+            from dispatcher.waitd import record_control_session
+            record_control_session(state_dir, payload["binding"])
+        return 200, accepted
     return 404, None
+
+
+class BoundClient:
+    """Container transport: exact launch identity, no host files or credential."""
+    def __init__(self, state_dir, target, issue, launch_id):
+        self.state_dir = state_dir
+        self.identity = dict(target=target, issue=issue, launch_id=launch_id)
+
+    def _post(self, route, payload):
+        connection = UnixHTTP(self.state_dir)
+        try:
+            connection.request("POST", route, json.dumps(payload, allow_nan=False),
+                               {"Content-Type": "application/json"})
+            response = connection.getresponse()
+            data = response.read()
+            if response.status != 200:
+                raise RuntimeError(f"runtime listener rejected {route}: {response.status}")
+            return json.loads(data)
+        finally:
+            connection.close()
+
+    def view(self):
+        return self._post("/runtime/view", self.identity)
+
+    def event(self, binding, event):
+        return self._post("/runtime/event", dict(binding=binding, event=event))

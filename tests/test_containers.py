@@ -36,7 +36,7 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd and f"-w {wt}" in cmd
     assert f"-v {clone}:{clone}" in cmd
-    assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
+    assert f"-v {Path('/home/agent/agent-ops-state/claude-home').resolve()}:/root/.claude" in cmd
     assert cmd.endswith(
         "claude --remote-control task-42 --permission-mode auto "
         "--model claude-fable-5 --continue 'hi'")
@@ -73,7 +73,7 @@ def test_session_cmd_exposes_waitd_socket(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
-    assert ("-v /home/agent/agent-ops-state/wait"
+    assert (f"-v {Path('/home/agent/agent-ops-state/wait').resolve()}"
             ":/home/agent/agent-ops-state/wait" in cmd)
     assert "-e AGENT_OPS_STATE_DIR=/home/agent/agent-ops-state" in cmd
 

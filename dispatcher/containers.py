@@ -10,12 +10,24 @@ import shlex
 from pathlib import Path
 
 from dispatcher.models import Entry, bare_model_id
-from dispatcher.runtimes import Runtime, runtime_for
+from dispatcher.runtimes import Runtime, SessionLaunch, runtime_for
+
+
+def _supervisor_mounts(state_dir: Path) -> list[str]:
+    import websockets
+    source = Path(__file__).resolve().parent.parent
+    dependency = Path(websockets.__file__).resolve().parent.parent
+    return [*_bind_mount(source, "/opt/agent-ops", state_dir, read_only=True),
+            *_bind_mount(dependency, "/opt/agent-ops-deps", state_dir, read_only=True),
+            "-e", "PYTHONPATH=/opt/agent-ops:/opt/agent-ops-deps",
+            "-e", "PYTHONDONTWRITEBYTECODE=1"]
 
 
 def clone_root(worktree: str) -> str:
     gitdir = (Path(worktree) / ".git").read_text().split("gitdir:", 1)[1].strip()
-    return str(Path(gitdir).parents[2])
+    # Git resolves a relative gitdir from the worktree, not the dispatcher's
+    # cwd. Keep symlink/.. components until the host source is canonicalized.
+    return str((Path(worktree) / gitdir).parents[2])
 
 
 def task_branch(worktree: str) -> str:
@@ -33,12 +45,48 @@ def image() -> str:
     return os.environ.get("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
 
 
-def _state_dir() -> str:
-    return os.environ.get("AGENT_OPS_STATE_DIR",
-                          str(Path.home() / "agent-ops-state"))
+def _state_dir(state_dir: str | Path | None = None) -> Path:
+    return Path(state_dir if state_dir is not None else os.environ.get(
+        "AGENT_OPS_STATE_DIR", str(Path.home() / "agent-ops-state"))).absolute()
 
 
-def _host_binary(runtime: Runtime) -> list[str]:
+def _overlaps(left: Path, right: Path) -> bool:
+    return left.is_relative_to(right) or right.is_relative_to(left)
+
+
+def _canonical_path(path: str | Path) -> Path:
+    resolved = Path(path).resolve()
+    existing = resolved
+    # Non-strict resolve permits missing paths, but also suppresses errors on
+    # recent Python versions. Verify the existing prefix strictly so a loop or
+    # inaccessible directory cannot be treated as a separated mount source.
+    while True:
+        try:
+            existing.resolve(strict=True)
+            return resolved
+        except FileNotFoundError:
+            existing = existing.parent
+
+
+def _bind_mount(source: str | Path, destination: str | Path, state_dir: Path,
+                *, read_only: bool = False) -> list[str]:
+    """Validate host paths before granting any container access, even read-only.
+
+    Resolve existing symlink components on both sides; missing paths still
+    reserve private state before the listener creates it. Provider homes are
+    shareable siblings of runtime state, never exceptions to this check.
+    """
+    root = _canonical_path(source)
+    for name in ("runtime", "runtime-host-token"):
+        private = _canonical_path(state_dir / name)
+        if _overlaps(root, private):
+            raise ValueError(f"container mount {source} overlaps private runtime state {private}")
+    if not read_only and _overlaps(root, _canonical_path(state_dir / "wait")):
+        raise ValueError(f"container mount {source} overlaps the read-only wait directory")
+    return ["-v", f"{root}:{destination}" + (":ro" if read_only else "")]
+
+
+def _host_binary(runtime: Runtime, state_dir: Path) -> list[str]:
     """Run the host's native CLI inside the container, read-only, so the
     box has one CLI at one version (the image used to npm-install its
     own, which drifted behind the auto-updating host install). Resolved at
@@ -48,22 +96,22 @@ def _host_binary(runtime: Runtime) -> list[str]:
     executable never mounts whatever directory happens to sit above it."""
     binary = Path(os.path.realpath(Path.home() / runtime.binary))
     if not runtime.package:
-        return ["-v", f"{binary}:{runtime.binary_mount}:ro"]
+        return _bind_mount(binary, runtime.binary_mount, state_dir, read_only=True)
     root = binary.parents[1]
     if not (root / f"{runtime.cli}-package.json").is_file():
         raise RuntimeError(f"{binary} is not a {runtime.cli.capitalize()} package "
                            f"(no {runtime.cli}-package.json in {root}); "
                            f"agent-ops-infra's {runtime.cli}-install.sh installs one")
-    return ["-v", f"{root}:{runtime.package}:ro"]
+    return _bind_mount(root, runtime.package, state_dir, read_only=True)
 
 
-def _runtime_args(runtime: Runtime) -> list[str]:
+def _runtime_args(runtime: Runtime, state_dir: Path) -> list[str]:
     """The runtime's container flags: its home (mounted and pointed at), its
     env, and its host binary. Every container that runs a CLI takes these."""
     return ["-e", f"{runtime.home_var}={runtime.mount}",
-            "-v", f"{_state_dir()}/{runtime.home}:{runtime.mount}",
+            *_bind_mount(state_dir / runtime.home, runtime.mount, state_dir),
             *(a for e in runtime.env for a in ("-e", e)),
-            *_host_binary(runtime)]
+            *_host_binary(runtime, state_dir)]
 
 
 def _wrapper() -> list[str]:
@@ -74,17 +122,27 @@ def _wrapper() -> list[str]:
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 args: str, effort: str = "", runtime: Runtime | None = None,
-                second: Entry | None = None, launch_env: dict | None = None) -> str:
+                second: Entry | None = None, launch_env: dict | None = None,
+                *, state_dir: str | Path | None = None,
+                plan: SessionLaunch | None = None) -> str:
     """The session's shell command, on the model's runtime. A caller that
     already resolved it (Sessions._launch) passes it; otherwise it is
     resolved here, and an unknown provider raises before anything runs.
     A granted `second` model (models.second_model) also gets its runtime's
-    home, env and host binary: the mount is the permission."""
+    home, env and host binary: the mount is the permission. Explicit state_dir
+    selects both client paths and every bind's private-state validation."""
     runtime = runtime or runtime_for(model)
-    extra = _runtime_args(runtime_for(second.model_id)) if second else []
+    state = _state_dir(state_dir)
+    extra = _runtime_args(runtime_for(second.model_id), state) if second else []
+    plan = plan or runtime.session_plan(name, worktree, bare_model_id(model), effort)
+    for resource in plan.support_resources:
+        extra += {"codex-supervisor": _supervisor_mounts}[resource](state)
     environment = shlex.join([part for key, value in (launch_env or {}).items()
                               for part in ("-e", f"{key}={value}")])
-    clone = clone_root(worktree)
+    # Host sources are canonicalized by _bind_mount. Container paths keep
+    # useful aliases, but must be absolute before herdr changes directory.
+    worktree = str(Path(worktree).absolute())
+    clone = str(Path(clone_root(worktree)).absolute())
     branch = task_branch(worktree)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
     home = str(Path.home())
@@ -93,26 +151,28 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     # right after deploy. Best-effort: if the dir really can't exist,
     # podman fails loudly on the mount anyway.
     try:
-        Path(_state_dir(), "wait").mkdir(parents=True, exist_ok=True)
+        (state / "wait").mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
     return (
         f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {name} "
         f"--memory {memory} --cpus {cpus} "
-        f"{shlex.join(_runtime_args(runtime) + extra)} "
+        f"{shlex.join(_runtime_args(runtime, state) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's
         # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its
         # curl dies against a nonexistent path and the `|| true` swallows
         # it, so waiting parks only ever happened via the stall timer.
-        # Mount only the wait dir: the state dir also holds op-token.env.
-        f"-e AGENT_OPS_STATE_DIR={_state_dir()} "
+        # Mount only the wait dir, read-only: clients connect to its socket
+        # but must not replace the listener and intercept host authorization.
+        # The state dir also holds op-token.env and stays outside the mount.
+        f"-e AGENT_OPS_STATE_DIR={shlex.quote(str(state))} "
         f"{branch_env}{environment} "
-        f"-v {_state_dir()}/wait:{_state_dir()}/wait "
-        f"-v {worktree}:{worktree} -w {worktree} "
-        f"-v {clone}:{clone} "
-        f"-v {home}/.config/gh:/root/.config/gh:ro "
-        f"-v {home}/.gitconfig:/root/.gitconfig:ro "
-        f"{image()} {runtime.launch(name, worktree, bare_model_id(model), effort)}"
+        f"{shlex.join(_bind_mount(state / 'wait', state / 'wait', state, read_only=True))} "
+        f"{shlex.join(_bind_mount(worktree, worktree, state))} -w {shlex.quote(worktree)} "
+        f"{shlex.join(_bind_mount(clone, os.path.normpath(clone), state))} "
+        f"{shlex.join(_bind_mount(Path(home) / '.config/gh', '/root/.config/gh', state, read_only=True))} "
+        f"{shlex.join(_bind_mount(Path(home) / '.gitconfig', '/root/.gitconfig', state, read_only=True))} "
+        f"{image()} {plan.command}"
         f" {args}"
     )
 
@@ -141,6 +201,8 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     The CLI is the model's runtime run headless (`claude -p`, `codex
     exec`); an unknown provider raises before anything runs."""
     runtime = runtime_for(model)
+    state = _state_dir()
+    clone = str(Path(clone).absolute())
     home = str(Path.home())
     line = runtime.headless(f"\"$(cat {shlex.quote(prompt_path)})\"",
                             bare_model_id(model), effort)
@@ -148,21 +210,23 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         *_wrapper(),
         "podman", "run", "--rm", "--name", name,
         "--memory", memory, "--cpus", cpus,
-        *_runtime_args(runtime),
-        "-v", f"{clone}:{clone}:ro", "-w", clone,
-        "-v", f"{home}/.config/gh:/root/.config/gh:ro",
-        "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
-        "-v", f"{triage_dir}:/triage",
+        *_runtime_args(runtime, state),
+        *_bind_mount(clone, clone, state, read_only=True), "-w", clone,
+        *_bind_mount(Path(home) / ".config/gh", "/root/.config/gh", state, read_only=True),
+        *_bind_mount(Path(home) / ".gitconfig", "/root/.gitconfig", state, read_only=True),
+        *_bind_mount(triage_dir, "/triage", state),
         image(), "bash", "-c", line,
     ]
 
 
 def setup_cmd(name: str, worktree: str, setup: str) -> list[str]:
-    clone = clone_root(worktree)
+    state = _state_dir()
+    worktree = str(Path(worktree).absolute())
+    clone = str(Path(clone_root(worktree)).absolute())
     return [
         "podman", "run", "--rm", "--name", name,
-        "-v", f"{worktree}:{worktree}", "-w", worktree,
-        "-v", f"{clone}:{clone}",
+        *_bind_mount(worktree, worktree, state), "-w", worktree,
+        *_bind_mount(clone, os.path.normpath(clone), state),
         "-v", "agent-ops-npm-cache:/root/.npm",
         "-v", "agent-ops-xdg-cache:/root/.cache",
         image(),

@@ -113,15 +113,22 @@ def valid_status_fields(snapshot):
     return all(scalar)
 
 
+def valid_alerts(alerts):
+    return (isinstance(alerts, list) and all(
+        isinstance(alert, dict) and alert.get("kind") == "compatibility"
+        and text(alert.get("message")) for alert in alerts))
+
+
 def valid_snapshot(snapshot):
     if not isinstance(snapshot, dict) or type(snapshot.get("version")) is not int or snapshot["version"] != 1:
         return False
     if not valid_binding(snapshot.get("binding")) or not valid_main(snapshot.get("main")):
         return False
     # Later worker/delivery tickets must explicitly extend these reserved schemas.
-    reserved = ("completions", "deliveries", "alerts")
+    reserved = ("completions", "deliveries")
     return all((valid_status_fields(snapshot), _supported_workers(snapshot),
                 all(snapshot.get(key) == [] for key in reserved),
+                valid_alerts(snapshot.get("alerts")),
                 "wait" in snapshot, valid_wait(snapshot.get("wait"))))
 
 

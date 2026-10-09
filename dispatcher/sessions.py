@@ -15,15 +15,13 @@ mutations best-effort — except a launch, which raises (see _launch)."""
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 import time
 from pathlib import Path
-from uuid import uuid4
 
 from dispatcher import containers, herdr, workspace
-from dispatcher.models import Entry
-from dispatcher.runtimes import Runtime, runtime_for
+from dispatcher.models import Entry, bare_model_id
+from dispatcher.runtimes import Runtime, SessionLaunch, runtime_for
 from dispatcher.runtime_control import RuntimeClient
 from dispatcher.state import clear_session, load
 
@@ -35,10 +33,13 @@ def session_name(target: str, issue: int) -> str:
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
                runtime: Runtime | None = None, second: Entry | None = None,
-               launch_env: dict | None = None) -> str:
+               launch_env: dict | None = None,
+               *, state_dir: str | Path | None = None,
+               plan: SessionLaunch | None = None) -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  runtime=runtime, second=second, launch_env=launch_env)
+                                  runtime=runtime, second=second, launch_env=launch_env,
+                                  state_dir=state_dir, plan=plan)
 
 
 class Sessions:
@@ -51,7 +52,7 @@ class Sessions:
         self.dry_run = dry_run
         self.memory = memory
         self.cpus = cpus
-        self.state_dir = Path(state_dir) if state_dir else None
+        self.state_dir = Path(state_dir).absolute() if state_dir else None
 
     def _tab(self, target: str, issue: int) -> herdr.Tab | None:
         return herdr.Tab.find(session_name(target, issue))
@@ -73,7 +74,8 @@ class Sessions:
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
                 runtime: Runtime, args: str, effort: str = "",
-                second: Entry | None = None, *, binding: dict) -> None:
+                second: Entry | None = None, *, binding: dict,
+                plan: SessionLaunch) -> None:
         launch_env = {f"AGENT_OPS_{key.upper()}": str(binding[key] or "")
                       for key in ("target", "issue", "launch_id", "conversation_id", "stage", "ticket")}
         # Build the command FIRST: containers.clone_root reads
@@ -83,7 +85,7 @@ class Sessions:
         # that will never launch.
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
                          model, args, effort=effort, runtime=runtime,
-                         second=second, launch_env=launch_env)
+                         second=second, launch_env=launch_env, state_dir=self.state_dir, plan=plan)
         workspace.install_stop_hook(worktree)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,
@@ -114,20 +116,24 @@ class Sessions:
             return
         if self.state_dir is None:
             raise ValueError("state_dir is required for a fresh session launch")
+        worktree = str(Path(worktree).absolute())
         clear_session(self.state_dir, target, issue)
-        agent_dir = Path(worktree) / ".agent"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)
         runtime = runtime_for(model)
-        conversation = str(uuid4()) if runtime.cli == "claude" else None
+        plan = runtime.session_plan(session_name(target, issue), worktree, bare_model_id(model), effort,
+                                    prompt_path=f".agent/prompt-{stage_name}.md")
+        self._write_prompt(worktree, plan, prompt)
         binding = RuntimeClient(self.state_dir).prepare(
             target, issue, stage_name, ticket=ticket, runtime=runtime.cli,
-            conversation_id=conversation, worktree=worktree)["binding"]
-        args = f'"$(cat .agent/prompt-{stage_name}.md)"'
-        if runtime.cli == "claude":
-            args = f"--session-id {conversation} {args}"
-        self._launch(target, issue, worktree, model, runtime, args, effort=effort,
-                     second=second, binding=binding)
+            conversation_id=plan.conversation_id, worktree=worktree)["binding"]
+        self._launch(target, issue, worktree, model, runtime, plan.args, effort=effort,
+                     second=second, binding=binding, plan=plan)
+
+    @staticmethod
+    def _write_prompt(worktree, plan, text):
+        if plan.prompt_file is not None:
+            path = Path(worktree) / plan.prompt_file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
                model: str, effort: str = "", second: Entry | None = None,
@@ -139,13 +145,17 @@ class Sessions:
         runtime = runtime_for(model)
         if self.state_dir is None:
             raise ValueError("state_dir is required for a resumed session launch")
+        worktree = str(Path(worktree).absolute())
         stage, ticket = self._resume_context(target, issue, worktree, session_id)
         binding = RuntimeClient(self.state_dir).prepare(
             target, issue, stage, ticket=ticket, runtime=runtime.cli,
             conversation_id=session_id, worktree=worktree)["binding"]
+        plan = runtime.session_plan(session_name(target, issue), worktree, bare_model_id(model), effort,
+            prompt_path=str(Path(worktree) / ".agent" / "prompt-resume.md"),
+            session_id=session_id, message=message)
+        self._write_prompt(worktree, plan, message)
         self._launch(target, issue, worktree, model, runtime,
-                     runtime.resume(session_id, shlex.quote(message)), effort=effort,
-                     second=second, binding=binding)
+                     plan.args, effort=effort, second=second, binding=binding, plan=plan)
 
     def _resume_context(self, target, issue, worktree, session_id):
         task = load(self.state_dir, target, issue)

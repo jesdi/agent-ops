@@ -197,12 +197,13 @@ def _codex_session_env(tmp_path, monkeypatch, package):
     return f"{os.path.realpath(package)}:/opt/codex:ro"
 
 
-def _assert_granted(cmd, tmp_path, codex_mount):
+def _assert_granted(cmd, tmp_path, codex_mount, *, state_dir=None):
+    state_dir = tmp_path / "state" if state_dir is None else state_dir
     assert f"-v {codex_mount}" in cmd
-    assert f"-v {tmp_path / 'state'}/codex-home:/root/.codex" in cmd
+    assert f"-v {state_dir}/codex-home:/root/.codex" in cmd
     assert "-e CODEX_HOME=/root/.codex" in cmd
     # still a Claude session
-    assert f"-v {tmp_path / 'state'}/claude-home:" in cmd
+    assert f"-v {state_dir}/claude-home:" in cmd
     assert "--model claude-opus-5" in cmd
 
 
@@ -241,8 +242,8 @@ def test_sessions_spawn_and_resume_carry_the_grant_to_the_command(tmp_path, monk
     s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5",
              session_id="recorded-session")
     assert len(cmds) == 3
-    _assert_granted(cmds[0], tmp_path, codex_mount)
-    _assert_granted(cmds[1], tmp_path, codex_mount)
+    _assert_granted(cmds[0], tmp_path, codex_mount, state_dir=tmp_path)
+    _assert_granted(cmds[1], tmp_path, codex_mount, state_dir=tmp_path)
     assert "codex" not in cmds[2].lower()
 
 

@@ -56,6 +56,19 @@ def _start_turn(snapshot, event):
     return True
 
 
+def _recover_turn(snapshot, event):
+    if not _main_turn(snapshot, event) or event.get("status") != "inProgress":
+        return False
+    main = snapshot["main"]
+    turn = event["turn_id"]
+    if turn not in main["seen_turns"]:
+        return _start_turn(snapshot, event)
+    if main["status"] != "unknown" or main["seen_turns"][-1] != turn:
+        return False
+    main.update(status="active", turn_id=turn)
+    return True
+
+
 def _complete_turn(snapshot, event):
     if not _main_turn(snapshot, event) or event.get("status") != "completed":
         return False
@@ -66,7 +79,19 @@ def _complete_turn(snapshot, event):
     return True
 
 
-_EVENTS = {"bound": _bind, "service": _service, "inventory": _empty_inventory,
+def _control_unknown(snapshot, event):
+    message = event.get("message")
+    if not isinstance(message, str) or not message:
+        return False
+    snapshot["inventory"] = "unknown"
+    snapshot["main"].update(status="unknown", turn_id=None)
+    alert = {"kind": "compatibility", "message": message}
+    if alert not in snapshot["alerts"]:
+        snapshot["alerts"].append(alert)
+    return True
+
+
+_EVENTS = {"control/unknown": _control_unknown, "turn/recovered": _recover_turn,"bound": _bind, "service": _service, "inventory": _empty_inventory,
            "turn/started": _start_turn, "turn/completed": _complete_turn}
 
 

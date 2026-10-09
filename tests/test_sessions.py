@@ -5,6 +5,8 @@ CLI calls are asserted."""
 from tests.runtime_listener import launch_listener, seed_resume_task  # noqa: F401
 
 import json as _json
+from pathlib import Path
+import shlex
 import subprocess as _sp
 
 import pytest
@@ -125,10 +127,18 @@ LIVE = [(("tab", "list"), 0, TABS), (("pane", "list"), 0, PANES),
 
 def _worktree(tmp_path):
     """A worktree whose .git points into a clone — containers.session_cmd
-    reads it to derive the clone mount."""
-    (tmp_path / ".git").write_text(
-        f"gitdir: {tmp_path}/clone/.git/worktrees/task-42\n")
-    return str(tmp_path)
+    reads it to derive the clone mount. Both mounts exclude private state.
+
+    The root-level .agent alias preserves historical prompt assertions. It
+    starts dangling, so launches that perform no I/O still have no .agent.
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    gitdir = tmp_path / "clone" / ".git" / "worktrees" / "task-42"
+    gitdir.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {gitdir}\n")
+    (tmp_path / ".agent").symlink_to(worktree / ".agent", target_is_directory=True)
+    return str(worktree)
 
 
 def _fake_podman(monkeypatch, seen=None):
@@ -138,6 +148,43 @@ def _fake_podman(monkeypatch, seen=None):
             seen.append(args)
         return _sp.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(sessions.subprocess, "run", run)
+
+
+def assert_codex_supervisor_prompt(command, worktree, prompt, model, *, effort=None,
+                                   session_id=None):
+    """Public T3 launch contract: safe-path executable and literal prompt file."""
+    words = shlex.split(command)
+    for index, word in enumerate(words[:-2]):
+        if Path(word).name in {"sh", "bash"} and words[index + 1] in {"-c", "-lc"}:
+            words = shlex.split(words[index + 2])
+            break
+    assert "dispatcher.codex_supervisor" in words, (
+        "Codex task containers must execute the controlled supervisor")
+    module = words.index("dispatcher.codex_supervisor")
+    assert words[module - 1] == "-m" and "-P" in words[:module]
+    arguments = words[module + 1:]
+
+    def option(name):
+        for index, value in enumerate(arguments):
+            if value.startswith(name + "="):
+                return value[len(name) + 1:]
+            if value == name:
+                return arguments[index + 1]
+        return None
+
+    assert option("--model") == model.split("/", 1)[-1]
+    if effort is not None:
+        assert option("--effort") == effort
+    assert option("--resume") == session_id
+    if session_id and session_id.startswith("-"):
+        assert f"--resume={session_id}" in arguments, (
+            "option-shaped recorded IDs must remain values in the supervisor CLI")
+    assert "--last" not in arguments and "--continue" not in arguments
+    prompt_file = option("--prompt-file")
+    assert prompt_file, "the supervisor must receive the stage/input prompt through a file"
+    assert (Path(worktree) / prompt_file).read_text() == prompt
+    assert prompt not in arguments, "prompt text must not be expanded into the launch argv"
+    return arguments
 
 
 # --- naming and the container command ----------------------------------------
@@ -160,7 +207,8 @@ def test_podman_cmd_mounts_and_caps(tmp_path, monkeypatch):
     assert f"-v {wt}:{wt}" in cmd
     assert f"-w {wt}" in cmd
     assert f"-v {clone}:{clone}" in cmd
-    assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
+    assert (f"-v {Path('/home/agent/agent-ops-state').resolve()}/claude-home:"
+            "/root/.claude") in cmd
     assert cmd.endswith('claude --remote-control task-pe-42 --permission-mode auto '
                         '--model claude-opus-4-8 "$(cat .agent/prompt-spec.md)"')
 
@@ -261,7 +309,7 @@ def test_spawn_stage_writes_the_prompt_and_runs_podman_in_a_new_tab(tmp_path, mo
                   for key in ("target", "issue", "launch_id", "conversation_id", "stage", "ticket")}
     assert run[3] == podman_cmd("acme", 42, wt, "2g", "2", "claude-fable-5",
                                 f'--session-id {binding["conversation_id"]} "$(cat .agent/prompt-spec.md)"',
-                                launch_env=launch_env)
+                                launch_env=launch_env, state_dir=tmp_path)
     assert "HERDR_AGENT" not in run[3]
 
 
@@ -346,11 +394,9 @@ def test_spawn_stage_on_an_openai_model_launches_codex(tmp_path, monkeypatch):
             "--cwd", wt, "--env", "HERDR_AGENT=codex", "--no-focus"] in calls
     cmd = next(c for c in calls if c[:2] == ["pane", "run"])[3]
     assert "-e CODEX_HOME=/root/.codex " in cmd
-    assert "-v /state/codex-home:/root/.codex " in cmd
+    assert f"-v {tmp_path / 'codex-home'}:/root/.codex " in cmd
     assert "/root/.claude" not in cmd
-    assert (" codex --model gpt-5-codex -c model_reasoning_effort=high "
-            "--dangerously-bypass-approvals-and-sandbox ") in cmd
-    assert cmd.endswith(' "$(cat .agent/prompt-implement.md)"')
+    assert_codex_supervisor_prompt(cmd, wt, "P", "openai/gpt-5-codex", effort="high")
 
 
 def test_resume_on_an_openai_model_resumes_the_last_codex_session(tmp_path,
@@ -362,12 +408,8 @@ def test_resume_on_an_openai_model_resumes_the_last_codex_session(tmp_path,
     Sessions(state_dir=tmp_path).resume("acme", 42, wt, "it's done", "openai/gpt-5-codex",
                       session_id="recorded-session")
     cmd = next(c for c in calls if c[:2] == ["pane", "run"])[3]
-    assert cmd.endswith(
-        " agent-ops-session codex --model gpt-5-codex"
-        " --dangerously-bypass-approvals-and-sandbox"
-        f""" -c 'notify=["{wt}/.agent/stop-hook.sh"]'"""
-        f""" -c 'projects={{"{wt}"={{trust_level="trusted"}}}}'"""
-        """ resume recorded-session 'it'"'"'s done'""")
+    assert_codex_supervisor_prompt(cmd, wt, "it's done", "openai/gpt-5-codex",
+                                  session_id="recorded-session")
 
 
 def test_resume_dry_run_announces_the_session(capsys):

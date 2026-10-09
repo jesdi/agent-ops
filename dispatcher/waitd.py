@@ -42,6 +42,12 @@ def _record_session(rec: dict, state_dir, target: str, issue: int,
         print(f"waitd: cannot record session for {target}#{issue}: {exc}", file=sys.stderr)
 
 
+def record_control_session(state_dir, binding):
+    """Only an accepted current completion may persist this launch's stage."""
+    write_session(state_dir, binding["target"], binding["issue"],
+                  SessionRecord(binding["conversation_id"], binding["stage"]))
+
+
 def _read_codex_metadata(path: Path, session_id: str) -> dict | None:
     try:
         with path.open(encoding="utf-8") as rollout:

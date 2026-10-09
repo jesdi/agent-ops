@@ -10,7 +10,7 @@ All tickets are sequential because their runtime boundary overlaps. See design.m
   Seam: RuntimeControl.prepare/view/event; waitd.handle_ping; main.run_pass.
   Touches: runtime_control.RuntimeControl; waitd.handle_ping; main._drive_task.
   Blocked by: #154 (reuse fix/session-isolation at 558b297 without changing its worktree).
-- [ ] T2 — Launch-scoped atomic snapshots and native Claude prompt hooks preserve binding/clock.
+- [x] T2 — Launch-scoped atomic snapshots and native Claude prompt hooks preserve binding/clock.
   Resume gets a fresh launch ID; malformed snapshots yield unknown. Native SessionStart,
   UserPromptSubmit and Stop carry explicit session/prompt identity; late hooks cannot alter current
   turns. Listener is sole writer; stage/ticket bindings and host-only snapshots survive restart.
@@ -22,13 +22,31 @@ All tickets are sequential because their runtime boundary overlaps. See design.m
   Sessions._launch/spawn_stage/resume/_resume_context/runtime_view; containers.session_cmd;
   main._launch_stage; workspace.install_stop_hook; hooks/stop-hook.sh.
   Blocked by: T1.
-- [ ] T3 — Controlled Codex backend and real terminal share one bound conversation. Supervisor
+- [x] T3 — Controlled Codex backend and real terminal share one bound conversation. Supervisor
   launches app-server/controller/remote TUI inside task container, with read-only relay/dependency
-  mounts and no runtime snapshots mounted. Explicit resume/fresh fallback is retained. Service
+  mounts and no runtime snapshots mounted. Every session mounts the host wait directory
+  read-only, including secondary-provider grants. All container builders reject canonical
+  bind overlaps with private runtime state and writable wait-directory aliases before
+  returning commands, including unsafe configured layouts and `.git`-selected clone paths.
+  Sessions' explicit state directory controls preparation, client paths, provider homes
+  and every bind check. Bind sources emit the canonical absolute paths validated;
+  container paths remain usable after terminal cwd changes, including on resume.
+  Explicit resume/fresh fallback is retained. Service
   death ends session; incompatible required interfaces report unknown/alert. Isolated fake-provider
   integration proves same terminal sees continuation.
-  Seam: Sessions.spawn_stage/resume; containers.session_cmd; supervisor executable.
-  Touches: sessions._launch; containers.session_cmd; runtime supervisor/transport/gateway.
+  Seam: Sessions.spawn_stage/resume; containers.session_cmd;
+  `python3 -P -m dispatcher.codex_supervisor` executable (design.md CLI contract).
+  Touches: sessions.podman_cmd; Sessions.__init__/_launch/spawn_stage/resume;
+  containers.session_cmd/triage_cmd/setup_cmd/_supervisor_mounts/_session_launch/_runtime_args/
+  _host_binary/_bind_mount/_canonical_path/_overlaps/_state_dir;
+  codex_supervisor.Controller.__init__/event/problem/notification/lifecycle/bind/start/inventory/recover/connected/observe,
+  selected_conversation/recovered_turn/validated_turn/has_initial_input/has_user_message,
+  valid_inventory/valid_terminal/backend_command/stop_process/run/main;
+  codex_transport.RPC.__init__/call/receive/_packet/_response, connect,
+  Gateway.__init__/serve/_downstream/_upstream/_foreign;
+  runtime_http.dispatch and BoundClient.__init__/_post/view/event;
+  runtime_control._control_unknown/_recover_turn; runtime_snapshots.valid_alerts/valid_snapshot;
+  waitd.record_control_session; pyproject websocket dependency.
   Blocked by: T2.
 - [ ] T4 — Gateway orders operator input against conditional retirement. Accepted input prevents
   old-stop park; revision change/unknown state holds; retired rejects later main input. All terminal

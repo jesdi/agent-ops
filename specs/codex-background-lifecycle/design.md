@@ -12,7 +12,32 @@ alone writes task state. Every physical launch, including a resume, receives a U
 A binding contains target, issue, stage, ticket, launch_id, runtime, worktree and
 conversation_id. A conversation can be bound once; resumed conversations are explicit.
 The snapshot is outside every container mount; only the existing wait socket directory
-is shared. Listener requests are serialized and snapshot replacement is atomic and
+is shared, read-only inside every task container, including Claude, Codex, and sessions
+granted a secondary provider. The host listener retains directory write access to create
+or replace its socket; native hooks and the controller only connect to that existing
+socket. A writable directory would let a task replace the listener endpoint and intercept
+the host authorization header even without access to its credential file. Read-only
+directory binding prevents that replacement while retaining the Unix socket connection
+path. T8 must verify actual Podman enforcement and socket connection behavior.
+All session, setup and triage bind sources are validated before a command is returned.
+Canonical source paths cannot contain or sit inside the private `runtime` store or
+`runtime-host-token`, even through a read-only bind or symlink alias. This includes
+the worktree and its `.git`-selected clone, primary and granted provider homes/binaries,
+supervisor source/dependencies, and supporting configuration mounts. Writable aliases
+of the wait directory are also rejected. Missing paths reserve the private locations
+before creation; unresolvable paths fail closed. Provider homes remain shareable when
+separate from private runtime state. Unsafe configured layouts must be relocated by
+the operator before launch; command construction does not move existing state.
+`Sessions(state_dir=...)` owns the launch directory: preparation, the container's
+client environment, read-only wait mount, provider homes and every bind's validation
+use that same directory. `podman_cmd` and `session_cmd` accept an optional keyword
+`state_dir`; direct callers that omit it retain the environment/default selection.
+Relative session state is made absolute at construction, and launch worktrees before
+binding or prompt creation. Every host bind emits the canonical absolute source that
+was validated, so a later terminal working directory or symlink alias cannot select
+another source. Container destinations preserve useful absolute aliases; relative
+worktree, clone and wait destinations become absolute before command construction.
+Listener requests are serialized and snapshot replacement is atomic and
 fsynced. The runtime_snapshots store keeps one complete document per launch under a
 hashed task directory, with an atomic current.json pointer. Missing or malformed documents
 behind an existing pointer remain managed unknown; an existing task runtime directory also
@@ -48,6 +73,43 @@ prepared launch binding. Socket view requests need either the host credential or
 current launch ID. RuntimeClient is the host transport (re-exported by runtime_control);
 its view reads atomic snapshots without mutating them. A listener restart preserves snapshots. A managed unreadable
 snapshot remains a managed unknown view at the Sessions boundary.
+
+The public exact-launch read wire is `POST /runtime/view` on
+`<state_dir>/wait/wait.sock`, with JSON `{target, issue, launch_id}` and
+`Content-Type: application/json`. An exact current launch ID needs no host
+credential header. HTTP 200 returns the snapshot, null for a foreign/replaced
+launch, or a managed-unknown view for damaged state. Container event requests
+use `POST /runtime/event` with JSON `{binding, event, now?}` and return a JSON
+boolean; after an accepted initial `bound` event, clients read the updated
+binding before sending later events.
+
+The container's `BoundClient` uses those two HTTP routes and never reads the
+host credential or snapshot files. A `control/unknown` event carries a nonempty
+`message`, invalidates main/inventory certainty while preserving seen-turn IDs
+and the wait clock, and records a deduplicated `{kind: 'compatibility', message}`
+alert. The listener records an accepted normal control completion as a
+`SessionRecord` using the binding's conversation and stage. Late task-state
+writes and supplementary native Codex hooks cannot select that record's stage.
+
+A reconnected controller uses exact-root `thread/resume` to subscribe to future
+turn notifications: `thread/read` plus inventory does not subscribe on 0.156.1.
+An ordered response callback applies an authoritative active resume snapshot
+before subsequent wire notifications. Its `turn/recovered` event requires
+`status: 'inProgress'` and the bound thread/turn identity; it can restore the
+latest seen turn from unknown or establish a new unseen turn, never an older
+seen turn. Historical completed-turn/result reconciliation remains T7's scope.
+
+Terminal attachment can proceed after the initial RPC reply or an accepted bound
+`turn/started` while that request is outstanding. If both are lost, exact-root
+resume must expose the initial prompt's launch-specific `clientUserMessageId`
+as a `userMessage.clientId` in valid turn history before attachment. A matching
+completed, failed, or interrupted turn permits attachment only; it does not
+synthesize a normal Stop or SessionRecord. A later current turn cannot hide that
+initial receipt. Recovery never repeats the initial prompt, and unrelated history
+cannot release initial terminal readiness. Until that receipt is visible, the
+controller rechecks the exact root at its inventory polling interval.
+
+
 
 For Claude, SessionStart establishes service health only for the explicitly selected
 conversation. UserPromptSubmit maps native session_id/prompt_id to main thread/turn.
@@ -85,6 +147,19 @@ serializes operator turn RPCs, result RPCs and host retirement fences. It record
 sent-unconfirmed receipt state before forwarding. The source package and installed Python
 WebSocket dependency are mounted read-only. No host runtime snapshot is mounted.
 Service death exits the session; controller disconnect reconnects without replacing it.
+
+The supervisor's executable seam is `python3 -P -m dispatcher.codex_supervisor
+--model MODEL --prompt-file PATH [--effort EFFORT] [--resume CONVERSATION_ID]`.
+It runs in the task worktree inside the container. Python safe-path mode and an
+explicit read-only source path prevent the target worktree's own Python packages
+from shadowing the deployed supervisor. The immutable target, issue and launch ID
+select the complete prepared binding through the listener's exact-launch view API;
+the host credential remains outside the mounts. The prompt is read from its file,
+not expanded into the host or container argument list. Fresh launches create one
+conversation; resumes select exactly the supplied ID, including IDs resembling flags.
+Binding precedes the actual stage prompt and real remote terminal attachment, without
+a synthetic model turn. `codex` on PATH and its Unix WebSocket app-server are the
+external process/transport boundaries for isolated fixtures.
 
 The controller reads authoritative lifecycle, complete background-terminal inventory,
 thread history and descendant ancestry. Newly observed commands become eligible background

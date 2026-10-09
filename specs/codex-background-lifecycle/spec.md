@@ -392,5 +392,4 @@
   admission/capacity policy, existing retry/loop limits, or stage gates.
 - Automatic recovery of a dead session service or a server-side exactly-once guarantee for
   repeated client message IDs.
-- Implementation, deployment, live task resumes, or edits to the separate #154 branch in this
-  specification stage.
+- Deployment, live task resumes, or edits to the separate #154 branch.

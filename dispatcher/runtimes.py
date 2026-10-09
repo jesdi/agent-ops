@@ -8,8 +8,19 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 from typing import Callable, Mapping
+from uuid import uuid4
 
 from dispatcher.models import PROVIDER_EFFORTS, split_model_id
+
+
+@dataclass(frozen=True)
+class SessionLaunch:
+    """One runtime-selected managed command, input transport and resource set."""
+    command: str
+    args: str
+    conversation_id: str | None
+    prompt_file: str | None
+    support_resources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -39,6 +50,24 @@ class Runtime:
     def launch(self, name: str, worktree: str, model: str, effort: str) -> str:
         return f"{self.cli} {self.launch_args(name, worktree, model, effort)}"
 
+    def session_plan(self, name: str, worktree: str, model: str, effort: str,
+                     *, prompt_path: str = "", session_id: str | None = None,
+                     message: str = "") -> SessionLaunch:
+        """Select managed launch policy; raw launch/resume remain crash-repro CLIs."""
+        if self.cli == "codex":
+            return codex_session_plan(model, effort, prompt_path, session_id)
+        conversation = session_id
+        if session_id is not None:
+            args = self.resume(session_id, shlex.quote(message))
+            prompt_file = None
+        else:
+            conversation = str(uuid4()) if prompt_path else None
+            args = (f'--session-id {conversation} "$(cat {shlex.quote(prompt_path)})"'
+                    if prompt_path else "")
+            prompt_file = prompt_path or None
+        return SessionLaunch(self.launch(name, worktree, model, effort), args,
+                             conversation, prompt_file)
+
     def headless(self, prompt: str, model: str, effort: str) -> str:
         """One-shot shell line; model and effort are shell-quoted here."""
         return f"{self.cli} {self.headless_args(prompt, shlex.quote(model), shlex.quote(effort) if effort else '')}"
@@ -50,6 +79,17 @@ class Runtime:
     def resume_cmd(self, session_id: str, message: str = "") -> str:
         """The whole resume command line, e.g. for a crash repro."""
         return f"{self.cli} {self.resume(session_id, message)}"
+
+
+def codex_session_plan(model, effort, prompt_path, session_id):
+    command = ["python3", "-P", "-m", "dispatcher.codex_supervisor", "--model", model]
+    if effort:
+        command.extend(["--effort", effort])
+    args = [f"--resume={session_id}"] if session_id is not None else []
+    if prompt_path:
+        args.extend(["--prompt-file", prompt_path])
+    return SessionLaunch(shlex.join(command), shlex.join(args), session_id,
+                         prompt_path or None, ("codex-supervisor",))
 
 
 CLAUDE = Runtime(

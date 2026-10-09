@@ -17,6 +17,7 @@ from tests.test_main import FakeGitHub, deps, make_task, valid_spec, write_ticke
 from tests.test_session_resume_acceptance import (
     CLAUDE_MODEL, CODEX_ID, CODEX_MODEL, RecordingSessions, _config, _tab_fake, _task,
 )
+from tests.test_sessions import assert_codex_supervisor_prompt
 
 
 OPTION_SHAPED_IDS = [
@@ -39,8 +40,8 @@ OPTION_SHAPED_IDS = [
 def test_operator_wake_passes_option_shaped_id_literally_to_the_tab(
         tmp_path, monkeypatch, model, session_id, expected_args):
     c = _config(tmp_path, monkeypatch, model)
-    _task(c, 384, Stage.REVIEW, model=model, session_id=session_id,
-          park=PARK_WAKE, slot=0)
+    wt = _task(c, 384, Stage.REVIEW, model=model, session_id=session_id,
+               park=PARK_WAKE, slot=0)
     calls = []
     _tab_fake(monkeypatch, calls, target="portfolio_eval", issue=384)
     messages.append(c.state_dir, "portfolio_eval", 384,
@@ -58,8 +59,12 @@ def test_operator_wake_passes_option_shaped_id_literally_to_the_tab(
     assert resume["session_id"] == session_id
     assert "It's approved; use $(the token) safely" in resume["message"]
     command = next(call[3] for call in calls if call[:2] == ["pane", "run"])
-    expected = [*expected_args, resume["message"]]
-    assert shlex.split(command)[-len(expected):] == expected
+    if model == CODEX_MODEL:
+        assert_codex_supervisor_prompt(command, wt, resume["message"], model,
+                                      session_id=session_id)
+    else:
+        expected = [*expected_args, resume["message"]]
+        assert shlex.split(command)[-len(expected):] == expected
     assert messages.undelivered(c.state_dir, "portfolio_eval", 384) == []
     assert read_session(c.state_dir, "portfolio_eval", 384).session_id == session_id
 

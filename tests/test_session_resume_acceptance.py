@@ -27,7 +27,7 @@ from tests.test_containers import make_worktree
 from tests.test_main import (
     FakeGitHub, FakeSessions, cfg, deps, make_task, write_tickets,
 )
-from tests.test_sessions import _fake_podman, herdr_fake_creating
+from tests.test_sessions import _fake_podman, assert_codex_supervisor_prompt, herdr_fake_creating
 from tests.usagefakes import session_usage
 from telegram.inbound import Command
 
@@ -131,8 +131,7 @@ def test_codex_tab_command_names_the_recorded_id_and_quotes_the_message(
     seed_resume_task(tmp_path, wt)
     Sessions(state_dir=tmp_path).resume("acme", 42, wt, message, CODEX_MODEL, session_id=CODEX_ID)
     command = next(call[3] for call in calls if call[:2] == ["pane", "run"])
-    assert " codex " in command
-    assert command.endswith(f" resume {CODEX_ID} {quoted}")
+    assert_codex_supervisor_prompt(command, wt, message, CODEX_MODEL, session_id=CODEX_ID)
     assert "--last" not in command
     assert "--continue" not in command
 
