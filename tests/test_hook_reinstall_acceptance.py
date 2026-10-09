@@ -2,11 +2,16 @@
 reinstalls the Stop hook. See specs/stop-hook-background-work/ (requirement 5).
 Observed only through the worktree's .agent/stop-hook.sh and
 .claude/settings.local.json, driven via Sessions.spawn_stage / .resume."""
+from tests.runtime_listener import launch_listener, seed_resume_task  # noqa: F401
+
 import json
 import os
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("launch_listener")
+
 
 import dispatcher.workspace as workspace
 from dispatcher import herdr
@@ -15,9 +20,10 @@ from tests.test_containers import make_worktree
 from tests.test_workspace import target
 
 REPO_HOOK = Path(__file__).resolve().parent.parent / "hooks" / "stop-hook.sh"
-STOP = {"hooks": {"Stop": [{"hooks": [{
+STOP = {"hooks": {event: [{"hooks": [{
     "type": "command",
-    "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]}]}}
+    "command": f"$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh --native-event {event}"}]}]
+    for event in ("SessionStart", "UserPromptSubmit", "Stop")}}
 
 
 class FakeTab:
@@ -54,7 +60,9 @@ def spawn(wt, model="claude-fable-5"):
 
 
 def resume(wt, model="claude-fable-5"):
-    Sessions().resume("acme", 42, wt, "go", model, session_id="recorded-session")
+    state_dir = Path(wt).parent / "state"
+    seed_resume_task(state_dir, wt)
+    Sessions(state_dir=state_dir).resume("acme", 42, wt, "go", model, session_id="recorded-session")
 
 
 def launches():

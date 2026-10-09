@@ -1,0 +1,33 @@
+{
+  "version": "0.156.1",
+  "provenance": "Unmodified direct-reference subset of the genuine Darwin Codex 0.156.1 experimental schema bundle. Generated schema files are copied byte-for-byte.",
+  "upstream_full_manifest": {
+    "sha256": "16670ec9772309d0af1aa0cab94067d2f076fcb5624ea5b157e6b90b4362c7d1",
+    "file_count": 436,
+    "catalog_only": [
+      "codex_app_server_protocol.schemas.json"
+    ]
+  },
+  "files": {
+    "ClientRequest.json": "84503651b1b6f9a4f259cf6d917b6b46a4a8f3262e00f6cfd077abc84dfbb5c1",
+    "JSONRPCMessage.json": "6da4cc373a7ccd01f5608ad4496eeb4d44b6a9b0d3158e85ed66b59f3c0b5114",
+    "ServerNotification.json": "a950d2228b9fcc123c8a0ea57349e137f915e1cf56453985e9fa72d767bbb30f",
+    "v1/InitializeParams.json": "6f0094be9a65242ec779a40794cbd4fdfa32fca1e45084a16adfb50501d33ea2",
+    "v1/InitializeResponse.json": "62ad689c2cb6379913c1d72749cfd8de5089d35760214123518eb92eef11acc9",
+    "v2/CommandExecutionOutputDeltaNotification.json": "841fa94098ddb63a71acf1bf5f9e3fac1b0491f4ed3fa8ef86f9a6ca1260b539",
+    "v2/HookCompletedNotification.json": "1f146d70303cea6e59752191179e36a273650d63a74d4f9338f9a399da6597d2",
+    "v2/ItemCompletedNotification.json": "d04b9153de38cd8302a2a418a44a65e8265d4c7586d46ea2cc801b594c6acf5b",
+    "v2/ItemStartedNotification.json": "7574788d2a352747f50d44be3ef649011cb8de8069da4c655faff14d0aee32c4",
+    "v2/ThreadBackgroundTerminalsListResponse.json": "b56b1cbcb1d60079ee9f9caaeef29cad869a25b4a6d356566f7c9f672faa7bf4",
+    "v2/ThreadItemsListResponse.json": "ffe80a17f536ce7ff1b0940103be93f77c439df02d3dff314747368b6e6b45d6",
+    "v2/ThreadListParams.json": "5daf371b2852c409d4405c95f79cddb2d92a1ee89da808b2c5112ef16a57432c",
+    "v2/ThreadReadResponse.json": "d685105cfc1430330376770fd05616814b30d2ecbc3e590780a90a66fdd36bc3",
+    "v2/ThreadResumeParams.json": "cc5bb3b25f82073d24af5b6c09e4804ac307467f8400ba5f263fa86f9f0349e6",
+    "v2/ThreadStartParams.json": "80a40a7fac15b4bf70efb7f893fb353acc0a0d30c68f54aee4f01923deca85de",
+    "v2/ThreadTurnsListResponse.json": "02a662f5fe56fccbf7ff12765b4f8854896895d8ff5bc9971c269e5c455b5586",
+    "v2/TurnCompletedNotification.json": "20052f79e907069a0d7948b93ba0927fa08f9a2faac23a63a0e8e527ae6bf0f7",
+    "v2/TurnStartParams.json": "07771223642e1b61bd9aac0069fc0f98143a1c047724ca02c7ceb13653442738",
+    "v2/TurnStartedNotification.json": "cf35428997e1eed4fe7f3d0318a476e0f210f58a1f7616cf1945e3f1851e8c85",
+    "v2/TurnSteerParams.json": "99f7fdff8b090065b68f36420b70870b5eafed048c024b308230aaa02f15d891"
+  }
+}

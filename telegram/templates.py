@@ -31,6 +31,7 @@ _RELOGIN = ("ssh -t agent@{host} 'CLAUDE_CONFIG_DIR=$HOME/agent-ops-state/"
             "claude-home $HOME/.local/bin/claude' then /login")
 
 _TEMPLATES = {
+    "runtime_alert": "⚠️ {ref} {title} — runtime alert\n{url}\n{note}",
     "awaiting_spec_review": "📝 {ref} {title} — spec ready for review.\n{url}\nsession task-{target}-{issue} · {note}\n" + _ATTACH,
     "stage_blocked": "🚧 {ref} {title} — stage blocked: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "pr_opened": "✅ {ref} {title} — PR opened: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,

@@ -182,9 +182,9 @@ def _seed_claude_state(wt: str) -> None:
 
 def install_stop_hook(wt: str) -> None:
     """Copy the Stop hook script into the worktree and point
-    .claude/settings.local.json's hooks.Stop at it. Runs at provisioning and
-    on every launch/resume, so a stale or deleted hook heals. Only hooks.Stop
-    is asserted; other settings keys survive, and a missing, unparseable or
+    .claude/settings.local.json's native lifecycle hooks at it. Runs at provisioning
+    and on every launch/resume, so a stale or deleted hook heals. SessionStart,
+    UserPromptSubmit and Stop are asserted; other keys survive. A missing, unparseable or
     non-object file is replaced."""
     agent_dir = Path(wt) / ".agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -207,9 +207,10 @@ def install_stop_hook(wt: str) -> None:
     # the Stop hook with the session's current cwd, which need not be the
     # worktree root. A relative command 404s from any subdir, the waiting
     # ping never fires, and the task hangs unparked forever.
-    hooks["Stop"] = [{"hooks": [{
-        "type": "command",
-        "command": "$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh"}]}]
+    for event in ("SessionStart", "UserPromptSubmit", "Stop"):
+        hooks[event] = [{"hooks": [{
+            "type": "command",
+            "command": f"$CLAUDE_PROJECT_DIR/.agent/stop-hook.sh --native-event {event}"}]}]
     _write_json_atomic(path, settings)   # a live session may read it mid-resume
 
 

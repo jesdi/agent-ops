@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 from dispatcher import spec_publish, task_artifacts
 from dispatcher.artifacts import TICKETS_DIR, ticket_files
 from dispatcher.loops import Decision, Outcome, ResetCause
-from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView,
+from dispatcher.machine import (ApplyDecision, ArmSpecApproval, BackgroundView, ManagedBackgroundView,
                                 HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
                                 RecordBackgroundWait, RetryStage, SetTaskStage,
@@ -49,6 +49,10 @@ from dispatcher.models import (Admitted, Entry, ModelPolicy, Order, candidates,
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
+from dispatcher.runtime_http import RuntimeClient
+from dispatcher.runtime_snapshots import valid_snapshot
+from dispatcher.runtime_work import running_workers
+from dispatcher.runtime_presentation import present_runtime_alerts
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
@@ -514,7 +518,9 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     stage, entry = launch.stage, launch.entry
     model = entry.model_id
     ticket_path = ""
+    ticket_id = ""
     if ticket:
+        ticket_id = str(ticket)
         files = ticket_files(Path(task.worktree) / TICKETS_DIR)
         if ticket > len(files):
             raise RuntimeError(f"ticket {ticket} of {task.ticket_count} missing "
@@ -549,7 +555,7 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     _log_model(task.worktree, stage, str(entry))
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
-                              second=launch.second)
+                              second=launch.second, ticket=ticket_id)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
                    operator_request=None, updated_at=_now(),
@@ -1571,27 +1577,51 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
                           time.time(), cfg.background_wait_seconds)
 
 
+def _session_evidence(cfg: Config, deps: Deps, task: TaskState, alive: bool):
+    runtime_view = getattr(deps.sessions, "runtime_view", None)
+    snapshot = runtime_view(task.target, task.issue) if runtime_view is not None else None
+    if snapshot is not None:
+        # Evidence is read-only. The actual automatic park action must win
+        # conditional retirement before it can perform any park effects.
+        waiting = (valid_snapshot(snapshot) and _bound_task_stage(snapshot["binding"], task)
+                   and snapshot["main"]["status"] == "stopped")
+        view = _managed_background_view(cfg, snapshot) if waiting else None
+        return waiting and view is None, view, None, snapshot
+    waiting = has_waiting(cfg.state_dir, task.target, task.issue)
+    # Read background state before idle: a wake between reads must hold.
+    view = _background_view(cfg, deps, task, alive)
+    idle = (deps.sessions.idle_seconds(task.target, task.issue)
+            if alive and cfg.stall_after_seconds > 0 else None)
+    return waiting, view, idle, None
+
+
+def _managed_background_view(cfg, snapshot):
+    if snapshot["inventory"] != "known" or snapshot["wait"] is None or not running_workers(snapshot):
+        return None
+    return ManagedBackgroundView(snapshot["wait"]["since"], time.time(), cfg.background_wait_seconds)
+
+
+def _bound_task_stage(binding, task):
+    stage = task.continued_stage
+    return (binding["stage"] == stage.value
+            and (stage != Stage.IMPLEMENT or binding["ticket"] == str(task.ticket_cursor)))
+
+
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 admit: Admit, order: Order, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
     policy = policy_for(cfg, target)
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
     alive = deps.sessions.is_alive(task.target, task.issue)
-    waiting = has_waiting(cfg.state_dir, task.target, task.issue)
     if task.track not in policy.tracks:
         _park_for_input(cfg, deps, target, task,
                         f"track {task.track!r} is no longer configured (have "
                         f"{sorted(policy.tracks)}); restore it in targets.yaml or "
                         f"run the task with a model override")
         return
-    # herdr's view of a background wait BEFORE the idle reading: a session
-    # waking between the two reads must look still-waiting (held), never
-    # woken-with-a-stale-idle (stall-parked mid-turn).
-    view = _background_view(cfg, deps, task, alive)
-    # Query idle only when it can matter: detection enabled and the
-    # session alive (the crash path owns dead sessions).
-    idle = (deps.sessions.idle_seconds(task.target, task.issue)
-            if alive and cfg.stall_after_seconds > 0 else None)
+    waiting, view, idle, snapshot = _session_evidence(cfg, deps, task, alive)
+    if valid_snapshot(snapshot) and snapshot["service"] == "dead":
+        alive = False
     turn = _Turn(cfg, deps, target, signal, dry_run)
     for act in pass_actions(task, signal, alive, waiting, view,
                             caps=cfg.loop_caps,
@@ -1599,6 +1629,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             stall_after=cfg.stall_after_seconds,
                             grace_elapsed=_grace_elapsed(cfg, task),
                             tracks=frozenset(policy.tracks)):
+        observed_at = view.now if isinstance(view, ManagedBackgroundView) else None
+        if not _admit_automatic_park(cfg, act, signal, snapshot, dry_run, observed_at):
+            return
         stage = _action_stage(act)
         launch, bypass_usage = ((None, False) if stage is None
                                 else _choose_launch(cfg, target, task, stage, admit, order))
@@ -1610,6 +1643,22 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             _consume_execution_choice(cfg, *choice_key)
         if task is None:
             return
+
+
+def _admit_automatic_park(cfg, act, signal, snapshot, dry_run, observed_at=None):
+    if snapshot is None or not isinstance(act, ParkForInput):
+        return True
+    if signal is None or signal.status != "working":
+        return True
+    if dry_run or not valid_snapshot(snapshot):
+        return False
+    try:
+        return RuntimeClient(cfg.state_dir).retire(
+            snapshot["binding"], snapshot["revision"],
+            reason="background" if running_workers(snapshot) else "stopped",
+            now=observed_at, cap=cfg.background_wait_seconds) == "retired"
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _report_session_crash(cfg: Config, deps: Deps, target: Target,
@@ -2240,6 +2289,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
+            present_runtime_alerts(cfg.state_dir, target, task.issue, deps.notifier, dry_run=dry_run)
             try:
                 _drive_task(eff, deps, target, task, admit, order, dry_run)
             except Exception:

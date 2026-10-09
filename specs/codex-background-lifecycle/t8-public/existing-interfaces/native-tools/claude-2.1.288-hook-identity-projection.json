@@ -1,0 +1,72 @@
+{
+  "native_version": "2.1.288 (Claude Code)",
+  "artifact_kind": "field-only projection of recorded genuine generic native hooks; not T8 acceptance",
+  "identity_labels_are_aliases": true,
+  "identity_labels": "S1 is one native session; P1/P2/P3 are three pairwise distinct native prompt UUIDs; W1 is the same native running shell task at both early Stops. Alias labels are not fixture hook inputs.",
+  "selected_native_events": [
+    {
+      "hook_event_name": "SessionStart",
+      "session_id": "S1"
+    },
+    {
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "S1",
+      "prompt_id": "P1",
+      "input_kind": "operator_prompt"
+    },
+    {
+      "hook_event_name": "Stop",
+      "session_id": "S1",
+      "prompt_id": "P1",
+      "background_tasks": [
+        {
+          "id": "W1",
+          "type": "shell",
+          "status": "running"
+        }
+      ]
+    },
+    {
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "S1",
+      "prompt_id": "P2",
+      "input_kind": "operator_prompt"
+    },
+    {
+      "hook_event_name": "Stop",
+      "session_id": "S1",
+      "prompt_id": "P2",
+      "background_tasks": [
+        {
+          "id": "W1",
+          "type": "shell",
+          "status": "running"
+        }
+      ]
+    },
+    {
+      "hook_event_name": "UserPromptSubmit",
+      "session_id": "S1",
+      "prompt_id": "P3",
+      "input_kind": "native_task_notification"
+    },
+    {
+      "hook_event_name": "Stop",
+      "session_id": "S1",
+      "prompt_id": "P3",
+      "background_tasks": []
+    }
+  ],
+  "omitted_native_member_types": {
+    "transcript_path": "string",
+    "cwd": "string",
+    "permission_mode": "string",
+    "prompt": "string",
+    "stop_hook_active": "boolean",
+    "last_assistant_message": "string",
+    "session_crons": "array",
+    "background_tasks[].description": "string",
+    "background_tasks[].command": "string"
+  },
+  "source_capture_sha256": "140132eb1fbc88468791ad7fa3347803e050102138fb13746408122cdfff81d2"
+}

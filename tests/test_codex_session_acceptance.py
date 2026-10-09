@@ -6,13 +6,19 @@ openai/... entry (spawn and resume) and the console's task view. Skips "On
 the box" (manual)."""
 from pathlib import Path
 
+from tests.runtime_listener import launch_listener, seed_resume_task  # noqa: F401
+
 import pytest
+
+pytestmark = pytest.mark.usefixtures("launch_listener")
+
 
 from dispatcher import containers, sessions
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.state import Stage
 from tests.test_containers import make_worktree
 from tests.test_prompts import CTX
+from tests.test_sessions import assert_codex_supervisor_prompt
 
 
 def _openai_runtime():
@@ -55,16 +61,19 @@ def test_codex_spawn_command_shape(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
     runtime = _openai_runtime()
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "gpt-5-codex", "P",
+    prompt_file = Path(wt) / ".agent" / "prompt-review.md"
+    prompt_file.parent.mkdir()
+    prompt_file.write_text("P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "gpt-5-codex",
+                                 "--prompt-file .agent/prompt-review.md",
                                  effort="high", runtime=runtime)
 
-    assert "--model gpt-5-codex" in cmd
-    assert "-c model_reasoning_effort=high" in cmd
-    assert "--dangerously-bypass-approvals-and-sandbox" in cmd
-    assert f"-c 'notify=[\"{wt}/.agent/stop-hook.sh\"]'" in cmd
-    # Dotted -c keys keep their quote characters in Codex 0.155.1, so the
-    # trust override must be an inline table, not a dotted path.
-    assert f"-c 'projects={{\"{wt}\"={{trust_level=\"trusted\"}}}}'" in cmd
+    assert_codex_supervisor_prompt(cmd, wt, "P", "gpt-5-codex", effort="high")
+    assert "--memory 2g --cpus 2" in cmd
+    assert f"-v {wt}:{wt}" in cmd and f"-w {wt}" in cmd
+    assert f"-v {clone}:{clone}" in cmd
+    # Effective trust/approval/sandbox settings moved behind this executable;
+    # test_codex_supervisor_security_acceptance covers the actual processes.
     assert "--remote-control" not in cmd
 
 
@@ -99,8 +108,9 @@ def test_codex_session_resume_tab_gets_herdr_agent_codex(tmp_path, monkeypatch):
                      # that's fine, we only need to see the call it made.
 
     monkeypatch.setattr(herdr.Tab, "ensure", fake_ensure)
+    seed_resume_task(tmp_path, wt)
     with pytest.raises(RuntimeError):
-        sessions.Sessions().resume("acme", 42, wt, "go", "openai/gpt-5-codex",
+        sessions.Sessions(state_dir=tmp_path).resume("acme", 42, wt, "go", "openai/gpt-5-codex",
                                    session_id="recorded-session")
     assert calls, "Tab.ensure was never called"
     assert calls[0].get("env") == {"HERDR_AGENT": "codex"}

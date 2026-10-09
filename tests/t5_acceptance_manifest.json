@@ -1,0 +1,912 @@
+{
+  "schema_version": 1,
+  "contract": "specs/codex-background-lifecycle/runtime-contract.md",
+  "criterion_count": 66,
+  "seams": {
+    "R": "Public RuntimeControl calls and durable public views; caller-supplied normalized observations do not prove Controller native RPC ordering.",
+    "X": "Actual executable supervisor, own external native WebSocket backend and terminal, actual waitd listener and RuntimeClient views.",
+    "D": "Actual run_pass, Sessions and waitd/RuntimeClient with own external GitHub, notifier, usage and Tab effects."
+  },
+  "deferred": [
+    "T6 result transmission and delivery receipts",
+    "T7 re-instantiated Controller receipt recovery and bootstrap no-resend"
+  ],
+  "criteria": {
+    "B01": {
+      "stimulus": "Stopped live known qualified running worker, elapsed cap-1, cap, cap+1; fresh current revision each",
+      "observable": "background retire held below/equal; retired strictly above; default cap 10800 and configurable value honored",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_background_cap_is_strict_and_configurable"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_task_background_wait_holds_capacity_until_strict_cap"
+        }
+      ]
+    },
+    "B02": {
+      "stimulus": "Foreground active main with old clock well past cap",
+      "observable": "Background retire held; run_pass neither parks nor ends working main",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_background_cap_never_overrides_input_results_or_unknown_authority"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_task_cap_respects_active_input_unknown_control_and_pending_failure"
+        }
+      ]
+    },
+    "B03": {
+      "stimulus": "cap+1 but inventory unknown, main unknown, service unknown, changed revision, stale binding, admitted input not yet turn-started",
+      "observable": "Never retired automatically; session/task held pending authority",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_admitted_input_before_turn_start_cannot_report_new_work_against_old_stop"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_background_cap_never_overrides_input_results_or_unknown_authority"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_task_cap_respects_active_input_unknown_control_and_pending_failure"
+        }
+      ]
+    },
+    "B04": {
+      "stimulus": "cap+1 with pending available completion, even another known worker running",
+      "observable": "Accepted input/unresolved-result precedence holds retirement under T4; no T6 acknowledgment shortcut",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_available_outcomes_preserve_native_fields_and_hold_park"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_background_cap_never_overrides_input_results_or_unknown_authority"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_task_cap_respects_active_input_unknown_control_and_pending_failure"
+        }
+      ]
+    },
+    "B05": {
+      "stimulus": "Complete stopped empty setup, live service, no known workers/results/input",
+      "observable": "Ordinary stopped retirement and existing waiting-for-input reason/session end still work",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_declared_empty_inventory_setup_still_allows_normal_stopped_retirement"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_task_normal_empty_work_stop_still_parks_and_fences_before_physical_end"
+        }
+      ]
+    },
+    "B06": {
+      "stimulus": "Known stopped background wait crosses ordinary stall timer before background cap",
+      "observable": "In progress, capacity retained, no ordinary stall/input park or physical end",
+      "coverage": [
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_task_background_wait_holds_capacity_until_strict_cap"
+        }
+      ]
+    },
+    "B07": {
+      "stimulus": "blocked, awaiting-answers, awaiting-ci, awaiting-review, done, and loop-cap signals while worker running/pending",
+      "observable": "Existing stage transition/note/artifact wins; exact-launch forced fence precedes physical end; no worker-induced revival",
+      "coverage": [
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_existing_stage_authority_wins_over_running_background_work"
+        }
+      ]
+    },
+    "B08": {
+      "stimulus": "service dies vs control socket disconnect while service/terminal alive",
+      "observable": "Dead service keeps existing Failed/Resume behavior; client-only reconnect never becomes service death or successful worker completion",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_crash_cannot_be_capped_and_new_physical_resume_starts_fresh_clock"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_dead_service_and_exited_physical_session_keep_failed_resume_behavior"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_same_controller_reconnect_recovers_offline_original_outcome_with_same_terminal_and_clock"
+        }
+      ]
+    },
+    "B09": {
+      "stimulus": "Successful cap retirement then new operator-resume preparation",
+      "observable": "New physical launch/fresh baseline/null old wait; first new stopped running-work report starts fresh clock; old events rejected",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_crash_cannot_be_capped_and_new_physical_resume_starts_fresh_clock"
+        }
+      ]
+    },
+    "C01": {
+      "stimulus": "Initial root command starts; complete terminal inventory while its initiating main turn is active",
+      "observable": "Observed command is ineligible; no completion or stopped-work clock; terminal presence/source name is not qualification",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_requires_complete_post_owning_stop_inventory"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_foreground_and_two_surviving_commands_are_distinguished_without_yield_receipts"
+        }
+      ]
+    },
+    "C02": {
+      "stimulus": "Exact current bound root receives normal completed turn, then complete root inventory begun at that Stop revision or later still lists initial item",
+      "observable": "Worker eligible; qualifying_stop exactly names owner/initiating turn/accepted revision; first stopped report starts clock",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_requires_complete_post_owning_stop_inventory"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_foreground_and_two_surviving_commands_are_distinguished_without_yield_receipts"
+        }
+      ]
+    },
+    "C03": {
+      "stimulus": "Root terminal query begins before Stop and its response is released after Stop",
+      "observable": "Its earlier observed_revision cannot qualify worker; no clock reset/start from that reply",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_late_reply_cannot_retroactively_qualify_root_command"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_terminal_reply_started_before_main_stop_cannot_qualify_on_arrival"
+        }
+      ]
+    },
+    "C04": {
+      "stimulus": "New root command observation omits observed_revision; repeat with revision below accepted Stop",
+      "observable": "No new eligibility or empty-work certainty from insufficient causal evidence; previously eligible other workers persist",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_late_reply_cannot_retroactively_qualify_root_command"
+        }
+      ]
+    },
+    "C05": {
+      "stimulus": "False root owning Stops: stale main turn, foreign root, child turn, failed/interrupted status, missing/unreadable event, native Stop only, obsolete launch",
+      "observable": "None qualifies root command or supplies current-main completion; no success fabricated",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_wrong_stop_does_not_qualify_new_root_work"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_normal_stop_fields_cannot_qualify_a_root_turn_that_never_authoritatively_ended"
+        }
+      ]
+    },
+    "C06": {
+      "stimulus": "Stop A was accepted while A current; B starts before first complete post-A terminal scan",
+      "observable": "Command surviving accepted own A Stop can qualify during active B; A no longer current input-park evidence; clock waits for stopped-main report",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_accepted_old_stop_provenance_survives_new_active_main"
+        }
+      ]
+    },
+    "C07": {
+      "stimulus": "Qualified command completes during later active B",
+      "observable": "Same identity/provenance/eligibility; one available completion; B remains active and bound",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_accepted_old_stop_provenance_survives_new_active_main"
+        }
+      ]
+    },
+    "C08": {
+      "stimulus": "Foreground command visible before return, completed history exists before first qualifying Stop; post-Stop list empty",
+      "observable": "Outcome data may be retained but command ineligible; no independently available completion/pending background result; normal empty-work retirement possible",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_foreground_history_outcome_is_retained_without_redelivery"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_foreground_and_two_surviving_commands_are_distinguished_without_yield_receipts"
+        }
+      ]
+    },
+    "C09": {
+      "stimulus": "Only item/started exists after Stop with no complete terminal survival evidence",
+      "observable": "No background qualification from lifecycle arrival alone",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_requires_complete_post_owning_stop_inventory"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_foreground_and_two_surviving_commands_are_distinguished_without_yield_receipts"
+        }
+      ]
+    },
+    "H01": {
+      "stimulus": "Fresh physical launch resumes same conversation with old completed turns/workers; seeded baseline names them",
+      "observable": "Old/delayed baseline outcomes excluded from this launch's completions; new current work can qualify",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_physical_launch_baseline_excludes_old_outcomes_and_unreadable_seed_is_not_empty"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_fresh_physical_resume_seeds_native_old_history_and_work_before_bootstrap_prompt"
+        }
+      ]
+    },
+    "H02": {
+      "stimulus": "Fresh baseline seed unreadable or incomplete",
+      "observable": "seeded=false; no empty prior-history guarantee; holds unknown and reports compatibility/control problem",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_physical_launch_baseline_excludes_old_outcomes_and_unreadable_seed_is_not_empty"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_unreadable_native_baseline_before_bootstrap_cannot_be_seeded_as_empty"
+        }
+      ]
+    },
+    "H03": {
+      "stimulus": "Same-controller same-launch socket reconnect with previously qualified command and persisted seed/checkpoint; offline command completed during active B",
+      "observable": "Exact-root resume; baseline not reseeded; missed available outcome collected once; eligibility/original identity/clock/root/terminal unchanged; no receipt/transmission assertion",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_offline_outcomes_on_final_native_item_pages_require_complete_scoped_cursors"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_same_controller_reconnect_recovers_offline_original_outcome_with_same_terminal_and_clock"
+        }
+      ]
+    },
+    "H04": {
+      "stimulus": "Inventory event omits checkpoint after one recorded; attempts different launch_id checkpoint",
+      "observable": "Omission retains checkpoint; foreign checkpoint cannot select launch or clear work/outcomes",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_unknown_partial_inventory_preserves_eligibility_outcome_checkpoint_and_clock"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_foreign_checkpoint_cannot_replace_current_launch_checkpoint"
+        }
+      ]
+    },
+    "H05": {
+      "stimulus": "Valid checkpoint retains baseline, seen_completions and exact-thread/optional-turn opaque scope cursors",
+      "observable": "Survives listener restart and same-controller socket reconnect; null incomplete scope is not readable exhaustion or disappearance proof; re-instantiated-controller bootstrap/no-resend remains T7",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_unknown_partial_inventory_preserves_eligibility_outcome_checkpoint_and_clock"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_unreadable_page_cannot_erase_known_work_clock_or_checkpoint"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_same_controller_reconnect_recovers_offline_original_outcome_with_same_terminal_and_clock"
+        }
+      ]
+    },
+    "H06": {
+      "stimulus": "Pre-completion startup history contains no inProgress command row; reconnect sees empty running-item history",
+      "observable": "Stored running identity remains; empty history does not erase eligibility or invent outcome",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_notloaded_or_absent_worker_remains_unresolved_not_success"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_foreground_and_two_surviving_commands_are_distinguished_without_yield_receipts"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_offline_outcomes_on_final_native_item_pages_require_complete_scoped_cursors"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_same_controller_reconnect_recovers_offline_original_outcome_with_same_terminal_and_clock"
+        }
+      ]
+    },
+    "I01": {
+      "stimulus": "Same owner+initial item reported twice; command/process/cwd observations vary, later stdin names another turn",
+      "observable": "One worker; original initiating turn stable; no replacement identity, duplicate completion, or new-work clock reset",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_identity_is_owner_and_initial_item_with_permanent_turn"
+        }
+      ]
+    },
+    "I02": {
+      "stimulus": "Two initial items share process ID, command and cwd; identical initial item string occurs in another owned thread",
+      "observable": "Distinct identities remain distinct workers/completions and can count as new work",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_identity_is_owner_and_initial_item_with_permanent_turn"
+        }
+      ]
+    },
+    "I03": {
+      "stimulus": "TerminalInteraction on B names original item/process; completion/history stay in initiating A",
+      "observable": "Exactly original command represented; later interaction turn is not new worker provenance",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_identity_is_owner_and_initial_item_with_permanent_turn"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_later_stdin_and_failed_child_preserve_available_outcomes_without_output_reconstruction"
+        }
+      ]
+    },
+    "I04": {
+      "stimulus": "Standalone unifiedExecInteraction item has no established initial linkage",
+      "observable": "Unknown identity/ownership; enum alone cannot qualify new worker or invent original item link",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_unlinked_interaction_source_is_not_a_new_background_worker"
+        }
+      ]
+    },
+    "I05": {
+      "stimulus": "Two turns of same owned child thread",
+      "observable": "Distinct AgentIdentity; second stopped report can reset clock for genuinely new child turn",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_owned_child_turns_are_distinct_new_work"
+        }
+      ]
+    },
+    "I06": {
+      "stimulus": "Duplicate outcome event plus equivalent authoritative history; restart control/listener",
+      "observable": "One stable eligible completion identity/outcome after restart, no extra worker/result",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_completion_is_monotonic_and_durable_across_duplicate_and_stale_running_reply"
+        }
+      ]
+    },
+    "I07": {
+      "stimulus": "Foreign target/issue, replacement ticket or launch, retired binding receives inventory/completion",
+      "observable": "Current launch binding/revision/workers/completions/wait unchanged; retired launches do not revive",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_late_inventory_cannot_change_other_launch"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_existing_stage_authority_wins_over_running_background_work"
+        }
+      ]
+    },
+    "O01": {
+      "stimulus": "Bound root native source is vscode, not appServer",
+      "observable": "Exact recorded root accepted; valid child chain reaches it",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_descendant_pages_count_active_depth8_through_idle_parents_and_exclude_foreign_threads"
+        }
+      ]
+    },
+    "O02": {
+      "stimulus": "Active depth-1 child, no commands; list turns empty but exact read has active turn",
+      "observable": "Child eligible/running; stopped main/session/task/capacity held; no dependence on child thread/started",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_owned_child_turns_are_distinct_new_work"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_descendant_pages_count_active_depth8_through_idle_parents_and_exclude_foreign_threads"
+        }
+      ]
+    },
+    "O03": {
+      "stimulus": "Active grandchild through idle/completed parent; depth-3 and synthetic depth-8 chains",
+      "observable": "Every owned active descendant counts; no active-parent or fixed-depth restriction",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_owned_descendants_at_every_depth_count"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_descendant_pages_count_active_depth8_through_idle_parents_and_exclude_foreign_threads"
+        }
+      ]
+    },
+    "O04": {
+      "stimulus": "Established ancestry through notLoaded parent, then unreadable parent query",
+      "observable": "Ownership/work not erased or deemed completed; incomplete observation is unknown and holds retirement",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_notloaded_or_absent_worker_remains_unresolved_not_success"
+        }
+      ]
+    },
+    "O05": {
+      "stimulus": "Foreign root/subtree, internal title thread, subAgent review/compact/other, path/cwd/root-like sessionID decoys",
+      "observable": "Definite unrelated work excluded; no clock reset/result/main change from those records",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_ownership_requires_every_link_and_terminates_cycles"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_descendant_pages_count_active_depth8_through_idle_parents_and_exclude_foreign_threads"
+        }
+      ]
+    },
+    "O06": {
+      "stimulus": "Broken ancestry variants: parent disagreement, missing intermediate, wrong root, depth disagreement, repeated thread/cycle",
+      "observable": "Unknown unresolved links cannot become known empty; definite foreign chains excluded; no hang/cycle recursion or owned result",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_ownership_requires_every_link_and_terminates_cycles"
+        }
+      ]
+    },
+    "O07": {
+      "stimulus": "Spawn item completes with subAgentActivity kind started while child still inProgress",
+      "observable": "Child remains running; spawn-action item does not create child completion or main Stop",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_descendant_pages_count_active_depth8_through_idle_parents_and_exclude_foreign_threads"
+        }
+      ]
+    },
+    "O08": {
+      "stimulus": "Child active flags waitingOnApproval/waitingOnUserInput; no main-stage operator request",
+      "observable": "Flags alone do not turn child into completed work; running wait held",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_child_active_flags_do_not_invent_child_completion"
+        }
+      ]
+    },
+    "O09": {
+      "stimulus": "Grandchild's command survives its own normal child Stop, root terminal list empty",
+      "observable": "Exact-owner terminal list required; valid child-end evidence qualifies command without host child revision",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_descendant_command_needs_its_own_normal_end_not_root_stop"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_nested_command_needs_own_child_end_before_exact_owner_terminal_query"
+        }
+      ]
+    },
+    "O10": {
+      "stimulus": "Root normal Stop but initiating child still active; variants wrong child turn, failed/interrupted child end, unknown child end",
+      "observable": "No new descendant-command qualification from root Stop or mismatched/non-normal child evidence",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_wrong_stop_does_not_qualify_new_root_work"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_descendant_command_needs_its_own_normal_end_not_root_stop"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_wrong_child_end_does_not_qualify_descendant_command"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_nested_command_needs_own_child_end_before_exact_owner_terminal_query"
+        }
+      ]
+    },
+    "O11": {
+      "stimulus": "Child exact normal end from native child turn event vs authoritative child history precedes terminal scan",
+      "observable": "Each supported evidence_source qualifies descendant command; main status/session record/current waiting evidence unaffected by child end",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_descendant_command_needs_its_own_normal_end_not_root_stop"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_nested_command_needs_own_child_end_before_exact_owner_terminal_query"
+        }
+      ]
+    },
+    "O12": {
+      "stimulus": "Exact-owner terminal request begins before normal child end and reply arrives after it",
+      "observable": "Cannot fabricate causal post-child-end survival from arrival ordering; repeat scan after end qualifies",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_nested_command_needs_own_child_end_before_exact_owner_terminal_query"
+        }
+      ]
+    },
+    "O13": {
+      "stimulus": "Child native SubagentStop says root session_id, actual child agent_id, or no native hook for failed child",
+      "observable": "Hook never ends root or creates duplicate controller completion; public child outcome remains authoritative",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_later_stdin_and_failed_child_preserve_available_outcomes_without_output_reconstruction"
+        }
+      ]
+    },
+    "P01": {
+      "stimulus": "thread/list returns multiple pages, each limit-1 realistic native Thread row, final nextCursor null; ancestor or recursively complete parent scopes supported",
+      "observable": "Follow opaque nextCursor to exhaustion and every required parent scope; descendants on final page included; no unsupported ancestry parameters",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_fresh_physical_resume_seeds_native_old_history_and_work_before_bootstrap_prompt"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_descendant_pages_count_active_depth8_through_idle_parents_and_exclude_foreign_threads"
+        }
+      ]
+    },
+    "P02": {
+      "stimulus": "Exact root/descendant terminal inventories contain two pages",
+      "observable": "Both initial-item workers present; request each owner's exact threadId; no assumption root list recursive",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_fresh_physical_resume_seeds_native_old_history_and_work_before_bootstrap_prompt"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_foreground_and_two_surviving_commands_are_distinguished_without_yield_receipts"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_nested_command_needs_own_child_end_before_exact_owner_terminal_query"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_paused_nonfinal_native_terminal_page_keeps_known_clock_and_cannot_claim_empty"
+        }
+      ]
+    },
+    "P03": {
+      "stimulus": "Item history has userMessage first, then outcomes on subsequent pages; reverse traversal when controller chooses it",
+      "observable": "Complete relevant history sees final-page results; cursor passed unchanged with correct scope/direction; outcomes deduplicated",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_fresh_physical_resume_seeds_native_old_history_and_work_before_bootstrap_prompt"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_later_stdin_and_failed_child_preserve_available_outcomes_without_output_reconstruction"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_offline_outcomes_on_final_native_item_pages_require_complete_scoped_cursors"
+        }
+      ]
+    },
+    "P04": {
+      "stimulus": "Missing/unreadable cursor, repeated cursor, failed query, malformed row, nonfinal-page pause at each of the three lists",
+      "observable": "No authoritative empty-work claim; partial definite worker/outcome observations preserved; problem visible; no infinite scan",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_unreadable_native_baseline_before_bootstrap_cannot_be_seeded_as_empty"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_unreadable_page_cannot_erase_known_work_clock_or_checkpoint"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_paused_nonfinal_native_terminal_page_keeps_known_clock_and_cannot_claim_empty"
+        }
+      ]
+    },
+    "P05": {
+      "stimulus": "New complete known empty setup event lacks observed_revision/checkpoint",
+      "observable": "Existing approved event valid; no new required-field failure; can support empty-work stopped retirement when no known workers/results remain",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_declared_empty_inventory_setup_still_allows_normal_stopped_retirement"
+        }
+      ]
+    },
+    "P06": {
+      "stimulus": "Running worker disappears from readable exhausted terminal list but no outcome available, including loaded parent returns empty",
+      "observable": "Worker remains unresolved; no completion/success or ordinary/cap retirement solely from absence",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_notloaded_or_absent_worker_remains_unresolved_not_success"
+        }
+      ]
+    },
+    "P07": {
+      "stimulus": "Inventory unknown with partial definitely owned running/completed observations",
+      "observable": "Preserve stored workers, eligibility, known outcomes, checkpoint and wait; unknown is never empty",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_unknown_partial_inventory_preserves_eligibility_outcome_checkpoint_and_clock"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_unreadable_page_cannot_erase_known_work_clock_or_checkpoint"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_paused_nonfinal_native_terminal_page_keeps_known_clock_and_cannot_claim_empty"
+        }
+      ]
+    },
+    "U01": {
+      "stimulus": "Qualified command completed exit 0 with available aggregate, then stale older running inventory",
+      "observable": "Outcome/status/exit/output monotonic; no duplicate completion or revived running work",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_completion_is_monotonic_and_durable_across_duplicate_and_stale_running_reply"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_offline_outcomes_on_final_native_item_pages_require_complete_scoped_cursors"
+        }
+      ]
+    },
+    "U02": {
+      "stimulus": "Qualified failed command exit 7, then failed exit -1/null output owner becomes notLoaded and query fails",
+      "observable": "Exact failure retained; null distinct from empty string; no success relabeling/erasure/park merely due failure",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_available_outcomes_preserve_native_fields_and_hold_park"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_task_cap_respects_active_input_unknown_control_and_pending_failure"
+        }
+      ]
+    },
+    "U03": {
+      "stimulus": "Command outcomes failed/completed/declined with nullable exit/output/duration; empty output separate case",
+      "observable": "Preserve exactly available fields; missing exit never zero; no invented prefix or reconstructed aggregate",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_available_outcomes_preserve_native_fields_and_hold_park"
+        }
+      ]
+    },
+    "U04": {
+      "stimulus": "OutputDelta PING overlaps later aggregate, initial consumed prefix absent",
+      "observable": "Completion aggregate equals native available aggregate once; no delta duplication or prefix fabrication",
+      "coverage": [
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_later_stdin_and_failed_child_preserve_available_outcomes_without_output_reconstruction"
+        }
+      ]
+    },
+    "U05": {
+      "stimulus": "Owned child failed turn with public error and empty full item history; native SubagentStop absent",
+      "observable": "One failed AgentOutcome retains error/codex_error_info and available messages; no success from empty items or missing hook",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_child_outcome_preserves_exact_error_and_available_messages"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_later_stdin_and_failed_child_preserve_available_outcomes_without_output_reconstruction"
+        }
+      ]
+    },
+    "U06": {
+      "stimulus": "Owned completed/interrupted child with authoritative status/message history",
+      "observable": "Correct distinct outcome with item IDs/text retained; no requirement for an invented errored activity kind",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_child_outcome_preserves_exact_error_and_available_messages"
+        }
+      ]
+    },
+    "U07": {
+      "stimulus": "Worker A ends while B remains running; duplicate/reconnect outcome arrives",
+      "observable": "A completion available immediately before B ends/dispatcher pass; B remains running; wait since preserved",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_partial_completion_and_same_subset_reappearance_preserve_ever_reported_union"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_native_foreground_and_two_surviving_commands_are_distinguished_without_yield_receipts"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_offline_outcomes_on_final_native_item_pages_require_complete_scoped_cursors"
+        }
+      ]
+    },
+    "U08": {
+      "stimulus": "All workers completed, available results unresolved",
+      "observable": "retire stopped/background held; task/session stay running; T5 does not create delivery/receipt to release hold",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_command_available_outcomes_preserve_native_fields_and_hold_park"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_task_cap_respects_active_input_unknown_control_and_pending_failure"
+        }
+      ]
+    },
+    "W01": {
+      "stimulus": "First stopped known report of qualified root command or owned running agent at time t",
+      "observable": "wait.since=t; stable current string labels; typed ever_reported union; session/capacity/task held beyond ordinary stall",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_partial_completion_and_same_subset_reappearance_preserve_ever_reported_union"
+        },
+        {
+          "seam": "D",
+          "case": "tests/test_bound_turns_t5_dispatcher_acceptance.py::test_task_background_wait_holds_capacity_until_strict_cap"
+        }
+      ]
+    },
+    "W02": {
+      "stimulus": "New eligible work first seen during active B",
+      "observable": "Wait does not reset while main active; resets only later stopped-main report of this new running identity",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_accepted_old_stop_provenance_survives_new_active_main"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_foreground_input_and_new_active_work_do_not_reset_wait_until_next_stop"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_admitted_input_before_turn_start_cannot_report_new_work_against_old_stop"
+        }
+      ]
+    },
+    "W03": {
+      "stimulus": "Repeated same set, subset, empty/unreadable observation, old identity disappears/reappears",
+      "observable": "Original since unchanged; ever_reported durable union never shrinks; reappearing old identity not new",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_partial_completion_and_same_subset_reappearance_preserve_ever_reported_union"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_reappearance_of_old_child_is_not_new_but_new_initial_item_resets"
+        }
+      ]
+    },
+    "W04": {
+      "stimulus": "A completion, later active input, listener restart/same-controller socket reconnect, later stopped report of B",
+      "observable": "Since and union preserved through each; no outcome/input/reconnect-only reset",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_partial_completion_and_same_subset_reappearance_preserve_ever_reported_union"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_foreground_input_and_new_active_work_do_not_reset_wait_until_next_stop"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_admitted_input_before_turn_start_cannot_report_new_work_against_old_stop"
+        },
+        {
+          "seam": "X",
+          "case": "tests/test_bound_turns_t5_executable_acceptance.py::test_same_controller_reconnect_recovers_offline_original_outcome_with_same_terminal_and_clock"
+        }
+      ]
+    },
+    "W05": {
+      "stimulus": "Later stopped report includes genuinely new initial item or child turn alongside old identities",
+      "observable": "Since moves to this report exactly once; union includes previous and new identities",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_owned_child_turns_are_distinct_new_work"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_reappearance_of_old_child_is_not_new_but_new_initial_item_resets"
+        },
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_admitted_input_before_turn_start_cannot_report_new_work_against_old_stop"
+        }
+      ]
+    },
+    "W06": {
+      "stimulus": "Claude native background_tasks ids A/B, subset B, A reappears, genuinely new C",
+      "observable": "Existing exact string workers compatibility plus durable union/new-work clock rule",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_native_clock_retains_union_and_legacy_wait_missing_extension"
+        }
+      ]
+    },
+    "W07": {
+      "stimulus": "Retained native/T2 wait without ever_reported from pre-T5 stored state, inserted through specifically approved fixture intake before listener start/restart",
+      "observable": "since/workers preserved, existing native identities not misclassified new; no clock reset or discard during migration",
+      "coverage": [
+        {
+          "seam": "R",
+          "case": "tests/test_bound_turns_t5_acceptance.py::test_native_clock_retains_union_and_legacy_wait_missing_extension"
+        }
+      ]
+    }
+  }
+}

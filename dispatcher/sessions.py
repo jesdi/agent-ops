@@ -15,15 +15,16 @@ mutations best-effort — except a launch, which raises (see _launch)."""
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 import time
 from pathlib import Path
 
 from dispatcher import containers, herdr, workspace
-from dispatcher.models import Entry
-from dispatcher.runtimes import Runtime, runtime_for
-from dispatcher.state import clear_session
+from dispatcher.models import Entry, bare_model_id
+from dispatcher.runtimes import Runtime, SessionLaunch, runtime_for
+from dispatcher.runtime_control import RuntimeClient
+from dispatcher.runtime_snapshots import valid_snapshot
+from dispatcher.state import clear_session, load
 
 
 def session_name(target: str, issue: int) -> str:
@@ -32,10 +33,14 @@ def session_name(target: str, issue: int) -> str:
 
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
-               runtime: Runtime | None = None, second: Entry | None = None) -> str:
+               runtime: Runtime | None = None, second: Entry | None = None,
+               launch_env: dict | None = None,
+               *, state_dir: str | Path | None = None,
+               plan: SessionLaunch | None = None) -> str:
     return containers.session_cmd(session_name(target, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  runtime=runtime, second=second)
+                                  runtime=runtime, second=second, launch_env=launch_env,
+                                  state_dir=state_dir, plan=plan)
 
 
 class Sessions:
@@ -48,10 +53,16 @@ class Sessions:
         self.dry_run = dry_run
         self.memory = memory
         self.cpus = cpus
-        self.state_dir = Path(state_dir) if state_dir else None
+        self.state_dir = Path(state_dir).absolute() if state_dir else None
 
     def _tab(self, target: str, issue: int) -> herdr.Tab | None:
         return herdr.Tab.find(session_name(target, issue))
+
+    def runtime_view(self, target: str, issue: int) -> dict | None:
+        """Read the host snapshot; legacy sessions have no prepared launch."""
+        if self.state_dir is None:
+            return None
+        return RuntimeClient(self.state_dir).view(target, issue)
 
     def is_alive(self, target: str, issue: int) -> bool:
         """Alive means the tab exists AND its shell is busy — a CLI that
@@ -64,7 +75,10 @@ class Sessions:
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
                 runtime: Runtime, args: str, effort: str = "",
-                second: Entry | None = None) -> None:
+                second: Entry | None = None, *, binding: dict,
+                plan: SessionLaunch) -> None:
+        launch_env = {f"AGENT_OPS_{key.upper()}": str(binding[key] or "")
+                      for key in ("target", "issue", "launch_id", "conversation_id", "stage", "ticket")}
         # Build the command FIRST: containers.clone_root reads
         # <worktree>/.git and raises on a vanished worktree (the case
         # _fail_task_crash exists for). Doing it before Tab.ensure means
@@ -72,7 +86,7 @@ class Sessions:
         # that will never launch.
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
                          model, args, effort=effort, runtime=runtime,
-                         second=second)
+                         second=second, launch_env=launch_env, state_dir=self.state_dir, plan=plan)
         workspace.install_stop_hook(worktree)
         tab = herdr.Tab.ensure(
             target, session_name(target, issue), worktree,
@@ -95,7 +109,7 @@ class Sessions:
 
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "",
-                    second: Entry | None = None) -> None:
+                    second: Entry | None = None, *, ticket: str = "") -> None:
         """Start a fresh conversation; real launches require state_dir."""
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
@@ -103,13 +117,24 @@ class Sessions:
             return
         if self.state_dir is None:
             raise ValueError("state_dir is required for a fresh session launch")
+        worktree = str(Path(worktree).absolute())
         clear_session(self.state_dir, target, issue)
-        agent_dir = Path(worktree) / ".agent"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        (agent_dir / f"prompt-{stage_name}.md").write_text(prompt)
-        self._launch(target, issue, worktree, model, runtime_for(model),
-                     f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort,
-                     second=second)
+        runtime = runtime_for(model)
+        plan = runtime.session_plan(session_name(target, issue), worktree, bare_model_id(model), effort,
+                                    prompt_path=f".agent/prompt-{stage_name}.md")
+        self._write_prompt(worktree, plan, prompt)
+        binding = RuntimeClient(self.state_dir).prepare(
+            target, issue, stage_name, ticket=ticket, runtime=runtime.cli,
+            conversation_id=plan.conversation_id, worktree=worktree)["binding"]
+        self._launch(target, issue, worktree, model, runtime, plan.args, effort=effort,
+                     second=second, binding=binding, plan=plan)
+
+    @staticmethod
+    def _write_prompt(worktree, plan, text):
+        if plan.prompt_file is not None:
+            path = Path(worktree) / plan.prompt_file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
                model: str, effort: str = "", second: Entry | None = None,
@@ -119,9 +144,33 @@ class Sessions:
                   f"at {worktree}")
             return
         runtime = runtime_for(model)
+        if self.state_dir is None:
+            raise ValueError("state_dir is required for a resumed session launch")
+        worktree = str(Path(worktree).absolute())
+        stage, ticket = self._resume_context(target, issue, worktree, session_id)
+        binding = RuntimeClient(self.state_dir).prepare(
+            target, issue, stage, ticket=ticket, runtime=runtime.cli,
+            conversation_id=session_id, worktree=worktree)["binding"]
+        plan = runtime.session_plan(session_name(target, issue), worktree, bare_model_id(model), effort,
+            prompt_path=str(Path(worktree) / ".agent" / "prompt-resume.md"),
+            session_id=session_id, message=message)
+        self._write_prompt(worktree, plan, message)
         self._launch(target, issue, worktree, model, runtime,
-                     runtime.resume(session_id, shlex.quote(message)), effort=effort,
-                     second=second)
+                     plan.args, effort=effort, second=second, binding=binding, plan=plan)
+
+    def _resume_context(self, target, issue, worktree, session_id):
+        task = load(self.state_dir, target, issue)
+        previous = (self.runtime_view(target, issue) or {}).get("binding", {})
+        stage = task.continued_stage.value if task else previous.get("stage")
+        same = (previous.get("worktree") == worktree,
+                previous.get("conversation_id") == session_id,
+                previous.get("stage") == stage)
+        if all(same):
+            return stage, previous["ticket"]
+        if task is None:
+            raise ValueError("resume requires a known task stage")
+        ticket = str(task.ticket_cursor) if stage == "implement" else ""
+        return stage, ticket
 
     def capture_tail(self, target: str, issue: int, lines: int = 25) -> str:
         if self.dry_run:
@@ -239,6 +288,11 @@ class Sessions:
         if self.dry_run:
             print(f"[dry-run] end session {session_name(target, issue)}")
             return
+        snapshot = self.runtime_view(target, issue)
+        if snapshot is not None:
+            if not valid_snapshot(snapshot) or RuntimeClient(self.state_dir).retire(
+                    snapshot["binding"], snapshot["revision"], reason="forced") != "retired":
+                raise RuntimeError("cannot fence the current physical launch")
         name = session_name(target, issue)
         self._snapshot(target, issue)
         tab = self._tab(target, issue)

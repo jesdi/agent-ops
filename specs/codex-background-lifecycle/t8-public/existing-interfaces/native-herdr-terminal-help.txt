@@ -1,0 +1,20 @@
+Attach to a session
+
+Usage: herdr session attach <NAME>
+
+Arguments:
+  <NAME>
+
+Focus a tab
+
+Usage: herdr tab focus <tab_id>
+
+Arguments:
+  <tab_id>
+
+List tabs
+
+Usage: herdr tab list [OPTIONS]
+
+Options:
+      --workspace <WORKSPACE_ID>

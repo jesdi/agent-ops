@@ -3,12 +3,17 @@
 Public seams only; every CLI/tab interaction is a fake. Invalid-record
 fallbacks belong to ticket 05 and are deliberately absent here.
 """
+from tests.runtime_listener import launch_listener, seed_resume_task  # noqa: F401
+
 import json
 import shlex
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("launch_listener")
+
 
 import dispatcher.main as main
 from dispatcher import eventlog, herdr, intents, messages, runtimes
@@ -22,7 +27,7 @@ from tests.test_containers import make_worktree
 from tests.test_main import (
     FakeGitHub, FakeSessions, cfg, deps, make_task, write_tickets,
 )
-from tests.test_sessions import _fake_podman, herdr_fake_creating
+from tests.test_sessions import _fake_podman, assert_codex_supervisor_prompt, herdr_fake_creating
 from tests.usagefakes import session_usage
 from telegram.inbound import Command
 
@@ -53,13 +58,13 @@ class RecordingSessions(FakeSessions):
         })
 
     def spawn_stage(self, target, issue, worktree, prompt, stage_name, model,
-                    effort="", second=None):
+                    effort="", second=None, ticket=""):
         super().spawn_stage(target, issue, worktree, prompt, stage_name,
-                            model, effort, second)
+                            model, effort, second, ticket=ticket)
         if self.launch_real:
             Sessions(state_dir=self.state_dir).spawn_stage(
                 target, issue, worktree, prompt, stage_name, model,
-                effort=effort, second=second)
+                effort=effort, second=second, ticket=ticket)
 
 
 def _config(tmp_path, monkeypatch, model=CODEX_MODEL):
@@ -123,10 +128,10 @@ def test_codex_tab_command_names_the_recorded_id_and_quotes_the_message(
     assert runtimes.CODEX.resume(CODEX_ID, quoted) == f"resume {CODEX_ID} {quoted}"
     assert runtimes.CODEX.resume_cmd(CODEX_ID, quoted) == f"codex resume {CODEX_ID} {quoted}"
     assert shlex.split(runtimes.CODEX.resume_cmd(CODEX_ID)) == ["codex", "resume", CODEX_ID]
-    Sessions().resume("acme", 42, wt, message, CODEX_MODEL, session_id=CODEX_ID)
+    seed_resume_task(tmp_path, wt)
+    Sessions(state_dir=tmp_path).resume("acme", 42, wt, message, CODEX_MODEL, session_id=CODEX_ID)
     command = next(call[3] for call in calls if call[:2] == ["pane", "run"])
-    assert " codex " in command
-    assert command.endswith(f" resume {CODEX_ID} {quoted}")
+    assert_codex_supervisor_prompt(command, wt, message, CODEX_MODEL, session_id=CODEX_ID)
     assert "--last" not in command
     assert "--continue" not in command
 
@@ -141,7 +146,8 @@ def test_claude_tab_command_names_the_recorded_id_and_quotes_the_message(
     assert runtimes.CLAUDE.resume(CLAUDE_ID, quoted) == f"--resume {CLAUDE_ID} {quoted}"
     assert runtimes.CLAUDE.resume_cmd(CLAUDE_ID, quoted) == f"claude --resume {CLAUDE_ID} {quoted}"
     assert shlex.split(runtimes.CLAUDE.resume_cmd(CLAUDE_ID)) == ["claude", "--resume", CLAUDE_ID]
-    Sessions().resume("acme", 42, wt, message, CLAUDE_MODEL, session_id=CLAUDE_ID)
+    seed_resume_task(tmp_path, wt)
+    Sessions(state_dir=tmp_path).resume("acme", 42, wt, message, CLAUDE_MODEL, session_id=CLAUDE_ID)
     command = next(call[3] for call in calls if call[:2] == ["pane", "run"])
     assert " claude " in command
     assert command.endswith(f" --resume {CLAUDE_ID} {quoted}")
@@ -290,6 +296,8 @@ def test_ticket_four_fresh_launch_clears_ticket_threes_record_before_the_tab_sta
     main.run_pass(c, deps(sess=sessions))
     assert load(c.state_dir, TARGET, 370).ticket_cursor == 4
     assert "04-t4.md" in sessions.spawned[0][3]
+    binding = Sessions(state_dir=c.state_dir).runtime_view(TARGET, 370)["binding"]
+    assert binding["stage"] == "implement" and binding["ticket"] == "4"
     assert observed and all(record is None for _, record in observed)
     assert observed[0][0] == ["tab", "create"]
 

@@ -124,6 +124,13 @@ class BackgroundView(NamedTuple):
     cap: int                        # background_wait_seconds
 
 
+class ManagedBackgroundView(NamedTuple):
+    """A listener-owned clock, independent of herdr's legacy sequence."""
+    since: float
+    now: float
+    cap: int
+
+
 # A ticket set that fails the mechanical check is usually a numbering or
 # heading slip — resume the session with the reason this many times before
 # giving up and failing the task.
@@ -274,7 +281,7 @@ def next_actions(
 
 
 def _in_wait(signal: StageSignal | None, session_alive: bool, waiting: bool,
-             view: BackgroundView | None) -> bool:
+             view: BackgroundView | ManagedBackgroundView | None) -> bool:
     """A background marker decides this pass only for a live session whose
     stage signal says `working`; a waiting marker wins. (Parked tasks are
     never driven, so park needs no check here.)"""
@@ -282,11 +289,13 @@ def _in_wait(signal: StageSignal | None, session_alive: bool, waiting: bool,
             and signal is not None and signal.status == "working")
 
 
-def _wait_actions(task: TaskState, view: BackgroundView) -> list[object] | None:
+def _wait_actions(task: TaskState, view: BackgroundView | ManagedBackgroundView) -> list[object] | None:
     """The background wait's actions this pass; None while herdr's counter
     differs from the recorded one: the session started a new turn and the
     wait is over until the next report. The marker stays, so a later report
     of the same work keeps its cap clock."""
+    if isinstance(view, ManagedBackgroundView):
+        return _managed_wait_actions(view)
     if view.agent is None:
         return []   # herdr cannot be asked: hold
     status, seq = view.agent
@@ -300,12 +309,19 @@ def _wait_actions(task: TaskState, view: BackgroundView) -> list[object] | None:
     return []
 
 
+def _managed_wait_actions(view):
+    if view.now - view.since > view.cap:
+        return [ParkForInput(f"(background work still running after "
+                             f"{view.cap // 60}m — cap reached)")]
+    return []
+
+
 def pass_actions(
     task: TaskState,
     signal: StageSignal | None,
     session_alive: bool,
     waiting: bool,
-    view: BackgroundView | None,
+    view: BackgroundView | ManagedBackgroundView | None,
     idle_seconds: float | None = None,
     stall_after: float = 600.0,
     grace_elapsed: bool = False,
