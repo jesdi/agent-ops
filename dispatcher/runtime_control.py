@@ -1,5 +1,6 @@
 """Listener-owned snapshots of a task's authoritative main-turn lifecycle."""
 
+from copy import deepcopy
 import time
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from dispatcher.runtime_snapshots import (number, read_current, task_path, text,
 from dispatcher.runtime_http import RuntimeClient  # public host client
 from dispatcher.runtime_inventory import apply_inventory, report_wait
 from dispatcher.runtime_work import current_stop_follows_inputs, inputs_resolved, running_workers
+from dispatcher.runtime_delivery import apply_delivery, results_resolved
 
 
 def _bind(snapshot, event):
@@ -56,6 +58,8 @@ def _recover_turn(snapshot, event):
     turn = event["turn_id"]
     if turn not in main["seen_turns"]:
         return _start_turn(snapshot, event)
+    if main["status"] == "active" and main["turn_id"] == turn:
+        return not inputs_resolved(snapshot)
     if main["status"] != "unknown" or main["seen_turns"][-1] != turn:
         return False
     main.update(status="active", turn_id=turn)
@@ -180,9 +184,18 @@ class RuntimeControl:
         snapshot = self._current(binding)
         if snapshot is None:
             return False
-        if not _apply_event(snapshot, event, now):
+        return self._apply_current_event(snapshot, event, now)
+
+    def _apply_current_event(self, snapshot, event, now):
+        before = deepcopy(snapshot)
+        delivery = str(event.get("type", "")).startswith("delivery/")
+        if delivery:
+            accepted = apply_delivery(snapshot, event, self.state_dir)
+        else:
+            accepted = _apply_event(snapshot, event, now)
+        if not accepted:
             return False
-        return self._save(snapshot)
+        return (delivery and snapshot == before) or self._save(snapshot)
 
     def _save(self, snapshot):
         binding = snapshot["binding"]
@@ -229,8 +242,8 @@ def _retirement_eligible(snapshot, revision, reason, now, cap):
         return True
     permitted = all((snapshot["revision"] == revision,
                 snapshot["service"] == "live", snapshot["main"]["status"] == "stopped",
-                snapshot["inventory"] == "known", not snapshot["completions"],
-                not snapshot["deliveries"], inputs_resolved(snapshot), current_stop_follows_inputs(snapshot)))
+                snapshot["inventory"] == "known", results_resolved(snapshot),
+                inputs_resolved(snapshot), current_stop_follows_inputs(snapshot)))
     return permitted and _retirement_work(snapshot, reason, now, cap)
 
 

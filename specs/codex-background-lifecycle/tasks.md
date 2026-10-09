@@ -123,19 +123,48 @@ All tickets are sequential because their runtime boundary overlaps. See design.m
   and t5_observed_session.py
   (public supervisor main with real external listener/native provider); update the historical
   test_runtime_persistence reappearing-subset expectation to the approved cumulative clock.
-  Merged after independent review and a green full make gate. One same-scan result-fidelity
-  defect remains open under T6: an available message in the first full-turn response can be
-  lost when an earlier item query succeeded. Final reviewers recorded APPROVE and REQUEST
-  CHANGES (Important/P2); the round-four cap ruling accepted merge with that finding retained
-  as a T6 obligation. No delivery transmission.
-- [ ] T6 — Successful and failed outcomes promptly reach idle/active main turns. Batch available
+  Merged after independent review and a green full make gate. The final capped review recorded
+  APPROVE and REQUEST CHANGES (Important/P2) for losing an available same-scan message after
+  a successful empty item query. The round-four cap ruling accepted merge with that specific
+  result-fidelity defect carried under T6; T6 now preserves the exact-turn message before first
+  completion publication. T5 did not add delivery transmission.
+- [x] T6 — Successful and failed outcomes promptly reach idle/active main turns. Batch available
   outcomes without waiting for other workers. Preserve command output/exit and child errors.
   Active delivery uses exact-turn precondition; idle uses same-conversation continuation. Confirmed
   races re-read state without duplicate turns. Pending outcomes hold input park. Native child
   notifications do not create duplicate controller deliveries.
   Seam: gateway delivery; RuntimeControl delivery records; fake-provider session flow.
-  Touches: controller delivery; gateway; runtime_control receipt operations.
-  Blocked by: T5.
+  Public contract: runtime-delivery-contract.md and t6-public/ declarations.
+  Acceptance also preserves safe available exact-turn messages exposed by full-turn history
+  before first completion publication despite an earlier successful empty item-page response.
+  Touches (implemented; exact function inventory):
+  - `dispatcher/runtime_control.py`: `_recover_turn`, `RuntimeControl.event`, `RuntimeControl._apply_current_event`, `_retirement_eligible`.
+  - `dispatcher/runtime_snapshots.py`: `valid_snapshot`.
+  - `dispatcher/codex_inventory.py`: `NativeInventory.history`, `merge_history_entries`,
+    `NativeInventory.discover`, `NativeInventory.read_thread`, `NativeInventory.loaded_history`.
+    Review round 2 validates inherited native thread reply boundaries so malformed replies
+    preserve unknown inventory and continued observation instead of stopping the observer.
+  - `dispatcher/codex_supervisor.py`: `Controller.__init__`, `Controller.connected`, `run`.
+  - `dispatcher/codex_transport.py`: `RPC.begin`, `RPC.finish`, `RPC.call`.
+  - `dispatcher/runtime_delivery.py`: `unassigned`, `results_resolved`, `task_matches`, `gate_open`, `valid_members`, `valid_text_item`, `payload_records`, `matches_records`, `batch_records`, `propose`, `membership_matches`, `current_revision`, `find_batch`, `send_selection`, `same_attempt`, `send`, `send_available`, `known_rejection`, `mismatched_turn_message`, `receipt_for`, `resolve`, `acknowledge`, `reject`, `apply_delivery`.
+  - `dispatcher/runtime_delivery_schema.py`: `bounded_revision`, `valid_deliveries`, `unique`, `unique_assignments`, `valid_batch`, `valid_batch_attempts`, `valid_attempt`, `valid_target`, `valid_attempt_input`, `valid_pending`, `valid_confirmation`.
+  - `dispatcher/codex_delivery.py`: `selection`, `active_selection`, `response_event`, `accepted_turn`, `DeliveryPump.__init__`, `DeliveryPump.view`, `DeliveryPump.event`, `DeliveryPump.poll`, `DeliveryPump.propose`, `DeliveryPump.forward`, `DeliveryPump.receipt`, `DeliveryPump.close`.
+  - `tests/test_t6_author_delivery.py`: public listener contradictory-rejection regression;
+    `lose_sent_response` owned Unix HTTP proxy and `ListenerResponseLossTests` executable
+    durable-reservation/response-loss regression.
+  - `tests/test_t6_crap_regressions.py`: public runtime replay/input/storage validation and
+    observed supervisor delivery selection, uncertainty, independent progress and durability regressions.
+  - `tests/test_t6_review_recovery.py`, `tests/t6_review_wire.py`, `tests/t6_review_view.py`:
+    executable-boundary malformed root-result recovery and postproposal launch-view
+    uncertainty checks using owned wire faults, with retained receipts and later delivery.
+  - `tests/test_t6_inventory_recovery.py`, `tests/t6_inventory_wire.py`:
+    executable-boundary null/list/scalar replies to exact history read, retained-owner read,
+    and notLoaded resume preserve pending state and clocks, expose inventory uncertainty,
+    keep operator input live, and recover polling and later exact-root outcome delivery.
+  - `tests/t6_locked/test_external_delivery.py::test_supplementary_child_completion_does_not_repeat_main_submission`:
+    supplementary replay barrier.
+  - `tests/test_bound_turns_t5_executable_acceptance.py::test_unreadable_native_baseline_before_bootstrap_cannot_be_seeded_as_empty`:
+    H02 positive compatibility publication wait.
 - [ ] T7 — Disconnect/restart/lost acknowledgments/duplicates preserve durable receipt state.
   Persist sent-unconfirmed before send; history client-message match confirms acceptance. Unknown
   receipt remains pending, alerts once, never blindly resends. Recover missed outcomes and owned

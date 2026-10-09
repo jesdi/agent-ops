@@ -7,6 +7,8 @@ from pathlib import Path
 import tempfile
 from uuid import UUID
 
+from dispatcher.runtime_delivery_schema import valid_deliveries
+
 from dispatcher.runtime_work import (valid_stored_worker, valid_completions, valid_checkpoint,
     valid_identity, identity_key)
 
@@ -133,10 +135,8 @@ def valid_snapshot(snapshot):
         return False
     if not valid_binding(snapshot.get("binding")) or not valid_main(snapshot.get("main")):
         return False
-    # Later worker/delivery tickets must explicitly extend these reserved schemas.
-    reserved = ("deliveries",)
     fields_valid = all((valid_status_fields(snapshot), _supported_workers(snapshot),
-                all(snapshot.get(key) == [] for key in reserved),
+                valid_deliveries(snapshot),
                 valid_work_extensions(snapshot),
                 valid_alerts(snapshot.get("alerts")), valid_inputs(snapshot.get("inputs")),
                 "wait" in snapshot, valid_wait(snapshot.get("wait"))))

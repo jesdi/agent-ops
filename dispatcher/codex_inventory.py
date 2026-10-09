@@ -177,6 +177,7 @@ class NativeInventory:
         # Previously discovered owners cannot silently disappear from discovery.
         for owner in self.nodes.keys() - nodes.keys():
             response = await rpc.call("thread/read", dict(threadId=owner, includeTurns=False))
+            require(isinstance(response, dict), "Unreadable retained owner response")
             thread = response.get("thread")
             require(native_thread(thread) and thread["id"] == owner, "Unreadable retained owner")
             nodes[owner] = ownership_node(thread, root)
@@ -189,6 +190,7 @@ class NativeInventory:
 
     async def read_thread(self, rpc, owner):
         response = await rpc.call("thread/read", dict(threadId=owner, includeTurns=True))
+        require(isinstance(response, dict), "Unreadable exact-thread history response")
         thread = response.get("thread")
         require(native_thread(thread) and thread["id"] == owner, "Unreadable exact-thread history")
         return thread
@@ -197,6 +199,7 @@ class NativeInventory:
         thread = await self.read_thread(rpc, owner)
         if thread["status"].get("type") == "notLoaded":
             response = await rpc.call("thread/resume", dict(threadId=owner))
+            require(isinstance(response, dict), "Unreadable exact-owner load response")
             require(native_thread(response.get("thread")) and response["thread"]["id"] == owner, "Unreadable exact-owner load")
             # Resume can return paginated/reduced turns. Read full exact history.
             thread = await self.read_thread(rpc, owner)
@@ -226,11 +229,13 @@ class NativeInventory:
         # Definite errors remain usable even if the owner stays unloaded.
         self.remember_turns(owner, thread)
         item_error = None
+        entries = []
         try:
             entries = await pages(rpc, "thread/items/list", dict(threadId=owner, sortDirection="asc"), native_item)
         except (ProtocolError, KeyError, TypeError, ValueError) as exc:
             item_error = exc
         else:
+            entries = merge_history_entries(entries, thread["turns"], messages_only=True)
             self.remember_entries(owner, thread, entries)
         # includeTurns may return a reduced history even when its last visible
         # turn has the current native status. Only exhausted turn pages establish
@@ -238,9 +243,7 @@ class NativeInventory:
         thread["turns"] = await pages(rpc, "thread/turns/list",
             dict(threadId=owner, sortDirection="asc", itemsView="full"), native_turn)
         self.remember_turns(owner, thread)
-        if item_error is not None:
-            entries = [dict(turnId=turn["id"], item=item) for turn in thread["turns"] for item in turn["items"]]
-            require(all(native_item(entry) for entry in entries), "Unreadable full turn items")
+        entries = merge_history_entries(entries, thread["turns"], messages_only=item_error is None)
         self.remember_entries(owner, thread, entries)
         if item_error is not None:
             raise item_error
@@ -352,3 +355,22 @@ def stored_commands(workers, owner):
 
 def unique_identities(identities):
     return list({identity_key(identity): identity for identity in identities}.values())
+
+
+def merge_history_entries(entries, turns, *, messages_only=False):
+    """Keep safe same-turn messages from every successful view in this scan.
+
+    Command entries remain anchored by the existing item/owning-turn checks.
+    A later full view supplements messages rather than overwriting native output.
+    """
+    merged = {(e['turnId'], e['item']['id']): e for e in entries}
+    for turn in turns:
+        for item in turn['items']:
+            entry = dict(turnId=turn['id'], item=item)
+            require(native_item(entry), 'Unreadable full turn items')
+            if messages_only and item['type'] != 'agentMessage':
+                continue
+            key = (turn['id'], item['id'])
+            if key not in merged:
+                merged[key] = entry
+    return list(merged.values())

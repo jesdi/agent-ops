@@ -87,6 +87,9 @@ def test_unreadable_native_baseline_before_bootstrap_cannot_be_seeded_as_empty()
             (r["kind"] == "request_held" and r.get("name") == "bootstrap-before-accept") or
             (r["kind"] == "rpc_response" and r["method"] == "thread/backgroundTerminals/list" and "error" in r["packet"])
             for r in session.rows())), "native seed query or held bootstrap must reach its declared observation barrier"
+        assert session.until(lambda: any(
+            alert.get("kind") == "compatibility" for alert in session.view()["alerts"])), (
+                "unreadable required native seed must publish its compatibility alert")
         snapshot = session.view()
         mark = snapshot.get("history_checkpoint")
         assert mark is not None, "unreadable native seed must expose a retained unseeded checkpoint before bootstrap"

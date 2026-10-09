@@ -245,3 +245,12 @@ for managed launches; legacy markers remain migration inputs only. Worker/comple
 keys, runtime socket paths and seen turns are launch-scoped. Task-state filenames, task
 branches/artifacts, herdr labels, operator queues, intents and event target/issue fields retain
 existing task identities; they are outside the runtime identity change.
+
+## Result delivery boundary
+
+The approved [T6 runtime delivery contract](runtime-delivery-contract.md) declares
+immutable batches, atomic send admission, independent receipts, fresh host task gates,
+and shared gateway ordering. Its public supplements preserve the existing input and
+executable interfaces. Exact owning-turn messages available before first completion
+publication must survive differing successful history responses. General reconnect and
+history receipt reconciliation remains T7; alert presentation and actual launches remain T8.

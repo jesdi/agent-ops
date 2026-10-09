@@ -14,6 +14,7 @@ from dispatcher.codex_transport import Gateway, ProtocolError, connect, admit_in
 from dispatcher.runtime_http import BoundClient
 from dispatcher.runtime_snapshots import valid_snapshot
 from dispatcher.codex_inventory import NativeInventory
+from dispatcher.codex_delivery import DeliveryPump
 
 
 class Controller:
@@ -25,6 +26,7 @@ class Controller:
         self.initial_input_id = f"agent-ops-bootstrap:{binding['launch_id']}"
         self.ready = asyncio.Event()
         self.work = NativeInventory()
+        self.delivery = None
 
     async def event(self, **event):
         return await asyncio.to_thread(self.client.event, self.binding, event)
@@ -141,6 +143,8 @@ class Controller:
             await self.bind(rpc, recover=True)
         while True:
             await self.inventory(rpc)
+            if self.delivery is not None:
+                await self.delivery.poll(rpc)
             if not self.ready.is_set():
                 # The accepted input item can become visible after the first
                 # recovery snapshot. Keep checking its identity, never resend.
@@ -265,6 +269,7 @@ async def run(arguments, client, binding, directory):
         if service_end in done or observation in done:
             return 1
         gateway = Gateway(backend_path, controller.conversation, client, controller.binding)
+        controller.delivery = DeliveryPump(client, controller.binding, gateway.input_lock)
         async with unix_serve(gateway.serve, path=gateway_path):
             terminal = await asyncio.create_subprocess_exec(
                 "codex", "--remote", f"unix://{gateway_path}", "-C", binding["worktree"],
@@ -276,6 +281,8 @@ async def run(arguments, client, binding, directory):
         observation.cancel()
         ready.cancel()
         await asyncio.gather(observation, ready, return_exceptions=True)
+        if controller.delivery is not None:
+            await controller.delivery.close()
         if terminal is not None:
             await stop_process(terminal)
         await stop_process(backend)

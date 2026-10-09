@@ -19,19 +19,31 @@ class RPC:
         self.pending = {}
         self.sequence = 0
 
-    async def call(self, method, params, *, on_result=None):
+    async def begin(self, method, params, *, on_result=None):
+        """Forward a request now; its independently awaited reply owns correlation."""
         self.sequence += 1
         identity = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[identity] = (future, on_result)
         try:
             await self.socket.send(json.dumps(dict(id=identity, method=method, params=params)))
-            response = await asyncio.wait_for(future, timeout=10)
-            if "error" in response:
-                raise ProtocolError(f"{method}: {response['error']}")
-            return response["result"]
+        except BaseException:
+            self.pending.pop(identity, None)
+            raise
+        return identity, future
+
+    async def finish(self, request):
+        identity, future = request
+        try:
+            return await asyncio.wait_for(future, timeout=10)
         finally:
             self.pending.pop(identity, None)
+
+    async def call(self, method, params, *, on_result=None):
+        response = await self.finish(await self.begin(method, params, on_result=on_result))
+        if "error" in response:
+            raise ProtocolError(f"{method}: {response['error']}")
+        return response["result"]
 
     async def receive(self):
         try:

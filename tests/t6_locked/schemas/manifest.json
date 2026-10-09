@@ -1,0 +1,33 @@
+{
+  "version": "0.156.1",
+  "provenance": "Original generated official Darwin 0.156.1 schemas; exact required full self-contained definitions, no schema download at test runtime.",
+  "files": {
+    "ClientRequest.json": "84503651b1b6f9a4f259cf6d917b6b46a4a8f3262e00f6cfd077abc84dfbb5c1",
+    "ClientNotification.json": "706cf248d75027c84a3c63348d0ed507182e8eba40069dd17541793de029145a",
+    "ServerNotification.json": "a950d2228b9fcc123c8a0ea57349e137f915e1cf56453985e9fa72d767bbb30f",
+    "JSONRPCRequest.json": "31bd6f360b2dd8a7ceaf682708105d40d38cb0b9d0821357a04da67028438f73",
+    "JSONRPCResponse.json": "4796738c04c74288213a08fb8d820c7b4df19e0977cdcd35b65ffcb43cfc93ab",
+    "JSONRPCError.json": "d7ea353d4875ae204625da5a00a1ecb5afc69101d5778b9acc253a49f8932992",
+    "JSONRPCNotification.json": "c2b43f26880db331393fe09f34bdd76dfeb4dc30d8418d1c26e18db166d6c8c8",
+    "v1/InitializeParams.json": "6f0094be9a65242ec779a40794cbd4fdfa32fca1e45084a16adfb50501d33ea2",
+    "v1/InitializeResponse.json": "62ad689c2cb6379913c1d72749cfd8de5089d35760214123518eb92eef11acc9",
+    "v2/ThreadStartParams.json": "80a40a7fac15b4bf70efb7f893fb353acc0a0d30c68f54aee4f01923deca85de",
+    "v2/ThreadStartResponse.json": "70ae37ceff100a8af817d7dc5f4fd58ef152d3201c1cedee0e40210f68f1fd2d",
+    "v2/ThreadResumeParams.json": "cc5bb3b25f82073d24af5b6c09e4804ac307467f8400ba5f263fa86f9f0349e6",
+    "v2/ThreadResumeResponse.json": "715fd11c51d241f453a6fc9bee80dffd33a7706bd55ae5026c1803aa70501cec",
+    "v2/ThreadReadParams.json": "dfe040c6ac71d30795b8be3f3ff232e66f362a37f883b491e5d1ea367f470db4",
+    "v2/ThreadReadResponse.json": "d685105cfc1430330376770fd05616814b30d2ecbc3e590780a90a66fdd36bc3",
+    "v2/ThreadListParams.json": "5daf371b2852c409d4405c95f79cddb2d92a1ee89da808b2c5112ef16a57432c",
+    "v2/ThreadListResponse.json": "3e11f6b42bc3d60570bf907a1f8699019b045e9b7b8dd566b891f35d62803a69",
+    "v2/ThreadItemsListParams.json": "ff56040c327ecdd30ef02affac9bc71fab64031e8980f2b4fea9fd8a888160b4",
+    "v2/ThreadItemsListResponse.json": "ffe80a17f536ce7ff1b0940103be93f77c439df02d3dff314747368b6e6b45d6",
+    "v2/ThreadTurnsListParams.json": "2a8b93d7d4437cc25e16a1dde16d8db3c338d39e16c5eece2a56e943a21577d7",
+    "v2/ThreadTurnsListResponse.json": "02a662f5fe56fccbf7ff12765b4f8854896895d8ff5bc9971c269e5c455b5586",
+    "v2/ThreadBackgroundTerminalsListParams.json": "7ac232410d59afd308dca04f8c0b08f20fa6e87f00bd0d3b5892b7ce8b31d2ee",
+    "v2/ThreadBackgroundTerminalsListResponse.json": "b56b1cbcb1d60079ee9f9caaeef29cad869a25b4a6d356566f7c9f672faa7bf4",
+    "v2/TurnStartParams.json": "07771223642e1b61bd9aac0069fc0f98143a1c047724ca02c7ceb13653442738",
+    "v2/TurnStartResponse.json": "e3c4abb778e60adefef03d19d65ca20f741f37eea411098ad0485eaab61fa8f6",
+    "v2/TurnSteerParams.json": "99f7fdff8b090065b68f36420b70870b5eafed048c024b308230aaa02f15d891",
+    "v2/TurnSteerResponse.json": "866ba9a77c12b5d570c837d58f73bf40b24e50fa93404bdf792dd984d313b1aa"
+  }
+}
