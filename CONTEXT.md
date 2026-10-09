@@ -19,8 +19,11 @@ least recently.
 _Avoid_: slots per target (there are none; `max_active` is only a cap)
 
 **Session**:
-One `podman run … claude` invocation in a herdr tab, working a single stage of
-one task. Sessions are disposable; state lives in artifacts and claude-home.
+One runtime launch in Podman, attached through a herdr tab, working a single
+stage of one task. Claude runs directly; controlled Codex shares one bound
+conversation between its app-server, controller and remote terminal. Each
+physical launch has a fresh identity. Sessions are disposable; durable state
+lives in task artifacts, runtime snapshots and the runtime home.
 _Avoid_: agent (that's the OS user), container (that's the isolation layer only)
 
 **Stage**:
@@ -83,14 +86,17 @@ operator. Parks, never fails.
 _Avoid_: retry limit (that is the plan-format retry)
 
 **Background wait**:
-A live session that ended its turn mid-stage while background work it started
-(a build, a gate run) is still running, reported by the Stop hook and recorded
-by waitd as a background marker. The dispatcher neither parks it nor lets the
-stall timer catch it. The wait is over once the session starts a new turn
-(today's rules apply again), but the marker stays until a waiting ping or the
-session's end, so the same work reported again keeps its clock. The cap clock
-starts at the first report and restarts when a report names new work; past
-`background_wait_seconds` (the cap) the task parks for the operator.
+A live session whose bound main turn stopped while owned background work
+remains. The listener records authoritative launch-scoped main, work and wait
+state; unknown evidence holds the session. Codex commands qualify only when
+they survive their matching owning Stop, and descendants need validated
+ancestry. A qualified worker remains deliverable during later main turns.
+The cap clock starts at the first stopped-work report and resets only when a
+report names new work. Foreground input, same/subset work, completion,
+delivery and reconnect preserve that clock. Foreground main turns are exempt
+from the cap. With current stopped main and all other retirement gates met,
+strictly past `background_wait_seconds` parks the task; equality holds.
+Legacy Claude background markers retain their existing continuation rules.
 _Avoid_: stall (a stall is a session with no output and no reason to be quiet)
 
 **Provider**:

@@ -14,6 +14,7 @@ from dispatcher.runtime_delivery import apply_delivery, results_resolved
 from dispatcher.runtime_bootstrap import attempt_root, bind_root, send_initial
 from dispatcher.runtime_input import valid_native_input
 from dispatcher.runtime_history import accept_history, settle_history
+from dispatcher.runtime_alerts import claim_presentation, find_alert
 
 
 def _bind(snapshot, event):
@@ -89,7 +90,7 @@ def _control_unknown(snapshot, event):
     snapshot["inventory"] = "unknown"
     snapshot["main"].update(status="unknown", turn_id=None)
     alert = {"kind": "compatibility", "message": message}
-    if alert not in snapshot["alerts"]:
+    if find_alert(snapshot, alert) is None:
         snapshot["alerts"].append(alert)
     return True
 
@@ -201,7 +202,9 @@ class RuntimeControl:
             return False
         before = deepcopy(snapshot)
         delivery = str(event.get("type", "")).startswith("delivery/")
-        if delivery:
+        if event.get("type") == "alert/presentation-claimed":
+            accepted = claim_presentation(snapshot, event, self.state_dir)
+        elif delivery:
             accepted = apply_delivery(snapshot, event, self.state_dir)
         else:
             accepted = _apply_event(snapshot, event, now)

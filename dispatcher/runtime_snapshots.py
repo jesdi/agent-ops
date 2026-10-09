@@ -9,6 +9,7 @@ from uuid import UUID
 
 from dispatcher.runtime_delivery_schema import valid_deliveries
 from dispatcher.runtime_bootstrap import valid_bootstrap, valid_initial_start
+from dispatcher.runtime_alerts import valid_presentation
 from dispatcher.runtime_history import valid_extensions, valid_settlement
 
 from dispatcher.runtime_work import (valid_stored_worker, valid_completions, valid_checkpoint,
@@ -137,7 +138,7 @@ def valid_alert(alert):
     if not isinstance(alert, dict) or not text(alert.get('message')):
         return False
     if alert.get('kind') == 'compatibility':
-        return True
+        return 'status' not in alert
     return (alert.get('kind') == 'delivery-uncertain' and text(alert.get('batch_id'))
             and alert.get('status') in ('pending', 'resolved'))
 
@@ -152,7 +153,12 @@ def valid_snapshot(snapshot):
                 valid_work_extensions(snapshot),
                 valid_alerts(snapshot.get("alerts")), valid_inputs(snapshot.get("inputs")),
                 "wait" in snapshot, valid_wait(snapshot.get("wait"))))
-    return fields_valid and valid_bootstrap(snapshot) and valid_initial_start(snapshot) and valid_provenance(snapshot)
+    return fields_valid and _valid_snapshot_provenance(snapshot)
+
+
+def _valid_snapshot_provenance(snapshot):
+    return (valid_bootstrap(snapshot) and valid_initial_start(snapshot) and valid_provenance(snapshot)
+            and all(valid_presentation(snapshot, alert) for alert in snapshot["alerts"]))
 
 
 def unknown_view():

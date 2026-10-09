@@ -1,0 +1,90 @@
+{
+  "native_version": "codex-cli 0.156.1",
+  "kind": "actual advertised native tool declaration projection; not provider implementation",
+  "tools": {
+    "functions.exec": {
+      "type": "custom",
+      "name": "exec",
+      "format": {
+        "type": "grammar",
+        "syntax": "lark",
+        "definition": "\nstart: pragma_source | plain_source\npragma_source: PRAGMA_LINE NEWLINE SOURCE\nplain_source: SOURCE\n\nPRAGMA_LINE: /[ \\t]*\\/\\/ @exec:[^\\r\\n]*/\nNEWLINE: /\\r?\\n/\nSOURCE: /[\\s\\S]+/\n"
+      }
+    },
+    "collaboration.followup_task": {
+      "type": "function",
+      "name": "followup_task",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Message text to send to the target agent.",
+            "encrypted": true
+          },
+          "target": {
+            "type": "string",
+            "description": "Agent id or canonical task name to send a follow-up task to (from spawn_agent)."
+          }
+        },
+        "required": [
+          "target",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "collaboration.spawn_agent": {
+      "type": "function",
+      "name": "spawn_agent",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "fork_turns": {
+            "type": "string",
+            "description": "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns."
+          },
+          "message": {
+            "type": "string",
+            "description": "Initial plain-text task for the new agent.",
+            "encrypted": true
+          },
+          "model": {
+            "type": "string",
+            "description": "Model override for the new agent. Omit unless an explicit override is needed."
+          },
+          "reasoning_effort": {
+            "type": "string",
+            "description": "Reasoning effort override for the new agent. Omit to inherit the parent effort."
+          },
+          "task_name": {
+            "type": "string",
+            "description": "Task name for the new agent. Use lowercase letters, digits, and underscores."
+          }
+        },
+        "required": [
+          "task_name",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "collaboration.wait_agent": {
+      "type": "function",
+      "name": "wait_agent",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "timeout_ms": {
+            "type": "number",
+            "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

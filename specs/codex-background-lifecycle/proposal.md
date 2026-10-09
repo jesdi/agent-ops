@@ -33,8 +33,8 @@ agents without operator action, while preserving the existing background-wait ca
 limits.
 
 This slice builds on [session isolation, #154](https://github.com/jesdi/agent-ops/issues/154).
-Its implementation is present in the separate `fix/session-isolation` branch and is not in
-this draft's base. Reuse its explicit resume IDs and continue-or-restart behavior; replace
+Its implementation is already present in this stacked draft's `fix/session-isolation`
+base (`558b297`). Reuse its explicit resume IDs and continue-or-restart behavior; replace
 its Codex fallback that reports unidentified notifications as turn ends. A late or unidentified
 notification must not become evidence that the current main turn ended.
 

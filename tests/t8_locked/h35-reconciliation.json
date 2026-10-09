@@ -1,0 +1,33 @@
+{
+  "source_baseline": "04e67b95dca4b9868e966f57f5f0e8bca02845a2",
+  "original_lock_commit": "5321bbe1f790605753e3a6de834a8d7842fdc438",
+  "scope": "H35 test_H35_exact_container_claim_is_403_and_cannot_consume_notice only",
+  "public_clarification": "Existing BoundClient.event raises RuntimeError for every non-200 HTTP reply, including required presentation denial 403. Ordinary return and exception semantics remain unchanged.",
+  "exact_change": "Wrap only the existing bound.event call in self.assertRaises(RuntimeError)",
+  "subsequent_assertions_preserved_byte_exact": true,
+  "original_other_lock_files_preserved_byte_exact": true,
+  "result": {
+    "run": 1,
+    "behavioral_RED": 1,
+    "ERROR": 0,
+    "reason": "RuntimeError not raised: unchanged baseline admits unauthorized claim with HTTP 200"
+  },
+  "cleanup": [
+    {
+      "case": "test_host_acceptance.HostAcceptance.test_H35_exact_container_claim_is_403_and_cannot_consume_notice",
+      "root": "/tmp/t8-h-tn3tswlc",
+      "root_removed": true,
+      "listener_stopped": true,
+      "children_stopped": true,
+      "proxy_threads_stopped": true
+    }
+  ],
+  "actual_result_report_SHA256": "36ff2f2dc595a874379c83d1610074cb334246628f087a1bee51a539c32e94ec",
+  "test_SHA256_before": "a15c48b0f199862690cd63358f314860ef3e20c3fbbbfec68663ea99d28ec20d",
+  "test_SHA256_after": "a9827e0ec8251a89011c1ecdf56bb204748aa33a2b364e91ca0f31384622fafe",
+  "fixture_changed": false,
+  "full_98_rerun": false,
+  "native_run": false,
+  "production_implementation_read_or_edited": false,
+  "original_baseline_and_history_preserved": true
+}

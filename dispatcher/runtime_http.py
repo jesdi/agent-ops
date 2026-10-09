@@ -90,7 +90,7 @@ def dispatch(state_dir, route, payload, token):
     from dispatcher.runtime_control import RuntimeControl
     control = RuntimeControl(state_dir)
     host = authorized(state_dir, token)
-    if route in ("/runtime/prepare", "/runtime/retire") and not host:
+    if _requires_host(route, payload) and not host:
         return 403, None
     if route == "/runtime/view" and not host and not payload.get("launch_id"):
         return 403, None
@@ -101,6 +101,13 @@ def dispatch(state_dir, route, payload, token):
     if route == "/runtime/event":
         return 200, _dispatch_event(control, payload, state_dir)
     return 404, None
+
+
+def _requires_host(route, payload):
+    if route != "/runtime/event":
+        return route in ("/runtime/prepare", "/runtime/retire")
+    event = payload.get("event")
+    return isinstance(event, dict) and event.get("type") == "alert/presentation-claimed"
 
 
 def _dispatch_event(control, payload, state_dir):

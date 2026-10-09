@@ -1,6 +1,7 @@
 """Listener-owned monotonic reconciliation and cumulative stopped-work clocks."""
 from copy import deepcopy
 
+from dispatcher.runtime_alerts import find_alert
 from dispatcher.runtime_work import (current_stop_follows_inputs, identity_key, running_workers,
     valid_checkpoint, valid_observation, valid_stop)
 
@@ -145,7 +146,7 @@ def report_stopped_work(snapshot, now):
 def inventory_alert(snapshot, message):
     if isinstance(message, str) and message:
         alert = {"kind": "compatibility", "message": message}
-        if alert not in snapshot["alerts"]:
+        if find_alert(snapshot, alert) is None:
             snapshot["alerts"].append(alert)
 
 

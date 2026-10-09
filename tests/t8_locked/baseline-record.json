@@ -1,0 +1,1487 @@
+{
+  "source_baseline": "d7c8d244b9b6c12e95335fb5e95b4daa0ebc1299",
+  "verified_runtime_t7": "cf69f595bf9ecff454251efac8110e0c521d44e5",
+  "host_result": {
+    "run": 98,
+    "behavioral_RED": 87,
+    "targeted_existing_policy_GREEN": 11,
+    "ERROR": 0
+  },
+  "native_result": {
+    "run": 0,
+    "mandatory_UNRUN": 18
+  },
+  "mutation_credit": false,
+  "ruling": "Retain 11 H42 targeted regressions; user waived exhaustive per-ticket review/mutations; no separate mutation delegation",
+  "run_started_epoch": 1791501919.357346,
+  "run_finished_epoch": 1791501937.945409,
+  "criterion_counts": {
+    "H01": 1,
+    "H02": 3,
+    "H03": 1,
+    "H04": 1,
+    "H05": 1,
+    "H06": 1,
+    "H07": 1,
+    "H08": 1,
+    "H09": 1,
+    "H10": 1,
+    "H11": 1,
+    "H12": 1,
+    "H13": 4,
+    "H14": 1,
+    "H15": 1,
+    "H16": 1,
+    "H17": 1,
+    "H18": 1,
+    "H19": 1,
+    "H20": 4,
+    "H21": 3,
+    "H22": 6,
+    "H23": 1,
+    "H24": 1,
+    "H25": 1,
+    "H26": 1,
+    "H27": 1,
+    "H28": 2,
+    "H29": 1,
+    "H30": 1,
+    "H31": 1,
+    "H32": 3,
+    "H33": 13,
+    "H34": 6,
+    "H35": 2,
+    "H36": 7,
+    "H37": 1,
+    "H38": 3,
+    "H39": 2,
+    "H40": 1,
+    "H41": 2,
+    "H42": 11
+  },
+  "cases": [
+    {
+      "criterion": "H01",
+      "test": "test_H01_pending_claim_audit_notice_preserves_pending_hold",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H02",
+      "test": "test_H02_compatibility_before_delivery_observations_stay_independent",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H02",
+      "test": "test_H02_delivery_before_compatibility_observations_stay_independent",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H02",
+      "test": "test_H02_repeated_checks_and_changed_diagnostic_keep_one_claim",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H03",
+      "test": "test_H03_controller_attachment_replacement_keeps_claim_identity",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H04",
+      "test": "test_H04_new_presenter_process_does_not_reuse_durable_claim",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H05",
+      "test": "test_H05_listener_restart_preserves_claim_without_repeat",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H06",
+      "test": "test_H06_lost_real_claim_reply_does_not_authorize_effect_or_retry",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H07",
+      "test": "test_H07_crash_after_durable_claim_before_effect_is_not_retried",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H08",
+      "test": "test_H08_real_log_append_failure_never_reopens_presentation",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H09",
+      "test": "test_H09_zero_notifier_return_is_not_receipt_or_retry_authority",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H10",
+      "test": "test_H10_notifier_timeout_retains_hold_and_never_retries",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H11",
+      "test": "test_H11_ack_resolves_only_its_batch_without_resolution_push",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H12",
+      "test": "test_H12_history_resolves_only_its_batch_without_resolution_push",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H13",
+      "test": "test_H13_duplicate_ack_never_repeats_confirmation_or_effect",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H13",
+      "test": "test_H13_duplicate_history_never_repeats_confirmation_or_effect",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H13",
+      "test": "test_H13_foreign_history_cannot_confirm_batch_or_create_another_main_turn",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H13",
+      "test": "test_H13_stale_ack_does_not_resolve_current_batch",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H14",
+      "test": "test_H14_known_rejection_cannot_claim_or_announce_delivery",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H15",
+      "test": "test_H15_safe_reopened_uncertainty_reuses_condition_and_initial_claim",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H16",
+      "test": "test_H16_two_batches_get_independent_pending_claims",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H17",
+      "test": "test_H17_identical_batch_string_is_independent_across_tasks",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H18",
+      "test": "test_H18_fresh_physical_launch_rejects_old_callbacks",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H19",
+      "test": "test_H19_new_implement_ticket_with_same_conversation_has_new_identity",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H20",
+      "test": "test_H20_current_task_park_suppresses_claim_and_effect",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H20",
+      "test": "test_H20_current_task_stage_suppresses_claim_and_effect",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H20",
+      "test": "test_H20_current_task_ticket_suppresses_claim_and_effect",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H20",
+      "test": "test_H20_current_task_worktree_suppresses_claim_and_effect",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H21",
+      "test": "test_H21_forced_retirement_before_claim_suppresses_presentation_and_claim",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H21",
+      "test": "test_H21_missing_current_association_cannot_use_retained_launch_as_authority",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H21",
+      "test": "test_H21_replacement_before_first_claim_cannot_present_retained_old_condition",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H22",
+      "test": "test_H22_known_park_after_claim_before_effect_consumes_claim_without_effect",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H22",
+      "test": "test_H22_known_replacement_after_claim_suppresses_both_effects",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H22",
+      "test": "test_H22_known_retirement_after_claim_suppresses_both_effects",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H22",
+      "test": "test_H22_known_stage_after_claim_suppresses_both_effects",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H22",
+      "test": "test_H22_known_ticket_after_claim_suppresses_both_effects",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H22",
+      "test": "test_H22_known_worktree_after_claim_suppresses_both_effects",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H23",
+      "test": "test_H23_known_park_during_real_audit_open_suppresses_later_push",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H24",
+      "test": "test_H24_own_receipt_between_claim_and_effect_suppresses_stale_pending_push",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H25",
+      "test": "test_H25_replacement_racing_after_final_check_never_relabels_context",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H26",
+      "test": "test_H26_compatibility_unknown_visibility_preserves_shape_and_claim",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H27",
+      "test": "test_H27_exact_compatibility_message_dedups_distinct_message_is_independent",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H28",
+      "test": "test_H28_delivery_receipt_does_not_resolve_compatibility",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H28",
+      "test": "test_H28_delivery_rejection_cannot_clear_compatibility_or_claim_its_resolution",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H29",
+      "test": "test_H29_prior_null_root_claim_survives_refinement_without_repeat",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H30",
+      "test": "test_H30_refinement_after_admitted_claim_keeps_original_null_attribution",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H31",
+      "test": "test_H31_refined_binding_authorizes_fresh_claim_old_null_does_not",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H32",
+      "test": "test_H32_missing_signal_allows_presentation_but_not_result_admission",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H32",
+      "test": "test_H32_nonworking_signal_allows_presentation_but_not_result_admission",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H32",
+      "test": "test_H32_unreadable_signal_allows_presentation_but_not_result_admission",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_address_review_eligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_awaiting_spec_review_eligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_blocked_eligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_canceled_ineligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_done_ineligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_failed_ineligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_implement_eligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_plan_eligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_pr_open_ineligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_queued_eligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_review_eligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_spec_eligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H33",
+      "test": "test_H33_saved_stage_stalled_on_budget_eligible",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H34",
+      "test": "test_H34_invalid_runtime_evidence_grants_no_presentation",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H34",
+      "test": "test_H34_invalid_task_evidence_grants_no_presentation",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H34",
+      "test": "test_H34_missing_runtime_evidence_grants_no_presentation",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H34",
+      "test": "test_H34_missing_task_evidence_grants_no_presentation",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H34",
+      "test": "test_H34_unreadable_runtime_evidence_grants_no_presentation",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H34",
+      "test": "test_H34_unreadable_task_evidence_grants_no_presentation",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H35",
+      "test": "test_H35_exact_container_claim_is_403_and_cannot_consume_notice",
+      "result": "FAIL",
+      "reason": "200 != 403"
+    },
+    {
+      "criterion": "H35",
+      "test": "test_H35_raw_no_header_claim_is_403_without_mutation",
+      "result": "FAIL",
+      "reason": "200 != 403"
+    },
+    {
+      "criterion": "H36",
+      "test": "test_H36_already_claimed_phase_returns_false_with_current_revision",
+      "result": "FAIL",
+      "reason": "False is not True"
+    },
+    {
+      "criterion": "H36",
+      "test": "test_H36_concurrent_host_claims_have_one_newly_durable_true",
+      "result": "FAIL",
+      "reason": "Lists differ: [False, False] != [False, True]\n\nFirst differing element 1:\nFalse\nTrue\n\n- [False, False]\n+ [False, True]"
+    },
+    {
+      "criterion": "H36",
+      "test": "test_H36_foreign_binding_has_no_claim_and_current_binding_can_claim",
+      "result": "FAIL",
+      "reason": "False is not True"
+    },
+    {
+      "criterion": "H36",
+      "test": "test_H36_receipt_resolution_phase_requires_own_confirmed_receipt",
+      "result": "FAIL",
+      "reason": "False is not True"
+    },
+    {
+      "criterion": "H36",
+      "test": "test_H36_resolved_condition_cannot_claim_pending_phase",
+      "result": "FAIL",
+      "reason": "False is not True"
+    },
+    {
+      "criterion": "H36",
+      "test": "test_H36_retired_launch_denies_fresh_revision_claim_while_owned_control_can_claim",
+      "result": "FAIL",
+      "reason": "False is not True"
+    },
+    {
+      "criterion": "H36",
+      "test": "test_H36_stale_revision_has_no_claim_and_fresh_revision_can_claim",
+      "result": "FAIL",
+      "reason": "False is not True"
+    },
+    {
+      "criterion": "H37",
+      "test": "test_H37_dry_run_has_no_claim_history_notice_or_queue_change",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H38",
+      "test": "test_H38_compatibility_audit_retains_kind_message_without_receipt_resolution",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H38",
+      "test": "test_H38_pending_audit_has_typed_identity_diagnostic_and_original_binding",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H38",
+      "test": "test_H38_resolved_audit_is_bound_to_own_confirmed_receipt",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H39",
+      "test": "test_H39_compatibility_rendering_does_not_invent_delivery_uncertainty",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H39",
+      "test": "test_H39_delivery_context_and_rendering_show_uncertainty_without_false_authority",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H40",
+      "test": "test_H40_presentation_preserves_real_task_queue_receipts_workers_and_clock",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H41",
+      "test": "test_H41_public_direct_entrypoint_has_no_unrelated_pass_dependency",
+      "result": "FAIL",
+      "reason": "unexpectedly None : Missing behavior: supported host runtime alert presentation capability"
+    },
+    {
+      "criterion": "H41",
+      "test": "test_H41_real_pass_reuses_public_entrypoint_before_normal_task_drive",
+      "result": "FAIL",
+      "reason": "[] is not true : real in-flight composition must call the supported presenter"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_actual_pass_preserves_existing_180_minute_cap_note",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_answers_request_keeps_its_existing_artifact_and_closes_background_launch",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_background_clock_exact_cap_holds_and_strictly_greater_retires",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_current_background_wait_holds_capacity_and_queued_input",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_delivered_failure_does_not_reset_exhausted_gate_loop",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_done_ticket_closes_old_launch_and_cannot_be_revived_by_late_outcome",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_explicit_ci_wait_retains_run_and_closure_authority",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_explicit_stage_help_still_parks_with_its_note_over_running_work",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_foreground_main_remains_exempt_from_old_background_cap",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_merged_pr_retains_existing_terminal_task_transition",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    },
+    {
+      "criterion": "H42",
+      "test": "test_H42_spec_review_request_preserves_artifact_and_operator_authority",
+      "result": "PASS",
+      "reason": "Existing-policy targeted regression; no mutation credit"
+    }
+  ],
+  "fixture_sanity": [
+    {
+      "test": "fixture_sanity.FixtureSanity.test_owned_listener_restart_has_new_inode_and_preserves_binding",
+      "result": "PASS"
+    },
+    {
+      "test": "fixture_sanity.FixtureSanity.test_real_controller_attachment_fixture_reconnects_without_input",
+      "result": "PASS"
+    },
+    {
+      "test": "fixture_sanity.FixtureSanity.test_real_listener_pending_ack_and_history_are_independent",
+      "result": "PASS"
+    }
+  ],
+  "cleanup": {
+    "host_cases": [
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H01_pending_claim_audit_notice_preserves_pending_hold",
+        "root": "/tmp/t8-h-4qyaks0u",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H02_compatibility_before_delivery_observations_stay_independent",
+        "root": "/tmp/t8-h-zwwy6id6",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H02_delivery_before_compatibility_observations_stay_independent",
+        "root": "/tmp/t8-h-mn27zbx9",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H02_repeated_checks_and_changed_diagnostic_keep_one_claim",
+        "root": "/tmp/t8-h-vjd49xsi",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H03_controller_attachment_replacement_keeps_claim_identity",
+        "root": "/tmp/t8-h-bd5oompc",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H04_new_presenter_process_does_not_reuse_durable_claim",
+        "root": "/tmp/t8-h-864dnk1s",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H05_listener_restart_preserves_claim_without_repeat",
+        "root": "/tmp/t8-h-lqm1tu9r",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H06_lost_real_claim_reply_does_not_authorize_effect_or_retry",
+        "root": "/tmp/t8-h-5km81w9v",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H07_crash_after_durable_claim_before_effect_is_not_retried",
+        "root": "/tmp/t8-h-1x09wjeg",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H08_real_log_append_failure_never_reopens_presentation",
+        "root": "/tmp/t8-h-hxulpiez",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H09_zero_notifier_return_is_not_receipt_or_retry_authority",
+        "root": "/tmp/t8-h-rpzfsu_a",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H10_notifier_timeout_retains_hold_and_never_retries",
+        "root": "/tmp/t8-h-6rk_wq_3",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H11_ack_resolves_only_its_batch_without_resolution_push",
+        "root": "/tmp/t8-h-ireimrv_",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H12_history_resolves_only_its_batch_without_resolution_push",
+        "root": "/tmp/t8-h-sqtzfqb8",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H13_duplicate_ack_never_repeats_confirmation_or_effect",
+        "root": "/tmp/t8-h-io6jb7y_",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H13_duplicate_history_never_repeats_confirmation_or_effect",
+        "root": "/tmp/t8-h-egz9u_ix",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H13_foreign_history_cannot_confirm_batch_or_create_another_main_turn",
+        "root": "/tmp/t8-h-g9m6regf",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H13_stale_ack_does_not_resolve_current_batch",
+        "root": "/tmp/t8-h-sj3vykkt",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H14_known_rejection_cannot_claim_or_announce_delivery",
+        "root": "/tmp/t8-h-2xh9wci7",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H15_safe_reopened_uncertainty_reuses_condition_and_initial_claim",
+        "root": "/tmp/t8-h-g9chsoti",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H16_two_batches_get_independent_pending_claims",
+        "root": "/tmp/t8-h-f9w0wc9a",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H17_identical_batch_string_is_independent_across_tasks",
+        "root": "/tmp/t8-h-e94fn9cw",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H18_fresh_physical_launch_rejects_old_callbacks",
+        "root": "/tmp/t8-h-7xgab3sr",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H19_new_implement_ticket_with_same_conversation_has_new_identity",
+        "root": "/tmp/t8-h-2n484pkr",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H20_current_task_park_suppresses_claim_and_effect",
+        "root": "/tmp/t8-h-5gzmpwe2",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H20_current_task_stage_suppresses_claim_and_effect",
+        "root": "/tmp/t8-h-9gsoy37e",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H20_current_task_ticket_suppresses_claim_and_effect",
+        "root": "/tmp/t8-h-3adh3v51",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H20_current_task_worktree_suppresses_claim_and_effect",
+        "root": "/tmp/t8-h-1j_5gmrg",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H21_forced_retirement_before_claim_suppresses_presentation_and_claim",
+        "root": "/tmp/t8-h-qegyp4wm",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H21_missing_current_association_cannot_use_retained_launch_as_authority",
+        "root": "/tmp/t8-h-be9v53rb",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H21_replacement_before_first_claim_cannot_present_retained_old_condition",
+        "root": "/tmp/t8-h-0i39yo7b",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H22_known_park_after_claim_before_effect_consumes_claim_without_effect",
+        "root": "/tmp/t8-h-3vj6j8qm",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H22_known_replacement_after_claim_suppresses_both_effects",
+        "root": "/tmp/t8-h-qrctzfxy",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H22_known_retirement_after_claim_suppresses_both_effects",
+        "root": "/tmp/t8-h-ipg6kirz",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H22_known_stage_after_claim_suppresses_both_effects",
+        "root": "/tmp/t8-h-viieydeq",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H22_known_ticket_after_claim_suppresses_both_effects",
+        "root": "/tmp/t8-h-_vwwuqeb",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H22_known_worktree_after_claim_suppresses_both_effects",
+        "root": "/tmp/t8-h-5d46c_8l",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H23_known_park_during_real_audit_open_suppresses_later_push",
+        "root": "/tmp/t8-h-7yc_j6wu",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H24_own_receipt_between_claim_and_effect_suppresses_stale_pending_push",
+        "root": "/tmp/t8-h-6rb571xj",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H25_replacement_racing_after_final_check_never_relabels_context",
+        "root": "/tmp/t8-h-8nmu5o48",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H26_compatibility_unknown_visibility_preserves_shape_and_claim",
+        "root": "/tmp/t8-h-yza_m5an",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H27_exact_compatibility_message_dedups_distinct_message_is_independent",
+        "root": "/tmp/t8-h-7q3p10k0",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H28_delivery_receipt_does_not_resolve_compatibility",
+        "root": "/tmp/t8-h-_s22rjc1",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H28_delivery_rejection_cannot_clear_compatibility_or_claim_its_resolution",
+        "root": "/tmp/t8-h-3oxkslku",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H29_prior_null_root_claim_survives_refinement_without_repeat",
+        "root": "/tmp/t8-h-j0tzc4lq",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H30_refinement_after_admitted_claim_keeps_original_null_attribution",
+        "root": "/tmp/t8-h-au8a8ad7",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H31_refined_binding_authorizes_fresh_claim_old_null_does_not",
+        "root": "/tmp/t8-h-a8fpe7cz",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H32_missing_signal_allows_presentation_but_not_result_admission",
+        "root": "/tmp/t8-h-k3wneeaq",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H32_nonworking_signal_allows_presentation_but_not_result_admission",
+        "root": "/tmp/t8-h-bgi1ehq7",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H32_unreadable_signal_allows_presentation_but_not_result_admission",
+        "root": "/tmp/t8-h-dzrvemj7",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_address_review_eligible",
+        "root": "/tmp/t8-h-bchsw76s",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_awaiting_spec_review_eligible",
+        "root": "/tmp/t8-h-d7s6owof",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_blocked_eligible",
+        "root": "/tmp/t8-h-hvcz7i_6",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_canceled_ineligible",
+        "root": "/tmp/t8-h-2pwh9ift",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_done_ineligible",
+        "root": "/tmp/t8-h-2h0iy2eo",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_failed_ineligible",
+        "root": "/tmp/t8-h-24qmr62k",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_implement_eligible",
+        "root": "/tmp/t8-h-v2iryad1",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_plan_eligible",
+        "root": "/tmp/t8-h-qiv9_lou",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_pr_open_ineligible",
+        "root": "/tmp/t8-h-duir3vem",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_queued_eligible",
+        "root": "/tmp/t8-h-vh6k88zc",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_review_eligible",
+        "root": "/tmp/t8-h-aa4fmn29",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_spec_eligible",
+        "root": "/tmp/t8-h-zr77di6q",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H33_saved_stage_stalled_on_budget_eligible",
+        "root": "/tmp/t8-h-g_ykcmdn",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H34_invalid_runtime_evidence_grants_no_presentation",
+        "root": "/tmp/t8-h-u1l449nw",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H34_invalid_task_evidence_grants_no_presentation",
+        "root": "/tmp/t8-h-8z7msh51",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H34_missing_runtime_evidence_grants_no_presentation",
+        "root": "/tmp/t8-h-j7ryijpy",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H34_missing_task_evidence_grants_no_presentation",
+        "root": "/tmp/t8-h-konm_3_l",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H34_unreadable_runtime_evidence_grants_no_presentation",
+        "root": "/tmp/t8-h-rso1d6u9",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H34_unreadable_task_evidence_grants_no_presentation",
+        "root": "/tmp/t8-h-urq39c31",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H35_exact_container_claim_is_403_and_cannot_consume_notice",
+        "root": "/tmp/t8-h-hgz7rvaf",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H35_raw_no_header_claim_is_403_without_mutation",
+        "root": "/tmp/t8-h-yvivt8tw",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H36_already_claimed_phase_returns_false_with_current_revision",
+        "root": "/tmp/t8-h-mf_f0zem",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H36_concurrent_host_claims_have_one_newly_durable_true",
+        "root": "/tmp/t8-h-7ffu5doi",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H36_foreign_binding_has_no_claim_and_current_binding_can_claim",
+        "root": "/tmp/t8-h-2vbeq_e2",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H36_receipt_resolution_phase_requires_own_confirmed_receipt",
+        "root": "/tmp/t8-h-5oxr0ems",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H36_resolved_condition_cannot_claim_pending_phase",
+        "root": "/tmp/t8-h-8vtbsdax",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H36_retired_launch_denies_fresh_revision_claim_while_owned_control_can_claim",
+        "root": "/tmp/t8-h-d9t0yaah",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H36_stale_revision_has_no_claim_and_fresh_revision_can_claim",
+        "root": "/tmp/t8-h-wen4tmzb",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H37_dry_run_has_no_claim_history_notice_or_queue_change",
+        "root": "/tmp/t8-h-mdp87qpb",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H38_compatibility_audit_retains_kind_message_without_receipt_resolution",
+        "root": "/tmp/t8-h-u3j_essa",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H38_pending_audit_has_typed_identity_diagnostic_and_original_binding",
+        "root": "/tmp/t8-h-1z58vx89",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H38_resolved_audit_is_bound_to_own_confirmed_receipt",
+        "root": "/tmp/t8-h-ej0g8_3b",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H39_compatibility_rendering_does_not_invent_delivery_uncertainty",
+        "root": "/tmp/t8-h-2q24ct54",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H39_delivery_context_and_rendering_show_uncertainty_without_false_authority",
+        "root": "/tmp/t8-h-jpuz6cex",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H40_presentation_preserves_real_task_queue_receipts_workers_and_clock",
+        "root": "/tmp/t8-h-d5f0rhib",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H41_public_direct_entrypoint_has_no_unrelated_pass_dependency",
+        "root": "/tmp/t8-h-owcnv42n",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H41_real_pass_reuses_public_entrypoint_before_normal_task_drive",
+        "root": "/tmp/t8-h-25iowu3m",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_actual_pass_preserves_existing_180_minute_cap_note",
+        "root": "/tmp/t8-h-vj11ja4b",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_answers_request_keeps_its_existing_artifact_and_closes_background_launch",
+        "root": "/tmp/t8-h-c0ysrx2a",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_background_clock_exact_cap_holds_and_strictly_greater_retires",
+        "root": "/tmp/t8-h-mc0q120q",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_current_background_wait_holds_capacity_and_queued_input",
+        "root": "/tmp/t8-h-n57_3ulr",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_delivered_failure_does_not_reset_exhausted_gate_loop",
+        "root": "/tmp/t8-h-enfenlzj",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_done_ticket_closes_old_launch_and_cannot_be_revived_by_late_outcome",
+        "root": "/tmp/t8-h-q37sie5x",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_explicit_ci_wait_retains_run_and_closure_authority",
+        "root": "/tmp/t8-h-vprwj51u",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_explicit_stage_help_still_parks_with_its_note_over_running_work",
+        "root": "/tmp/t8-h-v5rva3lf",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_foreground_main_remains_exempt_from_old_background_cap",
+        "root": "/tmp/t8-h-ch846n9_",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_merged_pr_retains_existing_terminal_task_transition",
+        "root": "/tmp/t8-h-uzea1e2j",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "test_host_acceptance.HostAcceptance.test_H42_spec_review_request_preserves_artifact_and_operator_authority",
+        "root": "/tmp/t8-h-0masaa52",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      }
+    ],
+    "fixture_sanity": [
+      {
+        "case": "fixture_sanity.FixtureSanity.test_owned_listener_restart_has_new_inode_and_preserves_binding",
+        "root": "/tmp/t8-h-uz_uwhng",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "fixture_sanity.FixtureSanity.test_real_controller_attachment_fixture_reconnects_without_input",
+        "root": "/tmp/t8-h-ojsio00d",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      },
+      {
+        "case": "fixture_sanity.FixtureSanity.test_real_listener_pending_ack_and_history_are_independent",
+        "root": "/tmp/t8-h-ybzosbxt",
+        "root_removed": true,
+        "listener_stopped": true,
+        "children_stopped": true,
+        "proxy_threads_stopped": true
+      }
+    ]
+  },
+  "actual_report_SHA256": {
+    "host-baseline-final.json": "b6de49ddec2cb5ca90222439edf4466189fe92728cb777b30a3d924324734ca6",
+    "host-fixture-sanity-final.json": "a78a8c745cf5bccac138ac34006dbc4408a390f2489d69586b4090cb77b1a102"
+  },
+  "full_gates_run": false,
+  "native_executed": false,
+  "product_implementation_read": false
+}

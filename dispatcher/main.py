@@ -52,6 +52,7 @@ from dispatcher.sessions import Sessions
 from dispatcher.runtime_http import RuntimeClient
 from dispatcher.runtime_snapshots import valid_snapshot
 from dispatcher.runtime_work import running_workers
+from dispatcher.runtime_presentation import present_runtime_alerts
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, SpecApprovalRequest,
@@ -2288,6 +2289,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
+            present_runtime_alerts(cfg.state_dir, target, task.issue, deps.notifier, dry_run=dry_run)
             try:
                 _drive_task(eff, deps, target, task, admit, order, dry_run)
             except Exception:
