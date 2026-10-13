@@ -22,6 +22,7 @@ targets.yaml
 .claude/skills/implement-spec
 .claude/skills/red-team-data-model
 .claude/skills/review-diff
+.claude/skills/review-page
 .claude/skills/to-openspec
 .claude/skills/to-spec
 .claude/skills/to-tickets
