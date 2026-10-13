@@ -456,7 +456,7 @@ def test_idle_working_is_zero_and_writes_no_sidecar(tmp_path, monkeypatch):
 def test_idle_new_status_pair_starts_the_clock(tmp_path, monkeypatch):
     herdr_fake(monkeypatch, LIVE + [_agent("idle", 4)])
     monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
-    assert Sessions(state_dir=tmp_path).idle_seconds("acme", 42) == 0.0
+    assert Sessions(state_dir=tmp_path).idle_seconds("acme", 42) > 0.0   # 0.0 means working
     side = _json.loads((tmp_path / "herdr-status" / "task-acme-42.json").read_text())
     assert side == {"seq": 4, "status": "idle", "since": 1000.0}
 
@@ -465,7 +465,7 @@ def test_idle_same_pair_accumulates_elapsed(tmp_path, monkeypatch):
     herdr_fake(monkeypatch, LIVE + [_agent("blocked", 4)])
     s = Sessions(state_dir=tmp_path)
     monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
-    assert s.idle_seconds("acme", 42) == 0.0
+    assert s.idle_seconds("acme", 42) > 0.0
     monkeypatch.setattr(sessions.time, "time", lambda: 1650.0)
     assert s.idle_seconds("acme", 42) == 650.0
 
@@ -477,10 +477,10 @@ def test_idle_resets_when_seq_or_status_changes(tmp_path, monkeypatch):
     s.idle_seconds("acme", 42)
     monkeypatch.setattr(sessions.time, "time", lambda: 1500.0)
     herdr_fake(monkeypatch, LIVE + [_agent("idle", 5)])   # new seq, same status
-    assert s.idle_seconds("acme", 42) == 0.0
+    assert s.idle_seconds("acme", 42) > 0.0
     monkeypatch.setattr(sessions.time, "time", lambda: 1600.0)
     herdr_fake(monkeypatch, LIVE + [_agent("blocked", 5)])  # same seq, new status
-    assert s.idle_seconds("acme", 42) == 0.0
+    assert s.idle_seconds("acme", 42) > 0.0
     monkeypatch.setattr(sessions.time, "time", lambda: 1700.0)
     assert s.idle_seconds("acme", 42) == 100.0
 
@@ -495,7 +495,7 @@ def test_idle_missing_agent_accumulates_like_a_static_screen(tmp_path, monkeypat
                '{"error":{"code":"agent_not_found","message":"x"},"id":"i"}')])
     s = Sessions(state_dir=tmp_path)
     monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
-    assert s.idle_seconds("acme", 42) == 0.0
+    assert s.idle_seconds("acme", 42) > 0.0
     monkeypatch.setattr(sessions.time, "time", lambda: 1900.0)
     assert s.idle_seconds("acme", 42) == 900.0
 
@@ -526,17 +526,17 @@ def test_idle_corrupt_sidecar_restarts_the_clock(tmp_path, monkeypatch):
     side.write_text("{garbage")
     herdr_fake(monkeypatch, LIVE + [_agent("idle", 1)])
     monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
-    assert Sessions(state_dir=tmp_path).idle_seconds("acme", 42) == 0.0
+    assert Sessions(state_dir=tmp_path).idle_seconds("acme", 42) > 0.0
     assert _json.loads(side.read_text())["since"] == 1000.0
 
 
-def test_idle_clamps_clock_skew_to_zero(tmp_path, monkeypatch):
+def test_idle_clamps_clock_skew_above_zero(tmp_path, monkeypatch):
     side = tmp_path / "herdr-status" / "task-acme-42.json"
     side.parent.mkdir()
     side.write_text(_json.dumps({"seq": 1, "status": "idle", "since": 2000.0}))
     herdr_fake(monkeypatch, LIVE + [_agent("idle", 1)])
     monkeypatch.setattr(sessions.time, "time", lambda: 1000.0)
-    assert Sessions(state_dir=tmp_path).idle_seconds("acme", 42) == 0.0
+    assert Sessions(state_dir=tmp_path).idle_seconds("acme", 42) > 0.0
 
 
 def test_forget_status_removes_the_sidecar(tmp_path):
@@ -565,6 +565,17 @@ def test_send_text_is_a_noop_when_the_tab_is_gone(monkeypatch):
     herdr_fake(monkeypatch, [(("tab", "list"), 0, NO_TABS)], calls)
     Sessions().send_text("acme", 42, "code")
     assert not any(c[0] == "pane" and c[1].startswith("send") for c in calls)
+
+
+def test_send_text_says_whether_text_and_enter_were_delivered(monkeypatch):
+    herdr_fake(monkeypatch, LIVE + [(("pane", "send-text"), 0, ""),
+                                    (("pane", "send-keys"), 0, "")])
+    assert Sessions().send_text("acme", 42, "x") is True
+    herdr_fake(monkeypatch, LIVE + [(("pane", "send-text"), 1, ""),
+                                    (("pane", "send-keys"), 0, "")])
+    assert Sessions().send_text("acme", 42, "x") is False
+    herdr_fake(monkeypatch, [(("tab", "list"), 0, NO_TABS)])
+    assert Sessions().send_text("acme", 42, "x") is False
 
 
 # --- end ---------------------------------------------------------------------

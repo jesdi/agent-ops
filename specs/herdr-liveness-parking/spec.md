@@ -4,13 +4,17 @@ Terms:
 
 - **Agent status** is what herdr reports for the session's pane: `working`, `idle`, `blocked`,
   `done`, `unknown`, or none. `idle_seconds` is 0 while the status is `working` and otherwise
-  counts from the last status change.
+  counts from the last status change; it is never 0 for a status other than `working`.
 - The **stall timeout** is `stall_after_seconds`, one value for both runtimes; 0 disables stalls
   and pokes.
 - A **waiting marker** is the file waitd writes on a turn-end ping that reports no background
   work. A **background marker** is the file it writes on a ping that does.
 - A **stopped session** is a live session with a `working` stage signal, a waiting marker, and an
   agent status other than `working`.
+- A stopped session is **at a prompt** when its agent status is `blocked` (a permission or trust
+  prompt) or its pane shows a login prompt. Text and Enter typed there can approve an action
+  without the operator. The dispatcher checks this right before it types the poke, with a new
+  read of the agent status and of the pane, not with the idle time of the start of the pass.
 - The **pass interval** is `pass_interval_minutes`, paired with the dispatcher's systemd timer;
   5 minutes.
 - A **poke** is one line of text typed into the session's pane, followed by Enter, asking the
@@ -26,12 +30,26 @@ Terms:
 2. **A stopped session is poked, not parked.** On every pass that finds a stopped session, the
    dispatcher sends one poke and records the time of the first poke. The pass logs the poke. The
    cadence is therefore the pass interval, 5 minutes for both runtimes; a pass that finds the
-   session `working` (answering the previous poke, or back at work) sends nothing.
+   session `working` (answering the previous poke, or back at work) sends nothing. Right before
+   the text is typed the dispatcher reads the agent status and the pane once more, and that read
+   has four outcomes:
+   - the status or the pane cannot be read: nothing is typed and nothing changes on the task;
+     the next pass tries again;
+   - the status is `working` (the session started a turn in the meantime): nothing is typed and
+     the first-poke time is cleared;
+   - the session is at a prompt: nothing is typed, and on that pass the task parks for the
+     operator with the note "(session stopped mid-stage waiting for input)" and the session is
+     ended; when the pane shows a login prompt the park is the login park, which keeps the
+     session, as today;
+   - otherwise the poke is typed.
 3. **Poking stops at the cap.** When a pass finds a stopped session whose first poke is older
    than the poke cap, the task parks for the operator with a note that names the cap and the
-   number of pokes, a `parked` event is logged, and the session is ended. A pass that finds the
-   session `working` clears the first-poke time, so a session that keeps doing real work is never
-   capped; a session that only answers pokes keeps its clock.
+   number of pokes, a `parked` event is logged, and the session is ended. The cap clock starts at
+   the first poke attempt, so a pane that refuses the text is capped too; only delivered pokes
+   are counted and logged. A pass that finds the session `working` clears the first-poke time,
+   so a session that keeps doing real work is never capped; a session that only answers pokes
+   keeps its clock. The cap is checked before the prompt, so a session past the cap parks with
+   the cap note also when it is at a prompt.
 4. **A hang still parks on the stall timer.** A live session with a `working` stage signal, no
    waiting marker, and an idle time past the stall timeout parks with today's stall note. It is
    never poked: a session that never ended a turn is in a prompt or hung, and typed text would
@@ -112,6 +130,45 @@ Terms:
 - **When** a dispatcher pass runs
 - **Then** the task is parked, its note names the 3 hour cap and the number of pokes, a
   `parked` event is logged, and the session is ended
+
+### Scenario: a pane that refuses the poke is still capped
+
+- **Given** `background_wait_seconds: 10800` and a stopped session whose pane has refused every
+  poke since the first attempt 3 hours and 1 minute ago
+- **When** a dispatcher pass runs
+- **Then** the task is parked with the note "(poked 0 times over 180m — stopped mid-stage
+  without a stage signal)" and the session is ended
+
+### Scenario: a stopped session at a permission prompt is parked, not poked
+
+- **Given** a Claude session that ended turn A, leaving a waiting marker, then started turn B,
+  stopped at a permission prompt, and is `blocked` to herdr; stage signal `working`
+- **When** a dispatcher pass runs
+- **Then** nothing is typed into the pane, the task is parked with the note "(session stopped
+  mid-stage waiting for input)", and the session is ended
+
+### Scenario: a stopped session at a login prompt takes the login park
+
+- **Given** a stopped session whose pane shows a login prompt
+- **When** a dispatcher pass runs
+- **Then** nothing is typed into the pane, the task takes the login park with the note
+  "(session stopped mid-stage waiting for input)", and the session stays alive
+
+### Scenario: herdr cannot be asked at the moment of the poke
+
+- **Given** a stopped session first poked 1 hour ago, and a pass in which the idle time is
+  known but the agent status, or the pane, cannot be read right before the poke
+- **When** that dispatcher pass runs
+- **Then** nothing is typed into the pane, the task is not parked, and its first-poke time and
+  poke count are unchanged
+
+### Scenario: the session started a turn between the idle read and the poke
+
+- **Given** a stopped session first poked 1 hour ago that starts a new turn after the pass read
+  its idle time, so that herdr reports `working` right before the poke
+- **When** that dispatcher pass runs
+- **Then** nothing is typed into the pane, the task is not parked, and its first-poke time is
+  cleared
 
 ### Scenario: real work resets the poke clock
 

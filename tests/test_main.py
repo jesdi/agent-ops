@@ -186,6 +186,7 @@ class FakeSessions:
 
     def send_text(self, target, issue, text):
         self.sent_text.append((issue, text))
+        return True
 
     def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
         if issue in self.spawn_raises:
@@ -1362,7 +1363,7 @@ def test_blocked_session_parks_and_frees_capacity(tmp_path, monkeypatch):
     assert "parked_question" in d.notifier.sent
 
 
-def test_waiting_marker_parks_working_session(tmp_path, monkeypatch):
+def test_waiting_marker_pokes_stopped_session(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
@@ -1370,11 +1371,12 @@ def test_waiting_marker_parks_working_session(tmp_path, monkeypatch):
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "working"}))
     mark_waiting(c.state_dir, "portfolio_eval", 42)
-    sess = FakeSessions(alive={42})
+    sess = FakeSessions(alive={42}, idle={42: 30.0})
+    sess.agent_state = lambda target, issue: ("done", 5)   # read again before typing
     main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_HUMAN
-    assert not has_waiting(c.state_dir, "portfolio_eval", 42)  # marker consumed
+    assert t.park == "" and len(sess.sent_text) == 1 and t.pokes == 1
+    assert has_waiting(c.state_dir, "portfolio_eval", 42)  # the poke leaves the marker
 
 
 def test_awaiting_ci_parks_silently_with_run_id(tmp_path, monkeypatch):
@@ -3006,9 +3008,11 @@ def test_login_park_clears_the_waiting_marker(tmp_path, monkeypatch):
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "working"}))
     mark_waiting(c.state_dir, "portfolio_eval", 42)
-    sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
+    sess = FakeSessions(alive=[42], tail=LOGIN_TAIL, idle={42: 30.0})
+    sess.agent_state = lambda target, issue: ("done", 5)
     main.run_pass(c, deps(sess=sess))
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN
+    assert sess.sent_text == []         # nothing typed into the login prompt
     assert not has_waiting(c.state_dir, "portfolio_eval", 42)
 
 

@@ -15,6 +15,7 @@ from dispatcher.machine import (
     ParkForCI,
     ParkForInput,
     ParkForReview,
+    Poke,
     ReviewPark,
     PublishSpec,
     RetryStage,
@@ -294,11 +295,12 @@ def test_unknown_loop_is_ignored():
     assert next_actions(task(Stage.REVIEW), loop_sig("dance", 9), True) == [NoOp()]
 
 
-def test_round_report_then_waiting_records_and_parks_for_input():
-    acts = next_actions(task(Stage.REVIEW), loop_sig("gate", 1), True, waiting=True)
+def test_round_report_then_waiting_records_and_pokes():
+    acts = next_actions(task(Stage.REVIEW), loop_sig("gate", 1), True, waiting=True,
+                        idle_seconds=30.0)
     assert len(acts) == 2 and isinstance(acts[0], ApplyDecision)
     assert acts[0].decision.outcome is Outcome.WITHIN_LIMIT
-    assert acts[1] == ParkForInput("(session stopped mid-stage waiting for input)")
+    assert acts[1] == Poke()
 
 
 def test_round_on_a_done_signal_is_not_a_round():
@@ -358,9 +360,10 @@ def test_awaiting_ci_without_run_id_fails_stage():
     assert SetTaskStage(Stage.FAILED) in acts
 
 
-def test_waiting_marker_parks_working_session():
-    acts = next_actions(task(Stage.SPEC), sig("spec", "working"), True, waiting=True)
-    assert acts == [ParkForInput("(session stopped mid-stage waiting for input)")]
+def test_waiting_marker_pokes_stopped_session():
+    acts = next_actions(task(Stage.SPEC), sig("spec", "working"), True, waiting=True,
+                        idle_seconds=30.0)
+    assert acts == [Poke()]
 
 
 def test_waiting_marker_ignored_when_stage_done(tmp_path):
@@ -426,10 +429,10 @@ def test_stall_ignores_gated_statuses(tmp_path):
     assert acts == [ParkForCI(7)]  # CI rule, not the stall rule
 
 
-def test_stall_working_with_waiting_uses_waiting_park():
+def test_stall_working_with_waiting_pokes_instead():
     acts = next_actions(task(Stage.SPEC), sig("spec", "working"), True,
                         waiting=True, idle_seconds=1e9)
-    assert acts == [ParkForInput("(session stopped mid-stage waiting for input)")]
+    assert acts == [Poke()]
 
 
 def test_stall_parked_task_still_noop():
@@ -651,8 +654,7 @@ def test_counter_change_ends_the_wait_and_today_rules_apply():
 
 
 def test_waiting_marker_or_non_working_signal_takes_precedence():
-    assert _bg(_waited(), _view(4 * HOUR), waiting=True) == [
-        ParkForInput("(session stopped mid-stage waiting for input)")]
+    assert _bg(_waited(), _view(4 * HOUR), waiting=True) == [Poke()]
     blocked = StageSignal(stage="review", status="blocked", note="q")
     assert _bg(_waited(), _view(4 * HOUR), signal=blocked) == [ParkForInput("q")]
 
@@ -661,3 +663,14 @@ def test_a_wait_still_applies_loop_round_bookkeeping():
     signal = StageSignal(stage="review", status="working", loop="review", round=1)
     acts = _bg(_waited(), _view(60), signal=signal)
     assert isinstance(acts[0], ApplyDecision) and acts[1:] == []
+
+
+
+def test_signal_with_an_unknown_status_is_ignored():
+    odd = StageSignal(stage="review", status="thinking")
+    assert next_actions(task(Stage.REVIEW), odd, True, waiting=True,
+                        idle_seconds=30.0) == [NoOp()]
+
+
+def test_dead_session_of_a_stage_with_no_session_is_left_alone():
+    assert next_actions(task(Stage.PR_OPEN), None, False) == [NoOp()]

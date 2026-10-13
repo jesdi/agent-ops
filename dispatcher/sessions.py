@@ -40,6 +40,12 @@ def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                                   second=second, clone=clone)
 
 
+# The idle time of a session that is not `working` but whose status just
+# changed, or whose recorded change lies in the future (clock skew): small,
+# yet never the 0.0 of working. An unreadable clock is None, not this.
+_MIN_IDLE = 0.001
+
+
 class Sessions:
     """The dispatcher's and the console's one session interface. Every
     operation resolves the tab by label; dry-run short-circuits each
@@ -168,7 +174,11 @@ class Sessions:
         the CLI yet, podman still starting or the wrapper still running)
         accumulates from the moment herdr last changed its mind. herdr
         exposes the transition counter but no timestamp, so the moment is
-        remembered in a sidecar keyed by (seq, status)."""
+        remembered in a sidecar keyed by (seq, status).
+
+        0.0 means herdr says `working` and nothing else: every other status
+        returns a strictly positive number (_MIN_IDLE at the least), so a
+        caller can read idle 0 as "working" (machine._poke_actions)."""
         state = self.agent_state(target, issue)
         if state is None:
             return None
@@ -204,11 +214,11 @@ class Sessions:
                 stored = None  # absent or corrupt: start the clock afresh
             if (isinstance(stored, dict) and stored.get("seq") == seq
                     and stored.get("status") == status):
-                return max(0.0, now - float(stored["since"]))
+                return max(_MIN_IDLE, now - float(stored["since"]))
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(
                 {"seq": seq, "status": status, "since": now}))
-            return 0.0
+            return _MIN_IDLE
         except (OSError, KeyError, TypeError, ValueError):
             return None  # unknown, never a stale number
 
@@ -220,17 +230,14 @@ class Sessions:
             except OSError:
                 pass
 
-    def send_text(self, target: str, issue: int, text: str) -> None:
-        """Type text into the live pane as-is (login-code injection), then
-        Enter as a separate key."""
+    def send_text(self, target: str, issue: int, text: str) -> bool:
+        """Type text into the live pane as-is (login-code injection, pokes),
+        then Enter as a separate key. True when both were delivered."""
         if self.dry_run:
             print(f"[dry-run] send text to {session_name(target, issue)}")
-            return
+            return False
         tab = self._tab(target, issue)
-        if tab is None:
-            return
-        tab.send_text(text)
-        tab.send_keys("enter")
+        return tab is not None and tab.send_text(text) and tab.send_keys("enter")
 
     def _snapshot(self, target: str, issue: int) -> None:
         """Last words: persist the pane history before the kill so the

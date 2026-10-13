@@ -29,7 +29,8 @@ rejected as too complex. This proposal uses two things the box already has:
   for the whole length of a long foreground tool call, with the state-change counter unchanged,
   and `done` after it. A marker can only be wrong about a session herdr can see is busy.
 - **The dispatcher pass as the supervisor.** A session that stopped its turn is not parked; the
-  pass types one line into its pane asking it to check its background work and continue. On the
+  pass types one line into its pane asking it to check its background work and continue, unless
+  the pane is at a permission, trust or login prompt: then nothing is typed and it parks. On the
   box, Codex took that line as a prompt, read the result of a shell that had finished while it
   sat idle, and carried on. That is the wake Codex lacks, at the cost of one `send_text` per
   pass, and it needs no inventory of what the session started.
@@ -44,7 +45,8 @@ stage sessions that lose long reviews or sit on finished background work until s
 A live session that herdr reports as `working` is never parked mid-stage, whatever markers say.
 A live session that ended its turn mid-stage is poked every pass, about every 5 minutes, instead
 of parked, until it continues, reports through the stage signal, or has been poked for the
-background-wait cap.
+background-wait cap. A session that is not at its composer is the exception: at a permission,
+trust or login prompt it parks at once and nothing is typed.
 A session that is not `working` and never ended a turn (a hang or a login prompt) parks on the
 stall timer as today. Both runtimes get the same rule and the same timeout.
 
@@ -60,6 +62,9 @@ stall timer as today. Both runtimes get the same rule and the same timeout.
   this, and the cap is the background-wait cap, already configured.
 - No change to parks that come from the stage signal (`blocked`, `awaiting-answers`), from the
   gate, from loop caps, or from a dead session.
-- No fix to herdr's status detection. One misread was observed (the Codex hooks-trust dialog
-  reads `done` instead of `blocked`); it is harmless here because any status but `working`
-  accumulates idle time.
+- No fix to herdr's status detection. One misread was observed: the Codex hooks-trust dialog
+  reads `done` instead of `blocked`. For the stall timer that changes nothing, because any
+  status but `working` accumulates idle time. For the poke it is a gap: with an old waiting
+  marker, the poke line and Enter can reach that dialog. This is accepted, not fixed: the launch
+  pre-trusts the worktree, the dialog belongs to a first run, before any turn end writes a
+  marker, and a text classifier for dialogs would be a guess.

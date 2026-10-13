@@ -20,6 +20,7 @@ import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Callable
 
@@ -40,7 +41,7 @@ from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
                                 ParkForInput, ParkForReview, PublishSpec,
-                                RecordBackgroundWait, RetryStage, ReviewPark, SetTaskStage,
+                                RecordBackgroundWait, Poke, RetryStage, ReviewPark, SetTaskStage,
                                 SpawnStage, pass_actions)
 from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
@@ -50,7 +51,8 @@ from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
-from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_SLOT, PARK_CI, PARK_HUMAN,
+from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SLOT, PARK_CI,
+                              PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
@@ -607,7 +609,8 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                               second=launch.second)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
     task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
-                   operator_request=None, updated_at=_now(),
+                   operator_request=None, **NO_POKES,
+                   updated_at=_now(),
                    picks={**task.picks, pick_key(stage.value): str(entry)},
                    implement_providers=_with_implement_provider(task, stage, entry))
     save(cfg.state_dir, task)
@@ -630,6 +633,7 @@ def _continue_or_restart(cfg: Config, deps: Deps, target: Target,
                              launch.model, launch.entry.effort,
                              second=launch.second, session_id=record.session_id)
         messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
+        task = replace(task, **NO_POKES)
     else:
         detail = (f"new conversation: session recorded for {record.stage}" if record
                   else "new conversation: no session recorded")
@@ -834,6 +838,7 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
     clear_turn_markers(cfg.state_dir, task.target, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
                                 park_note=note, operator_request=None,
+                                **NO_POKES,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
@@ -1658,14 +1663,76 @@ def _on_record_background_wait(turn: _Turn, task: TaskState,
                                act: RecordBackgroundWait,
                                launch: Launch | None) -> TaskState:
     task = replace(task, background_reported=act.reported,
-                   background_seq=act.seq)
+                   background_seq=act.seq, **NO_POKES)
     save(turn.cfg.state_dir, task)
     return task
+
+
+STOPPED_NOTE = "(session stopped mid-stage waiting for input)"
+
+
+class _PokeGuard(Enum):
+    """What herdr and the pane say right before a poke is typed."""
+    UNKNOWN = "herdr or the pane cannot be read"
+    WORKING = "the session started a turn after the idle read"
+    AT_PROMPT = "a permission, trust or login prompt"
+    CLEAR = "a stopped session at its composer"
+
+
+def _poke_guard(deps: Deps, task: TaskState) -> _PokeGuard:
+    """One read of herdr and one of the pane. Text plus Enter in a prompt
+    can approve an action without the operator, so a read that failed is
+    never taken as "no prompt"."""
+    state = deps.sessions.agent_state(task.target, task.issue)
+    tail = deps.sessions.capture_tail(task.target, task.issue)
+    if state is None or not tail.strip():
+        return _PokeGuard.UNKNOWN
+    if state[0] == "working":
+        return _PokeGuard.WORKING
+    if state[0] == "blocked" or relogin.classify_login(tail) is not None:
+        return _PokeGuard.AT_PROMPT
+    return _PokeGuard.CLEAR
+
+
+def _send_poke(turn: _Turn, task: TaskState, act: Poke) -> TaskState:
+    """The first attempt starts the cap clock, delivered or not: a pane that
+    refuses text every pass is then still parked at the cap. Only a
+    delivered poke is counted and logged."""
+    task = replace(task, poked_since=task.poked_since or time.time())
+    if not turn.deps.sessions.send_text(task.target, task.issue, act.text):
+        save(turn.cfg.state_dir, task)
+        print(f"[warn] poke of #{task.issue} not delivered", file=sys.stderr)
+        return task
+    task = replace(task, pokes=task.pokes + 1)
+    save(turn.cfg.state_dir, task)
+    eventlog.append_event(turn.cfg.state_dir, "poked", target=turn.target.name,
+                          issue=task.issue, stage=task.stage.value,
+                          detail=f"poke {task.pokes}")
+    return task
+
+
+def _on_poke(turn: _Turn, task: TaskState, act: Poke,
+             launch: Launch | None) -> TaskState | None:
+    """Type the poke into the stopped session, unless the look at herdr and
+    the pane right before it says otherwise: unknown holds (nothing typed,
+    nothing changed, the next pass tries again), a new turn ends the poke
+    stretch, and a prompt parks the task with nothing typed."""
+    if turn.dry_run:
+        return task
+    guard = _poke_guard(turn.deps, task)
+    if guard is _PokeGuard.UNKNOWN:
+        return task
+    if guard is _PokeGuard.WORKING:
+        return _end_poke_stretch(turn.cfg, task, 0.0, False)
+    if guard is _PokeGuard.AT_PROMPT:
+        return _on_park_for_input(turn, task, ParkForInput(STOPPED_NOTE), launch)
+    return _send_poke(turn, task, act)
 
 
 _DRIVE: dict[type, Callable[..., TaskState | None]] = {
     NoOp: _on_noop,
     RecordBackgroundWait: _on_record_background_wait,
+    Poke: _on_poke,
     ApplyDecision: _on_apply_decision,
     ParkForInput: _on_park_for_input,
     DisarmPlanApproval: _on_disarm_plan_approval,
@@ -1739,6 +1806,17 @@ def _stall_after(cfg: Config, task: TaskState) -> int:
             else cfg.stall_after_seconds)
 
 
+def _end_poke_stretch(cfg: Config, task: TaskState, idle: float | None,
+                      dry_run: bool) -> TaskState:
+    """herdr sees the session working (idle 0): whatever woke it, the poke
+    stretch is over and the next poke starts a new clock."""
+    if idle != 0 or not task.poked_since or dry_run:
+        return task
+    task = replace(task, **NO_POKES)
+    save(cfg.state_dir, task)
+    return task
+
+
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 admit: Admit, order: Order, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
@@ -1761,6 +1839,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     stall_after = _stall_after(cfg, task) if alive else 0
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and stall_after > 0 else None)
+    task = _end_poke_stretch(cfg, task, idle, dry_run)
     turn = _Turn(cfg, deps, target, signal, dry_run)
     for act in pass_actions(task, signal, alive, waiting, view,
                             caps=cfg.loop_caps,
@@ -1770,7 +1849,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             tracks=frozenset(policy.tracks),
                             gate_free=frozenset(
                                 n for n, t in policy.tracks.items()
-                                if not t.plan_review)):
+                                if not t.plan_review),
+                            now=time.time(), poke_cap=cfg.background_wait_seconds):
         task = _step_done(turn, task, act)
         stage = _action_stage(act)
         override = stage and _execution_override_for(cfg, task, stage)

@@ -195,17 +195,17 @@ def test_after_wait_over_idle_session_stalls_as_today(tmp_path, monkeypatch):
     assert read_background(c.state_dir, T, N) is None
 
 
-def test_working_signal_with_waiting_marker_parks_mid_stage(tmp_path, monkeypatch):
+def test_working_signal_with_waiting_marker_pokes_mid_stage(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     wt = make_task(c, issue=N, stage=Stage.REVIEW)
     (wt / ".agent" / "stage.json").write_text(
         json.dumps({"stage": "review", "status": "working"}))
     mark_waiting(c.state_dir, T, N)
-    sess = HerdrSessions({N: ("idle", 5)}, alive=[N], idle={N: 0.0})
+    sess = HerdrSessions({N: ("idle", 5)}, alive=[N], idle={N: 30.0})
     _passes(c, sess)
-    assert _task(c).park_note == "(session stopped mid-stage waiting for input)"
-    assert sess.ended == [N]
+    assert _task(c).park == ""
+    assert len(sess.sent_text) == 1 and sess.ended == []
 
 
 @pytest.mark.parametrize("herdr", [("working", 5), None])

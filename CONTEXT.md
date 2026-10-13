@@ -172,7 +172,31 @@ stall timer catch it. The wait is over once the session starts a new turn
 session's end, so the same work reported again keeps its clock. The cap clock
 starts at the first report and restarts when a report names new work; past
 `background_wait_seconds` (the cap) the task parks for the operator.
-_Avoid_: stall (a stall is a session with no output and no reason to be quiet)
+_Avoid_: poke (a poke wakes a stopped session with no background work on
+record), stall (a stall is a session with no output and no reason to be quiet)
+
+**Poke**:
+One line the dispatcher types into the pane of a stopped session: it ended its
+turn mid-stage (waiting marker, stage signal `working`, herdr not `working`)
+with no background work on record. The line asks the agent to check its
+background terminals and continue, to wait if the work still runs, or to set the
+stage status to `blocked` with a note. A stopped session is poked on every pass
+that finds it stopped. Right before it types, the dispatcher reads herdr and the
+pane once more: when herdr says `blocked` or the pane shows a login prompt,
+nothing is typed and the task parks on that pass; when herdr says `working`, or
+cannot be asked, nothing is typed and the task stays. The poke clock belongs to
+one live session: it starts at the first poke attempt and restarts when herdr
+says `working`; past `background_wait_seconds` the task parks for the operator,
+with the count of delivered pokes in the note.
+_Avoid_: nudge, ping (a ping is a Telegram message)
+
+**Stall**:
+A live session with stage signal `working`, no waiting marker and no background
+work, whose herdr status has not been `working` for longer than
+`stall_after_seconds`. It has no output and no reason to be quiet, so the task
+parks for the operator ("no session output for Nm"). Nothing is typed into it.
+_Avoid_: poke (a poke goes to a session that stopped and left a waiting
+marker)
 
 **Provider**:
 A subscription whose usage windows the box spends (`anthropic`; later
