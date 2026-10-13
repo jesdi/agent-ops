@@ -1795,17 +1795,6 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
                           time.time(), cfg.background_wait_seconds)
 
 
-def _stall_after(cfg: Config, task: TaskState) -> int:
-    """Give quiet Codex turns longer; a zero shared limit still disables stalls."""
-    if cfg.stall_after_seconds == 0:
-        return 0
-    pick = (stage_pick(task.picks, task.stage.value)
-            or _last_launched(task.worktree))
-    runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
-    return (cfg.codex_stall_after_seconds if runtime.cli == "codex"
-            else cfg.stall_after_seconds)
-
-
 def _end_poke_stretch(cfg: Config, task: TaskState, idle: float | None,
                       dry_run: bool) -> TaskState:
     """herdr sees the session working (idle 0): whatever woke it, the poke
@@ -1836,7 +1825,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     view = _background_view(cfg, deps, task, alive)
     # Query idle only when it can matter: detection enabled and the
     # session alive (the crash path owns dead sessions).
-    stall_after = _stall_after(cfg, task) if alive else 0
+    stall_after = cfg.stall_after_seconds if alive else 0
     idle = (deps.sessions.idle_seconds(task.target, task.issue)
             if alive and stall_after > 0 else None)
     task = _end_poke_stretch(cfg, task, idle, dry_run)

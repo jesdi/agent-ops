@@ -95,7 +95,7 @@
   <li>The <b>park</b> tells whether the task waits for something. An empty park means the task is not parked.</li>
 </ul>
 <p>A parked task keeps its stage. A park ends the session and gives back the capacity and the E2E slot. The login park is the only exception: its session stays alive, because the operator types the login code into it.</p>
-<p>The dispatcher does not watch sessions all the time. A timer starts one <b>pass</b> each 10 minutes. Each pass reads the state of each task and does the next step. Thus a state change can show up to 10 minutes after its cause.</p>
+<p>The dispatcher does not watch sessions all the time. A timer starts one <b>pass</b> each 5 minutes. Each pass reads the state of each task and does the next step. Thus a state change can show up to 5 minutes after its cause.</p>
 
 <h2 id="stages">Stages</h2>
 <div class="card"><pre class="mermaid">
@@ -146,7 +146,7 @@ flowchart TD
 <div class="card"><table>
 <tr><th>Park</th><th>Value</th><th>Causes</th><th>Session</th><th>How it ends</th></tr>
 <tr><td><span class="chip parked">Input</span></td><td><code>parked</code></td>
-  <td>Signal <code>blocked</code> or <code>awaiting-answers</code>.<br>The session stopped in the middle of a stage.<br>No session output for 10 minutes on Claude or 30 minutes on Codex.<br>Background work ran longer than 3 hours.<br>A round cap was reached.<br>The task's track is no longer configured.</td>
+  <td>Signal <code>blocked</code> or <code>awaiting-answers</code>.<br>The session stopped in the middle of a stage, and a pass poked it for more than 3 hours without a stage signal.<br>The session stopped in the middle of a stage at a permission or trust prompt.<br>No session output for 10 minutes, on any runtime.<br>Background work ran longer than 3 hours.<br>A round cap was reached.<br>The task's track is no longer configured.</td>
   <td>Ended</td><td>The operator replies or resumes.</td></tr>
 <tr><td><span class="chip waiting">Review</span></td><td><code>awaiting-review</code></td>
   <td>The spec waited 15 minutes for approval.</td><td>Ended</td><td>The operator approves or replies.</td></tr>
@@ -160,8 +160,9 @@ flowchart TD
 <p>The notes you see on an input park that the dispatcher wrote itself:</p>
 <div class="card"><table>
 <tr><th>Note</th><th>Cause</th></tr>
-<tr><td>(session stopped mid-stage waiting for input)</td><td>The session ended a turn with signal <code>working</code> and no background work.</td></tr>
-<tr><td>(no session output for 10m or 30m — likely login/trust prompt or hang)</td><td>The stall timer: no session output for 10 minutes on Claude or 30 minutes on Codex.</td></tr>
+<tr><td>(session stopped mid-stage waiting for input)</td><td>The session ended a turn with signal <code>working</code> and no background work, and it is now stopped at a prompt. The pass looks at herdr and the pane right before it types the poke. When herdr says <code>blocked</code> (a permission or trust prompt), the note is on an Input park. When the pane shows a login prompt, the note is on a Login park; it is on an Input park only when the login message could not be sent. The pass types nothing into the pane. A session whose first poke is older than 3 hours gets the note of the next row, also at a prompt.</td></tr>
+<tr><td>(poked N times over 180m — stopped mid-stage without a stage signal)</td><td>The session stayed stopped while the passes poked it, until the first poke was older than 3 hours.</td></tr>
+<tr><td>(no session output for 10m — likely login/trust prompt or hang)</td><td>The stall timer: no session output for 10 minutes, on any runtime.</td></tr>
 <tr><td>(background work still running after 180m — cap reached)</td><td>The session waited for the same background work for more than 3 hours.</td></tr>
 </table></div>
 <p>All other notes on an input park come from the session itself.</p>
@@ -171,7 +172,7 @@ flowchart TD
 <div class="card"><pre class="mermaid">
 flowchart LR
   T([Session ends a turn]) --> R{Runtime}
-  R -->|Codex| W[waiting marker:<br/>if the signal is working, the next pass parks the task]
+  R -->|Codex| W[waiting marker:<br/>if the signal is working, the next pass pokes the session]
   R -->|Claude| S{Signal is working, and<br/>background work is running?}
   S -->|no| W
   S -->|yes| B[background marker:<br/>the task stays in progress]
@@ -189,9 +190,16 @@ flowchart TD
   A([Signal is working]) --> AL{Session alive?}
   AL -->|no| CR([failed: session crashed])
   AL -->|yes| WM{Waiting marker?}
-  WM -->|yes| PK([Park: session stopped mid-stage])
+  WM -->|yes| HW{herdr says<br/>working?}
+  HW -->|yes| OK
+  HW -->|no| PC2{First poke older<br/>than 3 hours?}
+  PC2 -->|yes| PK([Park: poked N times, no stage signal])
+  PC2 -->|no| AP{Right before the poke:<br/>what do herdr and the pane say?}
+  AP -->|blocked, or login prompt| PP([Park: session stopped mid-stage,<br/>nothing typed])
+  AP -->|stopped, no prompt| PO([Poke the session, record a poked event])
+  AP -->|working, or cannot be read| OK
   WM -->|no| BM{Background marker?}
-  BM -->|no| ST{No session output for<br/>10m Claude / 30m Codex?}
+  BM -->|no| ST{No session output for<br/>10m?}
   ST -->|yes| PS([Park: no session output])
   ST -->|no| OK([Task stays in progress])
   BM -->|yes| SQ{Session started a new turn<br/>after the report?}
@@ -202,15 +210,19 @@ flowchart TD
   classDef ok fill:#dcfce7,stroke:#166534,color:#166534
   classDef bad fill:#fee2e2,stroke:#991b1b,color:#991b1b
   classDef park fill:#ede9fe,stroke:#5b21b6,color:#5b21b6
-  class OK ok
+  class OK,PO ok
   class CR bad
-  class PK,PS,PC park
+  class PK,PS,PC,PP park
 </pre></div>
 <ul>
   <li>The pass asks herdr (the session layer) for the agent's status. <code>working</code> is never idle, however long the turn is.</li>
   <li>During a background wait the stall timer does not apply. The 3-hour clock starts again only when a turn end reports background work that the turn end before it did not report.</li>
+  <li>Right before it types a poke, the pass reads herdr and the pane one more time. When herdr says <code>blocked</code> (the session is at a permission or trust prompt) or the pane shows a login prompt, the pass types nothing and parks the task: an Input park for <code>blocked</code>, a Login park for a login prompt. When herdr says <code>working</code>, the pass types nothing and the poke clock starts again. When herdr or the pane cannot be read, the pass types nothing and changes nothing.</li>
+  <li>The 3-hour check comes first: a session whose first poke is older than 3 hours parks with the poke note, also when it is at a prompt.</li>
+  <li>The 3-hour poke clock starts at the first poke attempt. A poke that the pane refused is not counted and has no <code>poked</code> event.</li>
+  <li><code>stall_after_seconds: 0</code> turns off both the stall park and the pokes.</li>
   <li>When herdr cannot be asked, the pass does nothing and tries again on the next pass.</li>
-  <li>The limits are settings: <code>stall_after_seconds</code> (600 for Claude), <code>codex_stall_after_seconds</code> (1800), and <code>background_wait_seconds</code> (10800).</li>
+  <li>The limits are settings: <code>stall_after_seconds</code> (600, both runtimes), and <code>background_wait_seconds</code> (10800, also the poke cap).</li>
 </ul>
 
 <h2 id="loops">Round caps</h2>
@@ -251,8 +263,9 @@ flowchart TD
 
 <h2 id="limits">Known limits</h2>
 <ul>
-  <li>A waiting marker is not compared with the live session. If a session ends a turn and starts a new turn before the next pass, the pass can park a session that is working.</li>
-  <li>Codex sessions have no background wait. A Codex session that ends a turn while background work runs is parked.</li>
+  <li>A waiting marker is not compared with the live session. A pass pokes only when herdr says the session is not working, so a session that started a new turn is left alone.</li>
+  <li>The pass knows a prompt only by herdr's <code>blocked</code> status or a login prompt in the pane. A dialog that herdr reads as <code>done</code> (seen: the Codex hooks-trust dialog) is poked when the session has an old waiting marker.</li>
+  <li>Codex sessions have no background wait. A Codex session that ends a turn while background work runs is poked.</li>
   <li>A parked task does not start again by itself. Only an operator reply or resume, a completed CI run, or a spec approval ends a park.</li>
 </ul>
 

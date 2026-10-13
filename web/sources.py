@@ -399,7 +399,7 @@ class Sources:
     # -- writes ----------------------------------------------------------
 
     def _kick_dispatcher(self) -> None:
-        try:  # best-effort kick; the 10-minute timer is the floor
+        try:  # best-effort kick; the 5-minute timer is the floor
             subprocess.run(self._systemctl, capture_output=True, timeout=30)
         except (OSError, subprocess.SubprocessError) as e:
             print(f"dispatcher kick failed (non-fatal): {e}")
