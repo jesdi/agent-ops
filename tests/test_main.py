@@ -4497,6 +4497,18 @@ def test_reconcile_keeps_the_marker_of_a_task_that_is_still_starving(tmp_path):
     assert main._wake_blocked_path(c, "portfolio_eval", 43).exists()   # feedback spawn still denied
 
 
+def test_reconcile_drops_the_marker_of_a_parked_task_with_pending_feedback(tmp_path):
+    """A parked task is not spawned for its feedback (a wake starts the
+    round): it waits for nothing."""
+    c = cfg(tmp_path)
+    make_task(c, issue=43, slot=NO_SLOT, stage=Stage.PR_OPEN, park=PARK_HUMAN,
+              feedback_pending=True)
+    main._wake_blocked_path(c, "portfolio_eval", 43).parent.mkdir(parents=True, exist_ok=True)
+    main._wake_blocked_path(c, "portfolio_eval", 43).touch()
+    main._reconcile_slots(c)
+    assert not main._wake_blocked_path(c, "portfolio_eval", 43).exists()
+
+
 def test_reconcile_drops_a_marker_left_by_a_vanished_task(tmp_path):
     c = cfg(tmp_path)
     main._wake_blocked_path(c, "portfolio_eval", 42).parent.mkdir(parents=True, exist_ok=True)

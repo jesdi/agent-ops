@@ -793,8 +793,7 @@ def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
         url=_url(target, task.issue), target=target.name, note=note)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, park_reason=WHY_LOOP_CAP,
-                                slot=NO_SLOT, ci_run_id=0,
-                                feedback_pending=False, operator_request=None,
+                                slot=NO_SLOT, ci_run_id=0, operator_request=None,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
@@ -1077,7 +1076,7 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
             _notify(deps, target, task, "pr_closed",
                     f"PR #{task.pr_number}. Worktree preserved for autopsy.")
         elif task.park:
-            continue   # exhausted-loop park: only merge/close still matter
+            continue   # parked: only merge/close still matter
         elif res.kind == "feedback" and not task.feedback_pending:
             task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
             save(cfg.state_dir, replace(task, feedback_pending=True,
@@ -1427,20 +1426,24 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
     failures.report_failure(cfg, deps, rep, dry_run=dry_run)
 
 
+def _awaiting_feedback_round(task: TaskState) -> bool:
+    """A pr-open task with pending feedback that _spawn_feedback launches.
+    A park keeps the feedback and leaves it to the wake that starts the
+    round (_launch_woken); a park lifted without one comes back here."""
+    return task.stage is Stage.PR_OPEN and task.feedback_pending and not task.park
+
+
 def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
                     order: Order) -> None:
     """Spawn address-review for tasks whose PR got feedback, box-wide and
     oldest first — same gates as claiming new work (capacity, usage, slot);
     a denied spawn just stays pr-open+pending and retries next pass, badge
     showing, unless it never launches (_choose_launch): then it parks with
-    its feedback kept. A parked task is not spawned here: a wake starts the
-    round (_launch_woken), and a login park un-parked by its code is spawned
-    again from here."""
+    its feedback kept (_awaiting_feedback_round)."""
     targets = {t.name: t for t in cfg.targets}
     pending = sorted(
         [t for t in load_all(cfg.state_dir)
-         if t.target in targets and t.stage is Stage.PR_OPEN
-         and t.feedback_pending and not t.park],
+         if t.target in targets and _awaiting_feedback_round(t)],
         key=_oldest_first(cfg))
     for task in pending:
         target = targets[task.target]
@@ -2442,9 +2445,9 @@ def _sandboxed_state(cfg: Config):
 def _starving(task: TaskState) -> bool:
     """Is this task legitimately still waiting for the capacity/slot it was
     denied? Exactly the two queues that mark the marker: _resume_woken's
-    (park == PARK_WAKE) and _spawn_feedback's (an unparked pr-open task with
-    pending feedback). Anything else is not waiting for anything."""
-    return task.park == PARK_WAKE or (task.feedback_pending and not task.park)
+    (park == PARK_WAKE) and _spawn_feedback's (_awaiting_feedback_round).
+    Anything else is not waiting for anything."""
+    return task.park == PARK_WAKE or _awaiting_feedback_round(task)
 
 
 def _migrate_legacy_keys(cfg: Config) -> None:

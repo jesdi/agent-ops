@@ -311,11 +311,17 @@ def test_a_login_park_keeps_the_feedback_for_after_the_code(tmp_path):
     d = deps(sess=FakeSessions(alive=[42], tail=LOGIN_TAIL))
 
     main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
+    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)   # parked: left alone
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN
+    assert [k for k, _ in d.notifier.calls] == ["needs_relogin"]
     main._inject_login_code(c, d, load(c.state_dir, "portfolio_eval", 42), "code")
+    assert load(c.state_dir, "portfolio_eval", 42).feedback_pending
 
+    # The next pass takes the round up again: still stranded, it parks for that.
+    d.sessions.tail = "…pane tail…"
+    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.feedback_pending) == ("", True)
+    assert (t.park, t.park_reason, t.feedback_pending) == (PARK_HUMAN, WHY_CONFIG, True)
 
 
 def test_a_feedback_round_denied_for_headroom_only_waits(tmp_path):
