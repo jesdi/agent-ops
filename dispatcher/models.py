@@ -109,8 +109,11 @@ def stranded(policy: ModelPolicy, track: str, picks: Mapping[str, str], stage: s
     """Why a task on `track` whose next stage is `stage` cannot go on under
     `policy`, "" when it can: its track is gone, or the stage is picked on a
     provider not in `launchable` (config.referenced_providers: no usage is
-    read for any other, so the gate never admits it). The one rule the
-    dispatcher's park and the console's 422 share."""
+    read for any other, so the gate never admits it). The dispatcher parks
+    on it when a launch is due and denied; the console refuses a save on it
+    for each task's next launch (state.next_stage), which is stricter: it
+    cannot see a stage signal that moves the task on, nor a model override
+    that replaces the pick, and a refused save is the safe mistake."""
     gone = track_gone(policy, track)
     if gone:
         return gone

@@ -525,11 +525,13 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _refuse_stranding(candidate: Config) -> None:
         """422 when `candidate` would leave an unfinished task unable to go
-        on (models.stranded, the rule the dispatcher parks on)."""
+        on (models.stranded at its next launch; stricter than the
+        dispatcher's park, see there)."""
         stranded_tasks = [
             f"{t.target}#{t.issue} ({why})" for t in sources.tasks()
             if t.stage not in TERMINAL_STAGES and t.target in targets_by_name
-            and (why := stranded(candidate, targets_by_name[t.target], t))]
+            and (why := stranded(candidate, targets_by_name[t.target], t,
+                                 next_stage(t)))]
         if stranded_tasks:
             raise HTTPException(422, "unfinished tasks could not go on: "
                                 f"{', '.join(stranded_tasks)}")

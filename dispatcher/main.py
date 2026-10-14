@@ -204,6 +204,16 @@ def _never_launches(cfg: Config, target: Target | None, task: TaskState,
     return stranded(cfg, target, task, stage.value)
 
 
+def _park_if_stranded(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                      stage: Stage,
+                      override: execution_overrides.ExecutionOverride | None) -> None:
+    """Park `task` when its denied `stage` launch never comes
+    (_never_launches); else leave it to wait for headroom."""
+    why = _never_launches(cfg, target, task, stage, override)
+    if why:
+        _park_stranded(cfg, deps, target, task, why)
+
+
 def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
                       admit: Admit, order: Order) -> tuple[Launch | None, bool]:
     """An unclaimed candidate has no picks: its spec entry comes from the
@@ -1221,7 +1231,8 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
     for task in woken:
         target = targets[task.target]
         launch, why = _wake_launch(cfg, deps, target, task, admit, order)
-        _park_stranded(cfg, deps, target, task, why)
+        if why:
+            _park_stranded(cfg, deps, target, task, why)
         if launch is None:
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
@@ -1440,10 +1451,13 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         key=_oldest_first(cfg))
     for task in pending:
         target = targets[task.target]
+        override = _execution_override_for(cfg, task, Stage.ADDRESS_REVIEW)
         launch, bypass_usage = _choose_launch(
-            cfg, target, task, Stage.ADDRESS_REVIEW, admit, order,
-            _execution_override_for(cfg, task, Stage.ADDRESS_REVIEW))
+            cfg, target, task, Stage.ADDRESS_REVIEW, admit, order, override)
         if launch is None:
+            # Parked, PR polling skips the task; a wake starts the round.
+            _park_if_stranded(cfg, deps, target, replace(task, feedback_pending=False),
+                              Stage.ADDRESS_REVIEW, override)
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
@@ -1828,10 +1842,7 @@ def _end_poke_stretch(cfg: Config, task: TaskState, idle: float | None,
 
 def _park_stranded(cfg: Config, deps: Deps, target: Target, task: TaskState,
                    why: str) -> None:
-    """Park a task the config strands for `why` (models.stranded); "" = it
-    is not stranded."""
-    if not why:
-        return
+    """Park a task the config strands for `why` (models.stranded)."""
     _park_for_input(cfg, deps, target, task,
                     f"{why}; restore it in the console's model settings or "
                     f"targets.yaml, or run the task with a model override",
@@ -1877,8 +1888,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             cfg, target, task, stage, admit, order, override))
         if stage is not None and launch is None:
             # No launch: the signal persists; retried once headroom returns.
-            _park_stranded(cfg, deps, target, task,
-                           _never_launches(cfg, target, task, stage, override))
+            _park_if_stranded(cfg, deps, target, task, stage, override)
             return
         choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)

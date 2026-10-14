@@ -285,6 +285,20 @@ def test_a_wake_picked_on_a_provider_no_entry_names_parks_again(tmp_path):
     assert "its implement stage runs on openai" in t.park_note
 
 
+def test_a_feedback_round_picked_on_a_provider_no_entry_names_parks(tmp_path):
+    """Parked with its feedback taken: PR polling skips a parked task, so it
+    is not parked again every pass, and a wake starts the round."""
+    c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
+    make_saved_task(c, issue=42, stage=Stage.PR_OPEN, feedback_pending=True,
+                    picks={"feedback": "openai/gpt-luna@high"})
+
+    main._spawn_feedback(c, deps(), ANTHROPIC_ONLY, tuple)
+
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.park, t.park_reason, t.feedback_pending) == (PARK_HUMAN, WHY_CONFIG, False)
+    assert "runs on openai, which no model entry names" in t.park_note
+
+
 def test_a_done_stage_on_a_dropped_provider_still_moves_on(tmp_path, monkeypatch):
     """The provider rule judges the launch about to happen, not the stage that
     just ended: implement ran on openai and is done, and review runs on a

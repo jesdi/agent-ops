@@ -11,7 +11,7 @@ import yaml
 
 from dispatcher import model_settings, models
 from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_block, parse_policy
-from dispatcher.state import LoopCaps, TaskState, next_stage
+from dispatcher.state import LoopCaps, TaskState
 from dispatcher.usage import PaceConfig
 
 
@@ -247,12 +247,10 @@ def policy_for(cfg: Config, target: Target | None) -> ModelPolicy:
     return (target.models if target else None) or cfg.models
 
 
-def stranded(cfg: Config, target: Target | None, task: TaskState,
-             stage: str = "") -> str:
-    """models.stranded for `task` under `cfg`, at `stage` (default: its next
-    launch's)."""
+def stranded(cfg: Config, target: Target | None, task: TaskState, stage: str) -> str:
+    """models.stranded for `task` under `cfg`, launching `stage`."""
     return models.stranded(policy_for(cfg, target), task.track, task.picks,
-                           stage or next_stage(task), referenced_providers(cfg))
+                           stage, referenced_providers(cfg))
 
 
 def routed_providers(cfg: Config) -> frozenset[str]:
