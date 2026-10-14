@@ -11,6 +11,7 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import NamedTuple
 
 from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
@@ -154,6 +155,10 @@ PARK_WAKE = "unpark-requested"   # wake event arrived; resume when slot free
 PARK_LOGIN = "parked-login"      # live session sitting at a /login prompt
 PARK_REVIEW = "awaiting-review"  # plan ready, parked for review at leisure
 
+# No poke stretch (TaskState.poked_since / pokes): `replace(task, **NO_POKES)`
+# at the clear points named on those fields.
+NO_POKES = MappingProxyType({"poked_since": 0.0, "pokes": 0})
+
 
 @dataclass(frozen=True)
 class TaskState:
@@ -221,6 +226,15 @@ class TaskState:
     # counter at that moment. A different counter later means a new turn.
     background_reported: float = 0.0
     background_seq: int = 0
+    # Pokes of a stopped session (machine.Poke): when the first of this
+    # stretch was attempted, and how many were delivered. A stretch belongs
+    # to one live session: every session start clears it (NO_POKES), and so
+    # does what shows that the live session moved on (herdr sees it working,
+    # a background wait is recorded) and the login park, which keeps the
+    # pane. A park or a crash that ends the session leaves the old numbers
+    # on the task until the next start.
+    poked_since: float = 0.0
+    pokes: int = 0
     # None=no request; PlanApprovalRequest while at gate; AnswersRequest written
     # ONLY by _park_for_input in dispatcher/main.py, and only when a
     # worktree-contained path resolves — so an answers request never exists

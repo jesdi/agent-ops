@@ -113,6 +113,8 @@ Terms:
 
 ### Scenario: the turn end after the background work finished parks as today
 
+> Note: this now pokes the session instead of parking; see specs/herdr-liveness-parking.
+
 - **Given** portfolio_eval #329 woken by its finished gate, stage signal still `working`
 - **When** the session ends that turn with hook input `{"background_tasks": []}`, and a
   dispatcher pass runs
@@ -129,6 +131,8 @@ Terms:
   session is ended
 
 ### Scenario: turn end with nothing running parks as today
+
+> Note: this now pokes the session instead of parking; see specs/herdr-liveness-parking.
 
 - **Given** stage signal `{"stage": "review", "status": "working"}` and waitd listening
 - **When** the Stop hook runs with hook input `{"background_tasks": []}`, and a dispatcher pass

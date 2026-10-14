@@ -88,6 +88,20 @@ class ParkForInput:
     is_answers: bool = False  # True only for awaiting-answers signals
 
 
+POKE_TEXT = ("Check your background terminals. If the work finished, continue the stage. "
+             "If it is still running, wait for it. If you need the operator, set the stage "
+             "status to blocked with a note.")
+
+
+@dataclass(frozen=True)
+class Poke:
+    """Type `text` into a stopped session's pane: it ended its turn mid-stage
+    (waiting marker, signal `working`, herdr not working). The executor
+    looks at herdr and the pane once more right before it types, and that
+    newer read can still hold the poke or park the task."""
+    text: str = POKE_TEXT
+
+
 @dataclass(frozen=True)
 class ParkForCI:
     run_id: int
@@ -230,14 +244,29 @@ def _blocked_actions(task: TaskState, signal: StageSignal) -> list[object]:
     return [ParkForInput(signal.note)]
 
 
-def _working_actions(task: TaskState, signal: StageSignal, session_alive: bool,
-                     waiting: bool, caps: LoopCaps) -> list[object]:
+def _poke_actions(task: TaskState, session_alive: bool, waiting: bool,
+                  idle_seconds: float | None, stall_after: float,
+                  now: float, poke_cap: int) -> list[object]:
+    """A stopped session (live, waiting marker, herdr not working, so idle
+    above 0) is poked on every pass, until the first poke of this stretch is
+    older than the cap. `stall_after` 0 turns liveness off, pokes included."""
+    if not (waiting and session_alive):
+        return []
+    if idle_seconds is None or idle_seconds <= 0 or stall_after <= 0:
+        return []
+    if task.poked_since and now - task.poked_since > poke_cap:
+        return [ParkForInput(f"(poked {task.pokes} times over {poke_cap // 60}m — "
+                             f"stopped mid-stage without a stage signal)")]
+    return [Poke()]
+
+
+def _working_actions(task: TaskState, signal: StageSignal,
+                     caps: LoopCaps) -> list[object]:
+    """The loop bookkeeping of a `working` signal; empty when there is none."""
     loop_acts = _loop_actions(task, signal, caps)
     if task.stage == Stage.AWAITING_PLAN_REVIEW and task.operator_request:
         loop_acts = [DisarmPlanApproval()] + loop_acts
-    if waiting and session_alive:
-        return loop_acts + [ParkForInput("(session stopped mid-stage waiting for input)")]
-    return loop_acts or [NoOp()]
+    return loop_acts
 
 
 def _review_actions(task: TaskState, signal: StageSignal, grace_elapsed: bool,
@@ -408,6 +437,8 @@ def next_actions(
     caps: LoopCaps = LoopCaps(),
     tracks: frozenset[str] | None = None,
     gate_free: frozenset[str] = frozenset(),
+    now: float = 0.0,
+    poke_cap: int = 0,
 ) -> list[object]:
     if task.park:
         return [NoOp()]  # wake/resume is dispatcher-side; never re-park
@@ -439,7 +470,9 @@ def next_actions(
         return [ParkForInput(signal.note, artifact=signal.artifact, is_answers=True)]
 
     if signal.status == "working":
-        return _working_actions(task, signal, session_alive, waiting, caps)
+        poke = _poke_actions(task, session_alive, waiting, idle_seconds,
+                             stall_after, now, poke_cap)
+        return _working_actions(task, signal, caps) + poke or [NoOp()]
 
     if signal.status == "awaiting-review":
         return _review_actions(task, signal, grace_elapsed, gate_free)
@@ -489,6 +522,8 @@ def pass_actions(
     caps: LoopCaps = LoopCaps(),
     tracks: frozenset[str] | None = None,
     gate_free: frozenset[str] = frozenset(),
+    now: float = 0.0,
+    poke_cap: int = 0,
 ) -> list[object]:
     """next_actions, deferring to a background wait (design "Data model"):
     while the wait holds, neither the stall timer nor a park applies, bar
@@ -499,4 +534,5 @@ def pass_actions(
     return next_actions(task, signal, session_alive, waiting=waiting,
                         idle_seconds=idle_seconds, stall_after=stall_after,
                         grace_elapsed=grace_elapsed, caps=caps,
-                        tracks=tracks, gate_free=gate_free)
+                        tracks=tracks, gate_free=gate_free,
+                        now=now, poke_cap=poke_cap)

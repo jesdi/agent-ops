@@ -401,9 +401,9 @@ not the first deploy.
   `--dangerously-bypass-approvals-and-sandbox` inside the container.
   Review-diff's read-only `codex exec` inside a rootless container is
   unverified (ticket 02's rootless-sandbox check).
-- **herdr does not recognise `codex`**: `idle_seconds` returns None ("unknown"),
-  stall detection is off for Codex panes, and the fix belongs in herdr.
-  Ticket 1 verifies it.
+- **herdr detects Codex through `HERDR_AGENT=codex`** on the tab. Without it herdr
+  finds `podman` as the pane process and reports `agent_not_found`. Codex uses the
+  shared `stall_after_seconds`; there is no separate Codex timeout.
 - **Review avoids implement's provider**: unchanged. With Codex live, the
   preference now actually takes effect.
 - **Second model denied mid-review**: the grant was made at spawn. If the

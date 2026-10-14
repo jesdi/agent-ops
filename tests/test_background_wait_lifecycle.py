@@ -121,7 +121,7 @@ def test_new_work_reported_after_a_woken_turn_restarts_the_cap_clock(tmp_path, m
     assert t.park == "" and t.background_seq == 6
 
 
-def test_a_waiting_ping_after_a_woken_wait_parks_mid_stage(tmp_path, monkeypatch):
+def test_a_waiting_ping_after_a_woken_wait_pokes_the_stopped_session(tmp_path, monkeypatch):
     c = _review_task(tmp_path, monkeypatch)
     mark_background(c.state_dir, T, N, WORK, now=time.time() - MIN)
     sess = Herdr(("idle", 5), alive=[N], idle={N: 0.0})
@@ -130,10 +130,10 @@ def test_a_waiting_ping_after_a_woken_wait_parks_mid_stage(tmp_path, monkeypatch
     sess.state = ("working", 6)                # woken into a new turn...
     main.run_pass(c, d)
     mark_waiting(c.state_dir, T, N)            # ...which stops for input
+    sess.state, sess.idle[N] = ("done", 7), 30.0
     main.run_pass(c, d)
     t = load(c.state_dir, T, N)
-    assert t.park == PARK_HUMAN
-    assert t.park_note == "(session stopped mid-stage waiting for input)"
-    assert sess.ended == [N]
+    assert t.park == "" and sess.ended == []
+    assert len(sess.sent_text) == 1            # poked, not parked
     assert read_background(c.state_dir, T, N) is None
-    assert not has_waiting(c.state_dir, T, N)
+    assert has_waiting(c.state_dir, T, N)

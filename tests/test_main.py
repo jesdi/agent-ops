@@ -186,6 +186,7 @@ class FakeSessions:
 
     def send_text(self, target, issue, text):
         self.sent_text.append((issue, text))
+        return True
 
     def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
         if issue in self.spawn_raises:
@@ -1362,7 +1363,7 @@ def test_blocked_session_parks_and_frees_capacity(tmp_path, monkeypatch):
     assert "parked_question" in d.notifier.sent
 
 
-def test_waiting_marker_parks_working_session(tmp_path, monkeypatch):
+def test_waiting_marker_pokes_stopped_session(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
@@ -1370,11 +1371,12 @@ def test_waiting_marker_parks_working_session(tmp_path, monkeypatch):
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "working"}))
     mark_waiting(c.state_dir, "portfolio_eval", 42)
-    sess = FakeSessions(alive={42})
+    sess = FakeSessions(alive={42}, idle={42: 30.0})
+    sess.agent_state = lambda target, issue: ("done", 5)   # read again before typing
     main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_HUMAN
-    assert not has_waiting(c.state_dir, "portfolio_eval", 42)  # marker consumed
+    assert t.park == "" and len(sess.sent_text) == 1 and t.pokes == 1
+    assert has_waiting(c.state_dir, "portfolio_eval", 42)  # the poke leaves the marker
 
 
 def test_awaiting_ci_parks_silently_with_run_id(tmp_path, monkeypatch):
@@ -2735,7 +2737,7 @@ def test_stalled_working_session_parks(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("stage", [Stage.SPEC, Stage.IMPLEMENT, Stage.REVIEW])
-def test_codex_session_stalls_after_30_minutes(tmp_path, monkeypatch, stage):
+def test_codex_session_stalls_after_the_shared_timeout(tmp_path, monkeypatch, stage):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     wt = make_task(c, stage=stage,
@@ -2744,18 +2746,17 @@ def test_codex_session_stalls_after_30_minutes(tmp_path, monkeypatch, stage):
         json.dumps({"stage": stage.value, "status": "working"}))
     sess = FakeSessions(alive=[42], idle={42: 601.0})
     d = deps(sess=sess)
-    for idle in (601.0, 1800.0):
-        sess.idle[42] = idle
-        main.run_pass(c, d)
-        assert load(c.state_dir, "portfolio_eval", 42).park == ""
-    sess.idle[42] = 1801.0
+    sess.idle[42] = 600.0
+    main.run_pass(c, d)
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
+    sess.idle[42] = 601.0
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN
-    assert "no session output for 30m" in t.park_note
+    assert "no session output for 10m" in t.park_note
 
 
-def test_codex_stall_uses_last_launch_when_ticket_pick_is_cleared(tmp_path, monkeypatch):
+def test_codex_stall_with_cleared_ticket_pick_still_uses_the_shared_timeout(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     wt = make_task(c, stage=Stage.IMPLEMENT)
@@ -2763,20 +2764,26 @@ def test_codex_stall_uses_last_launch_when_ticket_pick_is_cleared(tmp_path, monk
         "2026-10-08T00:00:00Z implement openai/gpt-sol@high\n")
     (wt / ".agent" / "stage.json").write_text(
         json.dumps({"stage": "implement", "status": "working"}))
-    sess = FakeSessions(alive=[42], idle={42: 601.0})
-    main.run_pass(c, deps(sess=sess))
-    assert load(c.state_dir, "portfolio_eval", 42).park == ""
-
-
-def test_codex_session_without_stage_signal_waits_30_minutes(tmp_path, monkeypatch):
-    patch_usage(monkeypatch)
-    c = cfg(tmp_path)
-    make_task(c, stage=Stage.SPEC, picks={"spec": "openai/gpt-sol@high"})
-    sess = FakeSessions(alive=[42], idle={42: 601.0})
+    assert not load(c.state_dir, "portfolio_eval", 42).picks  # the pick is cleared
+    sess = FakeSessions(alive=[42], idle={42: 600.0})
     d = deps(sess=sess)
     main.run_pass(c, d)
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
-    sess.idle[42] = 1801.0
+    sess.idle[42] = 601.0
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN and "no session output for 10m" in t.park_note
+
+
+def test_codex_session_without_stage_signal_stalls_at_the_shared_timeout(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC, picks={"spec": "openai/gpt-sol@high"})
+    sess = FakeSessions(alive=[42], idle={42: 600.0})
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+    assert load(c.state_dir, "portfolio_eval", 42).park == ""
+    sess.idle[42] = 601.0
     main.run_pass(c, d)
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
 
@@ -3006,9 +3013,11 @@ def test_login_park_clears_the_waiting_marker(tmp_path, monkeypatch):
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "working"}))
     mark_waiting(c.state_dir, "portfolio_eval", 42)
-    sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
+    sess = FakeSessions(alive=[42], tail=LOGIN_TAIL, idle={42: 30.0})
+    sess.agent_state = lambda target, issue: ("done", 5)
     main.run_pass(c, deps(sess=sess))
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN
+    assert sess.sent_text == []         # nothing typed into the login prompt
     assert not has_waiting(c.state_dir, "portfolio_eval", 42)
 
 
