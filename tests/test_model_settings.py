@@ -286,29 +286,36 @@ def test_a_wake_picked_on_a_provider_no_entry_names_parks_again(tmp_path):
 
 
 def test_a_feedback_round_picked_on_a_provider_no_entry_names_parks(tmp_path):
-    """Parked with its feedback taken: PR polling skips a parked task, so it
-    is not parked again every pass, and a wake starts the round."""
+    """Parked once, with its feedback kept for the wake that starts the
+    round: a parked task is not spawned, nor parked again."""
     c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
     make_saved_task(c, issue=42, stage=Stage.PR_OPEN, feedback_pending=True,
                     picks={"feedback": "openai/gpt-luna@high"})
+    d = deps()
 
-    main._spawn_feedback(c, deps(), ANTHROPIC_ONLY, tuple)
+    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
+    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.park_reason, t.feedback_pending) == (PARK_HUMAN, WHY_CONFIG, False)
+    assert (t.park, t.park_reason, t.feedback_pending) == (PARK_HUMAN, WHY_CONFIG, True)
     assert "runs on openai, which no model entry names" in t.park_note
+    assert [k for k, _ in d.notifier.calls] == ["parked_question"]
 
 
-def test_a_feedback_round_parked_at_a_login_prompt_takes_its_feedback(tmp_path):
+def test_a_login_park_keeps_the_feedback_for_after_the_code(tmp_path):
+    """The code un-parks the task without a wake: its pending feedback (a
+    failed check whose cursor already moved on) must still be there."""
     c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
     make_saved_task(c, issue=42, stage=Stage.PR_OPEN, feedback_pending=True,
                     picks={"feedback": "openai/gpt-luna@high"})
+    d = deps(sess=FakeSessions(alive=[42], tail=LOGIN_TAIL))
 
-    main._spawn_feedback(c, deps(sess=FakeSessions(alive=[42], tail=LOGIN_TAIL)),
-                         ANTHROPIC_ONLY, tuple)
+    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
+    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN
+    main._inject_login_code(c, d, load(c.state_dir, "portfolio_eval", 42), "code")
 
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.feedback_pending) == (PARK_LOGIN, False)
+    assert (t.park, t.feedback_pending) == ("", True)
 
 
 def test_a_feedback_round_denied_for_headroom_only_waits(tmp_path):

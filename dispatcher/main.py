@@ -737,9 +737,6 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     note: str, artifact: str = "",
                     is_answers: bool = False,
                     reason: str = WHY_DECISION) -> None:
-    # PR polling skips a parked task and a wake starts its round: pending
-    # feedback is taken, on the login park too, as _park_exhausted takes it.
-    task = replace(task, feedback_pending=False)
     tail = deps.sessions.capture_tail(task.target, task.issue)
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, target, task, note,
@@ -1435,13 +1432,15 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
     """Spawn address-review for tasks whose PR got feedback, box-wide and
     oldest first — same gates as claiming new work (capacity, usage, slot);
     a denied spawn just stays pr-open+pending and retries next pass, badge
-    showing, unless it never launches (_choose_launch): then it parks, PR
-    polling skips it, and a wake starts the round."""
+    showing, unless it never launches (_choose_launch): then it parks with
+    its feedback kept. A parked task is not spawned here: a wake starts the
+    round (_launch_woken), and a login park un-parked by its code is spawned
+    again from here."""
     targets = {t.name: t for t in cfg.targets}
     pending = sorted(
         [t for t in load_all(cfg.state_dir)
          if t.target in targets and t.stage is Stage.PR_OPEN
-         and t.feedback_pending],
+         and t.feedback_pending and not t.park],
         key=_oldest_first(cfg))
     for task in pending:
         target = targets[task.target]
@@ -2443,9 +2442,9 @@ def _sandboxed_state(cfg: Config):
 def _starving(task: TaskState) -> bool:
     """Is this task legitimately still waiting for the capacity/slot it was
     denied? Exactly the two queues that mark the marker: _resume_woken's
-    (park == PARK_WAKE) and _spawn_feedback's (a pr-open task with pending
-    feedback). Anything else is not waiting for anything."""
-    return task.park == PARK_WAKE or task.feedback_pending
+    (park == PARK_WAKE) and _spawn_feedback's (an unparked pr-open task with
+    pending feedback). Anything else is not waiting for anything."""
+    return task.park == PARK_WAKE or (task.feedback_pending and not task.park)
 
 
 def _migrate_legacy_keys(cfg: Config) -> None:
