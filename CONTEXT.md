@@ -267,9 +267,11 @@ The `models:` block (triage list, tracks, untracked, pinned, review_second)
 as stored from the console's Settings page in
 `<state_dir>/model-settings.json` (`dispatcher/model_settings.py`). When
 present it replaces the targets.yaml block for the dispatcher, triage and the
-console; a target's own `models:` block still wins. Read at every config load,
-so a save applies from the next pass. The console refuses a block that fails
-config validation or drops a track an unfinished task runs on. A stored block
+console; a target's own `models:` block still wins. Read at every config load
+and again by the pass inside the pass lock, so a save applies from the next
+pass. The console stores it under that lock (409 when a pass holds it for
+more than 30 s), and refuses a block that fails config validation or drops a
+track an unfinished task runs on. A stored block
 that no longer loads (a later targets.yaml change) is not applied: the
 targets.yaml block runs and the Settings page shows why. Reset deletes the
 file.

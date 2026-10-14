@@ -99,7 +99,7 @@ class FakeSources:
         return self.rank.get(target.name,
                              ([], "2026-07-25T00:00:00+00:00", False))
 
-    def usage(self):
+    def usage(self, routed=()):
         return self.usages
 
     def execution_override(self, target, issue):
@@ -156,9 +156,6 @@ class FakeSources:
     def append_event(self, event, *, target="", issue=0, actor="",
                      detail=""):
         self.appended.append((event, target, issue, actor, detail))
-
-    def reconfigure(self, cfg):
-        self.cfg = cfg
 
     def state_fingerprint(self):
         return self.fingerprint

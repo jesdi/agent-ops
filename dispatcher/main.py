@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Callable
 
 from dispatcher.convergence import pass_lock
-from dispatcher.config import (Config, Target, load_config, policy_for,
+from dispatcher.config import (Config, Target, apply_stored_models,
+                               load_config, policy_for, track_missing,
                                referenced_providers, routed_providers)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
@@ -1818,7 +1819,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
-    if task.track not in policy.tracks:
+    if track_missing(cfg, target, task.track):
         _park_for_input(cfg, deps, target, task,
                         f"track {task.track!r} is no longer configured (have "
                         f"{sorted(policy.tracks)}); restore it in the console's model "
@@ -2604,7 +2605,10 @@ def main() -> None:
             print(line)
     else:
         with pass_lock(cfg.state_dir):
-            guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)
+            # The console stores model settings under this lock: read them
+            # again inside it, so a pass never runs a block the console has
+            # replaced (a removed track would park the tasks it claims).
+            guarded_pass(apply_stored_models(cfg), deps, args.config, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from dispatcher import model_settings
-from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy
+from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_block, parse_policy
 from dispatcher.state import LoopCaps
 from dispatcher.usage import PaceConfig
 
@@ -73,10 +73,11 @@ class Config:
     # (see docs/specs/2026-09-13-usage-pace-gate-design.md).
     pace: PaceConfig = PaceConfig()
     # The targets.yaml `models:` block. `models` is the block in force: this
-    # one, or the one stored from the console (dispatcher.model_settings).
+    # one, or the one stored from the console (apply_stored_models).
     file_models: ModelPolicy = DEFAULT_POLICY
-    # Why the stored block was not applied, "" when it was or there is none.
-    models_override_error: str = ""
+    # Where `models` comes from: None = targets.yaml, Stored = the console's
+    # block, Rejected = a stored block not in force (targets.yaml's runs).
+    models_origin: model_settings.Stored | model_settings.Rejected | None = None
 
 
 def _loop_caps(raw: object) -> LoopCaps:
@@ -193,7 +194,6 @@ def load_config(path: str | Path) -> Config:
         targets=[_target(t, capacity) for t in raw.get("targets", [])],
         infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
-        file_models=parse_policy(raw.get("models")),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
         background_wait_seconds=_background_wait_seconds(raw),
@@ -204,15 +204,10 @@ def load_config(path: str | Path) -> Config:
         pace=_pace(raw),
     )
     _check_shares(cfg)
-    try:
-        doc = model_settings.load(cfg.state_dir)
-        return with_models(cfg, doc["models"]) if doc else cfg
-    except ValueError as e:
-        # A bad stored block must not stop every pass and the console that
-        # can fix it: targets.yaml's block runs, and the console shows why.
-        error = f"console model settings not applied: {e}"
-        print(f"[warn] {error}", file=sys.stderr)
-        return replace(cfg, models_override_error=error)
+    cfg = apply_stored_models(replace(cfg, file_models=cfg.models))
+    if isinstance(cfg.models_origin, model_settings.Rejected):
+        print(f"[warn] {cfg.models_origin.reason}", file=sys.stderr)
+    return cfg
 
 
 def _check_shares(cfg: Config) -> None:
@@ -224,14 +219,38 @@ def _check_shares(cfg: Config) -> None:
                          f"expected any of {sorted(referenced_providers(cfg))}")
 
 
-def with_models(cfg: Config, raw: dict) -> Config:
+def with_models(cfg: Config, raw: object) -> Config:
     """`cfg` with `raw` as the global `models:` block, validated as
     load_config validates the targets.yaml one. Raises ValueError."""
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError(f"models: must be a non-empty mapping, got {raw!r}")
-    out = replace(cfg, models=parse_policy(raw), models_override_error="")
+    out = replace(cfg, models=parse_block(raw))
     _check_shares(out)
     return out
+
+
+def file_config(cfg: Config) -> Config:
+    """`cfg` with the targets.yaml `models:` block in force."""
+    return replace(cfg, models=cfg.file_models, models_origin=None)
+
+
+def apply_stored_models(cfg: Config) -> Config:
+    """`cfg` with the block stored now in the state dir in force, else the
+    targets.yaml one. Never raises: a bad stored block must not stop every
+    pass and the console that can fix it, so it is Rejected with the reason."""
+    base = file_config(cfg)
+    try:
+        stored = model_settings.load(cfg.state_dir)
+        if stored is None:
+            return base
+        return replace(with_models(base, stored.models), models_origin=stored)
+    except ValueError as e:
+        return replace(base, models_origin=model_settings.Rejected(
+            f"console model settings not applied: {e}"))
+
+
+def track_missing(cfg: Config, target: Target, track: str) -> bool:
+    """`track` is not in the policy `target` runs on: the dispatcher parks a
+    task on it, and the console refuses a block that would do that."""
+    return track not in policy_for(cfg, target).tracks
 
 
 def policy_for(cfg: Config, target: Target) -> ModelPolicy:

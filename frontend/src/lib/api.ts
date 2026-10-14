@@ -30,6 +30,7 @@ export type ReadableContent = components['schemas']['ReadableContent']
 export type UnavailableContent = components['schemas']['UnavailableContent']
 export type ModelSettingsView = components['schemas']['ModelSettingsView']
 export type ModelsSetting = components['schemas']['ModelsSetting']
+export type EntrySetting = components['schemas']['EntrySetting']
 
 export interface PendingIntent {
   action: string

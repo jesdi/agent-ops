@@ -10,13 +10,13 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Collection, Literal
 
 from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
                         priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
-from dispatcher.config import Config, Target, referenced_providers
+from dispatcher.config import Config, Target
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
 from dispatcher.sessions import session_name
@@ -63,10 +63,6 @@ class Sources:
     @property
     def state_dir(self) -> Path:
         return Path(self._cfg.state_dir)
-
-    def reconfigure(self, cfg: Config) -> None:
-        """The config after the console changed its model settings."""
-        self._cfg = cfg
 
     # -- reads -----------------------------------------------------------
 
@@ -151,12 +147,13 @@ class Sources:
         self._desc_cache[key] = {"data": data, "at": now}
         return data
 
-    def usage(self) -> dict[str, ProviderUsage]:
-        """Every routed provider, plus any other provider whose adapter reads
-        (Codex run by hand while no track lists openai). The dispatcher
-        admits on the routed set alone; an unrouted provider that reads
-        unavailable (no login) is noise here, so it is left out."""
-        routed = referenced_providers(self._cfg)
+    def usage(self, routed: Collection[str]) -> dict[str, ProviderUsage]:
+        """Every `routed` provider (config.referenced_providers of the config
+        in force), plus any other provider whose adapter reads (Codex run by
+        hand while no track lists openai). The dispatcher admits on the
+        routed set alone; an unrouted provider that reads unavailable (no
+        login) is noise here, so it is left out."""
+        routed = set(routed)
         usages = {p: fetch_provider(p, self._cfg.state_dir, now=self._clock)
                   for p in sorted(routed | ADAPTERS.keys())}
         return {p: u for p, u in usages.items()

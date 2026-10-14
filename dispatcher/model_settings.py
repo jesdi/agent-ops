@@ -2,10 +2,11 @@
 (`<state_dir>/model-settings.json`). When present it replaces the `models:`
 block of targets.yaml for the dispatcher, triage and the console; deleting it
 brings the targets.yaml block back. A target's own `models:` block still
-replaces both (config.policy_for)."""
+replaces both (config.policy_for). config.apply_stored_models applies it."""
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,24 +15,36 @@ from dispatcher.state import write_json_atomic
 FILE = "model-settings.json"
 
 
-def load(state_dir: str | Path) -> dict | None:
-    """The stored document {"models", "set_by", "set_at"}, or None when there
-    is none. Raises ValueError when the file is unreadable or holds no
-    `models` mapping, so the caller can say why it was not applied."""
+@dataclass(frozen=True)
+class Stored:
+    """A stored block: the raw `models:` mapping (models.parse_block
+    validates it), who stored it and when (ISO 8601, UTC)."""
+    models: object
+    set_by: str
+    set_at: str
+
+
+@dataclass(frozen=True)
+class Rejected:
+    """A stored block that is not in force, and why: targets.yaml's runs."""
+    reason: str
+
+
+def load(state_dir: str | Path) -> Stored | None:
+    """The stored block, or None when there is none. Raises ValueError when
+    the file is unreadable or is not a {"models", ...} JSON object."""
     path = Path(state_dir) / FILE
     try:
-        text = path.read_text()
+        doc = json.loads(path.read_text())
     except FileNotFoundError:
         return None
     except OSError as e:
         raise ValueError(f"{path} is unreadable: {e}") from e
-    try:
-        doc = json.loads(text)
     except ValueError as e:
         raise ValueError(f"{path} is not JSON: {e}") from e
-    if not isinstance(doc, dict) or not isinstance(doc.get("models"), dict) or not doc["models"]:
-        raise ValueError(f"{path} holds no models mapping")
-    return doc
+    if not isinstance(doc, dict) or "models" not in doc:
+        raise ValueError(f"{path} holds no models block")
+    return Stored(doc["models"], str(doc.get("set_by") or ""), str(doc.get("set_at") or ""))
 
 
 def save(state_dir: str | Path, models: dict, *, actor: str, now: datetime) -> None:

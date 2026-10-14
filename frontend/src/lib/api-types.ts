@@ -591,6 +591,18 @@ export interface components {
              */
             zone: "needs-you" | "pipeline";
         };
+        /**
+         * EntrySetting
+         * @description One stage-list entry: models.Entry, which owns its text form.
+         */
+        EntrySetting: {
+            /** Effort */
+            effort: string;
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+        };
         /** EventEntry */
         EventEntry: {
             /** Actor */
@@ -718,27 +730,22 @@ export interface components {
         };
         /** ModelSettingsView */
         ModelSettingsView: {
+            /** Default Provider */
+            default_provider: string;
             /** Efforts */
             efforts: {
                 [key: string]: string[];
             };
-            /**
-             * Error
-             * @default
-             */
+            /** Error */
             error: string;
             /** Known Models */
-            known_models: string[];
+            known_models: {
+                [key: string]: string[];
+            };
             models: components["schemas"]["ModelsSetting"];
-            /**
-             * Set At
-             * @default
-             */
+            /** Set At */
             set_at: string;
-            /**
-             * Set By
-             * @default
-             */
+            /** Set By */
             set_by: string;
             /**
              * Source
@@ -750,23 +757,19 @@ export interface components {
         };
         /**
          * ModelsSetting
-         * @description The `models:` block, as targets.yaml writes it (models.parse_policy
-         *     validates it; this only fixes the shape).
+         * @description The `models:` block with structured entries. models.parse_block
+         *     validates it; this only fixes the shape.
          */
         ModelsSetting: {
-            /**
-             * Pinned
-             * @default []
-             */
+            /** Pinned */
             pinned: string[];
-            /** Review Second */
-            review_second?: string | null;
+            review_second: components["schemas"]["EntrySetting"] | null;
             /** Tracks */
             tracks: {
                 [key: string]: components["schemas"]["TrackSetting"];
             };
             /** Triage */
-            triage: string[];
+            triage: components["schemas"]["EntrySetting"][];
             /** Untracked */
             untracked: string;
         };
@@ -1082,24 +1085,18 @@ export interface components {
             /** Seconds */
             seconds: number;
         };
-        /**
-         * TrackSetting
-         * @description One track of the `models:` block, as targets.yaml writes it.
-         */
+        /** TrackSetting */
         TrackSetting: {
             /** Implement */
-            implement: string[];
+            implement: components["schemas"]["EntrySetting"][];
             /** Plan */
-            plan: string[];
-            /**
-             * Plan Review
-             * @default true
-             */
+            plan: components["schemas"]["EntrySetting"][];
+            /** Plan Review */
             plan_review: boolean;
             /** Review */
-            review: string[];
+            review: components["schemas"]["EntrySetting"][];
             /** Spec */
-            spec: string[];
+            spec: components["schemas"]["EntrySetting"][];
             /** When */
             when: string;
         };

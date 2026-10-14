@@ -255,12 +255,17 @@ def _pinned(raw: object, tracks: Mapping[str, Track]) -> tuple[str, ...]:
 
 
 def parse_policy(raw: dict | None) -> ModelPolicy:
-    """Validate the `models:` block. Raises ValueError so a typo kills the
-    pass loudly at config load instead of silently mis-routing."""
-    if not raw:
-        return DEFAULT_POLICY
+    """Validate a targets.yaml `models:` block; absent or empty is the
+    default policy. Raises ValueError so a typo kills the pass loudly at
+    config load instead of silently mis-routing."""
+    return parse_block(raw) if raw else DEFAULT_POLICY
+
+
+def _check_top_keys(raw: object) -> None:
     if not isinstance(raw, dict):
         raise ValueError(f"models: must be a mapping, got {raw!r}")
+    if not raw:
+        raise ValueError("models: must not be empty")
     old = [k for k in _OLD_KEYS if k in raw]
     if old:
         raise ValueError(f"models: {old} are gone; write tracks:, untracked: "
@@ -269,6 +274,12 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
     if unknown:
         raise ValueError(f"models: unknown key(s) {sorted(unknown)}; expected "
                          f"tracks:, untracked:, triage:")
+
+
+def parse_block(raw: object) -> ModelPolicy:
+    """Validate a `models:` block that must be there (the console's stored
+    one): empty is an error, not the default policy."""
+    _check_top_keys(raw)
     tracks_raw = raw.get("tracks")
     if not isinstance(tracks_raw, dict) or not tracks_raw:
         raise ValueError("models: tracks: must be a non-empty mapping of "
