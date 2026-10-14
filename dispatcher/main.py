@@ -215,7 +215,7 @@ def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
                       updated_at="", track=track_from_labels(cand.labels, policy))
     launch, bypass, _ = _choose_launch(cfg, target, probe, Stage.SPEC, admit, order,
                                        _execution_override_for(cfg, probe, Stage.SPEC))
-    return launch, bypass   # no picks: nothing strands it
+    return launch, bypass   # no picks and a configured track: nothing strands it
 
 
 def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
@@ -737,6 +737,9 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     note: str, artifact: str = "",
                     is_answers: bool = False,
                     reason: str = WHY_DECISION) -> None:
+    # PR polling skips a parked task and a wake starts its round: pending
+    # feedback is taken, on the login park too, as _park_exhausted takes it.
+    task = replace(task, feedback_pending=False)
     tail = deps.sessions.capture_tail(task.target, task.issue)
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, target, task, note,
@@ -770,13 +773,11 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     _end_session(cfg, deps, task.target, task.issue)
     # A wake that ends here is over: the wake that follows this park says
-    # for itself whether it is an attach, and on which model. PR polling
-    # skips a parked task and a wake starts its round: pending feedback is
-    # taken, as _park_exhausted takes it.
+    # for itself whether it is an attach, and on which model.
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, park_reason=reason,
                                 slot=NO_SLOT, operator_request=answers_request,
-                                hold_for_attach=False, feedback_pending=False,
+                                hold_for_attach=False,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
                                 asked=task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN)),

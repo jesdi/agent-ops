@@ -12,9 +12,9 @@ from dispatcher import main, model_settings
 from dispatcher.config import apply_stored_models, load_config
 from dispatcher.convergence import pass_lock
 from dispatcher.models import Entry
-from dispatcher.state import PARK_HUMAN, PARK_WAKE, WHY_CONFIG, Stage, load
+from dispatcher.state import PARK_HUMAN, PARK_LOGIN, PARK_WAKE, WHY_CONFIG, Stage, load
 from tests.test_config import SAMPLE
-from tests.test_main import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps, patch_usage,
+from tests.test_main import (ADMIT_ALL, DENY_ALL, LOGIN_TAIL, FakeSessions, cfg, deps, patch_usage,
                              patch_workspace)
 from tests.test_main import make_task as make_saved_task
 from tests.webfakes import HEADERS, FakeSources, make_task, tracks_policy
@@ -297,6 +297,18 @@ def test_a_feedback_round_picked_on_a_provider_no_entry_names_parks(tmp_path):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.park, t.park_reason, t.feedback_pending) == (PARK_HUMAN, WHY_CONFIG, False)
     assert "runs on openai, which no model entry names" in t.park_note
+
+
+def test_a_feedback_round_parked_at_a_login_prompt_takes_its_feedback(tmp_path):
+    c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
+    make_saved_task(c, issue=42, stage=Stage.PR_OPEN, feedback_pending=True,
+                    picks={"feedback": "openai/gpt-luna@high"})
+
+    main._spawn_feedback(c, deps(sess=FakeSessions(alive=[42], tail=LOGIN_TAIL)),
+                         ANTHROPIC_ONLY, tuple)
+
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.park, t.feedback_pending) == (PARK_LOGIN, False)
 
 
 def test_a_feedback_round_denied_for_headroom_only_waits(tmp_path):
