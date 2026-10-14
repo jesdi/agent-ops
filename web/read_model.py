@@ -72,6 +72,12 @@ _STAGE_COLUMN = {
 }
 
 
+def _park_reason(t: TaskState) -> str:
+    if t.park == PARK_LOGIN:
+        return "login"
+    return t.park_reason if t.park == PARK_HUMAN else ""
+
+
 def column_for(stage: str, park: str) -> str:
     if park in _PARK_COLUMN:
         return _PARK_COLUMN[park]
@@ -153,6 +159,9 @@ class TaskCard(BaseModel):
     stage: str
     park: str
     park_note: str
+    # Why the task sits in Parked: a WHY_* value, "login" for a login park,
+    # "" for every other park and for a park from before the field.
+    park_reason: str
     column: str
     slot: int
     branch: str
@@ -235,6 +244,7 @@ def task_card(t: TaskState, *, model: str,
         issue=t.issue, target=t.target, title=t.title,
         stage=shown_stage(t), park=t.park,
         park_note=t.park_note,
+        park_reason=_park_reason(t),
         column=column_for(shown_stage(t), t.park),
         slot=t.slot, branch=t.branch, model=model, track=t.track,
         pinned_track=pinned_track,

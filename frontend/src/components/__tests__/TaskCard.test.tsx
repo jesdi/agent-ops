@@ -37,7 +37,7 @@ it('compact card shows identifier, title link and updated stamp, and only the si
 
 it('parked cards show the park reason and in-progress cards the stage while compact', () => {
   renderCard(parkedCard)
-  expect(screen.getByText('parked: question')).toBeInTheDocument()
+  expect(screen.getByText('parked: decision')).toBeInTheDocument()
   expect(screen.queryByText('Implementing')).toBeNull()
   renderCard(inProgressCard)
   expect(screen.getByText('Implementing')).toBeInTheDocument()
@@ -139,6 +139,11 @@ it('marks a card that holds a capacity unit, in text and not only colour', () =>
   expect(screen.getByText('holding a capacity unit')).toBeInTheDocument()
 })
 
+it('shows a bare parked chip for a park from before the reason', () => {
+  renderCard({ ...parkedCard, park_reason: '' })
+  expect(screen.getByText('parked')).toBeInTheDocument()
+})
+
 it('leaves a card that holds no unit unmarked', () => {
   renderCard({ ...parkedCard, consuming_capacity: false })
   expect(screen.queryByText('holding a capacity unit')).not.toBeInTheDocument()
@@ -146,7 +151,7 @@ it('leaves a card that holds no unit unmarked', () => {
 
 it('AWKWARD: a login-parked card is marked — parked, yet still consuming', () => {
   renderCard(loginParkedCard)
-  expect(screen.getByText('parked: parked-login')).toBeInTheDocument()
+  expect(screen.getByText('parked: login')).toBeInTheDocument()
   expect(screen.getByText('holding a capacity unit')).toBeInTheDocument()
 })
 

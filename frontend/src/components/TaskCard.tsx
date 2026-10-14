@@ -1,6 +1,6 @@
 import type { TaskCard } from '../lib/api'
 import { slotBorder, slotChip } from '../lib/capacity'
-import { formatDuration, relativeTime, stageLabel } from '../lib/format'
+import { formatDuration, parkLabel, relativeTime, stageLabel } from '../lib/format'
 import { CHIP_SHAPE, chip } from '../lib/tone'
 import { PendingBadge } from './PendingBadge'
 import { AdmissionWarning } from './AdmissionWarning'
@@ -46,7 +46,7 @@ function TaskCardSignals({ card }: { card: TaskCard }) {
       <span key="stage" className="text-ink-muted">{stageLabel(card.stage)}</span>
     ),
     card.column === 'parked' && card.park !== '' && (
-      <span key="park" className={chip.parked}>parked: {card.park}</span>
+      <span key="park" className={chip.parked}>{parkLabel(card)}</span>
     ),
     card.undelivered_messages > 0 && (
       <span key="mail" data-testid="mail-badge" className={chip.neutral} title="queued operator messages">

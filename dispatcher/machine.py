@@ -18,7 +18,8 @@ from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, CheckResult, PlanRev
                                   check_tickets, count_open_questions, plan_revision)
 from dispatcher.loops import (Decision, Loop, Outcome, ReportedRound, Retry, evaluate,
                               retry_left, unattended_rounds_used)
-from dispatcher.state import (IN_FLIGHT_STAGES, BackgroundWait, LoopCaps, Stage,
+from dispatcher.state import (IN_FLIGHT_STAGES, WHY_BAD_SIGNAL, WHY_DECISION,
+                              WHY_STALLED, BackgroundWait, LoopCaps, Stage,
                               StageSignal, TaskState)
 
 
@@ -86,6 +87,7 @@ class ParkForInput:
     note: str = ""
     artifact: str = ""   # awaiting-answers: the file the operator must answer
     is_answers: bool = False  # True only for awaiting-answers signals
+    reason: str = WHY_DECISION
 
 
 POKE_TEXT = ("Check your background terminals. If the work finished, continue the stage. "
@@ -199,13 +201,13 @@ def _bad_track(signal: StageSignal, tracks: frozenset[str] | None,
 def _spec_bounce(task: TaskState, reason: str) -> list[object]:
     if retry_left(task, Retry.SPEC_SIGNAL):
         return [RetryStage(Stage.SPEC, reason, Retry.SPEC_SIGNAL)]
-    return [ParkForInput(reason)]
+    return [ParkForInput(reason, reason=WHY_BAD_SIGNAL)]
 
 
 def _plan_bounce(task: TaskState, reason: str) -> list[object]:
     if retry_left(task, Retry.PLAN_SIGNAL):
         return [RetryStage(Stage.PLAN, reason, Retry.PLAN_SIGNAL)]
-    return [ParkForInput(reason)]
+    return [ParkForInput(reason, reason=WHY_BAD_SIGNAL)]
 
 
 def _dead_session_actions(task: TaskState) -> list[object]:
@@ -256,7 +258,8 @@ def _poke_actions(task: TaskState, session_alive: bool, waiting: bool,
         return []
     if task.poked_since and now - task.poked_since > poke_cap:
         return [ParkForInput(f"(poked {task.pokes} times over {poke_cap // 60}m — "
-                             f"stopped mid-stage without a stage signal)")]
+                             f"stopped mid-stage without a stage signal)",
+                             reason=WHY_STALLED)]
     return [Poke()]
 
 
@@ -453,7 +456,7 @@ def next_actions(
     if _stalled(signal, session_alive, waiting, idle_seconds, stall_after):
         return [ParkForInput(
             f"(no session output for {int(stall_after) // 60}m — "
-            f"likely login/trust prompt or hang)")]
+            f"likely login/trust prompt or hang)", reason=WHY_STALLED)]
 
     if signal is None:
         return [NoOp()]
@@ -506,7 +509,8 @@ def _wait_actions(task: TaskState, view: BackgroundView) -> list[object] | None:
         return None
     if view.now - view.wait.since > view.cap:
         return [ParkForInput(f"(background work still running after "
-                             f"{view.cap // 60}m — cap reached)")]
+                             f"{view.cap // 60}m — cap reached)",
+                             reason=WHY_STALLED)]
     return []
 
 

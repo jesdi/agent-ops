@@ -2388,6 +2388,7 @@ def test_park_intent_parks_a_live_task(tmp_path, monkeypatch):
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN and t.park_msg_id == 77
+    assert t.park_reason == "operator"
     assert sess.ended == [42]
     assert "parked_question" in d.notifier.sent
     assert intents_mod.list_intents(c.state_dir) == []
@@ -5122,7 +5123,7 @@ def test_ordinary_blocked_park_clears_stale_operator_request(tmp_path):
     assert t.operator_request is None, (
         f"ordinary park must clear stale request, got {t.operator_request!r}")
     assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
-    assert t.park == PARK_HUMAN
+    assert (t.park, t.park_reason) == (PARK_HUMAN, "decision")
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 2, 0, 1), (
         "loop counters must be unchanged")
 
@@ -5143,7 +5144,7 @@ def test_loop_exhaustion_park_clears_stale_operator_request(tmp_path):
     assert t.operator_request is None, (
         f"exhaustion park must clear stale request, got {t.operator_request!r}")
     assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
-    assert t.park == PARK_HUMAN
+    assert (t.park, t.park_reason) == (PARK_HUMAN, "loop cap")
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 0, 2, 0), (
         "loop counters must be unchanged by the clear")
 

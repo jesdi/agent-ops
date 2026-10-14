@@ -155,6 +155,14 @@ PARK_WAKE = "unpark-requested"   # wake event arrived; resume when slot free
 PARK_LOGIN = "parked-login"      # live session sitting at a /login prompt
 PARK_REVIEW = "awaiting-review"  # plan ready, parked for review at leisure
 
+# Why a PARK_HUMAN task waits (TaskState.park_reason); the board shows it.
+WHY_DECISION = "decision"        # the session asks the operator something
+WHY_STALLED = "stalled"          # silent, poked out, or a wait past its cap
+WHY_LOOP_CAP = "loop cap"        # a bounded loop used all its rounds
+WHY_BAD_SIGNAL = "bad signal"    # stage.json still rejected after the retries
+WHY_CONFIG = "config"            # the task's track is not configured
+WHY_OPERATOR = "operator"        # the operator parked it
+
 # No poke stretch (TaskState.poked_since / pokes): `replace(task, **NO_POKES)`
 # at the clear points named on those fields.
 NO_POKES = MappingProxyType({"poked_since": 0.0, "pokes": 0})
@@ -174,6 +182,7 @@ class TaskState:
     ci_run_id: int = 0
     park_msg_id: int = 0
     park_note: str = ""                  # the question shown while parked
+    park_reason: str = ""                # WHY_* of the last PARK_HUMAN; "" = from before the field
     hold_for_attach: bool = False
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time

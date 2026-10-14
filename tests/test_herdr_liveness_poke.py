@@ -10,8 +10,8 @@ import pytest
 import dispatcher.main as main
 from dispatcher.main import STOPPED_NOTE
 from dispatcher.sessions import Sessions
-from dispatcher.state import (PARK_HUMAN, PARK_LOGIN, SessionRecord, Stage,
-                              mark_background, mark_waiting, save, write_session)
+from dispatcher.state import (PARK_HUMAN, PARK_LOGIN, WHY_DECISION, WHY_STALLED,
+                              SessionRecord, Stage, mark_background, mark_waiting, save, write_session)
 from tests.test_herdr_liveness_poke_acceptance import (HOUR, MIN, N, POKE, T,
                                                        HerdrSessions, _ev, _poke_state,
                                                        _setup, _signal, _task)
@@ -79,6 +79,7 @@ def test_pane_that_refuses_every_poke_is_parked_at_the_cap(tmp_path, monkeypatch
     t = _task(c)
     assert t.park == PARK_HUMAN and sess.ended == [N]
     assert t.park_note == "(poked 0 times over 180m — stopped mid-stage without a stage signal)"
+    assert t.park_reason == WHY_STALLED
 
 
 def test_dry_run_types_nothing_and_saves_nothing(tmp_path, monkeypatch):
@@ -178,6 +179,7 @@ def test_old_waiting_marker_and_herdr_blocked_parks_and_types_nothing(tmp_path, 
     t = _task(c)
     assert sess.sent_text == [] and _ev(c, "poked") == []
     assert (t.park, t.park_note) == (PARK_HUMAN, STOPPED_NOTE) and sess.ended == [N]
+    assert t.park_reason == WHY_DECISION
 
 
 def test_past_the_cap_the_cap_note_wins_at_a_prompt(tmp_path, monkeypatch):

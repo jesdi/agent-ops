@@ -14,7 +14,8 @@ export async function routeLongBoard(page: Page) {
         const issue = 100 + i * 20 + n
         column.cards.push({
           ...seed, issue, column: column.key, park_note_pending: false, wake_blocked: false,
-          park: column.key === 'parked' ? 'question' : '', stage: 'implement',
+          park: column.key === 'parked' ? 'parked' : '',
+          park_reason: column.key === 'parked' ? 'decision' : '', stage: 'implement',
           title: `Long-board card ${issue} with a title that wraps onto a second line`,
         })
       }

@@ -19,7 +19,7 @@ test('park -> reply -> pending -> confirmed', async ({ page, request }) => {
 
   // Pending badge appears; task state is NOT optimistically flipped.
   await expect(page.getByTestId('pending-badge')).toBeVisible()
-  await expect(page.getByText('parked: question')).toBeVisible()
+  await expect(page.getByText('parked: decision')).toBeVisible()
 
   // The fake dispatcher drains the intent into the durable queue but does NOT
   // resume yet — the task is starved (wake_blocked).

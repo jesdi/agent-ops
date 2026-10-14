@@ -15,7 +15,7 @@ import { queryKeys } from '../hooks/queryKeys'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useIssueDescription, usePendingIntents, useTaskDetail } from '../hooks/useResources'
 import { api, ApiError } from '../lib/api'
-import { formatDuration, providerOf, relativeTime, stageLabel } from '../lib/format'
+import { formatDuration, parkLabel, providerOf, relativeTime, stageLabel } from '../lib/format'
 import { banner, chip } from '../lib/tone'
 
 export function TaskPage() {
@@ -163,9 +163,7 @@ function TaskHeader({ card, intents, target, issue }: {
       branch {card.branch} · updated {relativeTime(card.updated_at)}
     </span>
     {card.park !== '' && (
-      <span className={chip.parked}>
-        parked: {card.park}
-      </span>
+      <span className={chip.parked}>{parkLabel(card)}</span>
     )}
     {myIntents.map((intent) => (
       <PendingBadge key={`${intent.action}-${intent.created_at}`} action={intent.action} />

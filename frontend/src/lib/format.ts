@@ -1,3 +1,5 @@
+import type { TaskCard } from './api'
+
 /** Two most significant units, zero units dropped: 8100 -> "2h 15m". */
 export function formatDuration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds))
@@ -39,6 +41,14 @@ const STAGE_LABELS: Record<string, string> = {
 
 export function stageLabel(stage: string): string {
   return STAGE_LABELS[stage] ?? stage
+}
+
+/** The park chip: why the task waits when the dispatcher recorded it, else
+ *  the park kind. An operator park from before the reason shows no kind:
+ *  "parked: parked" says nothing. */
+export function parkLabel(card: Pick<TaskCard, 'park' | 'park_reason'>): string {
+  if (card.park_reason) return `parked: ${card.park_reason}`
+  return card.park === 'parked' ? 'parked' : `parked: ${card.park}`
 }
 
 /** `provider/model` -> provider; a bare id is anthropic's. Mirrors

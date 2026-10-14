@@ -198,6 +198,12 @@ parks for the operator ("no session output for Nm"). Nothing is typed into it.
 _Avoid_: poke (a poke goes to a session that stopped and left a waiting
 marker)
 
+**Park reason**:
+`TaskState.park_reason`: why a task waits for the operator, set on every operator
+park (`dispatcher.state.WHY_*`: decision, stalled, loop cap, bad signal, config,
+operator). The board shows it as `parked: <reason>`; a login park shows
+`parked: login`. "" = a park from before the field.
+
 **Provider**:
 A subscription whose usage windows the box spends (`anthropic`; later
 `openai`, `nvidia`). Named by the `provider/` prefix of a model id; a bare

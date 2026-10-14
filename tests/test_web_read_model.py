@@ -35,6 +35,18 @@ def test_park_overrides_stage(stage):
     assert column_for(stage.value, PARK_REVIEW) == "needs-review"
 
 
+@pytest.mark.parametrize("park, stored, shown", [
+    (PARK_HUMAN, "stalled", "stalled"),
+    (PARK_HUMAN, "", ""),               # a park from before the field
+    (PARK_LOGIN, "", "login"),
+    (PARK_CI, "stalled", ""),           # only Parked-column parks have a reason
+    ("", "decision", ""),               # left over from an earlier park
+])
+def test_card_park_reason(park, stored, shown):
+    t = make_task(park=park, park_reason=stored, slot=NO_SLOT)
+    assert task_card(t, model="m").park_reason == shown
+
+
 @pytest.mark.parametrize("stage", list(Stage))
 def test_unparked_column_per_stage(stage):
     assert column_for(stage.value, "") == STAGE_COLUMNS[stage]
