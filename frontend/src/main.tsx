@@ -7,7 +7,7 @@ import { AppShell } from './components/AppShell'
 import { PageErrorBoundary } from './components/PageErrorBoundary'
 import { LiveUpdatesProvider } from './hooks/useLiveUpdates'
 import { BoardPage } from './pages/BoardPage'
-import { FailuresPage, HistoryPage, ReviewPage, TaskPage } from './pages/LazyPages'
+import { FailuresPage, HistoryPage, ReviewPage, SettingsPage, TaskPage } from './pages/LazyPages'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 1000, retry: 1 } },
@@ -26,6 +26,7 @@ createRoot(document.getElementById('root')!).render(
               <Route path="/task/:target/:issue" element={<TaskPage />} />
               <Route path="/failures" element={<FailuresPage />} />
               <Route path="/history" element={<HistoryPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
             </Route>
           </Routes>
         </BrowserRouter>

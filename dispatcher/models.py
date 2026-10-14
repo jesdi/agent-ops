@@ -283,6 +283,22 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
                        pinned=_pinned(raw.get("pinned"), tracks))
 
 
+def policy_to_raw(policy: ModelPolicy) -> dict:
+    """The inverse of parse_policy: the `models:` block that parses back to
+    `policy`. The console's settings page edits this shape."""
+    raw: dict = {
+        "triage": [str(e) for e in policy.triage],
+        "untracked": policy.untracked,
+        "tracks": {t.name: {"when": t.when, "plan_review": t.plan_review,
+                            **{s: [str(e) for e in t.stages[s]] for s in STAGES}}
+                   for t in policy.tracks.values()},
+        "pinned": list(policy.pinned),
+    }
+    if policy.review_second:
+        raw["review_second"] = policy.review_second
+    return raw
+
+
 def tracks_text(policy: ModelPolicy) -> str:
     """The track list as the prompts show it: one line per track. The rules for
     choosing come first when a track is pinned, then pinned tracks in pinned

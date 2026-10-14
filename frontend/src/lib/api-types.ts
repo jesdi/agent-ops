@@ -208,6 +208,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Model Settings */
+        get: operations["get_model_settings_api_settings_models_get"];
+        /** Put Model Settings */
+        put: operations["put_model_settings_api_settings_models_put"];
+        post?: never;
+        /** Reset Model Settings */
+        delete: operations["reset_model_settings_api_settings_models_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{target}/{issue}": {
         parameters: {
             query?: never;
@@ -697,6 +716,60 @@ export interface components {
             /** Provider */
             provider: string;
         };
+        /** ModelSettingsView */
+        ModelSettingsView: {
+            /** Efforts */
+            efforts: {
+                [key: string]: string[];
+            };
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /** Known Models */
+            known_models: string[];
+            models: components["schemas"]["ModelsSetting"];
+            /**
+             * Set At
+             * @default
+             */
+            set_at: string;
+            /**
+             * Set By
+             * @default
+             */
+            set_by: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "console" | "targets.yaml";
+            /** Target Overrides */
+            target_overrides: string[];
+        };
+        /**
+         * ModelsSetting
+         * @description The `models:` block, as targets.yaml writes it (models.parse_policy
+         *     validates it; this only fixes the shape).
+         */
+        ModelsSetting: {
+            /**
+             * Pinned
+             * @default []
+             */
+            pinned: string[];
+            /** Review Second */
+            review_second?: string | null;
+            /** Tracks */
+            tracks: {
+                [key: string]: components["schemas"]["TrackSetting"];
+            };
+            /** Triage */
+            triage: string[];
+            /** Untracked */
+            untracked: string;
+        };
         /** NextClaimView */
         NextClaimView: {
             /**
@@ -1008,6 +1081,27 @@ export interface components {
             ongoing: boolean;
             /** Seconds */
             seconds: number;
+        };
+        /**
+         * TrackSetting
+         * @description One track of the `models:` block, as targets.yaml writes it.
+         */
+        TrackSetting: {
+            /** Implement */
+            implement: string[];
+            /** Plan */
+            plan: string[];
+            /**
+             * Plan Review
+             * @default true
+             */
+            plan_review: boolean;
+            /** Review */
+            review: string[];
+            /** Spec */
+            spec: string[];
+            /** When */
+            when: string;
         };
         /**
          * UnavailableContent
@@ -1378,6 +1472,79 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_model_settings_api_settings_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsView"];
+                };
+            };
+        };
+    };
+    put_model_settings_api_settings_models_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelsSetting"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_model_settings_api_settings_models_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsView"];
                 };
             };
         };

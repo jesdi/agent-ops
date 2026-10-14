@@ -157,6 +157,9 @@ class FakeSources:
                      detail=""):
         self.appended.append((event, target, issue, actor, detail))
 
+    def reconfigure(self, cfg):
+        self.cfg = cfg
+
     def state_fingerprint(self):
         return self.fingerprint
 

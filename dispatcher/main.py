@@ -1821,7 +1821,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if task.track not in policy.tracks:
         _park_for_input(cfg, deps, target, task,
                         f"track {task.track!r} is no longer configured (have "
-                        f"{sorted(policy.tracks)}); restore it in targets.yaml or "
+                        f"{sorted(policy.tracks)}); restore it in the console's model "
+                        f"settings or targets.yaml, or "
                         f"run the task with a model override",
                         reason=WHY_CONFIG)
         return

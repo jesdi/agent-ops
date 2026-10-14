@@ -1,11 +1,13 @@
 """FastAPI app factory: route wiring only. All I/O is behind `sources`, with
-one exception: the priority mode is read and written with `dispatcher.priority`
-on the state dir, the one reader the dispatcher and triage also use."""
+two exceptions: the priority mode and the model settings are read and written
+with `dispatcher.priority` and `dispatcher.model_settings` on the state dir,
+the one reader the dispatcher and triage also use."""
 from __future__ import annotations
 
 import asyncio
 import json as _json
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -16,11 +18,11 @@ from pydantic import (BaseModel, Field, TypeAdapter, ValidationError,
                       field_validator)
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
-from dispatcher import execution_overrides, priority, queue_ops
-from dispatcher.config import Config, policy_for, routed_providers
+from dispatcher import execution_overrides, model_settings, priority, queue_ops
+from dispatcher.config import Config, policy_for, routed_providers, with_models
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
-                               override_refusal, parse_entry, stage_pick,
-                               track_from_labels)
+                               override_refusal, parse_entry, policy_to_raw,
+                               stage_pick, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher import answers as answers_file, intents
 from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, TaskState,
@@ -484,6 +486,56 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         sources.append_event("priority-mode-set", actor=op.login,
                              detail=f"mode={req.mode}")
         return {"ok": True, "mode": req.mode}
+
+    def _settings_view() -> read_model.ModelSettingsView:
+        try:
+            doc = model_settings.load(cfg.state_dir)
+        except ValueError:
+            doc = None   # cfg.models_override_error already says why
+        return read_model.model_settings_view(cfg, doc)
+
+    def _apply_models(new: Config, store, op: Operator, event: str) -> None:
+        """Make `new` the console's config: refuse a block that drops a track
+        an unfinished task still runs on (the dispatcher would park it), then
+        `store` it. The dispatcher and triage read the stored block on their
+        next pass: each pass is a fresh process."""
+        nonlocal cfg, routed
+        orphans = [f"{t.target}#{t.issue} ({t.track})" for t in sources.tasks()
+                   if t.stage not in TERMINAL_STAGES and t.target in targets_by_name
+                   and targets_by_name[t.target].models is None
+                   and t.track not in new.models.tracks]
+        if orphans:
+            raise HTTPException(422, "unfinished tasks run on a track this "
+                                f"removes: {', '.join(orphans)}")
+        store()
+        cfg, routed = new, routed_providers(new)
+        sources.reconfigure(new)
+        # After the file: the event log is the history of what was stored.
+        sources.append_event(event, actor=op.login)
+
+    @app.get("/api/settings/models", response_model=read_model.ModelSettingsView)
+    def get_model_settings(op: Operator = Depends(current_operator)):
+        return _settings_view()
+
+    @app.put("/api/settings/models", response_model=read_model.ModelSettingsView)
+    def put_model_settings(req: read_model.ModelsSetting,
+                           op: Operator = Depends(current_operator)):
+        try:
+            new = with_models(cfg, req.model_dump(exclude_none=True))
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        # ponytail: last write wins; add a version check if two operators edit at once.
+        _apply_models(new, lambda: model_settings.save(
+            cfg.state_dir, policy_to_raw(new.models), actor=op.login,
+            now=datetime.now(timezone.utc)), op, "model-settings-set")
+        return _settings_view()
+
+    @app.delete("/api/settings/models", response_model=read_model.ModelSettingsView)
+    def reset_model_settings(op: Operator = Depends(current_operator)):
+        _apply_models(replace(cfg, models=cfg.file_models, models_override_error=""),
+                      lambda: model_settings.clear(cfg.state_dir),
+                      op, "model-settings-reset")
+        return _settings_view()
 
     @app.get("/api/failures", response_model=read_model.FailuresView)
     def failures(op: Operator = Depends(current_operator)):

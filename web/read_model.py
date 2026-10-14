@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, StrictBool, StrictStr
 from dispatcher import messages as msgq
 from dispatcher import priority
 from dispatcher.claims import claim_room, pick_target
-from dispatcher.models import Entry
+from dispatcher.models import PROVIDER_EFFORTS, Entry, policy_to_raw
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
                               required_pace, verdict_note)
@@ -907,3 +907,51 @@ def stage_timeline(events: list[dict], target: str, issue: int, *,
             open_seg = None
     close(now, ongoing=True)
     return out
+
+
+class TrackSetting(BaseModel):
+    """One track of the `models:` block, as targets.yaml writes it."""
+    when: str
+    plan_review: bool = True
+    spec: list[str]
+    plan: list[str]
+    implement: list[str]
+    review: list[str]
+
+
+class ModelsSetting(BaseModel):
+    """The `models:` block, as targets.yaml writes it (models.parse_policy
+    validates it; this only fixes the shape)."""
+    triage: list[str]
+    untracked: str
+    tracks: dict[str, TrackSetting]
+    pinned: list[str] = []
+    review_second: str | None = None
+
+
+class ModelSettingsView(BaseModel):
+    models: ModelsSetting
+    # Where `models` comes from: the block stored from this page, or the
+    # targets.yaml one (no stored block, or a stored block that failed).
+    source: Literal["console", "targets.yaml"]
+    set_by: str = ""
+    set_at: str = ""
+    error: str = ""          # why a stored block was not applied
+    efforts: dict[str, list[str]]   # provider -> its effort vocabulary
+    known_models: list[str]         # model ids either block names, for suggestions
+    target_overrides: list[str]     # targets whose own models: block wins
+
+
+def model_settings_view(cfg, doc: dict | None) -> ModelSettingsView:
+    """`cfg`'s global block, and where it comes from: the stored `doc`
+    (dispatcher.model_settings) unless it failed to apply, else targets.yaml."""
+    doc = doc or {}
+    applied = bool(doc) and not cfg.models_override_error
+    return ModelSettingsView(
+        models=policy_to_raw(cfg.models),
+        source="console" if applied else "targets.yaml",
+        set_by=str(doc.get("set_by") or ""), set_at=str(doc.get("set_at") or ""),
+        error=cfg.models_override_error,
+        efforts={p: list(e) for p, e in PROVIDER_EFFORTS.items()},
+        known_models=sorted({*cfg.models.model_ids(), *cfg.file_models.model_ids()}),
+        target_overrides=[t.name for t in cfg.targets if t.models is not None])

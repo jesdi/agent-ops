@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from dispatcher import model_settings
 from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy
 from dispatcher.state import LoopCaps
 from dispatcher.usage import PaceConfig
@@ -71,6 +72,11 @@ class Config:
     # The usage gate: session threshold and weekly pace
     # (see docs/specs/2026-09-13-usage-pace-gate-design.md).
     pace: PaceConfig = PaceConfig()
+    # The targets.yaml `models:` block. `models` is the block in force: this
+    # one, or the one stored from the console (dispatcher.model_settings).
+    file_models: ModelPolicy = DEFAULT_POLICY
+    # Why the stored block was not applied, "" when it was or there is none.
+    models_override_error: str = ""
 
 
 def _loop_caps(raw: object) -> LoopCaps:
@@ -187,6 +193,7 @@ def load_config(path: str | Path) -> Config:
         targets=[_target(t, capacity) for t in raw.get("targets", [])],
         infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
+        file_models=parse_policy(raw.get("models")),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
         background_wait_seconds=_background_wait_seconds(raw),
@@ -196,13 +203,35 @@ def load_config(path: str | Path) -> Config:
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),
     )
+    _check_shares(cfg)
+    try:
+        doc = model_settings.load(cfg.state_dir)
+        return with_models(cfg, doc["models"]) if doc else cfg
+    except ValueError as e:
+        # A bad stored block must not stop every pass and the console that
+        # can fix it: targets.yaml's block runs, and the console shows why.
+        error = f"console model settings not applied: {e}"
+        print(f"[warn] {error}", file=sys.stderr)
+        return replace(cfg, models_override_error=error)
+
+
+def _check_shares(cfg: Config) -> None:
     # A share for a provider nothing runs on is a typo that would silently
     # turn the session-bound rule off.
     unknown = sorted(set(cfg.pace.session_week_share) - referenced_providers(cfg))
     if unknown:
         raise ValueError(f"session_week_share: {unknown} named by no model entry; "
                          f"expected any of {sorted(referenced_providers(cfg))}")
-    return cfg
+
+
+def with_models(cfg: Config, raw: dict) -> Config:
+    """`cfg` with `raw` as the global `models:` block, validated as
+    load_config validates the targets.yaml one. Raises ValueError."""
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"models: must be a non-empty mapping, got {raw!r}")
+    out = replace(cfg, models=parse_policy(raw), models_override_error="")
+    _check_shares(out)
+    return out
 
 
 def policy_for(cfg: Config, target: Target) -> ModelPolicy:

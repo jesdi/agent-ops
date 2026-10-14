@@ -64,6 +64,10 @@ class Sources:
     def state_dir(self) -> Path:
         return Path(self._cfg.state_dir)
 
+    def reconfigure(self, cfg: Config) -> None:
+        """The config after the console changed its model settings."""
+        self._cfg = cfg
+
     # -- reads -----------------------------------------------------------
 
     def tasks(self) -> list[TaskState]:
