@@ -175,43 +175,34 @@ def _choose_launch(
         cfg: Config, target: Target | None, task: TaskState, stage: Stage,
         admit: Admit, order: Order,
         override: execution_overrides.ExecutionOverride | None,
-) -> tuple[Launch | None, bool]:
-    """What a spawn site launches and whether usage is bypassed. A one-shot
-    operator `override` (_execution_override_for; on a wake also what the
-    resume named) names the entry outright; otherwise the sticky pick or
-    the track decides, and a denied launch is (None, bypass): nothing
-    mutated, the signal persists, retried once headroom returns."""
+) -> tuple[Launch | None, bool, str]:
+    """What a spawn site launches, whether usage is bypassed, and why a
+    denied launch never comes. A one-shot operator `override`
+    (_execution_override_for; on a wake also what the resume named) names
+    the entry outright; otherwise the sticky pick or the track decides. A
+    denied launch is (None, bypass, why): nothing mutated, the signal
+    persists, retried once headroom returns; `why` (models.stranded) says
+    when it never returns, and the caller parks."""
     bypass = bool(override and override.bypass_usage)
     if override is not None and override.model:
         launch = Launch(stage, parse_entry(override.model, "override"))
         if bypass or admit(launch.model).admitted:
-            return _with_second(cfg, target, launch, admit), bypass
-        return None, bypass
+            return _with_second(cfg, target, launch, admit), bypass, ""
+        return None, bypass, ""
     launch = _launch_for(cfg, target, task, stage, _admitted(admit, bypass), order)
     if launch is None or (not bypass and not admit(launch.model).admitted):
-        return None, bypass
-    return _with_second(cfg, target, launch, admit), bypass
+        return None, bypass, stranded(cfg, target, task, stage.value)
+    return _with_second(cfg, target, launch, admit), bypass, ""
 
 
-def _never_launches(cfg: Config, target: Target | None, task: TaskState,
-                    stage: Stage,
-                    override: execution_overrides.ExecutionOverride | None) -> str:
-    """Why a launch _choose_launch denied will never come (models.stranded:
-    the stage's pick names a provider the gate reads no usage for), "" when
-    it only waits on headroom. A model override does not use the pick."""
-    if override is not None and override.model:
-        return ""
-    return stranded(cfg, target, task, stage.value)
-
-
-def _park_if_stranded(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                      stage: Stage,
-                      override: execution_overrides.ExecutionOverride | None) -> None:
-    """Park `task` when its denied `stage` launch never comes
-    (_never_launches); else leave it to wait for headroom."""
-    why = _never_launches(cfg, target, task, stage, override)
-    if why:
-        _park_stranded(cfg, deps, target, task, why)
+def _action_launch(cfg: Config, target: Target, task: TaskState, stage: Stage | None,
+                   admit: Admit, order: Order) -> tuple[Launch | None, bool, str]:
+    """_choose_launch for the stage an action launches; nothing when it
+    launches none."""
+    if stage is None:
+        return None, False, ""
+    return _choose_launch(cfg, target, task, stage, admit, order,
+                          _execution_override_for(cfg, task, stage))
 
 
 def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
@@ -222,8 +213,9 @@ def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
     probe = TaskState(issue=cand.number, target=target.name, stage=Stage.QUEUED,
                       slot=NO_SLOT, worktree="", branch="", title=cand.title,
                       updated_at="", track=track_from_labels(cand.labels, policy))
-    return _choose_launch(cfg, target, probe, Stage.SPEC, admit, order,
-                          _execution_override_for(cfg, probe, Stage.SPEC))
+    launch, bypass, _ = _choose_launch(cfg, target, probe, Stage.SPEC, admit, order,
+                                       _execution_override_for(cfg, probe, Stage.SPEC))
+    return launch, bypass   # no picks: nothing strands it
 
 
 def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
@@ -778,11 +770,13 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     _end_session(cfg, deps, task.target, task.issue)
     # A wake that ends here is over: the wake that follows this park says
-    # for itself whether it is an attach, and on which model.
+    # for itself whether it is an attach, and on which model. PR polling
+    # skips a parked task and a wake starts its round: pending feedback is
+    # taken, as _park_exhausted takes it.
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, park_reason=reason,
                                 slot=NO_SLOT, operator_request=answers_request,
-                                hold_for_attach=False,
+                                hold_for_attach=False, feedback_pending=False,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
                                 asked=task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN)),
@@ -1265,15 +1259,13 @@ def _wake_launch(cfg: Config, deps: Deps, target: Target, task: TaskState,
     one-shot override is the model the resume named, else the stored
     execution override: "the next launch runs on this model" holds for a
     wake too. None: it waits (the gate denies the model; another task's may
-    be admitted), with why it never will (_never_launches) or ""."""
+    be admitted), with why it never will (_choose_launch) or ""."""
     stage = Stage(next_stage(task))
     override = execution_overrides.pending(
         _execution_override_for(cfg, task, stage),
         task.resume_model_override, task.resume_bypass_usage)
-    launch, _ = _choose_launch(cfg, target, task, stage, admit, order, override)
-    if launch is not None:
-        return launch, ""
-    return None, _never_launches(cfg, target, task, stage, override)
+    launch, _, why = _choose_launch(cfg, target, task, stage, admit, order, override)
+    return launch, why
 
 
 ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
@@ -1442,7 +1434,8 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
     """Spawn address-review for tasks whose PR got feedback, box-wide and
     oldest first — same gates as claiming new work (capacity, usage, slot);
     a denied spawn just stays pr-open+pending and retries next pass, badge
-    showing."""
+    showing, unless it never launches (_choose_launch): then it parks, PR
+    polling skips it, and a wake starts the round."""
     targets = {t.name: t for t in cfg.targets}
     pending = sorted(
         [t for t in load_all(cfg.state_dir)
@@ -1451,13 +1444,12 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         key=_oldest_first(cfg))
     for task in pending:
         target = targets[task.target]
-        override = _execution_override_for(cfg, task, Stage.ADDRESS_REVIEW)
-        launch, bypass_usage = _choose_launch(
-            cfg, target, task, Stage.ADDRESS_REVIEW, admit, order, override)
+        launch, bypass_usage, why = _choose_launch(
+            cfg, target, task, Stage.ADDRESS_REVIEW, admit, order,
+            _execution_override_for(cfg, task, Stage.ADDRESS_REVIEW))
+        if why:
+            _park_stranded(cfg, deps, target, task, why)
         if launch is None:
-            # Parked, PR polling skips the task; a wake starts the round.
-            _park_if_stranded(cfg, deps, target, replace(task, feedback_pending=False),
-                              Stage.ADDRESS_REVIEW, override)
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
@@ -1883,13 +1875,11 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             now=time.time(), poke_cap=cfg.background_wait_seconds):
         task = _step_done(turn, task, act)
         stage = _action_stage(act)
-        override = stage and _execution_override_for(cfg, task, stage)
-        launch, bypass_usage = ((None, False) if stage is None else _choose_launch(
-            cfg, target, task, stage, admit, order, override))
+        launch, bypass_usage, why = _action_launch(cfg, target, task, stage, admit, order)
+        if why:
+            _park_stranded(cfg, deps, target, task, why)
         if stage is not None and launch is None:
-            # No launch: the signal persists; retried once headroom returns.
-            _park_if_stranded(cfg, deps, target, task, stage, override)
-            return
+            return  # no launch: the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)
         if launch is not None and not turn.launch_failed:

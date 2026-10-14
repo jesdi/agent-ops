@@ -299,6 +299,17 @@ def test_a_feedback_round_picked_on_a_provider_no_entry_names_parks(tmp_path):
     assert "runs on openai, which no model entry names" in t.park_note
 
 
+def test_a_feedback_round_denied_for_headroom_only_waits(tmp_path):
+    c = replace(cfg(tmp_path), models=tracks_policy())
+    make_saved_task(c, issue=42, stage=Stage.PR_OPEN, feedback_pending=True,
+                    picks={"feedback": "anthropic/claude-sonnet-5"})
+
+    main._spawn_feedback(c, deps(), DENY_ALL, tuple)
+
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.park, t.feedback_pending) == ("", True)
+
+
 def test_a_done_stage_on_a_dropped_provider_still_moves_on(tmp_path, monkeypatch):
     """The provider rule judges the launch about to happen, not the stage that
     just ended: implement ran on openai and is done, and review runs on a
