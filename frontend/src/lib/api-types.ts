@@ -591,10 +591,7 @@ export interface components {
              */
             zone: "needs-you" | "pipeline";
         };
-        /**
-         * EntrySetting
-         * @description One stage-list entry: models.Entry, which owns its text form.
-         */
+        /** EntrySetting */
         EntrySetting: {
             /** Effort */
             effort: string;
@@ -743,6 +740,8 @@ export interface components {
                 [key: string]: string[];
             };
             models: components["schemas"]["ModelsSetting"];
+            /** Revision */
+            revision: string;
             /** Set At */
             set_at: string;
             /** Set By */
@@ -754,6 +753,15 @@ export interface components {
             source: "console" | "targets.yaml";
             /** Target Overrides */
             target_overrides: string[];
+        };
+        /**
+         * ModelsSave
+         * @description A save: the block, and the revision of the view it was edited from.
+         */
+        ModelsSave: {
+            models: components["schemas"]["ModelsSetting"];
+            /** Revision */
+            revision: string;
         };
         /**
          * ModelsSetting
@@ -1502,7 +1510,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ModelsSetting"];
+                "application/json": components["schemas"]["ModelsSave"];
             };
         };
         responses: {
@@ -1528,7 +1536,9 @@ export interface operations {
     };
     reset_model_settings_api_settings_models_delete: {
         parameters: {
-            query?: never;
+            query: {
+                revision: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1542,6 +1552,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModelSettingsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

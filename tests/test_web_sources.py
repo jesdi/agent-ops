@@ -68,7 +68,7 @@ class FakeClock:
 def make_sources(tmp_path, github=None, sessions=None, clock=None,
                  systemctl=("true",)):
     cfg = make_config(tmp_path)
-    return cfg, Sources(cfg, sessions or FakeSessions(),
+    return cfg, Sources(cfg.state_dir, sessions or FakeSessions(),
                         github or FakeGitHub(), clock=clock or FakeClock(),
                         systemctl=systemctl)
 

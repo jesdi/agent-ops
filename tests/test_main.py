@@ -3180,7 +3180,7 @@ def test_grace_expiry_park_preserves_plan_approval_request(tmp_path, monkeypatch
     assert t.operator_request == PlanApprovalRequest(".agent/review.html"), "operator_request must survive park"
     assert t.spec_path == "docs/specs/x-design.md", "spec_path must survive park"
     # GET /request must serve the plan-approval body (the summary the request names)
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request", headers=HEADERS)
     assert response.status_code == 200, response.text
@@ -5044,7 +5044,7 @@ def test_successful_resume_clears_operator_request_preserves_spec_path(
     assert t.spec_path == "docs/spec.md", "spec_path must be preserved"
     assert t.park == ""
     # GET /request must return 200 null after the request is cleared
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request", headers=WEB_HEADERS)
     assert response.status_code == 200, response.text
@@ -5095,7 +5095,7 @@ def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
     assert t.operator_request == PlanApprovalRequest(".agent/review.html"), "must re-arm approval"
     assert t.spec_path == "specs/x/spec.md", "spec_path must NOT become the summary path"
     # GET /request must return plan-approval once re-armed
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request", headers=WEB_HEADERS)
     assert response.status_code == 200, response.text
@@ -5192,7 +5192,7 @@ def test_failed_transition_clears_operator_request(tmp_path):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)
@@ -5218,7 +5218,7 @@ def test_canceled_transition_clears_operator_request(tmp_path):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)
@@ -5249,7 +5249,7 @@ def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)
@@ -5278,7 +5278,7 @@ def test_ci_park_clears_operator_request(tmp_path):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)
@@ -5306,7 +5306,7 @@ def test_login_park_clears_operator_request(tmp_path, monkeypatch):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)

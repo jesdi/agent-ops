@@ -141,6 +141,16 @@ def parse_entry(value: object, context: str) -> Entry:
     return Entry(provider, model, effort)
 
 
+def entry_text(provider: str, model: str, effort: str, context: str) -> str:
+    """The `provider/model[@effort]` text of these parts, refused when a part
+    holds a separator and so would read back as another entry. parse_entry
+    validates the rest when the block is parsed."""
+    if any(sep in part for part in (provider, model, effort) for sep in "/@"):
+        raise ValueError(f"models: {context} provider, model and effort must "
+                         f"not contain '/' or '@', got {(provider, model, effort)!r}")
+    return str(Entry(provider, model, effort))
+
+
 def _entries(raw: object, context: str) -> tuple[Entry, ...]:
     if isinstance(raw, str) or not isinstance(raw, list) or not raw:
         raise ValueError(f"models: {context} must be a non-empty list of "
@@ -292,22 +302,6 @@ def parse_block(raw: object) -> ModelPolicy:
     return ModelPolicy(triage=_triage(raw), untracked=untracked, tracks=tracks,
                        review_second=_review_second(raw.get("review_second")),
                        pinned=_pinned(raw.get("pinned"), tracks))
-
-
-def policy_to_raw(policy: ModelPolicy) -> dict:
-    """The inverse of parse_policy: the `models:` block that parses back to
-    `policy`. The console's settings page edits this shape."""
-    raw: dict = {
-        "triage": [str(e) for e in policy.triage],
-        "untracked": policy.untracked,
-        "tracks": {t.name: {"when": t.when, "plan_review": t.plan_review,
-                            **{s: [str(e) for e in t.stages[s]] for s in STAGES}}
-                   for t in policy.tracks.values()},
-        "pinned": list(policy.pinned),
-    }
-    if policy.review_second:
-        raw["review_second"] = policy.review_second
-    return raw
 
 
 def tracks_text(policy: ModelPolicy) -> str:

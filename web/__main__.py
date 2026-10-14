@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = load_config(args.config)
     sessions = Sessions(memory=cfg.session_memory, cpus=cfg.session_cpus, state_dir=cfg.state_dir)
-    sources = Sources(cfg, sessions, GitHubClient())
+    sources = Sources(cfg.state_dir, sessions, GitHubClient())
     # The console always has live streams open (SSE).
     # Unbounded graceful shutdown waits on them forever, so SIGTERM would
     # burn systemd's full stop timeout and end in SIGKILL — a ~90 s 502

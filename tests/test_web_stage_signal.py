@@ -13,7 +13,7 @@ from web.sources import Sources
 
 
 def _read(tmp_path, wt):
-    return Sources(make_config(tmp_path), None, None).stage_signal(str(wt))
+    return Sources(make_config(tmp_path).state_dir, None, None).stage_signal(str(wt))
 
 
 def _wt(tmp_path):

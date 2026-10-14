@@ -219,44 +219,45 @@ def _check_shares(cfg: Config) -> None:
                          f"expected any of {sorted(referenced_providers(cfg))}")
 
 
-def with_models(cfg: Config, raw: object) -> Config:
-    """`cfg` with `raw` as the global `models:` block, validated as
-    load_config validates the targets.yaml one. Raises ValueError."""
-    out = replace(cfg, models=parse_block(raw))
-    _check_shares(out)
-    return out
-
-
-def file_config(cfg: Config) -> Config:
-    """`cfg` with the targets.yaml `models:` block in force."""
-    return replace(cfg, models=cfg.file_models, models_origin=None)
+def checked_policy(cfg: Config, raw: object) -> ModelPolicy:
+    """`raw` as the global `models:` block of `cfg`, validated as load_config
+    validates the targets.yaml one. Raises ValueError."""
+    policy = parse_block(raw)
+    _check_shares(replace(cfg, models=policy))   # a probe: never returned
+    return policy
 
 
 def apply_stored_models(cfg: Config) -> Config:
     """`cfg` with the block stored now in the state dir in force, else the
     targets.yaml one. Never raises: a bad stored block must not stop every
     pass and the console that can fix it, so it is Rejected with the reason."""
-    base = file_config(cfg)
+    origin: model_settings.Stored | model_settings.Rejected | None = None
+    models = cfg.file_models
     try:
-        stored = model_settings.load(cfg.state_dir)
-        if stored is None:
-            return base
-        return replace(with_models(base, stored.models), models_origin=stored)
+        found = model_settings.load(cfg.state_dir)
+        if found is not None:
+            raw, origin = found
+            models = checked_policy(cfg, raw)
     except ValueError as e:
-        return replace(base, models_origin=model_settings.Rejected(
-            f"console model settings not applied: {e}"))
+        origin = model_settings.Rejected(f"console model settings not applied: {e}")
+    return replace(cfg, models=models, models_origin=origin)
 
 
-def track_missing(cfg: Config, target: Target, track: str) -> bool:
-    """`track` is not in the policy `target` runs on: the dispatcher parks a
-    task on it, and the console refuses a block that would do that."""
-    return track not in policy_for(cfg, target).tracks
+def track_missing(models: ModelPolicy, target: Target, track: str) -> bool:
+    """`track` is not in the policy `target` runs on when `models` is the
+    global block: the dispatcher parks a task on it, and the console refuses
+    a block that would do that."""
+    return track not in _target_policy(models, target).tracks
 
 
 def policy_for(cfg: Config, target: Target) -> ModelPolicy:
     """A target's own policy replaces the global one wholesale — rule lists are
     never merged, because merge order would make first-match-wins ambiguous."""
-    return target.models or cfg.models
+    return _target_policy(cfg.models, target)
+
+
+def _target_policy(models: ModelPolicy, target: Target) -> ModelPolicy:
+    return target.models or models
 
 
 def routed_providers(cfg: Config) -> frozenset[str]:

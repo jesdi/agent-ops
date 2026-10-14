@@ -124,7 +124,7 @@ def test_sources_messages_and_mail_count_are_target_scoped(tmp_path):
         "created_at": "2026-01-01T00:00:00+00:00", "delivered_at": None,
     }) + "\n")
 
-    src = Sources(cfg_, sessions=None, github=None)
+    src = Sources(cfg_.state_dir, sessions=None, github=None)
 
     fa_msgs = src.messages("factorial", 7)
     assert [m.text for m in fa_msgs] == ["use the v2 endpoint"]
@@ -145,12 +145,7 @@ def test_wake_blocked_marker_is_scoped_to_its_own_target(tmp_path):
 
     main._resume_woken(c, main_deps(), admit=ADMIT_ALL, order=tuple)
 
-    src = Sources(
-        webfakes.make_config(
-            c.state_dir,
-            targets=[webfakes.make_target("portfolio_eval", "jesdi/portfolio_eval"),
-                     webfakes.make_target("factorial", "jesdi/factorial")]),
-        sessions=None, github=None)
+    src = Sources(c.state_dir, sessions=None, github=None)
     blocked = src.wake_blocked_issues()
 
     assert ("factorial", 12) in blocked

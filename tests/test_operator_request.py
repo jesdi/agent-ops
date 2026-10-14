@@ -33,7 +33,7 @@ def test_plan_gate_exposes_the_review_page_as_an_approval_request(tmp_path, park
                              "path": ".agent/review.html"},
     }))
     # This read requires neither a running session nor a GitHub request.
-    sources = Sources(cfg, sessions=None, github=None)
+    sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/7/request", headers=HEADERS)
 
@@ -67,7 +67,7 @@ def test_answers_request_serves_readable_content(tmp_path):
         "artifact": str(qa_file),
         "operator_request": {"kind": "answers", "path": ".agent/questionnaire.md"},
     }))
-    sources = Sources(cfg, sessions=None, github=None)
+    sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/11/request", headers=HEADERS)
 
@@ -104,7 +104,7 @@ def test_unknown_operator_request_kind_rejected_at_load(tmp_path):
     with pytest.raises(ValueError, match="unrecognized"):
         load(tmp_path, "alpha", 12)
     # Web layer: load_all skips the corrupt record → task is not visible → 404
-    sources = Sources(cfg, sessions=None, github=None)
+    sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/12/request", headers=HEADERS)
     assert response.status_code == 404
@@ -124,7 +124,7 @@ def test_plan_approval_missing_file_returns_200_unavailable(tmp_path):
         "operator_request": {"kind": "plan-approval",
                              "path": ".agent/review.html"},
     }))
-    sources = Sources(cfg, sessions=None, github=None)
+    sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/20/request", headers=HEADERS)
 
@@ -149,7 +149,7 @@ def test_answers_missing_file_returns_200_unavailable(tmp_path):
         "operator_request": {"kind": "answers", "path": ".agent/gone.md"},
     }))
     # .agent/gone.md is never created — the file doesn't exist
-    sources = Sources(cfg, sessions=None, github=None)
+    sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/21/request", headers=HEADERS)
 
@@ -176,7 +176,7 @@ def test_answers_non_utf8_file_returns_200_unavailable(tmp_path):
         "park": "parked",
         "operator_request": {"kind": "answers", "path": ".agent/bad.md"},
     }))
-    sources = Sources(cfg, sessions=None, github=None)
+    sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/22/request", headers=HEADERS)
 
@@ -204,7 +204,7 @@ def test_answers_out_of_worktree_path_returns_200_unavailable(tmp_path):
         "park": "parked",
         "operator_request": {"kind": "answers", "path": "../../outside.md"},
     }))
-    sources = Sources(cfg, sessions=None, github=None)
+    sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/23/request", headers=HEADERS)
 
@@ -227,7 +227,7 @@ def test_existing_non_gate_task_returns_null_request(tmp_path):
         "updated_at": "2026-09-08T10:00:00+00:00",
         "park": "", "artifact": "",
     }))
-    sources = Sources(cfg, sessions=None, github=None)
+    sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
         response = client.get("/api/task/alpha/9/request", headers=HEADERS)
 

@@ -20,21 +20,22 @@ from pydantic import (BaseModel, Field, TypeAdapter, ValidationError,
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import execution_overrides, model_settings, priority, queue_ops
-from dispatcher.config import (Config, apply_stored_models, file_config, policy_for,
-                               referenced_providers, routed_providers,
-                               track_missing, with_models)
+from dispatcher.config import (Config, apply_stored_models, checked_policy,
+                               policy_for, referenced_providers,
+                               routed_providers, track_missing)
 from dispatcher.convergence import pass_lock
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
-                               override_refusal, parse_entry, policy_to_raw,
+                               override_refusal, parse_entry,
                                stage_pick, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher import answers as answers_file, intents
 from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, TaskState,
                               launch_entries, launch_track, next_stage,
                               resumable_crash)
+from web import model_settings_view as msv
 from web import read_model
 from web.artifacts import router as artifacts_router
-from web.auth import (HEADER, Operator, TailscaleAuthMiddleware,
+from web.auth import (Operator, TailscaleAuthMiddleware,
                       current_operator)
 
 DEFAULT_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -154,6 +155,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return {"ok": True, "operator": op.login}
 
     targets_by_name = {t.name: t for t in cfg.targets}
+    def _usages():
+        """Usage of every provider the config in force can launch on."""
+        return sources.usage(referenced_providers(cfg))
+
     def _mode() -> str:
         return priority.load(cfg.state_dir, routed_providers(cfg))
 
@@ -301,7 +306,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     def board(op: Operator = Depends(current_operator)):
         tasks = sources.tasks()
         now = datetime.now(timezone.utc)
-        usages = sources.usage(referenced_providers(cfg))
+        usages = _usages()
         mode = _mode()
         order = _order(mode, usages, now)
         usage = _usage_view(usages, now, mode)
@@ -343,7 +348,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                     op: Operator = Depends(current_operator)):
         t = _find_task(target, issue)
         now = datetime.now(timezone.utc)
-        usages = sources.usage(referenced_providers(cfg))
+        usages = _usages()
         order = _order(_mode(), usages, now)
         # Legacy intent files predate the target field (Task 3); they carry
         # target="" and still belong to whichever task's issue they name —
@@ -475,7 +480,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     @app.get("/api/usage", response_model=read_model.UsageView)
     def usage_route(op: Operator = Depends(current_operator)):
-        return _usage_view(sources.usage(referenced_providers(cfg)), datetime.now(timezone.utc), _mode())
+        return _usage_view(_usages(), datetime.now(timezone.utc), _mode())
 
     @app.post("/api/priority")
     def set_priority(req: PriorityReq,
@@ -507,47 +512,56 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                 raise HTTPException(409, "a dispatcher pass or an update is running; "
                                          "try again in a minute") from None
 
-    def _refuse_orphans(candidate: Config) -> None:
-        """422 when `candidate` drops a track an unfinished task runs on: the
-        dispatcher would park the task (config.track_missing)."""
+    def _refuse_stale(revision: str) -> None:
+        if revision != model_settings.revision(cfg.state_dir):
+            raise HTTPException(409, "the model settings changed since this page "
+                                     "loaded them; reload the page and edit again")
+
+    def _refuse_orphans(models: ModelPolicy) -> None:
+        """422 when `models` as the global block drops a track an unfinished
+        task runs on: the dispatcher would park the task (config.track_missing)."""
         orphans = [f"{t.target}#{t.issue} ({t.track})" for t in sources.tasks()
                    if t.stage not in TERMINAL_STAGES and t.target in targets_by_name
-                   and track_missing(candidate, targets_by_name[t.target], t.track)]
+                   and track_missing(models, targets_by_name[t.target], t.track)]
         if orphans:
             raise HTTPException(422, "unfinished tasks run on a track this "
                                 f"removes: {', '.join(orphans)}")
 
-    def _reload_models(op: Operator, event: str) -> read_model.ModelSettingsView:
+    def _settings_view() -> msv.ModelSettingsView:
+        return msv.view(cfg, model_settings.revision(cfg.state_dir))
+
+    def _reload_models(op: Operator, event: str) -> msv.ModelSettingsView:
         """The console's config follows the stored file, as the next pass's
         will (config.apply_stored_models)."""
         nonlocal cfg
         cfg = apply_stored_models(cfg)
         # After the file: the event log is the history of what was stored.
         sources.append_event(event, actor=op.login)
-        return read_model.model_settings_view(cfg)
+        return _settings_view()
 
-    @app.get("/api/settings/models", response_model=read_model.ModelSettingsView)
+    @app.get("/api/settings/models", response_model=msv.ModelSettingsView)
     def get_model_settings(op: Operator = Depends(current_operator)):
-        return read_model.model_settings_view(cfg)
+        return _settings_view()
 
-    @app.put("/api/settings/models", response_model=read_model.ModelSettingsView)
-    def put_model_settings(req: read_model.ModelsSetting,
-                           op: Operator = Depends(current_operator)):
+    @app.put("/api/settings/models", response_model=msv.ModelSettingsView)
+    def put_model_settings(req: msv.ModelsSave, op: Operator = Depends(current_operator)):
         with _settings_locked():
+            _refuse_stale(req.revision)
             try:
-                new = with_models(cfg, req.to_raw())
+                raw = req.models.to_raw()
+                models = checked_policy(cfg, raw)
             except ValueError as e:
                 raise HTTPException(422, str(e)) from e
-            _refuse_orphans(new)
-            # ponytail: last write wins; add a version check if two operators edit at once.
-            model_settings.save(cfg.state_dir, policy_to_raw(new.models),
-                                actor=op.login, now=datetime.now(timezone.utc))
+            _refuse_orphans(models)
+            model_settings.save(cfg.state_dir, raw, actor=op.login,
+                                now=datetime.now(timezone.utc))
             return _reload_models(op, "model-settings-set")
 
-    @app.delete("/api/settings/models", response_model=read_model.ModelSettingsView)
-    def reset_model_settings(op: Operator = Depends(current_operator)):
+    @app.delete("/api/settings/models", response_model=msv.ModelSettingsView)
+    def reset_model_settings(revision: str, op: Operator = Depends(current_operator)):
         with _settings_locked():
-            _refuse_orphans(file_config(cfg))
+            _refuse_stale(revision)
+            _refuse_orphans(cfg.file_models)
             model_settings.clear(cfg.state_dir)
             return _reload_models(op, "model-settings-reset")
 
@@ -761,7 +775,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             return req.model
         if task is not None:
             # No pick: the model the card names, the first admitted entry.
-            now, usages = datetime.now(timezone.utc), sources.usage(referenced_providers(cfg))
+            now, usages = datetime.now(timezone.utc), _usages()
             return (stage_pick(task.picks, next_stage(task))
                     or _model_for(task, _order(_mode(), usages, now), usages, now))
         return _candidate_model(configured_target, row, _order(_mode()))

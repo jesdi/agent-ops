@@ -1819,7 +1819,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
-    if track_missing(cfg, target, task.track):
+    if track_missing(cfg.models, target, task.track):
         _park_for_input(cfg, deps, target, task,
                         f"track {task.track!r} is no longer configured (have "
                         f"{sorted(policy.tracks)}); restore it in the console's model "

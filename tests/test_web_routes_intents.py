@@ -203,7 +203,7 @@ def test_intent_roundtrip_through_real_sources(tmp_path):
     from tests.test_web_sources import FakeGitHub, FakeSessions, FakeClock
 
     cfg = make_config(tmp_path)
-    src = Sources(cfg, FakeSessions(), FakeGitHub(), clock=FakeClock(),
+    src = Sources(cfg.state_dir, FakeSessions(), FakeGitHub(), clock=FakeClock(),
                   systemctl=("true",))
     state.save(tmp_path, make_task(issue=7))
     client = TestClient(create_app(cfg, src))

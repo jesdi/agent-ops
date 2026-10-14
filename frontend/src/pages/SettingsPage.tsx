@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState, type ReactNode } from 'react'
 import { queryKeys } from '../hooks/queryKeys'
-import { api, ApiError, type EntrySetting, type ModelSettingsView, type ModelsSetting } from '../lib/api'
+import { api, ApiError, type EntrySetting, type ModelSettingsView, type ModelsSetting, type TrackSetting } from '../lib/api'
 import { relativeTime } from '../lib/format'
 import { banner, chip } from '../lib/tone'
 
-const STAGES = ['spec', 'plan', 'implement', 'review'] as const
-type Stage = (typeof STAGES)[number]
+type Stage = Exclude<keyof TrackSetting, 'when' | 'plan_review'>
+// Every stage the server sends, in pipeline order: a new one fails the build here.
+const STAGE_ORDER: Record<Stage, number> = { spec: 0, plan: 1, implement: 2, review: 3 }
+const STAGES = (Object.keys(STAGE_ORDER) as Stage[]).sort((a, b) => STAGE_ORDER[a] - STAGE_ORDER[b])
 
 interface TrackForm extends Record<Stage, EntrySetting[]> {
   id: number            // React key: survives a rename
@@ -109,14 +111,15 @@ function SettingsEditor({ view }: { view: ModelSettingsView }) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.allTasks })
   }
   const save = useMutation({
-    mutationFn: () => api.saveModelSettings(toBody(form)),
+    mutationFn: () => api.saveModelSettings(view.revision, toBody(form)),
     onSuccess: (next) => onStored(next, true),
   })
   const reset = useMutation({
-    mutationFn: api.resetModelSettings,
+    mutationFn: () => api.resetModelSettings(view.revision),
     onSuccess: (next) => onStored(next, false),
   })
   const patch: Patch = (change) => { setSaved(false); setForm((f) => ({ ...f, ...change })) }
+  const busy = save.isPending || reset.isPending
   const newEntry = (): EntrySetting => ({ provider: view.default_provider, model: '', effort: '' })
 
   return (
@@ -127,17 +130,21 @@ function SettingsEditor({ view }: { view: ModelSettingsView }) {
           {models.map((m) => <option key={m} value={m} />)}
         </datalist>
       ))}
-      <GeneralSection form={form} efforts={view.efforts} newEntry={newEntry} patch={patch} />
-      <div className="flex items-center justify-between">
-        <h2 className="font-semibold">Tracks</h2>
-        <button type="button" className={BUTTON} onClick={() => patch(addTrack(form))}>Add track</button>
-      </div>
-      {form.tracks.map((track) => (
-        <TrackCard key={track.id} track={track} form={form} efforts={view.efforts}
-          newEntry={newEntry} patch={patch} />
-      ))}
+      {/* Locked while a save or reset waits (up to a dispatcher pass): the
+          answer replaces the form, so an edit made meanwhile would be lost. */}
+      <fieldset disabled={busy} className="flex min-w-0 flex-col gap-4">
+        <GeneralSection form={form} efforts={view.efforts} newEntry={newEntry} patch={patch} />
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold">Tracks</h2>
+          <button type="button" className={BUTTON} onClick={() => patch(addTrack(form))}>Add track</button>
+        </div>
+        {form.tracks.map((track) => (
+          <TrackCard key={track.id} track={track} form={form} efforts={view.efforts}
+            newEntry={newEntry} patch={patch} />
+        ))}
+      </fieldset>
       <ActionBar canReset={view.source === 'console'} dirty={dirty} invalid={invalid} saved={saved}
-        saving={save.isPending} busy={save.isPending || reset.isPending} error={save.error ?? reset.error}
+        saving={save.isPending} busy={busy} error={save.error ?? reset.error}
         onSave={() => save.mutate()} onDiscard={() => patch(toForm(view.models))} onReset={() => reset.mutate()} />
     </div>
   )

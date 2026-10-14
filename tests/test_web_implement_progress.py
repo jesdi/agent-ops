@@ -38,7 +38,7 @@ def _progress(tmp_path, stage, signal):
     cfg = make_config(sdir)
     state.save(sdir, make_task(issue=7, stage=stage, worktree=str(wt)))
     client = TestClient(create_app(
-        cfg, Sources(cfg, _NoSessions(), _NoGithub())))
+        cfg, Sources(cfg.state_dir, _NoSessions(), _NoGithub())))
     r = client.get("/api/task/alpha/7", headers=HEADERS)
     assert r.status_code == 200
     body = r.json()

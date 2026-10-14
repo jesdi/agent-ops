@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import type { EntrySetting, ModelSettingsView, ModelsSetting } from '../../lib/api'
+import type { EntrySetting, ModelSettingsView, ModelsSave, ModelsSetting } from '../../lib/api'
 import { server } from '../../test/msw-server'
 import { renderWithProviders } from '../../test/render'
 import { SettingsPage } from '../SettingsPage'
@@ -23,26 +23,29 @@ const VIEW: ModelSettingsView = {
     pinned: [],
     review_second: null,
   },
-  source: 'targets.yaml', set_by: '', set_at: '', error: '',
+  revision: '', source: 'targets.yaml', set_by: '', set_at: '', error: '',
   efforts: { anthropic: ['low', 'medium', 'high', 'xhigh', 'max'], openai: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
   default_provider: 'anthropic',
   known_models: { anthropic: ['claude-opus-5', 'claude-sonnet-5'], openai: ['gpt-luna'] },
   target_overrides: [],
 }
-const STORED: ModelSettingsView = { ...VIEW, source: 'console', set_by: 'jesdi', set_at: new Date().toISOString() }
+const STORED: ModelSettingsView = { ...VIEW, revision: 'r1', source: 'console', set_by: 'jesdi', set_at: new Date().toISOString() }
 
-/** Serves VIEW (or `initial`) and records each PUT body, answering as stored. */
+/** Serves VIEW (or `initial`) and records each saved block, answering as
+ *  stored; `revisions` records the revision each save was sent from. */
 function serve(initial: ModelSettingsView = VIEW) {
   const bodies: ModelsSetting[] = []
+  const revisions: string[] = []
   server.use(
     http.get('/api/settings/models', () => HttpResponse.json(initial)),
     http.put('/api/settings/models', async ({ request }) => {
-      const body = (await request.json()) as ModelsSetting
-      bodies.push(body)
-      return HttpResponse.json({ ...STORED, models: body })
+      const { revision, models } = (await request.json()) as ModelsSave
+      bodies.push(models)
+      revisions.push(revision)
+      return HttpResponse.json({ ...STORED, revision: `r${revisions.length + 1}`, models })
     }),
   )
-  return bodies
+  return Object.assign(bodies, { revisions })
 }
 
 it('saves an edited stage list and starts the form over from the stored block', async () => {
@@ -62,6 +65,32 @@ it('saves an edited stage list and starts the form over from the stored block', 
   expect(bodies[0]?.review_second).toBeNull()
   expect(screen.getByTestId('settings-source')).toHaveTextContent('set in the console')
   expect(save).toBeDisabled()
+
+  // The next save is sent from the revision the first one returned.
+  await user.type(screen.getByLabelText('When standard'), ' More.')
+  await user.click(save)
+  await waitFor(() => expect(bodies.revisions).toEqual(['', 'r2']))
+})
+
+it('locks the form while a save waits, so no edit is lost', async () => {
+  serve()
+  let answer: () => void = () => {}
+  server.use(http.put('/api/settings/models', async ({ request }) => {
+    const { models } = (await request.json()) as ModelsSave
+    await new Promise<void>((resolve) => { answer = resolve })
+    return HttpResponse.json({ ...STORED, models })
+  }))
+  renderWithProviders(<SettingsPage />)
+  const user = userEvent.setup()
+  const when = await screen.findByLabelText('When standard')
+  await user.type(when, ' More.')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+
+  await waitFor(() => expect(when).toBeDisabled())
+  expect(screen.getByRole('button', { name: 'Add track' })).toBeDisabled()
+  answer()
+  await waitFor(() => expect(screen.getByLabelText('When standard')).toBeEnabled())
+  expect(screen.getByLabelText('When standard')).toHaveValue('Any task. More.')
 })
 
 it('adds a second review model on another provider, with no effort', async () => {
@@ -139,7 +168,11 @@ it('names a new track with a name no track has', async () => {
 it('resets to targets.yaml only after a confirm', async () => {
   let resets = 0
   serve(STORED)
-  server.use(http.delete('/api/settings/models', () => { resets += 1; return HttpResponse.json(VIEW) }))
+  server.use(http.delete('/api/settings/models', ({ request }) => {
+    expect(new URL(request.url).searchParams.get('revision')).toBe('r1')
+    resets += 1
+    return HttpResponse.json(VIEW)
+  }))
   renderWithProviders(<SettingsPage />)
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Reset to targets.yaml' }))
