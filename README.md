@@ -241,13 +241,15 @@ Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.wo
 Two kinds of agent skills live in this repo:
 
 - **Committed:** the [mattpocock/skills](https://github.com/mattpocock/skills) set in `.agents/skills/`, pinned by `skills-lock.json`.
-- **Not committed:** the skills from [jesdi/general-skills](https://github.com/jesdi/general-skills) (backlog, crap-gate, implement-spec, review-diff, to-spec, to-tickets, …). Only their list, `.my-skills.json`, is committed. The skills are gitignored and installed into `.my-skills/`, with symlinks in `.claude/skills/`.
+- **Not committed:** the skills from [jesdi/general-skills](https://github.com/jesdi/general-skills) (backlog, crap-gate, implement-spec, review-diff, to-spec, to-tickets, …). Only their list, `.my-skills.json`, is committed. The skills are gitignored and installed into `.my-skills/`, with symlinks in `.claude/skills/` (Claude Code) and `.agents/skills/` (OpenCode and Codex). The top-level `agents` in `.my-skills.json` sets both for every skill; do not add a per-skill `agents`, it overrides that default.
 
 Global Claude Code config (rules, hooks, and plugins like engram, ponytail and codex, which lets Claude hand work to Codex) lives in the private [jesdi/claude-config](https://github.com/jesdi/claude-config). Run its `install.sh` once per machine.
 
 `scripts/setup.sh` installs the project skills. To install only them (needs Node and pnpm), run `./scripts/install-skills.sh`.
 
-To add a new one, run `pnpm dlx @jesdi/skills-cli install <skill> --agent claude` and add its `.claude/skills/<skill>` line to `.gitignore`.
+To add a new one, run `pnpm dlx @jesdi/skills-cli install <skill>` and add its `.claude/skills/<skill>` and `.agents/skills/<skill>` lines to `.gitignore`.
+
+The session hook of skills-cli updates only global skills (`~/.my-skills`). Project skills stay at the versions pinned in `.my-skills.json`. To move them to the latest release, run `pnpm dlx @jesdi/skills-cli@latest update --all` and commit the new pins.
 
 ## Deployment
 
