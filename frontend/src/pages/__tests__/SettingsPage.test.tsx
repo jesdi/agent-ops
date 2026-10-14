@@ -204,3 +204,45 @@ it('drops an effort the new provider does not have, and keeps one it has', async
   await user.selectOptions(screen.getByLabelText('Triage entry 1 provider'), 'anthropic')
   expect(effort).toHaveValue('')
 })
+
+
+it('keeps edits on the view they were made on when a newer one arrives', async () => {
+  serve(STORED)
+  const { queryClient } = renderWithProviders(<SettingsPage />)
+  const user = userEvent.setup()
+  await user.type(await screen.findByLabelText('When standard'), ' Mine.')
+
+  // Another operator saves; this tab refetches in the background.
+  const theirs = { ...STORED, revision: 'r9', models: { ...STORED.models, pinned: ['standard'] } }
+  const sent: string[] = []
+  server.use(
+    http.get('/api/settings/models', () => HttpResponse.json(theirs)),
+    http.put('/api/settings/models', async ({ request }) => {
+      sent.push(((await request.json()) as ModelsSave).revision)
+      return HttpResponse.json({ detail: 'the model settings changed since this page loaded them' }, { status: 409 })
+    }),
+  )
+  await queryClient.invalidateQueries()
+
+  await screen.findByText(/Someone saved newer model settings/)
+  expect(screen.getByLabelText('When standard')).toHaveValue('Any task. Mine.')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('changed since this page loaded'))
+  expect(sent).toEqual(['r1'])   // the revision the edits were made on, not r9
+
+  await user.click(screen.getByRole('button', { name: 'Discard changes' }))
+  expect(screen.getByLabelText('When standard')).toHaveValue('Any task.')
+  expect(screen.getByText('1. standard')).toBeInTheDocument()
+  expect(screen.getByRole('status')).toHaveTextContent('')
+})
+
+it('follows a newer view at once when there is nothing to lose', async () => {
+  serve(STORED)
+  const { queryClient } = renderWithProviders(<SettingsPage />)
+  await screen.findByLabelText('When standard')
+  server.use(http.get('/api/settings/models', () =>
+    HttpResponse.json({ ...STORED, revision: 'r9', models: { ...STORED.models, pinned: ['standard'] } })))
+  await queryClient.invalidateQueries()
+  await screen.findByText('1. standard')
+  expect(screen.queryByText(/Someone saved newer model settings/)).toBeNull()
+})

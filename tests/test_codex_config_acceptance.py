@@ -69,14 +69,14 @@ def test_triage_containing_openai_entry_is_accepted():
 
 # -- criterion 4: models.review_second is optional and validated -----------
 
-def test_review_second_unset_is_empty():
+def test_review_second_unset_is_none():
     policy = parse_policy(_raw())
-    assert policy.review_second == ""
+    assert policy.review_second is None
 
 
 def test_review_second_valid_openai_model_is_accepted():
     policy = parse_policy(_raw(review_second="openai/gpt-sol"))
-    assert policy.review_second == "openai/gpt-sol"
+    assert policy.review_second == Entry("openai", "gpt-sol")
 
 
 def test_review_second_anthropic_provider_is_rejected():

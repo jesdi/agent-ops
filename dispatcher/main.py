@@ -26,7 +26,7 @@ from typing import Callable
 
 from dispatcher.convergence import pass_lock
 from dispatcher.config import (Config, Target, apply_stored_models,
-                               load_config, policy_for, track_missing,
+                               load_config, policy_for,
                                referenced_providers, routed_providers)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
@@ -1819,7 +1819,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
-    if track_missing(cfg.models, target, task.track):
+    if task.track not in policy.tracks:
         _park_for_input(cfg, deps, target, task,
                         f"track {task.track!r} is no longer configured (have "
                         f"{sorted(policy.tracks)}); restore it in the console's model "

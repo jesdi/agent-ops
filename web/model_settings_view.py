@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from dispatcher import model_settings
 from dispatcher.config import Config
 from dispatcher.models import (DEFAULT_PROVIDER, PROVIDER_EFFORTS, STAGES, Entry,
-                               ModelPolicy, entry_text, parse_entry)
+                               ModelPolicy)
 
 
 class EntrySetting(BaseModel):
@@ -23,7 +23,12 @@ class EntrySetting(BaseModel):
         return cls(provider=entry.provider, model=entry.model, effort=entry.effort)
 
     def text(self, context: str) -> str:
-        return entry_text(self.provider, self.model, self.effort, context)
+        """The `provider/model[@effort]` text; models.parse_block validates
+        it. Raises ValueError when no Entry has these parts."""
+        try:
+            return str(Entry(self.provider, self.model, self.effort))
+        except ValueError as e:
+            raise ValueError(f"models: {context} {e}") from e
 
 
 class TrackSetting(BaseModel):
@@ -33,6 +38,11 @@ class TrackSetting(BaseModel):
     plan: list[EntrySetting]
     implement: list[EntrySetting]
     review: list[EntrySetting]
+
+
+# The stage fields are written out for the API schema; they must be STAGES.
+assert set(TrackSetting.model_fields) - {"when", "plan_review"} == set(STAGES), \
+    "TrackSetting's stage fields differ from dispatcher.models.STAGES"
 
 
 class ModelsSetting(BaseModel):
@@ -52,8 +62,7 @@ class ModelsSetting(BaseModel):
                                          **{s: _settings(t.stages[s]) for s in STAGES})
                     for t in policy.tracks.values()},
             pinned=list(policy.pinned),
-            review_second=(EntrySetting.of(parse_entry(policy.review_second, "review_second:"))
-                           if policy.review_second else None))
+            review_second=EntrySetting.of(policy.review_second) if policy.review_second else None)
 
     def to_raw(self) -> dict:
         """The targets.yaml shape. Raises ValueError (models.entry_text)."""

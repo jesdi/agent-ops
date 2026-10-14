@@ -110,6 +110,13 @@ class Entry:
     model: str
     effort: str = ""
 
+    def __post_init__(self) -> None:
+        # The written form must parse back to this entry (parse_entry).
+        if any(sep in part for part in (self.provider, self.model, self.effort)
+               for sep in "/@"):
+            raise ValueError(f"provider, model and effort must not contain '/' "
+                             f"or '@', got {(self.provider, self.model, self.effort)!r}")
+
     @property
     def model_id(self) -> str:
         return f"{self.provider}/{self.model}"
@@ -141,16 +148,6 @@ def parse_entry(value: object, context: str) -> Entry:
     return Entry(provider, model, effort)
 
 
-def entry_text(provider: str, model: str, effort: str, context: str) -> str:
-    """The `provider/model[@effort]` text of these parts, refused when a part
-    holds a separator and so would read back as another entry. parse_entry
-    validates the rest when the block is parsed."""
-    if any(sep in part for part in (provider, model, effort) for sep in "/@"):
-        raise ValueError(f"models: {context} provider, model and effort must "
-                         f"not contain '/' or '@', got {(provider, model, effort)!r}")
-    return str(Entry(provider, model, effort))
-
-
 def _entries(raw: object, context: str) -> tuple[Entry, ...]:
     if isinstance(raw, str) or not isinstance(raw, list) or not raw:
         raise ValueError(f"models: {context} must be a non-empty list of "
@@ -171,7 +168,7 @@ class ModelPolicy:
     triage: tuple[Entry, ...]
     untracked: str          # the track a candidate with no track: label specs on
     tracks: Mapping[str, Track]
-    review_second: str = ""  # provider/model a Claude review session's codex exec runs on, "" = unset
+    review_second: Entry | None = None  # what a Claude review session's codex exec runs on
     pinned: tuple[str, ...] = ()  # tracks whose entries the priority mode never reorders
 
     def entries(self) -> list[Entry]:
@@ -223,13 +220,13 @@ def _track(name: str, raw: object) -> Track:
                  plan_review)
 
 
-def _review_second(raw: object) -> str:
-    """`models.review_second:` -> a plain 'provider/model' string, "" when
-    absent or null. Must name a non-anthropic provider with a configured
-    effort vocabulary (a runtime); no @effort suffix, since codex exec's
-    effort comes from the codex-home config, not this policy."""
+def _review_second(raw: object) -> Entry | None:
+    """`models.review_second:` -> its entry, None when absent or null. Must
+    name a non-anthropic provider with a configured effort vocabulary (a
+    runtime); no @effort suffix, since codex exec's effort comes from the
+    codex-home config, not this policy."""
     if raw is None:
-        return ""
+        return None
     entry = parse_entry(raw, "review_second:")
     if entry.effort:
         raise ValueError(f"models: review_second: must be 'provider/model' "
@@ -239,7 +236,7 @@ def _review_second(raw: object) -> str:
                          f"non-anthropic provider with configured efforts "
                          f"{sorted(p for p in PROVIDER_EFFORTS if p != DEFAULT_PROVIDER)}, "
                          f"got {raw!r}")
-    return entry.model_id
+    return entry
 
 
 def _triage(raw: dict) -> tuple[Entry, ...]:
@@ -373,7 +370,8 @@ def second_model(policy: ModelPolicy, stage: str, entry: Entry,
     anthropic entry, and admitted by the gate itself. The caller passes the
     real gate, never a bypass: an operator bypass forces the stage's own
     pick, not a second subscription."""
+    second = policy.review_second
     if (stage != "review" or entry.provider != DEFAULT_PROVIDER
-            or not policy.review_second or not admitted(policy.review_second)):
+            or second is None or not admitted(second.model_id)):
         return None
-    return parse_entry(policy.review_second, "review_second:")
+    return second

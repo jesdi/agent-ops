@@ -22,7 +22,7 @@ from starlette.staticfiles import StaticFiles
 from dispatcher import execution_overrides, model_settings, priority, queue_ops
 from dispatcher.config import (Config, apply_stored_models, checked_policy,
                                policy_for, referenced_providers,
-                               routed_providers, track_missing)
+                               routed_providers, target_policy)
 from dispatcher.convergence import pass_lock
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
                                override_refusal, parse_entry,
@@ -519,10 +519,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     def _refuse_orphans(models: ModelPolicy) -> None:
         """422 when `models` as the global block drops a track an unfinished
-        task runs on: the dispatcher would park the task (config.track_missing)."""
+        task runs on: the dispatcher would park the task (main._drive_task)."""
         orphans = [f"{t.target}#{t.issue} ({t.track})" for t in sources.tasks()
                    if t.stage not in TERMINAL_STAGES and t.target in targets_by_name
-                   and track_missing(models, targets_by_name[t.target], t.track)]
+                   and t.track not in target_policy(models, targets_by_name[t.target]).tracks]
         if orphans:
             raise HTTPException(422, "unfinished tasks run on a track this "
                                 f"removes: {', '.join(orphans)}")
@@ -541,7 +541,10 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     @app.get("/api/settings/models", response_model=msv.ModelSettingsView)
     def get_model_settings(op: Operator = Depends(current_operator)):
-        return _settings_view()
+        # Not while a save is between its file write and `cfg`: the block
+        # and the revision must come from the same state.
+        with settings_lock:
+            return _settings_view()
 
     @app.put("/api/settings/models", response_model=msv.ModelSettingsView)
     def put_model_settings(req: msv.ModelsSave, op: Operator = Depends(current_operator)):

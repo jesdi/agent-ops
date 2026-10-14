@@ -370,7 +370,7 @@ def test_review_second_rejects_anything_but_a_model_id(bad):
 
 
 def test_review_second_null_is_unset():
-    assert parse_policy({**RAW, "review_second": None}).review_second == ""
+    assert parse_policy({**RAW, "review_second": None}).review_second is None
 
 
 def test_review_second_rejects_an_effort_suffix():

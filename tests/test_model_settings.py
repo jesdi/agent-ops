@@ -1,6 +1,7 @@
 """The console's model settings: a `models:` block stored in the state dir
 that replaces the targets.yaml one for the dispatcher and the console."""
 import json
+import threading
 from datetime import datetime, timezone
 
 import pytest
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 from dispatcher import model_settings
 from dispatcher.config import apply_stored_models, load_config
 from dispatcher.convergence import pass_lock
-from dispatcher.models import entry_text
+from dispatcher.models import Entry
 from dispatcher.state import Stage
 from tests.test_config import SAMPLE
 from tests.webfakes import HEADERS, FakeSources, make_task
@@ -199,7 +200,36 @@ def test_a_save_or_reset_from_a_stale_page_is_refused(tmp_path):
     assert [e[0] for e in fake.appended] == ["model-settings-set"]
 
 
-def test_entry_text_refuses_a_separator_inside_a_part():
-    assert entry_text("openai", "gpt-luna", "high", "x") == "openai/gpt-luna@high"
+def test_an_entry_refuses_a_separator_inside_a_part():
+    assert str(Entry("openai", "gpt-luna", "high")) == "openai/gpt-luna@high"
     with pytest.raises(ValueError, match="must not contain"):
-        entry_text("anthropic", "claude@x", "", "x")
+        Entry("anthropic", "claude@x")
+
+
+def test_a_read_during_a_save_sees_the_block_and_revision_of_one_state(tmp_path, monkeypatch):
+    """A save pauses after its file write; a read made then must not pair
+    the old block with the new revision (a save from it would undo the
+    first one)."""
+    _, _, client = rig(tmp_path)
+    written, release, reads = threading.Event(), threading.Event(), []
+    real_save = model_settings.save
+
+    def paused_save(*args, **kwargs):
+        real_save(*args, **kwargs)
+        written.set()
+        release.wait(5)
+    monkeypatch.setattr(model_settings, "save", paused_save)
+    saver = threading.Thread(target=lambda: client.put(
+        "/api/settings/models", headers=HEADERS, json=save(BODY)))
+    saver.start()
+    assert written.wait(5)
+    reader = threading.Thread(target=lambda: reads.append(
+        client.get("/api/settings/models", headers=HEADERS).json()))
+    reader.start()
+    reader.join(0.3)
+    assert reader.is_alive()   # waits for the save
+    release.set()
+    saver.join(5)
+    reader.join(5)
+    assert reads[0]["models"] == BODY
+    assert reads[0]["revision"] == model_settings.revision(state_dir(tmp_path))

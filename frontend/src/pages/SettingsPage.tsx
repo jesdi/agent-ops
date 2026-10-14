@@ -94,16 +94,21 @@ export function SettingsPage() {
 
 function SettingsEditor({ view }: { view: ModelSettingsView }) {
   const queryClient = useQueryClient()
+  // The view the form started from. Its revision goes with a save or reset,
+  // so a newer view fetched in the background never vouches for edits made
+  // on an older one: the server refuses them (409).
+  const [base, setBase] = useState(view)
   const [form, setForm] = useState(() => toForm(view.models))
   const [saved, setSaved] = useState(false)
-  const baseline = useMemo(() => JSON.stringify(toBody(toForm(view.models))), [view.models])
+  const baseline = useMemo(() => JSON.stringify(toBody(toForm(base.models))), [base.models])
   const dirty = JSON.stringify(toBody(form)) !== baseline
   const invalid = form.tracks.some((t) => nameProblem(form, t) !== '')
+  const restart = (next: ModelSettingsView) => { setBase(next); setForm(toForm(next.models)) }
 
   // A save or a reset starts the form over from what the server stored.
   const onStored = (next: ModelSettingsView, wasSave: boolean) => {
     queryClient.setQueryData(queryKeys.modelSettings, next)
-    setForm(toForm(next.models))
+    restart(next)
     setSaved(wasSave)
     // The block decides every next-launch model and the priority options.
     void queryClient.invalidateQueries({ queryKey: queryKeys.usage })
@@ -111,21 +116,30 @@ function SettingsEditor({ view }: { view: ModelSettingsView }) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.allTasks })
   }
   const save = useMutation({
-    mutationFn: () => api.saveModelSettings(view.revision, toBody(form)),
+    mutationFn: () => api.saveModelSettings(base.revision, toBody(form)),
     onSuccess: (next) => onStored(next, true),
   })
-  const reset = useMutation({
-    mutationFn: () => api.resetModelSettings(view.revision),
+  const restore = useMutation({
+    mutationFn: () => api.resetModelSettings(base.revision),
     onSuccess: (next) => onStored(next, false),
   })
   const patch: Patch = (change) => { setSaved(false); setForm((f) => ({ ...f, ...change })) }
-  const busy = save.isPending || reset.isPending
-  const newEntry = (): EntrySetting => ({ provider: view.default_provider, model: '', effort: '' })
+  const busy = save.isPending || restore.isPending
+  const newer = view.revision !== base.revision
+  // With no edits, follow a newer view at once (another tab or operator saved).
+  if (newer && !dirty && !busy) restart(view)
+  const newEntry = (): EntrySetting => ({ provider: base.default_provider, model: '', effort: '' })
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-4">
-      <SourceHeader view={view} />
-      {Object.entries(view.known_models).map(([provider, models]) => (
+      <SourceHeader view={base} />
+      {newer && dirty && (
+        <p role="alert" className={banner.waiting}>
+          Someone saved newer model settings while you were editing. Discard your changes to load them;
+          a save of these changes will be refused.
+        </p>
+      )}
+      {Object.entries(base.known_models).map(([provider, models]) => (
         <datalist key={provider} id={`models-${provider}`}>
           {models.map((m) => <option key={m} value={m} />)}
         </datalist>
@@ -133,19 +147,21 @@ function SettingsEditor({ view }: { view: ModelSettingsView }) {
       {/* Locked while a save or reset waits (up to a dispatcher pass): the
           answer replaces the form, so an edit made meanwhile would be lost. */}
       <fieldset disabled={busy} className="flex min-w-0 flex-col gap-4">
-        <GeneralSection form={form} efforts={view.efforts} newEntry={newEntry} patch={patch} />
+        <GeneralSection form={form} efforts={base.efforts} newEntry={newEntry} patch={patch} />
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">Tracks</h2>
           <button type="button" className={BUTTON} onClick={() => patch(addTrack(form))}>Add track</button>
         </div>
         {form.tracks.map((track) => (
-          <TrackCard key={track.id} track={track} form={form} efforts={view.efforts}
+          <TrackCard key={track.id} track={track} form={form} efforts={base.efforts}
             newEntry={newEntry} patch={patch} />
         ))}
       </fieldset>
-      <ActionBar canReset={view.source === 'console'} dirty={dirty} invalid={invalid} saved={saved}
-        saving={save.isPending} busy={busy} error={save.error ?? reset.error}
-        onSave={() => save.mutate()} onDiscard={() => patch(toForm(view.models))} onReset={() => reset.mutate()} />
+      <ActionBar canReset={base.source === 'console'} dirty={dirty} invalid={invalid} saved={saved}
+        saving={save.isPending} busy={busy} error={save.error ?? restore.error}
+        onSave={() => save.mutate()}
+        onDiscard={() => { setSaved(false); save.reset(); restore.reset(); restart(view) }}
+        onReset={() => restore.mutate()} />
     </div>
   )
 }

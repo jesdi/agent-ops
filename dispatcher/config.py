@@ -243,20 +243,14 @@ def apply_stored_models(cfg: Config) -> Config:
     return replace(cfg, models=models, models_origin=origin)
 
 
-def track_missing(models: ModelPolicy, target: Target, track: str) -> bool:
-    """`track` is not in the policy `target` runs on when `models` is the
-    global block: the dispatcher parks a task on it, and the console refuses
-    a block that would do that."""
-    return track not in _target_policy(models, target).tracks
-
-
 def policy_for(cfg: Config, target: Target) -> ModelPolicy:
     """A target's own policy replaces the global one wholesale — rule lists are
     never merged, because merge order would make first-match-wins ambiguous."""
-    return _target_policy(cfg.models, target)
+    return target_policy(cfg.models, target)
 
 
-def _target_policy(models: ModelPolicy, target: Target) -> ModelPolicy:
+def target_policy(models: ModelPolicy, target: Target) -> ModelPolicy:
+    """The policy `target` runs when `models` is the global block."""
     return target.models or models
 
 
@@ -279,5 +273,6 @@ def referenced_providers(cfg: Config) -> frozenset[str]:
     unavailable (and main() warns once at startup). A policy's review_second counts too: the
     gate that grants it needs its provider's usage."""
     policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
-    ids = [m for p in policies for m in (*p.model_ids(), p.review_second) if m]
+    ids = [*(m for p in policies for m in p.model_ids()),
+           *(p.review_second.model_id for p in policies if p.review_second)]
     return frozenset(m.partition("/")[0] for m in ids)
