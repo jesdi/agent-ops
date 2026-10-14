@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the jesdi/general-skills skills listed in .my-skills.json.
-# They live in .my-skills/ and are symlinked into .claude/skills/, both gitignored.
+# They live in .my-skills/ and are symlinked into .claude/skills/ and .agents/skills/, all gitignored.
 # The mattpocock skills (skills-lock.json, .agents/skills/) are committed and need nothing.
 set -euo pipefail
 cd "$(dirname "$0")/.."

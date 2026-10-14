@@ -11,7 +11,7 @@ node_modules/
 targets.yaml
 
 # jesdi/general-skills store + agent symlinks (installed by scripts/install-skills.sh;
-# only .my-skills.json is committed). Add a line here for every skill in .my-skills.json.
+# only .my-skills.json is committed). Add both lines here for every skill in .my-skills.json.
 .my-skills/
 .claude/skills/backlog
 .claude/skills/branch-audit
@@ -20,12 +20,27 @@ targets.yaml
 .claude/skills/deep-quality-review
 .claude/skills/file-bug-issue
 .claude/skills/implement-spec
+.claude/skills/pr-visual-diff
 .claude/skills/red-team-data-model
 .claude/skills/review-diff
 .claude/skills/review-page
 .claude/skills/to-openspec
 .claude/skills/to-spec
 .claude/skills/to-tickets
+.agents/skills/backlog
+.agents/skills/branch-audit
+.agents/skills/ceo-review
+.agents/skills/crap-gate
+.agents/skills/deep-quality-review
+.agents/skills/file-bug-issue
+.agents/skills/implement-spec
+.agents/skills/pr-visual-diff
+.agents/skills/red-team-data-model
+.agents/skills/review-diff
+.agents/skills/review-page
+.agents/skills/to-openspec
+.agents/skills/to-spec
+.agents/skills/to-tickets
 frontend/dist/
 
 # Quality reports
