@@ -153,7 +153,10 @@ function taskDetail(target, issue) {
     card,
     messages: messageViews(issue),
     delivery_contract: contractFor(card),
-    pane_tail: '? Should I use the staging redirect URL or prod?\n> ',
+    // A real pane tail is far taller than the console: the latest
+    // interaction is at the bottom.
+    pane_tail: Array.from({ length: 80 }, (_, i) => `tool output line ${i + 1}`).join('\n')
+      + '\n? Should I use the staging redirect URL or prod?\n> ',
     session_alive: true,
     worktree: `/home/agent/worktrees/task-${issue}`,
     ci_run_id: 0, effort: 3, labels: ['auto'],
