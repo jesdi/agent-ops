@@ -64,7 +64,7 @@ it('reply POSTs the text and refetches pending intents — no optimistic state f
   await waitFor(() =>
     expect(screen.getByTestId('pending-badge')).toBeInTheDocument(),
   )
-  expect(screen.getByText(/parked: question/)).toBeInTheDocument()
+  expect(screen.getByText(/parked: decision/)).toBeInTheDocument()
 })
 
 it('a failing intent surfaces the API detail inline instead of looking like success', async () => {

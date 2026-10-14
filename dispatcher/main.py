@@ -54,6 +54,7 @@ from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SLOT, PARK_CI,
                               PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
+                              WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
                               RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_session, clear_turn_markers, delete, has_waiting,
@@ -720,7 +721,8 @@ def _end_session(cfg: Config, deps: Deps, target: str, issue: int) -> None:
 
 def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     note: str, artifact: str = "",
-                    is_answers: bool = False) -> None:
+                    is_answers: bool = False,
+                    reason: str = WHY_DECISION) -> None:
     tail = deps.sessions.capture_tail(task.target, task.issue)
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, target, task, note,
@@ -756,8 +758,8 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # A wake that ends here is over: the wake that follows this park says
     # for itself whether it is an attach, and on which model.
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
-                                park_note=note, slot=NO_SLOT,
-                                operator_request=answers_request,
+                                park_note=note, park_reason=reason,
+                                slot=NO_SLOT, operator_request=answers_request,
                                 hold_for_attach=False,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
@@ -776,7 +778,8 @@ def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
         "parked_question", issue=task.issue, title=task.title,
         url=_url(target, task.issue), target=target.name, note=note)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
-                                park_note=note, slot=NO_SLOT, ci_run_id=0,
+                                park_note=note, park_reason=WHY_LOOP_CAP,
+                                slot=NO_SLOT, ci_run_id=0,
                                 feedback_pending=False, operator_request=None,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
@@ -1499,14 +1502,16 @@ def _on_apply_decision(turn: _Turn, task: TaskState, act: ApplyDecision,
     cfg, deps, target = turn.cfg, turn.deps, turn.target
     task, parked = _apply_loop_decision(
         cfg, deps, target, task, act.decision,
-        park_exhausted=lambda t, note: _park_for_input(cfg, deps, target, t, note))
+        park_exhausted=lambda t, note: _park_for_input(cfg, deps, target, t, note,
+                                                       reason=WHY_LOOP_CAP))
     return None if parked else task
 
 
 def _on_park_for_input(turn: _Turn, task: TaskState, act: ParkForInput,
                        launch: Launch | None) -> None:
     _park_for_input(turn.cfg, turn.deps, turn.target, task, act.note,
-                    artifact=act.artifact, is_answers=act.is_answers)
+                    artifact=act.artifact, is_answers=act.is_answers,
+                    reason=act.reason)
 
 
 def _plan_approval(task: TaskState, artifact: str) -> PlanApprovalRequest:
@@ -1817,7 +1822,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
         _park_for_input(cfg, deps, target, task,
                         f"track {task.track!r} is no longer configured (have "
                         f"{sorted(policy.tracks)}); restore it in targets.yaml or "
-                        f"run the task with a model override")
+                        f"run the task with a model override",
+                        reason=WHY_CONFIG)
         return
     # herdr's view of a background wait BEFORE the idle reading: a session
     # waking between the two reads must look still-waiting (held), never
@@ -2124,7 +2130,8 @@ def _apply_park_intent(cfg: Config, deps: Deps, by_name: dict,
         print(f"[warn] park intent for #{issue}: target "
               f"{task.target!r} left the config — skipped", file=sys.stderr)
         return
-    _park_for_input(cfg, deps, target, task, note="parked by operator")
+    _park_for_input(cfg, deps, target, task, note="parked by operator",
+                    reason=WHY_OPERATOR)
 
 
 def _release_killed_task(cfg: Config, deps: Deps, by_name: dict,

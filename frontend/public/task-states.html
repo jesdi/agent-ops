@@ -157,6 +157,18 @@ flowchart TD
 <tr><td><span class="chip running">Resuming</span></td><td><code>unpark-requested</code></td>
   <td>A park ended, and the task waits for free capacity.</td><td>Not started</td><td>A pass launches the session when capacity is free.</td></tr>
 </table></div>
+<p>The chip on a card in the Parked column tells why the task waits:</p>
+<div class="card"><table>
+<tr><th>Chip</th><th>Causes</th></tr>
+<tr><td><span class="chip parked">parked: decision</span></td><td>Signal <code>blocked</code> or <code>awaiting-answers</code>. The session stopped at a permission or trust prompt.</td></tr>
+<tr><td><span class="chip parked">parked: stalled</span></td><td>No session output for 10 minutes. The passes poked a stopped session for more than 3 hours. Background work ran longer than 3 hours.</td></tr>
+<tr><td><span class="chip parked">parked: loop cap</span></td><td>A round cap was reached.</td></tr>
+<tr><td><span class="chip parked">parked: bad signal</span></td><td>The spec or plan session wrote a stage signal that the dispatcher cannot accept, also after its retries.</td></tr>
+<tr><td><span class="chip parked">parked: config</span></td><td>The task's track is no longer configured.</td></tr>
+<tr><td><span class="chip parked">parked: operator</span></td><td>The operator parked the task.</td></tr>
+<tr><td><span class="chip parked">parked: login</span></td><td>The session is at a login prompt.</td></tr>
+<tr><td><span class="chip parked">parked</span></td><td>The task parked before the dispatcher recorded a reason.</td></tr>
+</table></div>
 <p>The notes you see on an input park that the dispatcher wrote itself:</p>
 <div class="card"><table>
 <tr><th>Note</th><th>Cause</th></tr>

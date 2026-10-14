@@ -15,7 +15,7 @@ const PORT = 8481
 
 const parkedCard = {
   issue: 42, target: 'widget', title: 'Fix login redirect',
-  stage: 'implement', park: 'question', column: 'parked', slot: -1,
+  stage: 'implement', park: 'parked', park_reason: 'decision', column: 'parked', slot: -1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?',
   feedback_pending: false,
@@ -30,11 +30,11 @@ const parkedCard = {
 // pinned task waiting on the usage gate (pinned_track + admission fields).
 const pinnedCards = () => [
   { ...parkedCard, issue: 51, title: 'Rework the settings screen layout', stage: 'implement',
-    park: '', column: 'in-progress', slot: 1, model: 'claude-fable-5-1',
+    park: '', park_reason: '', column: 'in-progress', slot: 1, model: 'claude-fable-5-1',
     track: 'frontend', pinned_track: 'frontend', park_note_pending: false,
     park_note: '', consuming_capacity: true, wake_blocked: false },
   { ...parkedCard, issue: 52, title: 'Rebuild the navigation bar for small screens', stage: 'implement',
-    park: 'awaiting-wake', column: 'parked', slot: -1, model: 'claude-fable-5-1',
+    park: 'awaiting-wake', park_reason: '', column: 'parked', slot: -1, model: 'claude-fable-5-1',
     track: 'frontend', pinned_track: 'frontend', park_note_pending: false,
     park_note: '', consuming_capacity: false, wake_blocked: false,
     admission: {

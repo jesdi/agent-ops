@@ -934,6 +934,8 @@ export interface components {
             park_note: string;
             /** Park Note Pending */
             park_note_pending: boolean;
+            /** Park Reason */
+            park_reason: string;
             /**
              * Pinned Track
              * @default

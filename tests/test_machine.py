@@ -23,7 +23,8 @@ from dispatcher.machine import (
     SpawnStage,
     next_actions,
 )
-from dispatcher.state import LoopCaps, PlanApprovalRequest, Stage, StageSignal, TaskState
+from dispatcher.state import (WHY_BAD_SIGNAL, WHY_STALLED, LoopCaps, PlanApprovalRequest,
+                              Stage, StageSignal, TaskState)
 
 GOOD_SPEC = "# t — design\n\n## Problem\n\n" + ("x " * 400) + "\n\n## Decisions\n\n" + ("y " * 400)
 GOOD_TICKET = ("# 01 — thing\n\n**What to build:** " + ("behaviour " * 30)
@@ -95,7 +96,7 @@ def test_spec_awaiting_review_is_bounced_once_then_parks():
     assert act == RetryStage(Stage.SPEC, SPEC_NO_REVIEW, Retry.SPEC_SIGNAL)
     assert '"done"' in act.reason
     (act,) = next_actions(replace(task(Stage.SPEC), spec_retries=1), s, True)
-    assert act == ParkForInput(SPEC_NO_REVIEW)
+    assert act == ParkForInput(SPEC_NO_REVIEW, reason=WHY_BAD_SIGNAL)
 
 
 def test_awaiting_review_at_the_gate_notifies_once(tmp_path):
@@ -146,7 +147,7 @@ def test_plan_done_before_the_gate_is_bounced_once_then_parks(tmp_path):
     t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_retries=1)
     assert next_actions(t, s, True) == acts
     t = replace(task(Stage.PLAN, worktree=str(tmp_path)), plan_slips=1)
-    assert next_actions(t, s, True) == [ParkForInput(PLAN_NO_APPROVAL)]
+    assert next_actions(t, s, True) == [ParkForInput(PLAN_NO_APPROVAL, reason=WHY_BAD_SIGNAL)]
 
 
 def test_approval_naming_a_track_is_validated_as_the_spec_track_is(tmp_path):
@@ -384,6 +385,7 @@ def test_stall_no_signal_parks():
     acts = next_actions(task(Stage.SPEC), None, True, idle_seconds=601.0)
     assert len(acts) == 1 and isinstance(acts[0], ParkForInput)
     assert "no session output for 10m" in acts[0].note
+    assert acts[0].reason == WHY_STALLED
 
 
 def test_stall_working_without_waiting_parks():
@@ -642,7 +644,7 @@ def test_new_report_with_agent_working_or_unknown_does_nothing(agent):
 def test_recorded_wait_inside_cap_holds_and_past_cap_parks():
     assert _bg(_waited(), _view(2 * HOUR)) == [NoOp()]
     assert _bg(_waited(), _view(3 * HOUR + 60)) == [ParkForInput(
-        "(background work still running after 180m — cap reached)")]
+        "(background work still running after 180m — cap reached)", reason=WHY_STALLED)]
 
 
 def test_counter_change_ends_the_wait_and_today_rules_apply():
