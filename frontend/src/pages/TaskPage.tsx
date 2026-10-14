@@ -6,6 +6,7 @@ import { useParams } from 'react-router'
 import { ArtifactsPanel } from '../components/ArtifactsPanel'
 import { AdmissionWarning } from '../components/AdmissionWarning'
 import { DescriptionPanel } from '../components/DescriptionPanel'
+import { LiveTail } from '../components/LiveTail'
 import { MessageThread } from '../components/MessageThread'
 import { PendingBadge } from '../components/PendingBadge'
 import { RequestPanel } from '../components/RequestPanel'
@@ -195,10 +196,7 @@ function TaskConsole({ target, issue, paneTail, showHistory, setShowHistory }: {
     {showHistory ? (
       <TerminalHistory target={target} issue={issue} onClose={() => setShowHistory(false)} />
     ) : (
-      <pre data-testid="pane-tail"
-        className="h-full overflow-auto rounded bg-ink p-3 font-mono text-xs text-surface dark:bg-surface-raised dark:text-ink">
-        {paneTail}
-      </pre>
+      <LiveTail text={paneTail} />
     )}
   </div>
 }
