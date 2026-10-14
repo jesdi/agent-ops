@@ -160,7 +160,7 @@ WHY_DECISION = "decision"        # the session asks the operator something
 WHY_STALLED = "stalled"          # silent, poked out, or a wait past its cap
 WHY_LOOP_CAP = "loop cap"        # a bounded loop used all its rounds
 WHY_BAD_SIGNAL = "bad signal"    # stage.json still rejected after the retries
-WHY_CONFIG = "config"            # the task's track is not configured
+WHY_CONFIG = "config"            # the config strands the task (models.stranded)
 WHY_OPERATOR = "operator"        # the operator parked it
 
 # No poke stretch (TaskState.poked_since / pokes): `replace(task, **NO_POKES)`

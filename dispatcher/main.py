@@ -46,7 +46,7 @@ from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApprova
                                 SpawnStage, pass_actions)
 from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
-                               parse_entry, pick_key, second_model,
+                               parse_entry, pick_key, second_model, stranded,
                                stage_pick,
                                track_from_labels, tracks_text)
 from dispatcher.prompts import render_stage_prompt
@@ -1819,12 +1819,12 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
-    if task.track not in policy.tracks:
+    why = stranded(policy, task.track, task.picks, next_stage(task),
+                   referenced_providers(cfg))
+    if why:
         _park_for_input(cfg, deps, target, task,
-                        f"track {task.track!r} is no longer configured (have "
-                        f"{sorted(policy.tracks)}); restore it in the console's model "
-                        f"settings or targets.yaml, or "
-                        f"run the task with a model override",
+                        f"{why}; restore it in the console's model settings or "
+                        f"targets.yaml, or run the task with a model override",
                         reason=WHY_CONFIG)
         return
     # herdr's view of a background wait BEFORE the idle reading: a session
@@ -2565,6 +2565,16 @@ def send_digest(cfg: Config, deps: Deps) -> None:
     deps.notifier.send("daily_digest", lines=_status_lines(cfg))
 
 
+def _load(config_path: str) -> tuple[Config, Config]:
+    """targets.yaml as loaded, and that with the console's stored model
+    settings in force; warns when the stored ones are rejected."""
+    boot = load_config(config_path)
+    cfg = apply_stored_models(boot)
+    if cfg.models_origin.error:
+        print(f"[warn] {cfg.models_origin.error}", file=sys.stderr)
+    return boot, cfg
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="agent-ops-dispatcher")
     ap.add_argument("--config", default="targets.yaml")
@@ -2574,7 +2584,7 @@ def main() -> None:
     ap.add_argument("--triage-run", action="store_true")
     ap.add_argument("--migrate-tmux", action="store_true")
     args = ap.parse_args()
-    cfg = load_config(args.config)
+    boot, cfg = _load(args.config)
     missing = referenced_providers(cfg) - set(ADAPTERS)
     if missing:
         print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
@@ -2608,7 +2618,7 @@ def main() -> None:
             # The console stores model settings under this lock: read them
             # again inside it, so a pass never runs a block the console has
             # replaced (a removed track would park the tasks it claims).
-            guarded_pass(apply_stored_models(cfg), deps, args.config, dry_run=args.dry_run)
+            guarded_pass(apply_stored_models(boot), deps, args.config, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

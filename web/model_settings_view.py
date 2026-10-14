@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from dispatcher.config import Config
+from dispatcher.model_settings import Stored
 from dispatcher.models import (DEFAULT_PROVIDER, PROVIDER_EFFORTS, STAGES, Entry,
                                ModelPolicy)
 
@@ -107,21 +108,24 @@ class ModelSettingsView(BaseModel):
     target_overrides: list[str]     # targets whose own models: block wins
 
 
-def view(cfg: Config) -> ModelSettingsView:
+def view(cfg: Config, yaml_models: ModelPolicy) -> ModelSettingsView:
+    """`cfg` (apply_stored_models' result) for the page; `yaml_models` is the
+    targets.yaml block, whose models are offered as suggestions too."""
     origin = cfg.models_origin
+    stored = origin.state if isinstance(origin.state, Stored) else Stored("", "")
     return ModelSettingsView(
         models=ModelsSetting.of(cfg.models), revision=origin.revision,
-        source=origin.source, set_by=origin.set_by, set_at=origin.set_at,
-        error=origin.rejected,
+        source=origin.source, set_by=stored.set_by, set_at=stored.set_at,
+        error=origin.error,
         efforts={p: list(e) for p, e in PROVIDER_EFFORTS.items()},
         default_provider=DEFAULT_PROVIDER,
-        known_models=_known_models(cfg),
+        known_models=_known_models(cfg.models, yaml_models),
         target_overrides=[t.name for t in cfg.targets if t.models is not None])
 
 
-def _known_models(cfg: Config) -> dict[str, list[str]]:
-    """provider -> the models the block in force or targets.yaml's names."""
+def _known_models(*policies: ModelPolicy) -> dict[str, list[str]]:
+    """provider -> the models the policies name."""
     known: dict[str, set[str]] = {}
-    for e in (*cfg.models.entries(), *cfg.yaml_models().entries()):
+    for e in (e for p in policies for e in p.entries()):
         known.setdefault(e.provider, set()).add(e.model)
     return {p: sorted(m) for p, m in sorted(known.items())}

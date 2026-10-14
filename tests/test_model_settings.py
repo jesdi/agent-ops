@@ -1,19 +1,22 @@
 """The console's model settings: a `models:` block stored in the state dir
 that replaces the targets.yaml one for the dispatcher and the console."""
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from dispatcher import model_settings
+from dispatcher import main, model_settings
 from dispatcher.config import apply_stored_models, load_config
 from dispatcher.convergence import pass_lock
 from dispatcher.models import Entry
-from dispatcher.state import Stage
+from dispatcher.state import PARK_HUMAN, WHY_CONFIG, Stage, load
 from tests.test_config import SAMPLE
-from tests.webfakes import HEADERS, FakeSources, make_task
+from tests.test_main import cfg, deps
+from tests.test_main import make_task as make_saved_task
+from tests.webfakes import HEADERS, FakeSources, make_task, tracks_policy
 from web import app as web_app
 from web.app import create_app
 
@@ -57,59 +60,63 @@ def store(tmp_path, models):
     (d / model_settings.FILE).write_text(json.dumps({"models": models}))
 
 
+def applied(tmp_path, extra=""):
+    """The config in force: targets.yaml with the stored block laid over it."""
+    return apply_stored_models(load_config(write_config(tmp_path, extra)))
+
+
 def test_a_stored_block_replaces_the_targets_yaml_one(tmp_path):
     model_settings.save(state_dir(tmp_path), BLOCK, actor="jesdi",
                         now=datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc))
-    cfg = load_config(write_config(tmp_path))
+    assert list(load_config(write_config(tmp_path)).models.tracks) == ["standard"]
+    cfg = applied(tmp_path)
     assert list(cfg.models.tracks) == ["fast"]
-    assert list(cfg.yaml_models().tracks) == ["standard"]
     origin = cfg.models_origin
-    assert (origin.source, origin.set_by, origin.set_at, origin.rejected) == \
-        ("console", "jesdi", "2026-10-14T09:00:00+00:00", "")
-    assert len(origin.revision) == 64
+    assert origin.state == model_settings.Stored("jesdi", "2026-10-14T09:00:00+00:00")
+    assert (origin.source, origin.error, len(origin.revision)) == ("console", "", 64)
 
 
 @pytest.mark.parametrize("models, why", [
     ({**BLOCK, "untracked": "nope"}, "untracked"),
     ({}, "must not be empty"),
+    (None, "must be a mapping"),   # a null block is checked like any other
 ])
 def test_a_bad_stored_block_falls_back_to_targets_yaml_and_says_why(tmp_path, models, why):
     store(tmp_path, models)
-    cfg = load_config(write_config(tmp_path))
-    assert cfg.models == cfg.yaml_models()
+    cfg = applied(tmp_path)
+    assert list(cfg.models.tracks) == ["standard"]
     assert cfg.models_origin.source == "targets.yaml"
-    assert why in cfg.models_origin.rejected
+    assert why in cfg.models_origin.error
 
 
 def test_a_stored_block_must_keep_every_session_week_share_provider(tmp_path):
     store(tmp_path, {**BLOCK, "tracks": {"fast": {**BLOCK["tracks"]["fast"],
                                                   "implement": ["claude-sonnet-5"]}}})
     extra = yaml.safe_dump({"models": BLOCK, "session_week_share": {"openai": 0.1}})
-    cfg = load_config(write_config(tmp_path, extra))
-    assert "session_week_share" in cfg.models_origin.rejected
+    assert "session_week_share" in applied(tmp_path, extra).models_origin.error
 
 
 def test_apply_stored_models_follows_the_file_as_it_is_now(tmp_path):
     """The dispatcher applies it again inside the pass lock, and the console
-    on every read: a block stored after load_config is the one in force."""
-    cfg = load_config(write_config(tmp_path))
+    on every route: a block stored after load_config is the one in force."""
+    boot = load_config(write_config(tmp_path))
     store(tmp_path, BLOCK)
-    assert list(apply_stored_models(cfg).models.tracks) == ["fast"]
+    assert list(apply_stored_models(boot).models.tracks) == ["fast"]
     (state_dir(tmp_path) / model_settings.FILE).unlink()
-    assert apply_stored_models(cfg).models == cfg.yaml_models()
+    assert apply_stored_models(boot).models == boot.models
 
 
 def test_read_says_why_a_stored_file_is_unusable(tmp_path):
     path = tmp_path / model_settings.FILE
-    assert model_settings.read(tmp_path) == (None, model_settings.Origin())
+    assert model_settings.read(tmp_path) == (model_settings.Origin(), None)
     for text, why in (("{", "not JSON"), ("[]", "no models"), ("{}", "no models")):
         path.write_text(text)
-        raw, origin = model_settings.read(tmp_path)
-        assert raw is None and why in origin.rejected and len(origin.revision) == 64
+        origin, raw = model_settings.read(tmp_path)
+        assert raw is None and why in origin.error and len(origin.revision) == 64
     path.unlink()
     path.mkdir()   # a directory: reading it fails with an OSError
-    raw, origin = model_settings.read(tmp_path)
-    assert raw is None and "unreadable" in origin.rejected
+    origin, raw = model_settings.read(tmp_path)
+    assert raw is None and "unreadable" in origin.error
     assert origin.revision == model_settings.UNREADABLE
 
 
@@ -139,14 +146,14 @@ def test_the_console_stores_shows_and_resets_the_block(tmp_path):
     assert r.json()["source"] == "console"
     assert r.json()["set_by"] == "jesdi@github"
     assert r.json()["models"] == BODY
-    assert r.json()["revision"] == model_settings.read(state_dir(tmp_path))[1].revision
+    assert r.json()["revision"] == model_settings.read(state_dir(tmp_path))[0].revision
     assert r.json()["known_models"] == {
         "anthropic": ["claude-opus-5", "claude-sonnet-5"], "openai": ["gpt-luna"]}
     # The console's own views follow at once; the next pass reads the file.
     usage = client.get("/api/usage", headers=HEADERS).json()
     assert usage["gate"]["model"] == "anthropic/claude-sonnet-5"
     assert usage["priority"]["options"] == ["auto", "anthropic", "openai"]
-    assert list(load_config(write_config(tmp_path)).models.tracks) == ["fast"]
+    assert list(applied(tmp_path).models.tracks) == ["fast"]
     assert [e[0] for e in fake.appended] == ["model-settings-set"]
 
     r = client.delete("/api/settings/models", headers=HEADERS,
@@ -179,7 +186,8 @@ def test_a_block_that_drops_a_track_in_use_is_refused(tmp_path):
     _, _, client = rig(tmp_path, [busy, done])
     r = client.put("/api/settings/models", headers=HEADERS, json=save(BODY))
     assert r.status_code == 422
-    assert r.json()["detail"].endswith("portfolio_eval#9 (its track standard is gone)")
+    assert r.json()["detail"].endswith(
+        "portfolio_eval#9 (track 'standard' is no longer configured (have ['fast']))")
     assert not (state_dir(tmp_path) / model_settings.FILE).exists()
 
 
@@ -194,7 +202,8 @@ def test_a_block_that_drops_the_provider_of_a_picked_stage_is_refused(tmp_path):
     no_openai = {**BODY, "tracks": {"fast": {**BODY["tracks"]["fast"], "implement": [SONNET]}}}
     r = client.put("/api/settings/models", headers=HEADERS, json=save(no_openai, revision))
     assert r.status_code == 422
-    assert "portfolio_eval#9 (its implement stage runs on openai" in r.json()["detail"]
+    assert "portfolio_eval#9 (its implement stage runs on openai, which no model entry" \
+        in r.json()["detail"]
 
 
 def test_a_save_waits_for_a_running_pass_and_gives_up_with_409(tmp_path, monkeypatch):
@@ -235,3 +244,26 @@ def test_an_unreadable_file_still_shows_the_page_and_says_why(tmp_path):
                       params={"revision": r.json()["revision"]})
     assert r.status_code == 500
     assert "cannot write the model settings" in r.json()["detail"]
+
+
+
+def test_the_dispatcher_parks_a_task_whose_stage_runs_on_a_provider_no_entry_names(tmp_path):
+    """The same rule the console refuses a save on (models.stranded): a
+    targets.yaml edit can still strand a task, and the dispatcher says so
+    instead of waiting on a provider whose usage it never reads."""
+    c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
+    make_saved_task(c, issue=42, stage=Stage.IMPLEMENT, picks={"implement": "openai/gpt-luna@high"})
+
+    main._drive_task(c, deps(), c.targets[0], load(c.state_dir, "portfolio_eval", 42),
+                     lambda _m: None, tuple)
+
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.park, t.park_reason) == (PARK_HUMAN, WHY_CONFIG)
+    assert "its implement stage runs on openai, which no model entry names" in t.park_note
+
+
+def test_the_dispatcher_warns_when_the_stored_block_is_rejected(tmp_path, capsys):
+    store(tmp_path, None)
+    boot, cfg = main._load(str(write_config(tmp_path)))
+    assert cfg.models == boot.models
+    assert "console model settings not applied" in capsys.readouterr().err
