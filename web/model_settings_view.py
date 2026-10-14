@@ -8,7 +8,6 @@ from typing import Literal
 from pydantic import BaseModel
 
 from dispatcher.config import Config
-from dispatcher.model_settings import Stored
 from dispatcher.models import (DEFAULT_PROVIDER, PROVIDER_EFFORTS, STAGES, Entry,
                                ModelPolicy)
 
@@ -112,10 +111,9 @@ def view(cfg: Config, yaml_models: ModelPolicy) -> ModelSettingsView:
     """`cfg` (apply_stored_models' result) for the page; `yaml_models` is the
     targets.yaml block, whose models are offered as suggestions too."""
     origin = cfg.models_origin
-    stored = origin.state if isinstance(origin.state, Stored) else Stored("", "")
     return ModelSettingsView(
         models=ModelsSetting.of(cfg.models), revision=origin.revision,
-        source=origin.source, set_by=stored.set_by, set_at=stored.set_at,
+        source=origin.source, set_by=origin.set_by, set_at=origin.set_at,
         error=origin.error,
         efforts={p: list(e) for p, e in PROVIDER_EFFORTS.items()},
         default_provider=DEFAULT_PROVIDER,

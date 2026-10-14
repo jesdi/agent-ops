@@ -12,9 +12,10 @@ from dispatcher import main, model_settings
 from dispatcher.config import apply_stored_models, load_config
 from dispatcher.convergence import pass_lock
 from dispatcher.models import Entry
-from dispatcher.state import PARK_HUMAN, WHY_CONFIG, Stage, load
+from dispatcher.state import PARK_HUMAN, PARK_WAKE, WHY_CONFIG, Stage, load
 from tests.test_config import SAMPLE
-from tests.test_main import cfg, deps
+from tests.test_main import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps, patch_usage,
+                             patch_workspace)
 from tests.test_main import make_task as make_saved_task
 from tests.webfakes import HEADERS, FakeSources, make_task, tracks_policy
 from web import app as web_app
@@ -42,6 +43,9 @@ BODY = {"triage": [SONNET], "untracked": "fast", "pinned": [], "review_second": 
 
 def save(models, revision=""):
     return {"revision": revision, "models": models}
+
+
+ANTHROPIC_ONLY = lambda m: ADMIT_ALL(m) if m.startswith("anthropic/") else DENY_ALL(m)
 
 
 def write_config(tmp_path, extra=""):
@@ -108,16 +112,17 @@ def test_apply_stored_models_follows_the_file_as_it_is_now(tmp_path):
 
 def test_read_says_why_a_stored_file_is_unusable(tmp_path):
     path = tmp_path / model_settings.FILE
-    assert model_settings.read(tmp_path) == (model_settings.Origin(), None)
+    assert model_settings.read(tmp_path) == ("", None)
     for text, why in (("{", "not JSON"), ("[]", "no models"), ("{}", "no models")):
         path.write_text(text)
-        origin, raw = model_settings.read(tmp_path)
-        assert raw is None and why in origin.error and len(origin.revision) == 64
+        revision, found = model_settings.read(tmp_path)
+        assert isinstance(found, model_settings.Rejected) and why in found.reason
+        assert len(revision) == 64
     path.unlink()
     path.mkdir()   # a directory: reading it fails with an OSError
-    origin, raw = model_settings.read(tmp_path)
-    assert raw is None and "unreadable" in origin.error
-    assert origin.revision == model_settings.UNREADABLE
+    revision, found = model_settings.read(tmp_path)
+    assert isinstance(found, model_settings.Rejected) and "unreadable" in found.reason
+    assert revision == model_settings.UNREADABLE
 
 
 def test_an_entry_refuses_a_separator_inside_a_part():
@@ -146,7 +151,7 @@ def test_the_console_stores_shows_and_resets_the_block(tmp_path):
     assert r.json()["source"] == "console"
     assert r.json()["set_by"] == "jesdi@github"
     assert r.json()["models"] == BODY
-    assert r.json()["revision"] == model_settings.read(state_dir(tmp_path))[0].revision
+    assert r.json()["revision"] == model_settings.read(state_dir(tmp_path))[0]
     assert r.json()["known_models"] == {
         "anthropic": ["claude-opus-5", "claude-sonnet-5"], "openai": ["gpt-luna"]}
     # The console's own views follow at once; the next pass reads the file.
@@ -247,19 +252,56 @@ def test_an_unreadable_file_still_shows_the_page_and_says_why(tmp_path):
 
 
 
-def test_the_dispatcher_parks_a_task_whose_stage_runs_on_a_provider_no_entry_names(tmp_path):
+def test_the_dispatcher_parks_a_launch_picked_on_a_provider_no_entry_names(tmp_path, monkeypatch):
     """The same rule the console refuses a save on (models.stranded): a
     targets.yaml edit can still strand a task, and the dispatcher says so
-    instead of waiting on a provider whose usage it never reads."""
+    instead of waiting on a provider whose usage it never reads. Here the
+    implement fix round is done and review runs again on its openai pick."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
     c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
-    make_saved_task(c, issue=42, stage=Stage.IMPLEMENT, picks={"implement": "openai/gpt-luna@high"})
+    wt = make_saved_task(c, issue=42, stage=Stage.IMPLEMENT, ticket_count=1,
+                         picks={"implement": "anthropic/claude-sonnet-5",
+                                "review": "openai/gpt-luna@high"})
+    (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
 
-    main._drive_task(c, deps(), c.targets[0], load(c.state_dir, "portfolio_eval", 42),
-                     lambda _m: None, tuple)
+    main._drive_task(c, deps(sess=FakeSessions(alive={42})), c.targets[0],
+                     load(c.state_dir, "portfolio_eval", 42), ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.park, t.park_reason) == (PARK_HUMAN, WHY_CONFIG)
-    assert "its implement stage runs on openai, which no model entry names" in t.park_note
+    assert "its review stage runs on openai, which no model entry names" in t.park_note
+
+
+def test_a_wake_picked_on_a_provider_no_entry_names_parks_again(tmp_path):
+    c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
+    make_saved_task(c, issue=42, stage=Stage.IMPLEMENT, park=PARK_WAKE,
+                    picks={"implement": "openai/gpt-luna@high"})
+
+    main._resume_woken(c, deps(), ANTHROPIC_ONLY, tuple)
+
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.park, t.park_reason) == (PARK_HUMAN, WHY_CONFIG)
+    assert "its implement stage runs on openai" in t.park_note
+
+
+def test_a_done_stage_on_a_dropped_provider_still_moves_on(tmp_path, monkeypatch):
+    """The provider rule judges the launch about to happen, not the stage that
+    just ended: implement ran on openai and is done, and review runs on a
+    configured provider."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
+    wt = make_saved_task(c, issue=42, stage=Stage.IMPLEMENT, ticket_count=1,
+                         picks={"implement": "openai/gpt-luna@high"})
+    (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
+    sess = FakeSessions(alive={42})
+
+    main.run_pass(c, deps(sess=sess))
+
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.park, t.stage) == ("", Stage.REVIEW)
+    assert [s[:2] for s in sess.spawned] == [(42, "review")]
 
 
 def test_the_dispatcher_warns_when_the_stored_block_is_rejected(tmp_path, capsys):

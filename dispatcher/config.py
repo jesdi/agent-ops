@@ -9,9 +9,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from dispatcher import model_settings
+from dispatcher import model_settings, models
 from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_block, parse_policy
-from dispatcher.state import LoopCaps
+from dispatcher.state import LoopCaps, TaskState, next_stage
 from dispatcher.usage import PaceConfig
 
 
@@ -214,11 +214,10 @@ def _check_shares(cfg: Config) -> None:
 
 
 def with_models(cfg: Config, block: object) -> Config:
-    """`cfg` with `block` (a raw `models:` mapping, or a policy) as its
-    global block, validated as load_config validates the targets.yaml one.
-    Raises ValueError."""
-    policy = block if isinstance(block, ModelPolicy) else parse_block(block)
-    out = replace(cfg, models=policy)
+    """`cfg` with `block` (a raw `models:` mapping) as its global block,
+    validated as load_config validates the targets.yaml one. Raises
+    ValueError."""
+    out = replace(cfg, models=parse_block(block))
     _check_shares(out)
     return out
 
@@ -228,13 +227,16 @@ def apply_stored_models(boot: Config) -> Config:
     in the state dir in force. Never raises: a bad stored block must not stop
     a pass, nor the console page that can fix it, so it is rejected and
     targets.yaml's block runs."""
-    origin, raw = model_settings.read(boot.state_dir)
-    if isinstance(origin.state, model_settings.Stored):
-        try:
-            return replace(with_models(boot, raw), models_origin=origin)
-        except ValueError as e:
-            origin = origin.reject(str(e))
-    return replace(boot, models_origin=origin)
+    revision, found = model_settings.read(boot.state_dir)
+    if not isinstance(found, model_settings.Found):
+        return replace(boot, models_origin=model_settings.Origin(revision, found))
+    try:
+        cfg = with_models(boot, found.block)
+    except ValueError as e:
+        return replace(boot, models_origin=model_settings.Origin(
+            revision, model_settings.Rejected(str(e))))
+    stored = model_settings.Stored(found.set_by, found.set_at)
+    return replace(cfg, models_origin=model_settings.Origin(revision, stored))
 
 
 def policy_for(cfg: Config, target: Target | None) -> ModelPolicy:
@@ -243,6 +245,14 @@ def policy_for(cfg: Config, target: Target | None) -> ModelPolicy:
     first-match-wins ambiguous. No target (one removed from targets.yaml):
     the global one."""
     return (target.models if target else None) or cfg.models
+
+
+def stranded(cfg: Config, target: Target | None, task: TaskState,
+             stage: str = "") -> str:
+    """models.stranded for `task` under `cfg`, at `stage` (default: its next
+    launch's)."""
+    return models.stranded(policy_for(cfg, target), task.track, task.picks,
+                           stage or next_stage(task), referenced_providers(cfg))
 
 
 def routed_providers(cfg: Config) -> frozenset[str]:

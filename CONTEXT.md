@@ -273,7 +273,8 @@ a save applies from the next pass. The console stores it under that lock
 (409 when a pass holds it for more than 30 s), and refuses a block that fails
 config validation, that would strand an unfinished task (`models.stranded`:
 its track gone, or its next stage picked on a provider no entry names; the
-dispatcher parks a task on the same rule), or that was edited from
+dispatcher parks a task on the same rule, the provider part only when that
+picked launch is due), or that was edited from
 a page that loaded an older revision of the file (409: reload and edit
 again). A stored block that does not load (unreadable, or broken by a later
 targets.yaml change) is not applied: the targets.yaml block runs and the

@@ -19,8 +19,16 @@ UNREADABLE = "unreadable"   # the revision of a file that cannot be read
 
 
 @dataclass(frozen=True)
+class Found:
+    """A stored block read from the file, not yet checked (read())."""
+    set_by: str
+    set_at: str
+    block: object   # the raw `models:` value: models.parse_block checks it
+
+
+@dataclass(frozen=True)
 class Stored:
-    """The console's block is in force (or, from read(), is to be checked)."""
+    """The console's block is in force (config.apply_stored_models)."""
     set_by: str
     set_at: str
 
@@ -44,35 +52,40 @@ class Origin:
         return "console" if isinstance(self.state, Stored) else "targets.yaml"
 
     @property
+    def set_by(self) -> str:
+        return self.state.set_by if isinstance(self.state, Stored) else ""
+
+    @property
+    def set_at(self) -> str:
+        return self.state.set_at if isinstance(self.state, Stored) else ""
+
+    @property
     def error(self) -> str:
-        return self.state.reason if isinstance(self.state, Rejected) else ""
+        if not isinstance(self.state, Rejected):
+            return ""
+        return f"console model settings not applied: {self.state.reason}"
 
-    def reject(self, reason: str) -> Origin:
-        return Origin(self.revision, Rejected(f"console model settings not applied: {reason}"))
 
-
-def read(state_dir: str | Path) -> tuple[Origin, object]:
-    """The file's origin and its raw `models:` block. The block means
-    something only when the state is Stored, and models.parse_block still
-    validates it (it may be null, or anything). A file that cannot be read
-    or is not a {"models", ...} object is Rejected, not raised: it must not
-    stop a pass, nor the console page that can fix it."""
+def read(state_dir: str | Path) -> tuple[str, Found | Rejected | None]:
+    """The file's revision ("" = no file) and what it holds. A file that
+    cannot be read or is not a {"models", ...} object is Rejected, not
+    raised: it must not stop a pass, nor the console page that can fix it."""
     path = Path(state_dir) / FILE
     try:
         data = path.read_bytes()
     except FileNotFoundError:
-        return Origin(), None
+        return "", None
     except OSError as e:
-        return Origin(UNREADABLE).reject(f"{path} is unreadable: {e}"), None
-    origin = Origin(hashlib.sha256(data).hexdigest())
+        return UNREADABLE, Rejected(f"{path} is unreadable: {e}")
+    revision = hashlib.sha256(data).hexdigest()
     try:
         doc = json.loads(data)
     except ValueError as e:
-        return origin.reject(f"{path} is not JSON: {e}"), None
+        return revision, Rejected(f"{path} is not JSON: {e}")
     if not isinstance(doc, dict) or "models" not in doc:
-        return origin.reject(f"{path} holds no models block"), None
-    stored = Stored(str(doc.get("set_by") or ""), str(doc.get("set_at") or ""))
-    return Origin(origin.revision, stored), doc["models"]
+        return revision, Rejected(f"{path} holds no models block")
+    return revision, Found(str(doc.get("set_by") or ""), str(doc.get("set_at") or ""),
+                           doc["models"])
 
 
 def save(state_dir: str | Path, models: dict, *, actor: str, now: datetime) -> None:

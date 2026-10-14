@@ -97,6 +97,13 @@ def override_refusal(picks: Mapping[str, str], stage: str, model_id: str) -> str
     return f"{what} runs on {fixed}; pick a model from {fixed}"
 
 
+def track_gone(policy: ModelPolicy, track: str) -> str:
+    """Why `track` cannot run under `policy`, "" when it can."""
+    if track not in policy.tracks:
+        return f"track {track!r} is no longer configured (have {sorted(policy.tracks)})"
+    return ""
+
+
 def stranded(policy: ModelPolicy, track: str, picks: Mapping[str, str], stage: str,
              launchable: Collection[str]) -> str:
     """Why a task on `track` whose next stage is `stage` cannot go on under
@@ -104,8 +111,9 @@ def stranded(policy: ModelPolicy, track: str, picks: Mapping[str, str], stage: s
     provider not in `launchable` (config.referenced_providers: no usage is
     read for any other, so the gate never admits it). The one rule the
     dispatcher's park and the console's 422 share."""
-    if track not in policy.tracks:
-        return f"track {track!r} is no longer configured (have {sorted(policy.tracks)})"
+    gone = track_gone(policy, track)
+    if gone:
+        return gone
     provider = pick_provider(picks, stage)
     if provider and provider not in launchable:
         return f"its {policy_stage(stage)} stage runs on {provider}, which no model entry names"

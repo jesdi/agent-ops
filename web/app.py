@@ -21,10 +21,10 @@ from starlette.staticfiles import StaticFiles
 from dispatcher import execution_overrides, model_settings, priority, queue_ops
 from dispatcher.config import (Config, apply_stored_models, policy_for,
                                referenced_providers, routed_providers,
-                               with_models)
+                               stranded, with_models)
 from dispatcher.convergence import pass_lock
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
-                               override_refusal, parse_entry, stranded,
+                               override_refusal, parse_entry,
                                stage_pick, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher import answers as answers_file, intents
@@ -343,8 +343,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             admissions={(t.target, t.issue): admission
                         for t in tasks
                         if (admission := _task_admission(live, t, order, usages, now))},
-            candidate_admissions=_candidate_admissions(live, 
-                queue_targets, order, usages, now),
+            candidate_admissions=_candidate_admissions(live, queue_targets, order,
+                                                       usages, now),
             max_active={t.name: t.max_active for t in boot.targets},
             last_claimed=sources.last_claims(),
             max_open=boot.max_open)
@@ -526,12 +526,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def _refuse_stranding(candidate: Config) -> None:
         """422 when `candidate` would leave an unfinished task unable to go
         on (models.stranded, the rule the dispatcher parks on)."""
-        launchable = referenced_providers(candidate)
         stranded_tasks = [
             f"{t.target}#{t.issue} ({why})" for t in sources.tasks()
             if t.stage not in TERMINAL_STAGES and t.target in targets_by_name
-            and (why := stranded(policy_for(candidate, targets_by_name[t.target]),
-                                 t.track, t.picks, next_stage(t), launchable))]
+            and (why := stranded(candidate, targets_by_name[t.target], t))]
         if stranded_tasks:
             raise HTTPException(422, "unfinished tasks could not go on: "
                                 f"{', '.join(stranded_tasks)}")
