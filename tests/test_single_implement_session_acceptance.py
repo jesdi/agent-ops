@@ -296,7 +296,7 @@ def _progress_shown(c):
     from tests.webfakes import HEADERS
     from web.app import create_app
     from web.sources import Sources
-    with TestClient(create_app(c, Sources(c, _NoSessions(), _NoGithub()))) as client:
+    with TestClient(create_app(c, Sources(c.state_dir, _NoSessions(), _NoGithub()))) as client:
         r = client.get(f"/api/task/portfolio_eval/{ISSUE}", headers=HEADERS)
     assert r.status_code == 200, r.text
     return r.json()["implement_progress"]

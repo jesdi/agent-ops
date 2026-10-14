@@ -10,13 +10,13 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Collection, Literal
 
 from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
                         priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
-from dispatcher.config import Config, Target, referenced_providers
+from dispatcher.config import Target
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
 from dispatcher.sessions import session_name
@@ -49,10 +49,12 @@ class ArtifactListing:
 
 
 class Sources:
-    def __init__(self, cfg: Config, sessions, github,
+    def __init__(self, state_dir: str, sessions, github,
                  clock: Callable[[], float] = time.time,
                  systemctl: tuple[str, ...] = DISPATCHER_KICK):
-        self._cfg = cfg
+        # The state dir only: the config (models included) has one owner,
+        # web.app, which can change it while the console runs.
+        self._state_dir = state_dir
         self._sessions = sessions
         self._github = github
         self._clock = clock
@@ -62,12 +64,12 @@ class Sources:
 
     @property
     def state_dir(self) -> Path:
-        return Path(self._cfg.state_dir)
+        return Path(self._state_dir)
 
     # -- reads -----------------------------------------------------------
 
     def tasks(self) -> list[TaskState]:
-        return state.load_all(self._cfg.state_dir)
+        return state.load_all(self._state_dir)
 
     def task(self, target: str, issue: int) -> TaskState | None:
         active = next((task for task in self.tasks()
@@ -147,13 +149,14 @@ class Sources:
         self._desc_cache[key] = {"data": data, "at": now}
         return data
 
-    def usage(self) -> dict[str, ProviderUsage]:
-        """Every routed provider, plus any other provider whose adapter reads
-        (Codex run by hand while no track lists openai). The dispatcher
-        admits on the routed set alone; an unrouted provider that reads
-        unavailable (no login) is noise here, so it is left out."""
-        routed = referenced_providers(self._cfg)
-        usages = {p: fetch_provider(p, self._cfg.state_dir, now=self._clock)
+    def usage(self, routed: Collection[str]) -> dict[str, ProviderUsage]:
+        """Every `routed` provider (config.referenced_providers of the config
+        in force), plus any other provider whose adapter reads (Codex run by
+        hand while no track lists openai). The dispatcher admits on the
+        routed set alone; an unrouted provider that reads unavailable (no
+        login) is noise here, so it is left out."""
+        routed = set(routed)
+        usages = {p: fetch_provider(p, self._state_dir, now=self._clock)
                   for p in sorted(routed | ADAPTERS.keys())}
         return {p: u for p, u in usages.items()
                 if p in routed or u.source != "unavailable"}
@@ -262,7 +265,7 @@ class Sources:
         # /api/task/{issue}. A torn append (UnicodeDecodeError -> ValueError)
         # is realistic because the dispatcher appends under normal operation.
         try:
-            return eventlog.read_tail(self._cfg.state_dir, limit=limit)
+            return eventlog.read_tail(self._state_dir, limit=limit)
         except (OSError, ValueError):
             return []
 
@@ -270,7 +273,7 @@ class Sources:
         # Same degrade as events_tail: an unreadable log only loses the
         # forecast's tie-break, never /api/board.
         try:
-            return claims.last_claims(self._cfg.state_dir)
+            return claims.last_claims(self._state_dir)
         except (OSError, ValueError):
             return {}
 
@@ -379,10 +382,10 @@ class Sources:
                            "history": history}, sort_keys=True)
 
     def messages(self, target: str, issue: int) -> list:
-        return msgq.all_messages(self._cfg.state_dir, target, issue)
+        return msgq.all_messages(self._state_dir, target, issue)
 
     def undelivered_counts(self) -> dict[tuple[str, int], int]:
-        return msgq.undelivered_counts(self._cfg.state_dir)
+        return msgq.undelivered_counts(self._state_dir)
 
     def wake_blocked_issues(self) -> set[tuple[str, int]]:
         """(target, issue) pairs currently denied a wake for want of a free
@@ -406,7 +409,7 @@ class Sources:
 
     def submit_intent(self, action: str, target: str, issue: int,
                       payload: dict, actor: str) -> str:
-        path = write_intent(self._cfg.state_dir, action, target, issue,
+        path = write_intent(self._state_dir, action, target, issue,
                             payload, actor, int(self._clock() * 1000))
         self._kick_dispatcher()
         return path.name
@@ -417,5 +420,5 @@ class Sources:
 
     def append_event(self, event: str, *, target: str = "", issue: int = 0,
                      actor: str = "", detail: str = "") -> None:
-        eventlog.append_event(self._cfg.state_dir, event, target=target,
+        eventlog.append_event(self._state_dir, event, target=target,
                               issue=issue, actor=actor, detail=detail)

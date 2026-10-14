@@ -77,7 +77,7 @@ def test_page_signal_enters_the_gate_and_the_console_serves_the_html(tmp_path, m
     assert t.stage.value == GATE
     assert t.operator_request.kind == "plan-approval"
     assert t.operator_request.path == PAGE
-    with TestClient(create_app(c, Sources(c, sessions=None, github=None))) as client:
+    with TestClient(create_app(c, Sources(c.state_dir, sessions=None, github=None))) as client:
         r = client.get(f"/api/task/portfolio_eval/{ISSUE}/request", headers=HEADERS)
     assert r.status_code == 200, r.text
     content = r.json()["content"]

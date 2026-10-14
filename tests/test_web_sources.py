@@ -68,7 +68,7 @@ class FakeClock:
 def make_sources(tmp_path, github=None, sessions=None, clock=None,
                  systemctl=("true",)):
     cfg = make_config(tmp_path)
-    return cfg, Sources(cfg, sessions or FakeSessions(),
+    return cfg, Sources(cfg.state_dir, sessions or FakeSessions(),
                         github or FakeGitHub(), clock=clock or FakeClock(),
                         systemctl=systemctl)
 
@@ -141,7 +141,7 @@ def test_usage_reads_fresh_cache_only(tmp_path):
         "fetched_at": clock.t,
         "usage": usage_to_json(session_usage(0.42))}))
     _, src = make_sources(tmp_path, clock=clock)
-    usages = src.usage()
+    usages = src.usage({"anthropic"})
     assert usages["anthropic"].windows[0].used == pytest.approx(0.42, abs=1e-3)
 
 

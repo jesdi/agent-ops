@@ -25,8 +25,9 @@ from pathlib import Path
 from typing import Callable
 
 from dispatcher.convergence import pass_lock
-from dispatcher.config import (Config, Target, load_config, policy_for,
-                               referenced_providers, routed_providers)
+from dispatcher.config import (Config, Target, apply_stored_models,
+                               load_config, policy_for,
+                               referenced_providers, routed_providers, stranded)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
 from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, loops,
@@ -46,8 +47,8 @@ from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApprova
 from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
                                parse_entry, pick_key, second_model,
-                               stage_pick,
-                               track_from_labels, tracks_text)
+                               stage_pick, track_from_labels, track_gone,
+                               tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
@@ -105,7 +106,7 @@ def _cursor_now() -> str:
 def _policy(cfg: Config, target: Target | None) -> ModelPolicy:
     """target is None for a task whose target has left the config — it still
     resolves, against the global policy."""
-    return policy_for(cfg, target) if target else cfg.models
+    return policy_for(cfg, target)
 
 
 @dataclass(frozen=True)
@@ -174,22 +175,34 @@ def _choose_launch(
         cfg: Config, target: Target | None, task: TaskState, stage: Stage,
         admit: Admit, order: Order,
         override: execution_overrides.ExecutionOverride | None,
-) -> tuple[Launch | None, bool]:
-    """What a spawn site launches and whether usage is bypassed. A one-shot
-    operator `override` (_execution_override_for; on a wake also what the
-    resume named) names the entry outright; otherwise the sticky pick or
-    the track decides, and a denied launch is (None, bypass): nothing
-    mutated, the signal persists, retried once headroom returns."""
+) -> tuple[Launch | None, bool, str]:
+    """What a spawn site launches, whether usage is bypassed, and why a
+    denied launch never comes. A one-shot operator `override`
+    (_execution_override_for; on a wake also what the resume named) names
+    the entry outright; otherwise the sticky pick or the track decides. A
+    denied launch is (None, bypass, why): nothing mutated, the signal
+    persists, retried once headroom returns; `why` (models.stranded) says
+    when it never returns, and the caller parks."""
     bypass = bool(override and override.bypass_usage)
     if override is not None and override.model:
         launch = Launch(stage, parse_entry(override.model, "override"))
         if bypass or admit(launch.model).admitted:
-            return _with_second(cfg, target, launch, admit), bypass
-        return None, bypass
+            return _with_second(cfg, target, launch, admit), bypass, ""
+        return None, bypass, ""
     launch = _launch_for(cfg, target, task, stage, _admitted(admit, bypass), order)
     if launch is None or (not bypass and not admit(launch.model).admitted):
-        return None, bypass
-    return _with_second(cfg, target, launch, admit), bypass
+        return None, bypass, stranded(cfg, target, task, stage.value)
+    return _with_second(cfg, target, launch, admit), bypass, ""
+
+
+def _action_launch(cfg: Config, target: Target, task: TaskState, stage: Stage | None,
+                   admit: Admit, order: Order) -> tuple[Launch | None, bool, str]:
+    """_choose_launch for the stage an action launches; nothing when it
+    launches none."""
+    if stage is None:
+        return None, False, ""
+    return _choose_launch(cfg, target, task, stage, admit, order,
+                          _execution_override_for(cfg, task, stage))
 
 
 def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
@@ -200,8 +213,9 @@ def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
     probe = TaskState(issue=cand.number, target=target.name, stage=Stage.QUEUED,
                       slot=NO_SLOT, worktree="", branch="", title=cand.title,
                       updated_at="", track=track_from_labels(cand.labels, policy))
-    return _choose_launch(cfg, target, probe, Stage.SPEC, admit, order,
-                          _execution_override_for(cfg, probe, Stage.SPEC))
+    launch, bypass, _ = _choose_launch(cfg, target, probe, Stage.SPEC, admit, order,
+                                       _execution_override_for(cfg, probe, Stage.SPEC))
+    return launch, bypass   # no picks and a configured track: nothing strands it
 
 
 def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
@@ -779,8 +793,7 @@ def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
         url=_url(target, task.issue), target=target.name, note=note)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, park_reason=WHY_LOOP_CAP,
-                                slot=NO_SLOT, ci_run_id=0,
-                                feedback_pending=False, operator_request=None,
+                                slot=NO_SLOT, ci_run_id=0, operator_request=None,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", target=target.name,
                           issue=task.issue, stage=task.stage.value,
@@ -1063,7 +1076,7 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
             _notify(deps, target, task, "pr_closed",
                     f"PR #{task.pr_number}. Worktree preserved for autopsy.")
         elif task.park:
-            continue   # exhausted-loop park: only merge/close still matter
+            continue   # parked: only merge/close still matter
         elif res.kind == "feedback" and not task.feedback_pending:
             task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
             save(cfg.state_dir, replace(task, feedback_pending=True,
@@ -1208,7 +1221,9 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
     )
     for task in woken:
         target = targets[task.target]
-        launch = _wake_launch(cfg, deps, target, task, admit, order)
+        launch, why = _wake_launch(cfg, deps, target, task, admit, order)
+        if why:
+            _park_stranded(cfg, deps, target, task, why)
         if launch is None:
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
@@ -1235,19 +1250,19 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
 
 
 def _wake_launch(cfg: Config, deps: Deps, target: Target, task: TaskState,
-                 admit: Admit, order: Order) -> Launch | None:
+                 admit: Admit, order: Order) -> tuple[Launch | None, str]:
     """The launch a woken task resumes on: its next launch
     (state.next_launch), chosen as every launch is (_choose_launch). Its
     one-shot override is the model the resume named, else the stored
     execution override: "the next launch runs on this model" holds for a
     wake too. None: it waits (the gate denies the model; another task's may
-    be admitted)."""
+    be admitted), with why it never will (_choose_launch) or ""."""
     stage = Stage(next_stage(task))
     override = execution_overrides.pending(
         _execution_override_for(cfg, task, stage),
         task.resume_model_override, task.resume_bypass_usage)
-    launch, _ = _choose_launch(cfg, target, task, stage, admit, order, override)
-    return launch  # None: denied, it waits
+    launch, _, why = _choose_launch(cfg, target, task, stage, admit, order, override)
+    return launch, why
 
 
 ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
@@ -1411,23 +1426,32 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
     failures.report_failure(cfg, deps, rep, dry_run=dry_run)
 
 
+def _awaiting_feedback_round(task: TaskState) -> bool:
+    """A pr-open task with pending feedback that _spawn_feedback launches.
+    A park keeps the feedback and leaves it to the wake that starts the
+    round (_launch_woken); a park lifted without one comes back here."""
+    return task.stage is Stage.PR_OPEN and task.feedback_pending and not task.park
+
+
 def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
                     order: Order) -> None:
     """Spawn address-review for tasks whose PR got feedback, box-wide and
     oldest first — same gates as claiming new work (capacity, usage, slot);
     a denied spawn just stays pr-open+pending and retries next pass, badge
-    showing."""
+    showing, unless it never launches (_choose_launch): then it parks with
+    its feedback kept (_awaiting_feedback_round)."""
     targets = {t.name: t for t in cfg.targets}
     pending = sorted(
         [t for t in load_all(cfg.state_dir)
-         if t.target in targets and t.stage is Stage.PR_OPEN
-         and t.feedback_pending],
+         if t.target in targets and _awaiting_feedback_round(t)],
         key=_oldest_first(cfg))
     for task in pending:
         target = targets[task.target]
-        launch, bypass_usage = _choose_launch(
+        launch, bypass_usage, why = _choose_launch(
             cfg, target, task, Stage.ADDRESS_REVIEW, admit, order,
             _execution_override_for(cfg, task, Stage.ADDRESS_REVIEW))
+        if why:
+            _park_stranded(cfg, deps, target, task, why)
         if launch is None:
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
@@ -1811,6 +1835,15 @@ def _end_poke_stretch(cfg: Config, task: TaskState, idle: float | None,
     return task
 
 
+def _park_stranded(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                   why: str) -> None:
+    """Park a task the config strands for `why` (models.stranded)."""
+    _park_for_input(cfg, deps, target, task,
+                    f"{why}; restore it in the console's model settings or "
+                    f"targets.yaml, or run the task with a model override",
+                    reason=WHY_CONFIG)
+
+
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 admit: Admit, order: Order, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
@@ -1818,12 +1851,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
     alive = deps.sessions.is_alive(task.target, task.issue)
     waiting = has_waiting(cfg.state_dir, task.target, task.issue)
-    if task.track not in policy.tracks:
-        _park_for_input(cfg, deps, target, task,
-                        f"track {task.track!r} is no longer configured (have "
-                        f"{sorted(policy.tracks)}); restore it in targets.yaml or "
-                        f"run the task with a model override",
-                        reason=WHY_CONFIG)
+    why = track_gone(policy, task.track)
+    if why:
+        _park_stranded(cfg, deps, target, task, why)
         return
     # herdr's view of a background wait BEFORE the idle reading: a session
     # waking between the two reads must look still-waiting (held), never
@@ -1848,9 +1878,9 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             now=time.time(), poke_cap=cfg.background_wait_seconds):
         task = _step_done(turn, task, act)
         stage = _action_stage(act)
-        override = stage and _execution_override_for(cfg, task, stage)
-        launch, bypass_usage = ((None, False) if stage is None else _choose_launch(
-            cfg, target, task, stage, admit, order, override))
+        launch, bypass_usage, why = _action_launch(cfg, target, task, stage, admit, order)
+        if why:
+            _park_stranded(cfg, deps, target, task, why)
         if stage is not None and launch is None:
             return  # no launch: the signal persists; retried once headroom returns
         choice_key = (task.target, task.issue)
@@ -2228,7 +2258,7 @@ def _require_resume_model(cfg: Config, by_name: dict,
     if not model:
         return
     target = by_name.get(task.target)
-    policy = policy_for(cfg, target) if target else cfg.models
+    policy = policy_for(cfg, target)
     if model not in policy.model_ids():
         raise IntentDropped(f"model {model!r} is not configured for target "
                             f"{task.target!r}", model)
@@ -2415,9 +2445,9 @@ def _sandboxed_state(cfg: Config):
 def _starving(task: TaskState) -> bool:
     """Is this task legitimately still waiting for the capacity/slot it was
     denied? Exactly the two queues that mark the marker: _resume_woken's
-    (park == PARK_WAKE) and _spawn_feedback's (a pr-open task with pending
-    feedback). Anything else is not waiting for anything."""
-    return task.park == PARK_WAKE or task.feedback_pending
+    (park == PARK_WAKE) and _spawn_feedback's (_awaiting_feedback_round).
+    Anything else is not waiting for anything."""
+    return task.park == PARK_WAKE or _awaiting_feedback_round(task)
 
 
 def _migrate_legacy_keys(cfg: Config) -> None:
@@ -2563,6 +2593,16 @@ def send_digest(cfg: Config, deps: Deps) -> None:
     deps.notifier.send("daily_digest", lines=_status_lines(cfg))
 
 
+def _load(config_path: str) -> tuple[Config, Config]:
+    """targets.yaml as loaded, and that with the console's stored model
+    settings in force; warns when the stored ones are rejected."""
+    boot = load_config(config_path)
+    cfg = apply_stored_models(boot)
+    if cfg.models_origin.error:
+        print(f"[warn] {cfg.models_origin.error}", file=sys.stderr)
+    return boot, cfg
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="agent-ops-dispatcher")
     ap.add_argument("--config", default="targets.yaml")
@@ -2572,7 +2612,7 @@ def main() -> None:
     ap.add_argument("--triage-run", action="store_true")
     ap.add_argument("--migrate-tmux", action="store_true")
     args = ap.parse_args()
-    cfg = load_config(args.config)
+    boot, cfg = _load(args.config)
     missing = referenced_providers(cfg) - set(ADAPTERS)
     if missing:
         print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
@@ -2603,7 +2643,10 @@ def main() -> None:
             print(line)
     else:
         with pass_lock(cfg.state_dir):
-            guarded_pass(cfg, deps, args.config, dry_run=args.dry_run)
+            # The console stores model settings under this lock: read them
+            # again inside it, so a pass never runs a block the console has
+            # replaced (a removed track would park the tasks it claims).
+            guarded_pass(apply_stored_models(boot), deps, args.config, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

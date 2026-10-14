@@ -8,7 +8,7 @@ a plain string. See docs/specs/2026-09-14-model-tracks-design.md."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Collection, Mapping, Sequence
 
 STAGES = ("spec", "plan", "implement", "review")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # anthropic's own vocabulary
@@ -97,6 +97,32 @@ def override_refusal(picks: Mapping[str, str], stage: str, model_id: str) -> str
     return f"{what} runs on {fixed}; pick a model from {fixed}"
 
 
+def track_gone(policy: ModelPolicy, track: str) -> str:
+    """Why `track` cannot run under `policy`, "" when it can."""
+    if track not in policy.tracks:
+        return f"track {track!r} is no longer configured (have {sorted(policy.tracks)})"
+    return ""
+
+
+def stranded(policy: ModelPolicy, track: str, picks: Mapping[str, str], stage: str,
+             launchable: Collection[str]) -> str:
+    """Why a task on `track` whose next stage is `stage` cannot go on under
+    `policy`, "" when it can: its track is gone, or the stage is picked on a
+    provider not in `launchable` (config.referenced_providers: no usage is
+    read for any other, so the gate never admits it). The dispatcher parks
+    on it when a launch is due and denied; the console refuses a save on it
+    for each task's next launch (state.next_stage), which is stricter: it
+    cannot see a stage signal that moves the task on, nor a model override
+    that replaces the pick, and a refused save is the safe mistake."""
+    gone = track_gone(policy, track)
+    if gone:
+        return gone
+    provider = pick_provider(picks, stage)
+    if provider and provider not in launchable:
+        return f"its {policy_stage(stage)} stage runs on {provider}, which no model entry names"
+    return ""
+
+
 def override_allowed(picks: Mapping[str, str], stage: str, model_id: str) -> bool:
     """True when `model_id` may override `stage` (see override_refusal)."""
     return not override_refusal(picks, stage, model_id)
@@ -109,6 +135,13 @@ class Entry:
     provider: str
     model: str
     effort: str = ""
+
+    def __post_init__(self) -> None:
+        # The written form must parse back to this entry (parse_entry).
+        if any(sep in part for part in (self.provider, self.model, self.effort)
+               for sep in "/@"):
+            raise ValueError(f"provider, model and effort must not contain '/' "
+                             f"or '@', got {(self.provider, self.model, self.effort)!r}")
 
     @property
     def model_id(self) -> str:
@@ -161,7 +194,7 @@ class ModelPolicy:
     triage: tuple[Entry, ...]
     untracked: str          # the track a candidate with no track: label specs on
     tracks: Mapping[str, Track]
-    review_second: str = ""  # provider/model a Claude review session's codex exec runs on, "" = unset
+    review_second: Entry | None = None  # what a Claude review session's codex exec runs on
     pinned: tuple[str, ...] = ()  # tracks whose entries the priority mode never reorders
 
     def entries(self) -> list[Entry]:
@@ -213,13 +246,13 @@ def _track(name: str, raw: object) -> Track:
                  plan_review)
 
 
-def _review_second(raw: object) -> str:
-    """`models.review_second:` -> a plain 'provider/model' string, "" when
-    absent or null. Must name a non-anthropic provider with a configured
-    effort vocabulary (a runtime); no @effort suffix, since codex exec's
-    effort comes from the codex-home config, not this policy."""
+def _review_second(raw: object) -> Entry | None:
+    """`models.review_second:` -> its entry, None when absent or null. Must
+    name a non-anthropic provider with a configured effort vocabulary (a
+    runtime); no @effort suffix, since codex exec's effort comes from the
+    codex-home config, not this policy."""
     if raw is None:
-        return ""
+        return None
     entry = parse_entry(raw, "review_second:")
     if entry.effort:
         raise ValueError(f"models: review_second: must be 'provider/model' "
@@ -229,7 +262,7 @@ def _review_second(raw: object) -> str:
                          f"non-anthropic provider with configured efforts "
                          f"{sorted(p for p in PROVIDER_EFFORTS if p != DEFAULT_PROVIDER)}, "
                          f"got {raw!r}")
-    return entry.model_id
+    return entry
 
 
 def _triage(raw: dict) -> tuple[Entry, ...]:
@@ -255,12 +288,17 @@ def _pinned(raw: object, tracks: Mapping[str, Track]) -> tuple[str, ...]:
 
 
 def parse_policy(raw: dict | None) -> ModelPolicy:
-    """Validate the `models:` block. Raises ValueError so a typo kills the
-    pass loudly at config load instead of silently mis-routing."""
-    if not raw:
-        return DEFAULT_POLICY
+    """Validate a targets.yaml `models:` block; absent or empty is the
+    default policy. Raises ValueError so a typo kills the pass loudly at
+    config load instead of silently mis-routing."""
+    return parse_block(raw) if raw else DEFAULT_POLICY
+
+
+def _check_top_keys(raw: object) -> None:
     if not isinstance(raw, dict):
         raise ValueError(f"models: must be a mapping, got {raw!r}")
+    if not raw:
+        raise ValueError("models: must not be empty")
     old = [k for k in _OLD_KEYS if k in raw]
     if old:
         raise ValueError(f"models: {old} are gone; write tracks:, untracked: "
@@ -269,6 +307,12 @@ def parse_policy(raw: dict | None) -> ModelPolicy:
     if unknown:
         raise ValueError(f"models: unknown key(s) {sorted(unknown)}; expected "
                          f"tracks:, untracked:, triage:")
+
+
+def parse_block(raw: object) -> ModelPolicy:
+    """Validate a `models:` block that must be there (the console's stored
+    one): empty is an error, not the default policy."""
+    _check_top_keys(raw)
     tracks_raw = raw.get("tracks")
     if not isinstance(tracks_raw, dict) or not tracks_raw:
         raise ValueError("models: tracks: must be a non-empty mapping of "
@@ -352,7 +396,8 @@ def second_model(policy: ModelPolicy, stage: str, entry: Entry,
     anthropic entry, and admitted by the gate itself. The caller passes the
     real gate, never a bypass: an operator bypass forces the stage's own
     pick, not a second subscription."""
+    second = policy.review_second
     if (stage != "review" or entry.provider != DEFAULT_PROVIDER
-            or not policy.review_second or not admitted(policy.review_second)):
+            or second is None or not admitted(second.model_id)):
         return None
-    return parse_entry(policy.review_second, "review_second:")
+    return second

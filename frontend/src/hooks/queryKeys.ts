@@ -10,6 +10,7 @@ export const queryKeys = {
   taskHistory: (target: string, issue: number) => ['task', target, issue, 'history'] as const,
   allTasks: ['task'] as const,
   pendingIntents: ['pending-intents'] as const,
+  modelSettings: ['settings', 'models'] as const,
   description: (target: string, issue: number) => ['task', target, issue, 'description'] as const,
   artifacts: (target: string, issue: number) => ['task', target, issue, 'artifacts'] as const,
   request: (target: string, issue: number) => ['task', target, issue, 'request'] as const,

@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_policy
-from dispatcher.state import LoopCaps
+from dispatcher import model_settings, models
+from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_block, parse_policy
+from dispatcher.state import LoopCaps, TaskState
 from dispatcher.usage import PaceConfig
 
 
@@ -71,6 +72,9 @@ class Config:
     # The usage gate: session threshold and weekly pace
     # (see docs/specs/2026-09-13-usage-pace-gate-design.md).
     pace: PaceConfig = PaceConfig()
+    # Where `models` comes from: load_config gives the targets.yaml block
+    # (no origin); apply_stored_models lays the console's stored one over it.
+    models_origin: model_settings.Origin = model_settings.Origin()
 
 
 def _loop_caps(raw: object) -> LoopCaps:
@@ -196,19 +200,57 @@ def load_config(path: str | Path) -> Config:
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),
     )
+    _check_shares(cfg)
+    return cfg
+
+
+def _check_shares(cfg: Config) -> None:
     # A share for a provider nothing runs on is a typo that would silently
     # turn the session-bound rule off.
     unknown = sorted(set(cfg.pace.session_week_share) - referenced_providers(cfg))
     if unknown:
         raise ValueError(f"session_week_share: {unknown} named by no model entry; "
                          f"expected any of {sorted(referenced_providers(cfg))}")
-    return cfg
 
 
-def policy_for(cfg: Config, target: Target) -> ModelPolicy:
-    """A target's own policy replaces the global one wholesale — rule lists are
-    never merged, because merge order would make first-match-wins ambiguous."""
-    return target.models or cfg.models
+def with_models(cfg: Config, block: object) -> Config:
+    """`cfg` with `block` (a raw `models:` mapping) as its global block,
+    validated as load_config validates the targets.yaml one. Raises
+    ValueError."""
+    out = replace(cfg, models=parse_block(block))
+    _check_shares(out)
+    return out
+
+
+def apply_stored_models(boot: Config) -> Config:
+    """`boot` (load_config's targets.yaml config) with the block stored now
+    in the state dir in force. Never raises: a bad stored block must not stop
+    a pass, nor the console page that can fix it, so it is rejected and
+    targets.yaml's block runs."""
+    revision, found = model_settings.read(boot.state_dir)
+    if not isinstance(found, model_settings.Found):
+        return replace(boot, models_origin=model_settings.Origin(revision, found))
+    try:
+        cfg = with_models(boot, found.block)
+    except ValueError as e:
+        return replace(boot, models_origin=model_settings.Origin(
+            revision, model_settings.Rejected(str(e))))
+    stored = model_settings.Stored(found.set_by, found.set_at)
+    return replace(cfg, models_origin=model_settings.Origin(revision, stored))
+
+
+def policy_for(cfg: Config, target: Target | None) -> ModelPolicy:
+    """The policy `target` runs: its own one replaces the global one
+    wholesale — rule lists are never merged, because merge order would make
+    first-match-wins ambiguous. No target (one removed from targets.yaml):
+    the global one."""
+    return (target.models if target else None) or cfg.models
+
+
+def stranded(cfg: Config, target: Target | None, task: TaskState, stage: str) -> str:
+    """models.stranded for `task` under `cfg`, launching `stage`."""
+    return models.stranded(policy_for(cfg, target), task.track, task.picks,
+                           stage, referenced_providers(cfg))
 
 
 def routed_providers(cfg: Config) -> frozenset[str]:
@@ -230,5 +272,6 @@ def referenced_providers(cfg: Config) -> frozenset[str]:
     unavailable (and main() warns once at startup). A policy's review_second counts too: the
     gate that grants it needs its provider's usage."""
     policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
-    ids = [m for p in policies for m in (*p.model_ids(), p.review_second) if m]
+    ids = [*(m for p in policies for m in p.model_ids()),
+           *(p.review_second.model_id for p in policies if p.review_second)]
     return frozenset(m.partition("/")[0] for m in ids)

@@ -208,6 +208,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Model Settings */
+        get: operations["get_model_settings_api_settings_models_get"];
+        /** Put Model Settings */
+        put: operations["put_model_settings_api_settings_models_put"];
+        post?: never;
+        /** Reset Model Settings */
+        delete: operations["reset_model_settings_api_settings_models_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{target}/{issue}": {
         parameters: {
             query?: never;
@@ -572,6 +591,15 @@ export interface components {
              */
             zone: "needs-you" | "pipeline";
         };
+        /** EntrySetting */
+        EntrySetting: {
+            /** Effort */
+            effort: string;
+            /** Model */
+            model: string;
+            /** Provider */
+            provider: string;
+        };
         /** EventEntry */
         EventEntry: {
             /** Actor */
@@ -696,6 +724,62 @@ export interface components {
             note: string;
             /** Provider */
             provider: string;
+        };
+        /** ModelSettingsView */
+        ModelSettingsView: {
+            /** Default Provider */
+            default_provider: string;
+            /** Efforts */
+            efforts: {
+                [key: string]: string[];
+            };
+            /** Error */
+            error: string;
+            /** Known Models */
+            known_models: {
+                [key: string]: string[];
+            };
+            models: components["schemas"]["ModelsSetting"];
+            /** Revision */
+            revision: string;
+            /** Set At */
+            set_at: string;
+            /** Set By */
+            set_by: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "console" | "targets.yaml";
+            /** Target Overrides */
+            target_overrides: string[];
+        };
+        /**
+         * ModelsSave
+         * @description A save: the block, and the revision of the view it was edited from.
+         */
+        ModelsSave: {
+            models: components["schemas"]["ModelsSetting"];
+            /** Revision */
+            revision: string;
+        };
+        /**
+         * ModelsSetting
+         * @description The `models:` block with structured entries. models.parse_block
+         *     validates it; this only fixes the shape.
+         */
+        ModelsSetting: {
+            /** Pinned */
+            pinned: string[];
+            review_second: components["schemas"]["EntrySetting"] | null;
+            /** Tracks */
+            tracks: {
+                [key: string]: components["schemas"]["TrackSetting"];
+            };
+            /** Triage */
+            triage: components["schemas"]["EntrySetting"][];
+            /** Untracked */
+            untracked: string;
         };
         /** NextClaimView */
         NextClaimView: {
@@ -1008,6 +1092,21 @@ export interface components {
             ongoing: boolean;
             /** Seconds */
             seconds: number;
+        };
+        /** TrackSetting */
+        TrackSetting: {
+            /** Implement */
+            implement: components["schemas"]["EntrySetting"][];
+            /** Plan */
+            plan: components["schemas"]["EntrySetting"][];
+            /** Plan Review */
+            plan_review: boolean;
+            /** Review */
+            review: components["schemas"]["EntrySetting"][];
+            /** Spec */
+            spec: components["schemas"]["EntrySetting"][];
+            /** When */
+            when: string;
         };
         /**
          * UnavailableContent
@@ -1369,6 +1468,90 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_model_settings_api_settings_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsView"];
+                };
+            };
+        };
+    };
+    put_model_settings_api_settings_models_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelsSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_model_settings_api_settings_models_delete: {
+        parameters: {
+            query: {
+                revision: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelSettingsView"];
                 };
             };
             /** @description Validation Error */

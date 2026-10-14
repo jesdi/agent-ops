@@ -61,9 +61,9 @@ class Rec(FakeSources):
         self.mode_at_append.append(priority.load(self._dir, {"anthropic", "openai"}))
         super().append_event(event, **kw)
 
-    def usage(self):
+    def usage(self, routed=()):
         self.usage_calls += 1
-        return super().usage()
+        return super().usage(routed)
 
 
 def rig(tmp_path, monkeypatch=None, usages=None, pace=PACE, routed_openai=True):

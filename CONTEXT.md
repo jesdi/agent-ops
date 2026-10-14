@@ -262,6 +262,25 @@ order. Missing, unreadable, or naming a provider no routed list names,
 it reads as `auto` and the file is left as it is.
 _Avoid_: preferred provider, default provider
 
+**Model settings**:
+The `models:` block (triage list, tracks, untracked, pinned, review_second)
+as stored from the console's Settings page in
+`<state_dir>/model-settings.json` (`dispatcher/model_settings.py`). When
+present it replaces the targets.yaml block for the dispatcher, triage and the
+console; a target's own `models:` block still wins. Read at every config load,
+again by the pass inside the pass lock, and by the console on every read, so
+a save applies from the next pass. The console stores it under that lock
+(409 when a pass holds it for more than 30 s), and refuses a block that fails
+config validation, that would strand an unfinished task (`models.stranded`:
+its track gone, or its next stage picked on a provider no entry names; the
+dispatcher parks a task on the same rule, the provider part only when that
+picked launch is due), or that was edited from
+a page that loaded an older revision of the file (409: reload and edit
+again). A stored block that does not load (unreadable, or broken by a later
+targets.yaml change) is not applied: the targets.yaml block runs and the
+Settings page shows why. Reset deletes the file.
+_Avoid_: model overrides (that is the one-shot per-task choice)
+
 **Binding window**:
 Of the windows a model draws on — unscoped ones plus any scoped window
 whose display name matches the model — the one with the least headroom. It

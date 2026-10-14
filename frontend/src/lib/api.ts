@@ -28,6 +28,11 @@ export type MessageView = components['schemas']['MessageView']
 export type OperatorRequest = components['schemas']['OperatorRequest']
 export type ReadableContent = components['schemas']['ReadableContent']
 export type UnavailableContent = components['schemas']['UnavailableContent']
+export type ModelSettingsView = components['schemas']['ModelSettingsView']
+export type ModelsSetting = components['schemas']['ModelsSetting']
+export type ModelsSave = components['schemas']['ModelsSave']
+export type EntrySetting = components['schemas']['EntrySetting']
+export type TrackSetting = components['schemas']['TrackSetting']
 
 export interface PendingIntent {
   action: string
@@ -94,6 +99,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const post = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'POST', body: JSON.stringify(body) })
+const put = <T>(path: string, body: unknown) =>
+  request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 
 export const api = {
   boardSnapshot: () => request<components['schemas']['BoardSnapshot']>('/board/snapshot'),
@@ -115,6 +122,14 @@ export const api = {
   queueReady: (issue: number) => post<QueueActionResult>('/queue/ready', { issue }),
   // Priority mode — applied immediately, 200 or 422 with the reason.
   setPriority: (mode: string) => post<PrioritySet>('/priority', { mode }),
+  // Model settings — stored immediately (200 or 422 with the reason); the
+  // dispatcher reads them on its next pass.
+  modelSettings: () => request<ModelSettingsView>('/settings/models'),
+  // `revision` is the one the edited view carried: a stale one gets 409.
+  saveModelSettings: (revision: string, models: ModelsSetting) =>
+    put<ModelSettingsView>('/settings/models', { revision, models } satisfies ModelsSave),
+  resetModelSettings: (revision: string) =>
+    request<ModelSettingsView>(`/settings/models?revision=${encodeURIComponent(revision)}`, { method: 'DELETE' }),
   // Intent actions — 202 accepted, applied by the next dispatcher pass.
   reply: (target: string, issue: number, text: string) =>
     post<IntentAccepted>(`/task/${target}/${issue}/reply`, { text }),

@@ -87,6 +87,9 @@ loop_caps:
 # Review moves the provider that ran implement to the back of its list.
 # A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
 # A target may carry its own `models:` block, which REPLACES this one.
+# The console's Settings page can store a block that REPLACES this one
+# (<state_dir>/model-settings.json) until you reset it there; a target's
+# own block still wins.
 models:
   triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted
   untracked: standard                    # spec-stage track when no track: label

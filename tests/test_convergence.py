@@ -30,3 +30,12 @@ def test_pass_lock_releases_on_exit(tmp_path):
     with pass_lock(str(tmp_path)):
         pass
     _try_flock(tmp_path / "convergence.lock")  # must not raise
+
+
+def test_pass_lock_with_a_timeout_gives_up_while_another_holds_it(tmp_path):
+    with pass_lock(str(tmp_path)):
+        with pytest.raises(TimeoutError):
+            with pass_lock(str(tmp_path), timeout=0.2):
+                pass
+    with pass_lock(str(tmp_path), timeout=0.2):
+        pass  # free again: taken at once

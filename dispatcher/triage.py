@@ -168,7 +168,7 @@ def _session_name(repo: str) -> str:
 
 def _policy_for_repo(cfg: Config, repo: str):
     target = next((t for t in cfg.targets if t.repo == repo), None)
-    return policy_for(cfg, target) if target else cfg.models
+    return policy_for(cfg, target)
 
 
 def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,

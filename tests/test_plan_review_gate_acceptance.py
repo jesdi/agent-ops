@@ -179,7 +179,7 @@ def test_console_shows_the_summary_as_the_task_request(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     _first_gate(c, tmp_path)
 
-    with TestClient(create_app(c, Sources(c, sessions=None, github=None))) as client:
+    with TestClient(create_app(c, Sources(c.state_dir, sessions=None, github=None))) as client:
         r = client.get(f"/api/task/portfolio_eval/{ISSUE}/request",
                        headers=HEADERS)
 

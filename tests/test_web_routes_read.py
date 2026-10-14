@@ -419,7 +419,7 @@ def test_board_probes_tmux_at_most_once_per_request(tmp_path):
     import pytest
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(triage_mod, "running", _running)
-        client2 = TestClient(create_app(cfg, Sources(cfg, _NullSessions(),
+        client2 = TestClient(create_app(cfg, Sources(cfg.state_dir, _NullSessions(),
                                                      _NullGitHub())))
         assert client2.get("/api/board", headers=HEADERS).status_code == 200
     assert len(calls) == 1, f"tmux probed {len(calls)} times per board request"
@@ -463,7 +463,7 @@ def test_board_degrades_to_200_on_corrupt_events(tmp_path):
     class _NullSessions:
         def is_alive(self, _): return False
 
-    src = Sources(cfg, _NullSessions(), _NullGitHub())
+    src = Sources(cfg.state_dir, _NullSessions(), _NullGitHub())
     client2 = TestClient(create_app(cfg, src))
     resp = client2.get("/api/board", headers=HEADERS)
     assert resp.status_code == 200
@@ -559,7 +559,7 @@ def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
     class _NullSessions:
         def is_alive(self, _): return False
 
-    client2 = TestClient(create_app(cfg, Sources(cfg, _NullSessions(),
+    client2 = TestClient(create_app(cfg, Sources(cfg.state_dir, _NullSessions(),
                                                  _NullGitHub())))
     resp = client2.get("/api/failures", headers=HEADERS)
     assert resp.status_code == 200

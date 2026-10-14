@@ -42,7 +42,7 @@ POLICY = parse_policy({
                         "review": ["openai/gpt-5-codex"]},
     },
 })
-UNSET = replace(POLICY, review_second="")
+UNSET = replace(POLICY, review_second=None)
 CLAUDE = Entry("anthropic", "claude-opus-5")
 CODEX = Entry("openai", "gpt-5-codex")
 

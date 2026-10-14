@@ -5,6 +5,7 @@ const links = [
   { to: '/', label: 'Board' },
   { to: '/failures', label: 'Failures' },
   { to: '/history', label: 'History' },
+  { to: '/settings', label: 'Settings' },
 ]
 
 export function AppShell({ children }: { children: ReactNode }) {

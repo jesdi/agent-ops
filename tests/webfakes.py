@@ -99,7 +99,7 @@ class FakeSources:
         return self.rank.get(target.name,
                              ([], "2026-07-25T00:00:00+00:00", False))
 
-    def usage(self):
+    def usage(self, routed=()):
         return self.usages
 
     def execution_override(self, target, issue):

@@ -394,7 +394,7 @@ def test_override_model_without_bypass_still_checked_by_usage_gate(tmp_path, mon
         execution_overrides.ExecutionOverride(
             model="claude-sonnet-4-6", bypass_usage=False))
 
-    launch, bypass = main._choose_launch(
+    launch, bypass, _ = main._choose_launch(
         c, c.targets[0], task, Stage.IMPLEMENT, DENY_ALL, tuple,
         main._execution_override_for(c, task, Stage.IMPLEMENT))
 
@@ -3180,7 +3180,7 @@ def test_grace_expiry_park_preserves_plan_approval_request(tmp_path, monkeypatch
     assert t.operator_request == PlanApprovalRequest(".agent/review.html"), "operator_request must survive park"
     assert t.spec_path == "docs/specs/x-design.md", "spec_path must survive park"
     # GET /request must serve the plan-approval body (the summary the request names)
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request", headers=HEADERS)
     assert response.status_code == 200, response.text
@@ -4497,6 +4497,18 @@ def test_reconcile_keeps_the_marker_of_a_task_that_is_still_starving(tmp_path):
     assert main._wake_blocked_path(c, "portfolio_eval", 43).exists()   # feedback spawn still denied
 
 
+def test_reconcile_drops_the_marker_of_a_parked_task_with_pending_feedback(tmp_path):
+    """A parked task is not spawned for its feedback (a wake starts the
+    round): it waits for nothing."""
+    c = cfg(tmp_path)
+    make_task(c, issue=43, slot=NO_SLOT, stage=Stage.PR_OPEN, park=PARK_HUMAN,
+              feedback_pending=True)
+    main._wake_blocked_path(c, "portfolio_eval", 43).parent.mkdir(parents=True, exist_ok=True)
+    main._wake_blocked_path(c, "portfolio_eval", 43).touch()
+    main._reconcile_slots(c)
+    assert not main._wake_blocked_path(c, "portfolio_eval", 43).exists()
+
+
 def test_reconcile_drops_a_marker_left_by_a_vanished_task(tmp_path):
     c = cfg(tmp_path)
     main._wake_blocked_path(c, "portfolio_eval", 42).parent.mkdir(parents=True, exist_ok=True)
@@ -5044,7 +5056,7 @@ def test_successful_resume_clears_operator_request_preserves_spec_path(
     assert t.spec_path == "docs/spec.md", "spec_path must be preserved"
     assert t.park == ""
     # GET /request must return 200 null after the request is cleared
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request", headers=WEB_HEADERS)
     assert response.status_code == 200, response.text
@@ -5095,7 +5107,7 @@ def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
     assert t.operator_request == PlanApprovalRequest(".agent/review.html"), "must re-arm approval"
     assert t.spec_path == "specs/x/spec.md", "spec_path must NOT become the summary path"
     # GET /request must return plan-approval once re-armed
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request", headers=WEB_HEADERS)
     assert response.status_code == 200, response.text
@@ -5192,7 +5204,7 @@ def test_failed_transition_clears_operator_request(tmp_path):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)
@@ -5218,7 +5230,7 @@ def test_canceled_transition_clears_operator_request(tmp_path):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)
@@ -5249,7 +5261,7 @@ def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)
@@ -5278,7 +5290,7 @@ def test_ci_park_clears_operator_request(tmp_path):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)
@@ -5306,7 +5318,7 @@ def test_login_park_clears_operator_request(tmp_path, monkeypatch):
     from tests.webfakes import HEADERS as WEB_HEADERS
     from web.app import create_app
     from web.sources import Sources
-    sources = Sources(c, sessions=None, github=None)
+    sources = Sources(c.state_dir, sessions=None, github=None)
     with TestClient(create_app(c, sources)) as client:
         response = client.get("/api/task/portfolio_eval/42/request",
                               headers=WEB_HEADERS)
