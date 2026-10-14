@@ -52,9 +52,10 @@ def test_implement_and_review_read_answers_before_tickets(stage):
 
 
 def test_review_page_skill_is_pinned():
-    pin = json.loads((ROOT / ".my-skills.json").read_text())["skills"]["review-page"]
+    state = json.loads((ROOT / ".my-skills.json").read_text())
+    pin = state["skills"]["review-page"]
     assert pin["version"] and pin["package"]
-    assert "claude" in pin["agents"]
+    assert "claude" in pin.get("agents", state["agents"])
 
 
 def test_fixture_matches_installed_template():
