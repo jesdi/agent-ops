@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import re
-import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +21,7 @@ from starlette.staticfiles import StaticFiles
 from dispatcher import execution_overrides, model_settings, priority, queue_ops
 from dispatcher.config import (Config, apply_stored_models, checked_policy,
                                policy_for, referenced_providers,
-                               routed_providers, target_policy)
+                               routed_providers, strands)
 from dispatcher.convergence import pass_lock
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
                                override_refusal, parse_entry,
@@ -155,12 +154,18 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return {"ok": True, "operator": op.login}
 
     targets_by_name = {t.name: t for t in cfg.targets}
+
+    def _cfg() -> Config:
+        """The config in force now: `cfg` with the stored model settings
+        read again, as each dispatcher pass does. No copy to keep in step."""
+        # ponytail: one small file read per call; cache by revision if it shows in profiles.
+        return apply_stored_models(cfg)
     def _usages():
         """Usage of every provider the config in force can launch on."""
-        return sources.usage(referenced_providers(cfg))
+        return sources.usage(referenced_providers(_cfg()))
 
     def _mode() -> str:
-        return priority.load(cfg.state_dir, routed_providers(cfg))
+        return priority.load(cfg.state_dir, routed_providers(_cfg()))
 
     def _order(mode, usages=None, now=None):
         """The dispatcher's own ordering under `mode`. A route reads the mode
@@ -172,7 +177,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
 
     def _policy(target_name):
         target = targets_by_name.get(target_name)
-        return policy_for(cfg, target) if target else cfg.models
+        return policy_for(_cfg(), target)
 
     def _require_same_provider(t, model):
         """422 unless `model` may override t's next launch: once the stage
@@ -244,7 +249,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             pinned_track=pinned_track)
 
     def _candidate_choices(target, row, order):
-        policy = policy_for(cfg, target)
+        policy = policy_for(_cfg(), target)
         track = track_from_labels(list(row.get("labels") or []), policy)
         return [e.model_id for e in candidates(
             policy, track, "spec", order=order)]
@@ -297,10 +302,11 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     app.include_router(artifacts_router(sources, _find_task))
 
     def _usage_view(usages, now, mode) -> read_model.UsageView:
+        live = _cfg()
         return read_model.usage_view(
             usages, now=now, pace=cfg.pace,
-            default_model=cfg.models.gate_entry().model_id,
-            mode=mode, routed=routed_providers(cfg), pinned=cfg.models.pinned)
+            default_model=live.models.gate_entry().model_id,
+            mode=mode, routed=routed_providers(live), pinned=live.models.pinned)
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
@@ -485,7 +491,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
     @app.post("/api/priority")
     def set_priority(req: PriorityReq,
                      op: Operator = Depends(current_operator)):
-        routed = routed_providers(cfg)
+        routed = routed_providers(_cfg())
         if req.mode != priority.AUTO and req.mode not in routed:
             raise HTTPException(
                 422, f"mode {req.mode!r} is neither {priority.AUTO!r} nor a "
@@ -497,76 +503,66 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
                              detail=f"mode={req.mode}")
         return {"ok": True, "mode": req.mode}
 
-    # One save or reset at a time, and never during a dispatcher pass: the
-    # orphan check, the file and `cfg` then always agree with each other and
-    # with what the next pass reads.
-    settings_lock = threading.Lock()
-
     @contextmanager
     def _settings_locked():
-        with settings_lock:
-            try:
-                with pass_lock(cfg.state_dir, timeout=PASS_LOCK_WAIT_SECONDS):
-                    yield
-            except TimeoutError:
-                raise HTTPException(409, "a dispatcher pass or an update is running; "
-                                         "try again in a minute") from None
+        """A save or reset never runs during a dispatcher pass nor during
+        another save (flock excludes each open() of the lock file): the
+        checks, the file and the next pass always agree."""
+        try:
+            with pass_lock(cfg.state_dir, timeout=PASS_LOCK_WAIT_SECONDS):
+                yield _cfg()
+        except TimeoutError:
+            raise HTTPException(409, "a dispatcher pass or an update is running; "
+                                     "try again in a minute") from None
 
-    def _refuse_stale(revision: str) -> None:
-        if revision != model_settings.revision(cfg.state_dir):
+    def _refuse_stale(live: Config, revision: str) -> None:
+        if revision != live.models_origin.revision:
             raise HTTPException(409, "the model settings changed since this page "
                                      "loaded them; reload the page and edit again")
 
-    def _refuse_orphans(models: ModelPolicy) -> None:
-        """422 when `models` as the global block drops a track an unfinished
-        task runs on: the dispatcher would park the task (main._drive_task)."""
-        orphans = [f"{t.target}#{t.issue} ({t.track})" for t in sources.tasks()
-                   if t.stage not in TERMINAL_STAGES and t.target in targets_by_name
-                   and t.track not in target_policy(models, targets_by_name[t.target]).tracks]
-        if orphans:
-            raise HTTPException(422, "unfinished tasks run on a track this "
-                                f"removes: {', '.join(orphans)}")
+    def _refuse_stranding(live: Config, models: ModelPolicy) -> None:
+        """422 when `models` as the global block would leave an unfinished
+        task unable to go on (config.strands)."""
+        stranded = [f"{t.target}#{t.issue} ({why})" for t in sources.tasks()
+                    if t.stage not in TERMINAL_STAGES and t.target in targets_by_name
+                    and (why := strands(live, targets_by_name[t.target], t, models))]
+        if stranded:
+            raise HTTPException(422, "unfinished tasks could not go on: "
+                                f"{', '.join(stranded)}")
 
-    def _settings_view() -> msv.ModelSettingsView:
-        return msv.view(cfg, model_settings.revision(cfg.state_dir))
-
-    def _reload_models(op: Operator, event: str) -> msv.ModelSettingsView:
-        """The console's config follows the stored file, as the next pass's
-        will (config.apply_stored_models)."""
-        nonlocal cfg
-        cfg = apply_stored_models(cfg)
+    def _write(action, op: Operator, event: str) -> msv.ModelSettingsView:
+        try:
+            action()
+        except OSError as e:
+            raise HTTPException(500, f"cannot write the model settings: {e}") from e
         # After the file: the event log is the history of what was stored.
         sources.append_event(event, actor=op.login)
-        return _settings_view()
+        return msv.view(_cfg())
 
     @app.get("/api/settings/models", response_model=msv.ModelSettingsView)
     def get_model_settings(op: Operator = Depends(current_operator)):
-        # Not while a save is between its file write and `cfg`: the block
-        # and the revision must come from the same state.
-        with settings_lock:
-            return _settings_view()
+        return msv.view(_cfg())
 
     @app.put("/api/settings/models", response_model=msv.ModelSettingsView)
     def put_model_settings(req: msv.ModelsSave, op: Operator = Depends(current_operator)):
-        with _settings_locked():
-            _refuse_stale(req.revision)
+        with _settings_locked() as live:
+            _refuse_stale(live, req.revision)
             try:
                 raw = req.models.to_raw()
-                models = checked_policy(cfg, raw)
+                models = checked_policy(live, raw)
             except ValueError as e:
                 raise HTTPException(422, str(e)) from e
-            _refuse_orphans(models)
-            model_settings.save(cfg.state_dir, raw, actor=op.login,
-                                now=datetime.now(timezone.utc))
-            return _reload_models(op, "model-settings-set")
+            _refuse_stranding(live, models)
+            return _write(lambda: model_settings.save(
+                cfg.state_dir, raw, actor=op.login, now=datetime.now(timezone.utc)),
+                op, "model-settings-set")
 
     @app.delete("/api/settings/models", response_model=msv.ModelSettingsView)
     def reset_model_settings(revision: str, op: Operator = Depends(current_operator)):
-        with _settings_locked():
-            _refuse_stale(revision)
-            _refuse_orphans(cfg.file_models)
-            model_settings.clear(cfg.state_dir)
-            return _reload_models(op, "model-settings-reset")
+        with _settings_locked() as live:
+            _refuse_stale(live, revision)
+            _refuse_stranding(live, live.yaml_models())
+            return _write(lambda: model_settings.clear(cfg.state_dir), op, "model-settings-reset")
 
     @app.get("/api/failures", response_model=read_model.FailuresView)
     def failures(op: Operator = Depends(current_operator)):
@@ -731,8 +727,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
             raise HTTPException(409, f"task {target}/{issue} is {task.stage.value} "
                                 "and cannot be resumed")
         configured_target = targets_by_name.get(task.target)
-        policy = (policy_for(cfg, configured_target)
-                  if configured_target else cfg.models)
+        policy = policy_for(_cfg(), configured_target)
         configured = policy.model_ids()
         if req.model and req.model not in configured:
             raise HTTPException(422, f"model {req.model!r} is not configured "
@@ -767,7 +762,7 @@ def create_app(cfg: Config, sources, sse_interval: float = 1.0,
         return task, None
 
     def _run_model(configured_target, target: str, req: RunReq, task, row):
-        policy = policy_for(cfg, configured_target)
+        policy = policy_for(_cfg(), configured_target)
         if (req.model and req.model not in policy.model_ids()
                 and req.model not in {str(e) for e in policy.entries()}):
             raise HTTPException(422, f"model {req.model!r} is not configured "

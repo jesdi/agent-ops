@@ -267,15 +267,16 @@ The `models:` block (triage list, tracks, untracked, pinned, review_second)
 as stored from the console's Settings page in
 `<state_dir>/model-settings.json` (`dispatcher/model_settings.py`). When
 present it replaces the targets.yaml block for the dispatcher, triage and the
-console; a target's own `models:` block still wins. Read at every config load
-and again by the pass inside the pass lock, so a save applies from the next
-pass. The console stores it under that lock (409 when a pass holds it for
-more than 30 s), and refuses a block that fails config validation, drops a
-track an unfinished task runs on, or was edited from a page that loaded an
-older revision of the file (409: reload and edit again). A stored block
-that no longer loads (a later targets.yaml change) is not applied: the
-targets.yaml block runs and the Settings page shows why. Reset deletes the
-file.
+console; a target's own `models:` block still wins. Read at every config load,
+again by the pass inside the pass lock, and by the console on every read, so
+a save applies from the next pass. The console stores it under that lock
+(409 when a pass holds it for more than 30 s), and refuses a block that fails
+config validation, that would strand an unfinished task (its track gone, or
+its next stage picked on a provider no entry names), or that was edited from
+a page that loaded an older revision of the file (409: reload and edit
+again). A stored block that does not load (unreadable, or broken by a later
+targets.yaml change) is not applied: the targets.yaml block runs and the
+Settings page shows why. Reset deletes the file.
 _Avoid_: model overrides (that is the one-shot per-task choice)
 
 **Binding window**:

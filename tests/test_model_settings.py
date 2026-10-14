@@ -1,7 +1,6 @@
 """The console's model settings: a `models:` block stored in the state dir
 that replaces the targets.yaml one for the dispatcher and the console."""
 import json
-import threading
 from datetime import datetime, timezone
 
 import pytest
@@ -63,8 +62,11 @@ def test_a_stored_block_replaces_the_targets_yaml_one(tmp_path):
                         now=datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc))
     cfg = load_config(write_config(tmp_path))
     assert list(cfg.models.tracks) == ["fast"]
-    assert list(cfg.file_models.tracks) == ["standard"]
-    assert cfg.models_origin == model_settings.Stored("jesdi", "2026-10-14T09:00:00+00:00")
+    assert list(cfg.yaml_models().tracks) == ["standard"]
+    origin = cfg.models_origin
+    assert (origin.source, origin.set_by, origin.set_at, origin.rejected) == \
+        ("console", "jesdi", "2026-10-14T09:00:00+00:00", "")
+    assert len(origin.revision) == 64
 
 
 @pytest.mark.parametrize("models, why", [
@@ -74,9 +76,9 @@ def test_a_stored_block_replaces_the_targets_yaml_one(tmp_path):
 def test_a_bad_stored_block_falls_back_to_targets_yaml_and_says_why(tmp_path, models, why):
     store(tmp_path, models)
     cfg = load_config(write_config(tmp_path))
-    assert cfg.models == cfg.file_models
-    assert isinstance(cfg.models_origin, model_settings.Rejected)
-    assert why in cfg.models_origin.reason
+    assert cfg.models == cfg.yaml_models()
+    assert cfg.models_origin.source == "targets.yaml"
+    assert why in cfg.models_origin.rejected
 
 
 def test_a_stored_block_must_keep_every_session_week_share_provider(tmp_path):
@@ -84,30 +86,37 @@ def test_a_stored_block_must_keep_every_session_week_share_provider(tmp_path):
                                                   "implement": ["claude-sonnet-5"]}}})
     extra = yaml.safe_dump({"models": BLOCK, "session_week_share": {"openai": 0.1}})
     cfg = load_config(write_config(tmp_path, extra))
-    assert "session_week_share" in cfg.models_origin.reason
+    assert "session_week_share" in cfg.models_origin.rejected
 
 
 def test_apply_stored_models_follows_the_file_as_it_is_now(tmp_path):
-    """The dispatcher applies it again inside the pass lock: a block stored
-    after load_config is the one the pass runs."""
+    """The dispatcher applies it again inside the pass lock, and the console
+    on every read: a block stored after load_config is the one in force."""
     cfg = load_config(write_config(tmp_path))
     store(tmp_path, BLOCK)
     assert list(apply_stored_models(cfg).models.tracks) == ["fast"]
     (state_dir(tmp_path) / model_settings.FILE).unlink()
-    assert apply_stored_models(cfg).models == cfg.file_models
+    assert apply_stored_models(cfg).models == cfg.yaml_models()
 
 
-def test_load_says_why_a_stored_file_is_unusable(tmp_path):
+def test_read_says_why_a_stored_file_is_unusable(tmp_path):
     path = tmp_path / model_settings.FILE
-    assert model_settings.load(tmp_path) is None
+    assert model_settings.read(tmp_path) == (None, model_settings.Origin())
     for text, why in (("{", "not JSON"), ("[]", "no models"), ("{}", "no models")):
         path.write_text(text)
-        with pytest.raises(ValueError, match=why):
-            model_settings.load(tmp_path)
+        raw, origin = model_settings.read(tmp_path)
+        assert raw is None and why in origin.rejected and len(origin.revision) == 64
     path.unlink()
-    path.mkdir()   # a directory: read_text fails with an OSError
-    with pytest.raises(ValueError, match="unreadable"):
-        model_settings.load(tmp_path)
+    path.mkdir()   # a directory: reading it fails with an OSError
+    raw, origin = model_settings.read(tmp_path)
+    assert raw is None and "unreadable" in origin.rejected
+    assert origin.revision == model_settings.UNREADABLE
+
+
+def test_an_entry_refuses_a_separator_inside_a_part():
+    assert str(Entry("openai", "gpt-luna", "high")) == "openai/gpt-luna@high"
+    with pytest.raises(ValueError, match="must not contain"):
+        Entry("anthropic", "claude@x")
 
 
 def rig(tmp_path, tasks=()):
@@ -127,10 +136,10 @@ def test_the_console_stores_shows_and_resets_the_block(tmp_path):
 
     r = client.put("/api/settings/models", headers=HEADERS, json=save(BODY))
     assert r.status_code == 200, r.text
-    assert r.json()["revision"] == model_settings.revision(state_dir(tmp_path)) != ""
     assert r.json()["source"] == "console"
     assert r.json()["set_by"] == "jesdi@github"
     assert r.json()["models"] == BODY
+    assert r.json()["revision"] == model_settings.read(state_dir(tmp_path))[1].revision
     assert r.json()["known_models"] == {
         "anthropic": ["claude-opus-5", "claude-sonnet-5"], "openai": ["gpt-luna"]}
     # The console's own views follow at once; the next pass reads the file.
@@ -170,8 +179,22 @@ def test_a_block_that_drops_a_track_in_use_is_refused(tmp_path):
     _, _, client = rig(tmp_path, [busy, done])
     r = client.put("/api/settings/models", headers=HEADERS, json=save(BODY))
     assert r.status_code == 422
-    assert r.json()["detail"].endswith("portfolio_eval#9 (standard)")
+    assert r.json()["detail"].endswith("portfolio_eval#9 (its track standard is gone)")
     assert not (state_dir(tmp_path) / model_settings.FILE).exists()
+
+
+def test_a_block_that_drops_the_provider_of_a_picked_stage_is_refused(tmp_path):
+    """The next stage already runs on openai: with no openai entry left, no
+    usage is read for it and the gate never admits the stage again."""
+    store(tmp_path, BLOCK)
+    picked = make_task(issue=9, target="portfolio_eval", track="fast",
+                       stage=Stage.IMPLEMENT, picks={"implement": "openai/gpt-luna@high"})
+    _, _, client = rig(tmp_path, [picked])
+    revision = client.get("/api/settings/models", headers=HEADERS).json()["revision"]
+    no_openai = {**BODY, "tracks": {"fast": {**BODY["tracks"]["fast"], "implement": [SONNET]}}}
+    r = client.put("/api/settings/models", headers=HEADERS, json=save(no_openai, revision))
+    assert r.status_code == 422
+    assert "portfolio_eval#9 (its implement stage runs on openai" in r.json()["detail"]
 
 
 def test_a_save_waits_for_a_running_pass_and_gives_up_with_409(tmp_path, monkeypatch):
@@ -200,36 +223,15 @@ def test_a_save_or_reset_from_a_stale_page_is_refused(tmp_path):
     assert [e[0] for e in fake.appended] == ["model-settings-set"]
 
 
-def test_an_entry_refuses_a_separator_inside_a_part():
-    assert str(Entry("openai", "gpt-luna", "high")) == "openai/gpt-luna@high"
-    with pytest.raises(ValueError, match="must not contain"):
-        Entry("anthropic", "claude@x")
-
-
-def test_a_read_during_a_save_sees_the_block_and_revision_of_one_state(tmp_path, monkeypatch):
-    """A save pauses after its file write; a read made then must not pair
-    the old block with the new revision (a save from it would undo the
-    first one)."""
+def test_an_unreadable_file_still_shows_the_page_and_says_why(tmp_path):
     _, _, client = rig(tmp_path)
-    written, release, reads = threading.Event(), threading.Event(), []
-    real_save = model_settings.save
-
-    def paused_save(*args, **kwargs):
-        real_save(*args, **kwargs)
-        written.set()
-        release.wait(5)
-    monkeypatch.setattr(model_settings, "save", paused_save)
-    saver = threading.Thread(target=lambda: client.put(
-        "/api/settings/models", headers=HEADERS, json=save(BODY)))
-    saver.start()
-    assert written.wait(5)
-    reader = threading.Thread(target=lambda: reads.append(
-        client.get("/api/settings/models", headers=HEADERS).json()))
-    reader.start()
-    reader.join(0.3)
-    assert reader.is_alive()   # waits for the save
-    release.set()
-    saver.join(5)
-    reader.join(5)
-    assert reads[0]["models"] == BODY
-    assert reads[0]["revision"] == model_settings.revision(state_dir(tmp_path))
+    (state_dir(tmp_path) / model_settings.FILE).mkdir(parents=True)
+    r = client.get("/api/settings/models", headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["source"] == "targets.yaml"
+    assert "unreadable" in r.json()["error"]
+    # A reset from that view is let through and says why it cannot write.
+    r = client.delete("/api/settings/models", headers=HEADERS,
+                      params={"revision": r.json()["revision"]})
+    assert r.status_code == 500
+    assert "cannot write the model settings" in r.json()["detail"]

@@ -106,7 +106,7 @@ def _cursor_now() -> str:
 def _policy(cfg: Config, target: Target | None) -> ModelPolicy:
     """target is None for a task whose target has left the config — it still
     resolves, against the global policy."""
-    return policy_for(cfg, target) if target else cfg.models
+    return policy_for(cfg, target)
 
 
 @dataclass(frozen=True)
@@ -2230,7 +2230,7 @@ def _require_resume_model(cfg: Config, by_name: dict,
     if not model:
         return
     target = by_name.get(task.target)
-    policy = policy_for(cfg, target) if target else cfg.models
+    policy = policy_for(cfg, target)
     if model not in policy.model_ids():
         raise IntentDropped(f"model {model!r} is not configured for target "
                             f"{task.target!r}", model)

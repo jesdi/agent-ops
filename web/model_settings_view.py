@@ -7,7 +7,6 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from dispatcher import model_settings
 from dispatcher.config import Config
 from dispatcher.models import (DEFAULT_PROVIDER, PROVIDER_EFFORTS, STAGES, Entry,
                                ModelPolicy)
@@ -108,14 +107,12 @@ class ModelSettingsView(BaseModel):
     target_overrides: list[str]     # targets whose own models: block wins
 
 
-def view(cfg: Config, revision: str) -> ModelSettingsView:
+def view(cfg: Config) -> ModelSettingsView:
     origin = cfg.models_origin
-    stored = origin if isinstance(origin, model_settings.Stored) else None
     return ModelSettingsView(
-        models=ModelsSetting.of(cfg.models), revision=revision,
-        source="console" if stored else "targets.yaml",
-        set_by=stored.set_by if stored else "", set_at=stored.set_at if stored else "",
-        error=origin.reason if isinstance(origin, model_settings.Rejected) else "",
+        models=ModelsSetting.of(cfg.models), revision=origin.revision,
+        source=origin.source, set_by=origin.set_by, set_at=origin.set_at,
+        error=origin.rejected,
         efforts={p: list(e) for p, e in PROVIDER_EFFORTS.items()},
         default_provider=DEFAULT_PROVIDER,
         known_models=_known_models(cfg),
@@ -125,6 +122,6 @@ def view(cfg: Config, revision: str) -> ModelSettingsView:
 def _known_models(cfg: Config) -> dict[str, list[str]]:
     """provider -> the models the block in force or targets.yaml's names."""
     known: dict[str, set[str]] = {}
-    for e in (*cfg.models.entries(), *cfg.file_models.entries()):
+    for e in (*cfg.models.entries(), *cfg.yaml_models().entries()):
         known.setdefault(e.provider, set()).add(e.model)
     return {p: sorted(m) for p, m in sorted(known.items())}

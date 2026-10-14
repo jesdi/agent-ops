@@ -10,8 +10,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from dispatcher import model_settings
-from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_block, parse_policy
-from dispatcher.state import LoopCaps
+from dispatcher.models import (DEFAULT_POLICY, ModelPolicy, parse_block, parse_policy,
+                               pick_provider)
+from dispatcher.state import LoopCaps, TaskState, next_stage
 from dispatcher.usage import PaceConfig
 
 
@@ -72,12 +73,16 @@ class Config:
     # The usage gate: session threshold and weekly pace
     # (see docs/specs/2026-09-13-usage-pace-gate-design.md).
     pace: PaceConfig = PaceConfig()
-    # The targets.yaml `models:` block. `models` is the block in force: this
-    # one, or the one stored from the console (apply_stored_models).
-    file_models: ModelPolicy = DEFAULT_POLICY
-    # Where `models` comes from: None = targets.yaml, Stored = the console's
-    # block, Rejected = a stored block not in force (targets.yaml's runs).
-    models_origin: model_settings.Stored | model_settings.Rejected | None = None
+    # The targets.yaml `models:` block, when `models` (the block in force)
+    # may be another one: the one stored from the console (apply_stored_models).
+    # None: `models` is the targets.yaml block (a Config built in code).
+    file_models: ModelPolicy | None = None
+    # Where `models` comes from, with the revision of the file it was read from.
+    models_origin: model_settings.Origin = model_settings.Origin()
+
+    def yaml_models(self) -> ModelPolicy:
+        """The targets.yaml `models:` block."""
+        return self.file_models or self.models
 
 
 def _loop_caps(raw: object) -> LoopCaps:
@@ -205,8 +210,8 @@ def load_config(path: str | Path) -> Config:
     )
     _check_shares(cfg)
     cfg = apply_stored_models(replace(cfg, file_models=cfg.models))
-    if isinstance(cfg.models_origin, model_settings.Rejected):
-        print(f"[warn] {cfg.models_origin.reason}", file=sys.stderr)
+    if cfg.models_origin.rejected:
+        print(f"[warn] {cfg.models_origin.rejected}", file=sys.stderr)
     return cfg
 
 
@@ -229,29 +234,43 @@ def checked_policy(cfg: Config, raw: object) -> ModelPolicy:
 
 def apply_stored_models(cfg: Config) -> Config:
     """`cfg` with the block stored now in the state dir in force, else the
-    targets.yaml one. Never raises: a bad stored block must not stop every
-    pass and the console that can fix it, so it is Rejected with the reason."""
-    origin: model_settings.Stored | model_settings.Rejected | None = None
-    models = cfg.file_models
-    try:
-        found = model_settings.load(cfg.state_dir)
-        if found is not None:
-            raw, origin = found
+    targets.yaml one. Never raises: a bad stored block must not stop a pass,
+    nor the console page that can fix it, so its origin says why instead."""
+    raw, origin = model_settings.read(cfg.state_dir)
+    models = cfg.yaml_models()
+    if raw is not None:
+        try:
             models = checked_policy(cfg, raw)
-    except ValueError as e:
-        origin = model_settings.Rejected(f"console model settings not applied: {e}")
-    return replace(cfg, models=models, models_origin=origin)
+        except ValueError as e:
+            origin = origin.reject(str(e))
+    return replace(cfg, models=models, file_models=cfg.yaml_models(), models_origin=origin)
 
 
-def policy_for(cfg: Config, target: Target) -> ModelPolicy:
-    """A target's own policy replaces the global one wholesale — rule lists are
-    never merged, because merge order would make first-match-wins ambiguous."""
-    return target_policy(cfg.models, target)
+def policy_for(cfg: Config, target: Target | None,
+               models: ModelPolicy | None = None) -> ModelPolicy:
+    """The policy `target` runs: its own one replaces the global one
+    wholesale — rule lists are never merged, because merge order would make
+    first-match-wins ambiguous. No target (one removed from targets.yaml):
+    the global one. `models` stands in for the global block (a candidate)."""
+    global_models = cfg.models if models is None else models
+    return (target.models if target else None) or global_models
 
 
-def target_policy(models: ModelPolicy, target: Target) -> ModelPolicy:
-    """The policy `target` runs when `models` is the global block."""
-    return target.models or models
+def strands(cfg: Config, target: Target | None, task: TaskState,
+            models: ModelPolicy) -> str:
+    """Why `models` as the global block would leave unfinished `task` unable
+    to go on, "" when it would not: its track gone (the dispatcher parks it),
+    or its next stage picked on a provider no entry names (no usage is read
+    for it, so the gate never admits the stage again)."""
+    policy = policy_for(cfg, target, models)
+    if task.track not in policy.tracks:
+        return f"its track {task.track} is gone"
+    stage = next_stage(task)
+    provider = pick_provider(task.picks, stage)
+    probe = replace(cfg, models=models)   # never returned
+    if provider and provider not in referenced_providers(probe):
+        return f"its {stage} stage runs on {provider}, which no entry names"
+    return ""
 
 
 def routed_providers(cfg: Config) -> frozenset[str]:
