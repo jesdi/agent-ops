@@ -48,7 +48,7 @@ are no rulings.
 Step 6 takes `proposal.md` and `design.md` off the branch, so what they say
 must be safe in a file before anything is removed. Write `.agent/pr-body.md`
 (temporary file, then rename) holding, in this order:
-`Closes #$issue_number`; a summary; **Why**, **Goal** and **Non-goals** from
+`Closes #$issue_number`; **Why**, **Goal** and **Non-goals** from
 `proposal.md`; **Decisions** from `design.md`, every one; **Open rulings**
 from the ledger, every one, or "None". Take the text from the files; do not
 shorten a decision to its headline. If `.agent/pr-body.md` already exists,
@@ -110,6 +110,11 @@ Put at the end of `.agent/pr-body.md`, replacing them if an earlier session
 left them there: **Findings** — each review finding and its fix;
 **Rounds** — review, gate and e2e rounds used; **Verification** —
 $e2e_verification.
+Then write **Summary**, **Evidence** and **Merge Danger** with the `pr` skill
+and put them right after the first line, replacing them if an earlier
+session left them there. Evidence holds the gate and e2e results; when the
+diff touches UI, add the before/after screenshots of the `pr-visual-diff`
+skill.
 Then `gh pr create --repo $repo --head $branch --body-file .agent/pr-body.md`;
 the first line of that body is `Closes #$issue_number`. One issue is one
 branch is one PR: if step 1 found an open pull request for `$branch`, do not
