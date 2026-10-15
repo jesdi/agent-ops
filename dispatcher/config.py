@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -38,12 +39,49 @@ class Target:
 
 
 @dataclass(frozen=True)
+class ProjectRepository:
+    """One repository owned by a project (see `Project`). Same fields a
+    legacy `Target` carries for a repo, minus the identity it gets from its
+    owning project instead (name, board)."""
+    repo: str  # "owner/name", or a URL alias of it (normalized for dedup)
+    clone_path: str
+    worktrees_path: str
+    rank_cmd: str
+    gate_cmd: str
+    setup_cmd: str = ""
+    verify_cmd: str = ""
+    boost_field_id: str = ""
+    status_done_option_id: str = ""
+    status_wont_do_option_id: str = ""
+    max_active: int | None = None
+    models: ModelPolicy | None = None
+
+
+@dataclass(frozen=True)
+class Project:
+    """A project owning one board and a nonempty set of repositories
+    (`projects:`, parallel to the legacy single-repository `targets:` list).
+    Paused (`enabled=False`) by default: onboarding a project must not start
+    work until an operator turns it on."""
+    key: str
+    name: str
+    board_owner: str
+    board_number: int
+    status_field_id: str
+    status_ready_option_id: str
+    status_in_progress_option_id: str
+    repositories: list[ProjectRepository]
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class Config:
     state_dir: str
     capacity: int
     session_memory: str
     session_cpus: str
     targets: list[Target]
+    projects: list[Project] = field(default_factory=list)
     infra_repo: str = ""  # repo for dispatcher-side failure issues; "" degrades to ping-only
     models: ModelPolicy = DEFAULT_POLICY
     console_url: str = ""  # web console base URL for Telegram deep links; "" = no link line
@@ -146,6 +184,127 @@ def _target(raw: dict, capacity: int) -> Target:
     return Target(**fields, models=parse_policy(models) if has_models else None)
 
 
+def _normalize_repo(repo: str) -> str:
+    """"owner/name", stripped of a URL alias's host/scheme/suffix, for
+    identity comparison across projects. Lowered before the host regexes run
+    so an upper-cased host (GITHUB.COM) still strips."""
+    s = str(repo).strip().lower()
+    s = re.sub(r"^ssh://git@github\.com/", "", s)
+    s = re.sub(r"^git@github\.com:", "", s)
+    s = re.sub(r"^https?://github\.com/", "", s)
+    s = s.rstrip("/")
+    if s.endswith(".git"):
+        s = s[:-len(".git")]
+    return s.strip("/")
+
+
+_REPOSITORY_STR_FIELDS = ("repo", "clone_path", "worktrees_path", "rank_cmd", "gate_cmd",
+                          "setup_cmd", "verify_cmd", "boost_field_id",
+                          "status_done_option_id", "status_wont_do_option_id")
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_repository_fields(fields: dict, where: str) -> None:
+    for name in _REPOSITORY_STR_FIELDS:
+        if name in fields and not isinstance(fields[name], str):
+            raise ValueError(f"{where}: {name} must be a string, got {fields[name]!r}")
+    if not str(fields.get("gate_cmd") or "").strip():
+        raise ValueError(f"{where}: gate_cmd is required "
+                         "(the session runs it after every ticket)")
+    max_active = fields.get("max_active")
+    if max_active is not None and not _is_int(max_active):
+        raise ValueError(f"{where}: max_active must be an integer, got {max_active!r}")
+
+
+def _project_repository(raw: dict, project_key: str) -> ProjectRepository:
+    fields = dict(raw)
+    has_models = "models" in fields
+    models = fields.pop("models", None)
+    where = f"project {project_key!r}: repository {fields.get('repo')!r}"
+    _check_repository_fields(fields, where)
+    try:
+        return ProjectRepository(**fields, models=parse_policy(models) if has_models else None)
+    except TypeError as e:
+        raise ValueError(f"{where}: {e}") from e
+
+
+def _project_repositories(repos_raw: object, key: object) -> list[ProjectRepository]:
+    if not isinstance(repos_raw, list) or not repos_raw:
+        raise ValueError(f"project {key!r}: repositories must be a nonempty list")
+    for r in repos_raw:
+        if not isinstance(r, dict):
+            raise ValueError(f"project {key!r}: repositories: each entry must be a "
+                              f"mapping, got {r!r}")
+    return [_project_repository(r, key) for r in repos_raw]
+
+
+_PROJECT_STR_FIELDS = ("key", "name", "board_owner", "status_field_id",
+                       "status_ready_option_id", "status_in_progress_option_id")
+
+
+def _project(raw: dict, capacity: int) -> Project:
+    fields = dict(raw)
+    key = fields.get("key")
+    for name in _PROJECT_STR_FIELDS:
+        if name in fields and not isinstance(fields[name], str):
+            raise ValueError(f"project {key!r}: {name} must be a string, got {fields[name]!r}")
+    repositories = _project_repositories(fields.pop("repositories", None), key)
+    enabled = fields.pop("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"project {key!r}: enabled must be a boolean, got {enabled!r}")
+    board_number = fields.get("board_number")
+    if not _is_int(board_number):
+        raise ValueError(f"project {key!r}: board_number must be an integer, got {board_number!r}")
+    try:
+        return Project(**fields, repositories=repositories, enabled=enabled)
+    except TypeError as e:
+        raise ValueError(f"project {key!r}: {e}") from e
+
+
+def _validate_identities(targets: list[Target], projects: list[Project]) -> None:
+    """Repository identity (including URL aliases) and board identity
+    (owner + number, case-insensitive) must each be unique across every
+    project AND every legacy target (targets.example.yaml's migration
+    contract). Project keys must also be unique and nonempty."""
+    seen_repos: dict[str, str] = {}
+    seen_boards: dict[tuple[str, int], str] = {}
+    for t in targets:
+        seen_repos[_normalize_repo(t.repo)] = f"target {t.name!r}"
+        seen_boards[(t.project_owner.strip().lower(), t.project_number)] = f"target {t.name!r}"
+
+    seen_keys: set[str] = set()
+    for p in projects:
+        if not p.key or p.key in seen_keys:
+            raise ValueError(f"project {p.key!r}: key must be nonempty and unique")
+        seen_keys.add(p.key)
+        board_key = (p.board_owner.strip().lower(), p.board_number)
+        if board_key in seen_boards:
+            raise ValueError(f"project {p.key!r}: board {p.board_owner}/{p.board_number} "
+                             f"already owned by {seen_boards[board_key]}")
+        seen_boards[board_key] = f"project {p.key!r}"
+        for r in p.repositories:
+            norm = _normalize_repo(r.repo)
+            if norm in seen_repos:
+                raise ValueError(f"project {p.key!r}: repository {r.repo!r} already owned "
+                                 f"by {seen_repos[norm]}")
+            seen_repos[norm] = f"project {p.key!r}"
+
+
+def _projects(raw: dict, capacity: int, targets: list[Target]) -> list[Project]:
+    projects_raw = raw.get("projects", [])
+    if not isinstance(projects_raw, list):
+        raise ValueError(f"projects: must be a list, got {projects_raw!r}")
+    for p in projects_raw:
+        if not isinstance(p, dict):
+            raise ValueError(f"projects: each entry must be a mapping, got {p!r}")
+    projects = [_project(p, capacity) for p in projects_raw]
+    _validate_identities(targets, projects)
+    return projects
+
+
 def _grace_minutes(raw: dict) -> int | None:
     if "spec_review_grace_minutes" not in raw:
         return 15
@@ -182,13 +341,15 @@ def load_config(path: str | Path) -> Config:
         print("[warn] codex_stall_after_seconds is ignored: stall_after_seconds "
               "now applies to every runtime", file=sys.stderr)
     capacity = raw.get("capacity", 3)
+    targets = [_target(t, capacity) for t in raw.get("targets", [])]
     cfg = Config(
         state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
         capacity=capacity,
         max_open=_max_open(raw, capacity),
         session_memory=str(raw.get("session_memory", "2g")),
         session_cpus=str(raw.get("session_cpus", "2")),
-        targets=[_target(t, capacity) for t in raw.get("targets", [])],
+        targets=targets,
+        projects=_projects(raw, capacity, targets),
         infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
