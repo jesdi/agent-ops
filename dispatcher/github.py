@@ -272,7 +272,7 @@ class GitHubClient:
             self._project_node_ids[key] = json.loads(out)["id"]
         return self._project_node_ids[key]
 
-    def _item_id(self, target: Target, issue: int) -> str:
+    def _item_id(self, target: Target, issue: int, repo: str = "") -> str:
         items = board.fetch_items(
             self._project_node_id(target),
             lambda args: _run(["gh"] + args, env=_project_env()))
@@ -281,13 +281,13 @@ class GitHubClient:
         # confirmed as target.repo is writable: a redacted item (repo or
         # number unknown) is unavailable, and a title match alone never
         # authorizes a board update.
-        target_repo = normalize_repo(target.repo)
+        target_repo = normalize_repo(repo or target.repo)
         for item in items:
             if item.number == issue and item.repo is not None \
                     and normalize_repo(item.repo) == target_repo:
                 return item.id
         raise LookupError(f"issue #{issue} not on project {target.project_number}"
-                          f" as a verified card in {target.repo}")
+                          f" as a verified card in {repo or target.repo}")
 
     def issue_view(self, repo: str, number: int) -> dict:
         out = _run(["gh", "issue", "view", str(number), "--repo", repo,
@@ -312,32 +312,35 @@ class GitHubClient:
                     "--title", title, "--body", body])
         return int(out.strip().rstrip("/").rsplit("/", 1)[-1])
 
-    def set_status(self, target: Target, issue: int, option_id: str) -> None:
+    def set_status(self, target: Target, issue: int, option_id: str,
+                   repo: str = "") -> None:
         if self.dry_run:
             print(f"[dry-run] set_status #{issue} -> {option_id}")
             return
         _run(["gh", "project", "item-edit",
-              "--id", self._item_id(target, issue),
+              "--id", self._item_id(target, issue, repo),
               "--project-id", self._project_node_id(target),
               "--field-id", target.status_field_id,
               "--single-select-option-id", option_id], env=_project_env())
 
-    def set_boost(self, target: Target, issue: int, value: int) -> None:
+    def set_boost(self, target: Target, issue: int, value: int,
+                  repo: str = "") -> None:
         if self.dry_run:
             print(f"[dry-run] set_boost #{issue} -> {value}")
             return
         _run(["gh", "project", "item-edit",
-              "--id", self._item_id(target, issue),
+              "--id", self._item_id(target, issue, repo),
               "--project-id", self._project_node_id(target),
               "--field-id", target.boost_field_id,
               "--number", str(value)], env=_project_env())
 
-    def add_label(self, target: Target, issue: int, label: str) -> None:
+    def add_label(self, target: Target, issue: int, label: str,
+                  repo: str = "") -> None:
         if self.dry_run:
             print(f"[dry-run] add_label #{issue} +{label}")
             return
         _run(["gh", "issue", "edit", str(issue),
-              "--repo", target.repo, "--add-label", label])
+              "--repo", repo or target.repo, "--add-label", label])
 
     def comment(self, target: Target, issue: int, body: str) -> None:
         if self.dry_run:

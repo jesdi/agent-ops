@@ -155,6 +155,7 @@ class TaskAdmissionView(BaseModel):
 class TaskCard(BaseModel):
     issue: int
     target: str
+    repo: str = ""
     title: str
     stage: str
     park: str
@@ -195,6 +196,7 @@ class GhostCard(BaseModel):
     consume next, rendered in the Queued column ahead of being claimed."""
     number: int
     target: str
+    repo: str = ""
     title: str
     url: str
     score: float | None
@@ -241,7 +243,7 @@ def task_card(t: TaskState, *, model: str,
               admission: TaskAdmissionView | None = None,
               pinned_track: str = "") -> TaskCard:
     return TaskCard(
-        issue=t.issue, target=t.target, title=t.title,
+        issue=t.issue, target=t.target, repo=t.repo, title=t.title,
         stage=shown_stage(t), park=t.park,
         park_note=t.park_note,
         park_reason=_park_reason(t),
@@ -261,30 +263,44 @@ def task_card(t: TaskState, *, model: str,
         wake_blocked=wake_blocked, admission=admission)
 
 
+MetadataKey = tuple[str, int] | tuple[str, int, str]
+
+
 def _score_index(queues: list[tuple[str, list[dict]]]
-                 ) -> dict[tuple[str, int], float | None]:
-    return {(name, row["number"]): row.get("score")
+                 ) -> dict[MetadataKey, float | None]:
+    return {identity_key(name, row["number"], row.get("repo", "")): row.get("score")
             for name, rows in queues for row in rows}
 
 
+def identity_key(target: str, issue: int, repo: str = "") -> MetadataKey:
+    """Qualified metadata key, retaining the legacy key for unproven records."""
+    return (target, issue, repo) if repo else (target, issue)
+
+
+def mail_key(task: TaskState) -> MetadataKey:
+    return identity_key(task.target, task.issue, task.repo)
+
+
 def _task_cards(tasks: list[TaskState], *,
-                models: dict[tuple[str, int], str],
-                claimed: dict[tuple[str, int], str],
-                scores: dict[tuple[str, int], float | None],
-                mail: dict[tuple[str, int], int],
+                models: dict[MetadataKey, str],
+                claimed: dict[MetadataKey, str],
+                scores: dict[MetadataKey, float | None],
+                mail: dict[MetadataKey, int],
                 blocked: set[tuple[str, int]],
-                admissions: dict[tuple[str, int], TaskAdmissionView],
-                pinned: dict[tuple[str, int], str]
+                admissions: dict[MetadataKey, TaskAdmissionView],
+                pinned: dict[MetadataKey, str]
                 ) -> list[TaskCard]:
     cards = []
     for task in tasks:
-        key = (task.target, task.issue)
-        at = claimed_at(claimed, task.target, task.issue)
+        key = mail_key(task)
+        at = claimed_at(claimed, task.target, task.issue, task.repo,
+                        legacy=not any(t.target == task.target and t.issue == task.issue
+                                       and t.repo != task.repo for t in tasks))
         cards.append(task_card(
             task, model=models.get(key, ""), claimed_at=at,
             cycle_seconds=cycle_seconds(at, task.done_at),
-            score=scores.get(key), undelivered_messages=mail.get(key, 0),
-            wake_blocked=key in blocked, admission=admissions.get(key),
+            score=scores.get(key), undelivered_messages=mail.get(mail_key(task), 0),
+            wake_blocked=(task.target, task.issue) in blocked, admission=admissions.get(key),
             pinned_track=pinned.get(key, "")))
     return cards
 
@@ -306,13 +322,13 @@ def _held_slots(tasks: list[TaskState]) -> list[int]:
 
 
 def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
-                         models: dict[tuple[str, int], str], events: list[dict],
+                         models: dict[MetadataKey, str], events: list[dict],
                          queues: list[tuple[str, list[dict]]],
-                         undelivered: dict[tuple[str, int], int] | None = None,
+                         undelivered: dict[MetadataKey, int] | None = None,
                          wake_blocked: set[tuple[str, int]] | None = None,
-                         admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
+                         admissions: dict[MetadataKey, TaskAdmissionView] | None = None,
                          ghosts: list[GhostCard] | None = None,
-                         pinned_tracks: dict[tuple[str, int], str] | None = None
+                         pinned_tracks: dict[MetadataKey, str] | None = None
                          ) -> BoardSnapshot:
     """Cards and capacity without any live-service dependencies; `ghosts`
     join the Queued column."""
@@ -348,32 +364,33 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
 
 
 def build_board(tasks: list[TaskState], *, capacity: int,
-                models: dict[tuple[str, int], str],
+                models: dict[MetadataKey, str],
                 events: list[dict], heartbeat: dict | None, now: datetime,
                 gate: GateView,
                 queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
                 triage_running: bool,
-                undelivered: dict[tuple[str, int], int] | None = None,
+                undelivered: dict[MetadataKey, int] | None = None,
                 wake_blocked: set[tuple[str, int]] | None = None,
-                admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
-                candidate_admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
+                admissions: dict[MetadataKey, TaskAdmissionView] | None = None,
+                candidate_admissions: dict[MetadataKey, TaskAdmissionView] | None = None,
                 max_active: Mapping[str, int | None],
                 last_claimed: Mapping[str, str],
                 max_open: int = sys.maxsize,
-                pinned_tracks: dict[tuple[str, int], str] | None = None,
+                pinned_tracks: dict[MetadataKey, str] | None = None,
                 ) -> BoardView:
-    # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
-    # are per-repo; bare numbers would wrongly suppress cross-target candidates
-    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
-    known = {(t.target, t.issue) for t in tasks}
+    # Key on (target, repo, issue) so alpha#73 does not hide beta#73, nor one
+    # repository's #73 another's. A legacy task (repo "") hides the number.
+    known = {(t.target, t.repo, t.issue) for t in tasks}
     ghost_admissions = candidate_admissions or {}
-    ghosts = [GhostCard(number=r["number"], target=name,
+    ghosts = [GhostCard(number=r["number"], target=name, repo=r.get("repo", ""),
                         title=r.get("title", ""), url=r.get("url", ""),
                         score=r.get("score"), boost=int(r.get("boost") or 0),
-                        admission=ghost_admissions.get((name, r["number"])))
+                        admission=ghost_admissions.get(identity_key(name, r["number"], r.get("repo", ""))))
               for name, rows in queues for r in rows
-              if _is_candidate(r) and (name, r["number"]) not in known]
+              if _is_candidate(r)
+              and not {(name, r.get("repo", ""), r["number"]),
+                       (name, "", r["number"])} & known]
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
         undelivered=undelivered, wake_blocked=wake_blocked,
@@ -393,6 +410,10 @@ def build_board(tasks: list[TaskState], *, capacity: int,
 
 
 class TaskDetail(BaseModel):
+    # The page's identity: with the target and issue number, the repository
+    # ("" = a legacy record) tells two issues that share a number apart.
+    title: str
+    repo: str
     card: TaskCard
     pane_tail: str
     session_alive: bool
@@ -431,9 +452,10 @@ def task_detail(t: TaskState, *, model: str,
                 admission: TaskAdmissionView | None = None,
                 track_when: str = "",
                 pinned_track: str = "") -> TaskDetail:
-    at = claimed_at(claimed_at_index(events), t.target, t.issue)
+    at = claimed_at(claimed_at_index(events), t.target, t.issue, t.repo)
     msgs = messages or []
     return TaskDetail(
+        title=t.title, repo=t.repo,
         card=task_card(t, model=model, pinned_track=pinned_track,
                        claimed_at=at,
                        cycle_seconds=cycle_seconds(at, t.done_at),
@@ -609,6 +631,7 @@ class QuarantineEntry(BaseModel):
     fingerprint: str
     created_at: str
     blocker_open: bool | None
+    repo: str = ""
 
 
 class FingerprintEntry(BaseModel):
@@ -632,6 +655,7 @@ class EventEntry(BaseModel):
     model: str
     actor: str
     detail: str
+    repo: str = ""
 
 
 class HistoryView(BaseModel):
@@ -648,6 +672,7 @@ class QueueRow(BaseModel):
     score: float | None
     boost: int
     in_flight: bool
+    repo: str = ""
 
 
 class TargetQueue(BaseModel):
@@ -662,7 +687,9 @@ class QueueView(BaseModel):
 
 
 def target_queue(name: str, rows: list[dict], as_of: str, stale: bool,
-                 in_flight: set[int]) -> TargetQueue:
+                 in_flight: set[tuple[str, int]]) -> TargetQueue:
+    """`in_flight` holds (repo, issue) of this target's tasks; a legacy task
+    (repo "") speaks for the row of that number in any repository."""
     return TargetQueue(
         target=name, as_of=as_of, stale=stale,
         rows=[QueueRow(
@@ -671,7 +698,9 @@ def target_queue(name: str, rows: list[dict], as_of: str, stale: bool,
             labels=list(r.get("labels") or []),
             blocked=bool(r.get("blocked", False)),
             score=r.get("score"), boost=int(r.get("boost") or 0),
-            in_flight=r["number"] in in_flight) for r in rows])
+            repo=r.get("repo", ""),
+            in_flight=(r.get("repo", ""), r["number"]) in in_flight
+            or ("", r["number"]) in in_flight) for r in rows])
 
 
 class TimelineEntry(BaseModel):
@@ -688,28 +717,26 @@ def _parse_ts(iso: str) -> datetime | None:
         return None
 
 
-def claimed_at_index(events: list[dict]) -> dict[tuple[str, int], str]:
-    """(target, issue) -> ts of its FIRST claimed event. events.jsonl rotates
-    at a size cap, so a task may have no claimed event at all — absent means
-    unknown.
-
-    Keyed on the pair, not the bare number: issue numbers are per-repo, so a
-    merged alpha#73 from weeks ago would otherwise win the setdefault over a
-    freshly claimed beta#73 and report a month-old claim time. Log lines
-    written before events carried `target` land under ("", issue) and are read
-    back as a fallback for any target — see claimed_at()."""
-    out: dict[tuple[str, int], str] = {}
+def claimed_at_index(events: list[dict]) -> dict[MetadataKey, str]:
+    """First claim per repository identity, retaining historical legacy keys."""
+    out: dict[MetadataKey, str] = {}
     for e in events:
         if e.get("event") == "claimed" and e.get("issue"):
-            out.setdefault((str(e.get("target") or ""), e["issue"]),
-                           e.get("ts", ""))
+            out.setdefault(identity_key(str(e.get("target") or ""), e["issue"],
+                                        str(e.get("repo") or "")), e.get("ts", ""))
     return out
 
 
-def claimed_at(index: dict[tuple[str, int], str], target: str,
-               issue: int) -> str:
-    """Exact (target, issue) match, else the untargeted legacy entry, else ""
-    — never another target's claim."""
+def claimed_at(index: dict[MetadataKey, str], target: str,
+               issue: int, repo: str = "", *, legacy: bool = True) -> str:
+    """Prefer the qualified claim; use old events only without competing owners."""
+    exact = index.get(identity_key(target, issue, repo))
+    if exact is not None:
+        return exact
+    competing = any(len(key) == 3 and key[:2] == (target, issue) and key[2] != repo
+                    for key in index)
+    if not legacy or competing:
+        return ""
     return index.get((target, issue)) or index.get(("", issue), "")
 
 
@@ -732,7 +759,8 @@ def median_cycle_seconds(events: list[dict], last: int = 20) -> float | None:
     cycles = [c for e in events
               if e.get("event") == "merged" and e.get("issue")
               if (c := cycle_seconds(
-                  claimed_at(claimed, str(e.get("target") or ""), e["issue"]),
+                  claimed_at(claimed, str(e.get("target") or ""), e["issue"],
+                             str(e.get("repo") or "")),
                   e.get("ts", ""))) is not None]
     if not cycles:
         return None

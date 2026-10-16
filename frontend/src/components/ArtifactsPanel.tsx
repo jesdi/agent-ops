@@ -2,8 +2,8 @@ import type { ArtifactsView } from '../lib/api'
 import { useTaskArtifacts } from '../hooks/useResources'
 import { chip } from '../lib/tone'
 
-export function ArtifactsPanel({ target, issue }: { target: string; issue: number }) {
-  const query = useTaskArtifacts(target, issue)
+export function ArtifactsPanel({ target, repo = '', issue }: { target: string; repo?: string; issue: number }) {
+  const query = useTaskArtifacts(target, issue, repo)
   return (
     <section aria-label="Artifacts" className="overflow-hidden rounded border border-border bg-surface-raised">
       <header className="p-4">

@@ -286,8 +286,8 @@ test('queued column renders ghost cards in rank order with count and stale hint'
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: withGhosts([
-      { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
-      { number: 74, target: 'widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
+      { number: 73, target: 'widget', repo: '', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 74, target: 'widget', repo: '', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
     ]),
     queue_stale: true,
     next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'widget' },
@@ -308,8 +308,8 @@ test('same issue number on two targets renders two distinct ghosts', async () =>
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: withGhosts([
-      { number: 73, target: 'alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
-      { number: 73, target: 'beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
+      { number: 73, target: 'alpha', repo: '', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, target: 'beta', repo: '', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
     ]),
     next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'beta' },
   })))
@@ -326,7 +326,7 @@ test('a failed queue action shows its error marker in the Queued header', async 
     http.get('/api/board', () => HttpResponse.json({
       ...fx_board,
       columns: withGhosts([
-        { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+        { number: 73, target: 'widget', repo: '', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
       ]),
       queue_stale: true,
       next_claim: { ...fx_board.next_claim, verdict: 'no-candidates' },
@@ -349,7 +349,7 @@ test('a Queued column holding only ghosts stays in the row', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: withGhosts([
-      { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, target: 'widget', repo: '', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
     ]),
   })))
   renderWithProviders(<BoardPage />)
@@ -540,7 +540,7 @@ describe('phone tabs', () => {
         await boardHeld
         return HttpResponse.json({
           ...fx_board,
-          columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }], columns),
+          columns: withGhosts([{ number: 73, target: 'widget', repo: '', title: 'Ship dark mode', url: '', score: 1, boost: 0 }], columns),
         })
       }),
     )
@@ -577,7 +577,7 @@ describe('phone tabs', () => {
       await boardHeld
       return HttpResponse.json({
         ...fx_board,
-        columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
+        columns: withGhosts([{ number: 73, target: 'widget', repo: '', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
       })
     }))
     renderWithProviders(<BoardPage />, { route: '/?column=queued' })
@@ -590,7 +590,7 @@ describe('phone tabs', () => {
   it('Queued counts its ghosts', async () => {
     server.use(http.get('/api/board', () => HttpResponse.json({
       ...fx_board,
-      columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
+      columns: withGhosts([{ number: 73, target: 'widget', repo: '', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
     })))
     renderWithProviders(<BoardPage />)
     expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()

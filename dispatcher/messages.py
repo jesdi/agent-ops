@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from dispatcher.state import parse_task_key, task_key
+from dispatcher.state import parse_qualified_task_key, parse_task_key, task_key
 
 MESSAGES_DIR = "messages"
 
@@ -125,6 +125,22 @@ def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
         n = len(undelivered(state_dir, *key))
         if n:
             out[key] = n
+    return out
+
+
+def undelivered_qualified_counts(state_dir: str | Path) -> dict[tuple[str, int, str], int]:
+    """(target, issue, repo) -> queued messages, for the repository-qualified
+    queues `undelivered_counts` leaves out."""
+    d = _dir(state_dir)
+    out: dict[tuple[str, int, str], int] = {}
+    for p in sorted(d.glob("*.jsonl")) if d.exists() else []:
+        key = parse_qualified_task_key(p.stem)
+        if key is None:
+            continue
+        repo, target, issue = key
+        n = len(undelivered(state_dir, target, issue, repo=repo))
+        if n:
+            out[(target, issue, repo)] = n
     return out
 
 

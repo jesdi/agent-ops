@@ -19,7 +19,7 @@ import { formatDuration, parkLabel, providerOf, relativeTime, stageLabel } from 
 import { banner, chip } from '../lib/tone'
 
 export function TaskPage() {
-  const { target, issue: rawIssue } = useParams()
+  const { target, repository, issue: rawIssue } = useParams()
   // An empty/missing target would otherwise request /api/task//<issue>.
   if (!target) {
     return (
@@ -37,26 +37,27 @@ export function TaskPage() {
       </p>
     )
   }
-  return <TaskView target={target} issue={issue} />
+  return <TaskView target={target} repo={repository?.replace('~', '/') ?? ''} issue={issue} />
 }
 
-function TaskView({ target, issue }: { target: string; issue: number }) {
-  const detailQuery = useTaskDetail(target, issue)
+function TaskView({ target, repo, issue }: { target: string; repo: string; issue: number }) {
+  const detailQuery = useTaskDetail(target, issue, repo)
   const intentsQuery = usePendingIntents()
-  const actions = useTaskActions(target, issue)
+  const actions = useTaskActions(target, issue, repo)
   // Local, not in the store: navigating to another task must open on its
   // live tail, never on a history view left behind by the previous one.
   const [showHistory, setShowHistory] = useState(false)
-  useEffect(() => setShowHistory(false), [target, issue])
+  useEffect(() => setShowHistory(false), [target, repo, issue])
 
-  return <TaskQueryView target={target} issue={issue} detailQuery={detailQuery}
+  return <TaskQueryView target={target} repo={repo} issue={issue} detailQuery={detailQuery}
     intentsQuery={intentsQuery} actions={actions} showHistory={showHistory}
     setShowHistory={setShowHistory} />
 }
 
-function TaskQueryView({ target, issue, detailQuery, intentsQuery, actions,
+function TaskQueryView({ target, repo, issue, detailQuery, intentsQuery, actions,
   showHistory, setShowHistory }: {
   target: string
+  repo: string
   issue: number
   detailQuery: ReturnType<typeof useTaskDetail>
   intentsQuery: ReturnType<typeof usePendingIntents>
@@ -67,18 +68,19 @@ function TaskQueryView({ target, issue, detailQuery, intentsQuery, actions,
   if (detailQuery.isPending) return <p className="p-4 text-ink-muted">loading task…</p>
   if (detailQuery.isError) {
     if (detailQuery.error instanceof ApiError && detailQuery.error.status === 404) {
-      return <GhostTaskView target={target} issue={issue} />
+      return <GhostTaskView target={target} repo={repo} issue={issue} />
     }
     return <p className="p-4 text-failed-fg">{detailQuery.error.message}</p>
   }
-  return <LoadedTaskView target={target} issue={issue} detail={detailQuery.data}
+  return <LoadedTaskView target={target} repo={repo} issue={issue} detail={detailQuery.data}
     intents={intentsQuery.data?.intents ?? []} actions={actions}
     showHistory={showHistory} setShowHistory={setShowHistory} />
 }
 
-function LoadedTaskView({ target, issue, detail, intents, actions,
+function LoadedTaskView({ target, repo, issue, detail, intents, actions,
   showHistory, setShowHistory }: {
   target: string
+  repo: string
   issue: number
   detail: TaskDetail
   intents: NonNullable<ReturnType<typeof usePendingIntents>['data']>['intents']
@@ -91,7 +93,7 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <TaskHeader card={card} intents={intents} target={target} issue={issue} />
+      <TaskHeader card={card} intents={intents} target={target} repo={repo} issue={issue} />
       {detail.implement_progress && (
         <p data-testid="implement-progress"
           className="text-sm text-ink-muted [overflow-wrap:anywhere]">{detail.implement_progress}</p>
@@ -103,11 +105,11 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
 
       <p className="break-all font-mono text-xs text-ink-muted">{worktree}</p>
 
-      <DescriptionPanel target={target} issue={issue} />
+      <DescriptionPanel target={target} repo={repo} issue={issue} />
 
-      <RequestPanel target={target} issue={issue} />
+      <RequestPanel target={target} repo={repo} issue={issue} />
 
-      <ArtifactsPanel target={target} issue={issue} />
+      <ArtifactsPanel target={target} repo={repo} issue={issue} />
 
       {/* On the load path the page owns the dead/parked state; the console
           below is read-only either way. */}
@@ -117,7 +119,7 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
           (snapshot-backed once the session is dead). Interactive attach is
           external — herdr from a terminal — so the board never holds a PTY
           and the dispatcher never waits on a viewer. */}
-      <TaskConsole target={target} issue={issue} paneTail={pane_tail}
+      <TaskConsole target={target} repo={repo} issue={issue} paneTail={pane_tail}
         showHistory={showHistory} setShowHistory={setShowHistory} />
       <p data-testid="attach-guidance" className="text-xs text-ink-muted">
         To interact with the session, attach from a terminal:{' '}
@@ -132,27 +134,29 @@ function LoadedTaskView({ target, issue, detail, intents, actions,
       )}
 
       {card.admission && (
-        <AdmissionWarning target={target} issue={issue} admission={card.admission} />
+        <AdmissionWarning target={target} repo={repo} issue={issue} admission={card.admission} />
       )}
 
       <MessageThread messages={messages} />
 
-      <TaskControls target={target} issue={issue} card={card} deliveryContract={delivery_contract}
+      <TaskControls target={target} repo={repo} issue={issue} card={card} deliveryContract={delivery_contract}
         actions={actions} showHistory={showHistory} setShowHistory={setShowHistory} />
     </div>
   )
 }
 
-function TaskHeader({ card, intents, target, issue }: {
+function TaskHeader({ card, intents, target, repo, issue }: {
   card: TaskDetail['card']
   intents: PendingIntent[]
   target: string
+  repo: string
   issue: number
 }) {
   // Target-less legacy intents match by issue alone; current intents must
   // match the exact target because issue numbers are repository-local.
   const myIntents = intents.filter(
-    (intent) => intent.issue === issue && (intent.target === target || intent.target === ''),
+    (intent) => intent.issue === issue && (intent.target === target || intent.target === '')
+      && ['', repo].includes(intent.repo ?? ''),
   )
   return <header className="flex flex-wrap items-center gap-3">
     <h1 className="text-lg font-semibold">{card.title}</h1>
@@ -183,8 +187,9 @@ function StageTimeline({ timeline }: { timeline: TaskDetail['timeline'] }) {
   </div>
 }
 
-function TaskConsole({ target, issue, paneTail, showHistory, setShowHistory }: {
+function TaskConsole({ target, repo, issue, paneTail, showHistory, setShowHistory }: {
   target: string
+  repo: string
   issue: number
   paneTail: string
   showHistory: boolean
@@ -192,15 +197,15 @@ function TaskConsole({ target, issue, paneTail, showHistory, setShowHistory }: {
 }) {
   return <div data-testid="console" className="h-96 w-full">
     {showHistory ? (
-      <TerminalHistory target={target} issue={issue} onClose={() => setShowHistory(false)} />
+      <TerminalHistory target={target} repo={repo} issue={issue} onClose={() => setShowHistory(false)} />
     ) : (
       <LiveTail text={paneTail} />
     )}
   </div>
 }
 
-function GhostTaskView({ target, issue }: { target: string; issue: number }) {
-  const desc = useIssueDescription(target, issue, true)
+function GhostTaskView({ target, repo, issue }: { target: string; repo: string; issue: number }) {
+  const desc = useIssueDescription(target, issue, true, repo)
   const { queueError, busy, boost, next, ready } = useQueueActions()
   return (
     <div data-testid="ghost-task-view" className="flex flex-col gap-4 p-4">
@@ -210,20 +215,20 @@ function GhostTaskView({ target, issue }: { target: string; issue: number }) {
           upcoming — not claimed yet
         </span>
       </header>
-      <DescriptionPanel target={target} issue={issue} defaultOpen />
+      <DescriptionPanel target={target} repo={repo} issue={issue} defaultOpen />
       {queueError && <p data-testid="queue-error" className="text-sm text-failed-fg">{queueError}</p>}
       <div className="flex gap-2">
-        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, 1)}>Boost</button>
-        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, -1)}>Demote</button>
-        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => next(issue)}>Next</button>
-        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => ready(issue)}>Ready</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, 1, repo)}>Boost</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => boost(issue, -1, repo)}>Demote</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => next(issue, repo)}>Next</button>
+        <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50" disabled={busy} onClick={() => ready(issue, repo)}>Ready</button>
       </div>
     </div>
   )
 }
 
 /** Intent submission owns draft/error state and resets destructive confirmations. */
-function useTaskActions(target: string, issue: number) {
+function useTaskActions(target: string, issue: number, repo: string) {
   const queryClient = useQueryClient()
   const [replyText, setReplyText] = useState('')
   // Inline error channel, same convention as useQueueActions: park/kill/
@@ -249,7 +254,7 @@ function useTaskActions(target: string, issue: number) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.pendingIntents })
       // A reply/resume can clear or replace the operator_request, so
       // invalidate it so stale approval/answers content disappears.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.request(target, issue) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.request(target, issue, repo) })
     },
     onError: (err) =>
       setActionError(err instanceof ApiError ? err.detail : String(err)),
@@ -265,8 +270,9 @@ function useTaskActions(target: string, issue: number) {
     wontDoArmed, setWontDoArmed, busy: intent.isPending, runIntent }
 }
 
-function TaskControls({ target, issue, card, deliveryContract, actions, showHistory, setShowHistory }: {
+function TaskControls({ target, repo, issue, card, deliveryContract, actions, showHistory, setShowHistory }: {
   target: string
+  repo: string
   issue: number
   card: TaskDetail['card']
   deliveryContract: string
@@ -294,7 +300,7 @@ function TaskControls({ target, issue, card, deliveryContract, actions, showHist
         type="button"
         className="rounded bg-ink px-3 py-1.5 text-sm text-surface-raised disabled:opacity-50"
         disabled={replyText.trim() === '' || busy}
-        onClick={() => runIntent(() => api.reply(target, issue, replyText), true)}
+        onClick={() => runIntent(() => api.reply(target, issue, replyText, repo), true)}
       >
         {card.park !== '' ? 'Send reply & wake' : 'Send message'}
       </button>
@@ -323,19 +329,19 @@ function TaskControls({ target, issue, card, deliveryContract, actions, showHist
       )}
       <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
         disabled={busy}
-        onClick={() => runIntent(() => api.park(target, issue))}>Park now</button>
+        onClick={() => runIntent(() => api.park(target, issue, repo))}>Park now</button>
       <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
         disabled={busy}
-        onClick={() => runIntent(() => api.resume(target, issue))}>Resume now</button>
+        onClick={() => runIntent(() => api.resume(target, issue, {}, repo))}>Resume now</button>
       <button type="button" className="rounded border px-3 py-1.5 text-sm disabled:opacity-50"
         disabled={busy}
-        onClick={() => runIntent(() => api.retry(target, issue))}>Retry</button>
+        onClick={() => runIntent(() => api.retry(target, issue, repo))}>Retry</button>
       <ConfirmAction armed={killArmed} setArmed={setKillArmed} busy={busy}
         label="Kill" confirmation="Confirm kill?" cancel="Cancel kill"
-        onConfirm={() => runIntent(() => api.kill(target, issue))} />
+        onConfirm={() => runIntent(() => api.kill(target, issue, repo))} />
       <ConfirmAction armed={wontDoArmed} setArmed={setWontDoArmed} busy={busy}
         label="Won't do" confirmation="Confirm won't do?" cancel="Keep task"
-        onConfirm={() => runIntent(() => api.cancel(target, issue))} />
+        onConfirm={() => runIntent(() => api.cancel(target, issue, repo))} />
     </div>
   )
 }

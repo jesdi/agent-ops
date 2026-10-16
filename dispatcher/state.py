@@ -326,6 +326,15 @@ def parse_task_key(name: str) -> tuple[str, int] | None:
     return (target, int(issue)) if target and issue.isdigit() else None
 
 
+def parse_qualified_task_key(name: str) -> tuple[str, str, int] | None:
+    """(repo, target, issue) from an `<owner>~<name>~<target>-<issue>` key,
+    else None: the inverse of task_key for a proven repository."""
+    owner, sep1, rest = name.partition("~")
+    repo_name, sep2, tail = rest.partition("~")
+    parsed = parse_task_key(tail) if sep1 and sep2 else None
+    return (f"{owner}/{repo_name}", *parsed) if parsed else None
+
+
 def _path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
     return Path(state_dir) / f"task-{task_key(target, issue, repo)}.json"
 
@@ -741,6 +750,20 @@ def load_archived(state_dir: str | Path, target: str, issue: int, *,
     return task if task and task.stage in TERMINAL_STAGES else None
 
 
+def archived_named(state_dir: str | Path, target: str, issue: int) -> list[TaskState]:
+    """Every archived task of this target and number, whatever its repository:
+    what an old, repository-less reference may name."""
+    found = []
+    for path in (Path(state_dir) / "artifacts").glob("*/task.json"):
+        try:
+            task = _read(path)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if task and task.stage in TERMINAL_STAGES and (task.target, task.issue) == (target, issue):
+            found.append(task)
+    return found
+
+
 def _unqualified(paths) -> set[tuple[str, int]]:
     found = set()
     for p in paths:
@@ -1020,3 +1043,27 @@ def migrate_legacy(state_dir: str | Path, proven: dict[str, str]) -> None:
         originals += pending
     for src in originals:
         shutil.rmtree(src) if src.is_dir() else src.unlink()
+
+
+def owns_task_session(state_dir: str | Path, target: str, issue: int, repo: str) -> bool:
+    """Only a launch record proves which repository owns a shared session name.
+
+    Task inventories can shrink and are not evidence of session ownership.
+    Empty repositories retain the pre-qualification session contract.
+    """
+    if not repo:
+        return True
+    try:
+        return session_owner_path(state_dir, target, issue).read_text() == repo
+    except (OSError, ValueError):
+        return False
+
+
+def session_owner_path(state_dir: str | Path, target: str, issue: int) -> Path:
+    return Path(state_dir) / f"session-owner-{task_key(target, issue)}"
+
+
+def record_session_owner(state_dir: str | Path, target: str, issue: int, repo: str) -> None:
+    path = session_owner_path(state_dir, target, issue)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(repo)

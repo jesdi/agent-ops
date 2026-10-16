@@ -91,13 +91,13 @@ export function BoardColumn({ view: { column, count, degraded, onCardDrop }, pen
       <div data-testid={`scroll-${column.key}`} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
         {column.cards.map((card) => (
           <TaskCardView
-            // Issue numbers are per-target: alpha#73 and beta#73 must not
-            // collide on one React key.
-            key={`${card.target}#${card.issue}`}
+            // Issue numbers are per-repository: two repositories of one
+            // target can both run #73 and must not collide on one React key.
+            key={`${card.repo}|${card.target}#${card.issue}`}
             card={card}
             pendingActions={[
-              ...(pendingByKey.get(`${card.target}#${card.issue}`) ?? []),
-              ...(pendingByKey.get(`#${card.issue}`) ?? []),
+              ...(pendingByKey.get(`${card.repo}|${card.target}#${card.issue}`) ?? []),
+              ...(pendingByKey.get(`|#${card.issue}`) ?? []),
             ]}
           />
         ))}

@@ -14,14 +14,14 @@ type QueueActions = ReturnType<typeof useQueueActions>
 
 /** An issue can carry several pending intents at once (park then kill).
  *  Collapsing to one would silently drop the rest — and TaskPage renders all
- *  of them, so the board must too. Keyed `${target}#${issue}` — issue numbers
- *  are per-target, so alpha#73 and beta#73 must not share a bucket. A legacy
- *  (target-less) intent lands under `#${issue}` (empty target) and
+ *  of them, so the board must too. Keyed `${repo}|${target}#${issue}` — issue
+ *  numbers are per-repository, so two repositories' #73 must not share a
+ *  bucket. A legacy (target-less) intent lands under `|#${issue}` and
  *  BoardColumn matches it against any card with that issue number. */
 function pendingIntentsByKey(intents: PendingIntent[]): Map<string, string[]> {
   const byKey = new Map<string, string[]>()
   for (const i of intents) {
-    const key = `${i.target}#${i.issue}`
+    const key = `${i.repo ?? ''}|${i.target}#${i.issue}`
     byKey.set(key, [...(byKey.get(key) ?? []), i.action])
   }
   return byKey
@@ -39,13 +39,13 @@ function Ghosts({ ghosts, nextClaim, queue }: {
         <GhostCardView
           /* Issue numbers are per-repo: alpha#73 and beta#73 can both be
              ghosts, so the key (and the next-badge match) needs the target. */
-          key={`${g.target}#${g.number}`}
+          key={`${g.target}/${g.repo}#${g.number}`}
           ghost={g}
           busy={queue.busy}
           isNext={nextClaim?.verdict === 'will-claim' && nextClaim.next_issue === g.number && nextClaim.next_target === g.target}
-          onBoost={(n, amount) => queue.boost(n, amount)}
-          onNext={(n) => queue.next(n)}
-          onReady={(n) => queue.ready(n)}
+          onBoost={(n, amount, repo) => queue.boost(n, amount, repo)}
+          onNext={(n, repo) => queue.next(n, repo)}
+          onReady={(n, repo) => queue.ready(n, repo)}
         />
       ))}
     </>

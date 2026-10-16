@@ -8,7 +8,7 @@ import type { GhostCard } from '../../lib/api'
 import { server } from '../../test/msw-server'
 
 const ghost: GhostCard = {
-  number: 73, target: 'widget', title: 'Ship dark mode',
+  number: 73, target: 'widget', repo: '', title: 'Ship dark mode',
   url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 2,
 }
 
@@ -57,13 +57,13 @@ test('ranking actions appear only when expanded and still act', async () => {
   }
   await expand()
   await userEvent.click(screen.getByRole('button', { name: 'Boost' }))
-  expect(onBoost).toHaveBeenCalledWith(73, 1)
+  expect(onBoost).toHaveBeenCalledWith(73, 1, '')
   await userEvent.click(screen.getByRole('button', { name: 'Demote' }))
-  expect(onBoost).toHaveBeenCalledWith(73, -1)
+  expect(onBoost).toHaveBeenCalledWith(73, -1, '')
   await userEvent.click(screen.getByRole('button', { name: 'Next' }))
-  expect(onNext).toHaveBeenCalledWith(73)
+  expect(onNext).toHaveBeenCalledWith(73, '')
   await userEvent.click(screen.getByRole('button', { name: 'Ready' }))
-  expect(onReady).toHaveBeenCalledWith(73)
+  expect(onReady).toHaveBeenCalledWith(73, '')
 })
 
 test('busy disables every ranking action', async () => {
@@ -134,4 +134,16 @@ test('a queued card has no pick yet, so it offers another provider too', async (
   await expand()
   await userEvent.click(screen.getByRole('button', { name: /fable-5 capacity limited/i }))
   expect(screen.getByRole('button', { name: /run with gpt-5-codex/i })).toBeInTheDocument()
+})
+
+test('two repositories sharing issue 73 act on their own repository', async () => {
+  const onBoost = vi.fn()
+  renderWithProviders(
+    <GhostCardView ghost={{ ...ghost, repo: 'example/shop-backend' }} isNext={false} busy={false}
+      onBoost={onBoost} onNext={() => {}} onReady={() => {}} />,
+  )
+  await expand()
+  await userEvent.click(screen.getByRole('button', { name: 'Boost' }))
+  expect(onBoost).toHaveBeenCalledWith(73, 1, 'example/shop-backend')
+  expect(screen.getByRole('link')).toHaveAttribute('href', '/task/widget/example~shop-backend/73')
 })

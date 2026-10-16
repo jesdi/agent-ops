@@ -227,7 +227,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}": {
+    "/api/task/{project}/{repository_id}/{issue}": {
         parameters: {
             query?: never;
             header?: never;
@@ -235,7 +235,7 @@ export interface paths {
             cookie?: never;
         };
         /** Task Detail */
-        get: operations["task_detail_api_task__target___issue__get"];
+        get: operations["task_detail_api_task__project___repository_id___issue__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -244,7 +244,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/answers": {
+    "/api/task/{project}/{repository_id}/{issue}/answers": {
         parameters: {
             query?: never;
             header?: never;
@@ -254,14 +254,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Answers */
-        post: operations["intent_answers_api_task__target___issue__answers_post"];
+        post: operations["intent_answers_api_task__project___repository_id___issue__answers_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/artifacts": {
+    "/api/task/{project}/{repository_id}/{issue}/artifacts": {
         parameters: {
             query?: never;
             header?: never;
@@ -269,7 +269,7 @@ export interface paths {
             cookie?: never;
         };
         /** Artifacts */
-        get: operations["artifacts_api_task__target___issue__artifacts_get"];
+        get: operations["artifacts_api_task__project___repository_id___issue__artifacts_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -278,7 +278,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/artifacts/{artifact_id}": {
+    "/api/task/{project}/{repository_id}/{issue}/artifacts/{artifact_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -286,7 +286,7 @@ export interface paths {
             cookie?: never;
         };
         /** Open Artifact */
-        get: operations["open_artifact_api_task__target___issue__artifacts__artifact_id__get"];
+        get: operations["open_artifact_api_task__project___repository_id___issue__artifacts__artifact_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -295,7 +295,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/cancel": {
+    "/api/task/{project}/{repository_id}/{issue}/cancel": {
         parameters: {
             query?: never;
             header?: never;
@@ -305,14 +305,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Cancel */
-        post: operations["intent_cancel_api_task__target___issue__cancel_post"];
+        post: operations["intent_cancel_api_task__project___repository_id___issue__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/description": {
+    "/api/task/{project}/{repository_id}/{issue}/description": {
         parameters: {
             query?: never;
             header?: never;
@@ -320,7 +320,7 @@ export interface paths {
             cookie?: never;
         };
         /** Task Description */
-        get: operations["task_description_api_task__target___issue__description_get"];
+        get: operations["task_description_api_task__project___repository_id___issue__description_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -329,7 +329,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/history": {
+    "/api/task/{project}/{repository_id}/{issue}/history": {
         parameters: {
             query?: never;
             header?: never;
@@ -337,7 +337,7 @@ export interface paths {
             cookie?: never;
         };
         /** Task History */
-        get: operations["task_history_api_task__target___issue__history_get"];
+        get: operations["task_history_api_task__project___repository_id___issue__history_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -346,7 +346,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/kill": {
+    "/api/task/{project}/{repository_id}/{issue}/kill": {
         parameters: {
             query?: never;
             header?: never;
@@ -356,14 +356,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Kill */
-        post: operations["intent_kill_api_task__target___issue__kill_post"];
+        post: operations["intent_kill_api_task__project___repository_id___issue__kill_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/park": {
+    "/api/task/{project}/{repository_id}/{issue}/park": {
         parameters: {
             query?: never;
             header?: never;
@@ -373,14 +373,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Park */
-        post: operations["intent_park_api_task__target___issue__park_post"];
+        post: operations["intent_park_api_task__project___repository_id___issue__park_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/reply": {
+    "/api/task/{project}/{repository_id}/{issue}/reply": {
         parameters: {
             query?: never;
             header?: never;
@@ -390,14 +390,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Reply */
-        post: operations["intent_reply_api_task__target___issue__reply_post"];
+        post: operations["intent_reply_api_task__project___repository_id___issue__reply_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/request": {
+    "/api/task/{project}/{repository_id}/{issue}/request": {
         parameters: {
             query?: never;
             header?: never;
@@ -405,7 +405,7 @@ export interface paths {
             cookie?: never;
         };
         /** Task Request */
-        get: operations["task_request_api_task__target___issue__request_get"];
+        get: operations["task_request_api_task__project___repository_id___issue__request_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -414,7 +414,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/resume": {
+    "/api/task/{project}/{repository_id}/{issue}/resume": {
         parameters: {
             query?: never;
             header?: never;
@@ -424,14 +424,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Resume */
-        post: operations["intent_resume_api_task__target___issue__resume_post"];
+        post: operations["intent_resume_api_task__project___repository_id___issue__resume_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/retry": {
+    "/api/task/{project}/{repository_id}/{issue}/retry": {
         parameters: {
             query?: never;
             header?: never;
@@ -441,14 +441,14 @@ export interface paths {
         get?: never;
         put?: never;
         /** Intent Retry */
-        post: operations["intent_retry_api_task__target___issue__retry_post"];
+        post: operations["intent_retry_api_task__project___repository_id___issue__retry_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/task/{target}/{issue}/run": {
+    "/api/task/{project}/{repository_id}/{issue}/run": {
         parameters: {
             query?: never;
             header?: never;
@@ -458,7 +458,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Force Run */
-        post: operations["force_run_api_task__target___issue__run_post"];
+        post: operations["force_run_api_task__project___repository_id___issue__run_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -555,6 +555,11 @@ export interface components {
             amount: number;
             /** Issue */
             issue: number;
+            /**
+             * Repo
+             * @default
+             */
+            repo: string;
         };
         /** CapacityView */
         CapacityView: {
@@ -612,6 +617,11 @@ export interface components {
             issue: number;
             /** Model */
             model: string;
+            /**
+             * Repo
+             * @default
+             */
+            repo: string;
             /** Stage */
             stage: string;
             /** Target */
@@ -667,6 +677,11 @@ export interface components {
             boost: number;
             /** Number */
             number: number;
+            /**
+             * Repo
+             * @default
+             */
+            repo: string;
             /** Score */
             score: number | null;
             /** Target */
@@ -817,6 +832,11 @@ export interface components {
             force: boolean;
             /** Issue */
             issue: number;
+            /**
+             * Repo
+             * @default
+             */
+            repo: string;
         };
         /** OperatorRequest */
         OperatorRequest: {
@@ -882,6 +902,11 @@ export interface components {
             created_at: string;
             /** Fingerprint */
             fingerprint: string;
+            /**
+             * Repo
+             * @default
+             */
+            repo: string;
             /** Target */
             target: string;
             /** Task Issue */
@@ -899,6 +924,11 @@ export interface components {
             labels: string[];
             /** Number */
             number: number;
+            /**
+             * Repo
+             * @default
+             */
+            repo: string;
             /** Score */
             score: number | null;
             /** Status */
@@ -931,6 +961,11 @@ export interface components {
         ReadyReq: {
             /** Issue */
             issue: number;
+            /**
+             * Repo
+             * @default
+             */
+            repo: string;
         };
         /** ReplyReq */
         ReplyReq: {
@@ -1025,6 +1060,11 @@ export interface components {
              * @default
              */
             pinned_track: string;
+            /**
+             * Repo
+             * @default
+             */
+            repo: string;
             /** Score */
             score: number | null;
             /** Slot */
@@ -1067,10 +1107,14 @@ export interface components {
             messages: components["schemas"]["MessageView"][];
             /** Pane Tail */
             pane_tail: string;
+            /** Repo */
+            repo: string;
             /** Session Alive */
             session_alive: boolean;
             /** Timeline */
             timeline: components["schemas"]["TimelineEntry"][];
+            /** Title */
+            title: string;
             /**
              * Track When
              * @default
@@ -1565,13 +1609,14 @@ export interface operations {
             };
         };
     };
-    task_detail_api_task__target___issue__get: {
+    task_detail_api_task__project___repository_id___issue__get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1597,13 +1642,14 @@ export interface operations {
             };
         };
     };
-    intent_answers_api_task__target___issue__answers_post: {
+    intent_answers_api_task__project___repository_id___issue__answers_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1633,13 +1679,14 @@ export interface operations {
             };
         };
     };
-    artifacts_api_task__target___issue__artifacts_get: {
+    artifacts_api_task__project___repository_id___issue__artifacts_get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1665,14 +1712,15 @@ export interface operations {
             };
         };
     };
-    open_artifact_api_task__target___issue__artifacts__artifact_id__get: {
+    open_artifact_api_task__project___repository_id___issue__artifacts__artifact_id__get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
-                issue: number;
                 artifact_id: string;
+                project: string;
+                issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1698,13 +1746,14 @@ export interface operations {
             };
         };
     };
-    intent_cancel_api_task__target___issue__cancel_post: {
+    intent_cancel_api_task__project___repository_id___issue__cancel_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1730,13 +1779,14 @@ export interface operations {
             };
         };
     };
-    task_description_api_task__target___issue__description_get: {
+    task_description_api_task__project___repository_id___issue__description_get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1762,15 +1812,16 @@ export interface operations {
             };
         };
     };
-    task_history_api_task__target___issue__history_get: {
+    task_history_api_task__project___repository_id___issue__history_get: {
         parameters: {
             query?: {
                 lines?: number;
             };
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1796,13 +1847,14 @@ export interface operations {
             };
         };
     };
-    intent_kill_api_task__target___issue__kill_post: {
+    intent_kill_api_task__project___repository_id___issue__kill_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1828,13 +1880,14 @@ export interface operations {
             };
         };
     };
-    intent_park_api_task__target___issue__park_post: {
+    intent_park_api_task__project___repository_id___issue__park_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1860,13 +1913,14 @@ export interface operations {
             };
         };
     };
-    intent_reply_api_task__target___issue__reply_post: {
+    intent_reply_api_task__project___repository_id___issue__reply_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1896,13 +1950,14 @@ export interface operations {
             };
         };
     };
-    task_request_api_task__target___issue__request_get: {
+    task_request_api_task__project___repository_id___issue__request_get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1928,13 +1983,14 @@ export interface operations {
             };
         };
     };
-    intent_resume_api_task__target___issue__resume_post: {
+    intent_resume_api_task__project___repository_id___issue__resume_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1964,13 +2020,14 @@ export interface operations {
             };
         };
     };
-    intent_retry_api_task__target___issue__retry_post: {
+    intent_retry_api_task__project___repository_id___issue__retry_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };
@@ -1996,13 +2053,14 @@ export interface operations {
             };
         };
     };
-    force_run_api_task__target___issue__run_post: {
+    force_run_api_task__project___repository_id___issue__run_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                target: string;
+                project: string;
                 issue: number;
+                repository_id: string;
             };
             cookie?: never;
         };

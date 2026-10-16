@@ -4,7 +4,7 @@ import { chip } from '../lib/tone'
 
 export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
   failures: FailuresView
-  onRetry: (target: string, issue: number) => void
+  onRetry: (target: string, issue: number, repo: string) => void
   /**
    * Per-task inline retry errors, same convention as GhostCard. Keyed
    * `${target}#${task_issue}` — issue numbers are per-target, so two
@@ -23,15 +23,15 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
         )}
         <ul className="mt-2 flex flex-col gap-2">
           {failures.quarantined.map((q) => {
-            const error = errors[`${q.target}#${q.task_issue}`] ?? null
+            const error = errors[`${q.repo}|${q.target}#${q.task_issue}`] ?? null
             return (
             <li
-              key={`${q.target}#${q.task_issue}`}
+              key={`${q.repo}|${q.target}#${q.task_issue}`}
               className="flex flex-wrap items-center gap-2 rounded border border-border bg-surface-raised p-3 text-sm"
             >
               <span className="font-mono text-xs">{q.fingerprint}</span>
               <span className="text-ink-muted">
-                {q.target} task #{q.task_issue} → blocker #{q.blocker_issue} ({q.blocker_repo})
+                {q.repo || q.target} task #{q.task_issue} → blocker #{q.blocker_issue} ({q.blocker_repo})
               </span>
               {q.blocker_open === true && (
                 <span className={chip.failed}>blocker open</span>
@@ -47,7 +47,7 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
                 type="button"
                 className="ml-auto rounded border px-2 py-0.5 text-xs disabled:opacity-50"
                 disabled={busy}
-                onClick={() => onRetry(q.target, q.task_issue)}
+                onClick={() => onRetry(q.target, q.task_issue, q.repo)}
               >
                 Retry
               </button>

@@ -19,7 +19,6 @@ from dispatcher.usage_providers import ADAPTERS, fetch_provider
 from dispatcher.config import Target
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
-from dispatcher.sessions import session_name
 from dispatcher.state import TaskState
 
 RANK_TTL_SECONDS = 15.0
@@ -71,39 +70,50 @@ class Sources:
     def tasks(self) -> list[TaskState]:
         return state.load_all(self._state_dir)
 
-    def task(self, target: str, issue: int) -> TaskState | None:
+    def task(self, target: str, issue: int, repo: str = "") -> TaskState | None:
+        """The task of exactly this identity: `repo` "" is the legacy record
+        whose repository is not proven."""
         active = next((task for task in self.tasks()
-                       if (task.target, task.issue) == (target, issue)), None)
-        return active or state.load_archived(self.state_dir, target, issue)
+                       if (task.target, task.issue, task.repo) == (target, issue, repo)),
+                      None)
+        if active or repo:
+            return active or state.load_archived(self.state_dir, target, issue, repo=repo)
+        archived = state.load_archived(self.state_dir, target, issue)
+        if archived:
+            return archived
+        # An old reference reaches the one archived task of that number.
+        named = state.archived_named(self.state_dir, target, issue)
+        return named[0] if len(named) == 1 else None
 
-    def execution_override(self, target: str, issue: int):
-        return execution_overrides.load(self.state_dir, target, issue)
+    def execution_override(self, target: str, issue: int, repo: str = ""):
+        return execution_overrides.load(self.state_dir, target, issue, repo=repo)
 
     def set_execution_override(self, target: str, issue: int, *, model: str,
-                               bypass_usage: bool) -> None:
+                               bypass_usage: bool, repo: str = "") -> None:
         execution_overrides.save(
             self.state_dir, target, issue,
-            execution_overrides.ExecutionOverride(model, bypass_usage))
+            execution_overrides.ExecutionOverride(model, bypass_usage), repo=repo)
         self._kick_dispatcher()
 
-    def artifacts(self, target: str, issue: int) -> ArtifactListing:
-        index = task_artifacts.read(self.state_dir, target, issue)
-        resources = [ArtifactResource(item, self._artifact_status(target, issue, item, index.expired))
+    def artifacts(self, target: str, issue: int, repo: str = "") -> ArtifactListing:
+        index = task_artifacts.read(self.state_dir, target, issue, repo=repo)
+        resources = [ArtifactResource(item, self._artifact_status(target, issue, item, index.expired, repo))
                      for item in index.items]
         return ArtifactListing(resources, index.expires_at, index.expired)
 
     def _artifact_status(self, target: str, issue: int, item: task_artifacts.StoredArtifact,
-                         expired: bool) -> ArtifactStatus:
+                         expired: bool, repo: str = "") -> ArtifactStatus:
         if item.publication:
             return "published"
         if expired:
             return "expired"
-        if task_artifacts.content_path(self.state_dir, target, issue, item.id):
+        if task_artifacts.content_path(self.state_dir, target, issue, item.id, repo=repo):
             return "local"
         return "unavailable"
 
-    def artifact_content(self, target: str, issue: int, artifact_id: str) -> bytes | None:
-        path = task_artifacts.content_path(self.state_dir, target, issue, artifact_id)
+    def artifact_content(self, target: str, issue: int, artifact_id: str,
+                         repo: str = "") -> bytes | None:
+        path = task_artifacts.content_path(self.state_dir, target, issue, artifact_id, repo=repo)
         if path is None:
             return None
         try:
@@ -111,10 +121,12 @@ class Sources:
         except FileNotFoundError:
             return None
 
-    def rank_rows(self, target: Target) -> tuple[list[dict], str, bool]:
+    def rank_rows(self, target: Target, *,
+                  fresh: bool = False) -> tuple[list[dict], str, bool]:
+        """`fresh`: a write reads the board now, not a row up to the TTL old."""
         now = self._clock()
         cached = self._rank_cache.get(target.name)
-        if cached and now - cached["fetched_at"] < RANK_TTL_SECONDS:
+        if cached and not fresh and now - cached["fetched_at"] < RANK_TTL_SECONDS:
             return cached["rows"], cached["as_of"], False
         try:
             rows = self._github.rank_rows(target)
@@ -186,7 +198,9 @@ class Sources:
         root = self.state_dir / "quarantine"
         entries = []
         for p in sorted(root.glob("*.json")) if root.exists() else []:
-            parsed = state.parse_task_key(p.stem)
+            qualified = state.parse_qualified_task_key(p.stem)
+            repo, parsed = ((qualified[0], qualified[1:]) if qualified
+                            else ("", state.parse_task_key(p.stem)))
             target, keyed_issue = parsed if parsed else ("", None)
             try:
                 d = json.loads(p.read_text())
@@ -197,7 +211,7 @@ class Sources:
             # Blank defaults keep FailuresView's model valid for a readable
             # record that is missing a field.
             entry = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
-                     "fingerprint": "", "created_at": "", **d}
+                     "fingerprint": "", "created_at": "", **d, "repo": repo}
             entry["target"] = (target if keyed_issue is not None
                                else p.stem.rsplit("-", 1)[0])
             if keyed_issue is not None:
@@ -280,37 +294,56 @@ class Sources:
     def stage_signal(self, worktree: str) -> state.StageSignal | None:
         return state.read_stage_signal(worktree)
 
-    def pane_tail(self, target: str, issue: int) -> str:
+    def archived_named(self, target: str, issue: int) -> list[TaskState]:
+        return state.archived_named(self.state_dir, target, issue)
+
+    def shares_number(self, target: str, issue: int, repo: str) -> bool:
+        """Does a task of another repository, active or archived, share this
+        number? Then a record that names no repository is not provably this
+        task's."""
+        return any((t.target, t.issue) == (target, issue) and t.repo != repo
+                   for t in self.tasks() + self.archived_named(target, issue))
+
+    def _owns_session(self, target: str, issue: int, repo: str) -> bool:
+        return state.owns_task_session(self.state_dir, target, issue, repo)
+
+    def pane_tail(self, target: str, issue: int, repo: str = "") -> str:
         try:
-            if self._sessions.is_alive(target, issue):
+            if self.session_alive(target, issue, repo):
                 return self._sessions.capture_tail(target, issue)
         except Exception:
             # capture runs the session CLI with timeout=30, which RAISES on a wedged
             # server. A missing tail degrades the task view; it must never
             # 500 it (cf. issue_open degrading to None).
             return ""
-        return self._read_snapshot(target, issue)
+        return self._read_snapshot(target, issue, repo)
 
-    def pane_history(self, target: str, issue: int, lines: int = 2000) -> str:
+    def pane_history(self, target: str, issue: int, lines: int = 2000,
+                     repo: str = "") -> str:
         try:
-            if self._sessions.is_alive(target, issue):
+            if self.session_alive(target, issue, repo):
                 return self._sessions.capture_history(target, issue, lines)
         except Exception:
             # Same degrade contract as pane_tail: a wedged session server
             # (capture_history runs with timeout=30 and RAISES) must never
             # 500 the history view.
             return ""
-        return self._read_snapshot(target, issue)
+        return self._read_snapshot(target, issue, repo)
 
-    def _read_snapshot(self, target: str, issue: int) -> str:
+    def _read_snapshot(self, target: str, issue: int, repo: str = "") -> str:
         """Dead session: serve the scrollback Sessions.end() persisted, keyed
         by the session name (task-<target>-<issue>.txt). Falls back to
         the legacy task-<issue>.txt for a snapshot written before this
         deploy — Sessions.end() only ever writes the modern name, so a
         legacy file only exists from before the (target, issue) rekey.
         Missing/unreadable file (pre-feature parks) degrades to ''."""
-        for name in (f"{session_name(target, issue)}.txt",
-                    f"task-{issue}.txt"):
+        names = [f"task-{state.task_key(target, issue, repo)}.txt"]
+        # A qualified task cannot prove ownership of an unqualified file
+        # from today's task inventory. Only a qualified filename records
+        # ownership durably; otherwise leave historical output withheld.
+        if not repo:
+            names.append(f"task-{issue}.txt")
+        for name in names:
             try:
                 return (self.state_dir / "snapshots" / name).read_text()
             except (OSError, ValueError):
@@ -320,8 +353,9 @@ class Sources:
                 continue
         return ""
 
-    def session_alive(self, target: str, issue: int) -> bool:
-        return self._sessions.is_alive(target, issue)
+    def session_alive(self, target: str, issue: int, repo: str = "") -> bool:
+        return (self._owns_session(target, issue, repo)
+                and self._sessions.is_alive(target, issue))
 
     def pending_intents(self) -> list[dict]:
         root = self.state_dir / "intents"
@@ -333,6 +367,7 @@ class Sources:
                 continue
             out.append({"action": d.get("action", ""),
                         "target": d.get("target", ""),
+                        "repo": d.get("repo", ""),
                         "issue": d.get("issue", 0),
                         "actor": d.get("actor", ""),
                         "created_at": d.get("created_at", ""),
@@ -381,11 +416,14 @@ class Sources:
                            "usage": usage, "failures": failures,
                            "history": history}, sort_keys=True)
 
-    def messages(self, target: str, issue: int) -> list:
-        return msgq.all_messages(self._state_dir, target, issue)
+    def messages(self, target: str, issue: int, repo: str = "") -> list:
+        return msgq.all_messages(self._state_dir, target, issue, repo=repo)
 
     def undelivered_counts(self) -> dict[tuple[str, int], int]:
         return msgq.undelivered_counts(self._state_dir)
+
+    def undelivered_qualified_counts(self) -> dict[tuple[str, int, str], int]:
+        return msgq.undelivered_qualified_counts(self._state_dir)
 
     def wake_blocked_issues(self) -> set[tuple[str, int]]:
         """(target, issue) pairs currently denied a wake for want of a free
@@ -408,17 +446,17 @@ class Sources:
             print(f"dispatcher kick failed (non-fatal): {e}")
 
     def submit_intent(self, action: str, target: str, issue: int,
-                      payload: dict, actor: str) -> str:
+                      payload: dict, actor: str, repo: str = "") -> str:
         path = write_intent(self._state_dir, action, target, issue,
-                            payload, actor, int(self._clock() * 1000))
+                            payload, actor, int(self._clock() * 1000), repo=repo)
         self._kick_dispatcher()
         return path.name
 
     def apply_queue_plan(self, target: Target, issue: int,
-                         plan: QueuePlan) -> None:
-        queue_ops.apply_plan(self._github, target, issue, plan)
+                         plan: QueuePlan, repo: str = "") -> None:
+        queue_ops.apply_plan(self._github, target, issue, plan, repo=repo)
 
     def append_event(self, event: str, *, target: str = "", issue: int = 0,
-                     actor: str = "", detail: str = "") -> None:
+                     actor: str = "", detail: str = "", repo: str = "") -> None:
         eventlog.append_event(self._state_dir, event, target=target,
-                              issue=issue, actor=actor, detail=detail)
+                              issue=issue, actor=actor, detail=detail, repo=repo)

@@ -2,14 +2,15 @@ import { Fragment, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import ReactMarkdown from 'react-markdown'
 import type { OperatorRequest } from '../lib/api'
+import { taskPath } from '../lib/api'
 import { useTaskArtifacts, useTaskRequest } from '../hooks/useResources'
 import { breakAfterSeparators } from '../lib/format'
 import { banner } from '../lib/tone'
 
 /** The operator answers a request on its full-screen review route. */
-export function RequestPanel({ target, issue }: { target: string; issue: number }) {
-  const req = useTaskRequest(target, issue)
-  const artifacts = useTaskArtifacts(target, issue)
+export function RequestPanel({ target, repo = '', issue }: { target: string; repo?: string; issue: number }) {
+  const req = useTaskRequest(target, issue, undefined, repo)
+  const artifacts = useTaskArtifacts(target, issue, repo)
   const spec = artifacts.data?.items.find((item) => item.id === 'spec')
 
   if (req.isError) {
@@ -39,7 +40,7 @@ export function RequestPanel({ target, issue }: { target: string; issue: number 
             className="inline-flex min-h-11 items-center justify-center rounded border border-border px-3 text-sm font-medium">
             View spec on GitHub ↗
           </a>}
-          <Link to={`/task/${target}/${issue}/review`}
+          <Link to={`${taskPath(target, issue, repo)}/review`}
             className="inline-flex min-h-11 items-center justify-center rounded bg-ink px-3 text-sm font-medium text-surface-raised">
             open review
           </Link>

@@ -9,7 +9,7 @@ import { queryKeys } from './queryKeys'
  * three action helpers that each post immediately and on success invalidate
  * both the board cache (so ghost cards re-rank) AND every cached task query
  * (so a slim task-view component refreshes without needing any board-specific
- * wiring). Queue actions are issue-only (no per-target route) and callers
+ * wiring). Queue actions name the issue and its repository (no per-target route) and callers
  * (board ghosts, the ghost task view) never know which target the issue will
  * land on ahead of the claim, so task queries — now keyed by (target, issue)
  * — are invalidated by the `['task']` prefix rather than one exact key.
@@ -35,11 +35,11 @@ export function useQueueActions() {
   return {
     queueError,
     busy: mutation.isPending,
-    boost: (issue: number, amount: number) =>
-      mutation.mutate(() => api.queueBoost(issue, amount)),
-    next: (issue: number) =>
-      mutation.mutate(() => api.queueNext(issue, false)),
-    ready: (issue: number) =>
-      mutation.mutate(() => api.queueReady(issue)),
+    boost: (issue: number, amount: number, repo = '') =>
+      mutation.mutate(() => api.queueBoost(issue, amount, repo)),
+    next: (issue: number, repo = '') =>
+      mutation.mutate(() => api.queueNext(issue, false, repo)),
+    ready: (issue: number, repo = '') =>
+      mutation.mutate(() => api.queueReady(issue, repo)),
   }
 }

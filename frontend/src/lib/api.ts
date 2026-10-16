@@ -37,6 +37,7 @@ export type TrackSetting = components['schemas']['TrackSetting']
 export interface PendingIntent {
   action: string
   target: string
+  repo?: string
   issue: number
   actor: string
   created_at: string
@@ -97,6 +98,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/** `/task/<target>/<owner~name>/<issue>`: two repositories of one target may
+ *  share an issue number. A task without a proven repository keeps the old path. */
+export const taskPath = (target: string, issue: number | string, repo = '') =>
+  repo ? `/task/${target}/${repo.replace('/', '~')}/${issue}` : `/task/${target}/${issue}`
+
 const post = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'POST', body: JSON.stringify(body) })
 const put = <T>(path: string, body: unknown) =>
@@ -105,21 +111,22 @@ const put = <T>(path: string, body: unknown) =>
 export const api = {
   boardSnapshot: () => request<components['schemas']['BoardSnapshot']>('/board/snapshot'),
   board: () => request<BoardView>('/board'),
-  taskDetail: (target: string, issue: number) =>
-    request<TaskDetail>(`/task/${target}/${issue}`),
-  taskHistory: (target: string, issue: number, lines = 2000) =>
-    request<PaneHistory>(`/task/${target}/${issue}/history?lines=${lines}`),
+  taskDetail: (target: string, issue: number, repo = '') =>
+    request<TaskDetail>(`${taskPath(target, issue, repo)}`),
+  taskHistory: (target: string, issue: number, repo = '', lines = 2000) =>
+    request<PaneHistory>(`${taskPath(target, issue, repo)}/history?lines=${lines}`),
   usage: () => request<UsageView>('/usage'),
   failures: () => request<FailuresView>('/failures'),
   history: (limit = 200) => request<HistoryView>(`/history?limit=${limit}`),
   pendingIntents: () => request<PendingIntentsView>('/pending-intents'),
-  // Queue actions — applied immediately, 200 or 422. Issue-only: the queue
-  // (GitHub project board rank) has no per-target route.
-  queueBoost: (issue: number, amount: number) =>
-    post<QueueActionResult>('/queue/boost', { issue, amount }),
-  queueNext: (issue: number, force: boolean) =>
-    post<QueueActionResult>('/queue/next', { issue, force }),
-  queueReady: (issue: number) => post<QueueActionResult>('/queue/ready', { issue }),
+  // Queue actions — applied immediately, 200 or 422. They name the issue and
+  // its repository ("owner/name"): the queue has no per-target route.
+  queueBoost: (issue: number, amount: number, repo = '') =>
+    post<QueueActionResult>('/queue/boost', { issue, amount, repo }),
+  queueNext: (issue: number, force: boolean, repo = '') =>
+    post<QueueActionResult>('/queue/next', { issue, force, repo }),
+  queueReady: (issue: number, repo = '') =>
+    post<QueueActionResult>('/queue/ready', { issue, repo }),
   // Priority mode — applied immediately, 200 or 422 with the reason.
   setPriority: (mode: string) => post<PrioritySet>('/priority', { mode }),
   // Model settings — stored immediately (200 or 422 with the reason); the
@@ -131,36 +138,36 @@ export const api = {
   resetModelSettings: (revision: string) =>
     request<ModelSettingsView>(`/settings/models?revision=${encodeURIComponent(revision)}`, { method: 'DELETE' }),
   // Intent actions — 202 accepted, applied by the next dispatcher pass.
-  reply: (target: string, issue: number, text: string) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/reply`, { text }),
+  reply: (target: string, issue: number, text: string, repo = '') =>
+    post<IntentAccepted>(`${taskPath(target, issue, repo)}/reply`, { text }),
   // keepalive: a pagehide flush still reaches the server while the page unloads.
-  answers: (target: string, issue: number, body: components['schemas']['AnswersReq']) =>
-    request<IntentAccepted>(`/task/${target}/${issue}/answers`,
+  answers: (target: string, issue: number, body: components['schemas']['AnswersReq'], repo = '') =>
+    request<IntentAccepted>(`${taskPath(target, issue, repo)}/answers`,
       { method: 'POST', body: JSON.stringify(body), keepalive: true }),
-  park: (target: string, issue: number) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/park`, {}),
-  kill: (target: string, issue: number) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/kill`, {}),
+  park: (target: string, issue: number, repo = '') =>
+    post<IntentAccepted>(`${taskPath(target, issue, repo)}/park`, {}),
+  kill: (target: string, issue: number, repo = '') =>
+    post<IntentAccepted>(`${taskPath(target, issue, repo)}/kill`, {}),
   // No _require_task server-side: a backlog card with no task file cancels too.
-  cancel: (target: string, issue: number) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/cancel`, {}),
-  retry: (target: string, issue: number) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/retry`, {}),
-  resume: (target: string, issue: number, options: ResumeOptions = {}) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/resume`, {
+  cancel: (target: string, issue: number, repo = '') =>
+    post<IntentAccepted>(`${taskPath(target, issue, repo)}/cancel`, {}),
+  retry: (target: string, issue: number, repo = '') =>
+    post<IntentAccepted>(`${taskPath(target, issue, repo)}/retry`, {}),
+  resume: (target: string, issue: number, options: ResumeOptions = {}, repo = '') =>
+    post<IntentAccepted>(`${taskPath(target, issue, repo)}/resume`, {
       ...(options.text ? { text: options.text } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(options.bypassUsage ? { bypass_usage: true } : {}),
     }),
-  forceRun: (target: string, issue: number, options: ResumeOptions = {}) =>
-    post<QueueActionResult>(`/task/${target}/${issue}/run`, {
+  forceRun: (target: string, issue: number, options: ResumeOptions = {}, repo = '') =>
+    post<QueueActionResult>(`${taskPath(target, issue, repo)}/run`, {
       ...(options.model ? { model: options.model } : {}),
       ...(options.bypassUsage ? { bypass_usage: true } : {}),
     }),
-  taskDescription: (target: string, issue: number) =>
-    request<IssueDescription>(`/task/${target}/${issue}/description`),
-  taskArtifacts: (target: string, issue: number) =>
-    request<ArtifactsView>(`/task/${target}/${issue}/artifacts`),
-  taskRequest: (target: string, issue: number) =>
-    request<OperatorRequest | null>(`/task/${target}/${issue}/request`),
+  taskDescription: (target: string, issue: number, repo = '') =>
+    request<IssueDescription>(`${taskPath(target, issue, repo)}/description`),
+  taskArtifacts: (target: string, issue: number, repo = '') =>
+    request<ArtifactsView>(`${taskPath(target, issue, repo)}/artifacts`),
+  taskRequest: (target: string, issue: number, repo = '') =>
+    request<OperatorRequest | null>(`${taskPath(target, issue, repo)}/request`),
 }

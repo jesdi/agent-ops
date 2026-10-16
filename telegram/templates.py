@@ -102,6 +102,8 @@ def render(template: str, multi_target: bool = False, **ctx) -> str:
                                       multi_target)}
     text = _TEMPLATES[template].format(**ctx)
     if template in ("awaiting_plan_review", "plan_parked", "parked_question") and ctx.get("console"):
-        text += (f"\nread & approve: {ctx['console']}/task/"
-                 f"{ctx['target']}/{ctx['issue']}")
+        repo = ctx.get("repo", "").replace("/", "~")
+        where = f"{ctx['target']}/{repo}/{ctx['issue']}" if repo \
+            else f"{ctx['target']}/{ctx['issue']}"
+        text += f"\nread & approve: {ctx['console']}/task/{where}"
     return text

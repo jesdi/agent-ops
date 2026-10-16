@@ -20,13 +20,16 @@ type Shown = { revision: string; text: string }
  *  console's own submit bar and, when there is one, a notice. No shell, no panels. */
 export function ReviewPage() {
   // The route always carries both params.
-  const { target, issue } = useParams() as { target: string; issue: string }
+  const { target, repository = '', issue } = useParams() as {
+    target: string; repository?: string; issue: string
+  }
+  const repo = repository.replace('~', '/')
   // Polls even with live updates on: a new revision has no live event.
-  const req = useTaskRequest(target, Number(issue), 5000)
+  const req = useTaskRequest(target, Number(issue), 5000, repo)
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const shown = useShownPage(req.data, () => setNotice(CHANGED))
-  const bridge = useBridge(frameRef, shown, req.data, target, Number(issue), setNotice)
+  const bridge = useBridge(frameRef, shown, req.data, target, Number(issue), repo, setNotice)
   // The changed and unsaved notices cover the page's top: they go after a
   // while or on tap (the page keeps its selections). The newer-console notice
   // is an error and stays.
@@ -104,7 +107,7 @@ function useShownPage(data: OperatorRequest | null | undefined, onChanged: () =>
 
 /** One bridge per page on screen, bound to the iframe's window and revision. */
 function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown | null,
-  data: OperatorRequest | null | undefined, target: string, issue: number,
+  data: OperatorRequest | null | undefined, target: string, issue: number, repo: string,
   onNotice: (notice: string) => void) {
   // restore sends the latest saved answers, not the ones of the first load.
   const latest = useRef({ data, onNotice })
@@ -117,7 +120,7 @@ function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown |
     const bridge = createBridge({
       frameWindow,
       revision: shown.revision,
-      post: (body) => { api.answers(target, issue, body).catch(() => latest.current.onNotice(UNSAVED)) },
+      post: (body) => { api.answers(target, issue, body, repo).catch(() => latest.current.onNotice(UNSAVED)) },
       onNotice: () => latest.current.onNotice(NEWER),
       onReady: () => bridge.restore(latest.current.data?.answers ?? {}),
     })
@@ -140,6 +143,6 @@ function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown |
       // the server drops a draft whose revision is stale.
       bridge.flush()
     }
-  }, [frameRef, shown, target, issue])
+  }, [frameRef, shown, target, repo, issue])
   return current
 }

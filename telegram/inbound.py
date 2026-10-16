@@ -8,6 +8,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import sys
 import urllib.request
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ class Reply:
 class Command:
     name: str  # "status" | "attach" | "queue" | "boost" | "next"
     issue: int = 0
+    repo: str = ""    # "owner/name" of a qualified `/attach|/boost|/next owner/name#12`
     amount: int = 0   # /boost +k, /demote -k
     force: bool = False
 
@@ -33,8 +35,56 @@ class Plain:
     text: str
 
 
+_ATTACH_REF = re.compile(r"(?:(?P<repo>[\w.-]+/[\w.-]+)#)?(?P<issue>\d+)")
+
+
 def _http_get(url: str) -> dict:
     return json.loads(urllib.request.urlopen(url, timeout=15).read() or b"{}")
+
+
+def _step(token: str) -> int:
+    """The positive integer of a /boost or /demote step, 0 when it is not one."""
+    return int(token) if token.isdecimal() and int(token) >= 1 else 0
+
+
+def _ref(token: str):
+    return _ATTACH_REF.fullmatch(token)
+
+
+def _boost(parts: list[str]) -> Command | None:
+    ref = _ref(parts[1]) if len(parts) in (2, 3) else None
+    step = _step(parts[2]) if len(parts) == 3 else 1
+    if ref is None or not step:
+        return None
+    sign = 1 if parts[0] == "/boost" else -1
+    return Command(name="boost", issue=int(ref["issue"]), repo=ref["repo"] or "",
+                   amount=sign * step)
+
+
+def _next(parts: list[str]) -> Command | None:
+    ref = _ref(parts[1]) if len(parts) in (2, 3) else None
+    if ref is None or (len(parts) == 3 and parts[2] != "force"):
+        return None
+    return Command(name="next", issue=int(ref["issue"]), repo=ref["repo"] or "",
+                   force=len(parts) == 3)
+
+
+def _attach(parts: list[str]) -> Command | None:
+    ref = _ref(parts[1]) if len(parts) == 2 else None
+    if ref is None:
+        return None
+    return Command(name="attach", issue=int(ref["issue"]), repo=ref["repo"] or "")
+
+
+def _command(parts: list[str]) -> Command | None:
+    name = parts[0]
+    if name == "/status":
+        return Command(name="status")
+    if name == "/queue" and len(parts) == 1:
+        return Command(name="queue")
+    handler = {"/attach": _attach, "/boost": _boost, "/demote": _boost,
+               "/next": _next}.get(name)
+    return handler(parts) if handler else None
 
 
 def classify(text: str, reply_to_msg_id: int):
@@ -44,27 +94,7 @@ def classify(text: str, reply_to_msg_id: int):
     if reply_to_msg_id:
         return Reply(reply_to_msg_id=reply_to_msg_id, text=text)
     if text.startswith("/"):
-        parts = text.split()
-        if parts[0] == "/status":
-            return Command(name="status")
-        if parts[0] == "/attach" and len(parts) == 2 and parts[1].isdecimal():
-            return Command(name="attach", issue=int(parts[1]))
-        if parts[0] == "/queue" and len(parts) == 1:
-            return Command(name="queue")
-        if parts[0] in ("/boost", "/demote") and len(parts) in (2, 3) \
-                and parts[1].isdecimal():
-            step = 1
-            if len(parts) == 3:
-                if not parts[2].isdecimal() or int(parts[2]) < 1:
-                    return None
-                step = int(parts[2])
-            sign = 1 if parts[0] == "/boost" else -1
-            return Command(name="boost", issue=int(parts[1]), amount=sign * step)
-        if parts[0] == "/next" and len(parts) in (2, 3) and parts[1].isdecimal() \
-                and (len(parts) == 2 or parts[2] == "force"):
-            return Command(name="next", issue=int(parts[1]),
-                           force=len(parts) == 3)
-        return None
+        return _command(text.split())
     return Plain(text=text)
 
 

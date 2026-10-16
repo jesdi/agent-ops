@@ -95,7 +95,7 @@ it('the whole card is the drag source carrying the cancel payload', () => {
     dataTransfer: { setData: (type: string, value: string) => { data[type] = value } },
   })
   expect(JSON.parse(data['application/x-agent-ops-card']!)).toEqual(
-    { issue: 41, target: 'widget', title: inProgressCard.title },
+    { issue: 41, target: 'widget', repo: '', title: inProgressCard.title },
   )
 })
 

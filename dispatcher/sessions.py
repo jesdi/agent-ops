@@ -25,7 +25,7 @@ from typing import Mapping
 from dispatcher import containers, herdr, workspace
 from dispatcher.models import Entry
 from dispatcher.runtimes import runtime_for
-from dispatcher.state import clear_session
+from dispatcher.state import clear_session, task_key
 
 
 def session_name(target: str, issue: int) -> str:
@@ -239,7 +239,7 @@ class Sessions:
         tab = self._tab(target, issue)
         return tab is not None and tab.send_text(text) and tab.send_keys("enter")
 
-    def _snapshot(self, target: str, issue: int) -> None:
+    def _snapshot(self, target: str, issue: int, repo: str = "") -> None:
         """Last words: persist the pane history before the kill so the
         console can still show a dead session's output. An empty capture
         (already-dead session, wedged server) writes nothing — end() runs
@@ -252,18 +252,18 @@ class Sessions:
             if not history:
                 return
             path = (self.state_dir / "snapshots" /
-                    f"{session_name(target, issue)}.txt")
+                    f"task-{task_key(target, issue, repo)}.txt")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(history)
         except OSError:
             return
 
-    def end(self, target: str, issue: int) -> None:
+    def end(self, target: str, issue: int, repo: str = "") -> None:
         if self.dry_run:
             print(f"[dry-run] end session {session_name(target, issue)}")
             return
         name = session_name(target, issue)
-        self._snapshot(target, issue)
+        self._snapshot(target, issue, repo)
         tab = self._tab(target, issue)
         if tab is not None:
             tab.close()  # HUPs the shell and the -it podman

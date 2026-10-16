@@ -78,35 +78,44 @@ class FakeSources:
     def tasks(self):
         return list(self.tasks_list)
 
-    def task(self, target, issue):
-        active = next((t for t in self.tasks_list if (t.target, t.issue) == (target, issue)), None)
+    def archived_named(self, target, issue):
+        return ([] if self.state_dir is None
+                else state.archived_named(self.state_dir, target, issue))
+
+    def shares_number(self, target, issue, repo):
+        return any((t.target, t.issue) == (target, issue) and t.repo != repo
+                   for t in self.tasks() + self.archived_named(target, issue))
+
+    def task(self, target, issue, repo=""):
+        active = next((t for t in self.tasks_list
+                       if (t.target, t.issue, t.repo) == (target, issue, repo)), None)
         if active is not None or self.state_dir is None:
             return active
-        return state.load_archived(self.state_dir, target, issue)
+        return state.load_archived(self.state_dir, target, issue, repo=repo)
 
-    def artifacts(self, target, issue):
+    def artifacts(self, target, issue, repo=""):
         if self.state_dir is None:
             return ArtifactListing([], "", False)
-        return Sources.artifacts(self, target, issue)
+        return Sources.artifacts(self, target, issue, repo)
 
-    def _artifact_status(self, target, issue, item, expired):
-        return Sources._artifact_status(self, target, issue, item, expired)
+    def _artifact_status(self, target, issue, item, expired, repo=""):
+        return Sources._artifact_status(self, target, issue, item, expired, repo)
 
-    def artifact_content(self, target, issue, artifact_id):
-        return Sources.artifact_content(self, target, issue, artifact_id)
+    def artifact_content(self, target, issue, artifact_id, repo=""):
+        return Sources.artifact_content(self, target, issue, artifact_id, repo)
 
-    def rank_rows(self, target):
+    def rank_rows(self, target, *, fresh=False):
         return self.rank.get(target.name,
                              ([], "2026-07-25T00:00:00+00:00", False))
 
     def usage(self, routed=()):
         return self.usages
 
-    def execution_override(self, target, issue):
+    def execution_override(self, target, issue, repo=""):
         stored = self.execution_overrides.get((target, issue))
         return stored and execution_overrides.ExecutionOverride(*stored)
 
-    def set_execution_override(self, target, issue, *, model, bypass_usage):
+    def set_execution_override(self, target, issue, *, model, bypass_usage, repo=""):
         self.execution_overrides[(target, issue)] = (model, bypass_usage)
 
     def quarantine_entries(self):
@@ -133,28 +142,28 @@ class FakeSources:
     def stage_signal(self, worktree):
         return None
 
-    def pane_tail(self, target, issue):
+    def pane_tail(self, target, issue, repo=""):
         return self.pane_tails.get(issue, "")
 
-    def pane_history(self, target, issue, lines=2000):
+    def pane_history(self, target, issue, lines=2000, repo=""):
         self.history_calls.append((issue, lines))
         return self.pane_histories.get(issue, "")
 
-    def session_alive(self, target, issue):
+    def session_alive(self, target, issue, repo=""):
         return issue in self.alive
 
-    def submit_intent(self, action, target, issue, payload, actor):
+    def submit_intent(self, action, target, issue, payload, actor, repo=""):
         self.intents.append((action, target, issue, payload, actor))
         return f"1753430000000-{target}-{issue}-{action}.json"
 
     def pending_intents(self):
         return list(self.pending)
 
-    def apply_queue_plan(self, target, issue, plan):
+    def apply_queue_plan(self, target, issue, plan, repo=""):
         self.applied_plans.append((target.name, issue, plan))
 
     def append_event(self, event, *, target="", issue=0, actor="",
-                     detail=""):
+                     detail="", repo=""):
         self.appended.append((event, target, issue, actor, detail))
 
     def state_fingerprint(self):
@@ -166,11 +175,14 @@ class FakeSources:
             {"title": "", "body": "", "url": "", "fetched_at": "",
              "error": "not seeded"})
 
-    def messages(self, target, issue):
+    def messages(self, target, issue, repo=""):
         return self.messages_by_key.get((target, issue), [])
 
     def undelivered_counts(self):
         return dict(self.undelivered)
+
+    def undelivered_qualified_counts(self):
+        return {}
 
     def wake_blocked_issues(self):
         return set(self.blocked_wakes)
