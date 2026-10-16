@@ -22,7 +22,8 @@ SCHEMA = {
 def _node(item_id, number, title="", status=None, impact=None, effort=None,
           area=None):
     return {"id": item_id,
-            "content": {"number": number} if number is not None else None,
+            "content": {"number": number, "repository": {"nameWithOwner": "o/a"}}
+            if number is not None else None,
             "title": {"text": title},
             "status": {"name": status} if status else None,
             "area": {"name": area} if area else None,
@@ -91,15 +92,25 @@ def test_fetch_items_follows_pagination_and_never_uses_item_list():
     assert "cursor=c1" in calls[1] and "cursor=c1" not in calls[0]
 
 
-def test_join_uses_the_title_when_the_token_cannot_see_the_issue():
+def test_join_refuses_title_when_the_token_cannot_see_the_issue():
     items = [board.Item("I1", None, "Private task", "Ready", 3, 1, "infra")]
-    joined = board.join(items, [_issue(9, "Private task"), _issue(10, "Other")])
-    assert joined[9].id == "I1" and 10 not in joined
+    joined = board.join(items, [_issue(9, "Private task"), _issue(10, "Other")], "o/a")
+    assert joined == {}
 
 
 def test_join_skips_a_title_two_issues_share():
     items = [board.Item("I1", None, "Dup", None, None, None, None)]
-    assert board.join(items, [_issue(1, "Dup"), _issue(2, "Dup")]) == {}
+    assert board.join(items, [_issue(1, "Dup"), _issue(2, "Dup")], "o/a") == {}
+
+
+def test_join_excludes_a_sibling_repository_s_card_with_the_same_number():
+    frontend = board.Item("FE12", 12, "Frontend bug", "Ready", 3, 1, "infra",
+                           repo="example/shop-frontend")
+    backend = board.Item("BE12", 12, "Backend bug", "Ready", 3, 1, "infra",
+                          repo="example/shop-backend")
+    joined = board.join([frontend, backend], [_issue(12, "Frontend bug")],
+                         "example/shop-frontend")
+    assert joined[12].id == "FE12"
 
 
 def test_no_board_pointer_in_the_clone_means_no_board(tmp_path):

@@ -1,7 +1,7 @@
 """Rejection branches of the project/repository validators in dispatcher.config."""
 import pytest
 
-from dispatcher.config import _normalize_repo, _project, _project_repository, _projects
+from dispatcher.config import _project, _project_repository, _projects, normalize_repo
 
 REPO = {"repo": "o/r", "clone_path": "/c", "worktrees_path": "/w",
         "rank_cmd": "rank", "gate_cmd": "make gate"}
@@ -55,4 +55,4 @@ def test_projects_rejects_malformed_container(projects_raw):
 
 
 def test_normalize_repo_strips_trailing_slash_before_git_suffix():
-    assert _normalize_repo("https://github.com/example/shop.git/") == "example/shop"
+    assert normalize_repo("https://github.com/example/shop.git/") == "example/shop"

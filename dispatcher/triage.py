@@ -145,7 +145,13 @@ def save_cursors(state_dir: str | Path, cursors: dict[str, str]) -> None:
 
 
 def triage_repos(cfg: Config) -> list[str]:
+    """Every legacy target plus every project repository (paused projects
+    included — pausing a project stops claims, not visibility to triage)."""
     repos = [t.repo for t in cfg.targets]
+    for project in cfg.projects:
+        for repo in project.repositories:
+            if repo.repo not in repos:
+                repos.append(repo.repo)
     if cfg.infra_repo and cfg.infra_repo not in repos:
         repos.append(cfg.infra_repo)
     return repos
@@ -155,11 +161,21 @@ class SweepError(Exception):
     pass
 
 
-def _clone_for(cfg: Config, repo: str) -> str:
+def _repo_config(cfg: Config, repo: str):
+    """The `Target` or `ProjectRepository` configuring `repo`, or None."""
     for t in cfg.targets:
         if t.repo == repo:
-            return t.clone_path
-    return str(Path.home() / "agent-ops")
+            return t
+    for project in cfg.projects:
+        for r in project.repositories:
+            if r.repo == repo:
+                return r
+    return None
+
+
+def _clone_for(cfg: Config, repo: str) -> str:
+    found = _repo_config(cfg, repo)
+    return found.clone_path if found else str(Path.home() / "agent-ops")
 
 
 def _session_name(repo: str) -> str:
@@ -167,15 +183,16 @@ def _session_name(repo: str) -> str:
 
 
 def _policy_for_repo(cfg: Config, repo: str):
-    target = next((t for t in cfg.targets if t.repo == repo), None)
-    return policy_for(cfg, target)
+    return policy_for(cfg, _repo_config(cfg, repo))
 
 
 def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
                  entry: Entry, run=subprocess.run) -> dict:
     triage_dir = Path(cfg.state_dir) / TRIAGE_DIR
     triage_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{repo.replace('/', '-')}-{started_date}"
+    # Doubling "-" first keeps the "/" -> "-" mapping injective, so
+    # example/shop-api and example-shop/api never share artifacts.
+    stem = f"{repo.replace('-', '--').replace('/', '-')}-{started_date}"
     fname = f"{stem}.json"
     decisions_path = triage_dir / fname
     decisions_path.unlink(missing_ok=True)
@@ -233,11 +250,11 @@ def _board(cfg: Config, repo: str, lines: list[str], run):
     """The repo's board, with stale cards repaired and what the sweep cannot
     reach reported. None for a repo without a board, and when the board cannot
     be read: labels are still worth triaging without it."""
-    target = next((t for t in cfg.targets if t.repo == repo), None)
-    if target is None:
+    found = _repo_config(cfg, repo)
+    if found is None:
         return None
     try:
-        brd = board.read(repo, target.clone_path, run=run)
+        brd = board.read(repo, found.clone_path, run=run)
     except Exception as e:  # noqa: BLE001 — degrade to label-only triage
         lines.append(f"{repo}: board unavailable, labels only — {e}")
         return None

@@ -184,7 +184,7 @@ def _target(raw: dict, capacity: int) -> Target:
     return Target(**fields, models=parse_policy(models) if has_models else None)
 
 
-def _normalize_repo(repo: str) -> str:
+def normalize_repo(repo: str) -> str:
     """"owner/name", stripped of a URL alias's host/scheme/suffix, for
     identity comparison across projects. Lowered before the host regexes run
     so an upper-cased host (GITHUB.COM) still strips."""
@@ -272,7 +272,7 @@ def _validate_identities(targets: list[Target], projects: list[Project]) -> None
     seen_repos: dict[str, str] = {}
     seen_boards: dict[tuple[str, int], str] = {}
     for t in targets:
-        seen_repos[_normalize_repo(t.repo)] = f"target {t.name!r}"
+        seen_repos[normalize_repo(t.repo)] = f"target {t.name!r}"
         seen_boards[(t.project_owner.strip().lower(), t.project_number)] = f"target {t.name!r}"
 
     seen_keys: set[str] = set()
@@ -286,7 +286,7 @@ def _validate_identities(targets: list[Target], projects: list[Project]) -> None
                              f"already owned by {seen_boards[board_key]}")
         seen_boards[board_key] = f"project {p.key!r}"
         for r in p.repositories:
-            norm = _normalize_repo(r.repo)
+            norm = normalize_repo(r.repo)
             if norm in seen_repos:
                 raise ValueError(f"project {p.key!r}: repository {r.repo!r} already owned "
                                  f"by {seen_repos[norm]}")
@@ -400,7 +400,7 @@ def apply_stored_models(boot: Config) -> Config:
     return replace(cfg, models_origin=model_settings.Origin(revision, stored))
 
 
-def policy_for(cfg: Config, target: Target | None) -> ModelPolicy:
+def policy_for(cfg: Config, target: Target | ProjectRepository | None) -> ModelPolicy:
     """The policy `target` runs: its own one replaces the global one
     wholesale — rule lists are never merged, because merge order would make
     first-match-wins ambiguous. No target (one removed from targets.yaml):

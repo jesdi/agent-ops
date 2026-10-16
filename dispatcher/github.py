@@ -7,10 +7,11 @@ import re
 import logging
 import shlex
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 
 from dispatcher import board
-from dispatcher.config import Target
+from dispatcher.config import Project, Target, normalize_repo
 from dispatcher.pr_poll import CIStatus
 
 log = logging.getLogger(__name__)
@@ -26,12 +27,28 @@ def _run(args: list[str], cwd: str | None = None,
 
 _project_env = board.project_env
 
+_ISSUE_URL = re.compile(r"^https://github\.com/([^/]+/[^/]+)/issues/\d+$")
+
+
+def _ambiguous_issue_numbers(verified: dict) -> set[int]:
+    """Bare issue numbers shared by multiple verified repository identities."""
+    counts = Counter(number for _, number in verified)
+    return {number for number, count in counts.items() if count > 1}
+
+
+def _blocker_numbers(body: str) -> set[int]:
+    """Read dependency fields without treating ordinary issue mentions as edges."""
+    return {int(n) for line in re.findall(r"^\s*Blocked by:\s*(.+)$", body,
+                                          re.IGNORECASE | re.MULTILINE)
+            for n in re.findall(r"#(\d+)", line)}
+
 
 @dataclass(frozen=True)
 class Candidate:
     number: int
     title: str
     url: str
+    repo: str = ""
     effort: int | None = None
     labels: tuple[str, ...] = ()
 
@@ -141,29 +158,116 @@ class GitHubClient:
         d = json.loads(out)
         return (d.get("conclusion") or "") if d.get("status") == "completed" else ""
 
-    def rank_rows(self, target: Target) -> list[dict]:
-        """rank_cmd --json rows in rank order; `boost` normalized to an int
-        (old vendored skills may not emit it yet, and the board can hand back
-        a string or an empty value for an unset field)."""
-        out = _run(shlex.split(target.rank_cmd), cwd=target.clone_path)
+    def _rank_rows_one(self, repo: str, rank_cmd: str, clone_path: str) -> list[dict]:
+        out = _run(shlex.split(rank_cmd), cwd=clone_path)
         rows = json.loads(out)
         for row in rows:
             row["boost"] = int(row.get("boost") or 0)
+            match = _ISSUE_URL.match(row.get("url") or "")
+            if match is not None and normalize_repo(match.group(1)) != normalize_repo(repo):
+                # The row's own URL names a different repository than the
+                # one whose rank_cmd produced it (a shared board's title
+                # join can resolve to another repo's issue) — this identity
+                # is unverifiable, so the row is unavailable rather than
+                # assigned to the invoking repo on trust.
+                row["number"] = None
+            row["repo"] = repo
         return rows
 
-    def candidates(self, target: Target) -> list[Candidate]:
+    @staticmethod
+    def _rank_sort_key(row: dict) -> tuple:
+        """Mirror the backlog skill's rank._sort_key: boost band first,
+        then score. rank_cmd's own output already orders same-band,
+        same-score rows by its further tiebreaks (e.g. impact), which this
+        key does not see — Python's sort is stable, so leaving those rows
+        unranked here preserves that order instead of re-deriving it (and
+        getting it wrong) from an issue number that isn't a priority
+        signal."""
+        score = row.get("score")
+        return (
+            -row.get("boost", 0),
+            0 if score is not None else 1,
+            -(score or 0.0),
+        )
+
+    def _blocked_by_ambiguous(self, row: dict, verified: dict) -> bool:
+        """Re-derive blockers the old rank script resolved by bare issue
+        number. Without collisions, keep rank's answer. With collisions,
+        check every dependency against this repository's own card so clearing
+        a false sibling blocker does not clear a genuine local blocker."""
+        repo = normalize_repo(row["repo"])
+        ambiguous = _ambiguous_issue_numbers(verified) - {row["number"]}
+        if not ambiguous:
+            return row["blocked"]
+        body = self.issue_view(row["repo"], row["number"]).get("body") or ""
+        listed = _blocker_numbers(body)
+        for number in sorted(listed - {row["number"]}):
+            blocker = verified.get((repo, number))
+            if blocker is None:
+                continue  # dropped edge, as rank drops unknown blockers
+            if blocker.status != "Done" and self.issue_state(row["repo"], number) != "CLOSED":
+                return True
+        return False
+
+    def rank_rows(self, target: Target | Project) -> list[dict]:
+        """rank_cmd --json rows, each tagged with its repository identity.
+        A `Target` runs its single rank_cmd in rank order. A `Project` runs
+        every member repository's rank_cmd and merges the results by the
+        same boost/score ranking rules a single repo uses, into one
+        project-wide order, rather than concatenating each repo's rows
+        after the other — concatenation would let an earlier repo's
+        low-priority work starve a later repo's urgent one, and sorting by
+        score alone would drop an operator's boost priority."""
+        if isinstance(target, Project):
+            rows = [row for repo in target.repositories
+                    for row in self._rank_rows_one(repo.repo, repo.rank_cmd, repo.clone_path)]
+            # Old rank scripts can synthesize this repo's genuine issue URL
+            # after a title-only join. Verify against the shared board itself;
+            # rank output alone cannot prove which repository owns a card.
+            items = board.fetch_items(
+                self._project_node_id(target),
+                lambda args: _run(["gh"] + args, env=_project_env()))
+            verified = {(normalize_repo(item.repo), item.number): item for item in items
+                        if item.repo is not None and item.number is not None}
+            for row in rows:
+                card = verified.get((normalize_repo(row["repo"]), row.get("number")))
+                if card is None:
+                    log.warning("Unavailable board identity: %s#%s", row["repo"],
+                                row.get("number"))
+                    row["number"] = None
+                    continue
+                # The old rank script joined status by title and blockers by
+                # bare number, so a sibling card may have supplied them. The
+                # verified card is the only source of its own status.
+                row["status"] = card.status
+                if row["status"] == "Ready":
+                    row["blocked"] = self._blocked_by_ambiguous(row, verified)
+            rows.sort(key=self._rank_sort_key)
+            return rows
+        return self._rank_rows_one(target.repo, target.rank_cmd, target.clone_path)
+
+    def candidates(self, target: Target | Project) -> list[Candidate]:
+        """Eligible rows become candidates. A row with no verified
+        repository-qualified issue number (redacted board content) is
+        unavailable — a shared title never stands in for the missing
+        identity."""
         return [
-            Candidate(number=r["number"], title=r["title"], url=r["url"],
-                      effort=r.get("effort"), labels=tuple(r.get("labels") or ()))
+            Candidate(repo=r["repo"], number=r["number"], title=r["title"],
+                      url=r["url"], effort=r.get("effort"),
+                      labels=tuple(r.get("labels") or ()))
             for r in self.rank_rows(target)
-            if r["status"] == "Ready" and not r["blocked"] and "auto" in r["labels"]
+            if r.get("number") is not None and r["status"] == "Ready"
+            and not r["blocked"] and "auto" in r["labels"]
         ]
 
-    def _project_node_id(self, target: Target) -> str:
-        key = f"{target.project_owner}/{target.project_number}"
+    def _project_node_id(self, target: Target | Project) -> str:
+        owner, number = ((target.board_owner, target.board_number)
+                         if isinstance(target, Project)
+                         else (target.project_owner, target.project_number))
+        key = f"{owner}/{number}"
         if key not in self._project_node_ids:
-            out = _run(["gh", "project", "view", str(target.project_number),
-                        "--owner", target.project_owner, "--format", "json"],
+            out = _run(["gh", "project", "view", str(number),
+                        "--owner", owner, "--format", "json"],
                        env=_project_env())
             self._project_node_ids[key] = json.loads(out)["id"]
         return self._project_node_ids[key]
@@ -172,22 +276,18 @@ class GitHubClient:
         items = board.fetch_items(
             self._project_node_id(target),
             lambda args: _run(["gh"] + args, env=_project_env()))
+        # A shared board can carry another repo's card with the same issue
+        # number or title. Only an item whose repository is positively
+        # confirmed as target.repo is writable: a redacted item (repo or
+        # number unknown) is unavailable, and a title match alone never
+        # authorizes a board update.
+        target_repo = normalize_repo(target.repo)
         for item in items:
-            if item.number == issue:
+            if item.number == issue and item.repo is not None \
+                    and normalize_repo(item.repo) == target_repo:
                 return item.id
-        # The project-scope token cannot expand linked issues of a private
-        # repo (the item has no number). GitHub syncs linked-item titles
-        # to issue titles, so the title — fetched with the stored repo auth —
-        # is the join key.
-        title = json.loads(_run(["gh", "issue", "view", str(issue),
-                                 "--repo", target.repo,
-                                 "--json", "title"]))["title"]
-        matches = [item.id for item in items
-                   if item.number is None and item.title == title]
-        if len(matches) == 1:
-            return matches[0]
         raise LookupError(f"issue #{issue} not on project {target.project_number}"
-                          f" (title join: {len(matches)} items match {title!r})")
+                          f" as a verified card in {target.repo}")
 
     def issue_view(self, repo: str, number: int) -> dict:
         out = _run(["gh", "issue", "view", str(number), "--repo", repo,

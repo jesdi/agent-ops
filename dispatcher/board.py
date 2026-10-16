@@ -9,8 +9,8 @@ items.
 Two tokens are in play on the box: the stored fine-grained auth reads the
 repo, and the classic project-scope token (GH_PROJECT_TOKEN) reads and writes
 the board. The project token cannot expand a private repo's issues, so an
-item's issue number can be absent; the title is then the join key (GitHub
-syncs linked-item titles to issue titles)."""
+item's issue number can be absent. Such cards are unavailable until GitHub
+exposes their repository-qualified identity."""
 from __future__ import annotations
 
 import json
@@ -19,6 +19,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+from dispatcher.config import normalize_repo
 
 GH_TIMEOUT = 120
 META_PATH = Path(".backlog") / "project-meta.json"
@@ -31,7 +33,7 @@ query($project: ID!, $cursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       id
-      content { ... on Issue { number } }
+      content { ... on Issue { number repository { nameWithOwner } } }
       title: fieldValueByName(name: "Title") { ... on ProjectV2ItemFieldTextValue { text } }
       status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
       area: fieldValueByName(name: "Area") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
@@ -64,6 +66,7 @@ class Item:
     impact: float | None
     effort: float | None
     area: str | None
+    repo: str | None = None  # "owner/name"; None when GitHub doesn't expose it
 
 
 def _value(node: dict, alias: str):
@@ -82,38 +85,32 @@ def fetch_items(project_id: str, gh: Callable[[list[str]], str]) -> list[Item]:
             args += ["-f", f"cursor={cursor}"]
         page = json.loads(gh(args))["data"]["node"]["items"]
         for node in page["nodes"]:
+            content = node.get("content") or {}
             items.append(Item(
                 id=node["id"],
-                number=(node.get("content") or {}).get("number"),
+                number=content.get("number"),
                 title=_value(node, "title") or "",
                 status=_value(node, "status"),
                 impact=_value(node, "impact"),
                 effort=_value(node, "effort"),
-                area=_value(node, "area")))
+                area=_value(node, "area"),
+                repo=(content.get("repository") or {}).get("nameWithOwner")))
         if not page["pageInfo"]["hasNextPage"]:
             return items
         cursor = page["pageInfo"]["endCursor"]
 
 
-def _unique(pairs) -> dict:
-    """key -> value for the keys that occur exactly once."""
-    seen: dict = {}
-    for key, value in pairs:
-        seen.setdefault(key, []).append(value)
-    return {key: values[0] for key, values in seen.items() if len(values) == 1}
+def join(items: list[Item], issues: list[dict], repo: str) -> dict[int, Item]:
+    """Join only exposed repository-qualified issue identities.
 
-
-def join(items: list[Item], issues: list[dict]) -> dict[int, Item]:
-    """issue number -> its board item. `issues` rows carry number + title.
-    An item without a number joins by title; a title shared by two issues or
-    two items is ambiguous and joins nothing."""
-    joined = {item.number: item for item in items if item.number is not None}
-    numbers = _unique((row.get("title") or "", row["number"]) for row in issues)
-    untitled = _unique((i.title, i) for i in items if i.number is None)
-    for title, item in untitled.items():
-        if title in numbers:
-            joined.setdefault(numbers[title], item)
-    return joined
+    Titles cannot establish which repository owns a redacted card, even
+    when a title occurs only once in this repository's issue list.
+    """
+    numbers = {row["number"] for row in issues}
+    norm_repo = normalize_repo(repo)
+    return {item.number: item for item in items
+            if item.repo is not None and normalize_repo(item.repo) == norm_repo
+            and item.number in numbers}
 
 
 # -- the triage sweep's view --------------------------------------------------
@@ -258,5 +255,5 @@ def read(repo: str, clone_path: str, run=subprocess.run) -> Board | None:
     rows = json.loads(_gh(run, [
         "issue", "list", "--repo", repo, "--state", "all", "--limit", "1000",
         "--json", "number,title,state,stateReason"]))
-    return Board(schema=schema, items=join(items, rows),
+    return Board(schema=schema, items=join(items, rows, repo),
                  issues={r["number"]: r for r in rows}, run=run)

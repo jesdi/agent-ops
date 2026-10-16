@@ -19,11 +19,16 @@ TARGET = Target(
 
 
 def _board(*items):
-    """One board GraphQL page: (id, number) or (id, None, title) per item."""
+    """One board GraphQL page: (id, number) or (id, None, title) per item.
+    A known number is a verified card of TARGET.repo (GitHub resolves an
+    Issue's number and repository together); a redacted item (number=None)
+    carries no repository either."""
     return json.dumps({"data": {"node": {"items": {
         "pageInfo": {"hasNextPage": False, "endCursor": None},
         "nodes": [{"id": i[0],
-                   "content": {"number": i[1]} if i[1] is not None else None,
+                   "content": ({"number": i[1], "repository":
+                                {"nameWithOwner": TARGET.repo}}
+                               if i[1] is not None else None),
                    "title": {"text": i[2] if len(i) > 2 else ""}}
                   for i in items]}}}})
 
@@ -153,14 +158,12 @@ def test_cancel_without_board_option_still_closes_issue(monkeypatch, caplog):
                for r in caplog.records)
 
 
-def test_item_id_title_join_when_content_redacted(monkeypatch):
+def test_item_id_title_join_refuses_an_unverified_redacted_item(monkeypatch):
     # A project-scope token cannot expand linked issues of a private repo:
-    # the board read returns items without "content". The issue title (fetched with
-    # the stored repo auth) is the join key — GitHub syncs linked-item titles.
-    calls = []
-
+    # the board read returns items without "content" and without a known
+    # repository. A shared title alone never authorizes a board update — the
+    # card is unavailable, not title-matched.
     def fake_run(args, cwd=None, env=None):
-        calls.append((args, env))
         joined = " ".join(args)
         if "project view" in joined:
             return json.dumps({"id": "PROJ_NODE"})
@@ -172,9 +175,9 @@ def test_item_id_title_join_when_content_redacted(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.GitHubClient().claim(TARGET, github.Candidate(7, "A", "u7"))
-    edit = next(a for a, _ in calls if "item-edit" in a)
-    assert "ITEM7" in edit
+    import pytest
+    with pytest.raises(LookupError):
+        github.GitHubClient()._item_id(TARGET, 7)
 
 
 def test_item_id_title_join_ambiguous_duplicate_titles_raises(monkeypatch):
