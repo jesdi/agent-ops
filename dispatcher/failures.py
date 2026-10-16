@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dispatcher.config import Config
+from dispatcher.state import task_key
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class FailureReport:
     log_tail: str  # last ~30 lines of setup.log / pane tail, "" if none
     repro: str     # exact command that reproduces the failure
     worktree: str  # path or ""
+    repo: str = ""  # "owner/name" of the task's repository, "" if unproven
 
 
 def _error_signature(error: str) -> str:
@@ -39,6 +41,8 @@ def _error_signature(error: str) -> str:
 
 def fingerprint(report: FailureReport) -> str:
     key = f"{report.klass}|{report.issue}|{_error_signature(report.error)}"
+    if report.repo:     # unqualified reports keep their old hash
+        key = f"{report.repo}|{key}"
     if report.target:   # box-level failures (no target) keep their old hash
         key = f"{report.target}|{key}"
     return hashlib.sha256(key.encode()).hexdigest()[:12]
@@ -143,13 +147,14 @@ def setup_log_tail(worktree: str) -> str:
 
 
 def quarantine_path(state_dir: str | Path, target_name: str,
-                    issue: int) -> Path:
-    return Path(state_dir) / "quarantine" / f"{target_name}-{issue}.json"
+                    issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / "quarantine" / f"{task_key(target_name, issue, repo)}.json"
 
 
 def write_quarantine(state_dir: str | Path, target_name: str, issue: int,
-                     blocker_repo: str, blocker_issue: int, fp: str) -> None:
-    p = quarantine_path(state_dir, target_name, issue)
+                     blocker_repo: str, blocker_issue: int, fp: str, *,
+                     repo: str = "") -> None:
+    p = quarantine_path(state_dir, target_name, issue, repo)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({
         "task_issue": issue,
@@ -161,11 +166,11 @@ def write_quarantine(state_dir: str | Path, target_name: str, issue: int,
 
 
 def check_quarantine(state_dir: str | Path, github, target_name: str,
-                     issue: int) -> bool:
+                     issue: int, *, repo: str = "") -> bool:
     """True = still quarantined (skip the candidate). Deleting the record
     file manually force-retries; closing the blocker issue deletes it here,
     making the candidate claimable in the same pass."""
-    p = quarantine_path(state_dir, target_name, issue)
+    p = quarantine_path(state_dir, target_name, issue, repo)
     if not p.exists():
         return False
     try:

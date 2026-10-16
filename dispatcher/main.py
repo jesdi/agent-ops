@@ -1159,9 +1159,9 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
             f"https://github.com/{target.repo}/pull/{task.pr_number}")
 
 
-def _wake_blocked_path(cfg: Config, target: str, issue: int) -> Path:
+def _wake_blocked_path(cfg: Config, target: str, issue: int, repo: str = "") -> Path:
     return (Path(cfg.state_dir)
-            / f"{WAKE_BLOCKED_PREFIX}{task_key(target, issue)}")
+            / f"{WAKE_BLOCKED_PREFIX}{task_key(target, issue, repo)}")
 
 
 def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
@@ -1169,7 +1169,7 @@ def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
     """Edge-triggered: the event fires the pass a wake FIRST goes hungry, not
     every pass thereafter — a resume that waits overnight must not write 144
     identical lines into events.jsonl. The marker is the edge."""
-    p = _wake_blocked_path(cfg, task.target, task.issue)
+    p = _wake_blocked_path(cfg, task.target, task.issue, task.repo)
     if p.exists():
         return
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -1179,8 +1179,8 @@ def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
                           detail=reason)
 
 
-def _clear_wake_blocked(cfg: Config, target: str, issue: int) -> None:
-    _wake_blocked_path(cfg, target, issue).unlink(missing_ok=True)
+def _clear_wake_blocked(cfg: Config, target: str, issue: int, repo: str = "") -> None:
+    _wake_blocked_path(cfg, target, issue, repo).unlink(missing_ok=True)
 
 
 def _expired(task: TaskState, cutoff_seconds: int) -> bool:
@@ -1211,7 +1211,7 @@ def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
         target = by_name.get(task.target)
         if target is not None and task.worktree:
             remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
-        _clear_wake_blocked(cfg, task.target, task.issue)
+        _clear_wake_blocked(cfg, task.target, task.issue, task.repo)
         clear_session(cfg.state_dir, task.target, task.issue)
         delete(cfg.state_dir, task.target, task.issue)
         eventlog.append_event(cfg.state_dir, "flushed",
@@ -1337,7 +1337,7 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
                        attention="operator", feedback_cursor=_cursor_now(),
                        resume_model_override="", resume_bypass_usage=False,
                        operator_request=None)
-        _clear_wake_blocked(cfg, task.target, task.issue)
+        _clear_wake_blocked(cfg, task.target, task.issue, task.repo)
         _spawn_stage(cfg, deps, target, task, launch)
         eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
@@ -1348,7 +1348,7 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
     _write_working(task.worktree, task.stage, entry)
     _log_model(task.worktree, task.stage, str(entry))
     task, detail = _continue_or_restart(cfg, deps, target, task, launch)
-    _clear_wake_blocked(cfg, task.target, task.issue)
+    _clear_wake_blocked(cfg, task.target, task.issue, task.repo)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                 park_msg_id=0, park_note="",
                                 resume_model_override="",
@@ -1388,7 +1388,7 @@ def _respawn(cfg: Config, deps: Deps, target: Target,
                    park_note="", hold_for_attach=False,
                    resume_model_override="", resume_bypass_usage=False,
                    **loops.crash_resume_fields(task))
-    _clear_wake_blocked(cfg, task.target, task.issue)
+    _clear_wake_blocked(cfg, task.target, task.issue, task.repo)
     task = _spawn_stage(cfg, deps, target, task, launch)
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
                           issue=task.issue, stage=task.stage.value,
@@ -1479,7 +1479,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         if slot is None:
             _mark_wake_blocked(cfg, target, task, "no free slot")
             continue
-        _clear_wake_blocked(cfg, task.target, task.issue)
+        _clear_wake_blocked(cfg, task.target, task.issue, task.repo)
         # Cursor := spawn time: everything the session can read live is
         # now "seen"; anything arriving after this moment re-triggers a
         # round (conservative — a redundant round beats a lost comment).
@@ -2505,7 +2505,7 @@ def _reconcile_slots(cfg: Config) -> None:
     slot, and a re-claim of the same issue inherited the stale badge."""
     known: set[str] = set()
     for task in load_all(cfg.state_dir):
-        known.add(_wake_blocked_path(cfg, task.target, task.issue).name)
+        known.add(_wake_blocked_path(cfg, task.target, task.issue, task.repo).name)
         if not holds_slot(task) and task.slot != NO_SLOT:
             eventlog.append_event(cfg.state_dir, "slot-reclaimed",
                                   target=task.target, issue=task.issue,
@@ -2517,7 +2517,7 @@ def _reconcile_slots(cfg: Config) -> None:
             task = replace(task, slot=NO_SLOT)
             save(cfg.state_dir, task)
         if not _starving(task):
-            _clear_wake_blocked(cfg, task.target, task.issue)
+            _clear_wake_blocked(cfg, task.target, task.issue, task.repo)
     for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
         if p.name not in known:  # state file flushed/deleted under the marker
             p.unlink(missing_ok=True)

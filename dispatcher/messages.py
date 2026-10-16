@@ -43,8 +43,8 @@ def _dir(state_dir: str | Path) -> Path:
     return Path(state_dir) / MESSAGES_DIR
 
 
-def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return _dir(state_dir) / f"{task_key(target, issue)}.jsonl"
+def _path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return _dir(state_dir) / f"{task_key(target, issue, repo)}.jsonl"
 
 
 def _parse(raw: str, where: Path) -> Message | None:
@@ -67,33 +67,36 @@ def _dump(m: Message) -> str:
 
 
 def append(state_dir: str | Path, target: str, issue: int, text: str,
-           actor: str) -> Message:
+           actor: str, *, repo: str = "") -> Message:
     m = Message(id=str(uuid.uuid4()), text=text, actor=actor,
                 created_at=_now())
-    p = _path(state_dir, target, issue)
+    p = _path(state_dir, target, issue, repo)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a") as fh:
         fh.write(_dump(m) + "\n")
     return m
 
 
-def all_messages(state_dir: str | Path, target: str, issue: int) -> list[Message]:
-    p = _path(state_dir, target, issue)
+def all_messages(state_dir: str | Path, target: str, issue: int, *,
+                 repo: str = "") -> list[Message]:
+    p = _path(state_dir, target, issue, repo)
     if not p.exists():
         return []
     out = [_parse(raw, p) for raw in p.read_text().splitlines() if raw.strip()]
     return [m for m in out if m is not None]
 
 
-def undelivered(state_dir: str | Path, target: str, issue: int) -> list[Message]:
-    return [m for m in all_messages(state_dir, target, issue) if not m.delivered_at]
+def undelivered(state_dir: str | Path, target: str, issue: int, *,
+                repo: str = "") -> list[Message]:
+    return [m for m in all_messages(state_dir, target, issue, repo=repo)
+            if not m.delivered_at]
 
 
 def mark_delivered(state_dir: str | Path, target: str, issue: int,
-                   ids: Sequence[str]) -> None:
+                   ids: Sequence[str], *, repo: str = "") -> None:
     """Stamp delivered_at on the named ids. Already-stamped messages keep
     their original timestamp, so a re-drain never rewrites history."""
-    p = _path(state_dir, target, issue)
+    p = _path(state_dir, target, issue, repo)
     if not p.exists():
         return
     wanted = set(ids)
@@ -101,7 +104,7 @@ def mark_delivered(state_dir: str | Path, target: str, issue: int,
     kept = [m if (m.id not in wanted or m.delivered_at)
             else Message(id=m.id, text=m.text, actor=m.actor,
                          created_at=m.created_at, delivered_at=stamp)
-            for m in all_messages(state_dir, target, issue)]
+            for m in all_messages(state_dir, target, issue, repo=repo)]
     tmp = p.with_suffix(".tmp")
     tmp.write_text("".join(_dump(m) + "\n" for m in kept))
     tmp.replace(p)

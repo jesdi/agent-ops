@@ -5,6 +5,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from dispatcher.state import task_key
+
 
 DIR = "execution-overrides"
 
@@ -28,22 +30,22 @@ def pending(stored: ExecutionOverride | None, resume_model: str,
     return ExecutionOverride(stored.model, stored.bypass_usage or resume_bypass)
 
 
-def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / DIR / f"{target}-{issue}.json"
+def _path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / DIR / f"{task_key(target, issue, repo)}.json"
 
 
 def save(state_dir: str | Path, target: str, issue: int,
-         override: ExecutionOverride) -> None:
-    path = _path(state_dir, target, issue)
+         override: ExecutionOverride, *, repo: str = "") -> None:
+    path = _path(state_dir, target, issue, repo)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(asdict(override), indent=2))
     tmp.replace(path)
 
 
-def load(state_dir: str | Path, target: str,
-         issue: int) -> ExecutionOverride | None:
-    path = _path(state_dir, target, issue)
+def load(state_dir: str | Path, target: str, issue: int, *,
+         repo: str = "") -> ExecutionOverride | None:
+    path = _path(state_dir, target, issue, repo)
     if not path.exists():
         return None
     try:
@@ -56,5 +58,5 @@ def load(state_dir: str | Path, target: str,
         return None
 
 
-def delete(state_dir: str | Path, target: str, issue: int) -> None:
-    _path(state_dir, target, issue).unlink(missing_ok=True)
+def delete(state_dir: str | Path, target: str, issue: int, *, repo: str = "") -> None:
+    _path(state_dir, target, issue, repo).unlink(missing_ok=True)

@@ -126,6 +126,8 @@ def request_reason(task: TaskState | None, intent: intents.Intent,
         return f"unknown submit {submit!r}"
     if task is None or task.operator_request is None:
         return "no open request"
+    if task.repo != intent.repo:
+        return "another repository's task"
     revision = task.operator_request.fingerprint
     if not _valid(intent, revision):
         return "stale revision"
@@ -207,10 +209,10 @@ def without_superseded(pending: list[intents.Intent],
     request is applied: the one `select` picks. The others that answer it
     are deleted unapplied; one that does not stays and drops with its
     reason (a stale tab never costs a current answer)."""
-    groups: dict[tuple[str, int], list[intents.Intent]] = {}
+    groups: dict[tuple[str, str, int], list[intents.Intent]] = {}
     for i in pending:
         if i.action == "answers":
-            groups.setdefault((i.target, i.issue), []).append(i)
+            groups.setdefault((i.repo, i.target, i.issue), []).append(i)
     losers = {i.path for g in groups.values() for i in _superseded(g, task_for)}
     for i in pending:
         if i.path in losers:

@@ -121,8 +121,9 @@ def _write(path: Path, value: dict) -> None:
     tmp.replace(path)
 
 
-def read(state_dir, target: str, issue: int) -> ArtifactIndex:
-    return ArtifactIndex.load(state.archive_root(state_dir, target, issue) / "index.json")
+def read(state_dir, target: str, issue: int, *, repo: str = "") -> ArtifactIndex:
+    return ArtifactIndex.load(
+        state.archive_root(state_dir, target, issue, repo=repo) / "index.json")
 
 
 def _source(worktree: str, raw: str) -> Path:
@@ -244,8 +245,8 @@ def _media_type(path: Path) -> str:
 def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
             now: datetime | None = None) -> None:
     now = now or datetime.now(timezone.utc)
-    root = state.archive_root(state_dir, task.target, task.issue)
-    index = read(state_dir, task.target, task.issue)
+    root = state.archive_root(state_dir, task.target, task.issue, repo=task.repo)
+    index = read(state_dir, task.target, task.issue, repo=task.repo)
     index.retain_for(task)
     if not index.expired and Path(task.worktree).is_dir():
         Collector(root, task, repo, publish, now).collect(index)
@@ -255,12 +256,13 @@ def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
 
 def pin_published(state_dir, task: TaskState, repo: str) -> None:
     """Before deleting a merged task branch, keep GitHub destinations alive."""
-    index = read(state_dir, task.target, task.issue)
+    index = read(state_dir, task.target, task.issue, repo=task.repo)
     for item in index.items:
         if item.publication and item.publication.commit:
             item.publication = spec_publish.PublishedReference(
                 spec_publish.spec_url(repo, item.publication.commit, item.path), item.publication.commit)
-    index.save(state.archive_root(state_dir, task.target, task.issue) / "index.json")
+    index.save(state.archive_root(state_dir, task.target, task.issue, repo=task.repo)
+               / "index.json")
 
 
 def cleanup(state_dir, *, now: datetime | None = None) -> None:
@@ -273,10 +275,11 @@ def cleanup(state_dir, *, now: datetime | None = None) -> None:
             log.exception("Artifact cleanup failed for %s", path)
 
 
-def content_path(state_dir, target: str, issue: int, artifact_id: str) -> Path | None:
+def content_path(state_dir, target: str, issue: int, artifact_id: str, *,
+                 repo: str = "") -> Path | None:
     if not ID.fullmatch(artifact_id):
         return None
-    root = state.archive_root(state_dir, target, issue)
+    root = state.archive_root(state_dir, target, issue, repo=repo)
     path = root / "content" / artifact_id
     if not path.resolve().is_relative_to(root.resolve()) or not path.is_file():
         return None

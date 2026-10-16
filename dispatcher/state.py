@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
+import warnings
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -251,6 +253,9 @@ class TaskState:
     # worktree-contained path resolves — so an answers request never exists
     # without a valid path.
     operator_request: "OperatorRequest | None" = None
+    # Canonical "owner/name" of the origin repository. "" = a legacy record
+    # whose repository is not proven (see migrate_legacy).
+    repo: str = ""
 
     @property
     def continued_stage(self) -> Stage:
@@ -303,22 +308,26 @@ class StageSignal:
 WAKE_BLOCKED_PREFIX = "wake-blocked-"
 
 
-def task_key(target: str, issue: int) -> str:
-    """`<target>-<issue>`: the (target, issue) key every per-task file in
-    state_dir is named by."""
-    return f"{target}-{issue}"
+def task_key(target: str, issue: int, repo: str = "") -> str:
+    """`<target>-<issue>`, or `<owner>~<name>~<target>-<issue>` when the task's
+    repository is proven: the key every per-task file in state_dir is named
+    by. Two repositories of one target never share a key."""
+    key = f"{target}-{issue}"
+    return f"{repo.replace('/', '~')}~{key}" if repo else key
 
 
 def parse_task_key(name: str) -> tuple[str, int] | None:
     """(target, issue) from a `<target>-<issue>` key, else None (including
     a legacy bare `<issue>`). rpartition, since target names may themselves
-    contain '-'."""
+    contain '-'. A repository-qualified key is not a legacy one: None."""
+    if "~" in name:
+        return None
     target, _, issue = name.rpartition("-")
     return (target, int(issue)) if target and issue.isdigit() else None
 
 
-def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"task-{task_key(target, issue)}.json"
+def _path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / f"task-{task_key(target, issue, repo)}.json"
 
 
 def _legacy_path(state_dir: str | Path, issue: int) -> Path:
@@ -329,7 +338,7 @@ def _previous(state_dir: str | Path, ts: TaskState) -> TaskState | None:
     """The state a save replaces; None also when the file cannot be read:
     the save is what repairs it."""
     try:
-        return load(state_dir, ts.target, ts.issue)
+        return load(state_dir, ts.target, ts.issue, repo=ts.repo)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
@@ -342,9 +351,11 @@ def save(state_dir: str | Path, ts: TaskState) -> None:
         ts = replace(ts, terminal_at=stamp)
     else:
         ts = replace(ts, terminal_at="")
-    _write_task(_path(state_dir, ts.target, ts.issue), ts)
+    _write_task(_path(state_dir, ts.target, ts.issue, ts.repo), ts)
     # Lazy migration: the first save under the new key retires the legacy twin.
-    _retire_legacy(state_dir, ts.target, ts.issue)
+    # A qualified task owns no legacy file: that would be a guess.
+    if not ts.repo:
+        _retire_legacy(state_dir, ts.target, ts.issue)
 
 
 def _retire_legacy(state_dir: str | Path, target: str, issue: int) -> None:
@@ -447,9 +458,10 @@ def _read(p: Path) -> TaskState | None:
     return TaskState(**d)
 
 
-def load(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
-    ts = _read(_path(state_dir, target, issue))
-    if ts is not None:
+def load(state_dir: str | Path, target: str, issue: int, *,
+         repo: str = "") -> TaskState | None:
+    ts = _read(_path(state_dir, target, issue, repo))
+    if ts is not None or repo:
         return ts
     legacy = _read(_legacy_path(state_dir, issue))
     # A legacy file speaks only for its own target.
@@ -476,12 +488,13 @@ def load_all(state_dir: str | Path) -> list[TaskState]:
         # Identity comes from the JSON, never the filename stem.
         if ts is not None:
             tasks.append(ts)
-    return sorted(tasks, key=lambda t: (t.target, t.issue))
+    return sorted(tasks, key=lambda t: (t.target, t.issue, t.repo))
 
 
-def delete(state_dir: str | Path, target: str, issue: int) -> None:
-    _path(state_dir, target, issue).unlink(missing_ok=True)
-    _retire_legacy(state_dir, target, issue)
+def delete(state_dir: str | Path, target: str, issue: int, *, repo: str = "") -> None:
+    _path(state_dir, target, issue, repo).unlink(missing_ok=True)
+    if not repo:
+        _retire_legacy(state_dir, target, issue)
 
 
 def max_slots(capacity: int) -> int:
@@ -603,21 +616,21 @@ class SessionRecord:
     stage: str
 
 
-def _session_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"session-{task_key(target, issue)}"
+def _session_path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / f"session-{task_key(target, issue, repo)}"
 
 
 def write_session(state_dir: str | Path, target: str, issue: int,
-                  record: SessionRecord) -> None:
+                  record: SessionRecord, *, repo: str = "") -> None:
     """Replace a task's conversation atomically; only waitd writes it."""
-    write_json_atomic(_session_path(state_dir, target, issue), asdict(record))
+    write_json_atomic(_session_path(state_dir, target, issue, repo), asdict(record))
 
 
-def read_session(state_dir: str | Path, target: str,
-                 issue: int) -> SessionRecord | None:
+def read_session(state_dir: str | Path, target: str, issue: int, *,
+                 repo: str = "") -> SessionRecord | None:
     """Read a task's conversation; missing or malformed records are absent."""
     try:
-        d = json.loads(_session_path(state_dir, target, issue).read_text())
+        d = json.loads(_session_path(state_dir, target, issue, repo).read_text())
         session_id, stage = d["session_id"], d["stage"]
         if not isinstance(session_id, str) or not session_id:
             return None
@@ -628,24 +641,26 @@ def read_session(state_dir: str | Path, target: str,
         return None
 
 
-def clear_session(state_dir: str | Path, target: str, issue: int) -> None:
+def clear_session(state_dir: str | Path, target: str, issue: int, *,
+                  repo: str = "") -> None:
     """Remove only the task's conversation; a missing record is harmless."""
-    _session_path(state_dir, target, issue).unlink(missing_ok=True)
+    _session_path(state_dir, target, issue, repo).unlink(missing_ok=True)
 
 
-def _waiting_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"waiting-{task_key(target, issue)}"
+def _waiting_path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / f"waiting-{task_key(target, issue, repo)}"
 
 
 def _legacy_waiting_path(state_dir: str | Path, issue: int) -> Path:
     return Path(state_dir) / f"waiting-{issue}"
 
 
-def mark_waiting(state_dir: str | Path, target: str, issue: int) -> None:
-    p = _waiting_path(state_dir, target, issue)
+def mark_waiting(state_dir: str | Path, target: str, issue: int, *,
+                 repo: str = "") -> None:
+    p = _waiting_path(state_dir, target, issue, repo)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.touch()
-    _background_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins
+    _background_path(state_dir, target, issue, repo).unlink(missing_ok=True)  # latest turn end wins
 
 
 @dataclass(frozen=True)
@@ -655,8 +670,8 @@ class BackgroundWait:
     reported: float          # time of the latest report
 
 
-def _background_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"background-{task_key(target, issue)}"
+def _background_path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / f"background-{task_key(target, issue, repo)}"
 
 
 def _identity(entry) -> str:
@@ -665,54 +680,343 @@ def _identity(entry) -> str:
     return json.dumps(entry, sort_keys=True)
 
 
-def read_background(state_dir: str | Path, target: str, issue: int) -> BackgroundWait | None:
+def read_background(state_dir: str | Path, target: str, issue: int, *,
+                    repo: str = "") -> BackgroundWait | None:
     try:
-        d = json.loads(_background_path(state_dir, target, issue).read_text())
+        d = json.loads(_background_path(state_dir, target, issue, repo).read_text())
         return BackgroundWait(tuple(d["tasks"]), float(d["since"]), float(d["reported"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
 def mark_background(state_dir: str | Path, target: str, issue: int,
-                    tasks: list, now: float | None = None) -> None:
+                    tasks: list, now: float | None = None, *, repo: str = "") -> None:
     now = time.time() if now is None else now
     ids = tuple(_identity(t) for t in tasks)
-    old = read_background(state_dir, target, issue)
+    old = read_background(state_dir, target, issue, repo=repo)
     since = old.since if old and set(ids) <= set(old.tasks) else now
-    p = _background_path(state_dir, target, issue)
+    p = _background_path(state_dir, target, issue, repo)
     p.parent.mkdir(parents=True, exist_ok=True)
-    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
+    _waiting_path(state_dir, target, issue, repo).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
     tmp = p.with_name(p.name + ".tmp")  # with_suffix would truncate a dotted target
     tmp.write_text(json.dumps({"tasks": list(ids), "since": since, "reported": now}))
     tmp.replace(p)
 
 
-def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
-    return (_waiting_path(state_dir, target, issue).exists()
-            or _legacy_waiting_path(state_dir, issue).exists())
+def has_waiting(state_dir: str | Path, target: str, issue: int, *,
+                repo: str = "") -> bool:
+    return (_waiting_path(state_dir, target, issue, repo).exists()
+            or (not repo and _legacy_waiting_path(state_dir, issue).exists()))
 
 
-def clear_turn_markers(state_dir: str | Path, target: str, issue: int) -> None:
+def clear_turn_markers(state_dir: str | Path, target: str, issue: int, *,
+                       repo: str = "") -> None:
     """Remove every turn-end marker (waiting, legacy waiting, background).
     The only way a background marker goes besides a waiting ping: every
     session end or replacement calls it, so a new session never inherits an
     old clock."""
-    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)
-    _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
-    _background_path(state_dir, target, issue).unlink(missing_ok=True)
+    _waiting_path(state_dir, target, issue, repo).unlink(missing_ok=True)
+    if not repo:
+        _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
+    _background_path(state_dir, target, issue, repo).unlink(missing_ok=True)
 
 
-def archive_root(state_dir: str | Path, target: str, issue: int) -> Path:
+def archive_root(state_dir: str | Path, target: str, issue: int, *,
+                 repo: str = "") -> Path:
     """Task archive namespace, shared by its snapshot and retained artifacts."""
-    key = hashlib.sha256(f"{target}\0{issue}".encode()).hexdigest()
+    ident = f"{repo}\0{target}\0{issue}" if repo else f"{target}\0{issue}"
+    key = hashlib.sha256(ident.encode()).hexdigest()
     return Path(state_dir) / "artifacts" / key
 
 
 def archive(state_dir: str | Path, task: TaskState) -> None:
     if task.stage in TERMINAL_STAGES:
-        _write_task(archive_root(state_dir, task.target, task.issue) / "task.json", task)
+        _write_task(archive_root(state_dir, task.target, task.issue,
+                                 repo=task.repo) / "task.json", task)
 
 
-def load_archived(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
-    task = _read(archive_root(state_dir, target, issue) / "task.json")
+def load_archived(state_dir: str | Path, target: str, issue: int, *,
+                  repo: str = "") -> TaskState | None:
+    task = _read(archive_root(state_dir, target, issue, repo=repo) / "task.json")
     return task if task and task.stage in TERMINAL_STAGES else None
+
+
+def _unqualified(paths) -> set[tuple[str, int]]:
+    found = set()
+    for p in paths:
+        try:
+            ts = _read(p)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if ts is not None and not ts.repo:
+            found.add((ts.target, ts.issue))
+    return found
+
+
+_SIDECAR_GLOBS = (("session-*", "session-", ""), ("waiting-*", "waiting-", ""),
+                  ("background-*", "background-", ""),
+                  ("wake-blocked-*", WAKE_BLOCKED_PREFIX, ""),
+                  # directory names of execution_overrides.DIR and failures.quarantine_path
+                  ("execution-overrides/*.json", "", ".json"),
+                  ("quarantine/*.json", "", ".json"),
+                  ("messages/*.jsonl", "", ".jsonl"))
+
+
+def _legacy_identities(root: Path, proven: dict[str, str]) -> set[tuple[str, int]]:
+    """(target, issue) of every unqualified record of a proven target."""
+    found = _unqualified(root.glob("task-*.json"))
+    found |= _sidecar_identities(root)
+    found |= _unqualified(root.glob("artifacts/*/task.json"))
+    found |= _unqualified_intents(root)
+    return {(t, i) for t, i in found if t in proven}
+
+
+def _sidecar_identities(root: Path) -> set[tuple[str, int]]:
+    """(target, issue) parsed from the name of every sidecar file."""
+    names = [p.name.removeprefix(pre).removesuffix(suf)
+             for pattern, pre, suf in _SIDECAR_GLOBS for p in root.glob(pattern)]
+    return {k for k in map(parse_task_key, names) if k}
+
+
+def _unqualified_intents(root: Path) -> set[tuple[str, int]]:
+    found = set()
+    for p in (root / "intents").glob("*.json"):
+        try:
+            rec = json.loads(p.read_text())
+            if not rec.get("repo"):
+                found.add((rec["target"], int(rec["issue"])))
+        except (OSError, json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+            continue
+    return found
+
+
+def _copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp")
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, dst)
+
+
+def _task_sources(root: Path, target: str, issue: int) -> list[Path]:
+    """The unqualified task files of one identity: the target-keyed one and
+    the issue-only one load() still reads (which speaks only for its target)."""
+    found = []
+    for p in (_path(root, target, issue), _legacy_path(root, issue)):
+        try:
+            ts = _read(p)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if ts is not None and not ts.repo and ts.target == target:
+            found.append(p)
+    return found
+
+
+def _read_messages(p: Path) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for raw in p.read_text().splitlines():
+        try:
+            d = json.loads(raw)
+            out.setdefault(str(d["id"]), d)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue   # same as messages._parse: a malformed line is dropped
+    return out
+
+
+def _merge_messages(src: Path, dst: Path) -> None:
+    """Fold a legacy queue into the qualified one: every id of both survives,
+    and a message delivered in either stays delivered."""
+    merged = _read_messages(dst)
+    for mid, d in _read_messages(src).items():
+        if mid not in merged:
+            merged[mid] = d
+        elif d.get("delivered_at") and not merged[mid].get("delivered_at"):
+            merged[mid]["delivered_at"] = d["delivered_at"]
+    rows = sorted(merged.values(), key=lambda d: str(d.get("created_at", "")))
+    tmp = dst.with_name(dst.name + ".tmp")
+    tmp.write_text("".join(json.dumps(d) + "\n" for d in rows))
+    os.replace(tmp, dst)
+    _verify_messages(src, dst)
+
+
+def _verify_messages(src: Path, dst: Path) -> None:
+    """Verify every source id and its delivery status survived the merge."""
+    after = _read_messages(dst)
+    if any(mid not in after or (d.get("delivered_at") and not after[mid].get("delivered_at"))
+           for mid, d in _read_messages(src).items()):
+        raise OSError(f"migration of {src} not verified")
+
+
+def _migrate_intents(root: Path, target: str, issue: int, repo: str) -> None:
+    """Hand each pending unqualified intent of the task to the repository."""
+    for p in sorted((root / "intents").glob("*.json")):
+        try:
+            rec = json.loads(p.read_text())
+            owned = (rec["target"] == target and int(rec["issue"]) == issue
+                     and not rec.get("repo"))
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if owned:
+            write_json_atomic(p, {**rec, "repo": repo})
+
+
+class _MigrationConflict(Exception):
+    """Both copies survive until an operator resolves ambiguous ownership/content."""
+
+
+def _migration_bytes(path: Path, identity: tuple[str, int, str] | None) -> bytes:
+    if identity is None:
+        return path.read_bytes()
+    target, issue, repo = identity
+    try:
+        task = _read(path)
+        if task is None or (task.target, task.issue) != (target, issue):
+            raise ValueError("wrong task identity")
+        if task.repo not in ("", repo):
+            raise ValueError("wrong repository")
+        return json.dumps(asdict(replace(task, repo=repo)), sort_keys=True).encode()
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise _MigrationConflict(f"invalid task replacement {path}: {exc}") from exc
+
+
+def _reconcile_copy(root: Path, src: Path, dst: Path,
+                    identity: tuple[str, int, str] | None = None) -> None:
+    """Three-way copy: only replace a destination known to be unchanged.
+
+    The journal records the last agreed source version. A destination-only
+    update wins; a source-only update is copied; concurrent edits are retained
+    in place for explicit resolution. No timestamps or existence-based guesses.
+    """
+    journal = root / "migration-copies.json"
+    versions = json.loads(journal.read_text()) if journal.exists() else {}
+    key = str(src.relative_to(root)) + " -> " + str(dst.relative_to(root))
+    source = _migration_bytes(src, identity)
+    digest = hashlib.sha256(source).hexdigest()
+    if _destination_wins(src, dst, identity, digest, versions.get(key)):
+        return  # the source was copied before the destination changed
+    _write_copy(src, dst, identity, source)
+    versions[key] = digest
+    write_json_atomic(journal, versions)
+
+
+def _destination_wins(src: Path, dst: Path, identity: tuple[str, int, str] | None,
+                      digest: str, previous: str | None) -> bool:
+    """True when only the destination changed since the last agreed copy;
+    raise when both sides changed or the destination's owner is unverified."""
+    if not dst.exists():
+        return False
+    if identity is not None and _read_repository(dst) != identity[2]:
+        raise _MigrationConflict(f"unverified repository ownership: {dst}")
+    current = hashlib.sha256(_migration_bytes(dst, identity)).hexdigest()
+    if current == digest:
+        return False
+    if digest == previous:
+        return True
+    if current != previous:
+        raise _MigrationConflict(f"conflicting migration copies: {src} and {dst}")
+    return False
+
+
+def _write_copy(src: Path, dst: Path, identity: tuple[str, int, str] | None,
+                source: bytes) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if identity is None:
+        _copy_file(src, dst)
+    else:
+        write_json_atomic(dst, json.loads(source))
+    if _migration_bytes(dst, identity) != source:
+        raise OSError(f"migration of {src} not verified")
+
+
+def _read_repository(path: Path) -> str:
+    try:
+        return json.loads(path.read_text()).get("repo", "")
+    except (json.JSONDecodeError, AttributeError):
+        return ""
+
+
+def _migrate_files(root: Path, target: str, issue: int, repo: str) -> list[Path]:
+    """Reconcile task and sidecars before retiring any original."""
+    originals = _task_sources(root, target, issue)
+    dst = _path(root, target, issue, repo)
+    for src in originals:
+        _reconcile_copy(root, src, dst, (target, issue, repo))
+    pairs = zip(_sidecar_paths(root, target, issue),
+                _sidecar_paths(root, target, issue, repo))
+    for src, new in pairs:
+        if src.exists():
+            _reconcile_copy(root, src, new)
+            originals.append(src)
+    # waiting-<issue> speaks for the bare task-<issue>.json; move it only with that record
+    legacy_waiting = _legacy_waiting_path(root, issue)
+    if _legacy_path(root, issue) in originals and legacy_waiting.exists():
+        _reconcile_copy(root, legacy_waiting, _waiting_path(root, target, issue, repo))
+        originals.append(legacy_waiting)
+    originals += _migrate_messages(root, target, issue, repo)
+    _migrate_intents(root, target, issue, repo)
+    return originals
+
+
+def _migrate_messages(root: Path, target: str, issue: int, repo: str) -> list[Path]:
+    """Copy or merge the legacy queue; return its original for deferred removal."""
+    src = root / "messages" / f"{task_key(target, issue)}.jsonl"
+    if not src.exists():
+        return []
+    dst = root / "messages" / f"{task_key(target, issue, repo)}.jsonl"
+    if dst.exists():
+        _merge_messages(src, dst)
+    else:
+        _copy_file(src, dst)
+    return [src]
+
+
+def _sidecar_paths(root: Path, target: str, issue: int, repo: str = "") -> list[Path]:
+    k = task_key(target, issue, repo)
+    return [_session_path(root, target, issue, repo), _waiting_path(root, target, issue, repo),
+            _background_path(root, target, issue, repo),
+            root / "execution-overrides" / f"{k}.json", root / "quarantine" / f"{k}.json",
+            root / f"{WAKE_BLOCKED_PREFIX}{k}"]
+
+
+def _verify_tree(old_root: Path, new_root: Path) -> None:
+    if {p.relative_to(old_root) for p in old_root.rglob("*")} \
+            - {p.relative_to(new_root) for p in new_root.rglob("*")}:
+        raise OSError(f"migration of {old_root} not verified")
+
+
+def _migrate_archive(root: Path, target: str, issue: int, repo: str) -> list[Path]:
+    old_root = archive_root(root, target, issue)
+    if not old_root.is_dir():
+        return []
+    new_root = archive_root(root, target, issue, repo=repo)
+
+    def copy(src, dst):
+        src, dst = Path(src), Path(dst)
+        identity = (target, issue, repo) if src == old_root / "task.json" else None
+        _reconcile_copy(root, src, dst, identity)
+        return str(dst)
+
+    shutil.copytree(old_root, new_root, dirs_exist_ok=True, copy_function=copy)
+    _verify_tree(old_root, new_root)
+    return [old_root]
+
+
+def migrate_legacy(state_dir: str | Path, proven: dict[str, str]) -> None:
+    """Migrate proven identities, retaining originals on ambiguous conflicts.
+
+    Copies are journaled and reconciled on retries. Original records remain
+    until every replacement has been verified; message queues merge by id.
+    """
+    root = Path(state_dir)
+    originals: list[Path] = []
+    for target, issue in sorted(_legacy_identities(root, proven)):
+        repo = proven[target]
+        try:
+            pending = _migrate_files(root, target, issue, repo)
+            pending += _migrate_archive(root, target, issue, repo)
+        except _MigrationConflict as exc:
+            warnings.warn(f"migration unresolved for {target}#{issue}: {exc}",
+                          RuntimeWarning)
+            continue
+        originals += pending
+    for src in originals:
+        shutil.rmtree(src) if src.is_dir() else src.unlink()

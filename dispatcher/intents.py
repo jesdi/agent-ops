@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dispatcher.state import task_key
+
 INTENTS_DIR = "intents"
 ACTIONS = ("reply", "park", "kill", "retry", "resume", "cancel", "answers")
 
@@ -25,6 +27,7 @@ class Intent:
     actor: str
     created_at: str                   # iso8601 UTC
     path: Path
+    repo: str = ""                    # "" = legacy file, repository not proven
 
 
 def _dir(state_dir: str | Path) -> Path:
@@ -32,21 +35,25 @@ def _dir(state_dir: str | Path) -> Path:
 
 
 def write_intent(state_dir: str | Path, action: str, target: str, issue: int,
-                 payload: dict, actor: str, epoch_ms: int) -> Path:
+                 payload: dict, actor: str, epoch_ms: int, *,
+                 repo: str = "") -> Path:
     if action not in ACTIONS:
         raise ValueError(f"unknown intent action: {action!r}")
     d = _dir(state_dir)
     d.mkdir(parents=True, exist_ok=True)
-    p = d / f"{epoch_ms}-{target}-{issue}-{action}.json"
+    p = d / f"{epoch_ms}-{task_key(target, issue, repo)}-{action}.json"
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps({
+    body = {
         "action": action,
         "target": target,
         "issue": issue,
         "payload": payload,
         "actor": actor,
         "created_at": datetime.now(timezone.utc).isoformat(),
-    }, indent=2))
+    }
+    if repo:   # an unqualified intent keeps its old body
+        body["repo"] = repo
+    tmp.write_text(json.dumps(body, indent=2))
     tmp.replace(p)
     return p
 
@@ -66,7 +73,8 @@ def list_intents(state_dir: str | Path) -> list[Intent]:
                               payload=dict(rec.get("payload") or {}),
                               actor=str(rec.get("actor", "")),
                               created_at=str(rec.get("created_at", "")),
-                              path=p))
+                              path=p,
+                              repo=str(rec.get("repo", ""))))
         except (json.JSONDecodeError, KeyError, TypeError, ValueError,
                 OSError) as exc:
             print(f"[warn] malformed intent {p.name} deleted: {exc}",
