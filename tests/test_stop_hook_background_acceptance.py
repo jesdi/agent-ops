@@ -35,7 +35,9 @@ def _listening(sock):
 
 
 @pytest.fixture
-def env():
+def env(monkeypatch):
+    # These hook-format tests model a verified legacy container peer.
+    monkeypatch.setattr("dispatcher.waitd._legacy_peer_matches", lambda *args: True)
     d = Path(tempfile.mkdtemp(prefix="w_"))
     threading.Thread(target=serve, args=(sock_path(d), d), daemon=True).start()
     _listening(sock_path(d))

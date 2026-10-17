@@ -64,13 +64,13 @@ class FakeGitHub:
 
 
 class FakeSessions:
-    def capture_tail(self, target, issue, lines=25):
+    def capture_tail(self, target, issue, lines=25, repo=""):
         return ""
 
-    def capture_history(self, target, issue, lines=2000):
+    def capture_history(self, target, issue, lines=2000, repo=""):
         return ""
 
-    def is_alive(self, target, issue):
+    def is_alive(self, target, issue, repo=""):
         return False
 
 
@@ -262,6 +262,7 @@ def repo_aware_sessions(alive):
 
     class RepoAwareSessions(FakeSessions):
         def end(self, target, issue, repo=""):
+            self.repo_end_calls = getattr(self, "repo_end_calls", []) + [(target, repo, issue)]
             super().end(target, issue)
 
     return RepoAwareSessions(alive=alive)
@@ -304,12 +305,12 @@ def test_qualified_kill_releases_only_its_own_repository_issue(tmp_path):
     assert github.released == [(BACK, ISSUE)]
     assert state.load(tmp_path, PROJECT, ISSUE, repo=BACK).stage == state.Stage.FAILED
     assert state.load(tmp_path, PROJECT, ISSUE, repo=FRONT).stage != state.Stage.FAILED
-    # The session is named by (project, issue) alone: with a colliding task it
-    # may belong to the other repository, so a destructive action leaves it.
-    assert sessions.end_calls == []
+    # Its session label is qualified, so ending it cannot reach the sibling's.
+    assert sessions.end_calls == [(PROJECT, ISSUE)]
+    assert sessions.repo_end_calls == [(PROJECT, BACK, ISSUE)]
 
 
-def test_qualified_cancel_leaves_the_colliding_repository_session(tmp_path):
+def test_qualified_cancel_ends_only_its_own_session(tmp_path):
     _, client = rig(tmp_path)
     assert client.post(url(BACK, "/cancel"), headers=HEADERS).status_code == 202
     sessions, github = repo_aware_sessions({ISSUE}), RecordingGitHub()
@@ -318,10 +319,11 @@ def test_qualified_cancel_leaves_the_colliding_repository_session(tmp_path):
     assert github.canceled == [(BACK, ISSUE)]
     assert state.load(tmp_path, PROJECT, ISSUE, repo=BACK).stage == state.Stage.CANCELED
     assert state.load(tmp_path, PROJECT, ISSUE, repo=FRONT).stage != state.Stage.CANCELED
-    assert sessions.end_calls == []
+    assert sessions.end_calls == [(PROJECT, ISSUE)]
+    assert sessions.repo_end_calls == [(PROJECT, BACK, ISSUE)]
 
 
-def test_qualified_park_parks_its_task_and_leaves_the_colliding_session(tmp_path):
+def test_qualified_park_parks_and_ends_only_its_own_session(tmp_path):
     from tests.test_main import FakeNotifier
     _, client = rig(tmp_path)
     assert client.post(url(BACK, "/park"), headers=HEADERS).status_code == 202
@@ -330,25 +332,26 @@ def test_qualified_park_parks_its_task_and_leaves_the_colliding_session(tmp_path
 
     assert state.load(tmp_path, PROJECT, ISSUE, repo=BACK).park
     assert not state.load(tmp_path, PROJECT, ISSUE, repo=FRONT).park
-    assert sessions.end_calls == []
+    assert sessions.end_calls == [(PROJECT, ISSUE)]
+    assert sessions.repo_end_calls == [(PROJECT, BACK, ISSUE)]
 
 
 class LiveSessions(FakeSessions):
-    """A live session that is named by (project, issue) alone."""
+    """A live session of the backend execution only."""
 
-    def capture_tail(self, target, issue, lines=25):
+    def capture_tail(self, target, issue, lines=25, repo=""):
         return "LIVE of someone"
 
-    def capture_history(self, target, issue, lines=2000):
+    def capture_history(self, target, issue, lines=2000, repo=""):
         return "LIVE of someone"
 
-    def is_alive(self, target, issue):
-        return True
+    def is_alive(self, target, issue, repo=""):
+        return repo == BACK
 
 
 def test_colliding_tasks_never_read_a_shared_session_or_snapshot(tmp_path):
-    """A repository-less snapshot or live session cannot be proven to belong
-    to either colliding task: neither history may show it."""
+    """A repository-less snapshot is no task's output, and a live session is
+    read only through its own repository's label."""
     gh = FakeGitHub()
     gh.rows[PROJECT] = [row(FRONT), row(BACK)]
     for r in (FRONT, BACK):
@@ -362,26 +365,19 @@ def test_colliding_tasks_never_read_a_shared_session_or_snapshot(tmp_path):
     for r in (FRONT, BACK):
         assert dead.get(url(r, "/history"), headers=HEADERS).json()["text"] == ""
 
-    # Removing one owner must not hand the shared file to the survivor: a
-    # fresh reader still withholds it.
+    live = TestClient(create_app(cfg, Sources(str(tmp_path), LiveSessions(), gh,
+                                              systemctl=("true",))))
+    assert live.get(url(BACK, "/history"), headers=HEADERS).json()["text"] == "LIVE of someone"
+    assert live.get(url(FRONT, "/history"), headers=HEADERS).json()["text"] == ""
+    assert "LIVE of someone" not in live.get(url(FRONT), headers=HEADERS).text
+
+    # A restart after the frontend task is removed must still withhold the
+    # unqualified snapshot and address the backend session by its own identity.
     state.delete(tmp_path, PROJECT, ISSUE, repo=FRONT)
     gh.rows[PROJECT] = [row(BACK)]
     fresh = TestClient(create_app(cfg, Sources(str(tmp_path), FakeSessions(), gh,
                                                systemctl=("true",))))
     assert fresh.get(url(BACK, "/history"), headers=HEADERS).json()["text"] == ""
-    state.save(tmp_path, task(FRONT))
-    gh.rows[PROJECT] = [row(FRONT), row(BACK)]
-
-    live =TestClient(create_app(cfg, Sources(str(tmp_path), LiveSessions(), gh,
-                                              systemctl=("true",))))
-    for r in (FRONT, BACK):
-        assert live.get(url(r, "/history"), headers=HEADERS).json()["text"] == ""
-        assert "LIVE of someone" not in live.get(url(r), headers=HEADERS).text
-
-    # Removing one owner must not hand the live session to the survivor either.
-    state.delete(tmp_path, PROJECT, ISSUE, repo=FRONT)
-    gh.rows[PROJECT] = [row(BACK)]
     survivor = TestClient(create_app(cfg, Sources(str(tmp_path), LiveSessions(), gh,
                                                   systemctl=("true",))))
-    assert survivor.get(url(BACK, "/history"), headers=HEADERS).json()["text"] == ""
-    assert "LIVE of someone" not in survivor.get(url(BACK), headers=HEADERS).text
+    assert survivor.get(url(BACK, "/history"), headers=HEADERS).json()["text"] == "LIVE of someone"

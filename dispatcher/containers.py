@@ -21,12 +21,18 @@ _TASK_BRANCH = re.compile(r"agent/task-(\d+)")
 TASK_JSON_MAX_BYTES = 64 * 1024
 
 
-def task_branch(worktree: str, name: str) -> str:
+def _name_word(name: str) -> str:
+    """A container name as one shell word; a plain name stays unquoted."""
+    return name if re.fullmatch(r"[A-Za-z0-9_.-]+", name) else shlex.quote(name)
+
+
+def task_branch(worktree: str, name: str, issue: int | None = None) -> str:
     """The branch create_workspace recorded in .agent/task.json, injected
     into the session as AGENT_OPS_TASK_BRANCH for the guardrail's lease-push
     exception. That file is session-writable, so the value is taken only
-    when it is exactly the branch the dispatcher gives the task that the
-    container `name` ends in (`agent/task-<issue>`). "" otherwise, also for
+    when it is exactly the branch the dispatcher gives the launched task
+    (`agent/task-<issue>`). The dispatcher passes `issue`; without it the
+    issue is read off the end of the container `name`. "" otherwise, also for
     a worktree provisioned before the field existed: the guardrail then
     fails closed on lease pushes."""
     raw = read_regular(Path(worktree) / ".agent" / "task.json", TASK_JSON_MAX_BYTES)
@@ -35,7 +41,11 @@ def task_branch(worktree: str, name: str) -> str:
     except (ValueError, AttributeError, RecursionError):
         return ""
     m = _TASK_BRANCH.fullmatch(branch) if isinstance(branch, str) else None
-    return branch if m and name.endswith(f"-{m.group(1)}") else ""
+    if not m:
+        return ""
+    owned = (int(m.group(1)) == issue if issue is not None
+             else name.endswith(f"-{m.group(1)}"))
+    return branch if owned else ""
 
 
 def _host_path(what: str, path: str) -> str:
@@ -97,7 +107,8 @@ def _wrapper() -> list[str]:
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 args: str, effort: str = "",
-                second: Entry | None = None, clone: str = "") -> str:
+                second: Entry | None = None, clone: str = "",
+                issue: int | None = None) -> str:
     """The session's shell command, resolved from its qualified model ID.
     An unknown provider raises before anything runs.
     A granted `second` model (models.second_model) also gets its runtime's
@@ -113,7 +124,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     extra = _runtime_args(runtime_for(second.model_id)) if second else []
     worktree = _host_path("worktree", worktree)
     state = _state_dir()
-    branch = task_branch(worktree, name)
+    branch = task_branch(worktree, name, issue)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
     clone_mount = (_mount(_host_path("clone", clone), clone) + " ") if clone else ""
     home = str(Path.home())
@@ -126,7 +137,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     except OSError:
         pass
     return (
-        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {shlex.quote(name)} "
+        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {_name_word(name)} "
         f"--memory {shlex.quote(memory)} --cpus {shlex.quote(cpus)} "
         f"{shlex.join(_runtime_args(runtime) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's

@@ -47,6 +47,11 @@ class ArtifactListing:
     expired: bool
 
 
+def _repo_kw(repo: str) -> dict:
+    """`repo=` for a Sessions call only when the repository is proven."""
+    return {"repo": repo} if repo else {}
+
+
 class Sources:
     def __init__(self, state_dir: str, sessions, github,
                  clock: Callable[[], float] = time.time,
@@ -304,13 +309,10 @@ class Sources:
         return any((t.target, t.issue) == (target, issue) and t.repo != repo
                    for t in self.tasks() + self.archived_named(target, issue))
 
-    def _owns_session(self, target: str, issue: int, repo: str) -> bool:
-        return state.owns_task_session(self.state_dir, target, issue, repo)
-
     def pane_tail(self, target: str, issue: int, repo: str = "") -> str:
         try:
             if self.session_alive(target, issue, repo):
-                return self._sessions.capture_tail(target, issue)
+                return self._sessions.capture_tail(target, issue, **_repo_kw(repo))
         except Exception:
             # capture runs the session CLI with timeout=30, which RAISES on a wedged
             # server. A missing tail degrades the task view; it must never
@@ -322,7 +324,7 @@ class Sources:
                      repo: str = "") -> str:
         try:
             if self.session_alive(target, issue, repo):
-                return self._sessions.capture_history(target, issue, lines)
+                return self._sessions.capture_history(target, issue, lines, **_repo_kw(repo))
         except Exception:
             # Same degrade contract as pane_tail: a wedged session server
             # (capture_history runs with timeout=30 and RAISES) must never
@@ -354,8 +356,9 @@ class Sources:
         return ""
 
     def session_alive(self, target: str, issue: int, repo: str = "") -> bool:
-        return (self._owns_session(target, issue, repo)
-                and self._sessions.is_alive(target, issue))
+        # Sessions resolves the qualified label, and a legacy one only for
+        # the repository its launch record names.
+        return self._sessions.is_alive(target, issue, **_repo_kw(repo))
 
     def pending_intents(self) -> list[dict]:
         root = self.state_dir / "intents"

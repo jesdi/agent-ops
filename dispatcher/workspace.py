@@ -328,6 +328,17 @@ def install_stop_hook(wt: str) -> None:
                         json.dumps(settings, indent=2) + "\n")
 
 
+def bind_execution(wt: str, repo: str, token: str) -> None:
+    """Record the launch's repository in .agent/task.json and its secret in
+    .agent/execution-token, for the Stop hook to put in its ping. The
+    dispatcher keeps the issued copy; waitd trusts the repository only
+    with the matching token."""
+    task = _json_object(read_worktree_file(wt, ".agent", "task.json"))
+    task["repo"] = repo
+    write_worktree_file(wt, ".agent", "task.json", json.dumps(task))
+    write_worktree_file(wt, ".agent", "execution-token", token, mode=0o600)
+
+
 LOCAL_STATE = (".agent/", ".claude/settings.local.json")
 
 

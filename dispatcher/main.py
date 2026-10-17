@@ -64,7 +64,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               next_stage, read_background, read_session,
                               read_stage_signal,
                               implement_done, resumable_crash, shown_stage,
-                              save, task_key)
+                              save, task_key, owns_task_session, token_issued)
 from dispatcher.workspace import (append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
@@ -327,17 +327,15 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     enforce — no waiting marker, a `working` signal — or the very next pass
     re-reads blocked/awaiting-ci, re-parks, and ENDS the session that was
     just re-authenticated."""
-    if not _owns_task_session(cfg, task.target, task.issue, task.repo):
-        return
     if relogin.classify_login(
-            deps.sessions.capture_tail(task.target, task.issue)) is None:
+            deps.sessions.capture_tail(task.target, task.issue, **_repo_kw(task))) is None:
         deps.notifier.send("status", lines=[
             f"{_ref(cfg, task)} is no longer at a login prompt — code NOT typed "
             f"(the pane would have run it as a shell command). Still parked; "
             f"attach to the session to sort it out."])
         return
-    deps.sessions.send_text(task.target, task.issue, code.strip())
-    clear_turn_markers(cfg.state_dir, task.target, task.issue)
+    deps.sessions.send_text(task.target, task.issue, code.strip(), **_repo_kw(task))
+    clear_turn_markers(cfg.state_dir, task.target, task.issue, repo=task.repo)
     signal = read_stage_signal(task.worktree)
     if signal is not None and signal.status != "working":
         by_name = {t.name: t for t in cfg.targets}
@@ -646,8 +644,7 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     _write_working(task.worktree, stage, entry)
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
-                              second=launch.second)
-    state.record_session_owner(cfg.state_dir, task.target, task.issue, task.repo)
+                              second=launch.second, **_repo_kw(task))
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained,
                             repo=task.repo)
     # A gated task's plan session runs at the gate, so its `done` is the approval.
@@ -680,10 +677,10 @@ def _continue_or_restart(cfg: Config, deps: Deps, target: Target,
             raise RuntimeError("session ownership is not isolated")
         deps.sessions.resume(task.target, task.issue, task.worktree, text,
                              launch.model, launch.entry.effort,
-                             second=launch.second, session_id=record.session_id)
-        state.record_session_owner(cfg.state_dir, task.target, task.issue, task.repo)
+                             second=launch.second, session_id=record.session_id,
+                             **_repo_kw(task))
         messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained,
-                            repo=task.repo)
+                                repo=task.repo)
         task = replace(task, **NO_POKES)
     else:
         detail = (f"new conversation: session recorded for {record.stage}" if record
@@ -762,33 +759,27 @@ def _auth_dark_edge(cfg: Config, deps: Deps, usages: dict[str, ProviderUsage]) -
         marker.write_text(json.dumps({"since": st["since"], "alerted": True}))
 
 
+def _repo_kw(task) -> dict:
+    """`repo=` for a session call, only when the task's repository is proven:
+    an unqualified task keeps the pre-qualification call shape."""
+    return {"repo": task.repo} if task.repo else {}
+
+
 def _end_session(cfg: Config, deps: Deps, target: str, issue: int,
                  repo: str = "") -> None:
     """End the task's session and drop its turn-end markers (waiting and
     background): the next session must never inherit the old one's. The
     repository names the snapshot the console reads back as this task's."""
-    if repo:
-        deps.sessions.end(target, issue, repo)
-    else:
-        deps.sessions.end(target, issue)
-    clear_turn_markers(cfg.state_dir, target, issue)
-
-
-def _owns_task_session(cfg: Config, target: str, issue: int, repo: str) -> bool:
-    return state.owns_task_session(cfg.state_dir, target, issue, repo)
+    deps.sessions.end(target, issue, **({"repo": repo} if repo else {}))
+    clear_turn_markers(cfg.state_dir, target, issue, repo=repo)
 
 
 def _session_launch_blocked(cfg: Config, deps: Deps, task: TaskState) -> bool:
-    """Only a live session this task does not provably own blocks a launch.
-    Colliding task records, archived or active, are history, not a conflict."""
-    return (not _owns_task_session(cfg, task.target, task.issue, task.repo)
-            and deps.sessions.is_alive(task.target, task.issue))
-
-
-def _end_owned_session(cfg: Config, deps: Deps, target: str, issue: int,
-                       repo: str) -> None:
-    if _owns_task_session(cfg, target, issue, repo):
-        _end_session(cfg, deps, target, issue, repo)
+    """A live session of this task blocks a launch. Its label is its own
+    (qualified, or the legacy one it provably owns), so a sibling
+    repository's session of the same number never does."""
+    return bool(task.repo) and deps.sessions.is_alive(
+        task.target, task.issue, **_repo_kw(task))
 
 
 def _park_answers_request(task: TaskState, artifact: str) -> AnswersRequest | None:
@@ -814,8 +805,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     is_answers: bool = False,
                     reason: str = WHY_DECISION) -> None:
     target = replace(target, repo=task.repo or target.repo)
-    tail = (deps.sessions.capture_tail(task.target, task.issue)
-            if _owns_task_session(cfg, task.target, task.issue, task.repo) else "")
+    tail = deps.sessions.capture_tail(task.target, task.issue, **_repo_kw(task))
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, target, task, note,
                                              tail, login):
@@ -830,7 +820,7 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         "parked_question", issue=task.issue, repo=task.repo, title=task.title,
         url=_url(target, task.issue), target=target.name,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
-    _end_owned_session(cfg, deps, task.target, task.issue, task.repo)
+    _end_session(cfg, deps, task.target, task.issue, task.repo)
     # A wake that ends here is over: the wake that follows this park says
     # for itself whether it is an attach, and on which model.
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
@@ -913,7 +903,7 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     if msg_id == 0:
         return False
-    clear_turn_markers(cfg.state_dir, task.target, task.issue)
+    clear_turn_markers(cfg.state_dir, task.target, task.issue, repo=task.repo)
     save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
                                 park_note=note, operator_request=None,
                                 **NO_POKES,
@@ -1016,7 +1006,7 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target, task: TaskState,
     unattended rounds used up may have left no plan: the operator is told
     that, not "plan ready"."""
     died = reason is ReviewPark.SESSION_DIED
-    tail = deps.sessions.capture_tail(task.target, task.issue)
+    tail = deps.sessions.capture_tail(task.target, task.issue, **_repo_kw(task))
     note = tail.strip() or "(no detail)"
     if task.spec_path:
         pub = spec_publish.ensure_published(
@@ -1243,6 +1233,21 @@ def _expired(task: TaskState, cutoff_seconds: int) -> bool:
     return (datetime.now(timezone.utc) - since).total_seconds() >= cutoff_seconds
 
 
+def _project_member(cfg: Config, repo: str):
+    return next((r for p in cfg.projects for r in p.repositories if r.repo == repo), None)
+
+
+def _cleanup_target(cfg: Config, task: TaskState, by_name: dict):
+    """What `remove_workspace` needs for `task`: its target or project member
+    with the clone path of the task's own repository, else None (the worktree
+    stays: nothing knows its clone)."""
+    clone = _clone_map(cfg).get(task.repo) if task.repo else None
+    target = by_name.get(task.target) or _project_member(cfg, task.repo)
+    if target is None or (task.repo and not clone):
+        return None
+    return replace(target, clone_path=clone or target.clone_path)
+
+
 def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
     """Retire finished tasks (done, failed, won't do) past the retention
     window: worktree and local branch go (the remote branch, PR and issue
@@ -1254,12 +1259,12 @@ def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
     for task in load_all(cfg.state_dir):
         if not _expired(task, cfg.done_retention_days * 86400):
             continue
-        target = by_name.get(task.target)
+        target = _cleanup_target(cfg, task, by_name)
         if target is not None and task.worktree:
             remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
         _clear_wake_blocked(cfg, task.target, task.issue, task.repo)
-        clear_session(cfg.state_dir, task.target, task.issue)
-        delete(cfg.state_dir, task.target, task.issue)
+        clear_session(cfg.state_dir, task.target, task.issue, repo=task.repo)
+        delete(cfg.state_dir, task.target, task.issue, repo=task.repo)
         eventlog.append_event(cfg.state_dir, "flushed",
                               target=task.target, issue=task.issue, repo=task.repo,
                               stage=task.stage.value)
@@ -1284,7 +1289,11 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
     )
     for task in woken:
         target = targets[task.target]
-        if _session_launch_blocked(cfg, deps, task):
+        # Only a launch record authorizes replacing a live execution. A
+        # login park deliberately retains that execution until attach wakes it.
+        if (_session_launch_blocked(cfg, deps, task)
+                and not owns_task_session(cfg.state_dir, task.target, task.issue, task.repo)
+                and not token_issued(cfg.state_dir, task.target, task.issue, task.repo)):
             _mark_wake_blocked(cfg, target, task, "session ownership is not isolated")
             continue
         launch, why = _wake_launch(cfg, deps, target, task, admit, order)
@@ -1342,13 +1351,13 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     operator's messages in whatever the session reads first (the resume
     text or a fresh stage prompt), and it is taken back, and the operator
     is not pinged, when the launch fails."""
-    if _session_launch_blocked(cfg, deps, task):
-        raise RuntimeError("session ownership is not isolated")
     # End first, unconditionally. Most parks already stopped the session,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
     # running session (the failure _retry_stage and SpawnStage guard).
-    _end_owned_session(cfg, deps, task.target, task.issue, task.repo)
+    _end_session(cfg, deps, task.target, task.issue, task.repo)
+    if _session_launch_blocked(cfg, deps, task):
+        raise RuntimeError("session ownership is not isolated")
     if not task.hold_for_attach:
         _launch_woken(cfg, deps, target, task, launch)
         return
@@ -1476,7 +1485,7 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
     except Exception as exc:
         print(f"[warn] release failed for #{task.issue}: {exc}", file=sys.stderr)
     try:
-        log_tail = deps.sessions.capture_tail(task.target, task.issue, lines=30)
+        log_tail = deps.sessions.capture_tail(task.target, task.issue, **_repo_kw(task), lines=30)
     except Exception:
         log_tail = ""
     save(cfg.state_dir, _crash_failed(task))
@@ -1665,7 +1674,7 @@ def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
 def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
                        launch: Launch | None) -> TaskState:
     cfg = turn.cfg
-    clear_turn_markers(cfg.state_dir, task.target, task.issue)
+    clear_turn_markers(cfg.state_dir, task.target, task.issue, repo=task.repo)
     task = replace(task, stage=act.stage, updated_at=_now(),
                    **_stage_extra(task, act, turn.signal))
     save(cfg.state_dir, task)
@@ -1781,8 +1790,8 @@ def _poke_guard(deps: Deps, task: TaskState) -> _PokeGuard:
     """One read of herdr and one of the pane. Text plus Enter in a prompt
     can approve an action without the operator, so a read that failed is
     never taken as "no prompt"."""
-    state = deps.sessions.agent_state(task.target, task.issue)
-    tail = deps.sessions.capture_tail(task.target, task.issue)
+    state = deps.sessions.agent_state(task.target, task.issue, **_repo_kw(task))
+    tail = deps.sessions.capture_tail(task.target, task.issue, **_repo_kw(task))
     if state is None or not tail.strip():
         return _PokeGuard.UNKNOWN
     if state[0] == "working":
@@ -1797,7 +1806,7 @@ def _send_poke(turn: _Turn, task: TaskState, act: Poke) -> TaskState:
     refuses text every pass is then still parked at the cap. Only a
     delivered poke is counted and logged."""
     task = replace(task, poked_since=task.poked_since or time.time())
-    if not turn.deps.sessions.send_text(task.target, task.issue, act.text):
+    if not turn.deps.sessions.send_text(task.target, task.issue, act.text, **_repo_kw(task)):
         save(turn.cfg.state_dir, task)
         print(f"[warn] poke of #{task.issue} not delivered", file=sys.stderr)
         return task
@@ -1886,10 +1895,11 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
                      alive: bool) -> BackgroundView | None:
     """The task's background wait as this pass sees it; herdr is asked only
     when a live session has a background marker."""
-    wait = read_background(cfg.state_dir, task.target, task.issue) if alive else None
+    wait = read_background(cfg.state_dir, task.target, task.issue,
+                           repo=task.repo) if alive else None
     if wait is None:
         return None
-    return BackgroundView(wait, deps.sessions.agent_state(task.target, task.issue),
+    return BackgroundView(wait, deps.sessions.agent_state(task.target, task.issue, **_repo_kw(task)),
                           time.time(), cfg.background_wait_seconds)
 
 
@@ -1918,8 +1928,8 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     signal = read_stage_signal(task.worktree)
     policy = policy_for(cfg, target)
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
-    alive = deps.sessions.is_alive(task.target, task.issue)
-    waiting = has_waiting(cfg.state_dir, task.target, task.issue)
+    alive = deps.sessions.is_alive(task.target, task.issue, **_repo_kw(task))
+    waiting = has_waiting(cfg.state_dir, task.target, task.issue, repo=task.repo)
     why = track_gone(policy, task.track)
     if why:
         _park_stranded(cfg, deps, target, task, why)
@@ -1931,7 +1941,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # Query idle only when it can matter: detection enabled and the
     # session alive (the crash path owns dead sessions).
     stall_after = cfg.stall_after_seconds if alive else 0
-    idle = (deps.sessions.idle_seconds(task.target, task.issue)
+    idle = (deps.sessions.idle_seconds(task.target, task.issue, **_repo_kw(task))
             if alive and stall_after > 0 else None)
     task = _end_poke_stretch(cfg, task, idle, dry_run)
     turn = _Turn(cfg, deps, target, signal, dry_run)
@@ -1981,7 +1991,7 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
         title=f"session crashed during {task.stage.value}: {task.title}",
         error=(f"session task-{task.target}-{task.issue} died during stage "
                f"{task.stage.value}"),
-        log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
+        log_tail=deps.sessions.capture_tail(task.target, task.issue, **_repo_kw(task), lines=30),
         repro=repro,
         worktree=task.worktree)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
@@ -2190,7 +2200,7 @@ def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
         # the grace park would end the session with the message undelivered.
         # So it parks now, as the grace park would (session ended, slot
         # freed), and wakes below.
-        _end_owned_session(cfg, deps, task.target, task.issue, task.repo)
+        _end_session(cfg, deps, task.target, task.issue, task.repo)
         task = replace(task, park=PARK_REVIEW, slot=NO_SLOT)
     if task.park in (PARK_HUMAN, PARK_REVIEW):
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
@@ -2259,8 +2269,8 @@ def _apply_kill_intent(cfg: Config, deps: Deps, by_name: dict,
         print(f"[warn] kill intent for #{issue}: no unique matching task "
               f"— skipped", file=sys.stderr)
         return
-    _end_owned_session(cfg, deps, kill_target, issue,
-                       intent.repo or (task.repo if task is not None else ""))
+    _end_session(cfg, deps, kill_target, issue,
+                 intent.repo or (task.repo if task is not None else ""))
     if task is not None:
         _release_killed_task(cfg, deps, by_name, task, issue)
     eventlog.append_event(cfg.state_dir, "failed", target=kill_target,
@@ -2310,7 +2320,7 @@ def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
     repo = intent.repo or (task.repo if task is not None else "")
     if not _cancel_identity_known(deps, by_name, cancel_target, issue, repo, task):
         raise IntentDropped("cancel identity is not a task or current project queue issue")
-    _end_owned_session(cfg, deps, cancel_target, issue, repo)
+    _end_session(cfg, deps, cancel_target, issue, repo)
     _cancel_board_issue(deps, by_name, cancel_target, issue, repo)
     if task is not None:
         save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
@@ -2501,7 +2511,8 @@ def _prune_snapshots(cfg: Config) -> None:
                      if t.stage in IN_FLIGHT_STAGES]
     except Exception:
         return  # unreadable/corrupt state dir: skip, never abort the sweep
-    live = {f"task-{t.target}-{t.issue}.txt" for t in in_flight} \
+    live = {f"task-{task_key(t.target, t.issue, t.repo)}.txt" for t in in_flight} \
+         | {f"task-{t.target}-{t.issue}.txt" for t in in_flight} \
          | {f"task-{t.issue}.txt" for t in in_flight}
     now = time.time()
     for p in root.glob("task-*.txt"):
@@ -2701,6 +2712,13 @@ def _load(config_path: str) -> tuple[Config, Config]:
     return boot, cfg
 
 
+def _clone_map(cfg: Config) -> dict[str, str]:
+    """Clone path by target name and by repository, project members included."""
+    return {**{t.name: t.clone_path for t in cfg.targets},
+            **{t.repo: t.clone_path for t in cfg.targets},
+            **{r.repo: r.clone_path for p in cfg.projects for r in p.repositories}}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="agent-ops-dispatcher")
     ap.add_argument("--config", default="targets.yaml")
@@ -2718,7 +2736,7 @@ def main() -> None:
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
                                   cpus=cfg.session_cpus, state_dir=cfg.state_dir,
-                                  clones={t.name: t.clone_path for t in cfg.targets}),
+                                  clones=_clone_map(cfg)),
                 notifier=Notifier(dry_run=args.dry_run,
                                   console_url=cfg.console_url,
                                   multi_target=len(cfg.targets) > 1))

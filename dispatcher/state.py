@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import stat
 import warnings
@@ -1045,6 +1046,15 @@ def migrate_legacy(state_dir: str | Path, proven: dict[str, str]) -> None:
         shutil.rmtree(src) if src.is_dir() else src.unlink()
 
 
+def session_owner(state_dir: str | Path, target: str, issue: int) -> str:
+    """The repository a launch record names as owner of the shared session
+    name; "" when no record exists."""
+    try:
+        return session_owner_path(state_dir, target, issue).read_text()
+    except (OSError, ValueError):
+        return ""
+
+
 def owns_task_session(state_dir: str | Path, target: str, issue: int, repo: str) -> bool:
     """Only a launch record proves which repository owns a shared session name.
 
@@ -1053,10 +1063,7 @@ def owns_task_session(state_dir: str | Path, target: str, issue: int, repo: str)
     """
     if not repo:
         return True
-    try:
-        return session_owner_path(state_dir, target, issue).read_text() == repo
-    except (OSError, ValueError):
-        return False
+    return session_owner(state_dir, target, issue) == repo
 
 
 def session_owner_path(state_dir: str | Path, target: str, issue: int) -> Path:
@@ -1067,3 +1074,37 @@ def record_session_owner(state_dir: str | Path, target: str, issue: int, repo: s
     path = session_owner_path(state_dir, target, issue)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(repo)
+
+
+def _token_path(state_dir: str | Path, target: str, issue: int, repo: str) -> Path:
+    return Path(state_dir) / "execution-tokens" / task_key(target, issue, repo)
+
+
+def issue_execution_token(state_dir: str | Path, target: str, issue: int,
+                          repo: str) -> str:
+    """A fresh secret for one launch of one repository's execution. Only that
+    execution's worktree holds it, so its Stop ping can prove which
+    execution sent it; a sibling's session cannot read it."""
+    path = _token_path(state_dir, target, issue, repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_hex(16)
+    path.write_text(token)
+    path.chmod(0o600)
+    return token
+
+
+def token_issued(state_dir: str | Path, target: str, issue: int, repo: str) -> bool:
+    """True once this repository's execution was launched with a token: its
+    hook then carries one, so a tokenless ping cannot speak for it."""
+    return _token_path(state_dir, target, issue, repo).exists()
+
+
+def execution_token_matches(state_dir: str | Path, target: str, issue: int,
+                            repo: str, presented: object) -> bool:
+    """True when `presented` is the token issued for this identity. A missing
+    token file never matches: a declared repository must prove itself."""
+    try:
+        issued = _token_path(state_dir, target, issue, repo).read_text()
+    except OSError:
+        return False
+    return isinstance(presented, str) and secrets.compare_digest(issued, presented)

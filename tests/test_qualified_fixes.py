@@ -48,7 +48,7 @@ def test_board_counts_queued_mail_per_repository(tmp_path):
 
 def test_snapshot_writer_names_the_repository(tmp_path):
     class Pane(Sessions):
-        def capture_history(self, target, issue, lines=2000):
+        def capture_history(self, target, issue, lines=2000, repo=""):
             return "BACK terminal"
 
     Pane(state_dir=tmp_path)._snapshot(PROJECT, ISSUE, BACK)
@@ -144,58 +144,42 @@ def test_qualified_backlog_cancel_rechecks_and_uses_queue_repository(tmp_path):
     assert writer.canceled == [(BACK, ISSUE)]
 
 
-def test_park_and_reply_do_not_capture_or_end_a_colliding_session(tmp_path):
+def test_park_ends_only_its_own_session_and_reply_ends_none(tmp_path):
     from dispatcher import intents
     from tests.test_main import FakeNotifier
     from tests.test_web_qualified_task_api import RecordingGitHub, drain, repo_aware_sessions
     for repo in (FRONT, BACK):
         state.save(tmp_path, make_task(issue=ISSUE, target=PROJECT, repo=repo))
     sessions = repo_aware_sessions({ISSUE})
-    def forbidden_capture(*args, **kwargs):
-        raise AssertionError("must not capture a session with unproven ownership")
-    sessions.capture_tail = forbidden_capture
     notifier = FakeNotifier()
     intents.write_intent(tmp_path, "park", PROJECT, ISSUE, {}, "op", 1, repo=BACK)
     drain(tmp_path, RecordingGitHub(), sessions, notifier)
     assert state.load(tmp_path, PROJECT, ISSUE, repo=BACK).park == state.PARK_HUMAN
     assert not state.load(tmp_path, PROJECT, ISSUE, repo=FRONT).park
-    assert sessions.end_calls == []
+    assert sessions.end_calls == [(PROJECT, ISSUE)]
     assert notifier.contexts[0][1]["url"] == f"https://github.com/{BACK}/issues/{ISSUE}"
-    assert notifier.contexts[0][1]["note"] == "parked by operator"
+    assert notifier.contexts[0][1]["note"].startswith("parked by operator")
     assert not list((tmp_path / "snapshots").glob("*"))
     state.save(tmp_path, make_task(issue=ISSUE, target=PROJECT, repo=BACK,
                                    stage=state.Stage.AWAITING_PLAN_REVIEW))
     intents.write_intent(tmp_path, "reply", PROJECT, ISSUE, {"text": "continue"}, "op", 1, repo=BACK)
     drain(tmp_path, RecordingGitHub(), sessions, notifier)
     assert state.load(tmp_path, PROJECT, ISSUE, repo=BACK).park == state.PARK_WAKE
-    assert sessions.end_calls == []
+    assert sessions.end_calls == [(PROJECT, ISSUE)] * 2
     state.save(tmp_path, make_task(issue=ISSUE, target=PROJECT, repo=BACK, park=state.PARK_LOGIN))
     intents.write_intent(tmp_path, "reply", PROJECT, ISSUE, {"text": "code"}, "op", 1, repo=BACK)
     drain(tmp_path, RecordingGitHub(), sessions, notifier)
     assert state.load(tmp_path, PROJECT, ISSUE, repo=BACK).park == state.PARK_LOGIN
-    assert sessions.end_calls == []
+    assert sessions.end_calls == [(PROJECT, ISSUE)] * 2
 
 
-def test_live_session_does_not_gain_an_owner_after_task_removal(tmp_path):
-    from dispatcher import intents
-    from tests.test_web_qualified_task_api import RecordingGitHub, drain, repo_aware_sessions
+def test_a_launch_record_is_durable_and_never_transfers_on_deletion(tmp_path):
     for repo in (FRONT, BACK):
         state.save(tmp_path, make_task(issue=ISSUE, target=PROJECT, repo=repo))
-    sessions = repo_aware_sessions({ISSUE})
-    sessions.capture_history = lambda *args: "FRONT live output"
     state.delete(tmp_path, PROJECT, ISSUE, repo=FRONT)
-    cfg = make_config(tmp_path, targets=[make_target(PROJECT, FRONT)])
-    c = TestClient(create_app(cfg, Sources(str(tmp_path), sessions, FakeGitHub(), systemctl=("true",))))
-    assert c.get(url(BACK, "/history"), headers=HEADERS).json()["text"] == ""
-    intents.write_intent(tmp_path, "park", PROJECT, ISSUE, {}, "op", 1, repo=BACK)
-    drain(tmp_path, RecordingGitHub(), sessions)
-    assert sessions.end_calls == []
-    # A positive launch record is durable and never transfers on deletion.
     state.record_session_owner(tmp_path, PROJECT, ISSUE, FRONT)
     assert not state.owns_task_session(tmp_path, PROJECT, ISSUE, BACK)
     assert state.owns_task_session(tmp_path, PROJECT, ISSUE, FRONT)
-    state.record_session_owner(tmp_path, PROJECT, ISSUE, BACK)
-    assert c.get(url(BACK, "/history"), headers=HEADERS).json()["text"] == "FRONT live output"
 
 
 def test_archived_identity_participates_in_bare_backlog_actions(tmp_path):

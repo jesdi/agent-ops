@@ -13,13 +13,13 @@ FRONT, BACK = "example/shop-frontend", "example/shop-backend"
 
 
 class LiveSessions:
-    def is_alive(self, target, issue):
-        return True
+    def is_alive(self, target, issue, repo=""):
+        return repo == BACK
 
-    def capture_tail(self, target, issue, lines=25):
+    def capture_tail(self, target, issue, lines=25, repo=""):
         return "LIVE"
 
-    def capture_history(self, target, issue, lines=2000):
+    def capture_history(self, target, issue, lines=2000, repo=""):
         return "LIVE"
 
 
@@ -33,14 +33,15 @@ def test_colliding_tasks_do_not_share_a_live_session_or_snapshot(tmp_path):
     src = sources(tmp_path, FRONT, BACK)
     (tmp_path / "snapshots").mkdir()
     (tmp_path / "snapshots" / "task-shop-12.txt").write_text("SHARED")
-    assert src.pane_tail("shop", 12, BACK) == ""
-    assert src.pane_history("shop", 12, 10, BACK) == ""
+    assert src.pane_tail("shop", 12, FRONT) == ""
+    assert src.pane_history("shop", 12, 10, FRONT) == ""
+    assert src._read_snapshot("shop", 12, FRONT) == ""
     assert src._read_snapshot("shop", 12, BACK) == ""
+    assert src.pane_tail("shop", 12, BACK) == "LIVE"
 
 
 def test_the_sole_task_reads_its_session_and_the_writers_snapshot(tmp_path):
     src = sources(tmp_path, BACK)
-    state.record_session_owner(tmp_path, "shop", 12, BACK)
     assert src.pane_tail("shop", 12, BACK) == "LIVE"
     (tmp_path / "snapshots").mkdir()
     (tmp_path / "snapshots" / f"task-{state.task_key('shop', 12, BACK)}.txt").write_text("LAST")

@@ -30,6 +30,13 @@ here = Path(sys.argv[1])
 task = json.loads((here / "task.json").read_text())
 # Old worktrees lack target; waitd treats an empty target as a legacy ping.
 ping = {"issue": task["issue"], "target": task.get("target", "")}
+if task.get("repo"):
+    ping["repo"] = task["repo"]
+    try:
+        # The launch secret: waitd trusts the declared repository only with it.
+        ping["token"] = (here / "execution-token").read_text().strip()
+    except OSError:
+        pass
 codex = len(sys.argv) > 2
 # Argument mode never reads stdin. For Claude, drain stdin before parsing;
 # large hook inputs must not pass through an env var or argument.
