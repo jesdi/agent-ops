@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shlex
+import shutil
 import subprocess
 import time
 import os
@@ -24,10 +26,16 @@ from pathlib import Path
 from typing import Mapping
 
 from dispatcher import containers, herdr, workspace
+from dispatcher.containers import token_dir
 from dispatcher.models import Entry
 from dispatcher.runtimes import runtime_for
 from dispatcher.state import (clear_session, issue_execution_token,
                               owns_task_session, task_key)
+
+log = logging.getLogger(__name__)
+
+# A running scoped session gets a new token this long before the old expires.
+RENEW_MARGIN = 600
 
 
 def session_name(target: str, issue: int, repo: str = "") -> str:
@@ -45,10 +53,11 @@ def session_name(target: str, issue: int, repo: str = "") -> str:
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
                second: Entry | None = None, clone: str = "",
-               repo: str = "") -> str:
+               repo: str = "", scoped_token: bool = False) -> str:
     return containers.session_cmd(session_name(target, issue, repo), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  second=second, clone=clone, issue=issue)
+                                  second=second, clone=clone, issue=issue,
+                                  scoped_token=scoped_token)
 
 
 # The deployed checkout this module is imported from.
@@ -68,7 +77,10 @@ class Sessions:
 
     def __init__(self, dry_run: bool = False, memory: str = "2g",
                  cpus: str = "2", state_dir: str | Path | None = None,
-                 clones: Mapping[str, str] | None = None):
+                 clones: Mapping[str, str] | None = None,
+                 credentials=None):
+        # ExecutionCredentials: when set, every launch runs on a scoped App token.
+        self.credentials = credentials
         self.dry_run = dry_run
         self.memory = memory
         self.cpus = cpus
@@ -125,9 +137,23 @@ class Sessions:
         # worktree: the case _fail_task_crash exists for) then leaves no
         # workspace and no empty tab behind for a task that will never launch.
         runtime = runtime_for(model)
+        # With a credential service the execution holds only its repository's
+        # App token, minted fresh per launch (a resume relaunches, so it is
+        # replaced); a denial raises here and never falls back to the host
+        # GitHub login. Without one the legacy host login stays mounted.
+        scoped = self.credentials is not None
+        token_env = {}
+        if scoped:
+            register = getattr(self.credentials, "register_execution", None)
+            if register:
+                register(name, repo or target, "task")
+            credential = self.credentials.refresh(name, repo or target, "task")
+            self._deliver_token(name, repo or target, credential)
+            token_env = {"GH_TOKEN": credential.token}
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
                          model, args, effort=effort,
-                         second=second, clone=clone, repo=repo)
+                         second=second, clone=clone, repo=repo,
+                         scoped_token=scoped)
         workspace.install_stop_hook(worktree)
         if repo and self.state_dir is not None:
             workspace.bind_execution(worktree, repo, issue_execution_token(
@@ -140,7 +166,7 @@ class Sessions:
             # it lives here and never in containers.session_cmd — the
             # headless triage container shares that module and must NOT read
             # as an agent.
-            env={"HERDR_AGENT": runtime.herdr_agent})
+            env={"HERDR_AGENT": runtime.herdr_agent, **token_env})
         # Raise, never return quietly: the caller would record a stage that
         # never started, and the next pass would report a phantom crash with
         # nothing to show (#363). A raise fails the task with this reason.
@@ -149,6 +175,40 @@ class Sessions:
                                " — server down or out of step with the CLI?")
         if not tab.run(cmd):
             raise RuntimeError(f"herdr refused the launch command for {name}")
+
+    def _deliver_token(self, name: str, repo: str, credential) -> None:
+        """Write the session's current token where its container reads it
+        (containers.TOKEN_FILE), and the scope renew_tokens needs, host-side."""
+        directory = Path(token_dir(containers._state_dir(), name))
+        directory.mkdir(parents=True, exist_ok=True)
+        replacement = directory / "gh-token.new"
+        replacement.touch(mode=0o600)
+        replacement.write_text(credential.token)
+        replacement.replace(directory / "gh-token")
+        Path(f"{directory}.scope").write_text(json.dumps(
+            {"repo": repo, "expires_at": credential.expires_at}))
+
+    def renew_tokens(self) -> None:
+        """Replace the token of every running scoped session that expires
+        within RENEW_MARGIN. A failure is logged and retried next pass; it
+        never falls back to the host login."""
+        if self.credentials is None or self.dry_run:
+            return
+        tokens = Path(containers._state_dir()) / "tokens"
+        for scope in tokens.glob("*.scope"):
+            name = scope.name.removesuffix(".scope")
+            if herdr.tab_absent(name):
+                shutil.rmtree(tokens / name, ignore_errors=True)
+                scope.unlink(missing_ok=True)
+                continue
+            try:
+                meta = json.loads(scope.read_text())
+                if meta["expires_at"] - self.credentials.clock() > RENEW_MARGIN:
+                    continue
+                self._deliver_token(name, meta["repo"], self.credentials.refresh(
+                    name, meta["repo"], "task"))
+            except Exception:  # noqa: BLE001 — visible, retried next pass
+                log.exception("Token renewal failed for %s", name)
 
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "",

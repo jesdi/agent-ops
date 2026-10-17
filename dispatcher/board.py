@@ -49,10 +49,18 @@ class BoardError(Exception):
     pass
 
 
-def project_env() -> dict[str, str] | None:
+def project_env(board: str | None = None, credentials=None) -> dict[str, str] | None:
     """User-owned Projects v2 are invisible to fine-grained PATs, so board
     calls run with GH_TOKEN set to the classic project-scope token
-    (GH_PROJECT_TOKEN); every other gh call keeps the stored auth."""
+    (GH_PROJECT_TOKEN); every other gh call keeps the stored auth.
+
+    With a credential service the token is the trusted board credential for
+    `board` ("owner/number"); an unregistered board raises CredentialDenied
+    and never falls back to GH_PROJECT_TOKEN."""
+    if credentials is not None:
+        from dispatcher.execution_credentials import TRUSTED
+        token = credentials.acquire(TRUSTED, board, "board").token
+        return {**os.environ, "GH_TOKEN": token}
     token = os.environ.get("GH_PROJECT_TOKEN")
     return {**os.environ, "GH_TOKEN": token} if token else None
 
@@ -169,6 +177,14 @@ class Board:
     items: dict[int, Item]   # issue number -> item
     issues: dict[int, dict]  # every issue: number, title, state, stateReason
     run: Callable = subprocess.run
+    # Trusted authorization of this board ("owner/number" from the dispatcher
+    # configuration, never from the clone): a mutation of any other board is
+    # refused before gh runs.
+    credentials: object = None
+    key: str | None = None
+    # Node id the registered board `key` resolves to, set by read(); a
+    # credentialed mutation of any other project is refused.
+    bound: str | None = None
 
     def _open(self) -> list[int]:
         return sorted(n for n, row in self.issues.items()
@@ -191,12 +207,16 @@ class Board:
             "effort": item.effort, "area": item.area}
 
     def _mutate(self, item: Item, sets: dict[str, str]) -> None:
+        env = project_env(self.key, self.credentials)
+        if self.credentials is not None and self.bound != self.schema.project_id:
+            raise BoardError(f"project {self.schema.project_id!r} is not the "
+                             f"registered board {self.key!r}")
         body = " ".join(f"{alias}:{_set(field, value)}"
                         for alias, (field, value) in sets.items())
         _gh(self.run, ["api", "graphql", "-f", f"p={self.schema.project_id}",
                        "-f", f"i={item.id}", "-f",
                        f"query=mutation($p:ID!,$i:ID!){{{body}}}"],
-            env=project_env())
+            env=env)
 
     def score(self, number: int, impact: object, effort: object,
               area: object) -> None:
@@ -246,14 +266,43 @@ class Board:
         return lines
 
 
-def read(repo: str, clone_path: str, run=subprocess.run) -> Board | None:
+_OWNER_PROJECT_QUERY = """
+query($login: String!, $number: Int!) {
+  repositoryOwner(login: $login) { ... on ProjectV2Owner {
+    projectV2(number: $number) { id } } }
+}
+"""
+
+
+def resolve_project_id(key: str, gh: Callable[[list[str]], str]) -> str:
+    """The node id of the registered board "owner/number", asked of GitHub
+    with the trusted credential, so clone metadata cannot redirect a board
+    call to another project."""
+    owner, _, number = key.rpartition("/")
+    try:
+        data = json.loads(gh(["api", "graphql", "-f", f"query={_OWNER_PROJECT_QUERY}",
+                              "-f", f"login={owner}", "-F", f"number={int(number)}"]))
+        return data["data"]["repositoryOwner"]["projectV2"]["id"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise BoardError(f"cannot resolve registered board {key!r}") from e
+
+
+def read(repo: str, clone_path: str, run=subprocess.run, credentials=None,
+         key: str | None = None) -> Board | None:
     schema = load_schema(clone_path)
     if schema is None:
         return None
-    env = project_env()
+    env = project_env(key, credentials)
+    bound = None
+    if credentials is not None:
+        bound = resolve_project_id(key, lambda args: _gh(run, args, env))
+        if bound != schema.project_id:
+            raise BoardError(f"clone metadata names project "
+                             f"{schema.project_id!r}, not registered board {key!r}")
     items = fetch_items(schema.project_id, lambda args: _gh(run, args, env))
     rows = json.loads(_gh(run, [
         "issue", "list", "--repo", repo, "--state", "all", "--limit", "1000",
         "--json", "number,title,state,stateReason"]))
     return Board(schema=schema, items=join(items, rows, repo),
-                 issues={r["number"]: r for r in rows}, run=run)
+                 issues={r["number"]: r for r in rows}, run=run,
+                 credentials=credentials, key=key, bound=bound)

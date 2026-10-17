@@ -66,6 +66,15 @@ def image() -> str:
     return os.environ.get("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
 
 
+TOKEN_DIR = "/run/agent-ops"
+TOKEN_FILE = f"{TOKEN_DIR}/gh-token"
+
+
+def token_dir(state: str | Path, name: str) -> str:
+    """Host directory holding a scoped session's current App token."""
+    return f"{state}/tokens/{name}"
+
+
 def _state_dir() -> str:
     return os.environ.get("AGENT_OPS_STATE_DIR",
                           str(Path.home() / "agent-ops-state"))
@@ -105,10 +114,17 @@ def _wrapper() -> list[str]:
     return [path] if path else []
 
 
+def credential_commands() -> list[str]:
+    """Read-only consumers for the renewable token channel inside a session."""
+    scripts = str(Path(__file__).resolve().parent / "credential_commands")
+    return ["-v", f"{scripts}:/opt/agent-ops-auth:ro", "-e",
+            "PATH=/opt/agent-ops-auth:/usr/local/bin:/usr/bin:/bin"]
+
+
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 args: str, effort: str = "",
                 second: Entry | None = None, clone: str = "",
-                issue: int | None = None) -> str:
+                issue: int | None = None, scoped_token: bool = False) -> str:
     """The session's shell command, resolved from its qualified model ID.
     An unknown provider raises before anything runs.
     A granted `second` model (models.second_model) also gets its runtime's
@@ -119,7 +135,11 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     is the target's configured clone path: nothing here is read from the
     worktree (its `.git` pointer is session-writable) except the task
     branch, which task_branch validates. With no clone none is mounted; the
-    launcher refuses to launch without one."""
+    launcher refuses to launch without one.
+
+    `scoped_token`: the execution holds a scoped App token (see
+    execution_credentials), delivered as GH_TOKEN inherited from the
+    launcher's environment (never in argv); the host gh login is not mounted."""
     runtime = runtime_for(model)
     extra = _runtime_args(runtime_for(second.model_id)) if second else []
     worktree = _host_path("worktree", worktree)
@@ -128,6 +148,12 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
     clone_mount = (_mount(_host_path("clone", clone), clone) + " ") if clone else ""
     home = str(Path.home())
+    gh_login = _mount(f'{home}/.config/gh', '/root/.config/gh', 'ro') + " "
+    # GH_TOKEN is the launch token; the token directory is the renewable
+    # channel (Sessions.renew_tokens rewrites the file before expiry).
+    scoped_env = (f"-e GH_TOKEN -e GH_TOKEN_FILE={TOKEN_FILE} "
+                  f"{_mount(token_dir(state, name), TOKEN_DIR, 'ro')} "
+                  f"{shlex.join(credential_commands())} ")
     # podman errors on a missing bind source; waitd only creates the dir
     # when it (re)starts with the new socket path, which a spawn can race
     # right after deploy. Best-effort: if the dir really can't exist,
@@ -150,7 +176,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         f"{_mount(f'{state}/wait', f'{state}/wait')} "
         f"{_mount(worktree, worktree)} -w {shlex.quote(worktree)} "
         f"{clone_mount}"
-        f"{_mount(f'{home}/.config/gh', '/root/.config/gh', 'ro')} "
+        f"{scoped_env if scoped_token else gh_login}"
         f"{_mount(f'{home}/.gitconfig', '/root/.gitconfig', 'ro')} "
         f"{shlex.quote(image())} "
         f"{runtime.launch(name, worktree, bare_model_id(model), effort)}"
@@ -159,7 +185,8 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
 
 
 def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
-               cpus: str, model: str, prompt_path: str, effort: str = "") -> list[str]:
+               cpus: str, model: str, prompt_path: str, effort: str = "",
+               scoped_token: bool = False) -> list[str]:
     """Headless read-only triage session: argv for subprocess.run (no pane,
     no -it). The clone is :ro — the session decides, it never writes; its
     only writable surface is /triage, where the prompt is read from and the
@@ -191,7 +218,8 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         "--memory", memory, "--cpus", cpus,
         *_runtime_args(runtime),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
-        "-v", f"{home}/.config/gh:/root/.config/gh:ro",
+        *(["-e", "GH_TOKEN"] if scoped_token
+          else ["-v", f"{home}/.config/gh:/root/.config/gh:ro"]),
         "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
         "-v", f"{triage_dir}:/triage",
         image(), "bash", "-c", line,

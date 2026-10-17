@@ -54,8 +54,11 @@ class Candidate:
 
 
 class GitHubClient:
-    def __init__(self, dry_run: bool = False):
+    def __init__(self, dry_run: bool = False, credentials=None):
         self.dry_run = dry_run
+        # ExecutionCredentials: board calls then run on the trusted board
+        # credential of the target's configured board, and no other.
+        self.credentials = credentials
         self._project_node_ids: dict[str, str] = {}
         self._viewer_login: str | None = None
 
@@ -226,7 +229,7 @@ class GitHubClient:
             # rank output alone cannot prove which repository owns a card.
             items = board.fetch_items(
                 self._project_node_id(target),
-                lambda args: _run(["gh"] + args, env=_project_env()))
+                lambda args: _run(["gh"] + args, env=self._board_env(target)))
             verified = {(normalize_repo(item.repo), item.number): item for item in items
                         if item.repo is not None and item.number is not None}
             for row in rows:
@@ -260,6 +263,12 @@ class GitHubClient:
             and not r["blocked"] and "auto" in r["labels"]
         ]
 
+    def _board_env(self, target: Target | Project):
+        owner, number = ((target.board_owner, target.board_number)
+                         if isinstance(target, Project)
+                         else (target.project_owner, target.project_number))
+        return _project_env(f"{owner}/{number}", self.credentials)
+
     def _project_node_id(self, target: Target | Project) -> str:
         owner, number = ((target.board_owner, target.board_number)
                          if isinstance(target, Project)
@@ -268,14 +277,14 @@ class GitHubClient:
         if key not in self._project_node_ids:
             out = _run(["gh", "project", "view", str(number),
                         "--owner", owner, "--format", "json"],
-                       env=_project_env())
+                       env=self._board_env(target))
             self._project_node_ids[key] = json.loads(out)["id"]
         return self._project_node_ids[key]
 
     def _item_id(self, target: Target, issue: int, repo: str = "") -> str:
         items = board.fetch_items(
             self._project_node_id(target),
-            lambda args: _run(["gh"] + args, env=_project_env()))
+            lambda args: _run(["gh"] + args, env=self._board_env(target)))
         # A shared board can carry another repo's card with the same issue
         # number or title. Only an item whose repository is positively
         # confirmed as target.repo is writable: a redacted item (repo or
@@ -321,7 +330,7 @@ class GitHubClient:
               "--id", self._item_id(target, issue, repo),
               "--project-id", self._project_node_id(target),
               "--field-id", target.status_field_id,
-              "--single-select-option-id", option_id], env=_project_env())
+              "--single-select-option-id", option_id], env=self._board_env(target))
 
     def set_boost(self, target: Target, issue: int, value: int,
                   repo: str = "") -> None:
@@ -332,7 +341,7 @@ class GitHubClient:
               "--id", self._item_id(target, issue, repo),
               "--project-id", self._project_node_id(target),
               "--field-id", target.boost_field_id,
-              "--number", str(value)], env=_project_env())
+              "--number", str(value)], env=self._board_env(target))
 
     def add_label(self, target: Target, issue: int, label: str,
                   repo: str = "") -> None:

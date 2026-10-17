@@ -33,6 +33,7 @@ from dispatcher.usage_providers import ADAPTERS, fetch_all
 from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, loops,
                         messages, pr_poll, priority, queue_ops, relogin, state, tmux_migration,
                         triage)
+from dispatcher.credential_service import configured_credentials
 from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ class Deps:
     github: object
     sessions: object
     notifier: object
+    credentials: object = None  # ExecutionCredentials; None keeps the host login
 
 
 def _now() -> str:
@@ -2807,10 +2809,12 @@ def main() -> None:
     if missing:
         print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
               f"their entries are never admitted", file=sys.stderr)
-    deps = Deps(github=GitHubClient(dry_run=args.dry_run),
+    credentials = configured_credentials(cfg)
+    deps = Deps(github=GitHubClient(dry_run=args.dry_run, credentials=credentials),
+                credentials=credentials,
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
                                   cpus=cfg.session_cpus, state_dir=cfg.state_dir,
-                                  clones=_clone_map(cfg)),
+                                  clones=_clone_map(cfg), credentials=credentials),
                 notifier=Notifier(dry_run=args.dry_run,
                                   console_url=cfg.console_url,
                                   multi_target=len(cfg.targets) > 1))
@@ -2836,6 +2840,7 @@ def main() -> None:
             # The console stores model settings under this lock: read them
             # again inside it, so a pass never runs a block the console has
             # replaced (a removed track would park the tasks it claims).
+            deps.sessions.renew_tokens()
             guarded_pass(apply_stored_models(boot), deps, args.config, dry_run=args.dry_run)
 
 

@@ -131,6 +131,15 @@ def tab(label: str) -> tuple[str, str] | None:
     return None
 
 
+def tab_absent(label: str) -> bool:
+    """True only when the server answered `tab list` and no tab carries
+    `label`; an unreachable server is unknown, not absent."""
+    result = _call(["tab", "list"])
+    return result is not None and not any(
+        isinstance(t, dict) and t.get("label") == label
+        for t in result.get("tabs") or [])
+
+
 def root_pane(workspace_id: str, tab_id: str) -> str | None:
     """pane_id of the tab's root pane — the pane whose tab_id matches; the
     dispatcher never splits its tabs, so the first match is the only one."""

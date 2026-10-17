@@ -9,12 +9,14 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dispatcher import (board, claims, containers, herdr, priority,
                         triage_apply, triage_prefetch)
 from dispatcher.config import Config, policy_for, routed_providers
+from dispatcher.execution_credentials import CredentialError
 from dispatcher.models import Entry, triage_entry, tracks_text
 from dispatcher.prompts import render_triage_prompt
 from dispatcher.state import load_all
@@ -186,8 +188,18 @@ def _policy_for_repo(cfg: Config, repo: str):
     return policy_for(cfg, _repo_config(cfg, repo))
 
 
+def _session_token(credentials, name: str, repo: str) -> str:
+    # Each launch reuses the execution scope, but must outlive a new session.
+    # Allow a minute for container startup and clock skew as well as execution.
+    credential = credentials.refresh(name, repo, "triage")
+    clock = getattr(credentials, "clock", time.time)
+    if not credential.expires_at > clock() + SESSION_TIMEOUT_SECONDS + 60:
+        raise CredentialError("triage token lifetime is insufficient for the session")
+    return credential.token
+
+
 def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
-                 entry: Entry, run=subprocess.run) -> dict:
+                 entry: Entry, run=subprocess.run, credentials=None) -> dict:
     triage_dir = Path(cfg.state_dir) / TRIAGE_DIR
     triage_dir.mkdir(parents=True, exist_ok=True)
     # Doubling "-" first keeps the "/" -> "-" mapping injective, so
@@ -207,12 +219,21 @@ def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
     prompt_name = f"{stem}-prompt.md"
     (triage_dir / prompt_name).write_text(prompt)
     name = _session_name(repo)
+    register = getattr(credentials, "register_execution", None)
+    if register:
+        register(name, repo, "triage")
     cmd = containers.triage_cmd(name, _clone_for(cfg, repo),
                                 str(triage_dir), cfg.session_memory,
                                 cfg.session_cpus, entry.model_id,
-                                f"/triage/{prompt_name}", effort=entry.effort)
+                                f"/triage/{prompt_name}", effort=entry.effort,
+                                scoped_token=credentials is not None)
+    # A scoped read-only token, inherited as GH_TOKEN (never in argv); a
+    # denial raises and never falls back to the host GitHub login.
+    env = ({"env": {**os.environ,
+                    "GH_TOKEN": _session_token(credentials, name, repo)}}
+           if credentials is not None else {})
     try:
-        proc = run(cmd, capture_output=True, text=True,
+        proc = run(cmd, capture_output=True, text=True, **env,
                    timeout=SESSION_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         try:
@@ -246,7 +267,18 @@ def _summary(repo: str, result: triage_apply.ApplyResult) -> list[str]:
     return lines
 
 
-def _board(cfg: Config, repo: str, lines: list[str], run):
+def _board_key(cfg: Config, repo: str) -> str | None:
+    """The configured board of `repo` as "owner/number"."""
+    for t in cfg.targets:
+        if t.repo == repo:
+            return f"{t.project_owner}/{t.project_number}"
+    for project in cfg.projects:
+        if any(r.repo == repo for r in project.repositories):
+            return f"{project.board_owner}/{project.board_number}"
+    return None
+
+
+def _board(cfg: Config, repo: str, lines: list[str], run, credentials=None):
     """The repo's board, with stale cards repaired and what the sweep cannot
     reach reported. None for a repo without a board, and when the board cannot
     be read: labels are still worth triaging without it."""
@@ -254,7 +286,8 @@ def _board(cfg: Config, repo: str, lines: list[str], run):
     if found is None:
         return None
     try:
-        brd = board.read(repo, found.clone_path, run=run)
+        brd = board.read(repo, found.clone_path, run=run, credentials=credentials,
+                         key=_board_key(cfg, repo))
     except Exception as e:  # noqa: BLE001 — degrade to label-only triage
         lines.append(f"{repo}: board unavailable, labels only — {e}")
         return None
@@ -292,7 +325,8 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
             lines.append(f"{repo}: cursor seeded, nothing triaged")
             continue
         try:
-            brd = _board(cfg, repo, lines, run)
+            creds = getattr(deps, "credentials", None)
+            brd = _board(cfg, repo, lines, run, creds)
             blob = triage_prefetch.prefetch(repo, cursor, run=run)
             if brd is not None:
                 triage_prefetch.add_board(blob, brd, run=run)
@@ -300,7 +334,8 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
                 cursors[repo] = started
                 lines.append(f"{repo}: nothing new")
                 continue
-            decisions = _run_session(cfg, repo, blob, started_date, entry, run=run)
+            decisions = _run_session(cfg, repo, blob, started_date, entry, run=run,
+                                     **({"credentials": creds} if creds else {}))
             inventory = frozenset(l["name"] for l in blob["labels"])
             result = triage_apply.apply(repo, decisions, inventory, run=run,
                                         board=brd)
@@ -331,7 +366,8 @@ def guarded_sweep(cfg: Config, deps) -> None:
 
 
 LAUNCH_ENV_VARS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-                   "AGENT_OPS_STATE_DIR", "GH_PROJECT_TOKEN")
+                   "AGENT_OPS_STATE_DIR", "GH_PROJECT_TOKEN",
+                   "AGENT_OPS_CREDENTIAL_SOCKET", "AGENT_OPS_LEGACY_CREDENTIALS")
 
 
 def _repo_dir() -> str:

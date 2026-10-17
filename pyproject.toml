@@ -17,3 +17,6 @@ packages = ["dispatcher", "telegram", "web"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+dispatcher = ["credential_commands/*"]
