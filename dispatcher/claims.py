@@ -11,6 +11,11 @@ from dispatcher.eventlog import EVENTS_FILE
 from dispatcher.state import TERMINAL_STAGES, TaskState, active
 
 
+# The slice's fixed number of places: `max_open` may be set higher, but never
+# raises the project or unfinished-task limit.
+PLACES = 10
+
+
 def box_free(capacity: int, tasks: list[TaskState], triage_running: bool) -> int:
     """Free capacity across the whole box. `tasks` must be every task, not
     one target's: capacity is one number shared by all targets. A running
@@ -33,6 +38,24 @@ def claim_room(capacity: int, max_open: int, tasks: list[TaskState],
     the claim round and the console's forecast go through here."""
     return min(box_free(capacity, tasks, triage_running),
                max_open - len(open_tasks(tasks)))
+
+
+def reservation_denial(owner: str, tasks: list[TaskState], enabled: list[str],
+                       max_open: int) -> str:
+    """Why `owner` may not claim one more task, or "" when it may. Every
+    enabled project holds one place while it has no unfinished task; the rest
+    are shared. Paused projects hold none, but their unfinished tasks count.
+    A legacy target holds none, so it always needs a shared place. Returns
+    "total-limit" or "reserved-places"."""
+    max_open = min(max_open, PLACES)
+    open_ = open_tasks(tasks)
+    if len(open_) >= max_open:
+        return "total-limit"
+    busy = {t.target for t in open_}
+    if owner in enabled and owner not in busy:
+        return ""  # its own reservation
+    held = sum(k not in busy for k in enabled)
+    return "reserved-places" if len(open_) + held >= max_open else ""
 
 
 def pick_target(names: list[str], active_counts: Mapping[str, int],

@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from dispatcher import model_settings, models
+from dispatcher.claims import PLACES
 from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_block, parse_policy
 from dispatcher.state import LoopCaps, TaskState
 from dispatcher.usage import PaceConfig
@@ -361,8 +362,34 @@ def load_config(path: str | Path) -> Config:
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),
     )
+    enabled = sum(p.enabled for p in cfg.projects)
+    limit = min(cfg.max_open, PLACES)
+    if enabled > limit:
+        raise ValueError(f"projects: {enabled} enabled, at most {limit} "
+                         "may be enabled (one reserved place each); pause one")
     _check_shares(cfg)
     return cfg
+
+
+def project_target(p: Project, repo: str = "") -> Target:
+    """The claim-round view of a project: a Target named by the project key
+    that carries its board and the repository `repo` names (the first when
+    `repo` is empty or unknown)."""
+    r = next((r for r in p.repositories
+              if repo and normalize_repo(r.repo) == normalize_repo(repo)),
+             p.repositories[0])
+    return Target(
+        name=p.key, repo=r.repo, clone_path=r.clone_path,
+        worktrees_path=r.worktrees_path, rank_cmd=r.rank_cmd,
+        project_number=p.board_number, project_owner=p.board_owner,
+        status_field_id=p.status_field_id,
+        status_ready_option_id=p.status_ready_option_id,
+        status_in_progress_option_id=p.status_in_progress_option_id,
+        setup_cmd=r.setup_cmd, verify_cmd=r.verify_cmd, gate_cmd=r.gate_cmd,
+        boost_field_id=r.boost_field_id,
+        status_done_option_id=r.status_done_option_id,
+        status_wont_do_option_id=r.status_wont_do_option_id,
+        max_active=r.max_active, models=r.models)
 
 
 def _check_shares(cfg: Config) -> None:
@@ -414,12 +441,18 @@ def stranded(cfg: Config, target: Target | None, task: TaskState, stage: str) ->
                            stage, referenced_providers(cfg))
 
 
+def _policies(cfg: Config) -> list[ModelPolicy]:
+    """The global policy and every target's and project repository's own."""
+    own = [*cfg.targets, *(r for p in cfg.projects for r in p.repositories)]
+    return [cfg.models, *(t.models for t in own if t.models is not None)]
+
+
 def routed_providers(cfg: Config) -> frozenset[str]:
     """Every provider some routed list names: the global triage list and the
     stage lists of every track, of the global policy and of every target's
     own. The priority mode may name one of these. Not routed: `review_second`,
     and a target policy's own triage list (the sweep runs `cfg.models.triage`)."""
-    policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
+    policies = _policies(cfg)
     staged = (e for p in policies for t in p.tracks.values()
               for entries in t.stages.values() for e in entries)
     return frozenset(e.provider for e in (*cfg.models.triage, *staged))
@@ -432,7 +465,7 @@ def referenced_providers(cfg: Config) -> frozenset[str]:
     adapter reads); one you route to without an adapter shows as
     unavailable (and main() warns once at startup). A policy's review_second counts too: the
     gate that grants it needs its provider's usage."""
-    policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
+    policies = _policies(cfg)
     ids = [*(m for p in policies for m in p.model_ids()),
            *(p.review_second.model_id for p in policies if p.review_second)]
     return frozenset(m.partition("/")[0] for m in ids)

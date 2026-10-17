@@ -16,7 +16,7 @@ from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
                         priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
-from dispatcher.config import Target
+from dispatcher.config import Project, Target
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
 from dispatcher.state import TaskState
@@ -126,11 +126,12 @@ class Sources:
         except FileNotFoundError:
             return None
 
-    def rank_rows(self, target: Target, *,
+    def rank_rows(self, target: Target | Project, *,
                   fresh: bool = False) -> tuple[list[dict], str, bool]:
         """`fresh`: a write reads the board now, not a row up to the TTL old."""
         now = self._clock()
-        cached = self._rank_cache.get(target.name)
+        name = target.key if isinstance(target, Project) else target.name
+        cached = self._rank_cache.get(name)
         if cached and not fresh and now - cached["fetched_at"] < RANK_TTL_SECONDS:
             return cached["rows"], cached["as_of"], False
         try:
@@ -139,7 +140,7 @@ class Sources:
             if cached:  # never a blank queue if a cache ever existed
                 return cached["rows"], cached["as_of"], True
             return [], _iso(now), True
-        self._rank_cache[target.name] = {
+        self._rank_cache[name] = {
             "rows": rows, "fetched_at": now, "as_of": _iso(now)}
         return rows, _iso(now), False
 

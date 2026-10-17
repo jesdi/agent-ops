@@ -1055,3 +1055,14 @@ def test_usage_view_reports_the_mode_options_and_one_decimal_pace():
         "first": "openai", "pinned": []}
     assert view.providers[0].windows[0].required_pace == 1.6
 
+
+
+@pytest.mark.parametrize("existing_repo,expected", [
+    ("", 74), ("example/api", 74), ("example/web", 73),
+])
+def test_forecast_preserves_legacy_claim_identity(existing_repo, expected):
+    tasks = [make_task(issue=73, repo=existing_repo, park=PARK_HUMAN)]
+    rows = [dict(row(n), repo="example/api") for n in (73, 74)]
+    view = next_claim(HB, now=NOW, tasks=tasks, capacity=2, gate=GATE_OK,
+                      queues=[("alpha", rows)], max_active={}, last_claimed={})
+    assert (view.verdict, view.next_issue) == ("will-claim", expected)

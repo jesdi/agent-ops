@@ -7,13 +7,14 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from typing import Annotated, Collection, Literal, Mapping
+from typing import Annotated, Collection, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, Field, StrictBool, StrictStr
 
 from dispatcher import messages as msgq
 from dispatcher import priority
-from dispatcher.claims import claim_room, pick_target
+from dispatcher.claims import box_free, pick_target, reservation_denial
+from dispatcher.config import Project
 from dispatcher.models import Entry
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
@@ -377,6 +378,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 max_active: Mapping[str, int | None],
                 last_claimed: Mapping[str, str],
                 max_open: int = sys.maxsize,
+                projects: Sequence[Project] = (),
                 pinned_tracks: dict[MetadataKey, str] | None = None,
                 ) -> BoardView:
     # Key on (target, repo, issue) so alpha#73 does not hide beta#73, nor one
@@ -406,7 +408,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                               triage_running=triage_running,
                               max_active=max_active,
                               last_claimed=last_claimed,
-                              max_open=max_open))
+                              max_open=max_open, projects=projects,
+                              denied={k for k, a in (candidate_admissions or {}).items()
+                                      if not any(alt.admitted for alt in a.alternatives)}))
 
 
 class TaskDetail(BaseModel):
@@ -773,7 +777,7 @@ _TIMELINE_EVENTS = {"claimed", "stage-started", "parked", "resumed", "merged"}
 
 
 class NextClaimView(BaseModel):
-    verdict: str          # will-claim|no-candidates|capacity-full|budget-blocked|claims-paused|unknown
+    verdict: str          # will-claim|no-candidates|capacity-full|budget-blocked|claims-paused|total-limit|reserved-places|project-paused|unknown
     next_pass_eta: str    # ISO; "" when verdict == "unknown"
     next_issue: int = 0
     next_target: str = ""
@@ -805,16 +809,22 @@ def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
 
 
 def _queue_heads(queues: list[tuple[str, list[dict]]],
-                 tasks: list[TaskState]) -> dict[str, int]:
+                 tasks: list[TaskState],
+                 denied: Collection[MetadataKey] = ()) -> dict[str, int]:
     """target -> its front-of-queue candidate issue, over rows not already
-    known as tasks. Key on (target, issue) — same rationale as build_board:
-    issue numbers are per-repo so alpha#73 must not shadow beta#73 in the
-    claim forecast."""
-    known = {(t.target, t.issue) for t in tasks}
+    known as tasks. Qualified tasks only shadow their own repository;
+    legacy tasks with no repository still speak for the whole issue number,
+    matching the dispatcher's _claimable fallback. A candidate in `denied`
+    (its model's usage gate says no) is skipped, as the claim round skips it,
+    leaving the next one eligible."""
+    known = {mail_key(t) for t in tasks}
     heads = {}
     for name, rows in queues:
         mine = [r["number"] for r in rows
-                if _is_candidate(r) and (name, r["number"]) not in known]
+                if _is_candidate(r)
+                and (name, r["number"]) not in known
+                and identity_key(name, r["number"], r.get("repo", "")) not in known
+                and identity_key(name, r["number"], r.get("repo", "")) not in denied]
         if mine:
             heads[name] = mine[0]
     return heads
@@ -828,7 +838,9 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                triage_running: bool = False,
                max_active: Mapping[str, int | None],
                last_claimed: Mapping[str, str],
-               max_open: int = sys.maxsize) -> NextClaimView:
+               max_open: int = sys.maxsize,
+               projects: Sequence[Project] = (),
+               denied: Collection[MetadataKey] = ()) -> NextClaimView:
     """A forecast of what the claim round (dispatcher main._claim_new)
     consumes next, from data already on the board request. The target comes
     from the same claims.pick_target the dispatcher uses, over box-wide free
@@ -862,18 +874,61 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
         return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
                              minutes_to_reset=gate.minutes_to_reset,
                              blocked_by=gate.note)
-    heads = _queue_heads(queues, tasks)
+    return _forecast_claim(eta, queues, tasks, capacity, triage_running,
+                           max_active, last_claimed, max_open, projects, denied)
+
+
+def _forecast_claim(eta: str, queues: list[tuple[str, list[dict]]],
+                    tasks: list[TaskState], capacity: int,
+                    triage_running: bool, max_active: Mapping[str, int | None],
+                    last_claimed: Mapping[str, str], max_open: int,
+                    projects: Sequence[Project],
+                    denied: Collection[MetadataKey]) -> NextClaimView:
+    """The candidate-and-capacity half of next_claim, once the heartbeat,
+    triage pause and box usage gate have passed."""
+    heads = _queue_heads(queues, tasks, denied)
     if not heads:
-        return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
+        blocked = denied and _queue_heads(queues, tasks)
+        return NextClaimView(verdict="budget-blocked" if blocked else "no-candidates",
+                             next_pass_eta=eta)
+    heads, verdict = _admissible_heads(heads, tasks, capacity, triage_running,
+                                       max_open, projects)
+    if verdict:
+        return NextClaimView(verdict=verdict, next_pass_eta=eta)
     running = active(tasks)
     counts = {n: sum(t.target == n for t in running) for n in heads}
-    name = (pick_target(list(heads), counts, last_claimed, max_active)
-            if claim_room(capacity, max_open, tasks, triage_running) > 0
-            else None)
+    name = pick_target(list(heads), counts, last_claimed, max_active)
     if name is None:
         return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
     return NextClaimView(verdict="will-claim", next_pass_eta=eta,
                          next_issue=heads[name], next_target=name)
+
+
+def _admissible_heads(heads: dict[str, int], tasks: list[TaskState],
+                      capacity: int, triage_running: bool, max_open: int,
+                      projects: Sequence[Project]
+                      ) -> tuple[dict[str, int], str]:
+    """The heads the claim round would not reject for pause, execution
+    capacity, the total limit or a reservation, else the verdict naming why
+    none survive."""
+    paused = {p.key for p in projects if not p.enabled}
+    heads = {n: i for n, i in heads.items() if n not in paused}
+    if not heads:
+        return heads, "project-paused"
+    if box_free(capacity, tasks, triage_running) <= 0:
+        return heads, "capacity-full"
+    return _unreserved_heads(heads, tasks, max_open, projects)
+
+
+def _unreserved_heads(heads: dict[str, int], tasks: list[TaskState],
+                      max_open: int, projects: Sequence[Project]
+                      ) -> tuple[dict[str, int], str]:
+    """`heads` minus those the total limit or another project's reservation
+    denies, with the most specific denial as the verdict when none remain."""
+    enabled = [p.key for p in projects if p.enabled]
+    denied = {n: reservation_denial(n, tasks, enabled, max_open) for n in heads}
+    heads = {n: i for n, i in heads.items() if not denied[n]}
+    return heads, "" if heads else max(denied.values())
 
 
 def stage_timeline(events: list[dict], target: str, issue: int, *,

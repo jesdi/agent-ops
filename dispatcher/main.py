@@ -24,9 +24,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from dispatcher.convergence import pass_lock
+from dispatcher.convergence import claim_lock, pass_lock
 from dispatcher.config import (Config, Target, apply_stored_models,
-                               load_config, policy_for,
+                               load_config, policy_for, project_target,
                                referenced_providers, routed_providers, stranded)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
@@ -1036,8 +1036,9 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
     for task in load_all(cfg.state_dir):
         if task.target != target.name or task.park != PARK_CI:
             continue
+        run_target = _task_target(cfg, target, task)
         try:
-            conclusion = deps.github.run_status(target, task.ci_run_id)
+            conclusion = deps.github.run_status(run_target, task.ci_run_id)
         except (subprocess.CalledProcessError, OSError) as exc:
             print(f"[warn] run_status failed for #{task.issue} run {task.ci_run_id}: {exc}",
                   file=sys.stderr)
@@ -1048,8 +1049,8 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
             dec = loops.evaluate(task, loops.FailedRun(f"run {task.ci_run_id} {conclusion}"),
                                  cfg.loop_caps)
             task, parked = _apply_loop_decision(
-                cfg, deps, target, task, dec,
-                park_exhausted=lambda t, note: _park_exhausted(cfg, deps, target, t, note))
+                cfg, deps, run_target, task, dec,
+                park_exhausted=lambda t, note: _park_exhausted(cfg, deps, run_target, t, note))
             if parked:
                 continue
         reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
@@ -1096,8 +1097,9 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
     for task in load_all(cfg.state_dir):
         if task.target != target.name or task.stage is not Stage.PR_OPEN:
             continue
+        run_target = _task_target(cfg, target, task)
         try:
-            polled = _poll_pr(cfg, deps, target, task)
+            polled = _poll_pr(cfg, deps, run_target, task)
             if polled is None:
                 continue
             task, res = polled
@@ -1107,7 +1109,7 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
             continue
         if res.kind == "merged":
             try:
-                _finish_merged(cfg, deps, target, task, dry_run)
+                _finish_merged(cfg, deps, run_target, task, dry_run)
             except (subprocess.CalledProcessError, OSError) as exc:
                 print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
                       file=sys.stderr)
@@ -1126,7 +1128,7 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
                                   target=target.name, issue=task.issue, repo=task.repo,
                                   stage=Stage.PR_OPEN.value,
                                   detail=f"PR #{task.pr_number} closed unmerged")
-            _notify(deps, target, task, "pr_closed",
+            _notify(deps, run_target, task, "pr_closed",
                     f"PR #{task.pr_number}. Worktree preserved for autopsy.")
         elif task.park:
             continue   # parked: only merge/close still matter
@@ -1139,10 +1141,10 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
                                   target=target.name, issue=task.issue, repo=task.repo,
                                   stage=Stage.PR_OPEN.value,
                                   detail=f"newest {res.latest_ts}")
-            _notify(deps, target, task, "pr_feedback",
+            _notify(deps, run_target, task, "pr_feedback",
                     f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
         elif res.kind in ("check-failed", "conflict") and not task.feedback_pending:
-            _pr_attention(cfg, deps, target, task, res)
+            _pr_attention(cfg, deps, run_target, task, res)
 
 
 def _pr_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -1288,7 +1290,7 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
         key=_oldest_first(cfg),
     )
     for task in woken:
-        target = targets[task.target]
+        target = _task_target(cfg, targets[task.target], task)
         # Only a launch record authorizes replacing a live execution. A
         # login park deliberately retains that execution until attach wakes it.
         if (_session_launch_blocked(cfg, deps, task)
@@ -1524,7 +1526,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
          if t.target in targets and _awaiting_feedback_round(t)],
         key=_oldest_first(cfg))
     for task in pending:
-        target = targets[task.target]
+        target = _task_target(cfg, targets[task.target], task)
         launch, bypass_usage, why = _choose_launch(
             cfg, target, task, Stage.ADDRESS_REVIEW, admit, order,
             _execution_override_for(cfg, task, Stage.ADDRESS_REVIEW))
@@ -2014,7 +2016,7 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
         repro=(f"podman run --rm -v {wt}:{wt} -w {wt} agent-ops-session "
                f"{target.setup_cmd}" if target.setup_cmd
                else "no setup_cmd; the worktree step failed (see error)"),
-        worktree=wt)
+        worktree=wt, repo=cand.repo)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
     # Quarantine only once the report exists (marker written) — a gh outage
     # leaves neither, so the next pass retries both. blocker may still be 0
@@ -2023,7 +2025,8 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
         failures.write_quarantine(cfg.state_dir, target.name, cand.number,
                                   blocker_repo=cfg.infra_repo if blocker else "",
                                   blocker_issue=blocker,
-                                  fp=failures.fingerprint(rep))
+                                  fp=failures.fingerprint(rep),
+                                  repo=cand.repo)
 
 
 def _box_free(cfg: Config, tasks: list[TaskState]) -> int:
@@ -2048,24 +2051,40 @@ def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
     would start. Skips issues that already have a task, quarantined issues,
     and candidates whose spec model has no headroom — a denied candidate
     leaves the next one eligible, since its model may differ."""
-    by_issue = {t.issue: t for t in tasks}
-    for cand in deps.github.candidates(target):
-        stale = by_issue.get(cand.number)
-        if stale is not None:
-            if not _reopened(stale, pass_started):
-                continue
-            delete(cfg.state_dir, target.name, cand.number)
-            del by_issue[cand.number]
-            eventlog.append_event(cfg.state_dir, "reopened",
-                                  target=target.name, issue=cand.number,
-                                  detail="canceled task ranked again — "
-                                         "reopened by operator")
-        if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
-                                     cand.number):
+    by_issue = {(t.repo, t.issue): t for t in tasks if t.target == target.name}
+    # A project ranks across all its repositories, not the first one's.
+    source = next((p for p in cfg.projects if p.key == target.name), target)
+    for cand in deps.github.candidates(source):
+        key = (_task_repo(cfg, target, cand), cand.number)
+        # A legacy record (repo "") still speaks for its issue number.
+        stale = by_issue.get(key) or by_issue.get(("", cand.number))
+        if stale is not None and not _reopened(stale, pass_started):
             continue
-        launch, _bypass = _candidate_launch(cfg, target, cand, admit, order)
+        if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
+                                     cand.number, repo=cand.repo):
+            continue
+        launch, _bypass = _candidate_launch(
+            cfg, _exec_target(cfg, target, cand), cand, admit, order)
         if launch is not None:
             yield cand, launch
+
+
+def _exec_target(cfg: Config, target: Target, cand: Candidate) -> Target:
+    """The target a candidate runs under: for a project, its own repository."""
+    p = next((p for p in cfg.projects if p.key == target.name), None)
+    return project_target(p, cand.repo) if p else target
+
+
+def _task_target(cfg: Config, target: Target, task: TaskState) -> Target:
+    """The target an existing task runs under: for a project, the task's own
+    repository (commands, PR lookups and model policy), not the first one's."""
+    p = next((p for p in cfg.projects if p.key == target.name), None)
+    return project_target(p, task.repo) if p and task.repo else target
+
+
+def _task_repo(cfg: Config, target: Target, cand: Candidate) -> str:
+    return cand.repo or (target.repo if any(
+        p.key == target.name for p in cfg.projects) else "")
 
 
 def _round_counts(targets: list[Target],
@@ -2089,6 +2108,7 @@ def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
                      stage=Stage.QUEUED, slot=slot, worktree=wt,
                      branch=f"agent/task-{cand.number}",
                      title=cand.title, updated_at=_now(),
+                     repo=_task_repo(cfg, target, cand),
                      effort=cand.effort, labels=cand.labels,
                      track=track_from_labels(cand.labels, policy_for(cfg, target)))
     save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
@@ -2102,6 +2122,57 @@ def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
         deps.github.release(target, cand.number, "claim/spawn failed after provisioning")
         raise
     return task
+
+
+def _claim_denied(cfg: Config, name: str, tasks: list[TaskState],
+                  enabled: list[str]) -> bool:
+    """True when the total limit or another project's reservation leaves
+    `name` no place among `tasks`."""
+    return bool(claims.claim_room(cfg.capacity, cfg.max_open, tasks, False) <= 0
+                or claims.reservation_denial(name, tasks, enabled, cfg.max_open))
+
+
+def _provision_workspace(cfg: Config, deps: Deps, target: Target, cand,
+                         dry_run: bool) -> str | None:
+    """The candidate's workspace, or None after reporting a provisioning
+    failure (the board was never claimed, so nothing to release)."""
+    try:
+        return create_workspace(target, cand.number, dry_run=dry_run)
+    except Exception:
+        _report_provisioning_failure(cfg, deps, target, cand, dry_run)
+        return None
+
+
+def _claim_once(cfg: Config, deps: Deps, target: Target, cand, launch,
+                enabled: list[str], dry_run: bool, pass_started: str = "") -> str:
+    """One locked claim decision over the tasks now on disk, so simultaneous
+    passes cannot oversubscribe the last place. Returns "claimed", "skip"
+    (candidate taken), "drop" (target leaves the round: no place for it, or one
+    provisioning failure per target per pass so a systemic fault cannot fail
+    every Ready candidate) or "stop" (no execution slot)."""
+    with claim_lock(cfg.state_dir):
+        now_tasks = load_all(cfg.state_dir)
+        repo = _task_repo(cfg, target, cand)
+        existing = (load(cfg.state_dir, target.name, cand.number, repo=repo)
+                    or load(cfg.state_dir, target.name, cand.number))
+        if existing is not None and not _reopened(existing, pass_started):
+            return "skip"  # a simultaneous pass claimed this candidate first
+        if _claim_denied(cfg, target.name, now_tasks, enabled):
+            return "drop"
+        slot = allocate_slot(now_tasks, max_slots(cfg.capacity))
+        if slot is None:
+            return "stop"
+        if existing is not None:   # re-read under the lock: never a fresh claim
+            delete(cfg.state_dir, target.name, cand.number, repo=existing.repo)
+            eventlog.append_event(cfg.state_dir, "reopened",
+                                  target=target.name, issue=cand.number,
+                                  detail="canceled task ranked again — "
+                                         "reopened by operator")
+        wt = _provision_workspace(cfg, deps, target, cand, dry_run)
+        if wt is None:
+            return "drop"
+        _commit_claim(cfg, deps, target, cand, slot, wt, launch)
+    return "claimed"
 
 
 def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
@@ -2124,6 +2195,7 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
                                admit, order, pass_started)
             for t in targets}
     in_round = {t.name: t for t in targets}  # insertion order = list order
+    enabled = [p.key for p in cfg.projects if p.enabled]
     while free > 0:
         name = claims.pick_target(list(in_round), counts, last, caps)
         if name is None:
@@ -2134,24 +2206,15 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
             del in_round[name]
             continue
         cand, launch = picked
-        slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
-        if slot is None:
+        target = _exec_target(cfg, target, cand)
+        outcome = _claim_once(cfg, deps, target, cand, launch, enabled, dry_run,
+                              pass_started)
+        if outcome == "stop":
             return
-        try:
-            wt = create_workspace(target, cand.number, dry_run=dry_run)
-        except Exception:
-            # Board never claimed (claim is last, still Ready) → no release
-            # needed; report + quarantine, and the pass survives.
-            _report_provisioning_failure(cfg, deps, target, cand, dry_run)
-            # Cap at one provisioning failure per target per pass: a
-            # systemic fault (git remote down, podman down, worktrees
-            # volume full) would otherwise fail EVERY remaining Ready
-            # candidate, filing an issue + ping + quarantine record per
-            # candidate. The target leaves this pass's round; the next pass
-            # retries its remaining candidates, and other targets keep claiming.
+        if outcome == "drop":
             del in_round[name]
+        if outcome != "claimed":
             continue
-        _commit_claim(cfg, deps, target, cand, slot, wt, launch)
         counts[target.name] += 1
         last[target.name] = _now()
         free -= 1  # checked before the next pull, so no candidate is vetted (or swept) that cannot be claimed
@@ -2295,7 +2358,7 @@ def _cancel_board_issue(deps: Deps, by_name: dict, target_name: str,
                     exc_info=True)
 
 
-def _cancel_identity_known(deps: Deps, by_name: dict, target_name: str,
+def _cancel_identity_known(cfg: Config, deps: Deps, by_name: dict, target_name: str,
                            issue: int, repo: str, task: TaskState | None) -> bool:
     if task is not None:
         return (task.target, task.issue, task.repo) == (target_name, issue, repo)
@@ -2305,8 +2368,11 @@ def _cancel_identity_known(deps: Deps, by_name: dict, target_name: str,
     # Old unqualified intents retain their single-repository target contract.
     if not repo:
         return True
+    # The target view carries only one member repository. Queue identity
+    # validation must consult the whole project's verified board ranking.
+    source = next((p for p in cfg.projects if p.key == target_name), target)
     return any((row.get("repo", target.repo), row["number"]) == (repo, issue)
-               for row in deps.github.rank_rows(target))
+               for row in deps.github.rank_rows(source))
 
 
 def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
@@ -2318,7 +2384,7 @@ def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
                     issue)
         return
     repo = intent.repo or (task.repo if task is not None else "")
-    if not _cancel_identity_known(deps, by_name, cancel_target, issue, repo, task):
+    if not _cancel_identity_known(cfg, deps, by_name, cancel_target, issue, repo, task):
         raise IntentDropped("cancel identity is not a task or current project queue issue")
     _end_session(cfg, deps, cancel_target, issue, repo)
     _cancel_board_issue(deps, by_name, cancel_target, issue, repo)
@@ -2365,7 +2431,7 @@ def _require_resume_model(cfg: Config, by_name: dict,
     if not model:
         return
     target = by_name.get(task.target)
-    policy = policy_for(cfg, target)
+    policy = policy_for(cfg, target and _task_target(cfg, target, task))
     if model not in policy.model_ids():
         raise IntentDropped(f"model {model!r} is not configured for target "
                             f"{task.target!r}", model)
@@ -2447,7 +2513,8 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
     """Drain operator intents (web console writes) at the top of the pass.
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
     noted to stderr, and never aborts the pass or the remaining intents."""
-    by_name = {t.name: t for t in cfg.targets}
+    by_name = {t.name: t for t in [*cfg.targets,
+                                   *map(project_target, cfg.projects)]}
     pending = answers.without_superseded(intents.list_intents(cfg.state_dir),
                                          lambda i: _task_for_intent(cfg, i))
     for intent in pending:
@@ -2649,7 +2716,11 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     # the sweep is running (it holds a real capacity unit active() cannot see);
     # claims are paused when any request is in flight (pending = file OR running).
     sweep_running = triage.running()
-    eff = replace(cfg, capacity=max(0, cfg.capacity - 1)) if sweep_running else cfg
+    # Every project, paused or not, runs its existing work; only the claim
+    # round below skips a paused one.
+    eff = replace(cfg, targets=[*cfg.targets, *map(project_target, cfg.projects)])
+    if sweep_running:
+        eff = replace(eff, capacity=max(0, cfg.capacity - 1))
     claims_paused = triage.pending(cfg.state_dir)
     _handle_telegram(cfg, deps, dry_run)
     usages = fetch_all(cfg)
@@ -2668,17 +2739,20 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         for task in [t for t in load_all(cfg.state_dir)
                      if t.target == target.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
+            run_target = _task_target(eff, target, task)
             try:
-                _drive_task(eff, deps, target, task, admit, order, dry_run)
+                _drive_task(eff, deps, run_target, task, admit, order, dry_run)
             except Exception:
-                _fail_task_crash(eff, deps, target, task, dry_run)
+                _fail_task_crash(eff, deps, run_target, task, dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
     _resume_woken(eff, deps, admit, order, dry_run)
     _spawn_feedback(eff, deps, admit, order)
     # Phase 2: new claims, with whatever capacity phase 1 left.
     if not claims_paused:
-        _claim_new(eff, deps, eff.targets, admit, order, dry_run, pass_started)
+        paused = {p.key for p in cfg.projects if not p.enabled}
+        _claim_new(eff, deps, [t for t in eff.targets if t.name not in paused],
+                   admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
     _flush_finished(cfg, dry_run)
     _write_heartbeat(cfg, pass_started)

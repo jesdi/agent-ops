@@ -19,7 +19,8 @@ from pydantic import (BaseModel, Field, TypeAdapter, ValidationError,
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import execution_overrides, model_settings, priority, queue_ops
-from dispatcher.config import (Config, apply_stored_models, policy_for,
+from dispatcher.config import (Config, apply_stored_models, normalize_repo,
+                               policy_for, project_target,
                                referenced_providers, routed_providers,
                                stranded, with_models)
 from dispatcher.convergence import pass_lock
@@ -157,7 +158,16 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def health(op: Operator = Depends(current_operator)):
         return {"ok": True, "operator": op.login}
 
-    targets_by_name = {t.name: t for t in boot.targets}
+    projects_by_name = {p.key: p for p in boot.projects}
+    targets_by_name = {t.name: t for t in [*boot.targets,
+                                          *map(project_target, boot.projects)]}
+
+    def _target(name: str, repo: str = ""):
+        project = projects_by_name.get(name)
+        return project_target(project, repo) if project else targets_by_name.get(name)
+
+    def _rank_rows(target):
+        return sources.rank_rows(projects_by_name.get(target.name, target))
 
     def _cfg() -> Config:
         """The config in force now: `boot` with the stored model settings
@@ -179,8 +189,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return priority.order(mode, usages or {},
                               now or datetime.now(timezone.utc), boot.pace)
 
-    def _policy(live: Config, target_name):
-        target = targets_by_name.get(target_name)
+    def _policy(live: Config, target_name, repo: str = ""):
+        target = _target(target_name, repo)
         return policy_for(live, target)
 
     def _require_same_provider(t, model):
@@ -200,7 +210,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _choices(live: Config, t, order):
         """The ordered entries the dispatcher would walk for t's next launch."""
-        return launch_entries(t, _policy(live, t.target), order)
+        return launch_entries(t, _policy(live, t.target, t.repo), order)
 
     def _model_for(live: Config, t, order, usages=None, now=None):
         override = _one_shot(t)
@@ -226,7 +236,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         stage = next_stage(t)
         pinned = _pinned_track(live, t)
         # A pinned wait may be overridden with any model of the policy.
-        offered = (_policy(live, t.target).model_ids() if pinned
+        offered = (_policy(live, t.target, t.repo).model_ids() if pinned
                    else [e.model_id for e in _choices(live, t, order)])
         return _admission_for_model(
             _model_for(live, t, order, usages, now),
@@ -235,7 +245,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _pinned_track(live: Config, t):
         override = _one_shot(t)
-        return launch_pinned_track(t, _policy(live, t.target),
+        return launch_pinned_track(t, _policy(live, t.target, t.repo),
                                    overridden=bool(override and override.model))
 
     def _admission_for_model(model, choices, usages, now, pinned_track=""):
@@ -341,6 +351,17 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             stale_any = stale_any or stale
             queues.append((target.name, rows))
             queue_targets.append((target, rows))
+        for project in boot.projects:  # ranked across all its repositories
+            rows, _as_of, stale = sources.rank_rows(project)
+            stale_any = stale_any or stale
+            queues.append((project.key, rows))
+            by_repo = {normalize_repo(r.repo): [] for r in project.repositories}
+            for row in rows:  # an untagged row belongs to the first repository
+                by_repo.get(normalize_repo(row.get("repo", "")),
+                            next(iter(by_repo.values()))).append(row)
+            queue_targets.extend((project_target(project, r.repo),
+                                  by_repo[normalize_repo(r.repo)])
+                                 for r in project.repositories)
         mail = {**sources.undelivered_counts(), **sources.undelivered_qualified_counts()}
         return read_model.build_board(
             tasks, capacity=boot.capacity,
@@ -362,9 +383,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                         if (admission := _task_admission(live, t, order, usages, now))},
             candidate_admissions=_candidate_admissions(live, queue_targets, order,
                                                        usages, now),
-            max_active={t.name: t.max_active for t in boot.targets},
+            max_active={**{t.name: t.max_active for t in boot.targets},
+                        **{p.key: project_target(p).max_active for p in boot.projects}},
             last_claimed=sources.last_claims(),
-            max_open=boot.max_open)
+            max_open=boot.max_open, projects=boot.projects)
 
     @task_routes(app, "get", response_model=read_model.TaskDetail)
     def task_detail(ref: TaskRef = REF,
@@ -384,7 +406,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                    and i.get("target", "") in ("", target)
                    and i.get("repo", "") in ("", t.repo)
                    and i.get("action") in ("reply", "resume")]
-        policy = _policy(live, t.target)
+        policy = _policy(live, t.target, t.repo)
         return read_model.task_detail(
             t, model=_model_for(live, t, order, usages, now),
             pinned_track=_pinned_track(live, t),
@@ -424,7 +446,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         if tgt is None:
             raise HTTPException(404, f"unknown target {target!r}")
         task = _resolve(ref) or sources.task(*ref)
-        rows = [r for r in sources.rank_rows(tgt)[0] if r["number"] == issue
+        rows = [r for r in _rank_rows(tgt)[0] if r["number"] == issue
                 and repo in ("", r.get("repo", ""))]
         if task is None and len(rows) > 1:
             raise ambiguous(target, issue, [r.get("repo", "") for r in rows])
@@ -558,7 +580,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         stranded_tasks = [
             f"{t.target}#{t.issue} ({why})" for t in sources.tasks()
             if t.stage not in TERMINAL_STAGES and t.target in targets_by_name
-            and (why := stranded(candidate, targets_by_name[t.target], t,
+            and (why := stranded(candidate, _target(t.target, t.repo), t,
                                  next_stage(t)))]
         if stranded_tasks:
             raise HTTPException(422, "unfinished tasks could not go on: "
@@ -714,7 +736,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         """The queue rows `ref` names on its target."""
         target = targets_by_name.get(ref.target)
         return [] if target is None else [
-            row for row in sources.rank_rows(target)[0]
+            row for row in _rank_rows(target)[0]
             if row["number"] == ref.issue and ref.repo in ("", row.get("repo", ""))]
 
     def _named(ref: TaskRef) -> TaskRef:
@@ -793,7 +815,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             # The dispatcher would drop it; say so instead of queueing it.
             raise HTTPException(409, f"task {target}/{issue} is {task.stage.value} "
                                 "and cannot be resumed")
-        configured_target = targets_by_name.get(task.target)
+        configured_target = _target(task.target, task.repo)
         policy = policy_for(_cfg(), configured_target)
         configured = policy.model_ids()
         if req.model and req.model not in configured:
@@ -808,7 +830,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return _accepted("resume", TaskRef(target, issue, task.repo), payload, op)
 
     def _queue_candidate(configured_target, ref: TaskRef):
-        rows, _as_of, stale = sources.rank_rows(configured_target)
+        rows, _as_of, stale = _rank_rows(configured_target)
         found = [candidate for candidate in rows
                  if candidate.get("number") == ref.issue
                  and ref.repo in ("", candidate.get("repo", ""))
@@ -870,8 +892,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         # Name the identity first: archived, active and every matching queue
         # row, runnable or not. Eligibility must never pick among them.
         task, row = _runnable_work(configured_target, _named(ref))
-        model = _run_model(configured_target, ref.target, req, task, row)
         repo = task.repo if task is not None else row.get("repo", "")
+        model = _run_model(_target(ref.target, repo), ref.target, req, task, row)
         return _arm_run(TaskRef(ref.target, ref.issue, repo), req, task, model, op)
 
     @app.get("/api/pending-intents")
