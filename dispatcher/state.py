@@ -199,6 +199,8 @@ class TaskState:
     # the operator last acted. Owned by dispatcher/loops.py (gate_fields
     # counts, reset on an operator wake, UNATTENDED_ROUND_LIMIT caps).
     unattended_rounds: int = 0
+    # A gate respawn already spent the round for its first valid ready report.
+    gate_respawn_pending: bool = False
     pr_number: int = 0                   # the task's PR; 0 = not yet resolved
     feedback_cursor: str = ""            # ISO ts; "" = any human feedback is new
     feedback_pending: bool = False       # feedback seen, address-review deferred

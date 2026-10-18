@@ -623,7 +623,11 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                               stage.value, model, entry.effort,
                               second=launch.second)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
-    task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
+    # A gated task's plan session runs at the gate, so its `done` is the approval.
+    kept = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and task.gated else stage
+    task = replace(task, stage=kept, spec_path=spec_path or task.spec_path,
+                   gate_respawn_pending=(task.gate_respawn_pending
+                                         and kept is Stage.AWAITING_PLAN_REVIEW),
                    operator_request=None, **NO_POKES,
                    updated_at=_now(),
                    picks={**task.picks, pick_key(stage.value): str(entry)},
@@ -1367,9 +1371,12 @@ def _respawn(cfg: Config, deps: Deps, target: Target,
     detail = "after crash" if task.crashed_stage else "next launch"
     deps.github.set_status(target, task.issue,
                            target.status_in_progress_option_id)
+    # A resume of a crash at the gate: the operator's round (-1) is spent by this launch.
+    rounds = ({"unattended_rounds": max(task.unattended_rounds, 0)}
+              if task.crashed_stage and task.gated else {})
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
                    park_note="", hold_for_attach=False,
-                   resume_model_override="", resume_bypass_usage=False)
+                   resume_model_override="", resume_bypass_usage=False, **rounds)
     _clear_wake_blocked(cfg, task.target, task.issue)
     task = _spawn_stage(cfg, deps, target, task, launch)
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
@@ -1645,7 +1652,7 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
     elif task.stage is Stage.AWAITING_PLAN_REVIEW:
-        task = replace(task, **loops.gate_fields(task))
+        task = replace(task, **loops.gate_fields(task, respawn=act.stage is Stage.PLAN))
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
     try:

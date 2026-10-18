@@ -74,7 +74,7 @@ def test_task_that_waited_never_skips_after_a_respawn(tmp_path, monkeypatch):
     c, wt, sess = _waited_once(tmp_path, monkeypatch)
     sess.alive_set = set()
     _pass(c, sess)                              # found dead: respawned
-    assert _task(c).stage is Stage.PLAN
+    assert _task(c).stage is Stage.AWAITING_PLAN_REVIEW
     (wt / SUMMARY).write_text(NONE_SUMMARY)
     _ready(wt)
     sess.alive_set = {ISSUE}
@@ -204,7 +204,7 @@ def test_old_gate_task_file_never_skips_after_its_session_dies(tmp_path, monkeyp
     f.write_text(json.dumps(doc))
     sess.alive_set = set()
     _pass(c, sess)                              # found dead: respawned
-    assert _task(c).stage is Stage.PLAN
+    assert _task(c).stage is Stage.AWAITING_PLAN_REVIEW
     _ready(wt)
     sess.alive_set = {ISSUE}
     _assert_waits(c, sess, _pass(c, sess))

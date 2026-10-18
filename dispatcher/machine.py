@@ -307,6 +307,7 @@ def _gate_ready_actions(task: TaskState, signal: StageSignal,
     clocked again, while unattended rounds are left: no request is armed (a
     resume or a rework cleared it), or the session changed the plan with no
     `working` signal that a pass saw, and what the console offers is stale.
+    A respawn's first ready report completes its already charged round.
     A task that waited at the gate never skips it."""
     revision = plan_revision(task.worktree, signal.artifact, task.spec_path)
     if task.operator_request and _armed_for(task.operator_request, revision):
@@ -315,7 +316,7 @@ def _gate_ready_actions(task: TaskState, signal: StageSignal,
     _result, failed = _checked_plan(task, revision)
     if failed:
         return disarm + failed
-    if unattended_rounds_used(task):
+    if unattended_rounds_used(task) and not task.gate_respawn_pending:
         return disarm + [ParkForReview(ReviewPark.ROUNDS, artifact=signal.artifact)]
     return disarm + _review_round(signal)
 
@@ -420,6 +421,14 @@ def _done_actions(task: TaskState, signal: StageSignal,
         # The PR is the artifact — nothing to format-check.
         return [SetTaskStage(Stage.PR_OPEN), Notify("pr_updated", signal.note)]
     if task.stage == Stage.PLAN:
+        if task.gated:
+            # Saved before a gated task kept the gate stage: a bounce would
+            # ask for a review it already had.
+            return [ParkForInput(
+                f"The gate state was lost: this task waited at the plan gate, "
+                f"but it is in stage plan and reports done with track "
+                f"{signal.track or 'none'!r}. Move it to implement by hand.",
+                reason=WHY_BAD_SIGNAL)]
         # Nobody approved this plan: the gate comes first.
         return _plan_bounce(task, PLAN_NO_APPROVAL)
     if task.stage == Stage.AWAITING_PLAN_REVIEW:

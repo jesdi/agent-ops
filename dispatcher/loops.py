@@ -118,21 +118,25 @@ def reset(task: TaskState, cause: ResetCause) -> TaskState:
     Every other field (cursors, stage, metadata) is preserved. Input is not mutated."""
     task = replace(task, **{f: 0 for f in _RESET_FIELDS[cause]})
     if cause is ResetCause.OPERATOR_WAKE:
-        task = replace(task, unattended_rounds=_OPERATOR_ACTED)
+        task = replace(task, unattended_rounds=_OPERATOR_ACTED,
+                       gate_respawn_pending=False)
     return task
 
 
-def gate_fields(task: TaskState) -> dict[str, object]:
+def gate_fields(task: TaskState, *, respawn: bool = False) -> dict[str, object]:
     """What a step at the plan gate records on the task, for the executor to
     save. The task has waited there (`gated`, never cleared: also a task that
     leaves the gate by a respawn has waited). A step taken from the gate, a
     new review round or the respawn of a dead session, is one more unattended
-    round; gate entry from the plan stage is not a round."""
-    if task.stage is Stage.AWAITING_PLAN_REVIEW:
+    round; gate entry from the plan stage is not a round. A respawn prepays
+    its first valid ready report, even if another respawn intervenes."""
+    if (task.stage is Stage.AWAITING_PLAN_REVIEW
+            and (respawn or not task.gate_respawn_pending)):
         rounds = task.unattended_rounds + 1
     else:
         rounds = max(task.unattended_rounds, 0)   # an operator's round is one at the gate
-    return {"gated": True, "unattended_rounds": rounds}
+    return {"gated": True, "unattended_rounds": rounds,
+            "gate_respawn_pending": respawn}
 
 
 def unattended_rounds_used(task: TaskState) -> bool:
