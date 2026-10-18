@@ -67,7 +67,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               save, task_key)
 from dispatcher.workspace import (append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
-                                  write_worktree_file)
+                                  write_task_identity, write_worktree_file)
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
@@ -543,6 +543,17 @@ def _notify(deps: Deps, target: Target, task: TaskState, template: str,
                        target=target.name)
 
 
+def _heal_identity(task: TaskState) -> None:
+    """Before a launch or a resume: .agent/task.json is rewritten from the
+    task's own state, whatever the file held. A failure is logged and the
+    launch goes on."""
+    try:
+        write_task_identity(task.worktree, task.issue, task.target, task.branch)
+    except OSError as exc:
+        print(f"[warn] task identity not written for #{task.issue}: {exc}",
+              file=sys.stderr)
+
+
 def _heal_exclude(target: Target, task: TaskState) -> None:
     """Before a launch or a resume: a worktree made before the exclude lines
     existed gets them now. The path is the target's configured clone, never
@@ -618,6 +629,7 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if block:
         prompt = f"{prompt}\n\n{block}\n"
     _heal_exclude(target, task)
+    _heal_identity(task)
     _write_working(task.worktree, stage, entry)
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
@@ -646,6 +658,7 @@ def _continue_or_restart(cfg: Config, deps: Deps, target: Target,
     record = read_session(cfg.state_dir, task.target, task.issue)
     detail = ""
     if record is not None and record.stage == stage.value:
+        _heal_identity(task)
         block, drained = _drain(cfg, task.target, task.issue)
         text = "\n\n".join(filter(None, (message, block))) or "Continue."
         deps.sessions.resume(task.target, task.issue, task.worktree, text,
