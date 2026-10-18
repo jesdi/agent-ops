@@ -265,7 +265,7 @@ def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
 
 
 def patch_workspace(monkeypatch, tmp_path):
-    def fake_create(target, issue, dry_run=False):
+    def fake_create(target, issue, dry_run=False, credentials=None):
         wt = Path(target.worktrees_path) / f"task-{issue}"
         (wt / ".agent").mkdir(parents=True, exist_ok=True)
         return str(wt)
@@ -1231,7 +1231,7 @@ def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monke
     gh = FakeGitHub([Candidate(42, "Bad", "u42"), Candidate(43, "Good", "u43")])
     sess = FakeSessions()
 
-    def failing_workspace(target, issue, dry_run=False):
+    def failing_workspace(target, issue, dry_run=False, credentials=None):
         if issue == 42:
             raise RuntimeError("pipenv: no python 3.13")
         wt = Path(target.worktrees_path) / f"task-{issue}"
@@ -1258,7 +1258,7 @@ def test_workspace_failure_second_pass_dedupes(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     gh = FakeGitHub([Candidate(42, "Bad", "u42")])
 
-    def failing_workspace(target, issue, dry_run=False):
+    def failing_workspace(target, issue, dry_run=False, credentials=None):
         raise RuntimeError("pipenv: no python 3.13")
 
     monkeypatch.setattr(main, "create_workspace", failing_workspace)

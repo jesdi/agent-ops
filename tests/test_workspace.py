@@ -1,9 +1,38 @@
 import json
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 import dispatcher.workspace as workspace
 from dispatcher.config import Target
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "timeout"])
+def test_setup_subprocess_redacts_secrets_from_logs_and_errors(tmp_path, outcome):
+    log = tmp_path / ".agent" / "setup.log"
+    secret = "registry-private.[token]"
+    script = (
+        "import os, sys, time; "
+        "print(os.environ['REGISTRY_TOKEN'], flush=True); "
+        "print(os.environ['REGISTRY_TOKEN'], file=sys.stderr, flush=True); "
+        + ("time.sleep(10)" if outcome == "timeout" else
+           f"sys.exit({1 if outcome == 'failure' else 0})"))
+    errors = []
+    try:
+        workspace._sh([sys.executable, "-c", script], str(tmp_path),
+                      timeout=0.2 if outcome == "timeout" else 5,
+                      log=log, env={"REGISTRY_TOKEN": secret})
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        errors.append(exc)
+        assert secret not in repr((exc.args, exc.output, exc.stderr))
+        assert "[REDACTED]" in exc.output
+        assert "[REDACTED]" in exc.stderr
+    assert len(errors) == (0 if outcome == "success" else 1)
+    assert secret not in log.read_text()
+    assert log.read_text().count("[REDACTED]") == 2
 
 
 def target(tmp_path: Path) -> Target:
@@ -49,7 +78,7 @@ def test_create_workspace(tmp_path: Path, monkeypatch):
     assert "task-portfolio_eval-42-setup" in setup_args
     assert f"{wt}:{wt}" in setup_args
     assert f"{t.clone_path}:{t.clone_path}" in setup_args
-    assert "agent-ops-npm-cache:/root/.npm" in setup_args
+    assert any(a.startswith("agent-ops-npm-cache-") and a.endswith(":/root/.npm") for a in setup_args)
     assert setup_args[-1] == "scripts/setup-worktree.sh"
     assert setup_cwd == wt
     assert setup_timeout == 1800

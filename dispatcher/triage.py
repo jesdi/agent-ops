@@ -376,8 +376,9 @@ def _repo_dir() -> str:
 
 
 def _launch_env() -> dict[str, str]:
-    """The dispatcher's own credentials, forwarded into the sweep's tab as
-    `--env` pairs (herdr's `tab create --env`).
+    """The dispatcher's own credentials, forwarded into the sweep's tab
+    environment (herdr.create_tab hands them to the shell privately, never
+    as process arguments).
 
     Sessions.launch only ever starts podman, whose credentials arrive
     through mounted volumes; the sweep runner is a dispatcher *Python*

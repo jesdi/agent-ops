@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -140,25 +141,56 @@ def _write_log(log: Path, text: str) -> None:
 
 
 def _sh(args: list[str], cwd: str, timeout: int = 300,
-        log: Path | None = None) -> None:
+        log: Path | None = None, env: dict[str, str] | None = None) -> None:
     try:
         proc = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
-                              timeout=timeout)
+                              timeout=timeout,
+                              env={**os.environ, **env} if env else None)
     except subprocess.TimeoutExpired as exc:
+        exc.output = redact(exc.stdout, env)
+        exc.stderr = redact(exc.stderr, env)
         if log is not None:
-            def _decode(v):
-                if v is None:
-                    return ""
-                if isinstance(v, bytes):
-                    return v.decode(errors="replace")
-                return v
-            _write_log(log, _decode(exc.stdout) + _decode(exc.stderr))
+            _write_log(log, exc.stdout + exc.stderr)
         raise
+    stdout = redact(proc.stdout, env)
+    stderr = redact(proc.stderr, env)
     if log is not None:
-        _write_log(log, proc.stdout + proc.stderr)
+        _write_log(log, stdout + stderr)
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, args,
-                                            proc.stdout, proc.stderr)
+                                            stdout, stderr)
+
+
+# What a terminal puts where it wraps a line: padding, then a line break.
+_WRAP = r"(?:[ \t]*\r?\n)?"
+# The shortest piece of a value redacted where a read cuts through it.
+_EDGE = 4
+
+
+def _spanning(value: str) -> str:
+    """`value` as a pattern that still matches across a terminal's line wraps."""
+    return _WRAP.join(map(re.escape, value))
+
+
+def _secret_pattern(values: list[str]) -> str:
+    """Each whole value, plus, where a pane read cuts through one, its tail at
+    the start of the text and its head at the end (longest pieces first)."""
+    tails = [_spanning(v[i:]) for v in values for i in range(1, len(v) - _EDGE + 1)]
+    heads = [_spanning(v[:i]) for v in values for i in range(len(v) - 1, _EDGE - 1, -1)]
+    return "|".join([*map(_spanning, values),
+                     *([rf"\A(?:{'|'.join(tails)})"] if tails else []),
+                     *([rf"(?:{'|'.join(heads)})(?=\s*\Z)"] if heads else [])])
+
+
+def redact(output: str | bytes | None, env: dict[str, str] | None) -> str:
+    """`output` with every value of `env` (an execution's secrets) replaced by
+    [REDACTED], even wrapped or cut by a pane read: setup output and session
+    history leave the process only so."""
+    text = output.decode(errors="replace") if isinstance(output, bytes) else (output or "")
+    values = sorted({v for v in (env or {}).values() if v}, key=len, reverse=True)
+    if not values:
+        return text
+    return re.sub(_secret_pattern(values), lambda _: "[REDACTED]", text)
 
 
 def _branch_exists(clone_path: str, branch: str) -> bool:
@@ -364,7 +396,8 @@ def exclude_local_state(clone_path: str) -> None:
                             text + "\n".join(missing) + "\n")
 
 
-def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
+def create_workspace(target: Target, issue: int, dry_run: bool = False,
+                     credentials=None) -> str:
     wt = str(Path(target.worktrees_path) / f"task-{issue}")
     branch = f"agent/task-{issue}"
     if dry_run:
@@ -414,9 +447,20 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
             cwd=target.clone_path)
         _mark_provisioned(wt)
     if target.setup_cmd:
-        _sh(containers.setup_cmd(f"task-{target.name}-{issue}-setup", wt,
-                                 target.setup_cmd, target.clone_path),
-            cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
+        name = f"task-{target.name}-{issue}-setup"
+        # The project's own secrets, resolved before setup starts: an unavailable
+        # reference raises here and setup never runs. Values travel in the
+        # launcher's environment, names only in argv.
+        project_env: dict[str, str] = {}
+        if credentials is not None:
+            register = getattr(credentials, "register_execution", None)
+            if register:
+                register(name, target.repo, "task")
+            project_env = credentials.project_env(name)
+        _sh(containers.setup_cmd(name, wt, target.setup_cmd, target.clone_path,
+                                 project=target.name, secret_names=tuple(project_env)),
+            cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log",
+            **({"env": project_env} if project_env else {}))
 
     write_task_identity(wt, issue, target.name, branch)
 

@@ -106,7 +106,7 @@ def test_running_command_consumers_read_replacements_and_refuse_missing_token(tm
 
 
 def test_scoped_launch_installs_consumers_and_renewable_directory(monkeypatch, tmp_path):
-    monkeypatch.setattr(containers, "_runtime_args", lambda runtime: [])
+    monkeypatch.setattr(containers, "_runtime_args", lambda runtime, name="": [])
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path))
     cmd = containers.session_cmd("task-1", str(tmp_path), "2g", "2", "claude-fable-5", "P", scoped_token=True)
     assert "GH_TOKEN_FILE=/run/agent-ops/gh-token" in cmd
@@ -142,6 +142,8 @@ def test_launch_registers_before_refresh_and_never_runs_after_registration_failu
 
     def request(operation, body):
         operations.append((operation, body))
+        if operation == "executions/project-env":
+            return {"env": {}}
         return dict(token="A", repository_id=101, permissions={}, expires_at=1234)
 
     monkeypatch.setattr(client, "_request", request)
@@ -152,7 +154,8 @@ def test_launch_registers_before_refresh_and_never_runs_after_registration_failu
     sessions = Sessions(clones={"me/analytics": clone}, credentials=client)
     sessions.resume("analytics", 7, wt, "go", "anthropic/claude-opus-5-5",
                     session_id="session", repo="me/analytics")
-    assert [op for op, body in operations] == ["executions/register", "refresh"]
+    assert [op for op, body in operations] == [
+        "executions/register", "executions/project-env", "refresh"]
     assert operations[0][1]["execution_id"] == session_name("analytics", 7, "me/analytics")
     ensure.reset_mock()
     client.repositories.clear()

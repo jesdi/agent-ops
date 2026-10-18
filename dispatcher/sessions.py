@@ -36,6 +36,8 @@ log = logging.getLogger(__name__)
 
 # A running scoped session gets a new token this long before the old expires.
 RENEW_MARGIN = 600
+# What a reader without the credential service shows for a scoped session.
+HIDDEN = "live output hidden: project secrets"
 
 
 def session_name(target: str, issue: int, repo: str = "") -> str:
@@ -53,11 +55,12 @@ def session_name(target: str, issue: int, repo: str = "") -> str:
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
                second: Entry | None = None, clone: str = "",
-               repo: str = "", scoped_token: bool = False) -> str:
+               repo: str = "", scoped_token: bool = False,
+               secret_names: tuple[str, ...] = ()) -> str:
     return containers.session_cmd(session_name(target, issue, repo), worktree, memory,
                                   cpus, model, args, effort=effort,
                                   second=second, clone=clone, issue=issue,
-                                  scoped_token=scoped_token)
+                                  scoped_token=scoped_token, secret_names=secret_names)
 
 
 # The deployed checkout this module is imported from.
@@ -89,6 +92,9 @@ class Sessions:
         # path: the only source of the clone a session's container mounts.
         # Without an entry nothing is launched.
         self.clones = clones if clones is not None else {}
+        # execution label -> its project secrets, the values its pane output is
+        # redacted of (see _redacted); filled at launch, else on first read.
+        self._secrets: dict[str, dict[str, str]] = {}
 
     def _legacy_owned(self, target: str, issue: int, repo: str) -> bool:
         """A live unqualified `task-<T>-<N>` session belongs to `repo` only
@@ -143,17 +149,22 @@ class Sessions:
         # GitHub login. Without one the legacy host login stays mounted.
         scoped = self.credentials is not None
         token_env = {}
+        project_env = {}
         if scoped:
             register = getattr(self.credentials, "register_execution", None)
             if register:
                 register(name, repo or target, "task")
+            # Resolved before the token is minted: an unavailable reference refuses the launch
+            # (MissingSecretReference) before anything is minted or started.
+            project_env = self.credentials.project_env(name)
+            self._secrets[name] = project_env
             credential = self.credentials.refresh(name, repo or target, "task")
             self._deliver_token(name, repo or target, credential)
             token_env = {"GH_TOKEN": credential.token}
         cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
                          model, args, effort=effort,
                          second=second, clone=clone, repo=repo,
-                         scoped_token=scoped)
+                         scoped_token=scoped, secret_names=tuple(project_env))
         workspace.install_stop_hook(worktree)
         if repo and self.state_dir is not None:
             workspace.bind_execution(worktree, repo, issue_execution_token(
@@ -166,7 +177,7 @@ class Sessions:
             # it lives here and never in containers.session_cmd — the
             # headless triage container shares that module and must NOT read
             # as an agent.
-            env={"HERDR_AGENT": runtime.herdr_agent, **token_env})
+            env={**project_env, "HERDR_AGENT": runtime.herdr_agent, **token_env})
         # Raise, never return quietly: the caller would record a stage that
         # never started, and the next pass would report a phantom crash with
         # nothing to show (#363). A raise fails the task with this reason.
@@ -235,18 +246,39 @@ class Sessions:
                   f"at {worktree}")
             return
         runtime = runtime_for(model)
+        containers.migrate_conversation(
+            containers._state_dir(), session_name(target, issue, repo), runtime, session_id, worktree)
         self._launch(target, issue, worktree, model,
                      runtime.resume(session_id, shlex.quote(message)), effort=effort,
                      second=second, repo=repo)
+
+    def _redacted(self, target: str, issue: int, repo: str, text: str | None) -> str:
+        """Pane output with the execution's project secret values redacted:
+        those of its launch, or the credential service's after a restart.
+        Values that cannot be known withhold the whole text (fail closed). A
+        reader without the service (the console) withholds every scoped
+        session's output: its launch left a token scope marker the session
+        cannot reach. Only legacy sessions, which hold no secrets, show raw."""
+        name = session_name(target, issue, repo)
+        if not text:
+            return ""
+        if self.credentials is None:
+            scoped = os.path.lexists(f"{token_dir(containers._state_dir(), name)}.scope")
+            return HIDDEN if scoped else text
+        if name not in self._secrets:
+            try:
+                self._secrets[name] = self.credentials.project_env(name)
+            except Exception:  # noqa: BLE001 — unknown values: show nothing
+                log.warning("Output of %s withheld: its secrets are unknown", name)
+                return ""
+        return workspace.redact(text, self._secrets[name])
 
     def capture_tail(self, target: str, issue: int, lines: int = 25,
                      repo: str = "") -> str:
         if self.dry_run:
             return ""
         tab = self._tab(target, issue, repo)
-        text = tab.read("visible", lines) if tab else None
-        if text is None:
-            return ""
+        text = self._redacted(target, issue, repo, tab.read("visible", lines) if tab else None)
         return "\n".join(text.rstrip().splitlines()[-lines:])
 
     def capture_history(self, target: str, issue: int, lines: int = 2000,
@@ -259,7 +291,7 @@ class Sessions:
             return ""
         tab = self._tab(target, issue, repo)
         text = tab.read("recent-unwrapped", lines) if tab else None
-        return "" if text is None else text.rstrip()
+        return self._redacted(target, issue, repo, text).rstrip()
 
     def idle_seconds(self, target: str, issue: int, repo: str = "") -> float | None:
         """Seconds the session has been static; None = unknown (dry-run,

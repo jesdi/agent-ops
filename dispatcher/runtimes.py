@@ -25,6 +25,8 @@ class Runtime:
     # (prompt, bare model, effort) -> one-shot non-interactive args; the
     # prompt is a shell word the caller already quoted or substitutes.
     headless_args: Callable[[str, str, str], str]
+    login: str = ""         # the login file inside `home`: the one thing shared across tasks
+    seed: Mapping[str, str] = None  # files a new task home starts with: fixed bootstrap content, never copied
     package: str = ""       # where the host package lands, "" = the lone binary at binary_mount
 
     @property
@@ -68,6 +70,8 @@ CLAUDE = Runtime(
     # The binary is the host's to update (see containers._host_binary), so
     # the in-container auto-updater stays off.
     env=("CLAUDE_CODE_OAUTH_TOKEN", "DISABLE_AUTOUPDATER=1"),
+    login=".credentials.json",
+    seed={".claude.json": '{"hasCompletedOnboarding": true}'},
     herdr_agent="claude",
     # auto: the classifier approves routine actions and stops only for
     # genuinely risky ones — the stop then flows into the park/resume path
@@ -98,6 +102,7 @@ CODEX = Runtime(
     mount="/root/.codex",
     home_var="CODEX_HOME",
     env=(),
+    login="auth.json",
     herdr_agent="codex",
     # No approval prompts and no sandbox: the container is the isolation
     # layer and nobody is attached to answer. `notify` fires on

@@ -2139,7 +2139,8 @@ def _provision_workspace(cfg: Config, deps: Deps, target: Target, cand,
     """The candidate's workspace, or None after reporting a provisioning
     failure (the board was never claimed, so nothing to release)."""
     try:
-        return create_workspace(target, cand.number, dry_run=dry_run)
+        return create_workspace(target, cand.number, dry_run=dry_run,
+                                credentials=deps.credentials)
     except Exception:
         _report_provisioning_failure(cfg, deps, target, cand, dry_run)
         return None

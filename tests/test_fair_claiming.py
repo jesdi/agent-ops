@@ -127,7 +127,7 @@ def test_provisioning_failure_scoped_to_target_other_target_still_claims(
         "portfolio_eval": [Candidate(10, "PE candidate", "u10")],
     })
 
-    def failing_workspace(target, issue, dry_run=False):
+    def failing_workspace(target, issue, dry_run=False, credentials=None):
         if target.name == "factorial":
             raise RuntimeError("podman down")
         wt = Path(target.worktrees_path) / f"task-{issue}"

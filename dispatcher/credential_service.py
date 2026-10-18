@@ -19,7 +19,7 @@ import time
 
 from dispatcher.execution_credentials import (
     Credential, CredentialDenied, CredentialError, MissingInstallation,
-    MissingRepositoryAccess, OrganizationApprovalPending, TokenGenerationFailed,
+    MissingRepositoryAccess, MissingSecretReference, OrganizationApprovalPending, TokenGenerationFailed,
     UnresolvedGrant)
 
 # Non-200 body `{"code": ..., "detail": ...}` -> the distinct refusal it names.
@@ -39,6 +39,8 @@ _TOKEN = re.compile(r"(gh[pousr]_|github_pat_)\w+")
 def _refusal(operation: str, status: int, data: bytes) -> CredentialError:
     try:
         body = json.loads(data)
+        if body["code"] == "missing_secret_reference":  # names only, never values
+            return MissingSecretReference(map(str, body["references"]))
         error, hint = ERROR_CODES[body["code"]]
         detail = _TOKEN.sub("[redacted]", str(body.get("detail", "")))[:200]
     except (ValueError, TypeError, KeyError, AttributeError):
@@ -79,6 +81,12 @@ class CredentialService:
         self._request("executions/register", {
             "execution_id": execution_id, "project": self.repositories[repository],
             "repositories": [repository], "purpose": purpose})
+
+    def project_env(self, execution_id: str) -> dict[str, str]:
+        """The resolved secret environment of the execution's own project; the
+        service refuses with the unresolvable references, so a launch fails closed."""
+        return self._request("executions/project-env",
+                             {"execution_id": execution_id})["env"]
 
     def _credential(self, operation, execution_id, repository_id, purpose):
         data = self._request(operation, {"execution_id": execution_id,

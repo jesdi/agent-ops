@@ -35,6 +35,8 @@ def main(argv: list[str] | None = None) -> None:
     from web.sources import Sources
 
     cfg = load_config(args.config)
+    # No credential service here: a scoped session's live output is withheld
+    # (Sessions._redacted); parked ones show the dispatcher's redacted snapshot.
     sessions = Sessions(memory=cfg.session_memory, cpus=cfg.session_cpus, state_dir=cfg.state_dir)
     sources = Sources(cfg.state_dir, sessions, GitHubClient())
     # The console always has live streams open (SSE).

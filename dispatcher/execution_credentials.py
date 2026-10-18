@@ -14,6 +14,7 @@ Contract (see tests/test_execution_credentials_acceptance.py):
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -21,6 +22,11 @@ from types import MappingProxyType
 from typing import Callable, Mapping, Protocol
 
 TRUSTED = "dispatcher"
+
+# Variables a project secret may not shadow: the launcher sets them itself.
+RESERVED_ENV = frozenset({"GH_TOKEN", "GITHUB_TOKEN", "HERDR_AGENT", "HOME", "PATH",
+                          "CLAUDE_CODE_OAUTH_TOKEN"})
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 # Permission bounds per purpose; triage never writes code or pull requests.
 PERMISSIONS = MappingProxyType({
@@ -40,6 +46,15 @@ class CredentialError(Exception):
 
 class CredentialDenied(CredentialError):
     """The caller may not hold a credential for that repository/purpose."""
+
+
+class MissingSecretReference(CredentialDenied):
+    """Project secret references that could not be resolved; the references
+    are named, never their values."""
+
+    def __init__(self, references):
+        self.references = tuple(references)
+        super().__init__("unavailable secret reference(s): " + ", ".join(self.references))
 
 
 class MissingInstallation(CredentialError):
@@ -115,6 +130,11 @@ def _claimed_id(claim, scope: ExecutionScope):
     return next((i for i, n in scope.repositories.items() if n == claim), claim)
 
 
+def _check_env_name(name: str) -> None:
+    if not _ENV_NAME.fullmatch(name) or name in RESERVED_ENV or name.startswith("AGENT_OPS_"):
+        raise CredentialDenied(f"unusable project secret variable {name!r}")
+
+
 @dataclass
 class ExecutionCredentials:
     app: AppApi
@@ -123,6 +143,7 @@ class ExecutionCredentials:
     org_boards: frozenset[str] = frozenset()  # "org/number" authorized via the App
     control: str = ""  # op:// ref of the infrastructure credential
     secrets: Callable[[str], str] = lambda ref: ""
+    project_secrets: Mapping[str, Mapping[str, str]] = field(default_factory=dict)  # project -> {ENV_NAME: op:// ref}
     clock: Callable[[], float] = time.time
 
     def __post_init__(self):
@@ -147,6 +168,32 @@ class ExecutionCredentials:
         key = self._authorize(execution_id, repository_id, purpose)
         with self._lock:
             return self._mint(key)
+
+    def project_env(self, execution_id: str) -> dict[str, str]:
+        """The resolved {ENV_NAME: value} of the execution's own project only."""
+        scope = self.executions.get(execution_id)
+        if scope is None:
+            raise CredentialDenied(f"{execution_id!r} has no project environment")
+        declared = self.project_secrets.get(scope.project, {})
+        for name in declared:
+            _check_env_name(name)
+        env, missing = {}, []
+        for name, ref in declared.items():
+            value = self._read_secret(ref)
+            if value:
+                env[name] = value
+            else:
+                missing.append(ref)
+        if missing:
+            raise MissingSecretReference(dict.fromkeys(missing))
+        return env
+
+    def _read_secret(self, ref) -> str:
+        try:
+            value = self.secrets(ref)
+        except Exception:  # noqa: BLE001 — the cause may quote a value
+            return ""
+        return value if isinstance(value, str) and value.strip() else ""
 
     def _trusted(self, target, purpose: str) -> Credential:
         if purpose == "board" and isinstance(target, str) and target in self.org_boards:

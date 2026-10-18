@@ -6,10 +6,14 @@ clone path is always the target's configured one, handed in by the caller:
 that pointer is session-writable and is never read here."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
+import shutil
+from contextlib import suppress
 from pathlib import Path
 
 from dispatcher.models import Entry, bare_model_id
@@ -99,13 +103,146 @@ def _host_binary(runtime: Runtime) -> list[str]:
     return ["-v", f"{root}:{runtime.package}:ro"]
 
 
-def _runtime_args(runtime: Runtime) -> list[str]:
-    """The runtime's container flags: its home (mounted and pointed at), its
-    env, and its host binary. Every container that runs a CLI takes these."""
+def task_home(state: str | Path, name: str, runtime: Runtime) -> Path:
+    """The execution's own writable runtime home. Created on first use from
+    the runtime's fixed bootstrap seed, never from the shared home; its login
+    file is bound in instead (see _runtime_args)."""
+    # One path component, whatever the name holds (no "." so never ".."). A
+    # name that needed sanitising carries a digest of the raw name, so two
+    # different names never share a home.
+    safe = name if re.fullmatch(r"[A-Za-z0-9_-]+", name) else (
+        re.sub(r"[^A-Za-z0-9_-]", "_", name)[:40] + "-" + hashlib.sha256(name.encode()).hexdigest()[:16])
+    home = Path(state, "task-homes", safe, runtime.home)
+    if not home.exists():
+        try:  # best-effort like the wait dir: podman fails loudly on a missing source
+            home.mkdir(parents=True)
+            for fname, content in (runtime.seed or {}).items():
+                (home / fname).write_text(content)
+        except OSError:
+            pass  # the CLI starts from scratch
+    return home
+
+
+def _owns(path: Path, session_id: str, runtime: Runtime) -> bool:
+    """A conversation file named exactly for the session (never a substring)."""
+    return bool(session_id) and path.is_file() and not path.is_symlink() \
+        and path.name != runtime.login \
+        and (path.stem == session_id or path.name.endswith(f"-{session_id}.jsonl"))
+
+
+def _recorded_cwd(path: Path) -> str | None:
+    """The working directory the conversation file itself records (the first
+    record that carries one, top level or in a `payload`)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as lines:
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                payload = record.get("payload")
+                cwd = record.get("cwd") or (payload.get("cwd") if isinstance(payload, dict) else None)
+                if cwd:
+                    return str(cwd)
+    except OSError:
+        pass
+    return None
+
+
+def _publish(home: Path, rel: Path, src: Path) -> None:
+    """Copy `src` to home/rel through directory descriptors that refuse links
+    (the home is task-writable, so a swapped parent never redirects the write),
+    into a temporary file linked into place only once complete."""
+    flags = os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(home, flags)
+    try:
+        for part in rel.parent.parts:
+            with suppress(FileExistsError):
+                os.mkdir(part, 0o700, dir_fd=fd)
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        tmp = f".{rel.name}.{secrets.token_hex(6)}.tmp"
+        out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        try:
+            with os.fdopen(out, "wb") as dest, \
+                    open(os.open(src, os.O_RDONLY | os.O_NOFOLLOW), "rb") as inp:
+                shutil.copyfileobj(inp, dest)
+            os.link(tmp, rel.name, src_dir_fd=fd, dst_dir_fd=fd)  # never replaces
+        except FileExistsError:
+            pass  # already migrated
+        finally:
+            with suppress(OSError):
+                os.unlink(tmp, dir_fd=fd)
+    finally:
+        os.close(fd)
+
+
+def migrate_conversation(state: str | Path, name: str, runtime: Runtime,
+                         session_id: str, worktree: str) -> None:
+    """Move one conversation that predates task homes from the shared home into
+    the task's own: only files whose name carries this session's ID AND that
+    record this task's `worktree` as their working directory (a
+    session ID a task reported is not proof of ownership; every CLI record of a
+    real session names the worktree it ran in), so no sibling history is exposed."""
+    shared = Path(state, runtime.home)
+    home = task_home(state, name, runtime)
+    for src in (p for p in shared.rglob("*") if _owns(p, session_id, runtime)):
+        if _recorded_cwd(src) != worktree:  # missing ownership evidence fails closed
+            continue
+        with suppress(OSError):  # a link in the way: leave the file behind
+            _publish(home, src.relative_to(shared), src)
+
+
+def _shared_login(state: str, runtime: Runtime) -> Path:
+    """The runtime's one shared login file, created empty (`{}`, 0600) when
+    absent so it is always bound: a login done inside any task then lands in
+    it, never in that task's own home. An existing login is never touched. A
+    file that cannot be created stays missing, and podman refuses the mount."""
+    login = Path(state, runtime.home, runtime.login)
+    with suppress(OSError):
+        login.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(login, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as out:
+            out.write("{}")
+    return login
+
+
+def _runtime_args(runtime: Runtime, name: str) -> list[str]:
+    """The runtime's container flags: its per-execution home (mounted and
+    pointed at), the shared login file bound into it (one refresh lineage,
+    never a copy), its env, and its host binary. Every container that runs a
+    CLI takes these."""
+    state = _state_dir()
     return ["-e", f"{runtime.home_var}={runtime.mount}",
-            "-v", f"{_state_dir()}/{runtime.home}:{runtime.mount}",
+            "-v", f"{task_home(state, name, runtime)}:{runtime.mount}",
+            *(["-v", f"{_shared_login(state, runtime)}:{runtime.mount}/{runtime.login}"]
+              if runtime.login else []),
             *(a for e in runtime.env for a in ("-e", e)),
             *_host_binary(runtime)]
+
+
+def _trust_worktree(runtime: Runtime, name: str, worktree: str) -> None:
+    """Trust only this launch's worktree in its isolated Claude configuration."""
+    if runtime.cli != "claude":
+        return
+    from dispatcher.workspace import read_worktree_file, write_worktree_file
+
+    home = task_home(_state_dir(), name, runtime)
+    if not home.is_dir():
+        return  # unavailable mount sources are reported by podman
+    raw = read_worktree_file(home.parent, home.name, ".claude.json")
+    try:
+        config = json.loads(raw) if raw else {}
+        if not isinstance(config, dict):
+            config = {}
+    except ValueError:
+        config = {}
+    config["hasCompletedOnboarding"] = True
+    config["projects"] = {worktree: {"hasTrustDialogAccepted": True}}
+    write_worktree_file(home.parent, home.name, ".claude.json", json.dumps(config), mode=0o600)
 
 
 def _wrapper() -> list[str]:
@@ -124,7 +261,8 @@ def credential_commands() -> list[str]:
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 args: str, effort: str = "",
                 second: Entry | None = None, clone: str = "",
-                issue: int | None = None, scoped_token: bool = False) -> str:
+                issue: int | None = None, scoped_token: bool = False,
+                secret_names: tuple[str, ...] = ()) -> str:
     """The session's shell command, resolved from its qualified model ID.
     An unknown provider raises before anything runs.
     A granted `second` model (models.second_model) also gets its runtime's
@@ -139,10 +277,15 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
 
     `scoped_token`: the execution holds a scoped App token (see
     execution_credentials), delivered as GH_TOKEN inherited from the
-    launcher's environment (never in argv); the host gh login is not mounted."""
+    launcher's environment (never in argv); the host gh login is not mounted.
+    `secret_names`: the project's secret variables, passed by name (`-e NAME`);
+    their values live only in the launcher's environment."""
     runtime = runtime_for(model)
-    extra = _runtime_args(runtime_for(second.model_id)) if second else []
     worktree = _host_path("worktree", worktree)
+    _trust_worktree(runtime, name, worktree)
+    if second:
+        _trust_worktree(runtime_for(second.model_id), name, worktree)
+    extra = _runtime_args(runtime_for(second.model_id), name) if second else []
     state = _state_dir()
     branch = task_branch(worktree, name, issue)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
@@ -162,17 +305,18 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         Path(state, "wait").mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
+    secret_env = "".join(f"-e {shlex.quote(n)} " for n in secret_names)
     return (
         f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {_name_word(name)} "
         f"--memory {shlex.quote(memory)} --cpus {shlex.quote(cpus)} "
-        f"{shlex.join(_runtime_args(runtime) + extra)} "
+        f"{shlex.join(_runtime_args(runtime, name) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's
         # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its
         # curl dies against a nonexistent path and the `|| true` swallows
         # it, so waiting parks only ever happened via the stall timer.
         # Mount only the wait dir: the state dir also holds op-token.env.
         f"-e {shlex.quote('AGENT_OPS_STATE_DIR=' + state)} "
-        f"{branch_env}"
+        f"{branch_env}{secret_env}"
         f"{_mount(f'{state}/wait', f'{state}/wait')} "
         f"{_mount(worktree, worktree)} -w {shlex.quote(worktree)} "
         f"{clone_mount}"
@@ -216,7 +360,7 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         *_wrapper(),
         "podman", "run", "--rm", "--name", name,
         "--memory", memory, "--cpus", cpus,
-        *_runtime_args(runtime),
+        *_runtime_args(runtime, name),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
         *(["-e", "GH_TOKEN"] if scoped_token
           else ["-v", f"{home}/.config/gh:/root/.config/gh:ro"]),
@@ -226,14 +370,20 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     ]
 
 
-def setup_cmd(name: str, worktree: str, setup: str, clone: str) -> list[str]:
+def setup_cmd(name: str, worktree: str, setup: str, clone: str,
+              project: str = "", secret_names: tuple[str, ...] = ()) -> list[str]:
     """One-shot provisioning container: argv, never a shell line. `clone` is
-    the target's configured clone path."""
+    the target's configured clone path. Build caches are per `project`, so one
+    project's writable cache is never another's; `secret_names` are passed by
+    name only (`-e NAME`), the values come from the launcher's environment."""
+    # A digest of the whole key: lossy sanitising alone could merge two projects.
+    suffix = "-" + hashlib.sha256(project.encode()).hexdigest()[:16] if project else ""
     return [
         "podman", "run", "--rm", "--name", name,
+        *(a for n in secret_names for a in ("-e", n)),
         "-v", f"{worktree}:{worktree}", "-w", worktree,
         "-v", f"{clone}:{clone}",
-        "-v", "agent-ops-npm-cache:/root/.npm",
-        "-v", "agent-ops-xdg-cache:/root/.cache",
+        "-v", f"agent-ops-npm-cache{suffix}:/root/.npm",
+        "-v", f"agent-ops-xdg-cache{suffix}:/root/.cache",
         image(),
     ] + shlex.split(setup)

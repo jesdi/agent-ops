@@ -1,9 +1,29 @@
 import os
+import json
 from pathlib import Path
 
 import pytest
 
 from dispatcher import containers
+
+
+def test_session_seeds_only_its_worktree_trust_in_isolated_claude_home(tmp_path, monkeypatch):
+    from dispatcher.runtimes import CLAUDE
+
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path))
+    shared = tmp_path / CLAUDE.home
+    shared.mkdir()
+    (shared / ".claude.json").write_text(json.dumps({
+        "private": "sibling secret", "projects": {"/wt/sibling": {"private": "history"}}}))
+    containers.session_cmd("task-42", "/wt/own", "2g", "2", "claude-fable-5", "P")
+    home = containers.task_home(tmp_path, "task-42", CLAUDE)
+    config = json.loads((home / ".claude.json").read_text())
+    assert config == {"hasCompletedOnboarding": True,
+                      "projects": {"/wt/own": {"hasTrustDialogAccepted": True}}}
+    config["theme"] = "dark"
+    (home / ".claude.json").write_text(json.dumps(config))
+    containers.session_cmd("task-42", "/wt/own", "2g", "2", "claude-fable-5", "--resume sid")
+    assert json.loads((home / ".claude.json").read_text()) == config
 
 
 def make_worktree(tmp_path: Path) -> tuple[str, str]:
@@ -31,7 +51,7 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd and f"-w {wt}" in cmd
     assert f"-v {clone}:{clone}" in cmd
-    assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
+    assert "/agent-ops-state/task-homes/task-42/claude-home:/root/.claude" in cmd
     assert cmd.endswith(
         "claude --remote-control task-42 --permission-mode auto "
         "--model claude-fable-5 --continue 'hi'")
@@ -127,7 +147,7 @@ def test_triage_cmd_read_only_clone_and_report_mount(monkeypatch, tmp_path):
     assert "-it" not in cmd
     assert "/repos/r:/repos/r:ro" in cmd
     assert "/state/triage:/triage" in cmd
-    assert f"{tmp_path / 'state'}/claude-home:/root/.claude" in cmd
+    assert f"{tmp_path / 'state'}/task-homes/triage-o-r/claude-home:/root/.claude" in cmd
     i = cmd.index("-w")
     assert cmd[i + 1] == "/repos/r"
     assert cmd[cmd.index("--memory") + 1] == "1500m"
@@ -236,7 +256,7 @@ def test_triage_cmd_runs_codex_headless_for_an_openai_model(monkeypatch, tmp_pat
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     cmd = containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
                                 "openai/gpt-6-sol", "/triage/p.md", effort="high")
-    assert f"{tmp_path / 'state'}/codex-home:/root/.codex" in cmd
+    assert f"{tmp_path / 'state'}/task-homes/triage-o-r/codex-home:/root/.codex" in cmd
     assert f"{codex_package}:/opt/codex:ro" in cmd
     assert "/repos/r:/repos/r:ro" in cmd
     assert "claude-home" not in " ".join(cmd)
@@ -418,3 +438,28 @@ def test_setup_cmd_mounts_the_configured_clone(tmp_path, monkeypatch):
     argv = containers.setup_cmd("task-42-setup", wt, "setup.sh", clone)
     assert f"{clone}:{clone}" in argv and not [a for a in argv if ".ssh" in a]
     assert not hasattr(containers, "clone_root")
+
+
+def test_migrate_conversation_copies_only_the_sessions_own_files(tmp_path):
+    from dispatcher.runtimes import runtime_for
+    runtime = runtime_for("anthropic/claude-opus-5-5")
+    shared = tmp_path / runtime.home
+    (shared / "projects" / "p").mkdir(parents=True)
+    (shared / "projects" / "p" / "sid-1.jsonl").write_text('{"cwd": "/wt/t"}\nmine')
+    (shared / "projects" / "p" / "sid-2.jsonl").write_text("sibling")
+    (shared / runtime.login).write_text("login-sid-1")
+    containers.migrate_conversation(tmp_path, "t", runtime, "sid-1", "/wt/t")
+    containers.migrate_conversation(tmp_path, "t", runtime, "sid-1", "/wt/t")  # idempotent
+    home = containers.task_home(tmp_path, "t", runtime)
+    assert (home / "projects" / "p" / "sid-1.jsonl").read_text().endswith("mine")
+    assert not (home / "projects" / "p" / "sid-2.jsonl").exists()
+    assert not (home / runtime.login).exists()
+
+
+def test_migrate_conversation_refuses_another_tasks_transcript(tmp_path):
+    from dispatcher.runtimes import runtime_for
+    runtime = runtime_for("anthropic/claude-opus-5-5")
+    (tmp_path / runtime.home / "projects" / "p").mkdir(parents=True)
+    (tmp_path / runtime.home / "projects" / "p" / "sid-1.jsonl").write_text('{"cwd": "/wt/other"}')
+    containers.migrate_conversation(tmp_path, "t", runtime, "sid-1", "/wt/t")
+    assert not (containers.task_home(tmp_path, "t", runtime) / "projects" / "p" / "sid-1.jsonl").exists()

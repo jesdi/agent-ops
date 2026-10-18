@@ -63,10 +63,12 @@ def _read_codex_metadata(path: Path, session_id: str) -> dict | None:
 def _codex_metadata(state_dir, session_id) -> dict | None:
     if not isinstance(session_id, str) or not session_id:
         return None
-    sessions = Path(state_dir) / "codex-home" / "sessions"
+    root = Path(state_dir)
+    # Each execution has its own codex home (containers.task_home).
+    homes = [root / "codex-home", *root.glob("task-homes/*/codex-home")]
     try:
         # The ID is compared literally, never interpolated into a glob pattern.
-        for path in sessions.glob("**/rollout-*.jsonl"):
+        for path in (p for h in homes for p in (h / "sessions").glob("**/rollout-*.jsonl")):
             if path.name.endswith(f"-{session_id}.jsonl"):
                 return _read_codex_metadata(path, session_id)
     except OSError:
