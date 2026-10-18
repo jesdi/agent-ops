@@ -284,7 +284,7 @@ def test_reset_stage_started():
 def test_reset_operator_wake():
     task = _task(
         review_rounds=2, gate_rounds=1, e2e_rounds=3, ci_rounds=2,
-        ticket_count=5,
+        ticket_count=5, gate_respawn_pending=True,
     )
     result = reset(task, ResetCause.OPERATOR_WAKE)
 
@@ -293,11 +293,13 @@ def test_reset_operator_wake():
     assert result.e2e_rounds == 0
     assert result.ci_rounds == 0
     assert result.ticket_count == 5   # preserved
+    assert not result.gate_respawn_pending
 
 
 def test_gate_fields_count_only_what_the_task_does_at_the_gate():
     gate = _task(stage=Stage.AWAITING_PLAN_REVIEW, unattended_rounds=1)
-    assert gate_fields(gate) == {"gated": True, "unattended_rounds": 2}
+    assert gate_fields(gate) == {"gated": True, "unattended_rounds": 2,
+                                "gate_respawn_pending": False}
     assert unattended_rounds_used(replace(gate, **gate_fields(gate)))
     # the round that answers the operator is theirs
     answered = reset(gate, ResetCause.OPERATOR_WAKE)
@@ -305,7 +307,8 @@ def test_gate_fields_count_only_what_the_task_does_at_the_gate():
     # gate entry from the plan stage is not a round, and keeps no credit
     for before, after in ((1, 1), (answered.unattended_rounds, 0)):
         plan = _task(stage=Stage.PLAN, unattended_rounds=before)
-        assert gate_fields(plan) == {"gated": True, "unattended_rounds": after}
+        assert gate_fields(plan) == {"gated": True, "unattended_rounds": after,
+                                    "gate_respawn_pending": False}
 
 
 # ---------------------------------------------------------------------------

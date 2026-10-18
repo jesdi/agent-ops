@@ -327,6 +327,42 @@ def test_ticket_gap_resumes_the_session_and_does_not_ask_for_review(tmp_path, mo
 
 
 # 7. The gate releases its slot after the grace time.
+@pytest.mark.parametrize("used", [0, 1])
+def test_respawn_ready_report_reuses_its_round_and_starts_a_fresh_grace_clock(
+        tmp_path, monkeypatch, used):
+    c = _setup(tmp_path, monkeypatch)
+    wt = _plan_task(c, tmp_path, Stage(GATE), gated=True,
+                    unattended_rounds=used, operator_request=PlanApprovalRequest(SUMMARY))
+    _ready(wt)
+    _arm(c)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert _task(c).unattended_rounds == used + 1
+
+    # The replacement may work longer than the old grace period before reporting ready.
+    old_clock = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    save(c.state_dir, dc_replace(_task(c), updated_at=old_clock))
+    sess.alive_set.add(ISSUE)
+    _ready(wt)
+    d = deps(sess=sess)
+    main.run_pass(c, d)
+
+    t = _task(c)
+    assert t.unattended_rounds == used + 1
+    assert t.park == "" and t.slot != NO_SLOT
+    assert t.operator_request == main._plan_approval(t, SUMMARY)
+    assert t.updated_at > old_clock and not main._grace_elapsed(c, t)
+    assert d.notifier.sent == ["awaiting_plan_review"]
+
+    # A repeated report preserves the new clock; only its expiry parks the task.
+    main.run_pass(c, d)
+    assert _task(c) == t
+    save(c.state_dir, dc_replace(t, updated_at=old_clock))
+    main.run_pass(c, d)
+    assert _task(c).park == PARK_REVIEW
+    assert _task(c).unattended_rounds == used + 1
+
+
 def test_gate_parks_after_the_grace_time_and_a_later_approval_starts_implement(
         tmp_path, monkeypatch):
     c = dc_replace(_setup(tmp_path, monkeypatch), capacity=1)

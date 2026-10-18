@@ -1027,7 +1027,7 @@ def test_gate_respawn_keeps_spec_path_and_track(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess))
     assert [(s[0], s[1]) for s in sess.spawned] == [(42, "plan")]
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.spec_path, t.track) == (Stage.PLAN, SPEC_PATH, "deep")
+    assert (t.stage, t.spec_path, t.track) == (Stage.AWAITING_PLAN_REVIEW, SPEC_PATH, "deep")
     assert t.operator_request is None
 
 
@@ -5811,7 +5811,7 @@ def test_rework_longer_than_the_grace_time_starts_a_round_with_a_fresh_clock(
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_REVIEW
 
 
-def test_a_session_that_dies_at_the_gate_each_life_is_respawned_twice_then_parks(
+def test_a_session_that_dies_at_the_gate_gets_two_respawns_then_parks(
         tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -5828,6 +5828,7 @@ def test_a_session_that_dies_at_the_gate_each_life_is_respawned_twice_then_parks
         sess.alive_set = set()
         _gate_pass(c, sess, monkeypatch, notifier=notifier)   # found dead
     t = load(c.state_dir, "portfolio_eval", 42)
+    # The respawn at the gate and its first ready report count one round.
     assert [s[1] for s in sess.spawned] == ["plan", "plan"]
     assert t.park == PARK_REVIEW and t.slot == NO_SLOT
     assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY)
@@ -5952,7 +5953,7 @@ def test_old_ready_signal_is_never_read_after_a_respawn_or_a_resume(tmp_path, mo
     assert json.loads(sig.read_text())["status"] == "working"
     _gate_pass(c, sess, monkeypatch, notifier=notifier)       # new session, no report yet
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.stage is Stage.PLAN and t.operator_request is None
+    assert t.stage is Stage.AWAITING_PLAN_REVIEW and t.operator_request is None
     gate_signal(wt)
     _gate_pass(c, sess, monkeypatch, notifier=notifier)       # its own ready report
     intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42,
