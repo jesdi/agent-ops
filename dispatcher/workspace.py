@@ -55,6 +55,13 @@ def _plain_name(name: str) -> str:
     return name
 
 
+def write_task_identity(wt: str | Path, issue: int, target: str, branch: str) -> None:
+    """.agent/task.json: the Stop hook's ping identity and the guardrail's
+    branch. Always written from the dispatcher's own task state."""
+    write_worktree_file(wt, ".agent", "task.json", json.dumps(
+        {"issue": issue, "target": target, "branch": branch}))
+
+
 def write_worktree_file(root: str | Path, subdir: str, name: str,
                         data: str | bytes, mode: int | None = 0o644) -> None:
     """Write <root>/<subdir>/<name> whole (temp file, then rename), never
@@ -400,8 +407,7 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
                                  target.setup_cmd, target.clone_path),
             cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
 
-    write_worktree_file(wt, ".agent", "task.json", json.dumps(
-        {"issue": issue, "target": target.name, "branch": branch}))
+    write_task_identity(wt, issue, target.name, branch)
 
     exclude_local_state(target.clone_path)
 
