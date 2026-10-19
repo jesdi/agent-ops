@@ -67,7 +67,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               save, task_key)
 from dispatcher.workspace import (append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
-                                  write_worktree_file)
+                                  write_task_identity, write_worktree_file)
 import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
@@ -543,6 +543,17 @@ def _notify(deps: Deps, target: Target, task: TaskState, template: str,
                        target=target.name)
 
 
+def _heal_identity(task: TaskState) -> None:
+    """Before a launch or a resume: .agent/task.json is rewritten from the
+    task's own state, whatever the file held. A failure is logged and the
+    launch goes on."""
+    try:
+        write_task_identity(task.worktree, task.issue, task.target, task.branch)
+    except OSError as exc:
+        print(f"[warn] task identity not written for #{task.issue}: {exc}",
+              file=sys.stderr)
+
+
 def _heal_exclude(target: Target, task: TaskState) -> None:
     """Before a launch or a resume: a worktree made before the exclude lines
     existed gets them now. The path is the target's configured clone, never
@@ -618,12 +629,17 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if block:
         prompt = f"{prompt}\n\n{block}\n"
     _heal_exclude(target, task)
+    _heal_identity(task)
     _write_working(task.worktree, stage, entry)
     deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
                               second=launch.second)
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
-    task = replace(task, stage=stage, spec_path=spec_path or task.spec_path,
+    # A gated task's plan session runs at the gate, so its `done` is the approval.
+    kept = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and task.gated else stage
+    task = replace(task, stage=kept, spec_path=spec_path or task.spec_path,
+                   gate_respawn_pending=(task.gate_respawn_pending
+                                         and kept is Stage.AWAITING_PLAN_REVIEW),
                    operator_request=None, **NO_POKES,
                    updated_at=_now(),
                    picks={**task.picks, pick_key(stage.value): str(entry)},
@@ -642,6 +658,7 @@ def _continue_or_restart(cfg: Config, deps: Deps, target: Target,
     record = read_session(cfg.state_dir, task.target, task.issue)
     detail = ""
     if record is not None and record.stage == stage.value:
+        _heal_identity(task)
         block, drained = _drain(cfg, task.target, task.issue)
         text = "\n\n".join(filter(None, (message, block))) or "Continue."
         deps.sessions.resume(task.target, task.issue, task.worktree, text,
@@ -1369,7 +1386,8 @@ def _respawn(cfg: Config, deps: Deps, target: Target,
                            target.status_in_progress_option_id)
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
                    park_note="", hold_for_attach=False,
-                   resume_model_override="", resume_bypass_usage=False)
+                   resume_model_override="", resume_bypass_usage=False,
+                   **loops.crash_resume_fields(task))
     _clear_wake_blocked(cfg, task.target, task.issue)
     task = _spawn_stage(cfg, deps, target, task, launch)
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
@@ -1645,7 +1663,7 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
     elif task.stage is Stage.AWAITING_PLAN_REVIEW:
-        task = replace(task, **loops.gate_fields(task))
+        task = replace(task, **loops.gate_fields(task, respawn=act.stage is Stage.PLAN))
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
     try:
