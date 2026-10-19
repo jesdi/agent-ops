@@ -106,12 +106,12 @@ def disk_revision(task: TaskState | None) -> str:
     """The revision of the task's open request as it is on disk now; ""
     when there is no request or the revision cannot be told."""
     # Imported here: artifacts reads QUESTION_ID from this module.
-    from dispatcher.artifacts import page_revision, plan_revision
+    from dispatcher.artifacts import page_revision, task_plan_revision
     req = task.operator_request if task is not None else None
     if req is None:
         return ""
     if req.kind == "plan-approval":
-        return plan_revision(task.worktree, req.path, task.spec_path).fingerprint
+        return task_plan_revision(task, req.path).fingerprint
     return page_revision(Path(task.worktree) / req.path)[0]
 
 

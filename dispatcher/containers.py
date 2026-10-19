@@ -297,6 +297,9 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         clone = ""
         sandbox_flags = shlex.join(["--network", agent.network,
                                     "--cgroup-parent", agent.group]) + " "
+        # a multi-repository task: the other checkouts, at the paths the sandbox ran their commands in
+        sandbox_flags += "".join(_mount(m.source, m.dest) + " " for m in agent.mounts
+                                 if m.dest.startswith("/workspaces/"))
     clone_mount = (_mount(_host_path("clone", clone), clone) + " ") if clone else ""
     home = str(Path.home())
     gh_login = _mount(f'{home}/.config/gh', '/root/.config/gh', 'ro') + " "

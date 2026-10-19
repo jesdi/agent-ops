@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -38,7 +39,7 @@ from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish, task_artifacts
-from dispatcher.artifacts import TICKETS_DIR, page_revision, plan_revision
+from dispatcher.artifacts import TICKETS_DIR, page_revision, task_plan_revision
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
                                 HandleCrash, NoOp, Notify, ParkForCI,
@@ -59,7 +60,8 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
                               RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
-                              Stage, StageSignal, TaskState, active, allocate_slot,
+                              ScopeRefused, Stage, StageSignal, TaskBundle, TaskRepository, TaskState, active,
+                              read_bundle, save_bundle, select_spec_repo, allocate_slot,
                               clear_session, clear_turn_markers, delete, has_waiting,
                               holds_slot, launch_entries, load,
                               load_all, max_slots,
@@ -618,6 +620,59 @@ def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     return _launch_stage(cfg, deps, target, task, launch, spec_path)
 
 
+def _session_checkout(task: TaskState, member: TaskRepository) -> str:
+    """Secondary checkouts are mounted under /workspaces in session containers."""
+    return (task.worktree if member.worktree == task.worktree
+            else f"/workspaces/{member.repo.replace('/', '~')}")
+
+
+def _awaits_spec_repo(cfg: Config, task: TaskState, stage: Stage) -> TaskBundle | None:
+    """The task's scope while a spec stage waits for its spec/plan repository."""
+    bundle = read_bundle(cfg.state_dir, task.target, task.issue, repo=task.repo)
+    return bundle if stage is Stage.SPEC and bundle and bundle.awaits_spec_repo else None
+
+
+def _held_for_spec_repo(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                        stage: Stage) -> bool:
+    """Park a spec launch until the operator chooses the spec/plan repository,
+    so no session writes or pushes the spec anywhere else first."""
+    bundle = _awaits_spec_repo(cfg, task, stage)
+    if bundle is None:
+        return False
+    choices = ", ".join(r.repo for r in bundle.repositories)
+    _park_for_input(cfg, deps, target, replace(task, stage=stage),
+                    f"Choose the spec/plan repository ({choices}) in the console: "
+                    "the spec stage starts there once it is chosen.")
+    return True
+
+
+def _session_plan_checkout(cfg: Config, task: TaskState) -> str:
+    bundle = read_bundle(cfg.state_dir, task.target, task.issue, repo=task.repo)
+    if bundle and bundle.spec_repo:
+        member = next(r for r in bundle.repositories if r.repo == bundle.spec_repo)
+        return _session_checkout(task, member)
+    return task.worktree
+
+
+def _repository_context(cfg: Config, task: TaskState) -> str:
+    bundle = read_bundle(cfg.state_dir, task.target, task.issue, repo=task.repo)
+    if bundle is None:
+        owner = state.pending_spec_repo(cfg.state_dir, task.target, task.issue, repo=task.repo)
+        return (f"The definition selects {owner} as the spec/plan repository. "
+                "Its checkout is provisioned after exploration. Keep the explored spec local; "
+                "override the spec stage's push requirement and report done after writing it. "
+                "The controller transfers it to the selected checkout at handover; "
+                "the plan stage commits and pushes it there.") if owner else ""
+    checkouts = ", ".join(f"{r.repo}: {_session_checkout(task, r)}" for r in bundle.repositories)
+    root = _session_plan_checkout(cfg, task)
+    return (f"Repository checkouts: {checkouts}. Spec/plan repository: {bundle.spec_repo or 'awaiting operator selection'}. "
+            f"Write, commit and push spec files and tickets in {root}, on {task.branch}. "
+            f"Use {root}/{TICKETS_DIR} for ticket execution. "
+            f"Keep stage.json, questionnaires, answers and the review page under {task.worktree}/.agent; "
+            "their relative paths in this prompt refer to that session control directory. "
+            "Report spec artifacts relative to the spec/plan checkout.")
+
+
 def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                   launch: Launch, spec_path: str = "",
                   message: str = "") -> TaskState:
@@ -639,7 +694,17 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         labels=", ".join(task.labels),
         tracks=tracks_text(_policy(cfg, target)),
     )
+    planning_root = _session_plan_checkout(cfg, task)
+    if planning_root != task.worktree:
+        ctx["spec_path"] = str(Path(planning_root) / ctx["spec_path"]) if ctx["spec_path"] else ""
+        ctx["tickets_dir"] = str(Path(planning_root) / TICKETS_DIR)
     prompt = render_stage_prompt(stage, ctx)
+    repository_context = _repository_context(cfg, task)
+    if repository_context:
+        prompt += "\n\n" + repository_context
+    if stage is Stage.SPEC and target.sandbox:
+        prompt += "\n\nProject repository members: " + ", ".join(
+            sorted(_project_members(cfg).get(task.target, ())))
     if message:
         prompt = f"{prompt}\n\n{message}"
     block, drained = _drain(cfg, task.target, task.issue, task.repo)
@@ -678,7 +743,7 @@ def _continue_or_restart(cfg: Config, deps: Deps, target: Target,
     if record is not None and record.stage == stage.value:
         _heal_identity(task)
         block, drained = _drain(cfg, task.target, task.issue, task.repo)
-        text = "\n\n".join(filter(None, (message, block))) or "Continue."
+        text = "\n\n".join(filter(None, (message, block, _repository_context(cfg, task)))) or "Continue."
         if _session_launch_blocked(cfg, deps, task):
             raise RuntimeError("session ownership is not isolated")
         deps.sessions.resume(task.target, task.issue, task.worktree, text,
@@ -1002,6 +1067,24 @@ def _spec_note(pub: "spec_publish.PublishResult") -> str:
     return f"spec: {pub.url}"
 
 
+def _publish_spec(cfg: Config, task: TaskState, target: Target,
+                  dry_run: bool) -> "spec_publish.PublishResult | None":
+    """Publish the spec from the repository that holds it: the bundle's selected
+    spec repository, else the task's own. None while a bundle awaits that selection."""
+    bundle = read_bundle(cfg.state_dir, task.target, task.issue, repo=task.repo)
+    if bundle is None:
+        worktree, branch, repo = task.worktree, task.branch, target.repo
+    elif not bundle.spec_repo:
+        return None
+    else:
+        member = next(r for r in bundle.repositories if r.repo == bundle.spec_repo)
+        worktree, branch, repo = member.worktree, member.branch, member.repo
+    return spec_publish.ensure_published(
+        worktree=worktree, branch=branch, repo=repo, issue=task.issue,
+        artifact=spec_publish.relative_artifact(task.worktree, task.spec_path) or task.spec_path,
+        dry_run=dry_run)
+
+
 def _park_for_review(cfg: Config, deps: Deps, target: Target, task: TaskState,
                      reason: ReviewPark, dry_run: bool = False) -> None:
     """Park a task at the plan gate for a human to read whenever they wake
@@ -1015,11 +1098,8 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target, task: TaskState,
     tail = deps.sessions.capture_tail(task.target, task.issue, **_repo_kw(task))
     note = tail.strip() or "(no detail)"
     if task.spec_path:
-        pub = spec_publish.ensure_published(
-            worktree=task.worktree, branch=task.branch,
-            repo=target.repo, issue=task.issue,
-            artifact=task.spec_path, dry_run=dry_run)
-        note += f"\n{_spec_note(pub)}"
+        pub = _publish_spec(cfg, task, target, dry_run)
+        note += f"\n{_spec_note(pub)}" if pub else "\nspec: waiting for its repository to be selected"
     # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
     # the task is not stranded — the session is ended and the operator can still
     # reach it via /attach, the console `resume` intent, or plain-text wakes.
@@ -1375,12 +1455,9 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
     )
     for task in woken:
         target = _task_target(cfg, targets[task.target], task)
-        # Only a launch record authorizes replacing a live execution. A
-        # login park deliberately retains that execution until attach wakes it.
-        if (_session_launch_blocked(cfg, deps, task)
-                and not owns_task_session(cfg.state_dir, task.target, task.issue, task.repo)
-                and not token_issued(cfg.state_dir, task.target, task.issue, task.repo)):
-            _mark_wake_blocked(cfg, target, task, "session ownership is not isolated")
+        held = _wake_held(cfg, deps, task)
+        if held:
+            _mark_wake_blocked(cfg, target, task, held)
             continue
         launch, why = _wake_launch(cfg, deps, target, task, admit, order)
         if why:
@@ -1400,6 +1477,19 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
             _consume_execution_choice(cfg, task.target, task.issue, task.repo)
         except Exception:
             _fail_task_crash(cfg, deps, target, task, dry_run)
+
+
+def _wake_held(cfg: Config, deps: Deps, task: TaskState) -> str:
+    """Why a woken task may not launch yet, else ""."""
+    # Only a launch record authorizes replacing a live execution. A
+    # login park deliberately retains that execution until attach wakes it.
+    if (_session_launch_blocked(cfg, deps, task)
+            and not owns_task_session(cfg.state_dir, task.target, task.issue, task.repo)
+            and not token_issued(cfg.state_dir, task.target, task.issue, task.repo)):
+        return "session ownership is not isolated"
+    if _awaits_spec_repo(cfg, task, Stage(next_stage(task))):
+        return "awaiting the spec/plan repository choice"
+    return ""
 
 
 def _with_slot(cfg: Config, target: Target, task: TaskState) -> TaskState | None:
@@ -1714,7 +1804,7 @@ def _plan_approval(task: TaskState, artifact: str) -> PlanApprovalRequest:
     """Arm the gate's request: the plan session's review page, bound to the
     plan revision that is on disk now. The answers of an earlier round go
     (answers.discard_stale)."""
-    revision = plan_revision(task.worktree, artifact, task.spec_path)
+    revision = task_plan_revision(task, artifact)
     answers.discard_stale(task.worktree, "plan-approval", revision.fingerprint)
     return PlanApprovalRequest(path=revision.path, fingerprint=revision.fingerprint)
 
@@ -1781,10 +1871,9 @@ def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
 
 def _on_publish_spec(turn: _Turn, task: TaskState, act: PublishSpec,
                      launch: Launch | None) -> TaskState:
-    pub = spec_publish.ensure_published(
-        worktree=task.worktree, branch=task.branch,
-        repo=turn.target.repo, issue=task.issue,
-        artifact=task.spec_path, dry_run=turn.dry_run)
+    pub = _publish_spec(turn.cfg, task, turn.target, turn.dry_run)
+    if pub is None:   # publication waits for the spec repository selection
+        return task
     turn.spec_line = _spec_note(pub)
     if act.review and not pub.error:
         try:
@@ -1820,6 +1909,8 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         task = replace(task, **loops.gate_fields(task, respawn=act.stage is Stage.PLAN))
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
+    if not _exploration_handover(turn, task, act.stage):
+        return None
     try:
         return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
     except Exception:
@@ -2208,6 +2299,8 @@ def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
                           issue=cand.number, stage=Stage.QUEUED.value)
     try:
         deps.github.claim(target, cand)  # irreversible board mutation — last
+        if _held_for_spec_repo(cfg, deps, target, task, launch.stage):
+            return task
         task = _spawn_stage(cfg, deps, target, task, launch)
         _consume_execution_choice(cfg, target.name, cand.number, cand.repo)
     except Exception:
@@ -2224,13 +2317,152 @@ def _claim_denied(cfg: Config, name: str, tasks: list[TaskState],
                 or claims.reservation_denial(name, tasks, enabled, cfg.max_open))
 
 
+def _project_members(cfg: Config) -> dict[str, frozenset[str]]:
+    return {p.key: frozenset(r.repo for r in p.repositories) for p in cfg.projects}
+
+
+def _bundle_members(cfg: Config, target: Target, issue: int, names=None) -> tuple:
+    """The project repositories, beyond the origin's, of the task's scope: the
+    recorded one, else `names`."""
+    bundle = read_bundle(cfg.state_dir, target.name, issue, repo=target.repo)
+    names = {r.repo for r in bundle.repositories} if bundle else set(names or ())
+    return tuple(r for p in cfg.projects if p.key == target.name
+                 for r in p.repositories if r.repo in names - {target.repo})
+
+
+def _definition_fields(body: str) -> tuple[list[str], str]:
+    """(`Repositories:` names, `Spec repository:` name) of a task definition."""
+    field = lambda name: [v.strip() for line in re.findall(  # noqa: E731
+        rf"^\s*{name}:\s*(.+)$", body, re.IGNORECASE | re.MULTILINE)
+        for v in line.split(",") if v.strip()]
+    return field("Repositories"), next(iter(field("Spec repository")), "")
+
+
+def _declared_scope(cfg: Config, deps: Deps, target: Target, issue: int,
+                    dry_run: bool) -> tuple[tuple[str, ...], str]:
+    """(member repositories, spec repository) of the task's recorded scope, else
+    of its definition (the issue body). ScopeRefused when the definition names a
+    repository outside the project."""
+    bundle = read_bundle(cfg.state_dir, target.name, issue, repo=target.repo)
+    if bundle:
+        return tuple(r.repo for r in bundle.repositories), bundle.spec_repo
+    if dry_run or not target.sandbox:
+        return (), ""
+    declared, spec = _definition_fields(deps.github.issue_view(target.repo, issue).get("body") or "")
+    if not declared:
+        if spec and spec not in _project_members(cfg).get(target.name, frozenset()):
+            raise ScopeRefused(f"{target.name}#{issue}: spec repository is not the project's")
+        return (), spec
+    names = tuple(dict.fromkeys((target.repo, *declared)))
+    _require_project_scope(cfg, target.name, issue, names, spec)
+    return names, spec
+
+
+def _require_project_scope(cfg: Config, project: str, issue: int,
+                           names: tuple[str, ...], spec: str) -> None:
+    if not set(names) <= _project_members(cfg).get(project, frozenset()) \
+            or (spec and spec not in names):
+        raise ScopeRefused(f"{project}#{issue}: definition scope "
+                           f"{sorted(names)} is not the project's")
+
+
+def _record_bundle(cfg: Config, target: Target, issue: int, names: tuple[str, ...],
+                   spec_repo: str, source: str = "definition") -> None:
+    """Record the declared scope once its checkouts exist (a recorded one stands)."""
+    from dispatcher import sandbox_runtime
+    if not names or read_bundle(cfg.state_dir, target.name, issue, repo=target.repo):
+        return
+    plan = sandbox_runtime.for_clone(target.clone_path)._plan_for(
+        sandbox_runtime.execution_ref(target.clone_path, issue))
+    save_bundle(cfg.state_dir, target.name, issue, TaskBundle(
+        tuple(TaskRepository(r, plan.checkouts[r], f"agent/task-{issue}") for r in names),
+        source=source, spec_repo=spec_repo), repo=target.repo)
+
+
+def _exploration_handover(turn: _Turn, task: TaskState, stage: Stage) -> bool:
+    try:
+        _establish_exploration_scope(turn, task, stage)
+        return True
+    except Exception as exc:
+        _park_for_input(turn.cfg, turn.deps, turn.target, task,
+                        f"Cannot establish exploration repository scope: {exc}")
+        return False
+
+
+def _handover_spec_files(task: TaskState, artifact: str, destination: str) -> None:
+    """Carry the spec, and any tickets, written in the origin checkout into the
+    spec/plan checkout.
+
+    Existing destination files stand; no checkout content is overwritten.
+    """
+    from dispatcher.artifacts import SPEC_FOLDER_FILES, ticket_files
+
+    relative = spec_publish.relative_artifact(task.worktree, artifact)
+    if relative is None or ".." in Path(relative).parts:
+        raise ScopeRefused("explored spec is outside the origin checkout")
+    try:
+        (Path(task.worktree) / relative).resolve().relative_to(Path(task.worktree).resolve())
+    except ValueError as exc:
+        raise ScopeRefused("explored spec is outside the origin checkout") from exc
+    folder = Path(relative).parent
+    for name in SPEC_FOLDER_FILES:
+        _copy_absent(Path(task.worktree) / folder / name, destination, str(folder))
+    for source in ticket_files(Path(task.worktree) / TICKETS_DIR):
+        _copy_absent(source, destination, TICKETS_DIR)
+
+
+def _copy_absent(source: Path, destination: str, subdir: str) -> None:
+    """Copy a readable regular file to <destination>/<subdir> unless one is there."""
+    from dispatcher.artifacts import PLAN_FILE_MAX_BYTES
+    from dispatcher.state import read_regular
+    from dispatcher.workspace import make_worktree_dir
+
+    data = read_regular(source, PLAN_FILE_MAX_BYTES)
+    if data is not None and not os.path.lexists(Path(destination) / subdir / source.name):
+        make_worktree_dir(destination, subdir)
+        write_worktree_file(destination, subdir, source.name, data)
+
+
+def _establish_exploration_scope(turn: _Turn, task: TaskState, stage: Stage) -> None:
+    """Accept one initial scope proposal at the exploration handover only.
+
+    Existing scopes stand. Project membership is checked before requesting
+    credentials or provisioning; later reports cannot expand execution access.
+    """
+    if (task.stage is not Stage.SPEC or stage is not Stage.PLAN
+            or not turn.target.sandbox or not turn.signal.repositories):
+        return
+    if read_bundle(turn.cfg.state_dir, task.target, task.issue, repo=task.repo):
+        return
+    names = tuple(dict.fromkeys((task.repo, *turn.signal.repositories)))
+    from dispatcher.state import pending_spec_repo
+    spec_repo = pending_spec_repo(turn.cfg.state_dir, task.target, task.issue, repo=task.repo)
+    _require_project_scope(turn.cfg, task.target, task.issue, names, spec_repo)
+    members = _bundle_members(turn.cfg, turn.target, task.issue, names)
+    create_workspace(turn.target, task.issue, credentials=turn.deps.credentials,
+                     members=members, establish_scope=True)
+    if spec_repo and spec_repo != task.repo:
+        from dispatcher import sandbox_runtime
+        plan = sandbox_runtime.for_clone(turn.target.clone_path)._plan_for(
+            sandbox_runtime.execution_ref(turn.target.clone_path, task.issue))
+        _handover_spec_files(task, turn.signal.artifact, plan.checkouts[spec_repo])
+    _record_bundle(turn.cfg, turn.target, task.issue, names, spec_repo, source="exploration")
+
+
 def _provision_workspace(cfg: Config, deps: Deps, target: Target, cand,
                          dry_run: bool) -> str | None:
     """The candidate's workspace, or None after reporting a provisioning
     failure (the board was never claimed, so nothing to release)."""
     try:
-        return create_workspace(target, cand.number, dry_run=dry_run,
-                                credentials=deps.credentials)
+        names, spec_repo = _declared_scope(cfg, deps, target, cand.number, dry_run)
+        from dispatcher.state import save_pending_spec_repo
+        save_pending_spec_repo(cfg.state_dir, target.name, cand.number, spec_repo, repo=target.repo)
+        members = _bundle_members(cfg, target, cand.number, names)
+        wt = create_workspace(target, cand.number, dry_run=dry_run,
+                              credentials=deps.credentials,
+                              **({"members": members} if members else {}))
+        _record_bundle(cfg, target, cand.number, names, spec_repo)
+        return wt
     except Exception:
         _report_provisioning_failure(cfg, deps, target, cand, dry_run)
         return None
@@ -2570,6 +2802,42 @@ def _apply_resume_intent(cfg: Config, by_name: dict,
           model_override=requested_model, bypass_usage=bypass_usage)
 
 
+def _apply_spec_repo_intent(cfg: Config, task: TaskState | None,
+                            intent: intents.Intent) -> None:
+    """Record the operator's spec/plan repository; one outside the project is refused.
+    A stage held for the choice (_held_for_spec_repo) then wakes in that repository."""
+    try:
+        bundle = select_spec_repo(cfg.state_dir, intent.target, intent.issue,
+                                  str(intent.payload.get("spec_repo") or ""),
+                                  repo=task.repo if task else intent.repo,
+                                  members=_project_members(cfg).get(intent.target, ()))
+    except ScopeRefused as refusal:
+        print(f"[warn] spec-repo intent for #{intent.issue}: {refusal}", file=sys.stderr)
+        return
+    if task is not None:
+        _after_spec_repo_choice(cfg, task, bundle)
+
+
+def _after_spec_repo_choice(cfg: Config, task: TaskState, bundle: TaskBundle) -> None:
+    owner = next(r for r in bundle.repositories if r.repo == bundle.spec_repo)
+    if task.spec_path and owner.worktree != task.worktree:
+        _carry_to_spec_repo(task, owner)
+    if task.park == PARK_HUMAN and task.stage is Stage.SPEC:
+        _wake(cfg, task, f"The operator chose {owner.repo} as the spec/plan repository. Continue.")
+
+
+def _carry_to_spec_repo(task: TaskState, owner: TaskRepository) -> None:
+    """Spec and tickets written in the origin before the choice move to the
+    chosen checkout, and the spec is published there; the origin keeps its copy."""
+    _handover_spec_files(task, task.spec_path, owner.worktree)
+    pub = spec_publish.ensure_published(
+        worktree=owner.worktree, branch=owner.branch, repo=owner.repo, issue=task.issue,
+        artifact=spec_publish.relative_artifact(task.worktree, task.spec_path) or task.spec_path)
+    if pub.error:
+        print(f"[warn] spec of #{task.issue} not published in {owner.repo}: {pub.error}",
+              file=sys.stderr)
+
+
 def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
                       intent: intents.Intent) -> None:
     """Route one operator intent to its action-specific handler."""
@@ -2589,6 +2857,8 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         _apply_resume_intent(cfg, by_name, task, intent)
     elif intent.action == "answers":
         _apply_answers_intent(cfg, deps, task, intent)
+    elif intent.action == "spec-repo":
+        _apply_spec_repo_intent(cfg, task, intent)
     else:
         print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
               file=sys.stderr)
@@ -2912,7 +3182,8 @@ def main() -> None:
                                   cpus=cfg.session_cpus, state_dir=cfg.state_dir,
                                   clones=_clone_map(cfg), credentials=credentials,
                                   sandbox_clones=[r.clone_path for p in cfg.projects
-                                                  for r in p.repositories]),
+                                                  for r in p.repositories],
+                                  members=_project_members(cfg)),
                 notifier=Notifier(dry_run=args.dry_run,
                                   console_url=cfg.console_url,
                                   multi_target=len(cfg.targets) > 1))

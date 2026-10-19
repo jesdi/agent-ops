@@ -29,8 +29,8 @@ from dispatcher import containers, herdr, workspace
 from dispatcher.containers import token_dir
 from dispatcher.models import Entry
 from dispatcher.runtimes import runtime_for
-from dispatcher.state import (clear_session, issue_execution_token,
-                              owns_task_session, task_key)
+from dispatcher.state import (ScopeRefused, TaskBundle, clear_session, issue_execution_token,
+                              owns_task_session, read_bundle, save_bundle, task_key)
 
 log = logging.getLogger(__name__)
 
@@ -82,10 +82,14 @@ class Sessions:
     def __init__(self, dry_run: bool = False, memory: str = "2g",
                  cpus: str = "2", state_dir: str | Path | None = None,
                  clones: Mapping[str, str] | None = None,
-                 credentials=None, sandbox_clones=()):
+                 credentials=None, sandbox_clones=(), sandbox=None,
+                 members: Mapping[str, frozenset[str]] | None = None):
         # ExecutionCredentials: when set, every launch runs on a scoped App token.
         self.sandbox_clones = frozenset(sandbox_clones)
         self.credentials = credentials
+        # an injected task sandbox (else each clone's own); project -> its member repositories
+        self.sandbox = sandbox
+        self.members = members or {}
         self.dry_run = dry_run
         self.memory = memory
         self.cpus = cpus
@@ -150,19 +154,7 @@ class Sessions:
         # replaced); a denial raises here and never falls back to the host
         # GitHub login. Without one the legacy host login stays mounted.
         scoped = self.credentials is not None
-        token_env = {}
-        project_env = {}
-        if scoped:
-            register = getattr(self.credentials, "register_execution", None)
-            if register:
-                register(name, repo or target, "task")
-            # Resolved before the token is minted: an unavailable reference refuses the launch
-            # (MissingSecretReference) before anything is minted or started.
-            project_env = self.credentials.project_env(name)
-            self._secrets[name] = project_env
-            credential = self.credentials.refresh(name, repo or target, "task")
-            self._deliver_token(name, repo or target, credential)
-            token_env = {"GH_TOKEN": credential.token}
+        project_env, token_env = self._grant(name, target, issue, repo) if scoped else ({}, {})
         cmd = self._launch_command(target, issue, worktree, model, args, effort,
                                    second, repo, clone, scoped, tuple(project_env))
         workspace.install_stop_hook(worktree)
@@ -187,6 +179,37 @@ class Sessions:
         if not tab.run(cmd):
             raise RuntimeError(f"herdr refused the launch command for {name}")
 
+    def _grant(self, name, target, issue, repo):
+        """(project env, token env) of a scoped launch: one token per repository of the
+        recorded scope, else the origin repository's alone."""
+        bundle = self._recorded_bundle(target, issue, repo)
+        repos = tuple(r.repo for r in bundle.repositories) if bundle else (repo or target,)
+        self._require_provisioned(target, issue, repo, bundle)
+        origin = repo or repos[0]
+        register = getattr(self.credentials, "register_execution", None)
+        if register:
+            register(name, repos if bundle else repos[0], "task")
+        # Resolved before the token is minted: an unavailable reference refuses the launch
+        # (MissingSecretReference) before anything is minted or started.
+        project_env = self.credentials.project_env(name)
+        self._secrets[name] = project_env
+        held = {r: self.credentials.refresh(name, r, "task") for r in dict.fromkeys((origin, *repos))}
+        credential = held.pop(origin)
+        self._deliver_token(name, origin, credential, held)
+        return project_env, {"GH_TOKEN": credential.token}
+
+    def _require_provisioned(self, target, issue, repo, bundle):
+        """Refuse before any credential is granted when a confirmed scope outgrew
+        the task's sandbox: its added repositories have no checkout there yet."""
+        clone = self.clones.get(repo) or self.clones.get(target)
+        if not bundle or not clone:
+            return
+        sandbox, plan = self._task_sandbox(clone, issue)
+        missing = {r.repo for r in bundle.repositories} - set(getattr(plan, "checkouts", ()) or ())
+        if sandbox is not None and missing:
+            raise RuntimeError(f"{target}#{issue}: sandbox lacks {sorted(missing)} of the "
+                               "confirmed scope; provisioning must complete before it resumes")
+
     def _launch_command(self, target, issue, worktree, model, args, effort,
                         second, repo, clone, scoped, secret_names):
         sandbox, plan = self._task_sandbox(clone, issue, worktree)
@@ -206,7 +229,7 @@ class Sessions:
     def _task_sandbox(self, clone, issue, worktree=None):
         from dispatcher.sandbox_runtime import execution_ref, for_clone
 
-        sandbox = for_clone(clone)
+        sandbox = self.sandbox or for_clone(clone)
         try:
             plan = sandbox._plan_for(execution_ref(clone, issue))
         except FileNotFoundError:
@@ -217,17 +240,21 @@ class Sessions:
             raise RuntimeError("session checkout differs from its owned sandbox")
         return sandbox, plan
 
-    def _deliver_token(self, name: str, repo: str, credential) -> None:
+    def _deliver_token(self, name: str, repo: str, credential, also: Mapping = {}) -> None:
         """Write the session's current token where its container reads it
-        (containers.TOKEN_FILE), and the scope renew_tokens needs, host-side."""
+        (containers.TOKEN_FILE), and the scope renew_tokens needs, host-side.
+        A bundle's further repositories each get their own `gh-token.<owner>~<name>`."""
         directory = Path(token_dir(containers._state_dir(), name))
         directory.mkdir(parents=True, exist_ok=True)
-        replacement = directory / "gh-token.new"
-        replacement.touch(mode=0o600)
-        replacement.write_text(credential.token)
-        replacement.replace(directory / "gh-token")
+        for file, token in ((("gh-token", credential.token),
+                             *((f"gh-token.{r.replace('/', '~')}", c.token) for r, c in also.items()))):
+            replacement = directory / f"{file}.new"
+            replacement.touch(mode=0o600)
+            replacement.write_text(token)
+            replacement.replace(directory / file)
         Path(f"{directory}.scope").write_text(json.dumps(
-            {"repo": repo, "expires_at": credential.expires_at}))
+            {"repo": repo, "also": list(also),
+             "expires_at": min(c.expires_at for c in (credential, *also.values()))}))
 
     def renew_tokens(self) -> None:
         """Replace the token of every running scoped session that expires
@@ -246,14 +273,15 @@ class Sessions:
                 meta = json.loads(scope.read_text())
                 if meta["expires_at"] - self.credentials.clock() > RENEW_MARGIN:
                     continue
-                self._deliver_token(name, meta["repo"], self.credentials.refresh(
-                    name, meta["repo"], "task"))
+                refresh = lambda r: self.credentials.refresh(name, r, "task")  # noqa: E731
+                self._deliver_token(name, meta["repo"], refresh(meta["repo"]),
+                                    {r: refresh(r) for r in meta.get("also", [])})
             except Exception:  # noqa: BLE001 — visible, retried next pass
                 log.exception("Token renewal failed for %s", name)
 
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "",
-                    second: Entry | None = None, repo: str = "") -> None:
+                    second: Entry | None = None, repo: str = "", bundle=None) -> None:
         """Start a fresh conversation; real launches require state_dir."""
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
@@ -261,12 +289,49 @@ class Sessions:
             return
         if self.state_dir is None:
             raise ValueError("state_dir is required for a fresh session launch")
+        self._admit(target, issue, repo, bundle)
         clear_session(self.state_dir, target, issue, repo=repo)
         workspace.write_worktree_file(worktree, ".agent",
                                       f"prompt-{stage_name}.md", prompt)
         self._launch(target, issue, worktree, model,
                      f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort,
                      second=second, repo=repo)
+
+    def _check_scope(self, target: str, repo: str, bundle: TaskBundle) -> None:
+        names = {r.repo for r in bundle.repositories}
+        if (not names <= self.members.get(target, frozenset())
+                or (repo and repo not in names)
+                or (bundle.spec_repo and bundle.spec_repo not in names)):
+            raise ScopeRefused(f"{target}: repository scope {sorted(names)} is not the project's")
+
+    def _recorded_bundle(self, target: str, issue: int, repo: str) -> TaskBundle | None:
+        """The recorded scope, re-validated: what a session may hold is never read
+        from its own reports."""
+        bundle = self.state_dir and read_bundle(self.state_dir, target, issue, repo=repo)
+        if bundle:
+            self._check_scope(target, repo, bundle)
+        return bundle or None
+
+    @staticmethod
+    def _refuse_unconfirmed_widening(target, issue, bundle, stored):
+        """A recorded scope changes only through state.confirm_scope."""
+        if (bundle.scope_revision != stored.scope_revision
+                or not {r.repo for r in bundle.repositories} <= {r.repo for r in stored.repositories}):
+            raise ScopeRefused(f"{target}#{issue}: only an operator-confirmed revision "
+                               f"widens the recorded scope (revision {stored.scope_revision})")
+
+    def _admit(self, target: str, issue: int, repo: str, bundle: TaskBundle | None) -> None:
+        """Validate and record the controller's bundle before anything is launched.
+        Without one the recorded scope stands; a recorded scope is never
+        replaced here (see state.confirm_scope)."""
+        if bundle is None:
+            return
+        self._check_scope(target, repo, bundle)
+        stored = read_bundle(self.state_dir, target, issue, repo=repo)
+        if stored:
+            self._refuse_unconfirmed_widening(target, issue, bundle, stored)
+            return    # the recorded bundle stands, spec repository choice included
+        save_bundle(self.state_dir, target, issue, bundle, repo=repo)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
                model: str, effort: str = "", second: Entry | None = None,

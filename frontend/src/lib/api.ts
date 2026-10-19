@@ -168,6 +168,8 @@ export const api = {
     request<IssueDescription>(`${taskPath(target, issue, repo)}/description`),
   taskArtifacts: (target: string, issue: number, repo = '') =>
     request<ArtifactsView>(`${taskPath(target, issue, repo)}/artifacts`),
+  chooseSpecRepo: (target: string, issue: number, specRepo: string, repo = '') =>
+    post<IntentAccepted>(`${taskPath(target, issue, repo)}/spec-repo`, { spec_repo: specRepo }),
   taskRequest: (target: string, issue: number, repo = '') =>
     request<OperatorRequest | null>(`${taskPath(target, issue, repo)}/request`),
 }

@@ -45,6 +45,7 @@ class ArtifactListing:
     items: list[ArtifactResource]
     expires_at: str
     expired: bool
+    spec_repo_choices: tuple[str, ...] = ()   # non-empty: publication awaits the operator's choice
 
 
 def _repo_kw(repo: str) -> dict:
@@ -104,7 +105,9 @@ class Sources:
         index = task_artifacts.read(self.state_dir, target, issue, repo=repo)
         resources = [ArtifactResource(item, self._artifact_status(target, issue, item, index.expired, repo))
                      for item in index.items]
-        return ArtifactListing(resources, index.expires_at, index.expired)
+        bundle = state.read_bundle(self.state_dir, target, issue, repo=repo)
+        choices = tuple(r.repo for r in bundle.repositories) if bundle and bundle.awaits_spec_repo else ()
+        return ArtifactListing(resources, index.expires_at, index.expired, choices)
 
     def _artifact_status(self, target: str, issue: int, item: task_artifacts.StoredArtifact,
                          expired: bool, repo: str = "") -> ArtifactStatus:

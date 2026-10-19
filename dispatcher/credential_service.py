@@ -75,12 +75,15 @@ class CredentialService:
         finally:
             connection.close()
 
-    def register_execution(self, execution_id: str, repository: str, purpose: str):
-        if repository not in self.repositories or purpose not in {"task", "triage"}:
+    def register_execution(self, execution_id: str, repository: str | tuple[str, ...], purpose: str):
+        repos = [repository] if isinstance(repository, str) else list(repository)
+        if (not repos or not all(r in self.repositories for r in repos)
+                or len({self.repositories[r] for r in repos}) != 1
+                or purpose not in {"task", "triage"}):
             raise CredentialDenied("execution repository/purpose is not configured")
         self._request("executions/register", {
-            "execution_id": execution_id, "project": self.repositories[repository],
-            "repositories": [repository], "purpose": purpose})
+            "execution_id": execution_id, "project": self.repositories[repos[0]],
+            "repositories": repos, "purpose": purpose})
 
     def project_env(self, execution_id: str) -> dict[str, str]:
         """The resolved secret environment of the execution's own project; the

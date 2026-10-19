@@ -90,6 +90,9 @@ class FakeGitHub:
     def set_status(self, target, issue, option_id):
         self.statused.append((issue, option_id))
 
+    def issue_view(self, repo, number):
+        return {"body": ""}
+
     def candidates(self, target):
         return self.cands_by_target.get(target.name, self.cands)
 

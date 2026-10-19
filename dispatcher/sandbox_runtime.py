@@ -15,14 +15,18 @@ import subprocess
 from dataclasses import asdict
 from pathlib import Path
 
-from dispatcher.sandbox import EngineError, ExecResult, Limits, SandboxRequest, TaskSandbox
+from dispatcher.sandbox import (WORKSPACE, EngineError, ExecResult, Limits, SandboxMember,
+                                SandboxRequest, TaskSandbox)
+
+
+HELPER = "agent-ops-sandbox"
 
 
 class BoxEngine:
     def __init__(self, env=None):
         self.env = env or {}
         self.plans = {}
-        self.helper = os.environ.get("AGENT_OPS_SANDBOX_RUNTIME", "agent-ops-sandbox")
+        self.helper = os.environ.get("AGENT_OPS_SANDBOX_RUNTIME", HELPER)
 
     def _call(self, operation, plan, *args):
         try:
@@ -51,11 +55,12 @@ class BoxEngine:
     def remove(self, plan):
         self._call("remove", plan)
 
-    def exec(self, name, command):
+    def exec(self, name, command, workdir=WORKSPACE):
         # exec is the one operation returning a command result rather than a
         # runtime exit status. The helper never writes command output to logs.
+        extra = () if workdir == WORKSPACE else ("--workdir", workdir)
         result = json.loads(self._call("exec", self.plans[name], "--container", name,
-                                       "--command", command))
+                                       "--command", command, *extra))
         return ExecResult(result["exit_code"], result.get("output", ""))
 
 
@@ -68,15 +73,18 @@ def execution_ref(clone, issue):
     return f"{Path(clone).resolve()}#{issue}"
 
 
-def provision(target, issue, env):
+def provision(target, issue, env, members=(), establish_scope=False):
     ref = execution_ref(target.clone_path, issue)
     request = SandboxRequest(target.name, target.repo, target.clone_path,
                              services=tuple(target.compose_services), setup=target.setup_cmd,
                              gate=target.gate_cmd, run_gate=False,
                              branch=f"agent/task-{issue}",
-                             limits=Limits(target.sandbox_memory, target.sandbox_cpus))
+                             limits=Limits(target.sandbox_memory, target.sandbox_cpus),
+                             members=tuple(SandboxMember(
+                                 m.repo, m.clone_path, tuple(m.compose_services), m.setup_cmd,
+                                 m.gate_cmd, branch=f"agent/task-{issue}") for m in members))
     sandbox = for_clone(target.clone_path, env, {ref: request})
-    plan = sandbox.prepare(ref)
+    plan = (sandbox.establish_scope(ref) if establish_scope else sandbox.prepare(ref))
     try:
         result = sandbox.start(ref)
         if not result.ready:
@@ -90,7 +98,7 @@ def provision(target, issue, env):
 
 def session_command(sandbox, ref, launcher):
     """The infra helper atomically replaces the idle agent with this session."""
-    return shlex.join([sandbox.engine.helper, "session", "--plan",
+    return shlex.join([getattr(sandbox.engine, "helper", HELPER), "session", "--plan",
                        str(sandbox._plan_path(ref)), "--"]) + " " + launcher
 
 

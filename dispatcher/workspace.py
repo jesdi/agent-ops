@@ -63,6 +63,14 @@ def write_task_identity(wt: str | Path, issue: int, target: str, branch: str) ->
         {"issue": issue, "target": target, "branch": branch}))
 
 
+def make_worktree_dir(root: str | Path, subdir: str) -> None:
+    """Create directory components without following session-controlled symlinks."""
+    parts = tuple(_plain_name(part) for part in Path(subdir).parts)
+    for length in range(1, len(parts) + 1):
+        with _real_dir(root, *parts[:length]):
+            pass
+
+
 def write_worktree_file(root: str | Path, subdir: str, name: str,
                         data: str | bytes, mode: int | None = 0o644) -> None:
     """Write <root>/<subdir>/<name> whole (temp file, then rename), never
@@ -397,7 +405,7 @@ def exclude_local_state(clone_path: str) -> None:
 
 
 def create_workspace(target: Target, issue: int, dry_run: bool = False,
-                     credentials=None) -> str:
+                     credentials=None, members=(), establish_scope=False) -> str:
     wt = str(Path(target.worktrees_path) / f"task-{issue}")
     branch = f"agent/task-{issue}"
     if dry_run:
@@ -405,7 +413,8 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False,
         return wt
 
     if target.sandbox:
-        return _create_sandbox_workspace(target, issue, credentials)
+        return _create_sandbox_workspace(target, issue, credentials, members,
+                                         establish_scope=establish_scope)
 
     if Path(wt).exists():
         # Retry after a partial provisioning failure: the worktree (and
@@ -475,15 +484,17 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False,
     return wt
 
 
-def _create_sandbox_workspace(target, issue, credentials):
+def _create_sandbox_workspace(target, issue, credentials, members=(), establish_scope=False):
     from dispatcher import sandbox_runtime
 
     env = {}
     if credentials is not None:
         name = f"task-{target.name}-{issue}-setup"
-        credentials.register_execution(name, target.repo, "task")
+        credentials.register_execution(
+            name, (target.repo, *(m.repo for m in members)) if members else target.repo, "task")
         env = credentials.project_env(name)
-    wt = sandbox_runtime.provision(target, issue, env)
+    wt = sandbox_runtime.provision(target, issue, env, members,
+                                   **({"establish_scope": True} if establish_scope else {}))
     _mark_provisioned(wt)
     write_worktree_file(wt, ".agent", "task.json", json.dumps(
         {"issue": issue, "target": target.name, "branch": f"agent/task-{issue}"}))

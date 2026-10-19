@@ -465,6 +465,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{project}/{repository_id}/{issue}/spec-repo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Choose Spec Repo */
+        post: operations["choose_spec_repo_api_task__project___repository_id___issue__spec_repo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/usage": {
         parameters: {
             query?: never;
@@ -509,6 +526,11 @@ export interface components {
             name: string;
             /** Path */
             path: string;
+            /**
+             * Repo
+             * @default
+             */
+            repo: string;
             /** Stage */
             stage: string;
             /**
@@ -516,6 +538,11 @@ export interface components {
              * @enum {string}
              */
             status: "published" | "local" | "expired" | "unavailable";
+            /**
+             * Task Revision
+             * @default 0
+             */
+            task_revision: number;
             /** Updated At */
             updated_at: string;
             /** Url */
@@ -529,6 +556,11 @@ export interface components {
             expires_at: string;
             /** Items */
             items: components["schemas"]["ArtifactView"][];
+            /**
+             * Spec Repo Choices
+             * @default []
+             */
+            spec_repo_choices: string[];
         };
         /** BoardSnapshot */
         BoardSnapshot: {
@@ -1002,6 +1034,11 @@ export interface components {
              * @default
              */
             model: string;
+        };
+        /** SpecRepoReq */
+        SpecRepoReq: {
+            /** Spec Repo */
+            spec_repo: string;
         };
         /** TargetQueue */
         TargetQueue: {
@@ -2072,6 +2109,43 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    choose_spec_repo_api_task__project___repository_id___issue__spec_repo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project: string;
+                issue: number;
+                repository_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpecRepoReq"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

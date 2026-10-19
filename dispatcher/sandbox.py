@@ -25,17 +25,31 @@ from functools import wraps
 import json
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Mapping, Protocol
 
 import yaml
+
+WORKSPACE = "/workspace"   # where the origin repository's checkout is mounted
 
 
 @dataclass(frozen=True)
 class Limits:
     memory_bytes: int
     cpus: float
+
+
+@dataclass(frozen=True)
+class SandboxMember:
+    """A further required repository of the same task sandbox."""
+    repo: str
+    clone: str
+    services: tuple[str, ...] = ()
+    setup: str = ""
+    gate: str = ""
+    compose: str = "compose.yaml"
+    branch: str = ""
 
 
 @dataclass(frozen=True)
@@ -51,6 +65,7 @@ class SandboxRequest:
     compose: str = "compose.yaml"         # path inside the checkout
     run_gate: bool = True
     branch: str = ""                     # created only before the checkout is exposed
+    members: tuple[SandboxMember, ...] = ()   # other required repositories, same sandbox
 
 
 @dataclass(frozen=True)
@@ -93,6 +108,7 @@ class ServicePlan:
     networks: tuple[str, ...]
     volumes: tuple[str, ...]
     containers: tuple[ContainerSpec, ...]
+    checkouts: Mapping[str, str] = field(default_factory=dict)   # repo -> its checkout
 
 
 @dataclass(frozen=True)
@@ -124,6 +140,7 @@ class Executed:
     container: str
     command: str
     exit_code: int
+    repo: str = ""  # the repository whose checkout the command ran in
 
 
 @dataclass(frozen=True)
@@ -144,7 +161,9 @@ class StartResult:
 class Engine(Protocol):
     def create(self, plan: ServicePlan) -> None: ...
     def start(self, plan: ServicePlan, name: str) -> None: ...
-    def exec(self, name: str, command: str) -> ExecResult: ...
+    # `workdir` is passed only for a repository other than the origin's, whose
+    # checkout is the default /workspace.
+    def exec(self, name: str, command: str, workdir: str = WORKSPACE) -> ExecResult: ...
     def stop(self, plan: ServicePlan, name: str) -> None: ...
     def remove(self, plan: ServicePlan) -> None: ...
 
@@ -283,6 +302,33 @@ def _compose_doc(path: Path) -> tuple[dict, dict]:
     return dict(doc.get("services") or {}), {k: {} if v is None else v for k, v in volumes.items()}
 
 
+def _units(req: SandboxRequest) -> tuple[SandboxMember, ...]:
+    """The origin repository and the members, as uniform checkout units."""
+    return (SandboxMember(req.repo, req.clone, req.services, req.setup, req.gate,
+                          req.compose, req.branch), *req.members)
+
+
+def _service_mounts(definition: dict, owned: dict, unit: int) -> list[Mount]:
+    parts = (_volume_parts(v) for v in definition.get("volumes") or [])
+    return [Mount(owned[unit, source], dest, mode) for source, dest, mode in parts]
+
+
+def _commands(req: SandboxRequest) -> list[tuple[str, str]]:
+    """(repo, command) in run order: every setup, then every gate when it runs."""
+    phases = ("setup", "gate") if req.run_gate else ("setup",)
+    return [(unit.repo, command) for phase in phases for unit in _units(req)
+            if (command := getattr(unit, phase))]
+
+
+def _all_defs(composes) -> dict:
+    return {name: defs[name] for unit, defs, _, _ in composes for name in unit.services}
+
+
+def _workdir(req: SandboxRequest, repo: str) -> str:
+    """Where the agent container mounts `repo`'s checkout."""
+    return WORKSPACE if repo == req.repo else f"/workspaces/{repo.replace('/', '~')}"
+
+
 def _digest(ref: str) -> str:
     """Collision-free resource prefix for an execution ref (names built by
     joining ref and volume with a separator would be ambiguous)."""
@@ -315,35 +361,74 @@ class TaskSandbox:
         req = self.requests[execution_ref]
         if self._plan_path(execution_ref).exists():
             plan = self._plan_for(execution_ref)
-            self._checkout(req, plan.checkout)
+            self._checkouts(req, plan)
             self.engine.create(plan)
             return plan
-        defs, volumes, unreadable = self._read_compose(req)
-        blockers = unreadable or self._compose_blockers(req, defs, volumes)
-        allocation = None if blockers else self._allocation(req, defs)
+        composes = [(unit, *self._read_compose(unit)) for unit in _units(req)]
+        allocation = self._allocated(req, composes)
+        plan = self._plan(execution_ref, req, composes, allocation)
+        self._save(plan)    # ownership is durable before anything is allocated
+        self._checkouts(req, plan)
+        self.engine.create(plan)
+        return plan
+
+    @_serialized
+    def establish_scope(self, execution_ref: str) -> ServicePlan:
+        """Controller-only initial exploration handover, after ending its session.
+
+        Reallocate the same sandbox for the initial member set, keeping checkout
+        contents and service volumes. Ordinary prepare/resume never widen scope.
+        """
+        req = self.requests[execution_ref]
+        old = self._plan_for(execution_ref)
+        if set(old.checkouts) == {unit.repo for unit in _units(req)}:
+            self._checkouts(req, old)
+            self.engine.create(old)
+            return old
+        composes = [(unit, *self._read_compose(unit)) for unit in _units(req)]
+        plan = self._plan(execution_ref, req, composes, self._allocated(req, composes))
+        self._require_initial_scope(old, plan, req.repo)
+        for container in old.containers:
+            self.engine.stop(old, container.name)
+        # Remove only containers and the resource group, preserving owned data
+        # and network. The durable old plan still owns these if removal fails.
+        self.engine.remove(replace(old, volumes=(), networks=()))
+        self._save(plan)
+        self._checkouts(req, plan)
+        self.engine.create(plan)
+        return plan
+
+    @staticmethod
+    def _require_initial_scope(old: ServicePlan, plan: ServicePlan, origin: str) -> None:
+        if set(old.checkouts) != {origin}:
+            raise EngineError("only an origin-only exploration can establish scope")
+        if old.checkout != plan.checkout or not set(old.volumes) <= set(plan.volumes):
+            raise EngineError("initial scope must preserve existing checkout and service data")
+
+    def _allocated(self, req, composes):
+        """The combined allocation, or SandboxBlocked with every reason it cannot be."""
+        blockers = [b for _, _, _, unreadable in composes for b in unreadable]
+        blockers = blockers or self._compose_blockers(composes)
+        allocation = None if blockers else self._allocation(req, _all_defs(composes))
         if allocation is None and not blockers:
             blockers = [Blocker("resource-allowance", "",
                                 f"declared memory/cpu exceed the combined {req.limits}")]
         if blockers:
             raise SandboxBlocked(blockers)
-        plan = self._plan(execution_ref, req, defs, volumes, allocation)
-        self._save(plan)    # ownership is durable before anything is allocated
-        self._checkout(req, plan.checkout)
-        self.engine.create(plan)
-        return plan
+        return allocation
 
     @staticmethod
-    def _read_compose(req):
+    def _read_compose(unit):
         """(services, volumes, blockers): Compose is read only when services are
         confirmed; a missing or malformed file blocks each of them."""
-        if not req.services:
+        if not unit.services:
             return {}, {}, []
         try:
-            return (*_compose_doc(Path(req.clone) / req.compose), [])
+            return (*_compose_doc(Path(unit.clone) / unit.compose), [])
         except (OSError, AttributeError, TypeError, ValueError, yaml.YAMLError) as error:
             return {}, {}, [Blocker("missing-service-definition", name,
-                                    f"{req.compose} is missing or unusable ({error})")
-                            for name in req.services]
+                                    f"{unit.compose} is missing or unusable ({error})")
+                            for name in unit.services]
 
     @contextmanager
     def _locked(self, ref):
@@ -379,19 +464,24 @@ class TaskSandbox:
         return self.plans[ref]
 
     @staticmethod
-    def _compose_blockers(req, defs, volumes) -> list[Blocker]:
-        found = []
-        for name in req.services:
-            if not isinstance(defs.get(name), dict) or not defs[name]:
-                found.append(Blocker("missing-service-definition", name,
-                                     f"{req.compose} has no usable definition for {name}"))
-            elif problem := _service_problem(defs[name], volumes):
-                found.append(Blocker("incompatible-compose", name, problem))
+    def _compose_blockers(composes) -> list[Blocker]:
+        found, seen = [], set()
+        for unit, defs, volumes, _ in composes:
+            for name in unit.services:
+                if name in seen:
+                    found.append(Blocker("incompatible-compose", name,
+                                         "another repository of this task defines the same service"))
+                elif not isinstance(defs.get(name), dict) or not defs[name]:
+                    found.append(Blocker("missing-service-definition", name,
+                                         f"{unit.compose} has no usable definition for {name}"))
+                elif problem := _service_problem(defs[name], volumes):
+                    found.append(Blocker("incompatible-compose", name, problem))
+                seen.add(name)
         return found
 
     @staticmethod
     def _allocation(req, defs) -> dict[str, tuple[float, float]] | None:
-        caps = {name: _declared_limits(defs[name]) for name in req.services}
+        caps = {name: _declared_limits(defs[name]) for u in _units(req) for name in u.services}
         demand = req.agent_demand
         caps[""] = (demand.memory_bytes, demand.cpus) if demand else (None, None)
         memory = _allocate({k: v[0] for k, v in caps.items()}, req.limits.memory_bytes)
@@ -400,11 +490,17 @@ class TaskSandbox:
             return None
         return {k: (int(memory[k]), cpus[k]) for k in caps}
 
-    def _plan(self, ref, req, defs, volumes, allocation) -> ServicePlan:
-        checkout = str(self.state_dir / "checkouts" / _digest(ref))
+    def _plan(self, ref, req, composes, allocation) -> ServicePlan:
         prefix = _digest(ref)
+        checkout = str(self.state_dir / "checkouts" / prefix)
+        checkouts = {req.repo: checkout, **{
+            m.repo: f"{checkout}-{i}" for i, m in enumerate(req.members, 1)}}
         group, network = f"{prefix}-group", f"{prefix}-net"
-        owned = {v: f"{prefix}-vol-{v}" for v in sorted(volumes)}
+        defs = _all_defs(composes)
+        # a member's volumes are namespaced: two repositories may both declare `pgdata`;
+        # `-m<i>-vol-` can never equal the origin's `-vol-<name>`
+        owned = {(i, v): f"{prefix}-vol-{v}" if i == 0 else f"{prefix}-m{i}-vol-{v}"
+                 for i, (_, _, volumes, _) in enumerate(composes) for v in sorted(volumes)}
 
         def spec(service, mounts):
             memory, cpus = allocation[service]
@@ -415,18 +511,18 @@ class TaskSandbox:
                                  service, tuple(mounts), network, group,
                                  memory_bytes=memory, cpus=cpus, **config)
 
-        containers = [spec("", [Mount(checkout, "/workspace")])]
-        for name in req.services:
-            mounts = []
-            for volume in defs[name].get("volumes") or []:
-                source, dest, mode = _volume_parts(volume)
-                mounts.append(Mount(owned[source], dest, mode))
-            containers.append(spec(name, mounts))
+        containers = [spec("", [Mount(path, _workdir(req, repo)) for repo, path in checkouts.items()])]
+        containers += [spec(name, _service_mounts(unit_defs[name], owned, i))
+                       for i, (unit, unit_defs, _, _) in enumerate(composes) for name in unit.services]
         return ServicePlan(ref, checkout, group, req.limits.memory_bytes, req.limits.cpus,
-                           (network,), tuple(owned.values()), tuple(containers))
+                           (network,), tuple(owned.values()), tuple(containers), checkouts)
+
+    def _checkouts(self, req: SandboxRequest, plan: ServicePlan) -> None:
+        for unit in _units(req):
+            self._checkout(unit, plan.checkouts.get(unit.repo, plan.checkout))
 
     @staticmethod
-    def _checkout(req: SandboxRequest, checkout: str) -> None:
+    def _checkout(req, checkout: str) -> None:
         # Once exposed to a task, even .git/config and hooks are untrusted.
         # Never run host Git against a retained checkout on retry.
         if not (Path(checkout) / ".git").exists():
@@ -463,17 +559,24 @@ class TaskSandbox:
         plan, req = self._plan_for(execution_ref), self.requests[execution_ref]
         if failure := self._start_containers(plan):
             return StartResult(False, failure=failure)
+        return self._run_checks(plan, req)
+
+    def _run_checks(self, plan: ServicePlan, req: SandboxRequest) -> StartResult:
+        """Every repository's setup, then every repository's gate, each in its checkout."""
         agent = next(c.name for c in plan.containers if c.role == "agent")
         executed = []
-        for command in (req.setup, req.gate if req.run_gate else ""):
-            if not command:
-                continue
-            result = self.engine.exec(agent, command)
-            executed.append(Executed("agent", agent, command, result.exit_code))
+        for repo, command in _commands(req):
+            result = self._exec(agent, command, _workdir(req, repo))
+            executed.append(Executed("agent", agent, command, result.exit_code, repo))
             if result.exit_code:
                 return StartResult(False, tuple(executed),
                                    Failure(command, "", result.exit_code, result.output))
         return StartResult(True, tuple(executed))
+
+    def _exec(self, agent: str, command: str, workdir: str) -> ExecResult:
+        if workdir == WORKSPACE:
+            return self.engine.exec(agent, command)
+        return self.engine.exec(agent, command, workdir=workdir)
 
     @_serialized
     def park(self, execution_ref: str) -> None:
@@ -504,7 +607,8 @@ class TaskSandbox:
         except FileNotFoundError:
             return      # already cleaned up
         self.engine.remove(plan)    # a failure keeps the plan so cleanup can be retried
-        if Path(plan.checkout).exists():
-            shutil.rmtree(plan.checkout)    # a failure keeps the plan so cleanup can be retried
+        for checkout in dict.fromkeys((plan.checkout, *plan.checkouts.values())):
+            if Path(checkout).exists():
+                shutil.rmtree(checkout)    # a failure keeps the plan so cleanup can be retried
         self._plan_path(execution_ref).unlink(missing_ok=True)
         self.plans.pop(execution_ref, None)

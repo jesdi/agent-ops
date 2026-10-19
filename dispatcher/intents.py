@@ -15,7 +15,7 @@ from pathlib import Path
 from dispatcher.state import task_key
 
 INTENTS_DIR = "intents"
-ACTIONS = ("reply", "park", "kill", "retry", "resume", "cancel", "answers")
+ACTIONS = ("reply", "park", "kill", "retry", "resume", "cancel", "answers", "spec-repo")
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,7 @@
 You are running unattended as the SPEC stage of the agent-ops pipeline for
 issue #$issue_number ("$issue_title", $issue_url) in $repo. Issue labels:
-$labels. Your worktree is on branch $branch; work only inside it. Nobody is
+$labels. Your worktree is on branch $branch; work within the controller-recorded
+repository checkouts supplied below, or this worktree when no bundle is supplied. Nobody is
 watching this chat: every question goes through `.agent/stage.json`, never
 through a chat message — a session that stops to ask in chat is parked as
 stuck.
@@ -37,6 +38,15 @@ Read the issue — body and full comment thread —
 `docs/adr/`, and the code the issue touches. If the spec folder for this
 issue already exists on $branch or in the worktree (a restarted session),
 resume from it instead of starting over.
+
+For a task with no declared repository scope, identify the required repositories
+from the project's member list supplied below. Include their full `owner/name`
+names as a `"repositories": ["owner/frontend", "owner/backend"]` array in your
+`done` signal. This is an initial exploration proposal: the controller validates
+membership and provisions the checkouts before starting plan. Until scope is established you have access
+only to the origin during exploration; do not request credentials yourself.
+An already declared scope stands, and later stage reports cannot expand it.
+Spec/plan publication ownership is a separate operator choice.
 
 ## 2. Branch on the labels
 **`bug`** — run the `diagnosing-bugs` skill. Write a

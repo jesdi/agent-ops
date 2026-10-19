@@ -28,10 +28,11 @@ class Registration:
     id: str
     name: str
     path: str
+    repo: str = ""    # the task repository the file lives in ("" = the origin's)
 
     @classmethod
     def parse(cls, raw: dict) -> Registration:
-        entry = cls(**{key: raw[key] for key in ("id", "name", "path")})
+        entry = cls(**{key: raw[key] for key in ("id", "name", "path")}, repo=raw.get("repo", ""))
         if not all(isinstance(value, str) for value in asdict(entry).values()):
             raise ValueError("artifact fields must be strings")
         if not ID.fullmatch(entry.id):
@@ -51,6 +52,8 @@ class StoredArtifact:
     stage: str
     updated_at: str
     publication: spec_publish.PublishedReference | None = None
+    repo: str = ""            # the member repository the artifact lives in
+    task_revision: int = 0    # the task scope revision it was collected under
 
     @classmethod
     def from_dict(cls, raw: dict) -> StoredArtifact:
@@ -75,6 +78,7 @@ class ArtifactIndex:
     expired: bool = False
     target: str = ""
     issue: int = 0
+    awaiting_spec_repo: bool = False   # publication waits for the spec repository choice
 
     @classmethod
     def load(cls, path: Path) -> ArtifactIndex:
@@ -169,61 +173,110 @@ def _automatic_registrations(task: TaskState) -> list[Registration]:
     return entries
 
 
-def _spec_registrations(task: TaskState) -> list[Registration]:
+def _spec_registrations(task: TaskState, spec_repo: str) -> list[Registration]:
     entries = _manifest(task)
     if task.spec_path:
-        entries = [entry for entry in entries if entry.id != "spec" and entry.path != task.spec_path]
-        entries.insert(0, Registration("spec", "Specification", task.spec_path))
+        entries = [entry for entry in entries if entry.id != "spec" and not (
+            entry.path == task.spec_path and entry.repo in ("", spec_repo))]
+        entries.insert(0, Registration("spec", "Specification", task.spec_path, spec_repo))
     return entries
 
 
-def _registrations(task: TaskState) -> list[Registration]:
-    entries = _spec_registrations(task)
+def _registrations(task: TaskState, spec_repo: str = "") -> list[Registration]:
+    entries = _spec_registrations(task, spec_repo)
     ids = {entry.id for entry in entries}
-    paths = {entry.path for entry in entries}
+    paths = {(entry.repo, entry.path) for entry in entries}
     for entry in _automatic_registrations(task):
-        if entry.id not in ids and entry.path not in paths:
+        if entry.id not in ids and (entry.repo, entry.path) not in paths:
             entries.append(entry)
             ids.add(entry.id)
-            paths.add(entry.path)
+            paths.add((entry.repo, entry.path))
     return entries
 
 
 class Collector:
-    """One collection pass owns content snapshots and a single remote lookup."""
+    """One collection pass owns content snapshots and a single remote lookup per
+    repository. A task bundle lets artifacts live in any of its repositories; with
+    its spec repository still unselected nothing is published."""
 
-    def __init__(self, root: Path, task: TaskState, repo: str, publish: bool, now: datetime):
-        self.root, self.task, self.now = root, task, now
-        self.publisher = spec_publish.ArtifactPublisher(task.worktree, task.branch, repo) if publish and repo else None
+    def __init__(self, root: Path, task: TaskState, repo: str, publish: bool, now: datetime,
+                 bundle: state.TaskBundle | None = None):
+        self.root, self.task, self.now, self.bundle, self.repo = root, task, now, bundle, repo
+        self.checkouts = {task.repo: (task.worktree, task.branch)}
+        for member in bundle.repositories if bundle else ():
+            self.checkouts.setdefault(member.repo, (member.worktree, member.branch))
+        self.revision = bundle.scope_revision if bundle else 0
+        self.spec_repo = bundle.spec_repo if bundle else ""
+        self.publishers = {}
+        self.publishing = publish and bool(repo) and not self.awaiting_spec_repo
+
+    @property
+    def awaiting_spec_repo(self) -> bool:
+        return bool(self.bundle and self.bundle.awaits_spec_repo)
+
+    def _publisher(self, repo: str) -> spec_publish.ArtifactPublisher | None:
+        if not self.publishing:
+            return None
+        if repo not in self.publishers:
+            worktree, branch = self.checkouts[repo]
+            # A legacy task keys its checkout by "": it publishes as the collected repository.
+            self.publishers[repo] = spec_publish.ArtifactPublisher(worktree, branch, repo or self.repo)
+        return self.publishers[repo]
 
     def store(self, entry: Registration, old: StoredArtifact | None) -> StoredArtifact:
-        path = _source(self.task.worktree, entry.path)
-        rel = path.relative_to(Path(self.task.worktree).resolve()).as_posix()
+        repo = entry.repo or self.task.repo
+        if repo not in self.checkouts:
+            raise ValueError(f"{repo!r} is not a repository of this task")
+        worktree = self.checkouts[repo][0]
+        path = _source(worktree, entry.path)
+        rel = path.relative_to(Path(worktree).resolve()).as_posix()
         content = path.read_bytes()
         if len(content) > MAX_BYTES:
             raise ValueError("artifact exceeds 20 MiB")
         digest = hashlib.sha256(content).hexdigest()
-        changed = old is None or (old.digest, old.path) != (digest, rel)
+        item_repo = repo if self.bundle else ""
+        changed = old is None or (old.digest, old.path, old.repo, old.task_revision) != (
+            digest, rel, item_repo, self.revision)
         if changed:
             item = StoredArtifact(entry.id, entry.name, rel, _media_type(path), digest,
-                                  old.stage if old else self.task.stage.value, self.now.isoformat())
+                                  old.stage if old else self.task.stage.value, self.now.isoformat(),
+                                  repo=item_repo, task_revision=self.revision)
         else:
             item = replace(old, name=entry.name)
         dest = self.root / "content" / entry.id
         if changed or not dest.exists():
             _copy_content(dest, content)
-        self.publish(item, content)
+        self.publish(item, repo, content)
         return item
 
-    def publish(self, item: StoredArtifact, content: bytes) -> None:
-        if self.publisher and item.media_type == "text/markdown" and not item.publication:
-            item.publication = self.publisher.reference(item.path, content)
+    def publish(self, item: StoredArtifact, repo: str, content: bytes) -> None:
+        publisher = self._publisher(repo)
+        if publisher and item.media_type == "text/markdown" and not item.publication:
+            item.publication = publisher.reference(item.path, content)
+
+    def _review_registration(self, entry: Registration) -> Registration:
+        """A plan's review page can live alongside its selected repository's tickets."""
+        if entry.path == ".agent/review.html" and not entry.repo and self.spec_repo:
+            root = self.checkouts[self.spec_repo][0]
+            if (Path(root) / entry.path).exists():
+                return replace(entry, repo=self.spec_repo)
+        return entry
 
     def collect(self, index: ArtifactIndex) -> None:
         items = {item.id: item for item in index.items}
-        for entry in _registrations(self.task):
+        index.awaiting_spec_repo = self.awaiting_spec_repo
+        for entry in _registrations(self.task, self.spec_repo):
+            entry = self._review_registration(entry)
+            old = items.get(entry.id)
+            if old and (old.repo or self.task.repo, old.path) != (
+                    entry.repo or self.task.repo, entry.path):
+                # A retained snapshot belongs to its original repository/path.
+                # Never serve it under a new binding, even if collection fails.
+                items.pop(entry.id)
+                (self.root / "content" / entry.id).unlink(missing_ok=True)
+                old = None
             try:
-                items[entry.id] = self.store(entry, items.get(entry.id))
+                items[entry.id] = self.store(entry, old)
             except (OSError, ValueError) as exc:
                 log.warning("Cannot collect artifact %s/%s/%s: %s", self.task.target, self.task.issue, entry.id, exc)
         index.items = list(items.values())
@@ -249,7 +302,8 @@ def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
     index = read(state_dir, task.target, task.issue, repo=task.repo)
     index.retain_for(task)
     if not index.expired and Path(task.worktree).is_dir():
-        Collector(root, task, repo, publish, now).collect(index)
+        bundle = state.read_bundle(state_dir, task.target, task.issue, repo=task.repo)
+        Collector(root, task, repo, publish, now, bundle).collect(index)
     index.save(root / "index.json")
     state.archive(state_dir, task)
 
@@ -260,7 +314,7 @@ def pin_published(state_dir, task: TaskState, repo: str) -> None:
     for item in index.items:
         if item.publication and item.publication.commit:
             item.publication = spec_publish.PublishedReference(
-                spec_publish.spec_url(repo, item.publication.commit, item.path), item.publication.commit)
+                spec_publish.spec_url(item.repo or repo, item.publication.commit, item.path), item.publication.commit)
     index.save(state.archive_root(state_dir, task.target, task.issue, repo=task.repo)
                / "index.json")
 

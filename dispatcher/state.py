@@ -302,11 +302,110 @@ class StageSignal:
     # Plan ready report: the question blocks the session counted in its
     # review page. None = missing or not a non-negative integer.
     open_questions: int | None = None
+    # Initial exploration proposal only; the controller validates membership
+    # and provisions it at the spec -> plan boundary. Never a late expansion.
+    repositories: tuple[str, ...] = ()
 
 
 # The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
 # state_dir. Written by dispatcher.main, read by web.sources.
 WAKE_BLOCKED_PREFIX = "wake-blocked-"
+
+
+@dataclass(frozen=True)
+class TaskRepository:
+    """One required repository of a task bundle: its owned checkout and branch."""
+    repo: str          # "owner/name", a member of the task's project
+    worktree: str
+    branch: str
+
+
+@dataclass(frozen=True)
+class TaskBundle:
+    """The controller-recorded repository scope of one task. `source` is where
+    the scope came from ("definition" | "exploration"); `spec_repo` is the member
+    repository holding the task's spec/plan ("" = not yet selected); a widened
+    scope is a new `scope_revision`."""
+    repositories: tuple[TaskRepository, ...]
+    scope_revision: int = 1
+    source: str = "definition"
+    spec_repo: str = ""
+
+    @property
+    def awaits_spec_repo(self) -> bool:
+        """Several repositories and none chosen for the spec/plan: a sole
+        repository owns them."""
+        return not self.spec_repo and len(self.repositories) > 1
+
+
+class ScopeRefused(Exception):
+    """A repository scope or spec repository outside the task's project, or a
+    widening nobody confirmed."""
+
+
+def _bundle_path(state_dir: str | Path, target: str, issue: int, repo: str) -> Path:
+    return Path(state_dir) / f"bundle-{task_key(target, issue, repo)}.json"
+
+
+def save_bundle(state_dir: str | Path, target: str, issue: int, bundle: TaskBundle, *,
+                repo: str = "") -> None:
+    write_json_atomic(_bundle_path(state_dir, target, issue, repo), asdict(bundle))
+
+
+def read_bundle(state_dir: str | Path, target: str, issue: int, *,
+                repo: str = "") -> TaskBundle | None:
+    """The task's recorded scope, or None when it runs on its origin repository alone."""
+    try:
+        raw = json.loads(_bundle_path(state_dir, target, issue, repo).read_text())
+    except FileNotFoundError:
+        return None
+    return TaskBundle(**{**raw, "repositories": tuple(
+        TaskRepository(**r) for r in raw["repositories"])})
+
+
+def save_pending_spec_repo(state_dir, target, issue, spec_repo, *, repo="") -> None:
+    """Remember definition ownership while exploration has not established scope."""
+    path = Path(state_dir) / f"spec-owner-{task_key(target, issue, repo)}.json"
+    write_json_atomic(path, {"spec_repo": spec_repo})
+
+
+def pending_spec_repo(state_dir, target, issue, *, repo="") -> str:
+    path = Path(state_dir) / f"spec-owner-{task_key(target, issue, repo)}.json"
+    try:
+        return json.loads(path.read_text())["spec_repo"]
+    except FileNotFoundError:
+        return ""
+
+
+def _recorded(state_dir, target, issue, repo) -> TaskBundle:
+    bundle = read_bundle(state_dir, target, issue, repo=repo)
+    if bundle is None:
+        raise ScopeRefused(f"{target}#{issue} has no recorded repository scope")
+    return bundle
+
+
+def select_spec_repo(state_dir: str | Path, target: str, issue: int, spec_repo: str, *,
+                     repo: str = "", members: Iterable[str]) -> TaskBundle:
+    """Record the operator's spec/plan repository choice; ScopeRefused outside `members`."""
+    bundle = _recorded(state_dir, target, issue, repo)
+    if spec_repo not in set(members) or spec_repo not in {r.repo for r in bundle.repositories}:
+        raise ScopeRefused(f"{spec_repo!r} is not a repository of this task's project scope")
+    bundle = replace(bundle, spec_repo=spec_repo)
+    save_bundle(state_dir, target, issue, bundle, repo=repo)
+    return bundle
+
+
+def confirm_scope(state_dir: str | Path, target: str, issue: int, add: Iterable[TaskRepository], *,
+                  repo: str = "", members: Iterable[str]) -> TaskBundle:
+    """Operator confirmation of a wider scope: a new scope revision."""
+    bundle, add = _recorded(state_dir, target, issue, repo), tuple(add)
+    if not {r.repo for r in add} <= set(members):
+        raise ScopeRefused("a repository outside the project cannot join the task scope")
+    held = {r.repo for r in bundle.repositories}
+    bundle = replace(bundle, scope_revision=bundle.scope_revision + 1, repositories=(
+        *bundle.repositories, *(r for r in add if r.repo not in held)))
+    save_bundle(state_dir, target, issue, bundle, repo=repo)
+    return bundle
 
 
 def task_key(target: str, issue: int, repo: str = "") -> str:
@@ -649,6 +748,10 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
     try:
         d = json.loads(raw)
         note = d.get("note", "")
+        repositories = d.get("repositories", [])
+        if not isinstance(repositories, list) or not all(
+                isinstance(repo, str) and repo for repo in repositories):
+            raise ValueError("repositories must be an array of repository names")
         return StageSignal(
             stage=str(d["stage"]),
             status=str(d["status"]),
@@ -659,6 +762,7 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
             round=_signal_int(d, "round"),
             track=str(d.get("track", "") or ""),
             open_questions=_open_questions(d.get("open_questions")),
+            repositories=tuple(repositories),
         )
     except (ValueError, KeyError, TypeError, AttributeError, RecursionError,
             OverflowError):

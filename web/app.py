@@ -19,6 +19,7 @@ from pydantic import (BaseModel, Field, TypeAdapter, ValidationError,
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import execution_overrides, model_settings, priority, queue_ops
+from dispatcher.artifacts import task_review_worktree
 from dispatcher.config import (Config, apply_stored_models, normalize_repo,
                                policy_for, project_target,
                                referenced_providers, routed_providers,
@@ -495,9 +496,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         req = t.operator_request
         if req is None:
             return None
-        wt = Path(t.worktree).resolve()
-        # Both request kinds are one file in the worktree: the plan review
-        # summary, or the questionnaire.
+        # Both request kinds are one file: the plan review summary, from the
+        # checkout its revision covers, or the questionnaire in the worktree.
+        wt = Path(task_review_worktree(t, boot.state_dir) if req.kind == "plan-approval"
+                  else t.worktree).resolve()
         return read_model.OperatorRequest(
             kind=req.kind, content=_resolve_content(req.path, wt),
             revision=req.fingerprint, answers=_saved_answers(t))

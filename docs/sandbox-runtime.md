@@ -51,6 +51,15 @@ execution reference. The session helper must use that same lock when replacing
 the agent. A retry reuses the persisted plan; editing Compose in the shared clone
 does not replace ownership of resources retained by an existing execution.
 
+The controller may establish an initially unspecified repository scope once,
+at the spec-to-plan handover after ending exploration. It validates project
+membership before requesting credentials, computes the combined allocation,
+and stops the old containers. It then calls `remove` with only those containers
+and the resource group, leaving the plan's network and volume lists empty so
+their data survives. The new durable plan retains the origin checkout and owned
+volumes and adds the required member checkouts and services. Normal prepare and
+resume calls never expand scope; subsequent expansion requires operator policy.
+
 This executable and box-level enforcement belong to the deferred infrastructure
 part of ticket 09. Application tests exercise this transport with a fake runtime;
 they do not establish box-level isolation or resource enforcement.
