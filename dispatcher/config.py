@@ -471,7 +471,9 @@ def policy_for(cfg: Config, target: Target | ProjectRepository | None) -> ModelP
 
 def stranded(cfg: Config, target: Target | None, task: TaskState, stage: str) -> str:
     """models.stranded for `task` under `cfg`, launching `stage`."""
-    return models.stranded(policy_for(cfg, target), task.track, task.picks,
+    policy = policy_for(cfg, target)
+    # A task with no track is untracked work (state.launch_track).
+    return models.stranded(policy, task.track or policy.untracked, task.picks,
                            stage, referenced_providers(cfg))
 
 

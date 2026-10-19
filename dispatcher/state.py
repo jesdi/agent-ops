@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import NamedTuple
+from typing import Iterable, NamedTuple
 
 from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
                                ModelPolicy, Order, candidates, pick_provider,
@@ -525,12 +525,78 @@ def holds_slot(t: TaskState) -> bool:
             and (not t.park or t.park == PARK_LOGIN))
 
 
-def allocate_slot(existing: list[TaskState], max_slots: int) -> int | None:
+def allocate_slot(existing: list[TaskState], max_slots: int,
+                  reserved: Iterable[int] = ()) -> int | None:
+    """`reserved`: the slots of owners that are not tasks (reserved_slots())."""
     held = {t.slot for t in existing if holds_slot(t) and t.slot != NO_SLOT}
+    held.update(reserved)
     for slot in range(max_slots):
         if slot not in held:
             return slot
     return None
+
+
+ALLOCATIONS_FILE = "allocations.json"
+
+
+@dataclass(frozen=True)
+class Allocation:
+    """One execution slot and who holds it. owner_kind: task | triage |
+    verification."""
+
+    owner_kind: str
+    owner_id: str
+    slot: int
+
+
+def _stored_allocations(state_dir: str | Path) -> list[Allocation]:
+    """The holds of owners that are not unparked tasks: a verification, a
+    triage sweep, a task whose containers are not yet confirmed stopped."""
+    try:
+        rows = json.loads((Path(state_dir) / ALLOCATIONS_FILE).read_text())
+        return [Allocation(**row) for row in rows]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def hold(state_dir: str | Path, kind: str, owner_id: str, slot: int) -> None:
+    kept = [a for a in _stored_allocations(state_dir)
+            if (a.owner_kind, a.owner_id) != (kind, owner_id)]
+    _write_allocations(state_dir, [*kept, Allocation(kind, owner_id, slot)])
+
+
+def release(state_dir: str | Path, kind: str, owner_id: str) -> None:
+    stored = _stored_allocations(state_dir)
+    kept = [a for a in stored if (a.owner_kind, a.owner_id) != (kind, owner_id)]
+    if len(kept) != len(stored):
+        _write_allocations(state_dir, kept)
+
+
+def _write_allocations(state_dir: str | Path, rows: list[Allocation]) -> None:
+    path = Path(state_dir) / ALLOCATIONS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.stem, suffix=".tmp")
+    with os.fdopen(fd, "w") as stream:
+        json.dump([asdict(a) for a in rows], stream)
+    os.replace(temporary, path)
+
+
+def allocations(state_dir: str | Path) -> list[Allocation]:
+    """The one execution allocation view: every slot held by a task, a triage
+    sweep or an onboarding verification. Slots are unique across owners."""
+    tasks = [Allocation("task", task_key(t.target, t.issue, t.repo), t.slot)
+             for t in load_all(state_dir) if holds_slot(t) and t.slot != NO_SLOT]
+    return [*tasks, *_stored_allocations(state_dir)]
+
+
+def reserved_slots(state_dir: str | Path) -> set[int]:
+    return {a.slot for a in _stored_allocations(state_dir) if a.slot != NO_SLOT}
+
+
+def held_count(state_dir: str | Path) -> int:
+    """Capacity units held by verifications and tasks still stopping. Tasks
+    that run are counted by active(), a running triage sweep by its tab."""
+    return sum(a.owner_kind != "triage" for a in _stored_allocations(state_dir))
 
 
 def _open_questions(raw: object) -> int | None:

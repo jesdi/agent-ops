@@ -102,3 +102,23 @@ def cleanup(clone, issue):
         return False
     sandbox.cleanup(ref)
     return True
+
+
+class BoxSandboxes:
+    """The box's task sandboxes: each execution ref belongs to its clone's."""
+
+    @staticmethod
+    def _of(ref):
+        return for_clone(ref.rpartition("#")[0])
+
+    def owns(self, ref):
+        return self._of(ref).owns(ref)
+
+    def park(self, ref):
+        self._of(ref).park(ref)
+
+    def resume(self, ref):
+        return self._of(ref).resume(ref)
+
+    def cleanup(self, ref):
+        self._of(ref).cleanup(ref)

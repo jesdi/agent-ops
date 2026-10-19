@@ -19,6 +19,7 @@ from dispatcher.config import Config, policy_for, routed_providers
 from dispatcher.execution_credentials import CredentialError
 from dispatcher.models import Entry, triage_entry, tracks_text
 from dispatcher.prompts import render_triage_prompt
+from dispatcher import state
 from dispatcher.state import load_all
 from dispatcher.usage import admits, verdict_note
 from dispatcher.usage_providers import fetch_all
@@ -395,6 +396,13 @@ def _launch_env() -> dict[str, str]:
             if os.environ.get(var)}
 
 
+def hold_sweep(cfg: Config) -> None:
+    """Record the sweep in the shared allocation view (main drops it once the tab is gone)."""
+    slot = state.allocate_slot(load_all(cfg.state_dir), state.max_slots(cfg.capacity),
+                               state.reserved_slots(cfg.state_dir))
+    state.hold(cfg.state_dir, "triage", TAB_LABEL, state.NO_SLOT if slot is None else slot)
+
+
 def tick(cfg: Config, deps, config_path: str) -> None:
     """Once per dispatcher pass: expire or launch a pending request. The
     request file survives until the runner consumes it, so claims stay
@@ -411,12 +419,16 @@ def tick(cfg: Config, deps, config_path: str) -> None:
                            lines=["skipped — no capacity within 2 h"])
         return
     # Box-wide, like every spawn site in main. No sweep is running here.
-    if claims.box_free(cfg.capacity, load_all(cfg.state_dir),
-                       triage_running=False) <= 0:
+    if claims.box_free(cfg.capacity, load_all(cfg.state_dir), triage_running=False,
+                       held=state.held_count(cfg.state_dir)) <= 0:
         return  # wait for a natural release; never preempt
+    # The sweep joins the shared allocation view before it launches; main drops
+    # it once the tab is gone.
+    hold_sweep(cfg)
     tab = herdr.Tab.ensure(herdr.SYSTEM_WORKSPACE, TAB_LABEL, _repo_dir(),
                            env=_launch_env())
     if tab is None:
+        state.release(cfg.state_dir, "triage", TAB_LABEL)
         clear_request(cfg.state_dir)
         deps.notifier.send("triage_report",
                            lines=["launch failed: herdr tab could not be created"])
@@ -425,6 +437,8 @@ def tick(cfg: Config, deps, config_path: str) -> None:
     # the finished sweep as idle rather than still running.
     if not tab.run(f"{shlex.quote(sys.executable)} -m dispatcher.main "
                    f"--config {shlex.quote(config_path)} --triage-run; exit"):
+        state.release(cfg.state_dir, "triage", TAB_LABEL)
         clear_request(cfg.state_dir)
         deps.notifier.send("triage_report",
                            lines=["launch failed: herdr pane run failed"])
+        return

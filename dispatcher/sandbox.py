@@ -477,9 +477,20 @@ class TaskSandbox:
 
     @_serialized
     def park(self, execution_ref: str) -> None:
+        """Stop every container; one that will not stop is reported after the
+        others were tried."""
         plan = self._plan_for(execution_ref)
+        failed = None
         for c in plan.containers:
-            self.engine.stop(plan, c.name)
+            try:
+                self.engine.stop(plan, c.name)
+            except EngineError as error:
+                failed = failed or error
+        if failed:
+            raise failed
+
+    def owns(self, execution_ref: str) -> bool:
+        return self._plan_path(execution_ref).exists()
 
     @_serialized
     def resume(self, execution_ref: str) -> StartResult:

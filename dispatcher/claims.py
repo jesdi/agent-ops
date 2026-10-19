@@ -16,12 +16,13 @@ from dispatcher.state import TERMINAL_STAGES, TaskState, active
 PLACES = 10
 
 
-def box_free(capacity: int, tasks: list[TaskState], triage_running: bool) -> int:
+def box_free(capacity: int, tasks: list[TaskState], triage_running: bool,
+             held: int = 0) -> int:
     """Free capacity across the whole box. `tasks` must be every task, not
     one target's: capacity is one number shared by all targets. A running
     triage sweep holds a unit that active() cannot see (a herdr tab, not a
-    TaskState)."""
-    return capacity - len(active(tasks)) - int(triage_running)
+    TaskState), as does each `held` verification or still-stopping task."""
+    return capacity - len(active(tasks)) - int(triage_running) - held
 
 
 def open_tasks(tasks: list[TaskState]) -> list[TaskState]:
@@ -31,12 +32,12 @@ def open_tasks(tasks: list[TaskState]) -> list[TaskState]:
 
 
 def claim_room(capacity: int, max_open: int, tasks: list[TaskState],
-               triage_running: bool) -> int:
+               triage_running: bool, held: int = 0) -> int:
     """How many NEW issues this pass may claim: free capacity, further
     capped so the box never holds more than `max_open` unfinished tasks.
     Woken work and PR feedback are not claims and ignore `max_open`; only
     the claim round and the console's forecast go through here."""
-    return min(box_free(capacity, tasks, triage_running),
+    return min(box_free(capacity, tasks, triage_running, held),
                max_open - len(open_tasks(tasks)))
 
 

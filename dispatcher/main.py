@@ -30,7 +30,7 @@ from dispatcher.config import (Config, Target, apply_stored_models,
                                referenced_providers, routed_providers, stranded)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
-from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, loops,
+from dispatcher import (answers, claims, sandbox_lifecycle, eventlog, execution_overrides, failures, intents, loops,
                         messages, pr_poll, priority, queue_ops, relogin, state, tmux_migration,
                         triage)
 from dispatcher.credential_service import configured_credentials
@@ -52,6 +52,7 @@ from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
                                tracks_text)
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
+from dispatcher.sandbox_runtime import BoxSandboxes
 from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SLOT, PARK_CI,
                               PARK_HUMAN,
@@ -66,6 +67,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               read_stage_signal,
                               implement_done, resumable_crash, shown_stage,
                               save, task_key, owns_task_session, token_issued)
+from dispatcher import state
 from dispatcher.workspace import (append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
@@ -83,6 +85,8 @@ class Deps:
     sessions: object
     notifier: object
     credentials: object = None  # ExecutionCredentials; None keeps the host login
+    sandbox: object = None      # task sandboxes (sandbox_lifecycle); None leaves them alone
+    verification: object = None  # onboarding verification requests (pending/start/is_running)
 
 
 def _now() -> str:
@@ -1252,16 +1256,21 @@ def _cleanup_target(cfg: Config, task: TaskState, by_name: dict):
     return replace(target, clone_path=clone or target.clone_path)
 
 
-def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
+def _flush_finished(cfg: Config, dry_run: bool = False, deps: Deps | None = None) -> None:
     """Retire finished tasks (done, failed, won't do) past the retention
     window: worktree and local branch go (the remote branch, PR and issue
     are the record), then the state file. A done task's teardown already
     ran at merge; remove_workspace is best-effort, so repeating it is a
     no-op. A task whose target left the config keeps its worktree: nothing
-    knows its clone any more."""
+    knows its clone any more. A task whose sandbox resources could not be
+    removed stays, so the cleanup is retried."""
     by_name = {t.name: t for t in cfg.targets}
+    clone_of = _clone_of(cfg)
     for task in load_all(cfg.state_dir):
         if not _expired(task, cfg.done_retention_days * 86400):
+            continue
+        if (deps is not None and getattr(deps, "sandbox", None) is not None and not dry_run
+                and not sandbox_lifecycle.cleanup(cfg, deps.sandbox, clone_of, task)):
             continue
         target = _cleanup_target(cfg, task, by_name)
         if target is not None and task.worktree:
@@ -1272,6 +1281,79 @@ def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
         eventlog.append_event(cfg.state_dir, "flushed",
                               target=task.target, issue=task.issue, repo=task.repo,
                               stage=task.stage.value)
+
+
+def _clone_of(cfg: Config):
+    clones = _clone_map(cfg)
+    return lambda task: clones.get(task.repo or task.target)
+
+
+def _settle_sandboxes(cfg: Config, deps: Deps, dry_run: bool) -> None:
+    if getattr(deps, "sandbox", None) is not None and not dry_run:
+        sandbox_lifecycle.settle(cfg, deps.sandbox, _clone_of(cfg))
+
+
+def _wake_sandbox(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                  dry_run: bool = False) -> bool:
+    """Start the task's services before its session runs again; when they will
+    not start the task waits, marked, for the next pass. A dry run touches
+    no real sandbox."""
+    if dry_run or getattr(deps, "sandbox", None) is None or sandbox_lifecycle.wake(cfg, deps.sandbox, _clone_of(cfg), task):
+        return True
+    _mark_wake_blocked(cfg, target, task, "sandbox services did not start")
+    return False
+
+
+def _held(cfg: Config) -> int:
+    return state.held_count(cfg.state_dir)
+
+
+def _free_slot(cfg: Config) -> int | None:
+    return allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity),
+                         reserved=state.reserved_slots(cfg.state_dir))
+
+
+def _drop_finished_verifications(cfg: Config, verification) -> None:
+    for held in state.allocations(cfg.state_dir):
+        if held.owner_kind == "verification" and not verification.is_running(held.owner_id):
+            state.release(cfg.state_dir, "verification", held.owner_id)
+
+
+def _account_allocations(cfg: Config, deps: Deps, dry_run: bool,
+                         sweep_running: bool) -> None:
+    """Settle the non-task holders of the shared allocation view."""
+    if dry_run:
+        return
+    if not sweep_running:
+        state.release(cfg.state_dir, "triage", triage.TAB_LABEL)
+    elif not any(a.owner_kind == "triage" for a in state.allocations(cfg.state_dir)):
+        triage.hold_sweep(cfg)   # a restart lost the hold of a sweep still running
+    _admit_verification(cfg, deps, sweep_running)
+
+
+def _admit_verification(cfg: Config, deps: Deps, sweep_running: bool) -> None:
+    """Verification holds an execution slot, never an unfinished-task place:
+    a slot is kept while its process runs and dropped once it is gone."""
+    verification = getattr(deps, "verification", None)
+    if verification is None:
+        return
+    _drop_finished_verifications(cfg, verification)
+    for operation in verification.pending():
+        if claims.box_free(cfg.capacity, load_all(cfg.state_dir), sweep_running,
+                           _held(cfg)) <= 0:
+            return
+        slot = _free_slot(cfg)
+        if slot is None:
+            return
+        state.hold(cfg.state_dir, "verification", operation, slot)   # durable before it starts
+        try:
+            verification.start(operation, slot)
+        except Exception:
+            # A launch that raised may still have a live process: keep the hold
+            # until it is gone (_drop_finished_verifications releases it).
+            if not verification.is_running(operation):
+                state.release(cfg.state_dir, "verification", operation)
+            log.exception("verification %s did not start", operation)
 
 
 def _oldest_first(cfg: Config):
@@ -1308,17 +1390,9 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
             continue
-        if task.slot == NO_SLOT:
-            # Parked tasks gave their slot back. Take any free one —
-            # worktrees are per-issue, and the spec and plan prompts name no
-            # slot port, so for a gate-parked task the number need not be
-            # the original.
-            slot = allocate_slot(load_all(cfg.state_dir),
-                                 max_slots(cfg.capacity))
-            if slot is None:
-                _mark_wake_blocked(cfg, target, task, "no free slot")
-                continue  # stays parked, retried next pass
-            task = replace(task, slot=slot)
+        task = _with_slot(cfg, target, task)
+        if task is None or not _wake_sandbox(cfg, deps, target, task, dry_run):
+            continue
         try:
             _resume_one(cfg, deps, target, task, launch)
             # The wake's launch is the next launch: a stored one-shot
@@ -1326,6 +1400,20 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
             _consume_execution_choice(cfg, task.target, task.issue, task.repo)
         except Exception:
             _fail_task_crash(cfg, deps, target, task, dry_run)
+
+
+def _with_slot(cfg: Config, target: Target, task: TaskState) -> TaskState | None:
+    """Parked tasks gave their slot back. Take any free one — worktrees are
+    per-issue, and the spec and plan prompts name no slot port, so for a
+    gate-parked task the number need not be the original. None: no slot is
+    free; the task stays parked, retried next pass."""
+    if task.slot != NO_SLOT:
+        return task
+    slot = _free_slot(cfg)
+    if slot is None:
+        _mark_wake_blocked(cfg, target, task, "no free slot")
+        return None
+    return replace(task, slot=slot)
 
 
 def _wake_launch(cfg: Config, deps: Deps, target: Target, task: TaskState,
@@ -1516,7 +1604,7 @@ def _awaiting_feedback_round(task: TaskState) -> bool:
 
 
 def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
-                    order: Order) -> None:
+                    order: Order, dry_run: bool = False) -> None:
     """Spawn address-review for tasks whose PR got feedback, box-wide and
     oldest first — same gates as claiming new work (capacity, usage, slot);
     a denied spawn just stays pr-open+pending and retries next pass, badge
@@ -1539,9 +1627,11 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, target, task, "capacity full")
             continue
-        slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
+        slot = _free_slot(cfg)
         if slot is None:
             _mark_wake_blocked(cfg, target, task, "no free slot")
+            continue
+        if not _wake_sandbox(cfg, deps, target, task, dry_run):
             continue
         _clear_wake_blocked(cfg, task.target, task.issue, task.repo)
         # Cursor := spawn time: everything the session can read live is
@@ -2034,7 +2124,7 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
 def _box_free(cfg: Config, tasks: list[TaskState]) -> int:
     """claims.box_free for this pass. `cfg` is the pass's effective config,
     whose capacity already has a running triage sweep's unit taken off."""
-    return claims.box_free(cfg.capacity, tasks, triage_running=False)
+    return claims.box_free(cfg.capacity, tasks, triage_running=False, held=_held(cfg))
 
 
 def _reopened(stale: TaskState, pass_started: str) -> bool:
@@ -2130,7 +2220,7 @@ def _claim_denied(cfg: Config, name: str, tasks: list[TaskState],
                   enabled: list[str]) -> bool:
     """True when the total limit or another project's reservation leaves
     `name` no place among `tasks`."""
-    return bool(claims.claim_room(cfg.capacity, cfg.max_open, tasks, False) <= 0
+    return bool(claims.claim_room(cfg.capacity, cfg.max_open, tasks, False, _held(cfg)) <= 0
                 or claims.reservation_denial(name, tasks, enabled, cfg.max_open))
 
 
@@ -2162,7 +2252,8 @@ def _claim_once(cfg: Config, deps: Deps, target: Target, cand, launch,
             return "skip"  # a simultaneous pass claimed this candidate first
         if _claim_denied(cfg, target.name, now_tasks, enabled):
             return "drop"
-        slot = allocate_slot(now_tasks, max_slots(cfg.capacity))
+        slot = allocate_slot(now_tasks, max_slots(cfg.capacity),
+                             reserved=state.reserved_slots(cfg.state_dir))
         if slot is None:
             return "stop"
         if existing is not None:   # re-read under the lock: never a fresh claim
@@ -2185,7 +2276,7 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
     the round when its candidates run out or provisioning fails for it."""
     all_tasks = load_all(cfg.state_dir)
     free = claims.claim_room(cfg.capacity, cfg.max_open, all_tasks,
-                             triage_running=False)
+                             triage_running=False, held=_held(cfg))
     if free <= 0:
         return
     counts = _round_counts(targets, all_tasks)
@@ -2712,6 +2803,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not dry_run:
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
+        _settle_sandboxes(cfg, deps, dry_run)
         triage.tick(cfg, deps, config_path)
     # Evaluate each triage signal once — triage.running() is a real herdr
     # subprocess; calling it per target would spawn (1 + len(targets)) processes
@@ -2719,6 +2811,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     # the sweep is running (it holds a real capacity unit active() cannot see);
     # claims are paused when any request is in flight (pending = file OR running).
     sweep_running = triage.running()
+    _account_allocations(cfg, deps, dry_run, sweep_running)
     # Every project, paused or not, runs its existing work; only the claim
     # round below skips a paused one.
     eff = replace(cfg, targets=[*cfg.targets, *map(project_target, cfg.projects)])
@@ -2749,15 +2842,17 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
                 _fail_task_crash(eff, deps, run_target, task, dry_run)
         _wake_ci(eff, deps, target)
         _poll_prs(eff, deps, target, dry_run)
+    _settle_sandboxes(cfg, deps, dry_run)   # stop what phase 1 retired before admitting wakes
     _resume_woken(eff, deps, admit, order, dry_run)
-    _spawn_feedback(eff, deps, admit, order)
+    _spawn_feedback(eff, deps, admit, order, dry_run)
+    _settle_sandboxes(cfg, deps, dry_run)   # a task parked this pass frees its unit only once stopped
     # Phase 2: new claims, with whatever capacity phase 1 left.
     if not claims_paused:
         paused = {p.key for p in cfg.projects if not p.enabled}
         _claim_new(eff, deps, [t for t in eff.targets if t.name not in paused],
                    admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
-    _flush_finished(cfg, dry_run)
+    _flush_finished(cfg, dry_run, deps)
     _write_heartbeat(cfg, pass_started)
 
 
@@ -2812,7 +2907,7 @@ def main() -> None:
               f"their entries are never admitted", file=sys.stderr)
     credentials = configured_credentials(cfg)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run, credentials=credentials),
-                credentials=credentials,
+                credentials=credentials, sandbox=BoxSandboxes(),
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
                                   cpus=cfg.session_cpus, state_dir=cfg.state_dir,
                                   clones=_clone_map(cfg), credentials=credentials,
