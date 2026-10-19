@@ -1384,12 +1384,10 @@ def _respawn(cfg: Config, deps: Deps, target: Target,
     detail = "after crash" if task.crashed_stage else "next launch"
     deps.github.set_status(target, task.issue,
                            target.status_in_progress_option_id)
-    # A resume of a crash at the gate: the operator's round (-1) is spent by this launch.
-    rounds = ({"unattended_rounds": max(task.unattended_rounds, 0)}
-              if task.crashed_stage and task.gated else {})
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
                    park_note="", hold_for_attach=False,
-                   resume_model_override="", resume_bypass_usage=False, **rounds)
+                   resume_model_override="", resume_bypass_usage=False,
+                   **loops.crash_resume_fields(task))
     _clear_wake_blocked(cfg, task.target, task.issue)
     task = _spawn_stage(cfg, deps, target, task, launch)
     eventlog.append_event(cfg.state_dir, "resumed", target=target.name,

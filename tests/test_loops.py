@@ -2,7 +2,7 @@
 from dataclasses import replace
 
 from dispatcher.loops import (Loop, ReportedRound, FailedRun, PRAttention, Outcome, evaluate,
-                              ResetCause, gate_fields, reset, unattended_rounds_used)
+                              ResetCause, crash_resume_fields, gate_fields, reset, unattended_rounds_used)
 from dispatcher.state import LoopCaps, Stage, TaskState
 
 # ---------------------------------------------------------------------------
@@ -309,6 +309,14 @@ def test_gate_fields_count_only_what_the_task_does_at_the_gate():
         plan = _task(stage=Stage.PLAN, unattended_rounds=before)
         assert gate_fields(plan) == {"gated": True, "unattended_rounds": after,
                                     "gate_respawn_pending": False}
+
+
+def test_crash_resume_spends_the_operator_round_only_at_the_gate():
+    answered = reset(_task(gated=True, crashed_stage="plan"), ResetCause.OPERATOR_WAKE)
+    assert crash_resume_fields(answered) == {"unattended_rounds": 0}
+    assert crash_resume_fields(replace(answered, unattended_rounds=1)) == {"unattended_rounds": 1}
+    assert crash_resume_fields(replace(answered, gated=False)) == {}
+    assert crash_resume_fields(replace(answered, crashed_stage="")) == {}
 
 
 # ---------------------------------------------------------------------------
