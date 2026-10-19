@@ -1,0 +1,396 @@
+{
+  "schema_version": 3,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Task states",
+    "output": "frontend/public/task-states.html",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:jesdi/agent-ops.git",
+      "link_mode": "local-only",
+      "revision": "6d78c8b8f4c3754b838db9a6ba7ebb4b236ff53b"
+    }
+  },
+  "mainPath": [
+    "spec",
+    "plan",
+    "plan_gate",
+    "implement",
+    "review"
+  ],
+  "states": [
+    {
+      "id": "spec",
+      "type": "start",
+      "label": "Spec",
+      "sublabel": "claimed \u2192 spec.md",
+      "tag": "session",
+      "step": "01",
+      "sources": [
+        {
+          "path": "dispatcher/main.py",
+          "line": 2003,
+          "end_line": 2020,
+          "label": "_commit_claim \u2192 spawn spec"
+        },
+        {
+          "path": "dispatcher/machine.py",
+          "line": 402,
+          "end_line": 410,
+          "label": "spec done \u2192 plan"
+        },
+        {
+          "path": "dispatcher/queue_ops.py",
+          "line": 22,
+          "end_line": 85,
+          "label": "Next / Boost / Ready rules"
+        }
+      ]
+    },
+    {
+      "id": "plan",
+      "type": "active",
+      "label": "Plan",
+      "sublabel": "design + tickets",
+      "tag": "session",
+      "step": "02",
+      "sources": [
+        {
+          "path": "dispatcher/machine.py",
+          "line": 288,
+          "end_line": 299,
+          "label": "ready report / gate skip"
+        }
+      ]
+    },
+    {
+      "id": "plan_gate",
+      "type": "decision",
+      "label": "Plan Review",
+      "sublabel": "operator gate",
+      "tag": "gate",
+      "step": "03",
+      "sources": [
+        {
+          "path": "dispatcher/machine.py",
+          "line": 302,
+          "end_line": 326,
+          "label": "gate rounds"
+        },
+        {
+          "path": "dispatcher/machine.py",
+          "line": 391,
+          "end_line": 399,
+          "label": "approval \u2192 implement"
+        },
+        {
+          "path": "dispatcher/machine.py",
+          "line": 213,
+          "end_line": 220,
+          "label": "dead gate session"
+        }
+      ]
+    },
+    {
+      "id": "implement",
+      "type": "active",
+      "label": "Implement",
+      "sublabel": "all tickets",
+      "tag": "session",
+      "step": "04",
+      "sources": [
+        {
+          "path": "dispatcher/machine.py",
+          "line": 384,
+          "end_line": 416,
+          "label": "spawn implement / done"
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "type": "active",
+      "label": "Review",
+      "sublabel": "fresh eyes",
+      "tag": "session",
+      "step": "05",
+      "sources": [
+        {
+          "path": "dispatcher/machine.py",
+          "line": 417,
+          "end_line": 418,
+          "label": "review done \u2192 pr-open"
+        }
+      ]
+    },
+    {
+      "id": "pr_open",
+      "type": "waiting",
+      "label": "PR Open",
+      "sublabel": "polled",
+      "tag": "github",
+      "step": "06",
+      "sources": [
+        {
+          "path": "dispatcher/main.py",
+          "line": 1043,
+          "end_line": 1092,
+          "label": "PR poll outcomes"
+        }
+      ]
+    },
+    {
+      "id": "done",
+      "type": "success",
+      "label": "Done",
+      "sublabel": "merged",
+      "tag": "terminal",
+      "sources": [
+        {
+          "path": "dispatcher/main.py",
+          "line": 1119,
+          "end_line": 1140,
+          "label": "_finish_merged"
+        }
+      ]
+    },
+    {
+      "id": "address_review",
+      "type": "active",
+      "label": "Address Review",
+      "sublabel": "PR fixes",
+      "tag": "session",
+      "sources": [
+        {
+          "path": "dispatcher/main.py",
+          "line": 1080,
+          "end_line": 1116,
+          "label": "feedback / attention"
+        },
+        {
+          "path": "dispatcher/machine.py",
+          "line": 419,
+          "end_line": 421,
+          "label": "done \u2192 pr-open"
+        }
+      ]
+    },
+    {
+      "id": "parked",
+      "type": "waiting",
+      "label": "Parked",
+      "sublabel": "needs operator",
+      "tag": "flag",
+      "sources": [
+        {
+          "path": "dispatcher/main.py",
+          "line": 2144,
+          "end_line": 2164,
+          "label": "operator Park intent"
+        },
+        {
+          "path": "dispatcher/machine.py",
+          "line": 456,
+          "end_line": 473,
+          "label": "stall / blocked / answers"
+        },
+        {
+          "path": "dispatcher/main.py",
+          "line": 2280,
+          "end_line": 2303,
+          "label": "Resume intent"
+        }
+      ]
+    },
+    {
+      "id": "failed",
+      "type": "failure",
+      "label": "Failed",
+      "sublabel": "worktree kept",
+      "tag": "terminal",
+      "sources": [
+        {
+          "path": "dispatcher/main.py",
+          "line": 1346,
+          "end_line": 1356,
+          "label": "crash records crashed_stage"
+        },
+        {
+          "path": "dispatcher/main.py",
+          "line": 2167,
+          "end_line": 2195,
+          "label": "Kill intent"
+        },
+        {
+          "path": "dispatcher/main.py",
+          "line": 1062,
+          "end_line": 1077,
+          "label": "PR closed unmerged"
+        }
+      ]
+    },
+    {
+      "id": "canceled",
+      "type": "neutral",
+      "label": "Canceled",
+      "sublabel": "Won't do",
+      "tag": "terminal",
+      "sources": [
+        {
+          "path": "dispatcher/main.py",
+          "line": 2212,
+          "end_line": 2228,
+          "label": "Cancel intent"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "id": "t-spec-done",
+      "from": "spec",
+      "to": "plan",
+      "label": "done"
+    },
+    {
+      "id": "t-ready",
+      "from": "plan",
+      "to": "plan_gate",
+      "label": "ready"
+    },
+    {
+      "id": "t-approve",
+      "from": "plan_gate",
+      "to": "implement",
+      "label": "approve",
+      "variant": "emphasis"
+    },
+    {
+      "id": "t-implement-done",
+      "from": "implement",
+      "to": "review",
+      "label": "done"
+    },
+    {
+      "id": "t-pr",
+      "from": "review",
+      "to": "pr_open",
+      "label": "PR"
+    },
+    {
+      "id": "t-merged",
+      "from": "pr_open",
+      "to": "done",
+      "label": "merged",
+      "variant": "emphasis"
+    },
+    {
+      "id": "t-skip",
+      "from": "plan",
+      "to": "implement",
+      "label": "gate skipped"
+    },
+    {
+      "id": "t-respawn",
+      "from": "plan_gate",
+      "to": "plan",
+      "label": "died"
+    },
+    {
+      "id": "t-feedback",
+      "from": "pr_open",
+      "to": "address_review",
+      "label": "feedback"
+    },
+    {
+      "id": "t-pr-updated",
+      "from": "address_review",
+      "to": "pr_open",
+      "label": "updated"
+    },
+    {
+      "id": "t-park",
+      "from": "implement",
+      "to": "parked",
+      "label": "park",
+      "variant": "dashed"
+    },
+    {
+      "id": "t-resume",
+      "from": "parked",
+      "to": "implement",
+      "label": "resume"
+    },
+    {
+      "id": "t-fail",
+      "from": "review",
+      "to": "failed",
+      "label": "crash / kill",
+      "variant": "security"
+    },
+    {
+      "id": "t-resume-crash",
+      "from": "failed",
+      "to": "review",
+      "label": "resume"
+    },
+    {
+      "id": "t-pr-closed",
+      "from": "pr_open",
+      "to": "failed",
+      "label": "closed",
+      "variant": "security"
+    },
+    {
+      "id": "t-cancel",
+      "from": "spec",
+      "to": "canceled",
+      "label": "cancel"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Operator operations",
+      "items": [
+        "Queue (board, before claim): Next, Boost, Ready an issue with the auto label",
+        "Task: Reply, Answers, Park, Resume, Kill, Cancel, Run with a model",
+        "Retry clears a provisioning quarantine so the issue can be claimed again",
+        "Console writes intent files; the dispatcher drains them at the top of each pass"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Transition conditions",
+      "items": [
+        "Claim (queued, then spec in the same pass): capacity, max_open and usage admission allow it",
+        "Spec done: spec.md passes check_spec and the track is valid",
+        "Ready: tickets checked, spec folder published; approved: operator approval only",
+        "Gate skipped: gate-free track, nothing asked, 0 open questions",
+        "Died: a dead gate session respawns plan while unattended rounds remain",
+        "Feedback: PR comments, red check or conflict; each CI round counts, past the cap it parks",
+        "Park, crash / kill, cancel: from any live stage; the drawn source stage is one example",
+        "Resume: back to the stage it parked or crashed in; Kill and PR close are final"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Waits are flags, not stages",
+      "items": [
+        "Park keeps the stage and sets park: parked, login, awaiting-ci, awaiting-review or resume-requested",
+        "A parked plan gate (grace or rounds used up) frees its E2E slot",
+        "Resume queues a wake; capacity and usage admission still decide when it launches"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Left out",
+      "items": [
+        "Implement is the representative stage for park, fail and cancel; all live stages do the same",
+        "blocked and stalled-on-budget are legacy stages nothing writes any more",
+        "Retries of bad signals or failed ticket checks stay inside a stage"
+      ]
+    }
+  ]
+}
