@@ -129,6 +129,7 @@ export const taskDetail: TaskDetail = {
   effort: 3,
   labels: ['auto'],
   timeline: [],
+  required_prs: [],
 }
 
 export const failures: FailuresView = {

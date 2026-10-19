@@ -172,6 +172,28 @@ NO_POKES = MappingProxyType({"poked_since": 0.0, "pokes": 0})
 
 
 @dataclass(frozen=True)
+class RequiredPR:
+    """One repository-qualified PR a task needs merged. `state` is open |
+    merged | closed (closed without merge); the cursors and the CI-fix
+    counter belong to this PR alone, so equal numbers in two repositories
+    never share them."""
+    repo: str
+    number: int
+    state: str = "open"
+    head: str = ""
+    check_cursor: str = ""
+    feedback_cursor: str = ""
+    conflict_cursor: str = ""
+    ci_fix_attempts: int = 0
+    feedback_rounds: int = 0
+    outcome: str = ""      # the last poll's classification: quiet | feedback | check-failed | ...
+    checks: str = ""       # the last CI read of this PR: check-failed | pending | passing | "" unread
+
+
+CI_FIX_LIMIT = 3     # automated CI-fix attempts per required PR
+
+
+@dataclass(frozen=True)
 class TaskState:
     issue: int
     target: str
@@ -257,6 +279,26 @@ class TaskState:
     # Canonical "owner/name" of the origin repository. "" = a legacy record
     # whose repository is not proven (see migrate_legacy).
     repo: str = ""
+    # The PRs this task needs merged; non-empty = authoritative, the task is
+    # done only when every one is merged. The revision names that set.
+    required_prs: tuple[RequiredPR, ...] = ()
+    required_set_revision: int = 0
+    # "owner/name#N" of the PRs the queued fix round repairs; each is charged
+    # when the round is actually launched, not when the failure is observed.
+    repair_prs: tuple[str, ...] = ()
+    # The PR a review-feedback round repairs; feedback is not a CI attempt.
+    feedback_pr: str = ""
+    # Automated CI fixes spent on the single PR; feedback and resume never reset it.
+    ci_fix_attempts: int = 0
+    # The partial-merge outcome the operator was last asked about.
+    partial_incident: str = ""
+    # Durable send reservation: an ambiguous transport outcome is never replayed.
+    partial_delivery: str = ""
+    # Charged before spawning; an interrupted launch requires reconciliation.
+    repair_launch_reserved: bool = False
+    ci_repair_pending: bool = False  # failed verification wake awaiting repair admission
+    # Explicit operator exclusions survive discovery and bundle validation.
+    dropped_pr_repos: tuple[str, ...] = ()
 
     @property
     def continued_stage(self) -> Stage:
@@ -559,6 +601,9 @@ def _read(p: Path) -> TaskState | None:
                 path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
         else:
             raise ValueError(f"unrecognized operator_request kind {kind!r}")
+    d["repair_prs"] = tuple(d.get("repair_prs") or ())
+    d["dropped_pr_repos"] = tuple(d.get("dropped_pr_repos") or ())
+    d["required_prs"] = tuple(RequiredPR(**r) for r in d.get("required_prs") or ())
     d.pop("artifact", None)        # retired field (slice 24)
     # Retired fields: one implement session, no cursor and no ticket tracks.
     for retired in ("ticket_cursor", "ticket_tracks", "ticket_names",

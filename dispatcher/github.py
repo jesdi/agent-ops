@@ -8,7 +8,7 @@ import logging
 import shlex
 import subprocess
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from dispatcher import board
 from dispatcher.config import Project, Target, normalize_repo
@@ -76,19 +76,22 @@ class GitHubClient:
                 return ""
         return self._viewer_login
 
-    def pr_view(self, target: Target, pr_number: int) -> dict:
-        out = _run(["gh", "pr", "view", str(pr_number), "--repo", target.repo,
+    def pr_view(self, target: Target, pr_number: int, repo: str = "") -> dict:
+        out = _run(["gh", "pr", "view", str(pr_number), "--repo", repo or target.repo,
                     "--json",
                     "state,mergedAt,reviewDecision,reviews,comments,mergeable,headRefOid,headRefName"])
         return json.loads(out)
 
-    def ci_statuses(self, target: Target, head: str, branch: str) -> list[CIStatus]:
+    def ci_statuses(self, target: Target, head: str, branch: str,
+                    repo: str = "") -> list[CIStatus]:
         """PAT-compatible CI reads, isolated from PR lifecycle reads.
 
         Each source can fail independently; unreadable CI is warned about,
         never taken as evidence of success or allowed to hide a merge.
         """
         results: list[CIStatus] = []
+        if repo:
+            target = replace(target, repo=repo)
         if not head:
             return results
         for source in (self._workflow_statuses, self._commit_statuses):

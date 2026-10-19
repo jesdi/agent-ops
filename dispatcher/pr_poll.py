@@ -48,6 +48,17 @@ def _is_human(author: dict | None, self_login: str) -> bool:
         and not login.endswith("[bot]") and not a.get("is_bot", False)
 
 
+def check_status(ci_statuses: Sequence[CIStatus], last: str) -> str:
+    """The PR head's current CI state, independent of any cursor. Nothing read
+    keeps the last known state: an unread poll is never evidence of success."""
+    conclusions = {s.conclusion.upper() for s in ci_statuses}
+    if conclusions & _RED:
+        return "check-failed"
+    if "" in conclusions:
+        return "pending"
+    return "passing" if conclusions else last
+
+
 def classify(payload: dict, cursor: str, self_login: str,
              check_cursor: str = "", conflict_cursor: str = "",
              ci_statuses: Sequence[CIStatus] = ()) -> PollResult:

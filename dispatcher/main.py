@@ -32,7 +32,7 @@ from dispatcher.config import (Config, Target, apply_stored_models,
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
 from dispatcher import (answers, claims, sandbox_lifecycle, eventlog, execution_overrides, failures, intents, loops,
-                        messages, pr_poll, priority, queue_ops, relogin, state, tmux_migration,
+                        messages, pr_poll, priority, queue_ops, relogin, required_pr_commands, state, tmux_migration,
                         triage)
 from dispatcher.credential_service import configured_credentials
 from dispatcher.github import Candidate, GitHubClient
@@ -60,7 +60,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
                               WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
                               RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
-                              ScopeRefused, Stage, StageSignal, TaskBundle, TaskRepository, TaskState, active,
+                              CI_FIX_LIMIT, ScopeRefused, Stage, StageSignal, TaskBundle, TaskRepository, TaskState, active,
                               read_bundle, save_bundle, select_spec_repo, allocate_slot,
                               clear_session, clear_turn_markers, delete, has_waiting,
                               holds_slot, launch_entries, load,
@@ -673,6 +673,15 @@ def _repository_context(cfg: Config, task: TaskState) -> str:
             "Report spec artifacts relative to the spec/plan checkout.")
 
 
+def _repair_identity(task: TaskState, stage: Stage) -> dict:
+    """A repair round names the repository-qualified PR it fixes, not the origin's."""
+    key = (task.repair_prs or (task.feedback_pr,))[0]
+    if stage is not Stage.ADDRESS_REVIEW or not key:
+        return {}
+    repo, _, number = key.partition("#")
+    return {"repo": repo, "pr_number": number}
+
+
 def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                   launch: Launch, spec_path: str = "",
                   message: str = "") -> TaskState:
@@ -694,6 +703,7 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
         labels=", ".join(task.labels),
         tracks=tracks_text(_policy(cfg, target)),
     )
+    ctx.update(_repair_identity(task, stage))
     planning_root = _session_plan_checkout(cfg, task)
     if planning_root != task.worktree:
         ctx["spec_path"] = str(Path(planning_root) / ctx["spec_path"]) if ctx["spec_path"] else ""
@@ -705,6 +715,8 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     if stage is Stage.SPEC and target.sandbox:
         prompt += "\n\nProject repository members: " + ", ".join(
             sorted(_project_members(cfg).get(task.target, ())))
+    if stage is Stage.ADDRESS_REVIEW and len(task.repair_prs) > 1:
+        prompt += "\n\nPull requests to repair: " + ", ".join(task.repair_prs)
     if message:
         prompt = f"{prompt}\n\n{message}"
     block, drained = _drain(cfg, task.target, task.issue, task.repo)
@@ -718,12 +730,9 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                               second=launch.second, **_repo_kw(task))
     messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained,
                             repo=task.repo)
-    # A gated task's plan session runs at the gate, so its `done` is the approval.
-    kept = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and task.gated else stage
-    task = replace(task, stage=kept, spec_path=spec_path or task.spec_path,
-                   gate_respawn_pending=(task.gate_respawn_pending
-                                         and kept is Stage.AWAITING_PLAN_REVIEW),
-                   operator_request=None, **NO_POKES,
+    task = replace(task, **_launched_stage(task, stage),
+                   spec_path=spec_path or task.spec_path,
+                   operator_request=None, repair_launch_reserved=False, **NO_POKES,
                    updated_at=_now(),
                    picks={**task.picks, pick_key(stage.value): str(entry)},
                    implement_providers=_with_implement_provider(task, stage, entry))
@@ -731,6 +740,15 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
                           issue=task.issue, repo=task.repo, stage=stage.value, model=str(entry))
     return task
+
+
+def _launched_stage(task: TaskState, stage: Stage) -> dict[str, object]:
+    """The stage a launch records. A gated task's plan session runs at the
+    gate, so its `done` is the approval."""
+    kept = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and task.gated else stage
+    return {"stage": kept,
+            "gate_respawn_pending": (task.gate_respawn_pending
+                                     and kept is Stage.AWAITING_PLAN_REVIEW)}
 
 
 def _continue_or_restart(cfg: Config, deps: Deps, target: Target,
@@ -1139,6 +1157,9 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
                 park_exhausted=lambda t, note: _park_exhausted(cfg, deps, run_target, t, note))
             if parked:
                 continue
+            if task.stage is Stage.ADDRESS_REVIEW:
+                task = replace(task, ci_repair_pending=True, attention="check-failed",
+                               repair_prs=task.repair_prs or tuple(filter(None, (task.feedback_pr,))))
         reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
                  f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
         _queue_message(cfg, task.target, task.issue, reply, "dispatcher",
@@ -1184,6 +1205,9 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
         if task.target != target.name or task.stage is not Stage.PR_OPEN:
             continue
         run_target = _task_target(cfg, target, task)
+        task = _discover_required(cfg, deps, run_target, task)
+        if _poll_bundle(cfg, deps, run_target, task, dry_run):
+            continue
         try:
             polled = _poll_pr(cfg, deps, run_target, task)
             if polled is None:
@@ -1233,6 +1257,278 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
             _pr_attention(cfg, deps, run_target, task, res)
 
 
+def _poll_bundle(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                 dry_run: bool) -> bool:
+    """True when the task is bundled over several repositories and so never takes
+    the single-PR poll. A bundle whose PRs are not all discoverable yet polls
+    nothing: no one PR may finish the task."""
+    if task.required_prs:
+        _poll_required(cfg, deps, target, task, dry_run)
+    return bool(task.required_prs) or _is_bundled(cfg, task)
+
+
+def _is_bundled(cfg: Config, task: TaskState) -> bool:
+    bundle = read_bundle(cfg.state_dir, task.target, task.issue, repo=task.repo)
+    return bundle is not None and len(bundle.repositories) >= 2
+
+
+def _find_prs(deps: Deps, target: Target, repositories) -> list:
+    """A PR per repository, or [] when any has none yet or cannot be looked up."""
+    found = []
+    for r in repositories:
+        try:
+            n = deps.github.pr_number_for_branch(replace(target, repo=r.repo), r.branch)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            print(f"[warn] PR lookup failed in {r.repo}: {exc}", file=sys.stderr)
+            return []
+        if not n:
+            return []
+        found.append(state.RequiredPR(r.repo, n))
+    return found
+
+
+def _discover_required(cfg: Config, deps: Deps, target: Target,
+                       task: TaskState) -> TaskState:
+    """A task bundled over several repositories needs one PR per repository:
+    the set is built from the bundle and re-built when the scope widens. It
+    grows only once every missing repository has its PR (a half-known set
+    would let the task finish early); a single-repository task has no bundle
+    and keeps the one-PR poll."""
+    bundle = read_bundle(cfg.state_dir, task.target, task.issue, repo=task.repo)
+    if not _is_bundled(cfg, task):
+        return task
+    held = {p.repo for p in task.required_prs} | set(task.dropped_pr_repos)
+    found = _find_prs(deps, target, [r for r in bundle.repositories if r.repo not in held])
+    if not found:
+        return task
+    task = replace(task, required_prs=task.required_prs + tuple(
+                       _inherit_scalar_pr(task, pr) for pr in found),
+                   required_set_revision=_discovered_revision(task, bundle), updated_at=_now())
+    save(cfg.state_dir, task)
+    return task
+
+
+def _discovered_revision(task: TaskState, bundle: TaskBundle) -> int:
+    previous = task.required_set_revision + bool(task.required_prs)
+    return max(previous, bundle.scope_revision)
+
+
+def _inherit_scalar_pr(task: TaskState, pr: state.RequiredPR) -> state.RequiredPR:
+    if (pr.repo, pr.number) != (task.repo, task.pr_number):
+        return pr
+    return replace(pr, ci_fix_attempts=task.ci_fix_attempts,
+                   check_cursor=task.check_cursor, conflict_cursor=task.conflict_cursor,
+                   feedback_cursor=task.feedback_cursor, feedback_rounds=task.review_rounds)
+
+
+def _observe_required(deps: Deps, target: Target, task: TaskState, login: str,
+                      pr: state.RequiredPR):
+    """One required PR read on its own: (pr with its head and merge state,
+    classification). None when unreadable: never evidence of a merge."""
+    statuses = ()
+    try:
+        payload = deps.github.pr_view(target, pr.number, repo=pr.repo)
+        args = dict(check_cursor=pr.check_cursor, conflict_cursor=pr.conflict_cursor)
+        res = pr_poll.classify(payload, pr.feedback_cursor, login, **args)
+        if (res.kind in ("quiet", "conflict") and not task.park
+                and not task.feedback_pending):
+            statuses = deps.github.ci_statuses(
+                target, payload.get("headRefOid") or "",
+                payload.get("headRefName") or "", repo=pr.repo)
+            res = pr_poll.classify(payload, pr.feedback_cursor, login,
+                                   ci_statuses=statuses, **args)
+    except Exception as exc:     # an unreadable PR keeps its last known state
+        print(f"[warn] PR poll failed for {pr.repo}#{pr.number}: {exc}", file=sys.stderr)
+        return None
+    # The check status outlives polls that skip CI (pending feedback, a park).
+    pr = replace(pr, head=str(payload.get("headRefOid") or pr.head), outcome=res.kind,
+                 checks=pr_poll.check_status(statuses, pr.checks),
+                 state=res.kind if res.kind in ("merged", "closed") else "open")
+    return pr, res
+
+
+def _poll_required(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                   dry_run: bool = False) -> None:
+    """A task with a required-PR set: every PR is read on its own cursors, the
+    task finishes only when all merged, and a PR lost after another merged
+    parks it for the operator (nothing is reverted or dropped)."""
+    login = deps.github.viewer_login()
+    # Closed PRs are read again: a reopened one must be able to recover.
+    seen = {(pr.repo, pr.number): _observe_required(deps, target, task, login, pr)
+            for pr in task.required_prs if pr.state != "merged"}
+    unreadable = any(v is None for v in seen.values())
+    revision = task.required_set_revision
+    task = replace(task, required_prs=tuple(
+        (seen.get((pr.repo, pr.number)) or (pr,))[0] for pr in task.required_prs))
+    task = _reconcile_pending_repairs(task)
+    save(cfg.state_dir, task)
+    _settle_required(cfg, deps, target, task, [r for r in seen.values() if r], dry_run,
+                     unreadable=unreadable, validated_revision=revision)
+
+
+def _reconcile_pending_repairs(task: TaskState) -> TaskState:
+    """Drop queued work for PRs that completed while execution was full."""
+    if not task.feedback_pending:
+        return task
+    open_prs = {f"{p.repo}#{p.number}" for p in task.required_prs if p.state == "open"}
+    repairs = tuple(key for key in task.repair_prs if key in open_prs)
+    feedback = task.feedback_pr if task.feedback_pr in open_prs else ""
+    return replace(task, repair_prs=repairs, feedback_pr=feedback,
+                   feedback_pending=bool(repairs or feedback))
+
+
+def _settle_required(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                     results: list, dry_run: bool, *, unreadable: bool = False,
+                     validated_revision: int = 0) -> None:
+    states = {p.state for p in task.required_prs}
+    if states == {"merged"}:
+        if _set_still_valid(cfg, task, validated_revision):
+            _finish_required(cfg, deps, target, task, dry_run)
+    elif "closed" in states:
+        _required_pr_lost(cfg, deps, target, task, "merged" in states, unreadable)
+    elif not task.park and not task.feedback_pending:
+        _required_attention(cfg, deps, target, task, results)
+
+
+def _set_still_valid(cfg: Config, task: TaskState, validated_revision: int) -> bool:
+    """Completion and validation name one revision: the set must still be the
+    one that was read, and cover every repository of the bundle."""
+    current = load(cfg.state_dir, task.target, task.issue, repo=task.repo)
+    return ((current is None or current.required_set_revision == validated_revision)
+            and _required_set_covers_bundle(cfg, task))
+
+
+def _required_set_covers_bundle(cfg: Config, task: TaskState) -> bool:
+    bundle = read_bundle(cfg.state_dir, task.target, task.issue, repo=task.repo)
+    return bundle is None or ({r.repo for r in bundle.repositories} - set(task.dropped_pr_repos)) <= {
+        p.repo for p in task.required_prs}
+
+
+def _partial_incident(task: TaskState) -> str:
+    return f"{task.required_set_revision}|" + ";".join(sorted(
+        f"{p.repo}#{p.number}:{p.state}" for p in task.required_prs))
+
+
+def _finish_required(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                     dry_run: bool) -> None:
+    last = task.required_prs[-1]
+    try:
+        _finish_merged(cfg, deps, target, task, dry_run,
+                       url=f"https://github.com/{last.repo}/pull/{last.number}")
+    except (subprocess.CalledProcessError, OSError) as exc:
+        print(f"[warn] _finish_merged failed for #{task.issue}: {exc}", file=sys.stderr)
+
+
+def _required_pr_lost(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                      partial: bool, unreadable: bool = False) -> None:
+    """A required PR closed unmerged. After another merged, the task asks for
+    guidance once per incident (whatever else parked it); otherwise it fails,
+    but never while another PR could not be read: it may have merged."""
+    if partial:
+        if task.partial_incident != _partial_incident(task):
+            _park_partial_merge(cfg, deps, target, task)
+        elif task.partial_delivery == "sending":
+            # Restart after a reserved send: delivery may have happened. The
+            # durable console request remains the reply route; do not resend.
+            save(cfg.state_dir, replace(task, partial_delivery="unknown"))
+        return
+    if unreadable:
+        return
+    _end_session(cfg, deps, task.target, task.issue, task.repo)
+    save(cfg.state_dir, replace(task, stage=Stage.FAILED, operator_request=None,
+                                updated_at=_now()))
+    lost = next(p for p in task.required_prs if p.state == "closed")
+    eventlog.append_event(cfg.state_dir, "pr-closed", target=target.name,
+                          issue=task.issue, repo=task.repo, stage=Stage.PR_OPEN.value,
+                          detail=f"PR {lost.repo}#{lost.number} closed unmerged")
+    _notify(deps, target, task, "pr_closed",
+            f"PR {lost.repo}#{lost.number}. Worktree preserved for autopsy.")
+
+
+def _park_partial_merge(cfg: Config, deps: Deps, target: Target, task: TaskState) -> None:
+    note = "; ".join(f"{p.repo}#{p.number} {p.state}" for p in task.required_prs)
+    _end_session(cfg, deps, task.target, task.issue, task.repo)
+    task = replace(task, park=PARK_HUMAN, park_msg_id=0, park_note=note,
+                   park_reason=WHY_DECISION, slot=NO_SLOT, operator_request=None,
+                   partial_incident=_partial_incident(task), partial_delivery="sending",
+                   updated_at=_now())
+    # Persist the request and stable incident identity before external delivery.
+    # Telegram has no idempotency key: an ambiguous send remains visible in the
+    # console rather than producing a second message/reply target after restart.
+    save(cfg.state_dir, task)
+    msg_id = deps.notifier.send(
+        "partial_merge_guidance", issue=task.issue, repo=task.repo, title=task.title,
+        url=_url(target, task.issue), target=target.name, note=note)
+    save(cfg.state_dir, replace(task, park_msg_id=msg_id,
+                                partial_delivery="delivered" if msg_id else "unknown"))
+    eventlog.append_event(cfg.state_dir, "parked", target=target.name, issue=task.issue,
+                          repo=task.repo, stage=task.stage.value,
+                          detail="partial merge: " + note)
+
+
+def _swap_required(task: TaskState, pr: state.RequiredPR, **kw) -> TaskState:
+    return replace(task, required_prs=tuple(
+        replace(p, **kw) if (p.repo, p.number) == (pr.repo, pr.number) else p
+        for p in task.required_prs))
+
+
+def _required_feedback(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                       pr: state.RequiredPR, res) -> None:
+    """Review feedback on a required PR queues a round, up to the review cap per PR."""
+    if pr.feedback_rounds >= cfg.loop_caps.review:
+        _park_exhausted(cfg, deps, target, task,
+                        f"review-feedback limit of {cfg.loop_caps.review} rounds "
+                        f"reached for {pr.repo}#{pr.number}")
+        return
+    task = replace(_swap_required(loops.reset(task, ResetCause.PR_CYCLE_STARTED), pr,
+                                  feedback_cursor=res.latest_ts,
+                                  feedback_rounds=pr.feedback_rounds + 1),
+                   feedback_pending=True, attention="feedback", repair_prs=(),
+                   feedback_pr=f"{pr.repo}#{pr.number}", updated_at=_now())
+    save(cfg.state_dir, task)
+    eventlog.append_event(cfg.state_dir, "pr-feedback", target=target.name,
+                          issue=task.issue, repo=task.repo,
+                          stage=Stage.PR_OPEN.value, detail=f"{pr.repo}#{pr.number}")
+    _notify(deps, target, task, "pr_feedback",
+            f"PR {pr.repo}#{pr.number}, newest feedback {res.latest_ts}")
+
+
+def _required_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                        results: list) -> None:
+    """Feedback or a red check on an open required PR queues one fix round."""
+    for pr, res in results:
+        if res.kind == "feedback":
+            _required_feedback(cfg, deps, target, task, pr, res)
+            return
+    red = [(pr, res) for pr, res in results if res.kind in ("check-failed", "conflict")]
+    if red:
+        _required_ci_round(cfg, deps, target, task, red)
+
+
+def _required_ci_round(cfg: Config, deps: Deps, target: Target, task: TaskState,
+                       red: list) -> None:
+    """Each red PR's cursor advances and it is queued for repair; the attempt
+    is charged when the round launches (_charge_repairs). A PR already at the
+    limit parks the task instead."""
+    spent = [pr for pr, _ in red if pr.ci_fix_attempts >= CI_FIX_LIMIT]
+    if spent:
+        _park_exhausted(cfg, deps, target, task, f"CI-fix limit of {CI_FIX_LIMIT} attempts "
+                        "reached for " + ", ".join(f"{p.repo}#{p.number}" for p in spent))
+        return
+    for pr, res in red:
+        cursor = "check_cursor" if res.kind == "check-failed" else "conflict_cursor"
+        task = _swap_required(task, pr, **{cursor: res.latest_ts})
+    what = ", ".join(f"{res.kind} on {pr.repo}#{pr.number}" for pr, res in red)
+    save(cfg.state_dir, replace(task, feedback_pending=True, attention=red[0][1].kind,
+                                repair_prs=tuple(f"{pr.repo}#{pr.number}" for pr, _ in red),
+                                feedback_pr="",
+                                updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "pr-attention", target=target.name,
+                          issue=task.issue, repo=task.repo, stage=Stage.PR_OPEN.value,
+                          detail=what)
+    _notify(deps, target, task, "pr_attention", what)
+
+
 def _pr_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
                   res: "pr_poll.PollResult") -> None:
     """A red check or a conflict on the open PR: one round of the ci loop,
@@ -1241,8 +1537,14 @@ def _pr_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
     cursor = ({"check-failed": dict(check_cursor=res.latest_ts),
                "conflict": dict(conflict_cursor=res.latest_ts)}[res.kind])
     task = replace(task, **cursor)          # advance cursor FIRST
+    # At most CI_FIX_LIMIT automated fixes per PR, whatever the target configures.
+    caps = replace(cfg.loop_caps, ci=min(cfg.loop_caps.ci, CI_FIX_LIMIT))
+    if task.ci_fix_attempts >= CI_FIX_LIMIT:
+        _park_exhausted(cfg, deps, target, task, f"CI-fix limit of {CI_FIX_LIMIT} "
+                        f"attempts reached for PR #{task.pr_number}")
+        return
     dec = loops.evaluate(task, loops.PRAttention(f"{res.kind} on PR #{task.pr_number}"),
-                         cfg.loop_caps)
+                         caps)
     task, parked = _apply_loop_decision(
         cfg, deps, target, task, dec,
         park_exhausted=lambda t, note: _park_exhausted(cfg, deps, target, t, note))
@@ -1258,7 +1560,7 @@ def _pr_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
 
 
 def _finish_merged(cfg: Config, deps: Deps, target: Target,
-                   task: TaskState, dry_run: bool = False) -> None:
+                   task: TaskState, dry_run: bool = False, url: str = "") -> None:
     """Ordered so a mid-sequence gh failure retries next pass (a merged PR
     still reads merged): board first (the raising step), then teardown
     (best-effort by construction), then the state flip that stops polling."""
@@ -1280,7 +1582,7 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
                           issue=task.issue, repo=task.repo, stage=Stage.DONE.value,
                           detail=f"PR #{task.pr_number}")
     _notify(deps, target, task, "task_done",
-            f"https://github.com/{target.repo}/pull/{task.pr_number}")
+            url or f"https://github.com/{target.repo}/pull/{task.pr_number}")
 
 
 def _wake_blocked_path(cfg: Config, target: str, issue: int, repo: str = "") -> Path:
@@ -1455,6 +1757,8 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
     )
     for task in woken:
         target = _task_target(cfg, targets[task.target], task)
+        if task.ci_repair_pending and _repair_budget_exhausted(cfg, deps, target, task):
+            continue
         held = _wake_held(cfg, deps, task)
         if held:
             _mark_wake_blocked(cfg, target, task, held)
@@ -1471,12 +1775,25 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
         if task is None or not _wake_sandbox(cfg, deps, target, task, dry_run):
             continue
         try:
+            task = _reserve_ci_repair(cfg, deps, task)
             _resume_one(cfg, deps, target, task, launch)
             # The wake's launch is the next launch: a stored one-shot
             # override is used up with it, whatever model the wake ran on.
             _consume_execution_choice(cfg, task.target, task.issue, task.repo)
         except Exception:
             _fail_task_crash(cfg, deps, target, task, dry_run)
+
+
+def _reserve_ci_repair(cfg: Config, deps: Deps, task: TaskState) -> TaskState:
+    if not task.ci_repair_pending:
+        return task
+    # End the old execution before reserving: interruption recovery must
+    # only adopt a session from this new repair attempt.
+    _end_session(cfg, deps, task.target, task.issue, task.repo)
+    task = replace(_charge_repairs(task), ci_repair_pending=False,
+                   repair_launch_reserved=True, park="")
+    save(cfg.state_dir, task)
+    return task
 
 
 def _wake_held(cfg: Config, deps: Deps, task: TaskState) -> str:
@@ -1592,6 +1909,7 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
     task, detail = _continue_or_restart(cfg, deps, target, task, launch)
     _clear_wake_blocked(cfg, task.target, task.issue, task.repo)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
+                                repair_launch_reserved=False,
                                 park_msg_id=0, park_note="",
                                 resume_model_override="",
                                 resume_bypass_usage=False,
@@ -1730,14 +2048,43 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         # _cursor_now(), not _now(): GitHub timestamps are second-granular
         # and pr_poll's trigger is a strict `>`, so the cursor has to be
         # quantised to seconds or a comment from the spawn second is lost.
-        task = replace(task, slot=slot, feedback_pending=False,
-                       feedback_cursor=_cursor_now())
-        # The implement session is still alive at pr-open (the pr-open
-        # transition never ends it). End first so _launch doesn't type
-        # the podman command into the live session's input box.
+        # Retire the implement session before recording the repair reservation:
+        # recovery must never mistake that older session for a launched repair.
         _end_session(cfg, deps, task.target, task.issue, task.repo)
+        task = replace(_charge_repairs(task), slot=slot, feedback_pending=False,
+                       feedback_cursor=_cursor_now(), stage=Stage.ADDRESS_REVIEW,
+                       picks={**task.picks, pick_key(Stage.ADDRESS_REVIEW.value): str(launch.entry)},
+                       repair_launch_reserved=True)
+        save(cfg.state_dir, task)
         _spawn_stage(cfg, deps, target, task, launch)
         _consume_execution_choice(cfg, task.target, task.issue, task.repo)
+
+
+def _charge_repairs(task: TaskState) -> TaskState:
+    """The fix round is launching: each PR it repairs spends one CI-fix attempt."""
+    if not task.required_prs and task.attention in ("check-failed", "conflict"):
+        return replace(task, ci_fix_attempts=task.ci_fix_attempts + 1)
+    for key in task.repair_prs:
+        repo, _, number = key.partition("#")
+        pr = next((p for p in task.required_prs if (p.repo, str(p.number)) == (repo, number)), None)
+        if pr:
+            task = _swap_required(task, pr, ci_fix_attempts=pr.ci_fix_attempts + 1)
+    return task
+
+
+def _repair_budget_exhausted(cfg: Config, deps: Deps, target: Target,
+                             task: TaskState) -> bool:
+    """Automatic verification retries share the lifetime PR repair allowance."""
+    spent = [f"{p.repo}#{p.number}" for p in task.required_prs
+             if f"{p.repo}#{p.number}" in task.repair_prs
+             and p.ci_fix_attempts >= CI_FIX_LIMIT]
+    if not task.required_prs and task.ci_fix_attempts >= CI_FIX_LIMIT:
+        spent = [f"{task.repo}#{task.pr_number}"]
+    if not spent:
+        return False
+    _park_exhausted(cfg, deps, target, replace(task, ci_repair_pending=False),
+                    f"CI-fix limit of {CI_FIX_LIMIT} attempts reached for " + ", ".join(spent))
+    return True
 
 
 @dataclass
@@ -2108,8 +2455,22 @@ def _park_stranded(cfg: Config, deps: Deps, target: Target, task: TaskState,
                     reason=WHY_CONFIG)
 
 
+def _reconcile_repair_launch(cfg: Config, deps: Deps, target: Target,
+                             task: TaskState) -> None:
+    if deps.sessions.is_alive(task.target, task.issue, **_repo_kw(task)):
+        save(cfg.state_dir, replace(task, repair_launch_reserved=False))
+        return
+    # A spawn may have succeeded before the process died. Never start another
+    # automated attempt from this reservation. The operator can guide recovery.
+    _park_exhausted(cfg, deps, target, replace(task, repair_launch_reserved=False),
+                    "Repair launch interrupted; attempt reserved. Confirm recovery before resuming.")
+
+
 def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                 admit: Admit, order: Order, dry_run: bool = False) -> None:
+    if task.repair_launch_reserved:
+        _reconcile_repair_launch(cfg, deps, target, task)
+        return
     signal = read_stage_signal(task.worktree)
     policy = policy_for(cfg, target)
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
@@ -2838,6 +3199,16 @@ def _carry_to_spec_repo(task: TaskState, owner: TaskRepository) -> None:
               file=sys.stderr)
 
 
+def _apply_required_pr_intent(cfg: Config, deps: Deps, by_name: dict,
+                               task: TaskState | None, intent: intents.Intent) -> None:
+    if task is None:
+        raise ValueError("required-PR command needs an existing task")
+    target = _task_target(cfg, by_name[task.target], task)
+    changed = required_pr_commands.change(deps.github, target, task,
+                                          intent.action, intent.payload)
+    save(cfg.state_dir, changed)
+
+
 def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
                       intent: intents.Intent) -> None:
     """Route one operator intent to its action-specific handler."""
@@ -2857,6 +3228,8 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         _apply_resume_intent(cfg, by_name, task, intent)
     elif intent.action == "answers":
         _apply_answers_intent(cfg, deps, task, intent)
+    elif intent.action in ("replace-pr", "drop-pr"):
+        _apply_required_pr_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "spec-repo":
         _apply_spec_repo_intent(cfg, task, intent)
     else:

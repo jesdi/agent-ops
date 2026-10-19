@@ -101,6 +101,18 @@ function LoadedTaskView({ target, repo, issue, detail, intents, actions,
       {detail.track_when && (
         <p data-testid="track-when" className="text-xs text-ink-muted">{detail.track_when}</p>
       )}
+      {detail.required_prs.length > 0 && (
+        <ul data-testid="required-prs" className="flex flex-col gap-1 text-sm">
+          {detail.required_prs.map((pr) => (
+            <li key={`${pr.repo}#${pr.number}`} className="flex flex-wrap gap-2">
+              <a href={pr.url} className="font-mono underline">{pr.repo}#{pr.number}</a>
+              <span>{pr.state === 'closed' ? 'closed without merge' : pr.state}</span>
+              {pr.checks && <span className="text-ink-muted">{pr.checks}</span>}
+              <span className="text-ink-muted">CI fixes {pr.ci_fix_attempts}/3</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <StageTimeline timeline={detail.timeline} />
 
       <p className="break-all font-mono text-xs text-ink-muted">{worktree}</p>

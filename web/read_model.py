@@ -413,6 +413,17 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                                       if not any(alt.admitted for alt in a.alternatives)}))
 
 
+class RequiredPRView(BaseModel):
+    repo: str
+    number: int
+    url: str
+    state: str          # open | merged | closed (closed without merge)
+    outcome: str        # the last poll's review/CI classification
+    checks: str         # the last CI read: check-failed | pending | passing | "" unread
+    ci_fix_attempts: int
+    feedback_rounds: int
+
+
 class TaskDetail(BaseModel):
     # The page's identity: with the target and issue number, the repository
     # ("" = a legacy record) tells two issues that share a number apart.
@@ -430,6 +441,7 @@ class TaskDetail(BaseModel):
     timeline: list[TimelineEntry]
     track_when: str = ""
     implement_progress: str | None = None
+    required_prs: list[RequiredPRView] = []
 
 
 PROGRESS_MAX_CHARS = 200  # the session writes this text: bound what the page shows
@@ -473,7 +485,11 @@ def task_detail(t: TaskState, *, model: str,
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
         timeline=stage_timeline(events, t.target, t.issue, now=now),
         track_when=track_when,
-        implement_progress=_implement_progress(t, signal))
+        implement_progress=_implement_progress(t, signal),
+        required_prs=[RequiredPRView(
+            repo=p.repo, number=p.number, url=f"https://github.com/{p.repo}/pull/{p.number}",
+            state=p.state, outcome=p.outcome, checks=p.checks, ci_fix_attempts=p.ci_fix_attempts,
+            feedback_rounds=p.feedback_rounds) for p in t.required_prs])
 
 
 class IssueDescription(BaseModel):

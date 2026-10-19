@@ -1004,6 +1004,25 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** RequiredPRView */
+        RequiredPRView: {
+            /** Checks */
+            checks: string;
+            /** Ci Fix Attempts */
+            ci_fix_attempts: number;
+            /** Feedback Rounds */
+            feedback_rounds: number;
+            /** Number */
+            number: number;
+            /** Outcome */
+            outcome: string;
+            /** Repo */
+            repo: string;
+            /** State */
+            state: string;
+            /** Url */
+            url: string;
+        };
         /** ResumeReq */
         ResumeReq: {
             /**
@@ -1146,6 +1165,11 @@ export interface components {
             pane_tail: string;
             /** Repo */
             repo: string;
+            /**
+             * Required Prs
+             * @default []
+             */
+            required_prs: components["schemas"]["RequiredPRView"][];
             /** Session Alive */
             session_alive: boolean;
             /** Timeline */
