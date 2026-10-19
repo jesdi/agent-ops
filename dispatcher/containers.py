@@ -262,7 +262,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 args: str, effort: str = "",
                 second: Entry | None = None, clone: str = "",
                 issue: int | None = None, scoped_token: bool = False,
-                secret_names: tuple[str, ...] = ()) -> str:
+                secret_names: tuple[str, ...] = (), sandbox_plan=None) -> str:
     """The session's shell command, resolved from its qualified model ID.
     An unknown provider raises before anything runs.
     A granted `second` model (models.second_model) also gets its runtime's
@@ -289,6 +289,14 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     state = _state_dir()
     branch = task_branch(worktree, name, issue)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
+    sandbox_flags = ""
+    container_name = name
+    if sandbox_plan is not None:
+        agent = next(c for c in sandbox_plan.containers if c.role == "agent")
+        container_name, memory, cpus = agent.name, str(agent.memory_bytes), str(agent.cpus)
+        clone = ""
+        sandbox_flags = shlex.join(["--network", agent.network,
+                                    "--cgroup-parent", agent.group]) + " "
     clone_mount = (_mount(_host_path("clone", clone), clone) + " ") if clone else ""
     home = str(Path.home())
     gh_login = _mount(f'{home}/.config/gh', '/root/.config/gh', 'ro') + " "
@@ -307,8 +315,8 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         pass
     secret_env = "".join(f"-e {shlex.quote(n)} " for n in secret_names)
     return (
-        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {_name_word(name)} "
-        f"--memory {shlex.quote(memory)} --cpus {shlex.quote(cpus)} "
+        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {_name_word(container_name)} "
+        f"--memory {shlex.quote(memory)} --cpus {shlex.quote(cpus)} {sandbox_flags}"
         f"{shlex.join(_runtime_args(runtime, name) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's
         # socket from AGENT_OPS_STATE_DIR — without the wait-dir mount its

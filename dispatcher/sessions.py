@@ -56,11 +56,12 @@ def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
                second: Entry | None = None, clone: str = "",
                repo: str = "", scoped_token: bool = False,
-               secret_names: tuple[str, ...] = ()) -> str:
+               secret_names: tuple[str, ...] = (), sandbox_plan=None) -> str:
     return containers.session_cmd(session_name(target, issue, repo), worktree, memory,
                                   cpus, model, args, effort=effort,
                                   second=second, clone=clone, issue=issue,
-                                  scoped_token=scoped_token, secret_names=secret_names)
+                                  scoped_token=scoped_token, secret_names=secret_names,
+                                  **({"sandbox_plan": sandbox_plan} if sandbox_plan else {}))
 
 
 # The deployed checkout this module is imported from.
@@ -81,8 +82,9 @@ class Sessions:
     def __init__(self, dry_run: bool = False, memory: str = "2g",
                  cpus: str = "2", state_dir: str | Path | None = None,
                  clones: Mapping[str, str] | None = None,
-                 credentials=None):
+                 credentials=None, sandbox_clones=()):
         # ExecutionCredentials: when set, every launch runs on a scoped App token.
+        self.sandbox_clones = frozenset(sandbox_clones)
         self.credentials = credentials
         self.dry_run = dry_run
         self.memory = memory
@@ -161,10 +163,8 @@ class Sessions:
             credential = self.credentials.refresh(name, repo or target, "task")
             self._deliver_token(name, repo or target, credential)
             token_env = {"GH_TOKEN": credential.token}
-        cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
-                         model, args, effort=effort,
-                         second=second, clone=clone, repo=repo,
-                         scoped_token=scoped, secret_names=tuple(project_env))
+        cmd = self._launch_command(target, issue, worktree, model, args, effort,
+                                   second, repo, clone, scoped, tuple(project_env))
         workspace.install_stop_hook(worktree)
         if repo and self.state_dir is not None:
             workspace.bind_execution(worktree, repo, issue_execution_token(
@@ -186,6 +186,36 @@ class Sessions:
                                " — server down or out of step with the CLI?")
         if not tab.run(cmd):
             raise RuntimeError(f"herdr refused the launch command for {name}")
+
+    def _launch_command(self, target, issue, worktree, model, args, effort,
+                        second, repo, clone, scoped, secret_names):
+        sandbox, plan = self._task_sandbox(clone, issue, worktree)
+        if sandbox is not None:
+            result = sandbox.resume(plan.ref)
+            if not result.ready:
+                raise RuntimeError(f"sandbox resume failed: {result.failure}")
+        cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
+                         model, args, effort=effort, second=second, clone=clone, repo=repo,
+                         scoped_token=scoped, secret_names=secret_names,
+                         **({"sandbox_plan": plan} if plan else {}))
+        if sandbox is not None:
+            from dispatcher.sandbox_runtime import session_command
+            cmd = session_command(sandbox, plan.ref, cmd)
+        return cmd
+
+    def _task_sandbox(self, clone, issue, worktree=None):
+        from dispatcher.sandbox_runtime import execution_ref, for_clone
+
+        sandbox = for_clone(clone)
+        try:
+            plan = sandbox._plan_for(execution_ref(clone, issue))
+        except FileNotFoundError:
+            if clone in self.sandbox_clones:
+                raise RuntimeError("task sandbox has not been prepared")
+            return None, None  # an existing legacy session may finish safely
+        if worktree is not None and Path(plan.checkout).resolve() != Path(worktree).resolve():
+            raise RuntimeError("session checkout differs from its owned sandbox")
+        return sandbox, plan
 
     def _deliver_token(self, name: str, repo: str, credential) -> None:
         """Write the session's current token where its container reads it
@@ -406,4 +436,9 @@ class Sessions:
         for name in dict.fromkeys(names):
             subprocess.run(["podman", "rm", "-f", name],
                            capture_output=True, timeout=60)
+        clone = self.clones.get(repo) or self.clones.get(target)
+        if clone:
+            sandbox, plan = self._task_sandbox(clone, issue)
+            if sandbox is not None:
+                sandbox.park(plan.ref)
         self.forget_status(target, issue, repo)

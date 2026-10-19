@@ -2815,7 +2815,9 @@ def main() -> None:
                 credentials=credentials,
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
                                   cpus=cfg.session_cpus, state_dir=cfg.state_dir,
-                                  clones=_clone_map(cfg), credentials=credentials),
+                                  clones=_clone_map(cfg), credentials=credentials,
+                                  sandbox_clones=[r.clone_path for p in cfg.projects
+                                                  for r in p.repositories]),
                 notifier=Notifier(dry_run=args.dry_run,
                                   console_url=cfg.console_url,
                                   multi_target=len(cfg.targets) > 1))

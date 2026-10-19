@@ -1,6 +1,7 @@
 """Load targets.yaml into typed config objects."""
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -37,6 +38,10 @@ class Target:
     status_wont_do_option_id: str = ""  # "" = cancel never touches the board
     max_active: int | None = None  # None = uncapped; else 1 <= n <= capacity, validated at load
     models: ModelPolicy | None = None  # None = inherit the global policy
+    sandbox: bool = False  # legacy targets drain through their original runtime
+    compose_services: tuple[str, ...] = ()
+    sandbox_memory: int = 2 << 30
+    sandbox_cpus: float = 2
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,13 @@ class ProjectRepository:
     status_wont_do_option_id: str = ""
     max_active: int | None = None
     models: ModelPolicy | None = None
+    compose_services: tuple[str, ...] = ()
+    sandbox_memory: int = 2 << 30
+    sandbox_cpus: float = 2
+
+    @property
+    def sandbox(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True)
@@ -167,8 +179,27 @@ def _pace(raw: dict) -> PaceConfig:
     return pace
 
 
+def _sandbox_config(fields):
+    services = fields.get("compose_services", ())
+    if not isinstance(services, (list, tuple)):
+        raise ValueError("compose_services must be a list of service names")
+    if any(not isinstance(name, str) or not name for name in services):
+        raise ValueError("compose_services must contain nonempty service names")
+    fields["compose_services"] = tuple(dict.fromkeys(services))
+    for key in ("sandbox_memory", "sandbox_cpus"):
+        _check_sandbox_quantity(key, fields.get(key, 1))
+
+
+def _check_sandbox_quantity(key, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a positive finite number")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{key} must be a positive finite number")
+
+
 def _target(raw: dict, capacity: int) -> Target:
     fields = dict(raw)
+    _sandbox_config(fields)
     has_models = "models" in fields
     models = fields.pop("models", None)
     name = fields.get("name")
@@ -222,6 +253,7 @@ def _check_repository_fields(fields: dict, where: str) -> None:
 
 def _project_repository(raw: dict, project_key: str) -> ProjectRepository:
     fields = dict(raw)
+    _sandbox_config(fields)
     has_models = "models" in fields
     models = fields.pop("models", None)
     where = f"project {project_key!r}: repository {fields.get('repo')!r}"
@@ -389,7 +421,9 @@ def project_target(p: Project, repo: str = "") -> Target:
         boost_field_id=r.boost_field_id,
         status_done_option_id=r.status_done_option_id,
         status_wont_do_option_id=r.status_wont_do_option_id,
-        max_active=r.max_active, models=r.models)
+        max_active=r.max_active, models=r.models, sandbox=True,
+        compose_services=r.compose_services, sandbox_memory=r.sandbox_memory,
+        sandbox_cpus=r.sandbox_cpus)
 
 
 def _check_shares(cfg: Config) -> None:

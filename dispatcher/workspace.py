@@ -404,6 +404,9 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False,
         print(f"[dry-run] create worktree {wt} on {branch}")
         return wt
 
+    if target.sandbox:
+        return _create_sandbox_workspace(target, issue, credentials)
+
     if Path(wt).exists():
         # Retry after a partial provisioning failure: the worktree (and
         # branch) were already created and only the setup step below
@@ -472,6 +475,23 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False,
     return wt
 
 
+def _create_sandbox_workspace(target, issue, credentials):
+    from dispatcher import sandbox_runtime
+
+    env = {}
+    if credentials is not None:
+        name = f"task-{target.name}-{issue}-setup"
+        credentials.register_execution(name, target.repo, "task")
+        env = credentials.project_env(name)
+    wt = sandbox_runtime.provision(target, issue, env)
+    _mark_provisioned(wt)
+    write_worktree_file(wt, ".agent", "task.json", json.dumps(
+        {"issue": issue, "target": target.name, "branch": f"agent/task-{issue}"}))
+    install_stop_hook(wt)
+    _seed_claude_state(wt)
+    return wt
+
+
 def remove_workspace(target: Target, wt: str, branch: str,
                      dry_run: bool = False) -> None:
     """Merged-task teardown — the ONE sanctioned worktree deletion (the
@@ -482,6 +502,12 @@ def remove_workspace(target: Target, wt: str, branch: str,
     if dry_run:
         print(f"[dry-run] remove worktree {wt} and local branch {branch}")
         return
+
+    if target.sandbox:
+        from dispatcher import sandbox_runtime
+        issue = branch.removeprefix("agent/task-")
+        if sandbox_runtime.cleanup(target.clone_path, issue):
+            return
 
     try:
         _sh(["git", "worktree", "remove", "--force", wt],
