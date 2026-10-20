@@ -38,6 +38,7 @@ from pathlib import Path
 
 from dispatcher.config import normalize_repo
 from project_control.board_validation import _check_board
+from project_control.write_verification import verification_complete, verify_repo, verify_target
 
 
 class UnconfirmedOperation(Exception):
@@ -49,8 +50,9 @@ class ConflictingConfirmation(Exception):
 
 
 class ProjectControl:
-    def __init__(self, state_dir, github, deployer, boards=None):
+    def __init__(self, state_dir, github, deployer, boards=None, verifier=None):
         self.state_dir, self.github, self.deployer, self.boards = state_dir, github, deployer, boards
+        self.verifier = verifier
 
     def propose(self, plan):
         return {"revision": plan["revision"], "delta": _delta(plan)}
@@ -114,9 +116,50 @@ class ProjectControl:
                 return  # verified completion is history; later deployments do not undo it
             if op["merge_sha"] is None and self._prepare_board(operation_id, op):
                 self._publish(operation_id, op)
-            if op["merge_sha"] is not None:
+            if op["merge_sha"] is not None and self._writes_verified(operation_id, op):
                 self._deploy(op)
             self._save(operation_id, op)
+
+    def verify_writes(self, operation_id):
+        """Authorize and write-test every member repository; return the per-repository records."""
+        name = self._load(operation_id)["plan"]["name"]
+        with self._locked(_project_id(name)):
+            op = self._load(operation_id)
+            records = self._verify(operation_id, op)
+            self._save(operation_id, op)
+            return records
+
+    def _verify(self, operation_id, op):
+        records = op.setdefault("verification", {})
+        if self.verifier is None:
+            self._block(op, "write verification unavailable: no verifier configured")
+            return records
+        for r in op["plan"]["repositories"]:
+            repo = r["repo"]
+            verify_repo(self.verifier, repo, records.setdefault(repo, {}),
+                        lambda: self._save(operation_id, op))
+        return records
+
+    def _writes_verified(self, operation_id, op):
+        """Deployment requires repository and board writes, including their cleanup."""
+        if self.verifier is None:
+            self._block(op, "write verification unavailable: no verifier configured")
+            return False
+        bad = [repo for repo, rec in self._verify(operation_id, op).items()
+               if not verification_complete(rec)]
+        board = op.get("board") or op["plan"]["board"]
+        if not board or not board.get("id"):
+            bad.append("board identity unavailable")
+        else:
+            target = "board:" + board["id"]
+            record = op.setdefault("board_verification", {})
+            verify_target(self.verifier, target, record,
+                          lambda: self._save(operation_id, op), ("board",))
+            if not verification_complete(record):
+                bad.append(target)
+        if bad:
+            self._block(op, f"write verification incomplete for {', '.join(bad)}")
+        return not bad
 
     def _prepare_board(self, op_id, op):
         """Run confirmed work once and revalidate before each publication attempt."""

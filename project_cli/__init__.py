@@ -12,6 +12,7 @@ import sys
 from copy import deepcopy
 
 from dispatcher.config import normalize_repo
+from project_cli.status import show as _show, status
 from project_control.board_validation import _check_board
 
 _COMMANDS = ("setup_cmd", "verify_cmd", "gate_cmd")
@@ -40,6 +41,9 @@ class SshBox:
 
     def board_state(self, ref):
         return self._call("board_state", ref)
+
+    def status(self, name):
+        return self._call("status", name)
 
     def confirm(self, plan):
         return self._call("confirm", plan)
@@ -107,12 +111,6 @@ def _prepare(plan, found, box):
 def _revision(plan):
     body = {k: v for k, v in plan.items() if k != "revision"}
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:8]
-
-
-def _show(value):
-    """Box-supplied text, escaped when it holds control characters that could spoof the prompt."""
-    text = str(value)
-    return text if text.isprintable() else repr(text)
 
 
 def _changes(plan):
@@ -272,5 +270,7 @@ def _add(args, stdin, out, err, box):
 def main(argv, *, stdin, stdout, stderr, box) -> int:
     if list(argv[:2]) == ["project", "add"]:
         return _add(list(argv[2:]), stdin, stdout, stderr, box)
+    if list(argv[:2]) == ["project", "status"]:
+        return status(list(argv[2:]), stdout, stderr, box)
     print("usage: agent-ops project add [name] [repository ...]", file=stderr)
     return 2
