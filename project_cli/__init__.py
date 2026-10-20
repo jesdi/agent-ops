@@ -9,11 +9,14 @@ import json
 import os
 import subprocess
 import sys
+from copy import deepcopy
 
 from dispatcher.config import normalize_repo
+from project_control.board_validation import _check_board
 
 _COMMANDS = ("setup_cmd", "verify_cmd", "gate_cmd")
 _EDITABLE = _COMMANDS + ("compose_services",)
+_LABEL = "auto"
 _BOARD_HELP = "edit board=<owner>/<number> or edit board=create:<owner>/<title>"
 
 
@@ -35,6 +38,9 @@ class SshBox:
     def inspect(self, repo):
         return self._call("inspect", repo)
 
+    def board_state(self, ref):
+        return self._call("board_state", ref)
+
     def confirm(self, plan):
         return self._call("confirm", plan)
 
@@ -47,8 +53,7 @@ def cli():
                   box=SshBox(os.environ.get("AGENT_OPS_BOX", "agent-ops"))))
 
 
-def _build(name, repos, box):
-    found = {r: box.inspect(r) for r in repos}
+def _build(name, repos, found):
     boards = [f["board"] for f in found.values() if f.get("board")]
     return {
         "name": name,
@@ -64,6 +69,40 @@ def _build(name, repos, box):
                        + (["board: temporary item update, then restore it"] if boards else []),
     }
 
+def _prepare(plan, found, box):
+    """Fill board_prep and backlog from the selected board; return the reasons it is blocked."""
+    board, state = plan["board"], None
+    plan["board_prep"] = {"fields": [], "options": [], "labels": {}}
+    plan["backlog"] = {"add": {}, "future": "reconcile", "status": None, "labels": []}
+    if board is not None and board.get("create"):
+        state = {"fields": [], "cards": []}
+    elif board is not None:
+        inspected = next((f for f in found.values() if f.get("board") == board and "board_state" in f), None)
+        if inspected:
+            state = inspected["board_state"]
+            if state is None:
+                return [f"board {_board_label(board)} was not found or is not accessible"]
+        elif hasattr(box, "board_state"):
+            state = box.board_state(board)
+            if state is None:
+                return [f"board {_board_label(board)} was not found or is not accessible"]
+    members = [r["repo"] for r in plan["repositories"]]
+    if state is None:
+        return []
+    problems, plan["board_prep"]["fields"], plan["board_prep"]["options"] = _check_board(state, members)
+    if problems:
+        plan["board_prep"]["fields"] = plan["board_prep"]["options"] = []
+        return problems
+    carded = {(normalize_repo(c["repo"]), c["number"]) for c in state["cards"]}
+    for r in members:
+        info = found[r]
+        if "labels" in info and _LABEL not in info["labels"]:
+            plan["board_prep"]["labels"][r] = [_LABEL]
+        todo = [i["number"] for i in info.get("open_issues", []) if (r, i["number"]) not in carded]
+        if todo:
+            plan["backlog"]["add"][r] = todo
+    return []
+
 
 def _revision(plan):
     body = {k: v for k, v in plan.items() if k != "revision"}
@@ -74,6 +113,15 @@ def _show(value):
     """Box-supplied text, escaped when it holds control characters that could spoof the prompt."""
     text = str(value)
     return text if text.isprintable() else repr(text)
+
+
+def _changes(plan):
+    prep = plan["board_prep"]
+    return ([f"field {f['name']} ({f['type']})"
+             + (f": {', '.join(f['options'])}" if f.get("options") else "")
+             for f in prep["fields"]]
+            + [f"option {o['field']}: {o['name']}" for o in prep["options"]]
+            + [f"label {r}: {', '.join(ls)}" for r, ls in prep["labels"].items()])
 
 
 def _render(plan, out):
@@ -96,6 +144,11 @@ def _render(plan, out):
                            for r in plan["repositories"]]),
             ("Secret references:", list(map(_show, plan["secret_refs"])) or ["none declared"]),
             ("Write tests:", plan["write_tests"]),
+            ("Board changes:", _changes(plan)),
+            ("Backlog:", [f"{r}: add {', '.join(f'#{n}' for n in ns)}"
+                          for r, ns in plan["backlog"]["add"].items()]
+                         + (["new issues are added by the dispatcher's periodic reconcile"]
+                            if plan["backlog"]["add"] else [])),
             ("Missing:", missing + (["board"] if board is None else []))):
         if lines:
             print(f"\n{title}", *(f"  {line}" for line in lines), sep="\n", file=out)
@@ -184,12 +237,18 @@ def _add(args, stdin, out, err, box):
         print(f"Resuming onboarding of {name!r}", file=out)
         box.resume(name)
         return 0
-    plan = _build(name, repos, box)
+    found = {r: box.inspect(r) for r in repos}
+    plan = _build(name, repos, found)
+    blocked = _prepare(plan, found, box)
     while True:
         _render(plan, out)
+        for problem in blocked:
+            print(f"Board blocked: {problem}; choose or create another: {_BOARD_HELP}", file=err)
         answer = _ask("Apply this revision? [yes / edit <repo>.<field>=<value> / no] ",
                       stdin, out)
         if answer == "yes":
+            if blocked:
+                continue
             if plan["board"] is None:
                 print(f"Choose a board before confirming: {_BOARD_HELP}", file=err)
                 continue
@@ -199,7 +258,13 @@ def _add(args, stdin, out, err, box):
         if not answer.startswith("edit "):
             print("Declined; nothing was changed", file=out)
             return 0
+        previous_plan, was_blocked = deepcopy(plan), blocked
         problem = _edit(plan, answer[5:].strip())
+        if not problem and plan["board"] != previous_plan["board"]:
+            blocked = _prepare(plan, found, box)
+            if blocked and blocked[0].endswith("is not accessible"):
+                plan, blocked = previous_plan, was_blocked
+                problem = "board not found or not accessible"
         if problem:
             print(problem, file=err)
 

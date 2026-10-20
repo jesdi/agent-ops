@@ -279,6 +279,10 @@ def _board_key(cfg: Config, repo: str) -> str | None:
     return None
 
 
+def _onboarded(cfg: Config, repo: str) -> bool:
+    return any(r.repo == repo for p in cfg.projects for r in p.repositories)
+
+
 def _board(cfg: Config, repo: str, lines: list[str], run, credentials=None):
     """The repo's board, with stale cards repaired and what the sweep cannot
     reach reported. None for a repo without a board, and when the board cannot
@@ -293,8 +297,18 @@ def _board(cfg: Config, repo: str, lines: list[str], run, credentials=None):
         lines.append(f"{repo}: board unavailable, labels only — {e}")
         return None
     if brd is None:
+        if _onboarded(cfg, repo):
+            lines.append(f"{repo}: board metadata .backlog/project-meta.json missing, "
+                         "new issues are not added to the board")
         return None
     lines.extend(f"{repo}: {line}" for line in brd.repair())
+    if _onboarded(cfg, repo):
+        # An onboarded project's board follows its repositories: future issues join it.
+        added = brd.add_missing()
+        lines.extend(f"{repo}: {line}" for line in added)
+        if any(line.endswith("added to the board") for line in added):
+            brd = board.read(repo, found.clone_path, run=run, credentials=credentials,
+                             key=_board_key(cfg, repo))
     missing = brd.off_board()
     if missing:
         lines.append(f"{repo}: not on the board, cannot be scored: "

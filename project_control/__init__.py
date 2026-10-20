@@ -12,6 +12,21 @@ Recovery additionally reads `merged` and `merge_sha` from find_pr; unknown
 merge results remain blocked. Stale PRs use update_pr(number, expected_head,
 base_sha, config), which must compare the head atomically and invalidate prior
 checks and approval. No capability to refresh means an explicit blocker.
+
+Board work (creating the board, adding missing structure and labels, the
+initial import) runs before publication through the optional `boards` object,
+every method idempotent and repository-qualified:
+  board_state(ref) -> {owner, number, id, fields, cards}
+                                 trusted, complete current identity/schema/membership read
+  find(owner, title) -> [ref]      exact title lookup, including the creation identity
+  create(owner, title) -> ref      ref = {"owner", "number", "id"}
+  apply(ref, board_prep) -> dict   add only what is missing; returns {"fields": {name: id}}
+  import_issues(ref, add)          add {repo: [number]} issues lacking a card, no status, no label
+The verified ref and field mappings are recorded in the operation and become
+the project's board in the published delta.
+Creation uses a persisted random suffix in the title to distinguish its board
+from unrelated boards with the requested title. Missing or ambiguous recovery
+results block until resolved; they never authorize another creation.
 """
 import fcntl
 import hashlib
@@ -22,6 +37,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from dispatcher.config import normalize_repo
+from project_control.board_validation import _check_board
 
 
 class UnconfirmedOperation(Exception):
@@ -33,8 +49,8 @@ class ConflictingConfirmation(Exception):
 
 
 class ProjectControl:
-    def __init__(self, state_dir, github, deployer):
-        self.state_dir, self.github, self.deployer = state_dir, github, deployer
+    def __init__(self, state_dir, github, deployer, boards=None):
+        self.state_dir, self.github, self.deployer, self.boards = state_dir, github, deployer, boards
 
     def propose(self, plan):
         return {"revision": plan["revision"], "delta": _delta(plan)}
@@ -79,6 +95,11 @@ class ProjectControl:
             raise ConflictingConfirmation("resolve the previous merge before superseding " + op_id)
         op.setdefault("confirmations", []).append(dict(plan=op["plan"], expected=op["expected"]))
         op.update(plan=plan, expected=expected, phase="published", blocker="")
+        op.pop("board_done", None)
+        intent = plan["board"] and plan["board"].get("create") and dict(owner=plan["board"]["owner"],
+                                                                         title=plan["board"]["title"])
+        if not intent or intent != op.get("board_intent"):
+            op.pop("board", None)  # a saved board belongs to the creation intent that made it
         self._save(op_id, op)
 
     def status(self, operation_id):
@@ -91,14 +112,93 @@ class ProjectControl:
             op = self._load(operation_id)
             if op["phase"] == "complete":
                 return  # verified completion is history; later deployments do not undo it
-            if op["merge_sha"] is None:
+            if op["merge_sha"] is None and self._prepare_board(operation_id, op):
                 self._publish(operation_id, op)
             if op["merge_sha"] is not None:
                 self._deploy(op)
             self._save(operation_id, op)
 
+    def _prepare_board(self, op_id, op):
+        """Run confirmed work once and revalidate before each publication attempt."""
+        plan = op["plan"]
+        board, prep, backlog = plan["board"], plan.get("board_prep"), plan.get("backlog")
+        add = {r: ns for r, ns in (backlog or {}).get("add", {}).items() if ns}
+        prep = prep and any([prep["fields"], prep["options"], *prep["labels"].values()])
+        if board is None:
+            self._block(op, "board selection required")
+            return False
+        if self.boards is None:
+            self._block(op, "board operations unavailable: no board adapter configured")
+            return False
+        try:
+            if board.get("create") and "board" not in op:
+                ref = self._create_board(op_id, op, board)
+                if ref is None:
+                    return False
+                op["board"] = dict(ref)
+                self._save(op_id, op)
+            ref = op.get("board") or board
+            self._validate_board(ref, plan, prepared=False)
+            if not op.get("board_done"):
+                self._apply_board(op_id, op, ref, prep, add)
+            op["board"] = self._validate_board(op.get("board") or ref, plan, prepared=True)
+        except Exception as e:  # noqa: BLE001 — an adapter failure is a resumable blocker
+            self._block(op, f"board preparation failed: {e}")
+            return False
+        op["board_done"] = True
+        return True
+
+    def _apply_board(self, op_id, op, ref, prep, add):
+        plan = op["plan"]
+        if prep or plan["board"].get("create"):
+            mappings = self.boards.apply(ref, plan.get("board_prep") or dict(fields=[], options=[], labels={}))
+            op["board"] = {**ref, **mappings}
+            self._save(op_id, op)
+        if add:
+            self.boards.import_issues(op.get("board") or ref, add)
+
+    def _validate_board(self, ref, plan, *, prepared):
+        """Always inspect through the trusted adapter, including retries with no additions."""
+        state = self.boards.board_state(ref)
+        for key in ("owner", "number", "id"):
+            if not state.get(key) or (key in ref and state[key] != ref[key]):
+                raise ValueError(f"board identity mismatch or unavailable: {key}")
+        members = [r["repo"] for r in plan["repositories"]]
+        problems, fields, options = _check_board(state, members)
+        if problems:
+            raise ValueError("; ".join(problems))
+        prep = plan.get("board_prep") or dict(fields=[], options=[])
+        if prepared:
+            if fields or options:
+                raise ValueError("required board structure is still missing")
+        elif any(f not in prep["fields"] for f in fields) or any(o not in prep["options"] for o in options):
+            raise ValueError("missing board structure was not confirmed")
+        if prepared:
+            return {**ref, "id": state["id"],
+                    "fields": {f["name"]: f["id"] for f in state["fields"]}}
+
+    def _create_board(self, op_id, op, board):
+        intent = dict(owner=board["owner"], title=board["title"])
+        if "board_intent" in op:
+            # A legacy title-only intent cannot prove ownership of a found board.
+            title = op.get("creation_title")
+            found = self.boards.find(board["owner"], title) if title else []
+            if op["board_intent"] == intent and len(found) == 1:
+                return found[0]
+            self._block(op, "board creation outcome unresolved; select a verified board "
+                            "explicitly and confirm again")
+            return None
+        if self.boards.find(board["owner"], board["title"]):
+            self._block(op, f"a board titled {board['title']!r} already exists; "
+                            "select it explicitly and confirm again")
+            return None
+        title = f"{board['title']} [onboarding {uuid.uuid4().hex}]"
+        op.update(board_intent=intent, creation_title=title)
+        self._save(op_id, op)  # persist the identity before the potentially uncertain write
+        return self.boards.create(board["owner"], title)
+
     def _publish(self, op_id, op):
-        gh, plan = self.github, op["plan"]
+        gh, plan = self.github, _effective(op)
         name, delta = plan["name"], _delta(plan)
         main_sha, main_config = gh.main()
         branch = f"onboard/{name}"
@@ -210,7 +310,7 @@ class ProjectControl:
     def _carries_delta(self, op, revision):
         """A later deployment that still holds the confirmed delta covers the merge."""
         sha, config = self.github.main()
-        return revision == sha and config["projects"].get(op["plan"]["name"]) == _delta(op["plan"])
+        return revision == sha and config["projects"].get(op["plan"]["name"]) == _delta(_effective(op))
 
     @staticmethod
     def _wait(op):
@@ -244,6 +344,11 @@ class ProjectControl:
         tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps(op))
         os.replace(tmp, path)
+
+
+def _effective(op):
+    """The confirmed plan with the board the operation verified, if it had to make one."""
+    return {**op["plan"], "board": op["board"]} if op.get("board") else op["plan"]
 
 
 def _delta(plan):

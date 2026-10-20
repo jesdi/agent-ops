@@ -54,8 +54,12 @@ class FakeGh:
         if "mutation" in query:
             self.mutations.append(args)
             rc = 1 if self.fail_mutations else 0
+        elif "repositoryOwner" in query:
+            out = json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": SCHEMA["projectId"]}}}})
         elif args[1:3] == ["api", "graphql"]:
             out = self.pages.pop(0)
+        elif args[1] == "api":
+            out = json.dumps([[i for i in self.issues if i["state"] == "OPEN"]])
         elif args[1:3] == ["issue", "list"]:
             out = json.dumps(self.issues)
         return subprocess.CompletedProcess(args, rc, out, "rate limited" if rc else "")
@@ -198,3 +202,18 @@ def test_repair_reports_a_refused_write_and_continues(clone):
                     fail_mutations=True)
     lines = brd.repair()
     assert len(lines) == 2 and all("NOT repaired" in l for l in lines)
+
+
+def test_add_missing_adds_only_issues_without_a_card_and_sets_nothing(clone):
+    class Gh(FakeGh):
+        def __call__(self, args, **kw):
+            if args[1:3] == ["issue", "view"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps({"id": f"N{args[3]}"}), "")
+            return super().__call__(args, **kw)
+
+    gh = Gh([_page([_node("I1", 1, status="Ready")])], [_issue(1), _issue(3)])
+    brd = board.read("o/a", clone, run=gh)
+    assert brd.add_missing() == ["#3 added to the board"]
+    [mutation] = gh.mutations
+    assert "c=N3" in mutation and "addProjectV2ItemById" in " ".join(mutation)
+    assert "updateProjectV2ItemFieldValue" not in " ".join(mutation)

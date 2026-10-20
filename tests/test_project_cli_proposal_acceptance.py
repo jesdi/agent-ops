@@ -71,6 +71,13 @@ class Box:
         self.reads.append(("inspect", repo))
         return dict(self.inspected.get(repo, {}))
 
+    def board_state(self, ref):
+        self.reads.append(("board_state", ref))
+        return dict(cards=[], fields=[
+            dict(name="Status", type="single_select", options=["Inbox", "Ready", "In progress"]),
+            *(dict(name=n, type=t) for n, t in (("Impact", "number"), ("Effort", "number"),
+                                                ("Score", "number"), ("Area", "single_select")))])
+
     def confirm(self, plan):
         self.writes.append(("confirm", plan))
         return "op-1"
@@ -220,7 +227,7 @@ def test_exiting_the_proposal_changes_nothing():
         assert code == 0
         assert "Write tests:" in out
         assert box.writes == []
-        assert set(map(str, box.reads)) <= {"projects", str(("inspect", REPO))}
+        assert {r if isinstance(r, str) else r[0] for r in box.reads} <= {"projects", "inspect", "board_state"}
 
 
 @pytest.mark.parametrize("spelling", [
