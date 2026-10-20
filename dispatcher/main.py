@@ -1713,6 +1713,12 @@ def _account_allocations(cfg: Config, deps: Deps, dry_run: bool,
     _admit_verification(cfg, deps, sweep_running)
 
 
+def _new_verification_slot(cfg: Config, sweep_running: bool) -> int | None:
+    if claims.box_free(cfg.capacity, load_all(cfg.state_dir), sweep_running, _held(cfg)) <= 0:
+        return None
+    return _free_slot(cfg)
+
+
 def _admit_verification(cfg: Config, deps: Deps, sweep_running: bool) -> None:
     """Verification holds an execution slot, never an unfinished-task place:
     a slot is kept while its process runs and dropped once it is gone."""
@@ -1720,13 +1726,13 @@ def _admit_verification(cfg: Config, deps: Deps, sweep_running: bool) -> None:
     if verification is None:
         return
     _drop_finished_verifications(cfg, verification)
+    kept = {a.owner_id: a.slot for a in state.allocations(cfg.state_dir)
+            if a.owner_kind == "verification"}
     for operation in verification.pending():
-        if claims.box_free(cfg.capacity, load_all(cfg.state_dir), sweep_running,
-                           _held(cfg)) <= 0:
-            return
-        slot = _free_slot(cfg)
+        # a held slot still guards live resources: retry their cleanup there
+        slot = kept.get(operation, _new_verification_slot(cfg, sweep_running))
         if slot is None:
-            return
+            continue   # no capacity for this one; a later operation may hold a slot to clean up
         state.hold(cfg.state_dir, "verification", operation, slot)   # durable before it starts
         try:
             verification.start(operation, slot)

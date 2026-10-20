@@ -37,6 +37,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from dispatcher.config import normalize_repo
+from project_control import provisioning
 from project_control.board_validation import _check_board
 from project_control.write_verification import verification_complete, verify_repo, verify_target
 
@@ -50,9 +51,9 @@ class ConflictingConfirmation(Exception):
 
 
 class ProjectControl:
-    def __init__(self, state_dir, github, deployer, boards=None, verifier=None):
+    def __init__(self, state_dir, github, deployer, boards=None, verifier=None, host=None):
         self.state_dir, self.github, self.deployer, self.boards = state_dir, github, deployer, boards
-        self.verifier = verifier
+        self.verifier, self.host = verifier, host
 
     def propose(self, plan):
         return {"revision": plan["revision"], "delta": _delta(plan)}
@@ -89,24 +90,61 @@ class ProjectControl:
         if not supersede:
             if _canonical_plan(op["plan"]) != plan:
                 raise ConflictingConfirmation(op_id)
+            self._requeue(op_id, op)
             return
         expected = self.github.main()[1]["projects"].get(plan["name"])
         if op["plan"] == plan and op["expected"] == expected:
+            self._requeue(op_id, op)
             return
         if op["merging"] or op["merge_sha"] is not None:
             raise ConflictingConfirmation("resolve the previous merge before superseding " + op_id)
         op.setdefault("confirmations", []).append(dict(plan=op["plan"], expected=op["expected"]))
         op.update(plan=plan, expected=expected, phase="published", blocker="")
         op.pop("board_done", None)
+        if "provisioning" in op:  # a new plan needs its own verification; leftovers are still stopped
+            old = op["provisioning"]
+            op["provisioning"] = {**provisioning.new(), "live": old["live"], "cleanup": old["cleanup"]}
         intent = plan["board"] and plan["board"].get("create") and dict(owner=plan["board"]["owner"],
                                                                          title=plan["board"]["title"])
         if not intent or intent != op.get("board_intent"):
             op.pop("board", None)  # a saved board belongs to the creation intent that made it
         self._save(op_id, op)
 
+    def _requeue(self, op_id, op):
+        if "provisioning" in op:
+            provisioning.requeue(op["provisioning"])
+            self._save(op_id, op)
+
     def status(self, operation_id):
         op = self._load(operation_id)
-        return {k: op[k] for k in ("phase", "blocker", "pr", "applied_revision")}
+        status = {k: op[k] for k in ("phase", "blocker", "pr", "applied_revision")}
+        if self.host is not None:
+            status["provisioning"] = provisioning.view(op.get("provisioning") or provisioning.new())
+        return status
+
+    def operations(self):
+        return [path.stem for path in sorted(self._path("x").parent.glob("*.json"))]
+
+    def verification(self):
+        return provisioning.Verification(self)
+
+    def provision(self, operation_id, slot=None):
+        """Run or resume host provisioning in execution slot `slot`; None means no free slot."""
+        name = self._load(operation_id)["plan"]["name"]
+        with self._locked(_project_id(name)):
+            op = self._load(operation_id)
+            prov = op.setdefault("provisioning", provisioning.new())
+            if slot is not None and prov["state"] != "passed":
+                provisioning.run(self.host, op["plan"], prov, slot, lambda: self._save(operation_id, op))
+            self._save(operation_id, op)
+            return provisioning.view(prov)
+
+    def has_live(self, operation_id):
+        """Temporary resources not confirmed stopped: they keep their execution slot."""
+        return bool((self._load(operation_id).get("provisioning") or {}).get("live"))
+
+    def _provisioned(self, op):
+        return self.host is None or (op.get("provisioning") or {}).get("state") == "passed"
 
     def advance(self, operation_id):
         name = self._load(operation_id)["plan"]["name"]
@@ -115,7 +153,10 @@ class ProjectControl:
             if op["phase"] == "complete":
                 return  # verified completion is history; later deployments do not undo it
             if op["merge_sha"] is None and self._prepare_board(operation_id, op):
-                self._publish(operation_id, op)
+                if self._provisioned(op):
+                    self._publish(operation_id, op)
+                else:
+                    self._block(op, "provisioning and sandbox verification incomplete")
             if op["merge_sha"] is not None and self._writes_verified(operation_id, op):
                 self._deploy(op)
             self._save(operation_id, op)

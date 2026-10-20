@@ -45,15 +45,19 @@ def status(args, out, err, box):
         verify.append(f"{show(r)}: {show(v['state'])}" + (f" - denied: {', '.join(map(show, v['denied']))}" if v["denied"] else ""))
         cleanup += [f"{show(r)}: {show(c['id'])} {show(c['state'])}" + (f" - {show(c['detail'])}" if c["detail"] else "")
                     for c in v["cleanup"]]
+    prov = state.get("provisioning")
+    provision = [] if prov is None else [prov["state"].replace("_", " ") + (f" - {show(prov['blocker'])}" if prov["blocker"] else "")]
+    cleanup += [f"{show(c['id'])} {show(c['state'])}" + (f" - {show(c['detail'])}" if c["detail"] else "")
+                for c in (prov or {}).get("cleanup", [])]
     caps = [f"{show(n)}: " + ("documented, " if c["documented"] else "not documented, ") + ("blocked (input missing)" if c["input"] == "missing"
             else "effective" if c["effective"] else "not effective")
             for n, c in state["capabilities"].items()]
     for title, lines in (("Authorization:", auth), ("Write verification:", verify),
-                         ("Cleanup:", cleanup), ("Capabilities:", caps)):
+                         ("Provisioning:", provision), ("Cleanup:", cleanup), ("Capabilities:", caps)):
         _section(title, lines, out)
     members = set(box.projects().get(args[0], ()))
     board = state["capabilities"].get(BOARD_WRITE)
-    done = (bool(members) and bool(board) and board["effective"] and board["input"] == "present"
+    done = ((prov is None or prov["state"] == "passed") and bool(members) and bool(board) and board["effective"] and board["input"] == "present"
             and members <= set(repos)
             and all(s["authorization"]["state"] == "granted" and s["verification"]["state"] == "passed"
                 for s in repos.values())
