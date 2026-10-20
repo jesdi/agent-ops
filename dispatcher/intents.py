@@ -16,7 +16,7 @@ from dispatcher.state import task_key
 
 INTENTS_DIR = "intents"
 ACTIONS = ("reply", "park", "kill", "retry", "resume", "cancel", "answers", "spec-repo",
-           "replace-pr", "drop-pr")
+           "replace-pr", "drop-pr", "depend-pr")
 
 
 @dataclass(frozen=True)

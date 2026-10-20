@@ -1010,6 +1010,16 @@ export interface components {
             checks: string;
             /** Ci Fix Attempts */
             ci_fix_attempts: number;
+            /**
+             * Dependency
+             * @default satisfied
+             */
+            dependency: string;
+            /**
+             * Depends On
+             * @default []
+             */
+            depends_on: string[];
             /** Feedback Rounds */
             feedback_rounds: number;
             /** Number */
@@ -1022,6 +1032,11 @@ export interface components {
             state: string;
             /** Url */
             url: string;
+            /**
+             * Waiting On
+             * @default []
+             */
+            waiting_on: string[];
         };
         /** ResumeReq */
         ResumeReq: {
@@ -1153,6 +1168,11 @@ export interface components {
             ci_run_id: number;
             /** Delivery Contract */
             delivery_contract: string;
+            /**
+             * Dependency Errors
+             * @default []
+             */
+            dependency_errors: string[];
             /** Effort */
             effort: number | null;
             /** Implement Progress */

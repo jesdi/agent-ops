@@ -188,6 +188,7 @@ class RequiredPR:
     feedback_rounds: int = 0
     outcome: str = ""      # the last poll's classification: quiet | feedback | check-failed | ...
     checks: str = ""       # the last CI read of this PR: check-failed | pending | passing | "" unread
+    depends_on: tuple[str, ...] = ()   # "owner/name#N" prerequisites: PRs of this task's required set
 
 
 CI_FIX_LIMIT = 3     # automated CI-fix attempts per required PR
@@ -603,7 +604,8 @@ def _read(p: Path) -> TaskState | None:
             raise ValueError(f"unrecognized operator_request kind {kind!r}")
     d["repair_prs"] = tuple(d.get("repair_prs") or ())
     d["dropped_pr_repos"] = tuple(d.get("dropped_pr_repos") or ())
-    d["required_prs"] = tuple(RequiredPR(**r) for r in d.get("required_prs") or ())
+    d["required_prs"] = tuple(RequiredPR(**{**r, "depends_on": tuple(r.get("depends_on") or ())})
+                              for r in d.get("required_prs") or ())
     d.pop("artifact", None)        # retired field (slice 24)
     # Retired fields: one implement session, no cursor and no ticket tracks.
     for retired in ("ticket_cursor", "ticket_tracks", "ticket_names",

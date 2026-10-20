@@ -3228,7 +3228,7 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         _apply_resume_intent(cfg, by_name, task, intent)
     elif intent.action == "answers":
         _apply_answers_intent(cfg, deps, task, intent)
-    elif intent.action in ("replace-pr", "drop-pr"):
+    elif intent.action in ("replace-pr", "drop-pr", "depend-pr"):
         _apply_required_pr_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "spec-repo":
         _apply_spec_repo_intent(cfg, task, intent)

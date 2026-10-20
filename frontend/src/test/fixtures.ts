@@ -130,6 +130,7 @@ export const taskDetail: TaskDetail = {
   labels: ['auto'],
   timeline: [],
   required_prs: [],
+  dependency_errors: [],
 }
 
 export const failures: FailuresView = {

@@ -422,6 +422,63 @@ class RequiredPRView(BaseModel):
     checks: str         # the last CI read: check-failed | pending | passing | "" unread
     ci_fix_attempts: int
     feedback_rounds: int
+    depends_on: list[str] = []
+    # judged apart from checks/outcome: satisfied | waiting | invalid
+    dependency: str = "satisfied"
+    waiting_on: list[str] = []
+
+
+def _ref(p) -> str:
+    return f"{p.repo}#{p.number}"
+
+
+def _edge_errors(by_ref) -> dict[str, list[str]]:
+    """Self and missing-required-PR edges, per offending PR."""
+    out: dict[str, list[str]] = {}
+    for ref, p in by_ref.items():
+        for dep in p.depends_on:
+            if dep == ref:
+                out.setdefault(ref, []).append(f"{ref} depends on itself")
+            elif dep not in by_ref:
+                out.setdefault(ref, []).append(
+                    f"{ref} depends on {dep}, which is not a required PR of this task")
+    return out
+
+
+def _reaches(by_ref, start: str) -> set[str]:
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        for dep in by_ref[stack.pop()].depends_on:
+            if dep in by_ref and dep not in seen:
+                seen.add(dep)
+                stack.append(dep)
+    return seen
+
+
+def _status(by_ref, ref: str, invalid: bool) -> tuple[str, list[str]]:
+    if invalid:
+        return "invalid", []
+    waiting = [d for d in by_ref[ref].depends_on if by_ref[d].state != "merged"]
+    return ("waiting" if waiting else "satisfied"), waiting
+
+
+def _invalid(by_ref) -> tuple[set[str], list[str]]:
+    edge_errors = _edge_errors(by_ref)
+    cyclic = {r for r in by_ref if r in _reaches(by_ref, r) and r not in edge_errors}
+    errors = [e for es in edge_errors.values() for e in es]
+    if cyclic:
+        errors.append(f"dependency cycle through {', '.join(sorted(cyclic))}")
+    return set(edge_errors) | cyclic, errors
+
+
+def dependency_views(prs) -> tuple[dict[str, tuple[str, list[str]]], list[str]]:
+    """Per PR ref: (dependency, waiting_on), plus the validation errors of
+    self, missing-required-PR and cyclic edges. A prerequisite counts only
+    once merged, whatever its checks or review say."""
+    by_ref = {_ref(p): p for p in prs}
+    invalid, errors = _invalid(by_ref)
+    return {r: _status(by_ref, r, r in invalid) for r in by_ref}, errors
 
 
 class TaskDetail(BaseModel):
@@ -442,6 +499,7 @@ class TaskDetail(BaseModel):
     track_when: str = ""
     implement_progress: str | None = None
     required_prs: list[RequiredPRView] = []
+    dependency_errors: list[str] = []
 
 
 PROGRESS_MAX_CHARS = 200  # the session writes this text: bound what the page shows
@@ -470,6 +528,7 @@ def task_detail(t: TaskState, *, model: str,
                 pinned_track: str = "") -> TaskDetail:
     at = claimed_at(claimed_at_index(events), t.target, t.issue, t.repo)
     msgs = messages or []
+    dependencies, dependency_errors = dependency_views(t.required_prs)
     return TaskDetail(
         title=t.title, repo=t.repo,
         card=task_card(t, model=model, pinned_track=pinned_track,
@@ -489,7 +548,10 @@ def task_detail(t: TaskState, *, model: str,
         required_prs=[RequiredPRView(
             repo=p.repo, number=p.number, url=f"https://github.com/{p.repo}/pull/{p.number}",
             state=p.state, outcome=p.outcome, checks=p.checks, ci_fix_attempts=p.ci_fix_attempts,
-            feedback_rounds=p.feedback_rounds) for p in t.required_prs])
+            feedback_rounds=p.feedback_rounds, depends_on=list(p.depends_on),
+            dependency=dependencies[_ref(p)][0], waiting_on=dependencies[_ref(p)][1])
+            for p in t.required_prs],
+        dependency_errors=dependency_errors)
 
 
 class IssueDescription(BaseModel):

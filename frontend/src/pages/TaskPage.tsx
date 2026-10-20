@@ -77,6 +77,33 @@ function TaskQueryView({ target, repo, issue, detailQuery, intentsQuery, actions
     showHistory={showHistory} setShowHistory={setShowHistory} />
 }
 
+function RequiredPrs({ detail }: { detail: TaskDetail }) {
+  return (
+    <>
+      {detail.dependency_errors.map((e) => (
+        <p key={e} data-testid="dependency-error" className="text-sm text-failed-fg">{e}</p>
+      ))}
+      {detail.required_prs.length > 0 && (
+        <ul data-testid="required-prs" className="flex flex-col gap-1 text-sm">
+          {detail.required_prs.map((pr) => (
+            <li key={`${pr.repo}#${pr.number}`} className="flex flex-wrap gap-2">
+              <a href={pr.url} className="font-mono underline">{pr.repo}#{pr.number}</a>
+              <span>{pr.state === 'closed' ? 'closed without merge' : pr.state}</span>
+              {pr.checks && <span className="text-ink-muted">{pr.checks}</span>}
+              {pr.outcome && <span data-testid="pr-outcome" className="text-ink-muted">{pr.outcome}</span>}
+              <span className="text-ink-muted">CI fixes {pr.ci_fix_attempts}/3</span>
+              {pr.dependency === 'waiting' && (
+                <span data-testid="pr-waiting">waiting for {pr.waiting_on.join(', ')} to merge</span>
+              )}
+              {pr.dependency === 'invalid' && <span data-testid="pr-invalid">invalid dependency</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  )
+}
+
 function LoadedTaskView({ target, repo, issue, detail, intents, actions,
   showHistory, setShowHistory }: {
   target: string
@@ -101,18 +128,7 @@ function LoadedTaskView({ target, repo, issue, detail, intents, actions,
       {detail.track_when && (
         <p data-testid="track-when" className="text-xs text-ink-muted">{detail.track_when}</p>
       )}
-      {detail.required_prs.length > 0 && (
-        <ul data-testid="required-prs" className="flex flex-col gap-1 text-sm">
-          {detail.required_prs.map((pr) => (
-            <li key={`${pr.repo}#${pr.number}`} className="flex flex-wrap gap-2">
-              <a href={pr.url} className="font-mono underline">{pr.repo}#{pr.number}</a>
-              <span>{pr.state === 'closed' ? 'closed without merge' : pr.state}</span>
-              {pr.checks && <span className="text-ink-muted">{pr.checks}</span>}
-              <span className="text-ink-muted">CI fixes {pr.ci_fix_attempts}/3</span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <RequiredPrs detail={detail} />
       <StageTimeline timeline={detail.timeline} />
 
       <p className="break-all font-mono text-xs text-ink-muted">{worktree}</p>
