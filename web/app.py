@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import re
+import yaml
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +21,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import execution_overrides, model_settings, priority, queue_ops
 from dispatcher.artifacts import task_review_worktree
-from dispatcher.config import (Config, apply_stored_models, normalize_repo,
+from dispatcher.config import (Config, Project, apply_stored_models, load_config, normalize_repo,
                                policy_for, project_target,
                                referenced_providers, routed_providers,
                                stranded, with_models)
@@ -33,6 +34,7 @@ from dispatcher import answers as answers_file, intents
 from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, TaskState,
                               launch_entries, launch_track, next_stage,
                               resumable_crash)
+from project_control import ConflictingConfirmation
 from web import model_settings_view as msv
 from web import read_model
 from web.artifacts import router as artifacts_router
@@ -132,6 +134,10 @@ class NextReq(BaseModel):
     force: bool = False
 
 
+class ControlReq(BaseModel):
+    confirm: bool = False
+
+
 class ReadyReq(BaseModel):
     issue: int
     repo: str = ""
@@ -151,7 +157,8 @@ def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
 
 def create_app(boot: Config, sources, sse_interval: float = 1.0,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
-               frontend_dist: Path | None = None) -> FastAPI:
+               frontend_dist: Path | None = None, project_control=None,
+               config_path: str | None = None) -> FastAPI:
     app = FastAPI(title="agent-ops web console")
     app.add_middleware(TailscaleAuthMiddleware)
 
@@ -159,9 +166,47 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def health(op: Operator = Depends(current_operator)):
         return {"ok": True, "operator": op.login}
 
-    projects_by_name = {p.key: p for p in boot.projects}
-    targets_by_name = {t.name: t for t in [*boot.targets,
-                                          *map(project_target, boot.projects)]}
+    projects_by_name = targets_by_name = None
+
+    def _index() -> None:
+        nonlocal projects_by_name, targets_by_name
+        projects_by_name = {p.key: p for p in boot.projects}
+        targets_by_name = {t.name: t for t in [*boot.targets,
+                                              *map(project_target, boot.projects)]}
+    _index()
+
+    def _refresh() -> None:
+        """With a live targets.yaml, each request sees the deployed projects."""
+        nonlocal boot
+        if config_path:
+            try:
+                boot = load_config(config_path)
+            except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
+                return  # mid-write or invalid: keep the last good configuration
+            _index()
+    app.router.dependencies.append(Depends(_refresh))
+
+    @app.get("/api/projects")
+    def projects(op: Operator = Depends(current_operator)):
+        return {"projects": [
+            {"name": p.key, "state": "enabled" if p.enabled else "paused",
+             "repositories": [r.repo for r in p.repositories],
+             "pending": project_control.pending_change(p.key) if project_control else None}
+            for p in boot.projects]}
+
+    @app.post("/api/projects/{name}/{verb}", status_code=202)
+    def change_project(name: str, verb: Literal["enable", "pause"], req: ControlReq,
+                       op: Operator = Depends(current_operator)):
+        if project_control is None:
+            raise HTTPException(503, "project control unavailable")
+        if name not in projects_by_name:
+            raise HTTPException(404, f"unknown project {name!r}")
+        if not req.confirm:
+            raise HTTPException(422, "confirmation required")
+        try:
+            return {"operation": project_control.request_enabled(name, verb == "enable")}
+        except ConflictingConfirmation as e:
+            raise HTTPException(409, f"another change is pending: {e}") from e
 
     def _target(name: str, repo: str = ""):
         project = projects_by_name.get(name)
@@ -660,7 +705,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         """
         hits = []
         stale_as_of = None
-        for target in boot.targets:
+        for target in [*boot.targets, *boot.projects]:
             rows, as_of, stale = sources.rank_rows(target, fresh=True)
             if stale and stale_as_of is None:
                 stale_as_of = as_of
@@ -677,6 +722,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         target, row, stale, as_of = hits[0]
         if stale:
             raise _stale(as_of)
+        if isinstance(target, Project):
+            target = project_target(target, row.get("repo", ""))
         return target, row
 
     def _apply(event: str, issue: int, plan, op: Operator, detail: str,

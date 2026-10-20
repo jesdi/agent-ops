@@ -51,6 +51,12 @@ class SshBox:
     def resume(self, name):
         return self._call("resume", name)
 
+    def request_enabled(self, name, enabled):
+        return self._call("request_enabled", [name, enabled])
+
+    def control_state(self, name):
+        return self._call("control_state", name)
+
 
 def cli():
     sys.exit(main(sys.argv[1:], stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr,
@@ -267,10 +273,44 @@ def _add(args, stdin, out, err, box):
             print(problem, file=err)
 
 
+def _control(args, verb, stdin, out, err, box):
+    """`project enable|pause <name>`: say what will happen, change only on a typed yes."""
+    name = args[0] if args else ""
+    if name not in box.projects():
+        print(f"unknown project {name!r}", file=err)
+        return 1
+    enabled = verb == "enable"
+    print(f"This opens an infrastructure pull request that {verb}s project {_show(name)}; "
+          "it takes effect only after checks, approval and a verified deployment.", file=out)
+    if _ask("Proceed? [yes / no] ", stdin, out) != "yes":
+        print("Declined; nothing was changed", file=out)
+        return 0
+    print(f"Requested {verb} of {_show(name)}: operation {_show(box.request_enabled(name, enabled))}", file=out)
+    return 0
+
+
+def _state(args, out, err, box):
+    state = box.control_state(args[0]) if args else None
+    if state is None:
+        print(f"unknown project {args[0] if args else ''!r}", file=err)
+        return 1
+    print(f"Effective: {_show(state['effective'])}", file=out)
+    pending = state["pending"]
+    if pending:
+        print(f"Pending: {_show(pending['requested'])} ({_show(pending['phase'])})", file=out)
+        if pending["blocker"]:
+            print(f"  {_show(pending['blocker'])}", file=out)
+    return 0
+
+
 def main(argv, *, stdin, stdout, stderr, box) -> int:
+    if argv[:1] == ["project"] and argv[1:2] in (["enable"], ["pause"]):
+        return _control(list(argv[2:]), argv[1], stdin, stdout, stderr, box)
+    if list(argv[:2]) == ["project", "state"]:
+        return _state(list(argv[2:]), stdout, stderr, box)
     if list(argv[:2]) == ["project", "add"]:
         return _add(list(argv[2:]), stdin, stdout, stderr, box)
     if list(argv[:2]) == ["project", "status"]:
         return status(list(argv[2:]), stdout, stderr, box)
-    print("usage: agent-ops project add [name] [repository ...]", file=stderr)
+    print("usage: agent-ops project add|status|state|enable|pause [name] [repository ...]", file=stderr)
     return 2

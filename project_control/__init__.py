@@ -50,6 +50,10 @@ class ConflictingConfirmation(Exception):
     """A confirmation cannot safely replace the recorded operation."""
 
 
+class UnknownProject(Exception):
+    """A control request named a project the deployed configuration lacks."""
+
+
 class ProjectControl:
     def __init__(self, state_dir, github, deployer, boards=None, verifier=None, host=None):
         self.state_dir, self.github, self.deployer, self.boards = state_dir, github, deployer, boards
@@ -77,10 +81,63 @@ class ProjectControl:
                 self._reconfirm(op_id, plan, supersede)
         return op_id
 
+    def request_enabled(self, name, enabled):
+        """The one confirmed enable / pause operation behind the web and the terminal.
+
+        It runs the ordinary PR / checks / approval / merge / verified-deployment
+        sequence and changes only `desired_enabled` of the project's entry. The
+        same pending change is the same operation.
+        """
+        with self._locked(_project_id(name)):
+            pending = next(iter(self._control_ops(name)), None)
+            if pending:
+                if pending[1]["control"]["enabled"] != enabled:
+                    raise ConflictingConfirmation(pending[0])
+                self._rebase_control(*pending)
+                return pending[0]
+            current = self.github.main()[1]["projects"].get(name)
+            if current is None:
+                raise UnknownProject(name)
+            op_id = "ctl-" + uuid.uuid4().hex
+            plan = _control_plan(name, current)
+            self._save(op_id, dict(plan=plan, expected=current, phase="published", blocker="", pr=None,
+                                   head_sha=None, base_sha=None, merge_sha=None, merging=False,
+                                   applied_revision=None, control=dict(enabled=enabled)))
+            return op_id
+
+    def _rebase_control(self, op_id, op):
+        """Repeating a blocked request after the project entry changed re-bases it on the
+        current entry: the delta is only `desired_enabled`, so nothing is lost. Never once
+        a merge may have happened; that outcome must first be reconciled."""
+        name = op["plan"]["name"]
+        current = self.github.main()[1]["projects"].get(name)
+        if (current is None or current in (op["expected"], _proposed(op))
+                or op["merging"] or op["merge_sha"] is not None):
+            return
+        op.update(plan=_control_plan(name, current), expected=current, phase="published", blocker="")
+        self._save(op_id, op)
+
+    def pending_change(self, name):
+        """The not yet deployed enable / pause request of `name`, or None."""
+        pending = next(iter(self._control_ops(name)), None)
+        if pending is None:
+            return None
+        op_id, op = pending
+        return dict(operation=op_id, requested="enabled" if op["control"]["enabled"] else "paused",
+                    phase=op["phase"], blocker=op["blocker"], pr=op["pr"])
+
+    def _control_ops(self, name):
+        """(id, record) of each undeployed control operation of `name`."""
+        records = ((path.stem, json.loads(path.read_text()))
+                   for path in sorted(self._path("x").parent.glob("*.json")))
+        return [(i, op) for i, op in records
+                if "control" in op and op["plan"]["name"] == name and op["phase"] != "complete"]
+
     def _operation_for_project(self, name, project_id):
         """Keep pre-existing operation IDs and their uncertain-write history."""
         matches = [path.stem for path in self._path(project_id).parent.glob("*.json")
-                   if json.loads(path.read_text())["plan"]["name"] == name]
+                   if (op := json.loads(path.read_text()))["plan"]["name"] == name
+                   and "control" not in op]
         if len(matches) > 1:
             raise ConflictingConfirmation("multiple recorded operations require reconciliation for " + name)
         return matches[0] if matches else project_id
@@ -118,7 +175,7 @@ class ProjectControl:
     def status(self, operation_id):
         op = self._load(operation_id)
         status = {k: op[k] for k in ("phase", "blocker", "pr", "applied_revision")}
-        if self.host is not None:
+        if self.host is not None and "control" not in op:  # a control request never provisions
             status["provisioning"] = provisioning.view(op.get("provisioning") or provisioning.new())
         return status
 
@@ -130,7 +187,10 @@ class ProjectControl:
 
     def provision(self, operation_id, slot=None):
         """Run or resume host provisioning in execution slot `slot`; None means no free slot."""
-        name = self._load(operation_id)["plan"]["name"]
+        op = self._load(operation_id)
+        if "control" in op:
+            raise ValueError("a control operation has no provisioning: " + operation_id)
+        name = op["plan"]["name"]
         with self._locked(_project_id(name)):
             op = self._load(operation_id)
             prov = op.setdefault("provisioning", provisioning.new())
@@ -138,6 +198,25 @@ class ProjectControl:
                 provisioning.run(self.host, op["plan"], prov, slot, lambda: self._save(operation_id, op))
             self._save(operation_id, op)
             return provisioning.view(prov)
+
+    def advance_controls(self):
+        """Advance every undeployed enable / pause request one step; the web console's worker calls it."""
+        for path in sorted(self._path("x").parent.glob("*.json")):
+            op = json.loads(path.read_text())
+            if "control" in op and op["phase"] != "complete":
+                try:
+                    self.advance(path.stem)
+                except Exception as error:  # adapter failures must not starve other projects
+                    self._control_failure(path.stem, error)
+
+    def _control_failure(self, operation_id, error):
+        name = self._load(operation_id)["plan"]["name"]
+        with self._locked(_project_id(name)):
+            # Reload persisted intent: a lost response may hide a successful write.
+            op = self._load(operation_id)
+            if op["phase"] != "complete":
+                self._block(op, f"control advancement failed: {error}")
+                self._save(operation_id, op)
 
     def has_live(self, operation_id):
         """Temporary resources not confirmed stopped: they keep their execution slot."""
@@ -152,12 +231,13 @@ class ProjectControl:
             op = self._load(operation_id)
             if op["phase"] == "complete":
                 return  # verified completion is history; later deployments do not undo it
-            if op["merge_sha"] is None and self._prepare_board(operation_id, op):
-                if self._provisioned(op):
+            control = "control" in op  # no board, provisioning or write verification: nothing new
+            if op["merge_sha"] is None and (control or self._prepare_board(operation_id, op)):
+                if control or self._provisioned(op):
                     self._publish(operation_id, op)
                 else:
                     self._block(op, "provisioning and sandbox verification incomplete")
-            if op["merge_sha"] is not None and self._writes_verified(operation_id, op):
+            if op["merge_sha"] is not None and (control or self._writes_verified(operation_id, op)):
                 self._deploy(op)
             self._save(operation_id, op)
 
@@ -283,9 +363,9 @@ class ProjectControl:
 
     def _publish(self, op_id, op):
         gh, plan = self.github, _effective(op)
-        name, delta = plan["name"], _delta(plan)
+        name, delta = plan["name"], _proposed(op)
         main_sha, main_config = gh.main()
-        branch = f"onboard/{name}"
+        branch = f"control/{name}/{op_id}" if "control" in op else f"onboard/{name}"
         pr = gh.find_pr(branch)
         current = main_config["projects"].get(name)
         if op["merging"] and self._recover_merge(op_id, op, pr):
@@ -302,7 +382,9 @@ class ProjectControl:
             # Persist the intended publication before a possibly lost response.
             op.update(pr_config=config, base_sha=main_sha)
             self._save(op_id, op)
-            pr = gh.create_pr(branch, main_sha, config, f"Onboard {name}")
+            pr = gh.create_pr(branch, main_sha, config,
+                              f"{'Enable' if op['control']['enabled'] else 'Pause'} {name}"
+                              if "control" in op else f"Onboard {name}")
         if op["pr"] is not None and pr["number"] != op["pr"]["number"]:
             return self._block(op, "recorded PR identity changed")
         if op["pr"] is None and pr["base_sha"] == op["base_sha"] and pr["config"] == op.get("pr_config"):
@@ -394,7 +476,7 @@ class ProjectControl:
     def _carries_delta(self, op, revision):
         """A later deployment that still holds the confirmed delta covers the merge."""
         sha, config = self.github.main()
-        return revision == sha and config["projects"].get(op["plan"]["name"]) == _delta(_effective(op))
+        return revision == sha and config["projects"].get(op["plan"]["name"]) == _proposed(op)
 
     @staticmethod
     def _wait(op):
@@ -433,6 +515,18 @@ class ProjectControl:
 def _effective(op):
     """The confirmed plan with the board the operation verified, if it had to make one."""
     return {**op["plan"], "board": op["board"]} if op.get("board") else op["plan"]
+
+
+def _control_plan(name, current):
+    return dict(name=name, repositories=current["repositories"], board=current["board"],
+                models=current["models"])
+
+
+def _proposed(op):
+    """The project entry the operation's PR proposes."""
+    if "control" in op:
+        return {**op["expected"], "desired_enabled": op["control"]["enabled"]}
+    return _delta(_effective(op))
 
 
 def _delta(plan):

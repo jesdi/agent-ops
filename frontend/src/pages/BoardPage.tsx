@@ -6,7 +6,9 @@ import { CountStrip } from '../components/CountStrip'
 import { GhostCardView } from '../components/GhostCard'
 import { useActiveColumn } from '../components/useActiveColumn'
 import type { GhostCard, NextClaimView, PendingIntent, Zone } from '../lib/api'
+import { ProjectTabs } from '../components/ProjectTabs'
 import { useBoardSnapshot, usePendingIntents, useTasks } from '../hooks/useResources'
+import { useState } from 'react'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useWontDo } from '../hooks/useWontDo'
 
@@ -115,18 +117,34 @@ function WontDoConfirm({ card, error, busy, onKeep, onConfirm }: {
   )
 }
 
+/** Cards and ghosts name their target, which is the project's key: a project tab scopes both. */
+function scopeToProject<C extends ColumnView['column']>(columns: C[] = [], project: string | null): C[] {
+  if (project === null) return columns
+  return columns.map((c) => ({
+    ...c,
+    cards: c.cards.filter((t) => t.target === project),
+    ghosts: c.ghosts.filter((g) => g.target === project),
+  }))
+}
+
+function degradedQueue(stale: boolean, error: string | null) {
+  return stale || error ? { stale, error } : null
+}
+
 export function BoardPage() {
   const boardQuery = useTasks()
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
+  const [project, setProject] = useState<string | null>(null)
 
   const board = boardQuery.data ?? snapshotQuery.data
   // Queue trouble lives on Queued, the column the ranking and the actions feed.
   const stale = boardQuery.data?.queue_stale ?? false
-  const queueDegraded = stale || queue.queueError ? { stale, error: queue.queueError } : null
-  const views: ColumnView[] = (board?.columns ?? []).map((column) => ({
+  const queueDegraded = degradedQueue(stale, queue.queueError)
+  const scoped = scopeToProject(board?.columns, project)
+  const views: ColumnView[] = scoped.map((column) => ({
     column,
     count: column.cards.length + column.ghosts.length,
     degraded: column.key === 'queued' ? queueDegraded : null,
@@ -153,6 +171,7 @@ export function BoardPage() {
   return (
     <div className="flex flex-col gap-4 p-4 md:min-h-0 md:grow md:basis-0 md:pb-0">
       <BoardHeader board={board} />
+      <ProjectTabs selected={project} onSelect={setProject} />
       <ColumnTabs tabs={inRow} active={tabs.active} onSelect={tabs.select} />
       <CountStrip columns={views.filter((v) => v.count === 0)} />
       <div data-testid="board-row" className="relative -mx-4 flex gap-4 overflow-x-auto px-4 pb-4 md:min-h-0 md:grow md:basis-0">

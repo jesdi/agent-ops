@@ -1,6 +1,7 @@
 export const queryKeys = {
   board: ['board'] as const,
   boardSnapshot: ['board', 'snapshot'] as const,
+  projects: ['projects'] as const,
   usage: ['usage'] as const,
   failures: ['failures'] as const,
   history: ['history'] as const,

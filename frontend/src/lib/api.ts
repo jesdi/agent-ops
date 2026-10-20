@@ -49,6 +49,21 @@ export interface PrioritySet { ok: true; mode: string }
 export interface IntentAccepted { status: 'pending'; intent: string }
 export interface ResumeOptions { text?: string; model?: string; bypassUsage?: boolean }
 
+export interface ProjectPending {
+  operation: string
+  requested: 'enabled' | 'paused'
+  phase: 'published' | 'blocked' | 'merged'
+  blocker: string
+  pr: { number: number; url: string } | null
+}
+/** One configured project: `state` is the deployed (effective) one, `pending` the undeployed change. */
+export interface ProjectTab {
+  name: string
+  state: 'enabled' | 'paused'
+  repositories: string[]
+  pending: ProjectPending | null
+}
+
 export class ApiError extends Error {
   status: number
   detail: string
@@ -109,6 +124,10 @@ const put = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 
 export const api = {
+  projects: () => request<{ projects: ProjectTab[] }>('/projects'),
+  // Confirmed PR-backed change: 202 with the operation; the effective state moves only on verified deployment.
+  changeProject: (name: string, verb: 'enable' | 'pause') =>
+    post<{ operation: string }>(`/projects/${encodeURIComponent(name)}/${verb}`, { confirm: true }),
   boardSnapshot: () => request<components['schemas']['BoardSnapshot']>('/board/snapshot'),
   board: () => request<BoardView>('/board'),
   taskDetail: (target: string, issue: number, repo = '') =>
