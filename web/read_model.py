@@ -380,6 +380,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 max_open: int = sys.maxsize,
                 projects: Sequence[Project] = (),
                 pinned_tracks: dict[MetadataKey, str] | None = None,
+                holds: Sequence[str] = (),
                 ) -> BoardView:
     # Key on (target, repo, issue) so alpha#73 does not hide beta#73, nor one
     # repository's #73 another's. A legacy task (repo "") hides the number.
@@ -408,7 +409,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                               triage_running=triage_running,
                               max_active=max_active,
                               last_claimed=last_claimed,
-                              max_open=max_open, projects=projects,
+                              max_open=max_open, projects=projects, holds=holds,
                               denied={k for k, a in (candidate_admissions or {}).items()
                                       if not any(alt.admitted for alt in a.alternatives)}))
 
@@ -918,7 +919,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                last_claimed: Mapping[str, str],
                max_open: int = sys.maxsize,
                projects: Sequence[Project] = (),
-               denied: Collection[MetadataKey] = ()) -> NextClaimView:
+               denied: Collection[MetadataKey] = (),
+               holds: Sequence[str] = ()) -> NextClaimView:
     """A forecast of what the claim round (dispatcher main._claim_new)
     consumes next, from data already on the board request. The target comes
     from the same claims.pick_target the dispatcher uses, over box-wide free
@@ -953,7 +955,7 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                              minutes_to_reset=gate.minutes_to_reset,
                              blocked_by=gate.note)
     return _forecast_claim(eta, queues, tasks, capacity, triage_running,
-                           max_active, last_claimed, max_open, projects, denied)
+                           max_active, last_claimed, max_open, projects, denied, holds)
 
 
 def _forecast_claim(eta: str, queues: list[tuple[str, list[dict]]],
@@ -961,7 +963,8 @@ def _forecast_claim(eta: str, queues: list[tuple[str, list[dict]]],
                     triage_running: bool, max_active: Mapping[str, int | None],
                     last_claimed: Mapping[str, str], max_open: int,
                     projects: Sequence[Project],
-                    denied: Collection[MetadataKey]) -> NextClaimView:
+                    denied: Collection[MetadataKey],
+                    holds: Sequence[str] = ()) -> NextClaimView:
     """The candidate-and-capacity half of next_claim, once the heartbeat,
     triage pause and box usage gate have passed."""
     heads = _queue_heads(queues, tasks, denied)
@@ -970,7 +973,7 @@ def _forecast_claim(eta: str, queues: list[tuple[str, list[dict]]],
         return NextClaimView(verdict="budget-blocked" if blocked else "no-candidates",
                              next_pass_eta=eta)
     heads, verdict = _admissible_heads(heads, tasks, capacity, triage_running,
-                                       max_open, projects)
+                                       max_open, projects, holds)
     if verdict:
         return NextClaimView(verdict=verdict, next_pass_eta=eta)
     running = active(tasks)
@@ -984,7 +987,7 @@ def _forecast_claim(eta: str, queues: list[tuple[str, list[dict]]],
 
 def _admissible_heads(heads: dict[str, int], tasks: list[TaskState],
                       capacity: int, triage_running: bool, max_open: int,
-                      projects: Sequence[Project]
+                      projects: Sequence[Project], holds: Sequence[str] = ()
                       ) -> tuple[dict[str, int], str]:
     """The heads the claim round would not reject for pause, execution
     capacity, the total limit or a reservation, else the verdict naming why
@@ -995,16 +998,16 @@ def _admissible_heads(heads: dict[str, int], tasks: list[TaskState],
         return heads, "project-paused"
     if box_free(capacity, tasks, triage_running) <= 0:
         return heads, "capacity-full"
-    return _unreserved_heads(heads, tasks, max_open, projects)
+    return _unreserved_heads(heads, tasks, max_open, projects, holds)
 
 
 def _unreserved_heads(heads: dict[str, int], tasks: list[TaskState],
-                      max_open: int, projects: Sequence[Project]
-                      ) -> tuple[dict[str, int], str]:
+                      max_open: int, projects: Sequence[Project],
+                      holds: Sequence[str] = ()) -> tuple[dict[str, int], str]:
     """`heads` minus those the total limit or another project's reservation
     denies, with the most specific denial as the verdict when none remain."""
     enabled = [p.key for p in projects if p.enabled]
-    denied = {n: reservation_denial(n, tasks, enabled, max_open) for n in heads}
+    denied = {n: reservation_denial(n, tasks, enabled, max_open, holds) for n in heads}
     heads = {n: i for n, i in heads.items() if not denied[n]}
     return heads, "" if heads else max(denied.values())
 

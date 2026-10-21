@@ -2681,7 +2681,8 @@ def _claim_denied(cfg: Config, name: str, tasks: list[TaskState],
     """True when the total limit or another project's reservation leaves
     `name` no place among `tasks`."""
     return bool(claims.claim_room(cfg.capacity, cfg.max_open, tasks, False, _held(cfg)) <= 0
-                or claims.reservation_denial(name, tasks, enabled, cfg.max_open))
+                or claims.reservation_denial(name, tasks, enabled, cfg.max_open,
+                                     claims.held_reservations(cfg.state_dir)))
 
 
 def _project_members(cfg: Config) -> dict[str, frozenset[str]]:

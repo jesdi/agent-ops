@@ -36,7 +36,10 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from dispatcher import claims
 from dispatcher.config import normalize_repo
+from dispatcher.convergence import claim_lock
+from dispatcher.state import load_all
 from project_control import provisioning
 from project_control.board_validation import _check_board
 from project_control.write_verification import verification_complete, verify_repo, verify_target
@@ -126,12 +129,18 @@ class ProjectControl:
         return dict(operation=op_id, requested="enabled" if op["control"]["enabled"] else "paused",
                     phase=op["phase"], blocker=op["blocker"], pr=op["pr"])
 
-    def _control_ops(self, name):
-        """(id, record) of each undeployed control operation of `name`."""
+    def _ops(self, name):
+        """(id, record) of each control operation of `name`."""
         records = ((path.stem, json.loads(path.read_text()))
                    for path in sorted(self._path("x").parent.glob("*.json")))
-        return [(i, op) for i, op in records
-                if "control" in op and op["plan"]["name"] == name and op["phase"] != "complete"]
+        return [(i, op) for i, op in records if "control" in op and op["plan"]["name"] == name]
+
+    def _all_ops(self):
+        return [(p.stem, json.loads(p.read_text())) for p in sorted(self._path("x").parent.glob("*.json"))]
+
+    def _control_ops(self, name):
+        """(id, record) of each undeployed control operation of `name`."""
+        return [(i, op) for i, op in self._ops(name) if op["phase"] not in ("complete", "failed")]
 
     def _operation_for_project(self, name, project_id):
         """Keep pre-existing operation IDs and their uncertain-write history."""
@@ -203,7 +212,7 @@ class ProjectControl:
         """Advance every undeployed enable / pause request one step; the web console's worker calls it."""
         for path in sorted(self._path("x").parent.glob("*.json")):
             op = json.loads(path.read_text())
-            if "control" in op and op["phase"] != "complete":
+            if "control" in op and (op["phase"] not in ("complete", "failed") or "release_pending" in op):
                 try:
                     self.advance(path.stem)
                 except Exception as error:  # adapter failures must not starve other projects
@@ -214,7 +223,7 @@ class ProjectControl:
         with self._locked(_project_id(name)):
             # Reload persisted intent: a lost response may hide a successful write.
             op = self._load(operation_id)
-            if op["phase"] != "complete":
+            if op["phase"] not in ("complete", "failed"):
                 self._block(op, f"control advancement failed: {error}")
                 self._save(operation_id, op)
 
@@ -229,9 +238,13 @@ class ProjectControl:
         name = self._load(operation_id)["plan"]["name"]
         with self._locked(_project_id(name)):
             op = self._load(operation_id)
-            if op["phase"] == "complete":
+            if op["phase"] in ("complete", "failed"):
+                if "release_pending" in op:  # a crash cut the hold cleanup short: retry it
+                    self._release_holds(operation_id)
                 return  # verified completion is history; later deployments do not undo it
             control = "control" in op  # no board, provisioning or write verification: nothing new
+            if control and not self._admitted(operation_id, op):
+                return
             if op["merge_sha"] is None and (control or self._prepare_board(operation_id, op)):
                 if control or self._provisioned(op):
                     self._publish(operation_id, op)
@@ -239,7 +252,77 @@ class ProjectControl:
                     self._block(op, "provisioning and sandbox verification incomplete")
             if op["merge_sha"] is not None and (control or self._writes_verified(operation_id, op)):
                 self._deploy(op)
+            if control and op["phase"] == "complete" and "release_pending" not in op:
+                # The deployed configuration now carries this state: the holds of the operations
+                # complete before it are redundant. Name them in the completing save so a crash
+                # cannot lose the cleanup, and a retry never touches a later operation's hold.
+                op["release_pending"] = [i for i, o in self._ops(name)
+                                         if i != operation_id and o.get("held") and o["phase"] == "complete"]
             self._save(operation_id, op)
+            if "release_pending" in op:
+                self._release_holds(operation_id)
+
+    def _release_holds(self, operation_id):
+        done = self._load(operation_id)
+        for old_id in done["release_pending"]:
+            old = self._load(old_id)
+            self._save(old_id, {**old, "held": False})
+        self._save(operation_id, {k: v for k, v in done.items() if k != "release_pending"})
+
+    def abandon(self, operation_id):
+        """Fail an operation that is not complete; its reservation hold is released."""
+        name = self._load(operation_id)["plan"]["name"]
+        with self._locked(_project_id(name)):
+            op = self._load(operation_id)
+            if op["merging"] or op["merge_sha"] is not None:
+                raise ConflictingConfirmation("resolve the merge before abandoning " + operation_id)
+            if op["phase"] != "complete":
+                self._close_open_pr(operation_id, op)
+                op.update(phase="failed", blocker="", held=False)
+                self._save(operation_id, op)
+
+    def _close_open_pr(self, op_id, op):
+        """An open PR could still merge and promise capacity that is gone: close it first.
+
+        Looks the PR up by branch even when its creation response was lost (`pr` unset)."""
+        gh, name = self.github, op["plan"]["name"]
+        branch = f"control/{name}/{op_id}" if "control" in op else f"onboard/{name}"
+        pr = gh.find_pr(branch)
+        recorded = op["pr"]["number"] if op["pr"] else None
+        if pr and pr.get("state", "open") == "open" and recorded in (None, pr["number"]):
+            gh.close_pr(pr["number"])
+            pr = gh.find_pr(branch)
+        if (pr is None and recorded is not None) or (pr and (
+                pr.get("merged") or pr.get("state", "open") != "closed"
+                or recorded not in (None, pr["number"]))):
+            raise ConflictingConfirmation("the PR is not confirmed closed; resolve it before abandoning " + op_id)
+
+    def _admitted(self, op_id, op):
+        """An enable request holds a reservation from admission until it completes or fails.
+
+        Admission and every claim decision run under the claims lock, so a free
+        place is promised to exactly one of them. Pausing needs no place."""
+        if op.get("held") or not op["control"]["enabled"]:
+            return True
+        name = op["plan"]["name"]
+        with claim_lock(self.state_dir):
+            enabled = {k for k, v in self.github.main()[1]["projects"].items() if v["desired_enabled"]}
+            # a merged change not yet deployed (a pause) still leaves the dispatcher with the old state
+            undeployed = {o["plan"]["name"] for _, o in self._all_ops()
+                          if "control" in o  # an onboarding merge deploys the project paused
+                          and o["phase"] not in ("complete", "failed") and (o["merging"] or o["merge_sha"])}
+            projects = enabled | undeployed | set(claims.held_reservations(self.state_dir)) | {name}
+            if (len(projects) > claims.PLACES
+                    or claims.places_taken(load_all(self.state_dir), projects) > claims.PLACES):
+                self._block(op, "waiting for reservation capacity: "
+                                "unfinished tasks and held reservations leave no place")
+                self._save(op_id, op)
+                return False
+            op.update(held=True)
+            if op["phase"] == "blocked":
+                self._wait(op)
+            self._save(op_id, op)
+        return True
 
     def verify_writes(self, operation_id):
         """Authorize and write-test every member repository; return the per-repository records."""

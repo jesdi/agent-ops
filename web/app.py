@@ -25,6 +25,7 @@ from dispatcher.config import (Config, Project, apply_stored_models, load_config
                                policy_for, project_target,
                                referenced_providers, routed_providers,
                                stranded, with_models)
+from dispatcher.claims import held_reservations
 from dispatcher.convergence import pass_lock
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
                                override_refusal, parse_entry,
@@ -432,7 +433,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             max_active={**{t.name: t.max_active for t in boot.targets},
                         **{p.key: project_target(p).max_active for p in boot.projects}},
             last_claimed=sources.last_claims(),
-            max_open=boot.max_open, projects=boot.projects)
+            max_open=boot.max_open, projects=boot.projects,
+            holds=held_reservations(boot.state_dir))
 
     @task_routes(app, "get", response_model=read_model.TaskDetail)
     def task_detail(ref: TaskRef = REF,
