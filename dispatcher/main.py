@@ -6,6 +6,7 @@ systemd timer; one invocation = one pass."""
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from dispatcher.convergence import claim_lock, pass_lock
+from dispatcher.convergence import MIGRATION_LOCK, claim_lock, pass_lock
 from dispatcher.config import (Config, Target, apply_stored_models,
                                load_config, policy_for, project_target,
                                referenced_providers, routed_providers, stranded)
@@ -3591,6 +3592,91 @@ def main() -> None:
             # replaced (a removed track would park the tasks it claims).
             deps.sessions.renew_tokens()
             guarded_pass(apply_stored_models(boot), deps, args.config, dry_run=args.dry_run)
+
+
+def _unfinished(state_dir, targets) -> dict:
+    tasks = state.load_all(state_dir)
+    return {t: sum(1 for k in tasks if k.target == t and k.stage not in state.TERMINAL_STAGES)
+            for t in targets}
+
+
+def migration_check(state_dir, infra) -> dict:
+    """Read the live migration state: consumers, mappings, credentials, unfinished
+    and above-limit tasks, and legacy records no proven mapping covers."""
+    mappings = infra.mapping()
+    unfinished = _unfinished(state_dir, mappings)
+    return {
+        "consumers": [c["id"] for t in mappings for c in infra.legacy_consumers(t)],
+        "mappings": mappings,
+        "credentials": {t: infra.credentials(t) for t in mappings},
+        "unfinished": unfinished,
+        "over_limit": {t: n - infra.limit(t) for t, n in unfinished.items() if n > infra.limit(t)},
+        "unmapped": state.unproven_legacy(state_dir, mappings),
+        "unmapped_messages": state.unproven_message_queues(state_dir, mappings),
+    }
+
+
+def _roll_out_target(infra, target: str, report: dict) -> bool:
+    """Switch one target to scoped access and retire its shared credential once
+    no legacy consumer remains. True while a consumer still needs the old one."""
+    infra.switch(target)
+    report["switched"].append(target)
+    if infra.legacy_consumers(target):
+        return True
+    if infra.credentials(target).get("shared") == "present":
+        infra.revoke_shared(target)
+        report["retired"].append(target)
+    return False
+
+
+def _migrate_state_blockers(work, infra, mappings) -> list[str]:
+    live = [t for t in mappings if infra.legacy_consumers(t)]
+    return ([f"{t}#{i}: unresolved migration conflict"
+             for t, i in state.migrate_legacy(work, mappings, live)]
+            + [f"{t}#{i}: no proven repository mapping"
+               for t, i in state.unproven_legacy(work, mappings)]
+            + [f"{path}: no proven message queue owner"
+               for path in state.unproven_message_queues(work, mappings)])
+
+
+def _migrate_state_and_access(work, infra, rehearse: bool, report: dict) -> bool:
+    mappings = infra.mapping()
+    report["blockers"] += _migrate_state_blockers(work, infra, mappings)
+    waiting = False
+    for target in mappings:
+        denied = infra.test_access(target)
+        if denied:
+            report["blockers"].append(f"{target}: replacement access denied: {', '.join(denied)}")
+        elif rehearse:
+            waiting = waiting or bool(infra.legacy_consumers(target))
+        else:
+            waiting = _roll_out_target(infra, target, report) or waiting
+    return waiting
+
+
+def migration_apply(state_dir, infra, rehearse: bool = False) -> dict:
+    """Idempotent rollout: revision, schema, state, then per target verify scoped
+    access, switch, and retire the shared credential once no consumer needs it.
+    rehearse=True migrates a copy of the state and changes nothing live."""
+    report = {"completed": False, "blockers": [], "retired": [], "switched": []}
+    if not infra.select_revision():
+        report["blockers"].append("no compatible application revision")
+        return report
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(state_dir)
+        if rehearse:
+            work = Path(tmp) / "state"
+            shutil.copytree(state_dir, work)
+        # live apply excludes dispatcher passes: sources are read through deletion
+        with contextlib.ExitStack() as locks:
+            if not rehearse:
+                locks.enter_context(pass_lock(state_dir))
+                # waitd's completion writes take this one; migration reads through deletion
+                locks.enter_context(pass_lock(state_dir, name=MIGRATION_LOCK))
+                infra.apply_schema()
+            waiting = _migrate_state_and_access(work, infra, rehearse, report)
+    report["completed"] = not report["blockers"] and not waiting
+    return report
 
 
 if __name__ == "__main__":

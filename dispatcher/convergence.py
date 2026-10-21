@@ -13,6 +13,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+MIGRATION_LOCK = "migration.lock"
+
+
 @contextmanager
 def pass_lock(state_dir: str, timeout: float | None = None,
               name: str = "convergence.lock"):

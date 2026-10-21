@@ -69,7 +69,7 @@ def test_encoded_target_cannot_overwrite_qualified_task(socket_ping, extra):
 def test_unmapped_socket_ping_still_requires_peer_authentication(socket_ping, target):
     root, ping = socket_ping
     ping({"target": target, "issue": 12, "session_id": "forged"})
-    assert not [p for p in root.rglob("*") if p.is_file()]
+    assert not [p for p in root.rglob("*") if p.is_file() and p.name != "migration.lock"]
 
 
 @pytest.mark.parametrize("payload", [

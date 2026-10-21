@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import UnixStreamServer
 
+from dispatcher.convergence import MIGRATION_LOCK, pass_lock
 from dispatcher.state import (SessionRecord, execution_token_matches, load,
                               mark_background, mark_waiting, session_owner,
                               token_issued, write_session)
@@ -151,6 +152,11 @@ def handle_ping(body: bytes, state_dir, *, legacy_sender=None) -> None:
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         print(f"waitd: dropping corrupt ping: {body!r}", file=sys.stderr)
         return
+    with pass_lock(state_dir, name=MIGRATION_LOCK):
+        _handle_proven_ping(rec, body, state_dir, target, issue, repo, legacy_sender)
+
+
+def _handle_proven_ping(rec, body, state_dir, target, issue, repo, legacy_sender) -> None:
     repo = _ping_owner(rec, state_dir, target, issue, repo, legacy_sender)
     if repo is None:
         print(f"waitd: dropping ping for unproven task {target}#{issue}",

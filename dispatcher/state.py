@@ -1015,7 +1015,8 @@ def _legacy_identities(root: Path, proven: dict[str, str]) -> set[tuple[str, int
 def _sidecar_identities(root: Path) -> set[tuple[str, int]]:
     """(target, issue) parsed from the name of every sidecar file."""
     names = [p.name.removeprefix(pre).removesuffix(suf)
-             for pattern, pre, suf in _SIDECAR_GLOBS for p in root.glob(pattern)]
+             for pattern, pre, suf in _SIDECAR_GLOBS for p in root.glob(pattern)
+             if not p.name.startswith("session-owner-")]
     return {k for k in map(parse_task_key, names) if k}
 
 
@@ -1210,6 +1211,37 @@ def _migrate_messages(root: Path, target: str, issue: int, repo: str) -> list[Pa
     return [src]
 
 
+def _bare_message_queues(root: Path) -> list[Path]:
+    return sorted(p for p in (root / "messages").glob("*.jsonl") if p.stem.isdigit())
+
+
+def unproven_message_queues(state_dir: str | Path, proven: dict[str, str]) -> list[str]:
+    """Issue-only queues require a sole project and no unmapped legacy owners."""
+    if len(proven) == 1 and not unproven_legacy(state_dir, proven):
+        return []
+    root = Path(state_dir)
+    return [str(p.relative_to(root)) for p in _bare_message_queues(root)]
+
+
+def _normalize_message_queues(root: Path, proven: dict[str, str]) -> None:
+    """Normalize provably owned pre-project queues before repository qualification.
+
+    Merge by message id and verify delivery history before removing a source;
+    an interrupted migration can safely repeat this step.
+    """
+    if len(proven) != 1 or unproven_message_queues(root, proven):
+        return
+    target = next(iter(proven))
+    for src in _bare_message_queues(root):
+        dst = root / "messages" / f"{task_key(target, int(src.stem))}.jsonl"
+        if dst.exists():
+            _merge_messages(src, dst)
+        else:
+            _copy_file(src, dst)
+        _verify_messages(src, dst)
+        src.unlink()
+
+
 def _sidecar_paths(root: Path, target: str, issue: int, repo: str = "") -> list[Path]:
     k = task_key(target, issue, repo)
     return [_session_path(root, target, issue, repo), _waiting_path(root, target, issue, repo),
@@ -1241,26 +1273,46 @@ def _migrate_archive(root: Path, target: str, issue: int, repo: str) -> list[Pat
     return [old_root]
 
 
-def migrate_legacy(state_dir: str | Path, proven: dict[str, str]) -> None:
-    """Migrate proven identities, retaining originals on ambiguous conflicts.
+def migrate_legacy(state_dir: str | Path, proven: dict[str, str],
+                   live_targets: Sequence[str] = ()) -> list[tuple[str, int]]:
+    """Migrate proven identities, retaining originals on ambiguous conflicts;
+    returns the (target, issue) of every unresolved conflict.
 
     Copies are journaled and reconciled on retries. Original records remain
     until every replacement has been verified; message queues merge by id.
+    A target in `live_targets` has a running legacy session: its tasks keep
+    their session owner even before a first completion record exists.
     """
     root = Path(state_dir)
+    _normalize_message_queues(root, proven)
     originals: list[Path] = []
+    unresolved: list[tuple[str, int]] = []
     for target, issue in sorted(_legacy_identities(root, proven)):
         repo = proven[target]
         try:
+            # a live legacy session keeps its owner once its task is qualified
+            live = target in live_targets or _session_path(root, target, issue).exists()
             pending = _migrate_files(root, target, issue, repo)
             pending += _migrate_archive(root, target, issue, repo)
         except _MigrationConflict as exc:
             warnings.warn(f"migration unresolved for {target}#{issue}: {exc}",
                           RuntimeWarning)
+            unresolved.append((target, issue))
             continue
+        if live and not session_owner(root, target, issue):
+            record_session_owner(root, target, issue, repo)
         originals += pending
     for src in originals:
         shutil.rmtree(src) if src.is_dir() else src.unlink()
+    return unresolved
+
+
+def unproven_legacy(state_dir: str | Path, proven: dict[str, str]) -> list[tuple[str, int]]:
+    """(target, issue) of every unqualified record no proven mapping covers."""
+    root = Path(state_dir)
+    found = _unqualified(root.glob("task-*.json")) | _sidecar_identities(root)
+    found |= _unqualified(root.glob("artifacts/*/task.json")) | _unqualified_intents(root)
+    return sorted((t, i) for t, i in found if t not in proven)
 
 
 def session_owner(state_dir: str | Path, target: str, issue: int) -> str:
