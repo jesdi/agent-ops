@@ -188,6 +188,65 @@ class ProjectControl:
             status["provisioning"] = provisioning.view(op.get("provisioning") or provisioning.new())
         return status
 
+    def completion(self, operation_id, web):
+        """Verify an onboarding from what is applied: the deployed revision, the web's project
+        view and the box's checkouts, never from the confirmed plan alone."""
+        op = self._load(operation_id)
+        name = op["plan"]["name"]
+        main_sha, config = self.github.main()
+        entry = config["projects"].get(name)
+        blockers = []
+        deployed = self.deployer.applied()["revision"]
+        applied = op["applied_revision"]
+        if deployed == main_sha:
+            if entry is None:
+                blockers.append(f"deployment: {name} is not in the configuration deployed at {main_sha}")
+            expected = entry
+        else:  # main's configuration is not what the box runs: use verified deployment history
+            expected = self._verified_project(name, deployed)
+            if expected is None:
+                blockers.append(f"deployment: configuration at {main_sha} of {name} is not deployed (applied {deployed})")
+        if applied is None:
+            blockers.append(f"deployment: {name} has no verified applied revision yet")
+        tab = next((t for t in web.projects() if t["name"] == name), None)
+        if tab is None:
+            blockers.append(f"web: project {name} is not in the applied project view")
+        elif expected is not None:
+            if tab["state"] != ("enabled" if expected["desired_enabled"] else "paused"):
+                blockers.append(f"web: project {name} is {tab['state']}, not as configured")
+            if _members(tab["repositories"]) != _members(expected["repositories"]):
+                blockers.append(f"web: project {name} serves a different repository membership than configured")
+            board = expected["board"]
+            if tab.get("board") != dict(owner=board["owner"], number=board["number"]):
+                blockers.append(f"web: project {name} serves a different board than configured")
+        entry = expected
+        repos = (entry or _delta(op["plan"]))["repositories"]
+        if self.host is None:
+            blockers.append(f"checkout: {name} cannot be verified without a host adapter")
+        else:
+            blockers += [f"checkout: {r['repo']} of {name} is missing at {r['clone_path']}"
+                         for r in repos if not self.host.has_checkout(r["clone_path"])]
+            blockers += self.host.unresolved_inputs()
+        return dict(complete=not blockers, applied_revision=deployed if applied is not None else None, blockers=blockers,
+                    project=dict(state=tab and tab["state"], tasks=tab and tab["tasks"], tab=tab and name),
+                    board=entry and dict(owner=entry["board"]["owner"], number=entry["board"]["number"]),
+                    repositories=[dict(repo=r["repo"], checkout=r["clone_path"],
+                                       present=self.host is not None and self.host.has_checkout(r["clone_path"]))
+                                  for r in repos])
+
+    def _verified_project(self, name, revision):
+        """Recover the versioned entry verified at this exact deployed revision.
+
+        Enable/pause operations carry the whole project entry, so their durable
+        evidence remains usable after main moves and after service restarts.
+        Pending or merely merged operations are never deployment evidence.
+        """
+        if revision is None:
+            return None
+        return next((_proposed(op) for _, op in self._all_ops()
+                     if op["plan"]["name"] == name and op["phase"] == "complete"
+                     and op["applied_revision"] == revision), None)
+
     def operations(self):
         return [path.stem for path in sorted(self._path("x").parent.glob("*.json"))]
 
@@ -616,6 +675,10 @@ def _delta(plan):
     """New projects start paused; enabling is a separately confirmed operation."""
     return {"repositories": _canonical_plan(plan)["repositories"], "board": plan["board"],
             "desired_enabled": False, "models": plan["models"]}
+
+
+def _members(repositories):
+    return sorted(normalize_repo(r if isinstance(r, str) else r["repo"]) for r in repositories)
 
 
 def _owner(config, plan, exclude):

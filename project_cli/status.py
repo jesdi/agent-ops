@@ -26,6 +26,22 @@ def _section(title, lines, out):
         print(f"{title}\n" + "\n".join(f"  {l}" for l in lines) + "\n", file=out)
 
 
+def _completion(name, comp, out):
+    print("Completion:", file=out)
+    if comp["applied_revision"]:
+        print(f"Applied revision: {show(comp['applied_revision'])}", file=out)
+    project = comp["project"]
+    if project["tab"]:
+        print(f"Project: {show(name)} - {show(project['state'])}, {show(project['tasks'])} tasks", file=out)
+    if comp["board"]:
+        print(f"Board: {show(comp['board']['owner'])}/{show(comp['board']['number'])}", file=out)
+    for r in comp["repositories"]:
+        print(f"Repository: {show(r['repo'])} -> {show(r['checkout'])}", file=out)
+    for blocker in comp["blockers"]:
+        print(f"Blocked: {show(blocker)}", file=out)
+    print(file=out)
+
+
 def status(args, out, err, box):
     state = box.status(args[0]) if args else None
     if state is None:
@@ -62,5 +78,8 @@ def status(args, out, err, box):
             and all(s["authorization"]["state"] == "granted" and s["verification"]["state"] == "passed"
                 for s in repos.values())
             and all(c["input"] == "present" and c["effective"] for c in state["capabilities"].values()))
-    print("Onboarding: " + ("complete" if done else "incomplete"), file=out)
+    comp = state.get("completion")
+    if comp:
+        _completion(args[0], comp, out)
+    print("Onboarding: " + ("complete" if done and (not comp or comp["complete"]) else "incomplete"), file=out)
     return 0

@@ -218,6 +218,16 @@ def _ask(prompt, stdin, out):
     return stdin.readline().strip()
 
 
+def _operation(operation, out):
+    if operation:
+        print(f"Operation: {_show(operation)}", file=out)
+
+
+def _report(name, out, err, box):
+    """The completion report of an onboarding; a box with no status read of it has none."""
+    return status([name], out, err, box) if getattr(box, "status", lambda _: None)(name) else 0
+
+
 def _add(args, stdin, out, err, box):
     name = args[0] if args else _ask("Project name: ", stdin, out)
     repos = args[1:] or _ask("Repositories (space separated): ", stdin, out).split()
@@ -239,8 +249,8 @@ def _add(args, stdin, out, err, box):
             print("Declined; nothing was changed", file=out)
             return 0
         print(f"Resuming onboarding of {name!r}", file=out)
-        box.resume(name)
-        return 0
+        _operation(box.resume(name), out)
+        return _report(name, out, err, box)
     found = {r: box.inspect(r) for r in repos}
     plan = _build(name, repos, found)
     blocked = _prepare(plan, found, box)
@@ -256,9 +266,10 @@ def _add(args, stdin, out, err, box):
             if plan["board"] is None:
                 print(f"Choose a board before confirming: {_BOARD_HELP}", file=err)
                 continue
-            box.confirm(plan)
+            operation = box.confirm(plan)
             print(f"Confirmed revision {plan['revision']}", file=out)
-            return 0
+            _operation(operation, out)
+            return _report(name, out, err, box)
         if not answer.startswith("edit "):
             print("Declined; nothing was changed", file=out)
             return 0

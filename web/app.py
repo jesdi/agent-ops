@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+from collections import Counter
 import re
 import yaml
 from contextlib import contextmanager
@@ -27,6 +28,7 @@ from dispatcher.config import (Config, Project, apply_stored_models, load_config
                                stranded, with_models)
 from dispatcher.claims import held_reservations
 from dispatcher.convergence import pass_lock
+from dispatcher.state import load_all
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
                                override_refusal, parse_entry,
                                stage_pick, track_from_labels)
@@ -189,8 +191,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     @app.get("/api/projects")
     def projects(op: Operator = Depends(current_operator)):
+        tasks = Counter(t.target for t in load_all(boot.state_dir))
         return {"projects": [
-            {"name": p.key, "state": "enabled" if p.enabled else "paused",
+            {"name": p.key, "state": "enabled" if p.enabled else "paused", "tasks": tasks[p.key],
+             "board": {"owner": p.board_owner, "number": p.board_number},
              "repositories": [r.repo for r in p.repositories],
              "pending": project_control.pending_change(p.key) if project_control else None}
             for p in boot.projects]}

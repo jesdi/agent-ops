@@ -78,6 +78,10 @@ class Box:
             *(dict(name=n, type=t) for n, t in (("Impact", "number"), ("Effort", "number"),
                                                 ("Score", "number"), ("Area", "single_select")))])
 
+    def status(self, name):
+        self.reads.append(("status", name))
+        return None
+
     def confirm(self, plan):
         self.writes.append(("confirm", plan))
         return "op-1"
