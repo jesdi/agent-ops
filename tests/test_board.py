@@ -37,6 +37,23 @@ def _page(nodes, cursor=None):
         "nodes": nodes}}}})
 
 
+def registered_board_gh(calls, project_id="REG"):
+    """gh for a registered board with no cards or issues; every argv is recorded in `calls`."""
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[1:3] == ["project", "field-list"]:
+            out = json.dumps({"fields": [{"name": n, "id": f"{project_id}_{n}", "options": []}
+                                         for n in ("Status", "Impact", "Effort", "Score", "Area")]})
+        elif "repositoryOwner" in " ".join(argv):
+            out = json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": project_id}}}})
+        elif argv[1:3] == ["api", "graphql"]:
+            out = _page([])
+        else:  # the repository's issue list and open-issue pages
+            out = "[]"
+        return subprocess.CompletedProcess(argv, 0, out, "")
+    return run
+
+
 class FakeGh:
     """subprocess.run stand-in for gh: board pages in order, one issue list,
     and every mutation recorded."""

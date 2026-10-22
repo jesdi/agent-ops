@@ -119,25 +119,19 @@ def test_board_mutation_is_refused_for_an_unregistered_board(monkeypatch):
 
 def test_board_read_refuses_clone_metadata_naming_another_project(tmp_path):
     import json
-    import subprocess
-    import pytest
     from dispatcher import board
     meta = {"projectId": "OTHER", "fields": {
         n: {"id": n, "options": {}} for n in
         ("Status", "Impact", "Effort", "Score", "Area")}}
     (tmp_path / ".backlog").mkdir()
     (tmp_path / ".backlog" / "project-meta.json").write_text(json.dumps(meta))
+    from tests.test_board import registered_board_gh
     calls = []
-
-    def run(argv, **kw):
-        calls.append(argv)
-        out = json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": "REG"}}}})
-        return subprocess.CompletedProcess(argv, 0, out, "")
-
-    with pytest.raises(board.BoardError):
-        board.read("o/r", str(tmp_path), run=run, credentials=_creds([0.0]),
-                   key="me/1")
-    assert len(calls) == 1  # only the node-id lookup ran
+    brd = board.read("o/r", str(tmp_path), run=registered_board_gh(calls),
+                     credentials=_creds([0.0]), key="me/1")
+    # The clone's project is refused: only the registered board is resolved and read.
+    assert brd.schema.project_id == "REG" and brd.bound == "REG"
+    assert "OTHER" not in json.dumps(calls)
 
 
 def test_renewal_keeps_credentials_when_herdr_is_unreachable(tmp_path, monkeypatch):

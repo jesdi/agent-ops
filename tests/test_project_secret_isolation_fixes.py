@@ -203,7 +203,7 @@ def test_the_console_withholds_a_scoped_sessions_live_output_without_the_credent
     monkeypatch.setattr(dispatcher.config, "load_config", lambda path: type(
         "Cfg", (), dict(session_memory="2g", session_cpus="2", state_dir=str(world.state)))())
     monkeypatch.setattr(web.sources, "Sources", lambda state, sessions, gh: seen.setdefault("s", sessions))
-    monkeypatch.setattr(web.app, "create_app", lambda cfg, sources: None)
+    monkeypatch.setattr(web.app, "create_app", lambda cfg, sources, **kw: None)
     monkeypatch.setattr(uvicorn, "run", lambda *a, **kw: None)
     web.__main__.main(["--config", str(world.tmp / "targets.yaml")])
     console = seen["s"]

@@ -490,16 +490,11 @@ def test_board_read_refuses_a_registered_key_whose_clone_names_another_board(tmp
     meta.write_text(json.dumps({"projectId": "OTHER", "fields": {
         name: {"id": name, "options": {}}
         for name in ("Status", "Impact", "Effort", "Score", "Area")}}))
+    from tests.test_board import registered_board_gh
     creds, _, _ = build()
     calls = []
-
-    def run(argv, **kw):
-        calls.append(argv)
-        out = json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": "REG"}}}})
-        return subprocess.CompletedProcess(argv, 0, out, "")
-    with pytest.raises(board.BoardError):
-        board.read("me/analytics", str(tmp_path), run=run, credentials=creds,
-                   key="me/1")  # registered, but the clone names board OTHER
-    # Only the registered board's node-id lookup ran; OTHER was never read.
-    assert len(calls) == 1
+    brd = board.read("me/analytics", str(tmp_path), run=registered_board_gh(calls),
+                     credentials=creds, key="me/1")  # registered, but the clone names board OTHER
+    # The stale clone mapping is refused: only the registered board is resolved and read.
+    assert brd.schema.project_id == "REG" and brd.bound == "REG"
     assert "OTHER" not in json.dumps(calls)
