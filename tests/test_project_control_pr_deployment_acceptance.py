@@ -148,6 +148,34 @@ class Deployer:
         self.direct_writes.append((a, kw))
 
 
+BOARD_FIELDS = [dict(name="Status", type="single_select", options=["Inbox", "Ready", "In progress"]),
+                dict(name="Impact", type="number"), dict(name="Effort", type="number"),
+                dict(name="Score", type="number"), dict(name="Area", type="single_select", options=["general"])]
+# The confirmed board as the trusted read verifies it; this is what publication records.
+VERIFIED_BOARD = dict(PLAN["board"], id="PVT_7", fields={f["name"]: f"F_{f['name']}" for f in BOARD_FIELDS})
+
+
+class Boards:
+    """The confirmed board, already prepared: complete structure, no cards."""
+
+    def board_state(self, ref):
+        return dict(owner=ref["owner"], number=ref["number"], id=VERIFIED_BOARD["id"],
+                    fields=[dict(f, id=VERIFIED_BOARD["fields"][f["name"]]) for f in BOARD_FIELDS], cards=[])
+
+
+class Verifier:
+    """Every required write is authorized, succeeds and is cleaned up."""
+
+    def authorize(self, target):
+        return dict(state="granted", action="")
+
+    def write(self, target, kind):
+        return f"{target}:{kind}"
+
+    def cleanup(self, target, receipt):
+        return dict(state="closed" if receipt["kind"] == "pr" else "removed", detail="")
+
+
 @pytest.fixture
 def world(tmp_path):
     from project_control import ProjectControl
@@ -156,7 +184,8 @@ def world(tmp_path):
     deployer = Deployer(state, github)
 
     def control():
-        return ProjectControl(state_dir=str(state), github=github, deployer=deployer)
+        return ProjectControl(state_dir=str(state), github=github, deployer=deployer,
+                              boards=Boards(), verifier=Verifier())
     return type("World", (), dict(state=state, github=github, deployer=deployer,
                                   control=staticmethod(control)))
 
@@ -288,7 +317,7 @@ def test_only_the_exact_confirmed_delta_reaches_the_merge(world):
     assert set(proposed) == {"billing", "analytics"}
     assert proposed["billing"] == BILLING
     assert proposed["analytics"]["models"] == PLAN["models"]
-    assert proposed["analytics"]["board"] == PLAN["board"]
+    assert proposed["analytics"]["board"] == VERIFIED_BOARD
     assert proposed["analytics"]["desired_enabled"] is False, "a new project starts paused (R12/R13)"
     assert [r if isinstance(r, str) else r["repo"] for r in proposed["analytics"]["repositories"]] == [REPO]
     published = proposed["analytics"]["repositories"][0]

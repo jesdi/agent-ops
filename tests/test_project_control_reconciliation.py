@@ -4,7 +4,7 @@ from copy import deepcopy
 import pytest
 
 from project_control import ConflictingConfirmation
-from test_project_control_pr_deployment_acceptance import BILLING, PLAN, world
+from test_project_control_pr_deployment_acceptance import BILLING, PLAN, VERIFIED_BOARD, world
 
 
 def pending(world):
@@ -223,7 +223,7 @@ def test_publication_preserves_whole_configuration_through_refresh_and_deploy(wo
     control, op, number = pending(world)
     assert gh.prs[number]["config"] == {**globals_before, "projects": {
         **gh.config["projects"], "analytics": {
-            "repositories": PLAN["repositories"], "board": PLAN["board"],
+            "repositories": PLAN["repositories"], "board": VERIFIED_BOARD,
             "models": PLAN["models"], "desired_enabled": False}}}
     install_refresh(world)
     gh.config["capacity"] = 8
