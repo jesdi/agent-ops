@@ -369,6 +369,10 @@ class Boards:
     def create(self, owner, title):
         return dict(owner=owner, number=7, id="PVT_7")
 
+    def board_state(self, ref):
+        return {**ref, "id": "PVT_7", "fields": [{**f, "id": f"F_{f['name']}"} for f in FIELDS],
+                "cards": self.cards}
+
     def apply(self, ref, prep):
         return {"fields": {}}
 
@@ -384,7 +388,7 @@ class Boards:
 
 def test_the_confirmed_import_adds_each_issue_once_across_retries_and_keeps_existing_cards(tmp_path):  # S11
     from tests.test_project_control_pr_deployment_acceptance import (
-        Deployer, Github, PLAN, drive)
+        Deployer, Github, PLAN, Verifier, drive)
     from project_control import ProjectControl
 
     existing = [card(REPO, 1, "Ready")]
@@ -397,7 +401,7 @@ def test_the_confirmed_import_adds_each_issue_once_across_retries_and_keeps_exis
     github = Github(state)
     boards = Boards(existing, fail_import=1)
     control = ProjectControl(state_dir=str(state), github=github,
-                             deployer=Deployer(state, github), boards=boards)
+                             deployer=Deployer(state, github), boards=boards, verifier=Verifier())
     op = control.confirm({**PLAN, "board": plan["board"], "board_prep": plan["board_prep"],
                           "backlog": plan["backlog"]})
     drive(control, op)
@@ -431,6 +435,10 @@ class WorldBoards:
     def _board(self, ref):
         return next(b for b in self.boards if b["number"] == ref["number"])
 
+    def board_state(self, ref):
+        live = self._board(ref)
+        return {**live, "fields": [{**f, "id": f"F_{f['name']}"} for f in live["fields"]], "cards": live["cards"]}
+
     def apply(self, ref, prep):
         board = self._board(ref)
         fields = {f["name"]: f for f in board["fields"]}
@@ -449,12 +457,12 @@ class WorldBoards:
 
 
 def _control(tmp_path, boards):
-    from tests.test_project_control_pr_deployment_acceptance import Deployer, Github
+    from tests.test_project_control_pr_deployment_acceptance import Deployer, Github, Verifier
     from project_control import ProjectControl
     state = tmp_path / "state"
     github = Github(state)
-    return ProjectControl(state_dir=str(state), github=github,
-                          deployer=Deployer(state, github), boards=boards), github
+    return ProjectControl(state_dir=str(state), github=github, deployer=Deployer(state, github),
+                          boards=boards, verifier=Verifier()), github
 
 
 def _confirmed(box, stdin):

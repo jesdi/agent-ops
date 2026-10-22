@@ -11,15 +11,9 @@ from tests.test_project_board_onboarding_acceptance import (
 )
 
 
-class InspectableBoards(WorldBoards):
-    def board_state(self, ref):
-        live = self._board(ref)
-        return {**live, "fields": [{**f, "id": f"F_{f['name']}"} for f in live["fields"]], "cards": live["cards"]}
-
-
 def world(cards=()):
-    return InspectableBoards([{**REF, "id": "PVT_7", "title": "T", "fields": FIELDS,
-                               "cards": list(cards)}])
+    return WorldBoards([{**REF, "id": "PVT_7", "title": "T", "fields": FIELDS,
+                         "cards": list(cards)}])
 
 
 def test_membership_changes_after_cli_confirmation_block_publication(tmp_path):
@@ -128,7 +122,7 @@ def test_a_completed_preparation_does_not_bypass_validation_on_retry(tmp_path):
 
 def test_creation_recovers_and_prepares_a_usable_board(tmp_path):
     plan = _confirmed(Box({REPO: repo_info(ref=None)}), "edit board=create:example/Backlog\nyes\n")
-    boards = InspectableBoards(lose_create=True)
+    boards = WorldBoards(lose_create=True)
     control, github = _control(tmp_path, boards)
     op = control.confirm(plan)
     control.advance(op)
