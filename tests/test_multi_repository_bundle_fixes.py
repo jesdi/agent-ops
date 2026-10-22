@@ -145,10 +145,12 @@ def _exploration_plan(tmp_path, monkeypatch):
     """Exploration widened the scope with no spec repository: spec and tickets
     were written into the origin checkout; the backend checkout has neither."""
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    for var in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(var, "t@t")  # CI has no git identity: the test and the spec publish both commit
     c = cfg(tmp_path)
     _, front = _origin_and_worktree(tmp_path, "front", f"agent/task-{N}")
     back_origin, back = _origin_and_worktree(tmp_path, "back", f"agent/task-{N}")
-    for args in (("rm", "-rq", "specs"), ("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "empty"),
+    for args in (("rm", "-rq", "specs"), ("commit", "-qm", "empty"),
                  ("push", "-q", "origin", f"HEAD:refs/heads/agent/task-{N}")):
         subprocess.run(["git", "-C", str(back), *args], check=True, capture_output=True)
     (front / ".agent" / "tickets").mkdir(parents=True)
