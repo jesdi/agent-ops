@@ -89,8 +89,14 @@ class SharedBoardGh:
         if "mutation" in query:
             self.mutations.append(" ".join(args))
             return ok()
+        if "repositoryOwner" in query:  # the registered board's identity
+            return ok(json.dumps({"data": {"repositoryOwner": {
+                "projectV2": {"id": SCHEMA["projectId"]}}}}))
         if args[1:3] == ["api", "graphql"]:
             return ok(_page(self.nodes))
+        if args[1] == "api" and "--paginate" in args:  # board.read's open issues
+            repo = args[2].split("/issues")[0].removeprefix("repos/")
+            return ok(json.dumps([[self.issue_by_repo[repo]]]))
         if args[1] == "api":  # issue-types probe: no org support here
             return subprocess.CompletedProcess(args, 1, "", "not an org")
         repo = args[args.index("--repo") + 1]
