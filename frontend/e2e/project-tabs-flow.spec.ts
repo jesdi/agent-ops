@@ -11,7 +11,8 @@ test('project tabs scope queue actions, show pending changes and report a refuse
   const seed = await (await request.get('/api/task/widget/42')).json()
   const taskColumn = board.columns.find((c: { cards: object[] }) => c.cards.length).key
   const cards = ['alpha', 'beta'].map(target =>
-    ({ ...seed.card, target, repo: `example/${target}`, issue: 30, title: `${target} task` }))
+    // Parked whatever earlier specs did to the shared seed card: the reply below wakes it.
+    ({ ...seed.card, target, repo: `example/${target}`, issue: 30, title: `${target} task`, park: 'parked' }))
   const replies: { path: string; text: string }[] = []
   for (const target of ['alpha', 'beta']) {
     await page.route(`**/api/task/${target}/example~${target}/30`, route => route.fulfill({

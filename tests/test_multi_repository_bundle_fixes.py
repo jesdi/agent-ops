@@ -148,7 +148,7 @@ def _exploration_plan(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     _, front = _origin_and_worktree(tmp_path, "front", f"agent/task-{N}")
     back_origin, back = _origin_and_worktree(tmp_path, "back", f"agent/task-{N}")
-    for args in (("rm", "-rq", "specs"), ("commit", "-qm", "empty"),
+    for args in (("rm", "-rq", "specs"), ("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "empty"),
                  ("push", "-q", "origin", f"HEAD:refs/heads/agent/task-{N}")):
         subprocess.run(["git", "-C", str(back), *args], check=True, capture_output=True)
     (front / ".agent" / "tickets").mkdir(parents=True)

@@ -14,7 +14,7 @@ const DIST = fileURLToPath(new URL('../dist/', import.meta.url))
 const PORT = 8481
 
 const parkedCard = {
-  issue: 42, target: 'widget', title: 'Fix login redirect',
+  issue: 42, target: 'widget', repo: '', title: 'Fix login redirect',
   stage: 'implement', park: 'parked', park_reason: 'decision', column: 'parked', slot: -1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?',
@@ -161,6 +161,7 @@ function taskDetail(target, issue) {
     worktree: `/home/agent/worktrees/task-${issue}`,
     ci_run_id: 0, effort: 3, labels: ['auto'],
     timeline: [],
+    required_prs: [], dependency_errors: [],
   }
 }
 
