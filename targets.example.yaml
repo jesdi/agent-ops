@@ -134,6 +134,33 @@ models:
   # Listed first to the sessions that choose a track, in this order.
   pinned: [security, architecture, frontend]
 
+# A project owns one board and a nonempty set of repositories (a multi-repo
+# shop, as opposed to the single-repository `targets:` list below, which
+# keeps working unchanged). Repository identity (URL aliases included) and
+# board identity (board_owner + board_number) must each be unique across
+# every project AND every legacy target. New: paused (enabled: false) until
+# an operator turns it on; omitting `enabled` also means paused.
+# projects:
+#   - key: shop
+#     name: Shop
+#     board_owner: example
+#     board_number: 2
+#     status_field_id: REPLACE_WITH_PROJECT_ID
+#     status_ready_option_id: abc123
+#     status_in_progress_option_id: def456
+#     enabled: false
+#     repositories:
+#       - repo: example/shop-frontend
+#         clone_path: /home/agent/repos/shop-frontend
+#         worktrees_path: /home/agent/repos/shop-frontend.worktrees
+#         rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
+#         gate_cmd: "make gate"
+#       - repo: example/shop-backend
+#         clone_path: /home/agent/repos/shop-backend
+#         worktrees_path: /home/agent/repos/shop-backend.worktrees
+#         rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
+#         gate_cmd: "make gate"
+
 targets:
   - name: example-app
     repo: example/example-app

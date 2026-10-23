@@ -1,6 +1,8 @@
 """dispatcher/herdr.py: JSON envelope parsing and the degrade contract of
 the herdr socket-CLI adapter. `_run` is faked per test with a table of
 argv-prefix -> (returncode, stdout)."""
+import os
+import shlex
 import subprocess
 
 from dispatcher import herdr
@@ -160,15 +162,27 @@ def test_workspace_and_ensure_workspace(monkeypatch):
 
 def test_create_tab_returns_root_pane_and_forwards_env(monkeypatch):
     calls = []
-    fake_run(monkeypatch, [(("tab", "create"), 0, TAB_CREATED)], calls)
+    fake_run(monkeypatch, [(("tab", "create"), 0, TAB_CREATED), (("pane", "run"), 0, "")], calls)
     pane = herdr.create_tab("w1", "task-acme-7", "/wt/7",
-                            env={"TELEGRAM_BOT_TOKEN": "tok", "X": "1"})
+                            env={"HERDR_AGENT": "claude", "TELEGRAM_BOT_TOKEN": "t o'k"})
     assert pane == "w1:p3"
-    assert calls == [["tab", "create", "--workspace", "w1",
-                      "--label", "task-acme-7", "--cwd", "/wt/7",
-                      "--env", "TELEGRAM_BOT_TOKEN=tok", "--env", "X=1",
-                      "--no-focus"]]
+    # Only herdr's own hint is an argument; the token is never in any argv.
+    assert calls[0] == ["tab", "create", "--workspace", "w1",
+                        "--label", "task-acme-7", "--cwd", "/wt/7",
+                        "--env", "HERDR_AGENT=claude", "--no-focus"]
+    assert not any("t o'k" in " ".join(c) for c in calls)
+    # The shell sources the value from a private file and deletes it.
+    [load] = [c[3] for c in calls if c[:3] == ["pane", "run", "w1:p3"]]
+    path = shlex.split(load.split(";")[0])[1]
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    shown = subprocess.run(["sh", "-c", f'{load}; printf %s "$TELEGRAM_BOT_TOKEN"'],
+                           capture_output=True, text=True, check=True).stdout
+    assert shown == "t o'k" and not os.path.exists(path)
     assert herdr.create_tab("w1", "t", "/wt") == "w1:p3"  # env optional
+    # A shell that never got the values: no tab, and no file left behind.
+    fake_run(monkeypatch, [(("tab", "create"), 0, TAB_CREATED), (("pane", "run"), 1, "")], calls)
+    assert herdr.create_tab("w1", "t", "/wt", env={"GH_TOKEN": "x"}) is None
+    assert not os.path.exists(shlex.split(calls[-1][3].split(";")[0])[1])
     fake_run(monkeypatch, [(("tab", "create"), 1, '{"error":{"code":"workspace_not_found"},"id":"i"}')])
     assert herdr.create_tab("w9", "t", "/wt") is None
 
@@ -394,7 +408,7 @@ def test_tab_ensure_closes_an_idle_tab_under_the_label_then_creates(monkeypatch)
 
 
 def test_tab_ensure_creates_workspace_on_first_use_and_forwards_env(monkeypatch):
-    """`workspace list` (absent) -> workspace create -> tab create with --env K=V."""
+    """`workspace list` (absent) -> workspace create -> tab create with --env HERDR_AGENT=V."""
     tab_list_n = 0
     calls = []
 
@@ -417,7 +431,7 @@ def test_tab_ensure_creates_workspace_on_first_use_and_forwards_env(monkeypatch)
 
     monkeypatch.setattr(herdr, "_run", _run)
 
-    t = herdr.Tab.ensure("beta", "task-acme-42", "/repos/acme", env={"K": "V"})
+    t = herdr.Tab.ensure("beta", "task-acme-42", "/repos/acme", env={"HERDR_AGENT": "V"})
     assert t is not None
     assert t.pane_id == "w1:p3"
 
@@ -427,7 +441,7 @@ def test_tab_ensure_creates_workspace_on_first_use_and_forwards_env(monkeypatch)
 
     tab_create = next(c for c in calls if c[:2] == ["tab", "create"])
     assert "--env" in tab_create
-    assert "K=V" in tab_create
+    assert "HERDR_AGENT=V" in tab_create
 
 
 def test_tab_ensure_is_none_when_server_down_or_create_fails(monkeypatch):

@@ -9,14 +9,17 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dispatcher import (board, claims, containers, herdr, priority,
                         triage_apply, triage_prefetch)
 from dispatcher.config import Config, policy_for, routed_providers
+from dispatcher.execution_credentials import CredentialError
 from dispatcher.models import Entry, triage_entry, tracks_text
 from dispatcher.prompts import render_triage_prompt
+from dispatcher import state
 from dispatcher.state import load_all
 from dispatcher.usage import admits, verdict_note
 from dispatcher.usage_providers import fetch_all
@@ -145,7 +148,13 @@ def save_cursors(state_dir: str | Path, cursors: dict[str, str]) -> None:
 
 
 def triage_repos(cfg: Config) -> list[str]:
+    """Every legacy target plus every project repository (paused projects
+    included — pausing a project stops claims, not visibility to triage)."""
     repos = [t.repo for t in cfg.targets]
+    for project in cfg.projects:
+        for repo in project.repositories:
+            if repo.repo not in repos:
+                repos.append(repo.repo)
     if cfg.infra_repo and cfg.infra_repo not in repos:
         repos.append(cfg.infra_repo)
     return repos
@@ -155,11 +164,21 @@ class SweepError(Exception):
     pass
 
 
-def _clone_for(cfg: Config, repo: str) -> str:
+def _repo_config(cfg: Config, repo: str):
+    """The `Target` or `ProjectRepository` configuring `repo`, or None."""
     for t in cfg.targets:
         if t.repo == repo:
-            return t.clone_path
-    return str(Path.home() / "agent-ops")
+            return t
+    for project in cfg.projects:
+        for r in project.repositories:
+            if r.repo == repo:
+                return r
+    return None
+
+
+def _clone_for(cfg: Config, repo: str) -> str:
+    found = _repo_config(cfg, repo)
+    return found.clone_path if found else str(Path.home() / "agent-ops")
 
 
 def _session_name(repo: str) -> str:
@@ -167,15 +186,26 @@ def _session_name(repo: str) -> str:
 
 
 def _policy_for_repo(cfg: Config, repo: str):
-    target = next((t for t in cfg.targets if t.repo == repo), None)
-    return policy_for(cfg, target)
+    return policy_for(cfg, _repo_config(cfg, repo))
+
+
+def _session_token(credentials, name: str, repo: str) -> str:
+    # Each launch reuses the execution scope, but must outlive a new session.
+    # Allow a minute for container startup and clock skew as well as execution.
+    credential = credentials.refresh(name, repo, "triage")
+    clock = getattr(credentials, "clock", time.time)
+    if not credential.expires_at > clock() + SESSION_TIMEOUT_SECONDS + 60:
+        raise CredentialError("triage token lifetime is insufficient for the session")
+    return credential.token
 
 
 def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
-                 entry: Entry, run=subprocess.run) -> dict:
+                 entry: Entry, run=subprocess.run, credentials=None) -> dict:
     triage_dir = Path(cfg.state_dir) / TRIAGE_DIR
     triage_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{repo.replace('/', '-')}-{started_date}"
+    # Doubling "-" first keeps the "/" -> "-" mapping injective, so
+    # example/shop-api and example-shop/api never share artifacts.
+    stem = f"{repo.replace('-', '--').replace('/', '-')}-{started_date}"
     fname = f"{stem}.json"
     decisions_path = triage_dir / fname
     decisions_path.unlink(missing_ok=True)
@@ -190,12 +220,21 @@ def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
     prompt_name = f"{stem}-prompt.md"
     (triage_dir / prompt_name).write_text(prompt)
     name = _session_name(repo)
+    register = getattr(credentials, "register_execution", None)
+    if register:
+        register(name, repo, "triage")
     cmd = containers.triage_cmd(name, _clone_for(cfg, repo),
                                 str(triage_dir), cfg.session_memory,
                                 cfg.session_cpus, entry.model_id,
-                                f"/triage/{prompt_name}", effort=entry.effort)
+                                f"/triage/{prompt_name}", effort=entry.effort,
+                                scoped_token=credentials is not None)
+    # A scoped read-only token, inherited as GH_TOKEN (never in argv); a
+    # denial raises and never falls back to the host GitHub login.
+    env = ({"env": {**os.environ,
+                    "GH_TOKEN": _session_token(credentials, name, repo)}}
+           if credentials is not None else {})
     try:
-        proc = run(cmd, capture_output=True, text=True,
+        proc = run(cmd, capture_output=True, text=True, **env,
                    timeout=SESSION_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         try:
@@ -229,21 +268,47 @@ def _summary(repo: str, result: triage_apply.ApplyResult) -> list[str]:
     return lines
 
 
-def _board(cfg: Config, repo: str, lines: list[str], run):
+def _board_key(cfg: Config, repo: str) -> str | None:
+    """The configured board of `repo` as "owner/number"."""
+    for t in cfg.targets:
+        if t.repo == repo:
+            return f"{t.project_owner}/{t.project_number}"
+    for project in cfg.projects:
+        if any(r.repo == repo for r in project.repositories):
+            return f"{project.board_owner}/{project.board_number}"
+    return None
+
+
+def _onboarded(cfg: Config, repo: str) -> bool:
+    return any(r.repo == repo for p in cfg.projects for r in p.repositories)
+
+
+def _board(cfg: Config, repo: str, lines: list[str], run, credentials=None):
     """The repo's board, with stale cards repaired and what the sweep cannot
     reach reported. None for a repo without a board, and when the board cannot
     be read: labels are still worth triaging without it."""
-    target = next((t for t in cfg.targets if t.repo == repo), None)
-    if target is None:
+    found = _repo_config(cfg, repo)
+    if found is None:
         return None
     try:
-        brd = board.read(repo, target.clone_path, run=run)
+        brd = board.read(repo, found.clone_path, run=run, credentials=credentials,
+                         key=_board_key(cfg, repo))
     except Exception as e:  # noqa: BLE001 — degrade to label-only triage
         lines.append(f"{repo}: board unavailable, labels only — {e}")
         return None
     if brd is None:
+        if _onboarded(cfg, repo):
+            lines.append(f"{repo}: board metadata .backlog/project-meta.json missing, "
+                         "new issues are not added to the board")
         return None
     lines.extend(f"{repo}: {line}" for line in brd.repair())
+    if _onboarded(cfg, repo):
+        # An onboarded project's board follows its repositories: future issues join it.
+        added = brd.add_missing()
+        lines.extend(f"{repo}: {line}" for line in added)
+        if any(line.endswith("added to the board") for line in added):
+            brd = board.read(repo, found.clone_path, run=run, credentials=credentials,
+                             key=_board_key(cfg, repo))
     missing = brd.off_board()
     if missing:
         lines.append(f"{repo}: not on the board, cannot be scored: "
@@ -275,7 +340,8 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
             lines.append(f"{repo}: cursor seeded, nothing triaged")
             continue
         try:
-            brd = _board(cfg, repo, lines, run)
+            creds = getattr(deps, "credentials", None)
+            brd = _board(cfg, repo, lines, run, creds)
             blob = triage_prefetch.prefetch(repo, cursor, run=run)
             if brd is not None:
                 triage_prefetch.add_board(blob, brd, run=run)
@@ -283,7 +349,8 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
                 cursors[repo] = started
                 lines.append(f"{repo}: nothing new")
                 continue
-            decisions = _run_session(cfg, repo, blob, started_date, entry, run=run)
+            decisions = _run_session(cfg, repo, blob, started_date, entry, run=run,
+                                     **({"credentials": creds} if creds else {}))
             inventory = frozenset(l["name"] for l in blob["labels"])
             result = triage_apply.apply(repo, decisions, inventory, run=run,
                                         board=brd)
@@ -314,7 +381,8 @@ def guarded_sweep(cfg: Config, deps) -> None:
 
 
 LAUNCH_ENV_VARS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-                   "AGENT_OPS_STATE_DIR", "GH_PROJECT_TOKEN")
+                   "AGENT_OPS_STATE_DIR", "GH_PROJECT_TOKEN",
+                   "AGENT_OPS_CREDENTIAL_SOCKET", "AGENT_OPS_LEGACY_CREDENTIALS")
 
 
 def _repo_dir() -> str:
@@ -323,8 +391,9 @@ def _repo_dir() -> str:
 
 
 def _launch_env() -> dict[str, str]:
-    """The dispatcher's own credentials, forwarded into the sweep's tab as
-    `--env` pairs (herdr's `tab create --env`).
+    """The dispatcher's own credentials, forwarded into the sweep's tab
+    environment (herdr.create_tab hands them to the shell privately, never
+    as process arguments).
 
     Sessions.launch only ever starts podman, whose credentials arrive
     through mounted volumes; the sweep runner is a dispatcher *Python*
@@ -339,6 +408,13 @@ def _launch_env() -> dict[str, str]:
     then apply, exactly as they would in-process."""
     return {var: os.environ[var] for var in LAUNCH_ENV_VARS
             if os.environ.get(var)}
+
+
+def hold_sweep(cfg: Config) -> None:
+    """Record the sweep in the shared allocation view (main drops it once the tab is gone)."""
+    slot = state.allocate_slot(load_all(cfg.state_dir), state.max_slots(cfg.capacity),
+                               state.reserved_slots(cfg.state_dir))
+    state.hold(cfg.state_dir, "triage", TAB_LABEL, state.NO_SLOT if slot is None else slot)
 
 
 def tick(cfg: Config, deps, config_path: str) -> None:
@@ -357,12 +433,16 @@ def tick(cfg: Config, deps, config_path: str) -> None:
                            lines=["skipped — no capacity within 2 h"])
         return
     # Box-wide, like every spawn site in main. No sweep is running here.
-    if claims.box_free(cfg.capacity, load_all(cfg.state_dir),
-                       triage_running=False) <= 0:
+    if claims.box_free(cfg.capacity, load_all(cfg.state_dir), triage_running=False,
+                       held=state.held_count(cfg.state_dir)) <= 0:
         return  # wait for a natural release; never preempt
+    # The sweep joins the shared allocation view before it launches; main drops
+    # it once the tab is gone.
+    hold_sweep(cfg)
     tab = herdr.Tab.ensure(herdr.SYSTEM_WORKSPACE, TAB_LABEL, _repo_dir(),
                            env=_launch_env())
     if tab is None:
+        state.release(cfg.state_dir, "triage", TAB_LABEL)
         clear_request(cfg.state_dir)
         deps.notifier.send("triage_report",
                            lines=["launch failed: herdr tab could not be created"])
@@ -371,6 +451,8 @@ def tick(cfg: Config, deps, config_path: str) -> None:
     # the finished sweep as idle rather than still running.
     if not tab.run(f"{shlex.quote(sys.executable)} -m dispatcher.main "
                    f"--config {shlex.quote(config_path)} --triage-run; exit"):
+        state.release(cfg.state_dir, "triage", TAB_LABEL)
         clear_request(cfg.state_dir)
         deps.notifier.send("triage_report",
                            lines=["launch failed: herdr pane run failed"])
+        return

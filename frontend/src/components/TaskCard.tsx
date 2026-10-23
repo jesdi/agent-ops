@@ -1,4 +1,5 @@
 import type { TaskCard } from '../lib/api'
+import { taskPath } from '../lib/api'
 import { slotBorder, slotChip } from '../lib/capacity'
 import { formatDuration, parkLabel, relativeTime, stageLabel } from '../lib/format'
 import { CHIP_SHAPE, chip } from '../lib/tone'
@@ -16,8 +17,8 @@ export function TaskCardView({ card, pendingActions }: {
   return (
     <CompactCard
       testId={`card-${card.issue}`}
-      drag={{ issue: card.issue, target: card.target, title: card.title }}
-      to={`/task/${card.target}/${card.issue}`}
+      drag={{ issue: card.issue, target: card.target, repo: card.repo, title: card.title }}
+      to={taskPath(card.target, card.issue, card.repo)}
       variant="task"
       accent={card.slot >= 0 ? slotBorder(card.slot) : 'border-l-transparent'}
       badges={<>
@@ -32,7 +33,7 @@ export function TaskCardView({ card, pendingActions }: {
       signals={<>
         <TaskCardSignals card={card} />
         {card.admission && (
-          <AdmissionWarning target={card.target} issue={card.issue} admission={card.admission} />
+          <AdmissionWarning target={card.target} repo={card.repo} issue={card.issue} admission={card.admission} />
         )}
       </>}
       detail={<TaskCardDetail card={card} />}

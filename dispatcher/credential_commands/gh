@@ -1,0 +1,26 @@
+#!/bin/sh
+# Read the renewable channel for every invocation; never use a stale env token.
+# A task over several repositories holds one token per repository, as
+# `$GH_TOKEN_FILE.<owner>~<name>`: pick the one of the repository the command
+# targets (-R/--repo, GH_REPO, else the working directory's origin).
+set -eu
+repo=${GH_REPO:-}
+prev=
+for arg in "$@"; do
+    case $prev in -R|--repo) repo=$arg ;; esac
+    case $arg in --repo=*) repo=${arg#--repo=} ;; esac
+    prev=$arg
+done
+if [ -z "$repo" ]; then
+    url=$(/usr/bin/git config --get remote.origin.url 2>/dev/null || true)
+    repo=${url%.git}
+    repo=${repo#*github.com[:/]}
+fi
+file=$GH_TOKEN_FILE.$(printf %s "$repo" | tr / '~')
+[ -n "$repo" ] && [ -r "$file" ] || file=${GH_TOKEN_FILE:?missing scoped token file}
+GH_TOKEN=$(cat "$file")
+[ -n "$GH_TOKEN" ] || exit 1
+export GH_TOKEN
+GITHUB_TOKEN=$GH_TOKEN
+export GITHUB_TOKEN
+exec /usr/bin/gh "$@"

@@ -1,4 +1,5 @@
 import type { GhostCard } from '../lib/api'
+import { taskPath } from '../lib/api'
 import { chip } from '../lib/tone'
 import { AdmissionWarning } from './AdmissionWarning'
 import { CompactCard } from './CompactCard'
@@ -12,15 +13,15 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
   ghost: GhostCard
   isNext: boolean
   busy: boolean
-  onBoost: (issue: number, amount: number) => void
-  onNext: (issue: number) => void
-  onReady: (issue: number) => void
+  onBoost: (issue: number, amount: number, repo: string) => void
+  onNext: (issue: number, repo: string) => void
+  onReady: (issue: number, repo: string) => void
 }) {
   return (
     <CompactCard
       testId={`ghost-${ghost.number}`}
-      drag={{ issue: ghost.number, target: ghost.target, title: ghost.title }}
-      to={`/task/${ghost.target}/${ghost.number}`}
+      drag={{ issue: ghost.number, target: ghost.target, repo: ghost.repo, title: ghost.title }}
+      to={taskPath(ghost.target, ghost.number, ghost.repo)}
       variant="ghost"
       badges={isNext && <span className={chip.running}>next</span>}
       detail={<>
@@ -31,13 +32,13 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
           </div>
         )}
         {ghost.admission && (
-          <AdmissionWarning target={ghost.target} issue={ghost.number} admission={ghost.admission} />
+          <AdmissionWarning target={ghost.target} repo={ghost.repo} issue={ghost.number} admission={ghost.admission} />
         )}
         <div className="mt-2 flex gap-1">
-          <button type="button" className={ACTION} disabled={busy} onClick={() => onBoost(ghost.number, 1)}>Boost</button>
-          <button type="button" className={ACTION} disabled={busy} onClick={() => onBoost(ghost.number, -1)}>Demote</button>
-          <button type="button" className={ACTION} disabled={busy} onClick={() => onNext(ghost.number)}>Next</button>
-          <button type="button" className={ACTION} disabled={busy} onClick={() => onReady(ghost.number)}>Ready</button>
+          <button type="button" className={ACTION} disabled={busy} onClick={() => onBoost(ghost.number, 1, ghost.repo)}>Boost</button>
+          <button type="button" className={ACTION} disabled={busy} onClick={() => onBoost(ghost.number, -1, ghost.repo)}>Demote</button>
+          <button type="button" className={ACTION} disabled={busy} onClick={() => onNext(ghost.number, ghost.repo)}>Next</button>
+          <button type="button" className={ACTION} disabled={busy} onClick={() => onReady(ghost.number, ghost.repo)}>Ready</button>
         </div>
       </>}
     />

@@ -6,7 +6,9 @@ import { CountStrip } from '../components/CountStrip'
 import { GhostCardView } from '../components/GhostCard'
 import { useActiveColumn } from '../components/useActiveColumn'
 import type { GhostCard, NextClaimView, PendingIntent, Zone } from '../lib/api'
+import { ProjectTabs } from '../components/ProjectTabs'
 import { useBoardSnapshot, usePendingIntents, useTasks } from '../hooks/useResources'
+import { useState } from 'react'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useWontDo } from '../hooks/useWontDo'
 
@@ -14,14 +16,14 @@ type QueueActions = ReturnType<typeof useQueueActions>
 
 /** An issue can carry several pending intents at once (park then kill).
  *  Collapsing to one would silently drop the rest — and TaskPage renders all
- *  of them, so the board must too. Keyed `${target}#${issue}` — issue numbers
- *  are per-target, so alpha#73 and beta#73 must not share a bucket. A legacy
- *  (target-less) intent lands under `#${issue}` (empty target) and
+ *  of them, so the board must too. Keyed `${repo}|${target}#${issue}` — issue
+ *  numbers are per-repository, so two repositories' #73 must not share a
+ *  bucket. A legacy (target-less) intent lands under `|#${issue}` and
  *  BoardColumn matches it against any card with that issue number. */
 function pendingIntentsByKey(intents: PendingIntent[]): Map<string, string[]> {
   const byKey = new Map<string, string[]>()
   for (const i of intents) {
-    const key = `${i.target}#${i.issue}`
+    const key = `${i.repo ?? ''}|${i.target}#${i.issue}`
     byKey.set(key, [...(byKey.get(key) ?? []), i.action])
   }
   return byKey
@@ -39,13 +41,13 @@ function Ghosts({ ghosts, nextClaim, queue }: {
         <GhostCardView
           /* Issue numbers are per-repo: alpha#73 and beta#73 can both be
              ghosts, so the key (and the next-badge match) needs the target. */
-          key={`${g.target}#${g.number}`}
+          key={`${g.target}/${g.repo}#${g.number}`}
           ghost={g}
           busy={queue.busy}
           isNext={nextClaim?.verdict === 'will-claim' && nextClaim.next_issue === g.number && nextClaim.next_target === g.target}
-          onBoost={(n, amount) => queue.boost(n, amount)}
-          onNext={(n) => queue.next(n)}
-          onReady={(n) => queue.ready(n)}
+          onBoost={(n, amount, repo) => queue.boost(n, amount, repo)}
+          onNext={(n, repo) => queue.next(n, repo)}
+          onReady={(n, repo) => queue.ready(n, repo)}
         />
       ))}
     </>
@@ -115,18 +117,34 @@ function WontDoConfirm({ card, error, busy, onKeep, onConfirm }: {
   )
 }
 
+/** Cards and ghosts name their target, which is the project's key: a project tab scopes both. */
+function scopeToProject<C extends ColumnView['column']>(columns: C[] = [], project: string | null): C[] {
+  if (project === null) return columns
+  return columns.map((c) => ({
+    ...c,
+    cards: c.cards.filter((t) => t.target === project),
+    ghosts: c.ghosts.filter((g) => g.target === project),
+  }))
+}
+
+function degradedQueue(stale: boolean, error: string | null) {
+  return stale || error ? { stale, error } : null
+}
+
 export function BoardPage() {
   const boardQuery = useTasks()
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
+  const [project, setProject] = useState<string | null>(null)
 
   const board = boardQuery.data ?? snapshotQuery.data
   // Queue trouble lives on Queued, the column the ranking and the actions feed.
   const stale = boardQuery.data?.queue_stale ?? false
-  const queueDegraded = stale || queue.queueError ? { stale, error: queue.queueError } : null
-  const views: ColumnView[] = (board?.columns ?? []).map((column) => ({
+  const queueDegraded = degradedQueue(stale, queue.queueError)
+  const scoped = scopeToProject(board?.columns, project)
+  const views: ColumnView[] = scoped.map((column) => ({
     column,
     count: column.cards.length + column.ghosts.length,
     degraded: column.key === 'queued' ? queueDegraded : null,
@@ -153,6 +171,7 @@ export function BoardPage() {
   return (
     <div className="flex flex-col gap-4 p-4 md:min-h-0 md:grow md:basis-0 md:pb-0">
       <BoardHeader board={board} />
+      <ProjectTabs selected={project} onSelect={setProject} />
       <ColumnTabs tabs={inRow} active={tabs.active} onSelect={tabs.select} />
       <CountStrip columns={views.filter((v) => v.count === 0)} />
       <div data-testid="board-row" className="relative -mx-4 flex gap-4 overflow-x-auto px-4 pb-4 md:min-h-0 md:grow md:basis-0">

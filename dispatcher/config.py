@@ -1,15 +1,18 @@
 """Load targets.yaml into typed config objects."""
 from __future__ import annotations
 
+import math
 import os
+import re
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
 from dispatcher import model_settings, models
+from dispatcher.claims import PLACES
 from dispatcher.models import DEFAULT_POLICY, ModelPolicy, parse_block, parse_policy
 from dispatcher.state import LoopCaps, TaskState
 from dispatcher.usage import PaceConfig
@@ -35,6 +38,53 @@ class Target:
     status_wont_do_option_id: str = ""  # "" = cancel never touches the board
     max_active: int | None = None  # None = uncapped; else 1 <= n <= capacity, validated at load
     models: ModelPolicy | None = None  # None = inherit the global policy
+    sandbox: bool = False  # legacy targets drain through their original runtime
+    compose_services: tuple[str, ...] = ()
+    sandbox_memory: int = 2 << 30
+    sandbox_cpus: float = 2
+
+
+@dataclass(frozen=True)
+class ProjectRepository:
+    """One repository owned by a project (see `Project`). Same fields a
+    legacy `Target` carries for a repo, minus the identity it gets from its
+    owning project instead (name, board)."""
+    repo: str  # "owner/name", or a URL alias of it (normalized for dedup)
+    clone_path: str
+    worktrees_path: str
+    rank_cmd: str
+    gate_cmd: str
+    setup_cmd: str = ""
+    verify_cmd: str = ""
+    boost_field_id: str = ""
+    status_done_option_id: str = ""
+    status_wont_do_option_id: str = ""
+    max_active: int | None = None
+    models: ModelPolicy | None = None
+    compose_services: tuple[str, ...] = ()
+    sandbox_memory: int = 2 << 30
+    sandbox_cpus: float = 2
+
+    @property
+    def sandbox(self) -> bool:
+        return True
+
+
+@dataclass(frozen=True)
+class Project:
+    """A project owning one board and a nonempty set of repositories
+    (`projects:`, parallel to the legacy single-repository `targets:` list).
+    Paused (`enabled=False`) by default: onboarding a project must not start
+    work until an operator turns it on."""
+    key: str
+    name: str
+    board_owner: str
+    board_number: int
+    status_field_id: str
+    status_ready_option_id: str
+    status_in_progress_option_id: str
+    repositories: list[ProjectRepository]
+    enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -44,6 +94,7 @@ class Config:
     session_memory: str
     session_cpus: str
     targets: list[Target]
+    projects: list[Project] = field(default_factory=list)
     infra_repo: str = ""  # repo for dispatcher-side failure issues; "" degrades to ping-only
     models: ModelPolicy = DEFAULT_POLICY
     console_url: str = ""  # web console base URL for Telegram deep links; "" = no link line
@@ -128,8 +179,27 @@ def _pace(raw: dict) -> PaceConfig:
     return pace
 
 
+def _sandbox_config(fields):
+    services = fields.get("compose_services", ())
+    if not isinstance(services, (list, tuple)):
+        raise ValueError("compose_services must be a list of service names")
+    if any(not isinstance(name, str) or not name for name in services):
+        raise ValueError("compose_services must contain nonempty service names")
+    fields["compose_services"] = tuple(dict.fromkeys(services))
+    for key in ("sandbox_memory", "sandbox_cpus"):
+        _check_sandbox_quantity(key, fields.get(key, 1))
+
+
+def _check_sandbox_quantity(key, value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a positive finite number")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{key} must be a positive finite number")
+
+
 def _target(raw: dict, capacity: int) -> Target:
     fields = dict(raw)
+    _sandbox_config(fields)
     has_models = "models" in fields
     models = fields.pop("models", None)
     name = fields.get("name")
@@ -144,6 +214,128 @@ def _target(raw: dict, capacity: int) -> Target:
         raise ValueError(f"target {name!r}: max_active must be an integer between "
                          f"1 and capacity ({capacity}), got {max_active!r}")
     return Target(**fields, models=parse_policy(models) if has_models else None)
+
+
+def normalize_repo(repo: str) -> str:
+    """"owner/name", stripped of a URL alias's host/scheme/suffix, for
+    identity comparison across projects. Lowered before the host regexes run
+    so an upper-cased host (GITHUB.COM) still strips."""
+    s = str(repo).strip().lower()
+    s = re.sub(r"^ssh://git@github\.com/", "", s)
+    s = re.sub(r"^git@github\.com:", "", s)
+    s = re.sub(r"^https?://github\.com/", "", s)
+    s = s.rstrip("/")
+    if s.endswith(".git"):
+        s = s[:-len(".git")]
+    return s.strip("/")
+
+
+_REPOSITORY_STR_FIELDS = ("repo", "clone_path", "worktrees_path", "rank_cmd", "gate_cmd",
+                          "setup_cmd", "verify_cmd", "boost_field_id",
+                          "status_done_option_id", "status_wont_do_option_id")
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_repository_fields(fields: dict, where: str) -> None:
+    for name in _REPOSITORY_STR_FIELDS:
+        if name in fields and not isinstance(fields[name], str):
+            raise ValueError(f"{where}: {name} must be a string, got {fields[name]!r}")
+    if not str(fields.get("gate_cmd") or "").strip():
+        raise ValueError(f"{where}: gate_cmd is required "
+                         "(the session runs it after every ticket)")
+    max_active = fields.get("max_active")
+    if max_active is not None and not _is_int(max_active):
+        raise ValueError(f"{where}: max_active must be an integer, got {max_active!r}")
+
+
+def _project_repository(raw: dict, project_key: str) -> ProjectRepository:
+    fields = dict(raw)
+    _sandbox_config(fields)
+    has_models = "models" in fields
+    models = fields.pop("models", None)
+    where = f"project {project_key!r}: repository {fields.get('repo')!r}"
+    _check_repository_fields(fields, where)
+    try:
+        return ProjectRepository(**fields, models=parse_policy(models) if has_models else None)
+    except TypeError as e:
+        raise ValueError(f"{where}: {e}") from e
+
+
+def _project_repositories(repos_raw: object, key: object) -> list[ProjectRepository]:
+    if not isinstance(repos_raw, list) or not repos_raw:
+        raise ValueError(f"project {key!r}: repositories must be a nonempty list")
+    for r in repos_raw:
+        if not isinstance(r, dict):
+            raise ValueError(f"project {key!r}: repositories: each entry must be a "
+                              f"mapping, got {r!r}")
+    return [_project_repository(r, key) for r in repos_raw]
+
+
+_PROJECT_STR_FIELDS = ("key", "name", "board_owner", "status_field_id",
+                       "status_ready_option_id", "status_in_progress_option_id")
+
+
+def _project(raw: dict, capacity: int) -> Project:
+    fields = dict(raw)
+    key = fields.get("key")
+    for name in _PROJECT_STR_FIELDS:
+        if name in fields and not isinstance(fields[name], str):
+            raise ValueError(f"project {key!r}: {name} must be a string, got {fields[name]!r}")
+    repositories = _project_repositories(fields.pop("repositories", None), key)
+    enabled = fields.pop("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"project {key!r}: enabled must be a boolean, got {enabled!r}")
+    board_number = fields.get("board_number")
+    if not _is_int(board_number):
+        raise ValueError(f"project {key!r}: board_number must be an integer, got {board_number!r}")
+    try:
+        return Project(**fields, repositories=repositories, enabled=enabled)
+    except TypeError as e:
+        raise ValueError(f"project {key!r}: {e}") from e
+
+
+def _validate_identities(targets: list[Target], projects: list[Project]) -> None:
+    """Repository identity (including URL aliases) and board identity
+    (owner + number, case-insensitive) must each be unique across every
+    project AND every legacy target (targets.example.yaml's migration
+    contract). Project keys must also be unique and nonempty."""
+    seen_repos: dict[str, str] = {}
+    seen_boards: dict[tuple[str, int], str] = {}
+    for t in targets:
+        seen_repos[normalize_repo(t.repo)] = f"target {t.name!r}"
+        seen_boards[(t.project_owner.strip().lower(), t.project_number)] = f"target {t.name!r}"
+
+    seen_keys: set[str] = set()
+    for p in projects:
+        if not p.key or p.key in seen_keys:
+            raise ValueError(f"project {p.key!r}: key must be nonempty and unique")
+        seen_keys.add(p.key)
+        board_key = (p.board_owner.strip().lower(), p.board_number)
+        if board_key in seen_boards:
+            raise ValueError(f"project {p.key!r}: board {p.board_owner}/{p.board_number} "
+                             f"already owned by {seen_boards[board_key]}")
+        seen_boards[board_key] = f"project {p.key!r}"
+        for r in p.repositories:
+            norm = normalize_repo(r.repo)
+            if norm in seen_repos:
+                raise ValueError(f"project {p.key!r}: repository {r.repo!r} already owned "
+                                 f"by {seen_repos[norm]}")
+            seen_repos[norm] = f"project {p.key!r}"
+
+
+def _projects(raw: dict, capacity: int, targets: list[Target]) -> list[Project]:
+    projects_raw = raw.get("projects", [])
+    if not isinstance(projects_raw, list):
+        raise ValueError(f"projects: must be a list, got {projects_raw!r}")
+    for p in projects_raw:
+        if not isinstance(p, dict):
+            raise ValueError(f"projects: each entry must be a mapping, got {p!r}")
+    projects = [_project(p, capacity) for p in projects_raw]
+    _validate_identities(targets, projects)
+    return projects
 
 
 def _grace_minutes(raw: dict) -> int | None:
@@ -182,13 +374,15 @@ def load_config(path: str | Path) -> Config:
         print("[warn] codex_stall_after_seconds is ignored: stall_after_seconds "
               "now applies to every runtime", file=sys.stderr)
     capacity = raw.get("capacity", 3)
+    targets = [_target(t, capacity) for t in raw.get("targets", [])]
     cfg = Config(
         state_dir=os.environ.get("AGENT_OPS_STATE_DIR", raw["state_dir"]),
         capacity=capacity,
         max_open=_max_open(raw, capacity),
         session_memory=str(raw.get("session_memory", "2g")),
         session_cpus=str(raw.get("session_cpus", "2")),
-        targets=[_target(t, capacity) for t in raw.get("targets", [])],
+        targets=targets,
+        projects=_projects(raw, capacity, targets),
         infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
@@ -200,8 +394,36 @@ def load_config(path: str | Path) -> Config:
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),
     )
+    enabled = sum(p.enabled for p in cfg.projects)
+    limit = min(cfg.max_open, PLACES)
+    if enabled > limit:
+        raise ValueError(f"projects: {enabled} enabled, at most {limit} "
+                         "may be enabled (one reserved place each); pause one")
     _check_shares(cfg)
     return cfg
+
+
+def project_target(p: Project, repo: str = "") -> Target:
+    """The claim-round view of a project: a Target named by the project key
+    that carries its board and the repository `repo` names (the first when
+    `repo` is empty or unknown)."""
+    r = next((r for r in p.repositories
+              if repo and normalize_repo(r.repo) == normalize_repo(repo)),
+             p.repositories[0])
+    return Target(
+        name=p.key, repo=r.repo, clone_path=r.clone_path,
+        worktrees_path=r.worktrees_path, rank_cmd=r.rank_cmd,
+        project_number=p.board_number, project_owner=p.board_owner,
+        status_field_id=p.status_field_id,
+        status_ready_option_id=p.status_ready_option_id,
+        status_in_progress_option_id=p.status_in_progress_option_id,
+        setup_cmd=r.setup_cmd, verify_cmd=r.verify_cmd, gate_cmd=r.gate_cmd,
+        boost_field_id=r.boost_field_id,
+        status_done_option_id=r.status_done_option_id,
+        status_wont_do_option_id=r.status_wont_do_option_id,
+        max_active=r.max_active, models=r.models, sandbox=True,
+        compose_services=r.compose_services, sandbox_memory=r.sandbox_memory,
+        sandbox_cpus=r.sandbox_cpus)
 
 
 def _check_shares(cfg: Config) -> None:
@@ -239,7 +461,7 @@ def apply_stored_models(boot: Config) -> Config:
     return replace(cfg, models_origin=model_settings.Origin(revision, stored))
 
 
-def policy_for(cfg: Config, target: Target | None) -> ModelPolicy:
+def policy_for(cfg: Config, target: Target | ProjectRepository | None) -> ModelPolicy:
     """The policy `target` runs: its own one replaces the global one
     wholesale — rule lists are never merged, because merge order would make
     first-match-wins ambiguous. No target (one removed from targets.yaml):
@@ -249,8 +471,16 @@ def policy_for(cfg: Config, target: Target | None) -> ModelPolicy:
 
 def stranded(cfg: Config, target: Target | None, task: TaskState, stage: str) -> str:
     """models.stranded for `task` under `cfg`, launching `stage`."""
-    return models.stranded(policy_for(cfg, target), task.track, task.picks,
+    policy = policy_for(cfg, target)
+    # A task with no track is untracked work (state.launch_track).
+    return models.stranded(policy, task.track or policy.untracked, task.picks,
                            stage, referenced_providers(cfg))
+
+
+def _policies(cfg: Config) -> list[ModelPolicy]:
+    """The global policy and every target's and project repository's own."""
+    own = [*cfg.targets, *(r for p in cfg.projects for r in p.repositories)]
+    return [cfg.models, *(t.models for t in own if t.models is not None)]
 
 
 def routed_providers(cfg: Config) -> frozenset[str]:
@@ -258,7 +488,7 @@ def routed_providers(cfg: Config) -> frozenset[str]:
     stage lists of every track, of the global policy and of every target's
     own. The priority mode may name one of these. Not routed: `review_second`,
     and a target policy's own triage list (the sweep runs `cfg.models.triage`)."""
-    policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
+    policies = _policies(cfg)
     staged = (e for p in policies for t in p.tracks.values()
               for entries in t.stages.values() for e in entries)
     return frozenset(e.provider for e in (*cfg.models.triage, *staged))
@@ -271,7 +501,7 @@ def referenced_providers(cfg: Config) -> frozenset[str]:
     adapter reads); one you route to without an adapter shows as
     unavailable (and main() warns once at startup). A policy's review_second counts too: the
     gate that grants it needs its provider's usage."""
-    policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
+    policies = _policies(cfg)
     ids = [*(m for p in policies for m in p.model_ids()),
            *(p.review_second.model_id for p in policies if p.review_second)]
     return frozenset(m.partition("/")[0] for m in ids)

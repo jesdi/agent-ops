@@ -11,20 +11,20 @@ export function FailuresPage() {
   // Per-task inline error channel, same convention as GhostCard/useQueueActions:
   // /task/{target}/{issue}/retry really does 404 ("issue N is not
   // quarantined"), and a swallowed failure is pixel-identical to a landed
-  // retry. Keyed `${target}#${issue}` — see FailureList's errors prop.
+  // retry. Keyed `${repo}|${target}#${issue}` — see FailureList's errors prop.
   const [errors, setErrors] = useState<Record<string, string | null>>({})
 
   const retry = useMutation({
-    mutationFn: ({ target, issue }: { target: string; issue: number }) =>
-      api.retry(target, issue),
-    onSuccess: (_data, { target, issue }) => {
-      setErrors((prev) => ({ ...prev, [`${target}#${issue}`]: null }))
+    mutationFn: ({ target, issue, repo }: { target: string; issue: number; repo: string }) =>
+      api.retry(target, issue, repo),
+    onSuccess: (_data, { target, issue, repo }) => {
+      setErrors((prev) => ({ ...prev, [`${repo}|${target}#${issue}`]: null }))
       void queryClient.invalidateQueries({ queryKey: queryKeys.pendingIntents })
     },
-    onError: (err, { target, issue }) =>
+    onError: (err, { target, issue, repo }) =>
       setErrors((prev) => ({
         ...prev,
-        [`${target}#${issue}`]: err instanceof ApiError ? err.detail : String(err),
+        [`${repo}|${target}#${issue}`]: err instanceof ApiError ? err.detail : String(err),
       })),
   })
 
@@ -38,7 +38,7 @@ export function FailuresPage() {
         failures={failuresQuery.data}
         errors={errors}
         busy={retry.isPending}
-        onRetry={(target, issue) => retry.mutate({ target, issue })}
+        onRetry={(target, issue, repo) => retry.mutate({ target, issue, repo })}
       />
     </div>
   )

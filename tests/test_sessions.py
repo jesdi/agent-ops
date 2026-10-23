@@ -156,7 +156,7 @@ def test_podman_cmd_mounts_and_caps(tmp_path, monkeypatch):
     assert f"-v {wt}:{wt}" in cmd
     assert f"-w {wt}" in cmd
     assert f"-v {clone}:{clone}" in cmd
-    assert "-v /home/agent/agent-ops-state/claude-home:/root/.claude" in cmd
+    assert "/agent-ops-state/task-homes/task-pe-42/claude-home:/root/.claude" in cmd
     assert cmd.endswith('claude --remote-control task-pe-42 --permission-mode auto '
                         '--model claude-opus-4-8 "$(cat .agent/prompt-spec.md)"')
 
@@ -338,7 +338,7 @@ def test_spawn_stage_on_an_openai_model_launches_codex(tmp_path, monkeypatch):
             "--cwd", wt, "--env", "HERDR_AGENT=codex", "--no-focus"] in calls
     cmd = next(c for c in calls if c[:2] == ["pane", "run"])[3]
     assert "-e CODEX_HOME=/root/.codex " in cmd
-    assert "-v /state/codex-home:/root/.codex " in cmd
+    assert "/state/task-homes/task-acme-42/codex-home:/root/.codex " in cmd
     assert "/root/.claude" not in cmd
     assert (" codex --model gpt-5-codex -c model_reasoning_effort=high "
             "--dangerously-bypass-approvals-and-sandbox ") in cmd

@@ -1,5 +1,6 @@
 import { Link } from 'react-router'
 import type { EventEntry } from '../lib/api'
+import { taskPath } from '../lib/api'
 import { relativeTime } from '../lib/format'
 import { chip, type Tone } from '../lib/tone'
 
@@ -29,7 +30,7 @@ export function TimelineList({ events }: { events: EventEntry[] }) {
             {e.event}
           </span>
           {e.target ? (
-            <Link to={`/task/${e.target}/${e.issue}`} className="underline">
+            <Link to={taskPath(e.target, e.issue, e.repo)} className="underline">
               {e.target}#{e.issue}
             </Link>
           ) : (

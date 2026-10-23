@@ -92,7 +92,7 @@ def _herdr_fake_creating(monkeypatch, calls, workspace=None, pane_run_ok=True):
             made["tab"] = True
             return ok(H_TAB_CREATED)
         if head == ["pane", "run"]:
-            if not pane_run_ok:
+            if not pane_run_ok and not args[3].startswith(". "):  # the env load works
                 return _subprocess.CompletedProcess(
                     ["herdr", *args], 1,
                     '{"error":{"code":"pane_not_found","message":"x"},"id":"i"}', "")
@@ -713,6 +713,16 @@ def test_tick_creates_the_system_workspace_on_first_use(tmp_path, monkeypatch):
             triage._repo_dir(), "--no-focus"] in calls
 
 
+def _loaded_env(calls) -> dict[str, str]:
+    """What the runner tab's shell exports from the private env file herdr
+    hands it (the first command typed into the new pane)."""
+    load = next(c[3] for c in calls if c[:2] == ["pane", "run"])
+    out = _subprocess.run(["sh", "-c", f"{load}; env"], capture_output=True, text=True,
+                          env={}, check=True).stdout
+    return {k: v for k, _, v in (line.partition("=") for line in out.splitlines())
+            if k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "AGENT_OPS_STATE_DIR")}
+
+
 def test_tick_forwards_dispatcher_env_to_the_runner(tmp_path, monkeypatch):
     """The herdr server's environment is the user unit's — no Telegram
     credentials — so the runner's env must be forwarded explicitly via the
@@ -726,10 +736,9 @@ def test_tick_forwards_dispatcher_env_to_the_runner(tmp_path, monkeypatch):
     _herdr_fake_creating(monkeypatch, calls)
     triage.enqueue(tmp_path)
     triage.tick(cfg, FakeDeps(), "targets.yaml")
-    create = next(c for c in calls if c[:2] == ["tab", "create"])
-    env = [create[i + 1] for i, a in enumerate(create) if a == "--env"]
-    assert env == ["TELEGRAM_BOT_TOKEN=tok", "TELEGRAM_CHAT_ID=42",
-                   f"AGENT_OPS_STATE_DIR={tmp_path}"]
+    assert not any("tok" in " ".join(c) for c in calls)  # never a process argument
+    assert _loaded_env(calls) == {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "42",
+                                  "AGENT_OPS_STATE_DIR": str(tmp_path)}
 
 
 def test_tick_launch_omits_unset_env_vars(tmp_path, monkeypatch):
@@ -743,9 +752,7 @@ def test_tick_launch_omits_unset_env_vars(tmp_path, monkeypatch):
     _herdr_fake_creating(monkeypatch, calls)
     triage.enqueue(tmp_path)
     triage.tick(cfg, deps, "targets.yaml")  # no crash on the unset ones
-    create = next(c for c in calls if c[:2] == ["tab", "create"])
-    assert [create[i + 1] for i, a in enumerate(create) if a == "--env"] == [
-        "TELEGRAM_BOT_TOKEN=tok"]
+    assert _loaded_env(calls) == {"TELEGRAM_BOT_TOKEN": "tok"}
 
 
 def test_tick_launch_failure_clears_and_notifies(tmp_path, monkeypatch):

@@ -11,6 +11,7 @@ from starlette.responses import RedirectResponse, Response
 from dispatcher.task_artifacts import StoredArtifact
 from web.auth import Operator, current_operator
 from web.sources import ArtifactResource
+from web.task_ref import REF, TaskRef, task_routes
 
 HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
            "Referrer-Policy": "no-referrer"}
@@ -26,6 +27,8 @@ class ArtifactView(BaseModel):
     id: str
     name: str
     path: str
+    repo: str = ""            # the repository holding it, for a multi-repository task
+    task_revision: int = 0    # the task scope revision it was collected under
     media_type: str
     updated_at: str
     stage: str
@@ -38,13 +41,21 @@ class ArtifactsView(BaseModel):
     items: list[ArtifactView]
     expires_at: str
     expired: bool
+    spec_repo_choices: list[str] = []   # non-empty: publication waits for one of these
 
 
-def _view(resource: ArtifactResource, target: str, issue: int) -> ArtifactView:
+class SpecRepoReq(BaseModel):
+    spec_repo: str
+
+
+def _view(resource: ArtifactResource, target: str, issue: int, repo: str) -> ArtifactView:
     item = resource.item
-    url = f"/api/task/{quote(target, safe='')}/{issue}/artifacts/{item.id}"
+    where = f"{quote(target, safe='')}/{repo.replace('/', '~')}/{issue}" if repo \
+        else f"{quote(target, safe='')}/{issue}"
+    url = f"/api/task/{where}/artifacts/{item.id}"
     return ArtifactView(
-        id=item.id, name=item.name, path=item.path, media_type=item.media_type,
+        id=item.id, name=item.name, path=item.path, repo=item.repo,
+        task_revision=item.task_revision, media_type=item.media_type,
         updated_at=item.updated_at, stage=item.stage, status=resource.status,
         url=url if resource.status in {"published", "local"} else "",
         github_url=item.publication.url if item.publication else "")
@@ -62,28 +73,41 @@ def _preview(item: StoredArtifact, content: bytes) -> Response:
 def router(sources, find_task) -> APIRouter:
     routes = APIRouter()
 
-    @routes.get("/api/task/{target}/{issue}/artifacts", response_model=ArtifactsView)
-    def artifacts(target: str, issue: int, op: Operator = Depends(current_operator)):
-        find_task(target, issue)
-        index = sources.artifacts(target, issue)
-        items = [_view(resource, target, issue) for resource in index.items]
-        return ArtifactsView(items=items, expires_at=index.expires_at, expired=index.expired)
+    @task_routes(routes, "get", "/artifacts", response_model=ArtifactsView)
+    def artifacts(ref: TaskRef = REF, op: Operator = Depends(current_operator)):
+        task = find_task(ref)
+        index = sources.artifacts(task.target, task.issue, task.repo)
+        items = [_view(resource, task.target, task.issue, task.repo)
+                 for resource in index.items]
+        return ArtifactsView(items=items, expires_at=index.expires_at, expired=index.expired,
+                             spec_repo_choices=list(index.spec_repo_choices))
 
-    @routes.get("/api/task/{target}/{issue}/artifacts/{artifact_id}")
-    def open_artifact(target: str, issue: int, artifact_id: str,
+    @task_routes(routes, "post", "/spec-repo", status_code=202)
+    def choose_spec_repo(req: SpecRepoReq, ref: TaskRef = REF,
+                         op: Operator = Depends(current_operator)):
+        task = find_task(ref)
+        index = sources.artifacts(task.target, task.issue, task.repo)
+        if req.spec_repo not in index.spec_repo_choices:
+            raise HTTPException(422, "not a repository the spec/plan is waiting on")
+        name = sources.submit_intent("spec-repo", task.target, task.issue,
+                                     {"spec_repo": req.spec_repo}, op.login, task.repo)
+        return {"status": "pending", "intent": name}
+
+    @task_routes(routes, "get", "/artifacts/{artifact_id}")
+    def open_artifact(artifact_id: str, ref: TaskRef = REF,
                       op: Operator = Depends(current_operator)):
-        find_task(target, issue)
-        index = sources.artifacts(target, issue)
+        task = find_task(ref)
+        index = sources.artifacts(task.target, task.issue, task.repo)
         resource = next((r for r in index.items if r.item.id == artifact_id), None)
         if resource is None:
             raise HTTPException(404, "artifact not found")
-        return _open_resource(sources, target, issue, resource)
+        return _open_resource(sources, task, resource)
 
 
     return routes
 
 
-def _open_resource(sources, target: str, issue: int, resource: ArtifactResource) -> Response:
+def _open_resource(sources, task, resource: ArtifactResource) -> Response:
     item = resource.item
     if resource.status == "published":
         return RedirectResponse(item.publication.url, status_code=302, headers=HEADERS)
@@ -91,7 +115,7 @@ def _open_resource(sources, target: str, issue: int, resource: ArtifactResource)
         raise HTTPException(410, "artifact expired")
     if resource.status == "unavailable":
         raise HTTPException(404, "artifact content unavailable")
-    content = sources.artifact_content(target, issue, item.id)
+    content = sources.artifact_content(task.target, task.issue, item.id, task.repo)
     if content is None:
         raise HTTPException(410, "artifact content no longer available")
     return _preview(item, content)

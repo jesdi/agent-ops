@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -131,6 +133,15 @@ def tab(label: str) -> tuple[str, str] | None:
     return None
 
 
+def tab_absent(label: str) -> bool:
+    """True only when the server answered `tab list` and no tab carries
+    `label`; an unreachable server is unknown, not absent."""
+    result = _call(["tab", "list"])
+    return result is not None and not any(
+        isinstance(t, dict) and t.get("label") == label
+        for t in result.get("tabs") or [])
+
+
 def root_pane(workspace_id: str, tab_id: str) -> str | None:
     """pane_id of the tab's root pane — the pane whose tab_id matches; the
     dispatcher never splits its tabs, so the first match is the only one."""
@@ -145,17 +156,40 @@ def root_pane(workspace_id: str, tab_id: str) -> str | None:
 
 def create_tab(workspace_id: str, label: str, cwd: str,
                env: dict[str, str] | None = None) -> str | None:
-    """Create an unfocused tab at `cwd`; returns its root pane_id. `env`
-    becomes `--env K=V` pairs for the launched shell."""
+    """Create an unfocused tab at `cwd`; returns its root pane_id. `env` is
+    the launched shell's environment. Only herdr's own `HERDR_*` hints become
+    `--env K=V` arguments: any process can read another's arguments, so every
+    other value (tokens, project secrets) goes through _load_env instead."""
+    env = env or {}
     args = ["tab", "create", "--workspace", workspace_id, "--label", label,
             "--cwd", cwd]
-    for key, value in (env or {}).items():
-        args += ["--env", f"{key}={value}"]
+    for key, value in env.items():
+        if key.startswith("HERDR_"):
+            args += ["--env", f"{key}={value}"]
     result = _call(args + ["--no-focus"])
     try:
-        return result["root_pane"]["pane_id"]
+        pane = result["root_pane"]["pane_id"]
     except (KeyError, TypeError):
         return None
+    private = {k: v for k, v in env.items() if not k.startswith("HERDR_")}
+    return pane if not private or _load_env(pane, private) else None
+
+
+def _load_env(pane_id: str, env: dict[str, str]) -> bool:
+    """Export `env` in the pane's shell from a private (0600) file that the
+    shell sources and deletes before it reads its next command; only the
+    file's path is typed, so no value reaches an argv or the pane."""
+    bad = [k for k in env if not (k.isascii() and k.isidentifier())]
+    if bad:
+        raise ValueError(f"not environment variable names: {bad}")
+    fd, path = tempfile.mkstemp(prefix="herdr-env-")
+    with os.fdopen(fd, "w") as out:
+        out.writelines(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
+    quoted = shlex.quote(path)
+    if run_command(pane_id, f". {quoted}; rm -f {quoted}"):
+        return True
+    os.unlink(path)
+    return False
 
 
 # -- pane I/O ------------------------------------------------------------------

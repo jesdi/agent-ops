@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+from collections import Counter
 import re
+import yaml
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,10 +21,14 @@ from pydantic import (BaseModel, Field, TypeAdapter, ValidationError,
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import execution_overrides, model_settings, priority, queue_ops
-from dispatcher.config import (Config, apply_stored_models, policy_for,
+from dispatcher.artifacts import task_review_worktree
+from dispatcher.config import (Config, Project, apply_stored_models, load_config, normalize_repo,
+                               policy_for, project_target,
                                referenced_providers, routed_providers,
                                stranded, with_models)
+from dispatcher.claims import held_reservations
 from dispatcher.convergence import pass_lock
+from dispatcher.state import load_all
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
                                override_refusal, parse_entry,
                                stage_pick, track_from_labels)
@@ -31,11 +37,13 @@ from dispatcher import answers as answers_file, intents
 from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, TaskState,
                               launch_entries, launch_track, next_stage,
                               resumable_crash)
+from project_control import ConflictingConfirmation
 from web import model_settings_view as msv
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.auth import (Operator, TailscaleAuthMiddleware,
                       current_operator)
+from web.task_ref import REF, TaskRef, ambiguous, task_routes
 
 DEFAULT_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
@@ -77,6 +85,7 @@ PASS_LOCK_WAIT_SECONDS = 30.0
 class BoostReq(BaseModel):
     issue: int
     amount: int
+    repo: str = ""      # "owner/name"; "" = bare, valid while one row has the number
 
 
 class ReplyReq(BaseModel):
@@ -124,11 +133,17 @@ class PriorityReq(BaseModel):
 
 class NextReq(BaseModel):
     issue: int
+    repo: str = ""
     force: bool = False
+
+
+class ControlReq(BaseModel):
+    confirm: bool = False
 
 
 class ReadyReq(BaseModel):
     issue: int
+    repo: str = ""
 
 
 def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
@@ -145,7 +160,8 @@ def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
 
 def create_app(boot: Config, sources, sse_interval: float = 1.0,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
-               frontend_dist: Path | None = None) -> FastAPI:
+               frontend_dist: Path | None = None, project_control=None,
+               config_path: str | None = None) -> FastAPI:
     app = FastAPI(title="agent-ops web console")
     app.add_middleware(TailscaleAuthMiddleware)
 
@@ -153,7 +169,56 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def health(op: Operator = Depends(current_operator)):
         return {"ok": True, "operator": op.login}
 
-    targets_by_name = {t.name: t for t in boot.targets}
+    projects_by_name = targets_by_name = None
+
+    def _index() -> None:
+        nonlocal projects_by_name, targets_by_name
+        projects_by_name = {p.key: p for p in boot.projects}
+        targets_by_name = {t.name: t for t in [*boot.targets,
+                                              *map(project_target, boot.projects)]}
+    _index()
+
+    def _refresh() -> None:
+        """With a live targets.yaml, each request sees the deployed projects."""
+        nonlocal boot
+        if config_path:
+            try:
+                boot = load_config(config_path)
+            except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
+                return  # mid-write or invalid: keep the last good configuration
+            _index()
+    app.router.dependencies.append(Depends(_refresh))
+
+    @app.get("/api/projects")
+    def projects(op: Operator = Depends(current_operator)):
+        tasks = Counter(t.target for t in load_all(boot.state_dir))
+        return {"projects": [
+            {"name": p.key, "state": "enabled" if p.enabled else "paused", "tasks": tasks[p.key],
+             "board": {"owner": p.board_owner, "number": p.board_number},
+             "repositories": [r.repo for r in p.repositories],
+             "pending": project_control.pending_change(p.key) if project_control else None}
+            for p in boot.projects]}
+
+    @app.post("/api/projects/{name}/{verb}", status_code=202)
+    def change_project(name: str, verb: Literal["enable", "pause"], req: ControlReq,
+                       op: Operator = Depends(current_operator)):
+        if project_control is None:
+            raise HTTPException(503, "project control unavailable")
+        if name not in projects_by_name:
+            raise HTTPException(404, f"unknown project {name!r}")
+        if not req.confirm:
+            raise HTTPException(422, "confirmation required")
+        try:
+            return {"operation": project_control.request_enabled(name, verb == "enable")}
+        except ConflictingConfirmation as e:
+            raise HTTPException(409, f"another change is pending: {e}") from e
+
+    def _target(name: str, repo: str = ""):
+        project = projects_by_name.get(name)
+        return project_target(project, repo) if project else targets_by_name.get(name)
+
+    def _rank_rows(target):
+        return sources.rank_rows(projects_by_name.get(target.name, target))
 
     def _cfg() -> Config:
         """The config in force now: `boot` with the stored model settings
@@ -175,8 +240,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return priority.order(mode, usages or {},
                               now or datetime.now(timezone.utc), boot.pace)
 
-    def _policy(live: Config, target_name):
-        target = targets_by_name.get(target_name)
+    def _policy(live: Config, target_name, repo: str = ""):
+        target = _target(target_name, repo)
         return policy_for(live, target)
 
     def _require_same_provider(t, model):
@@ -190,13 +255,13 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         """The pending one-shot override of t's next launch, or None: the
         dispatcher's own rule (execution_overrides.pending)."""
         return execution_overrides.pending(
-            sources.execution_override(t.target, t.issue),
+            sources.execution_override(t.target, t.issue, t.repo),
             t.resume_model_override if t.park == PARK_WAKE else "",
             t.resume_bypass_usage)
 
     def _choices(live: Config, t, order):
         """The ordered entries the dispatcher would walk for t's next launch."""
-        return launch_entries(t, _policy(live, t.target), order)
+        return launch_entries(t, _policy(live, t.target, t.repo), order)
 
     def _model_for(live: Config, t, order, usages=None, now=None):
         override = _one_shot(t)
@@ -222,7 +287,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         stage = next_stage(t)
         pinned = _pinned_track(live, t)
         # A pinned wait may be overridden with any model of the policy.
-        offered = (_policy(live, t.target).model_ids() if pinned
+        offered = (_policy(live, t.target, t.repo).model_ids() if pinned
                    else [e.model_id for e in _choices(live, t, order)])
         return _admission_for_model(
             _model_for(live, t, order, usages, now),
@@ -231,7 +296,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _pinned_track(live: Config, t):
         override = _one_shot(t)
-        return launch_pinned_track(t, _policy(live, t.target),
+        return launch_pinned_track(t, _policy(live, t.target, t.repo),
                                    overridden=bool(override and override.model))
 
     def _admission_for_model(model, choices, usages, now, pinned_track=""):
@@ -258,10 +323,11 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return _candidate_choices(live, target, row, order)[0]
 
     def _candidate_admissions(live: Config, queues, order, usages, now):
-        return {(target.name, row["number"]): admission
+        return {read_model.identity_key(target.name, row["number"], row.get("repo", "")): admission
                 for target, rows in queues for row in rows
                 if read_model._is_candidate(row)
-                and sources.execution_override(target.name, row["number"]) is None
+                and sources.execution_override(target.name, row["number"],
+                                                row.get("repo", "")) is None
                 and (admission := _admission_for_model(
                     _candidate_model(live, target, row, order),
                     _candidate_choices(live, target, row, order),
@@ -274,30 +340,42 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return target in targets_by_name or any(
             t.target == target for t in tasks)
 
-    def _find_task(target: str, issue: int):
-        """The task at (target, issue), or a 404 — unknown target and
+    def _resolve(ref: TaskRef):
+        """The one active task `ref` names, None when none does. A ref with
+        no repository names every task of that number: 409 when several."""
+        found = [t for t in sources.tasks()
+                 if (t.target, t.issue) == (ref.target, ref.issue)
+                 and ref.repo in ("", t.repo)]
+        known = found if ref.repo else found + sources.archived_named(ref.target, ref.issue)
+        repos = {t.repo for t in known}
+        if len(repos) > 1:
+            raise ambiguous(ref.target, ref.issue, sorted(repos))
+        return found[0] if found else None
+
+    def _find_task(ref: TaskRef):
+        """The task `ref` names, or a 404 — unknown target and
         known-target-but-no-such-task are both reported as 404, distinguished
         only by detail text."""
-        task = sources.task(target, issue)
+        task = _resolve(ref) or sources.task(*ref)
         if task is not None:
             return task
-        if not _known_target(target, sources.tasks()):
-            raise HTTPException(404, f"unknown target {target!r}")
-        raise HTTPException(404, f"no task {target}/{issue}")
+        if not _known_target(ref.target, sources.tasks()):
+            raise HTTPException(404, f"unknown target {ref.target!r}")
+        raise HTTPException(404, f"no task {ref.target}/{ref.issue}")
 
     @app.get("/api/board/snapshot", response_model=read_model.BoardSnapshot)
     def board_snapshot(op: Operator = Depends(current_operator)):
         # Local state only: cards must not wait for GitHub, usage or sessions.
         live = _cfg()
         tasks = sources.tasks()
-        mail = sources.undelivered_counts()
+        mail = {**sources.undelivered_counts(), **sources.undelivered_qualified_counts()}
         order = _order(_mode(live))
         return read_model.build_board_snapshot(
             tasks, capacity=boot.capacity,
-            models={(t.target, t.issue): _model_for(live, t, order) for t in tasks},
-            pinned_tracks={(t.target, t.issue): _pinned_track(live, t) for t in tasks},
+            models={read_model.mail_key(t): _model_for(live, t, order) for t in tasks},
+            pinned_tracks={read_model.mail_key(t): _pinned_track(live, t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT), queues=[],
-            undelivered={(t.target, t.issue): mail.get((t.target, t.issue), 0)
+            undelivered={read_model.mail_key(t): mail.get(read_model.mail_key(t), 0)
                          for t in tasks},
             wake_blocked=sources.wake_blocked_issues())
     app.include_router(artifacts_router(sources, _find_task))
@@ -324,12 +402,23 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             stale_any = stale_any or stale
             queues.append((target.name, rows))
             queue_targets.append((target, rows))
-        mail = sources.undelivered_counts()
+        for project in boot.projects:  # ranked across all its repositories
+            rows, _as_of, stale = sources.rank_rows(project)
+            stale_any = stale_any or stale
+            queues.append((project.key, rows))
+            by_repo = {normalize_repo(r.repo): [] for r in project.repositories}
+            for row in rows:  # an untagged row belongs to the first repository
+                by_repo.get(normalize_repo(row.get("repo", "")),
+                            next(iter(by_repo.values()))).append(row)
+            queue_targets.extend((project_target(project, r.repo),
+                                  by_repo[normalize_repo(r.repo)])
+                                 for r in project.repositories)
+        mail = {**sources.undelivered_counts(), **sources.undelivered_qualified_counts()}
         return read_model.build_board(
             tasks, capacity=boot.capacity,
-            models={(t.target, t.issue): _model_for(live, t, order, usages, now)
+            models={read_model.mail_key(t): _model_for(live, t, order, usages, now)
                     for t in tasks},
-            pinned_tracks={(t.target, t.issue): _pinned_track(live, t) for t in tasks},
+            pinned_tracks={read_model.mail_key(t): _pinned_track(live, t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=sources.pass_heartbeat(),
             now=now,
@@ -337,23 +426,25 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             queues=queues, queue_stale=stale_any,
             # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,
-            undelivered={(t.target, t.issue): mail.get((t.target, t.issue), 0)
+            undelivered={read_model.mail_key(t): mail.get(read_model.mail_key(t), 0)
                         for t in tasks},
             wake_blocked=sources.wake_blocked_issues(),
-            admissions={(t.target, t.issue): admission
+            admissions={read_model.mail_key(t): admission
                         for t in tasks
                         if (admission := _task_admission(live, t, order, usages, now))},
             candidate_admissions=_candidate_admissions(live, queue_targets, order,
                                                        usages, now),
-            max_active={t.name: t.max_active for t in boot.targets},
+            max_active={**{t.name: t.max_active for t in boot.targets},
+                        **{p.key: project_target(p).max_active for p in boot.projects}},
             last_claimed=sources.last_claims(),
-            max_open=boot.max_open)
+            max_open=boot.max_open, projects=boot.projects,
+            holds=held_reservations(boot.state_dir))
 
-    @app.get("/api/task/{target}/{issue}",
-             response_model=read_model.TaskDetail)
-    def task_detail(target: str, issue: int,
+    @task_routes(app, "get", response_model=read_model.TaskDetail)
+    def task_detail(ref: TaskRef = REF,
                     op: Operator = Depends(current_operator)):
-        t = _find_task(target, issue)
+        t = _find_task(ref)
+        target, issue = t.target, t.issue
         live = _cfg()
         now = datetime.now(timezone.utc)
         usages = _usages(live)
@@ -365,27 +456,36 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         pending = [i for i in sources.pending_intents()
                    if i.get("issue") == issue
                    and i.get("target", "") in ("", target)
+                   and i.get("repo", "") in ("", t.repo)
                    and i.get("action") in ("reply", "resume")]
-        policy = _policy(live, t.target)
+        policy = _policy(live, t.target, t.repo)
         return read_model.task_detail(
             t, model=_model_for(live, t, order, usages, now),
             pinned_track=_pinned_track(live, t),
-            pane_tail=sources.pane_tail(target, issue),
-            session_alive=sources.session_alive(target, issue),
+            pane_tail=sources.pane_tail(target, issue, t.repo),
+            session_alive=sources.session_alive(target, issue, t.repo),
             signal=sources.stage_signal(t.worktree),
-            events=sources.events_tail(EVENTS_SCAN_LIMIT),
+            events=_events_of(t),
             now=now,
-            messages=sources.messages(target, issue),
+            messages=sources.messages(target, issue, t.repo),
             pending_sends=pending,
             wake_blocked=(target, issue) in sources.wake_blocked_issues(),
             admission=_task_admission(live, t, order, usages, now),
             track_when=(policy.tracks[t.track].when
                        if t.track in policy.tracks else ""))
 
-    @app.get("/api/task/{target}/{issue}/description",
-             response_model=read_model.IssueDescription)
-    def task_description(target: str, issue: int,
+    def _events_of(t):
+        """The log lines of t's repository. An older line names none: it is
+        t's only while no task of another repository shares t's number."""
+        shared = sources.shares_number(t.target, t.issue, t.repo)
+        return [e for e in sources.events_tail(EVENTS_SCAN_LIMIT)
+                if e.get("repo", "") == t.repo or (not shared and not e.get("repo", ""))]
+
+    @task_routes(app, "get", "/description",
+                 response_model=read_model.IssueDescription)
+    def task_description(ref: TaskRef = REF,
                          op: Operator = Depends(current_operator)):
+        target, issue, repo = ref
         # `target` is already given, so — unlike the old issue-only route —
         # there is no cross-target AMBIGUITY left to resolve or 409 on: the
         # repo comes straight from this target's config, never scanned for
@@ -397,14 +497,17 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         tgt = targets_by_name.get(target)
         if tgt is None:
             raise HTTPException(404, f"unknown target {target!r}")
-        is_task = sources.task(target, issue) is not None
-        is_ghost = any(r["number"] == issue
-                       for r in sources.rank_rows(tgt)[0])
-        if not (is_task or is_ghost):
+        task = _resolve(ref) or sources.task(*ref)
+        rows = [r for r in _rank_rows(tgt)[0] if r["number"] == issue
+                and repo in ("", r.get("repo", ""))]
+        if task is None and len(rows) > 1:
+            raise ambiguous(target, issue, [r.get("repo", "") for r in rows])
+        if task is None and not rows:
             raise HTTPException(404, f"issue {target}/{issue} is neither a "
                                      "task nor on this target's queue")
+        named = task.repo if task else rows[0].get("repo", "")
         return read_model.IssueDescription(
-            **sources.issue_description(tgt.repo, issue))
+            **sources.issue_description(named or repo or tgt.repo, issue))
 
     def _readable_or_unavailable(
         p: Path, rel: str
@@ -436,17 +539,18 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                 path=raw_path, reason="path-escapes-worktree")
         return _readable_or_unavailable(p, str(p.relative_to(wt)))
 
-    @app.get("/api/task/{target}/{issue}/request",
-             response_model=read_model.OperatorRequest | None)
-    def task_request(target: str, issue: int,
+    @task_routes(app, "get", "/request",
+                 response_model=read_model.OperatorRequest | None)
+    def task_request(ref: TaskRef = REF,
                      op: Operator = Depends(current_operator)):
-        t = _find_task(target, issue)
+        t = _find_task(ref)
         req = t.operator_request
         if req is None:
             return None
-        wt = Path(t.worktree).resolve()
-        # Both request kinds are one file in the worktree: the plan review
-        # summary, or the questionnaire.
+        # Both request kinds are one file: the plan review summary, from the
+        # checkout its revision covers, or the questionnaire in the worktree.
+        wt = Path(task_review_worktree(t, boot.state_dir) if req.kind == "plan-approval"
+                  else t.worktree).resolve()
         return read_model.OperatorRequest(
             kind=req.kind, content=_resolve_content(req.path, wt),
             revision=req.fingerprint, answers=_saved_answers(t))
@@ -459,10 +563,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         kind = t.operator_request.kind
         pending = [intents.Intent(i["action"], i["target"], i["issue"],
                                   i["payload"], i["actor"], i["created_at"],
-                                  Path(i["id"]))
+                                  Path(i["id"]), i.get("repo", ""))
                    for i in sources.pending_intents()
-                   if (i["action"], i["target"], i["issue"])
-                   == ("answers", t.target, t.issue)
+                   if (i["action"], i["target"], i["issue"], i.get("repo", ""))
+                   == ("answers", t.target, t.issue, t.repo)
                    and isinstance(i["payload"], dict)
                    and isinstance(i["payload"].get("answers"), dict)]
         win = answers_file.select(pending, t.operator_request.fingerprint)
@@ -475,16 +579,15 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     HISTORY_MAX_LINES = 10000
 
-    @app.get("/api/task/{target}/{issue}/history",
-             response_model=read_model.PaneHistory)
-    def task_history(target: str, issue: int, lines: int = 2000,
+    @task_routes(app, "get", "/history", response_model=read_model.PaneHistory)
+    def task_history(lines: int = 2000, ref: TaskRef = REF,
                      op: Operator = Depends(current_operator)):
-        _find_task(target, issue)
+        t = _find_task(ref)
         # Unbounded `lines` would let one request pull an entire pane history
         # into memory and over the wire; clamp before hitting the session layer.
         clamped = max(1, min(lines, HISTORY_MAX_LINES))
         return read_model.PaneHistory(
-            text=sources.pane_history(target, issue, clamped))
+            text=sources.pane_history(t.target, t.issue, clamped, t.repo))
 
     @app.get("/api/usage", response_model=read_model.UsageView)
     def usage_route(op: Operator = Depends(current_operator)):
@@ -530,7 +633,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         stranded_tasks = [
             f"{t.target}#{t.issue} ({why})" for t in sources.tasks()
             if t.stage not in TERMINAL_STAGES and t.target in targets_by_name
-            and (why := stranded(candidate, targets_by_name[t.target], t,
+            and (why := stranded(candidate, _target(t.target, t.repo), t,
                                  next_stage(t)))]
         if stranded_tasks:
             raise HTTPException(422, "unfinished tasks could not go on: "
@@ -597,7 +700,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             409, f"queue data is stale (as of {as_of}); "
                  "retry when GitHub is reachable")
 
-    def _locate_row(issue: int):
+    def _locate_row(issue: int, repo: str = ""):
         """Find the row a queue write targets, refusing stale-backed writes.
 
         When GitHub is unreachable the rank cache keeps the VIEW useful, but
@@ -608,131 +711,166 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         """
         hits = []
         stale_as_of = None
-        for target in boot.targets:
-            rows, as_of, stale = sources.rank_rows(target)
+        for target in [*boot.targets, *boot.projects]:
+            rows, as_of, stale = sources.rank_rows(target, fresh=True)
             if stale and stale_as_of is None:
                 stale_as_of = as_of
             hits += [(target, row, stale, as_of)
-                     for row in rows if row["number"] == issue]
+                     for row in rows if row["number"] == issue
+                     and repo in ("", row.get("repo", ""))]
         if not hits:
             if stale_as_of is not None:
                 raise _stale(stale_as_of)
             raise HTTPException(404, f"issue {issue} not on any queue")
         if len(hits) > 1:
-            raise HTTPException(
-                409, f"issue {issue} is ambiguous across targets")
+            raise ambiguous(
+                "any target", issue, [row.get("repo", "") for _, row, *_ in hits])
         target, row, stale, as_of = hits[0]
         if stale:
             raise _stale(as_of)
+        if isinstance(target, Project):
+            target = project_target(target, row.get("repo", ""))
         return target, row
 
     def _apply(event: str, issue: int, plan, op: Operator, detail: str,
-               target):
+               target, row):
         if not plan.ok:
             raise HTTPException(422, plan.reason)
-        sources.apply_queue_plan(target, issue, plan)
+        repo = row.get("repo", "")
+        sources.apply_queue_plan(target, issue, plan, repo)
         sources.append_event(event, target=target.name, issue=issue,
-                             actor=op.login, detail=detail)
+                             actor=op.login, detail=detail, repo=repo)
         return {"ok": True, "reason": plan.reason}
 
     @app.post("/api/queue/boost")
     def queue_boost(req: BoostReq,
                     op: Operator = Depends(current_operator)):
-        target, row = _locate_row(req.issue)
+        target, row = _locate_row(req.issue, req.repo)
         return _apply("queue-boost", req.issue,
                       queue_ops.plan_boost(row, req.amount), op,
-                      f"amount={req.amount}", target)
+                      f"amount={req.amount}", target, row)
 
     @app.post("/api/queue/next")
     def queue_next(req: NextReq,
                    op: Operator = Depends(current_operator)):
-        target, row = _locate_row(req.issue)
+        target, row = _locate_row(req.issue, req.repo)
         return _apply("queue-next", req.issue,
                       queue_ops.plan_next(row, req.force), op,
-                      f"force={req.force}", target)
+                      f"force={req.force}", target, row)
 
     @app.post("/api/queue/ready")
     def queue_ready(req: ReadyReq,
                     op: Operator = Depends(current_operator)):
-        target, row = _locate_row(req.issue)
+        target, row = _locate_row(req.issue, req.repo)
         return _apply("queue-ready", req.issue,
-                      queue_ops.plan_ready(row), op, "", target)
+                      queue_ops.plan_ready(row), op, "", target, row)
 
     @app.get("/api/queue", response_model=read_model.QueueView)
     def queue_view(op: Operator = Depends(current_operator)):
-        in_flight = {t.issue for t in sources.tasks()}
+        tasks = sources.tasks()
         return read_model.QueueView(targets=[
-            read_model.target_queue(target.name, *sources.rank_rows(target),
-                                    in_flight=in_flight)
+            read_model.target_queue(
+                target.name, *sources.rank_rows(target),
+                in_flight={(t.repo, t.issue) for t in tasks
+                           if t.target == target.name})
             for target in boot.targets])
 
-    def _require_task(target: str, issue: int) -> None:
-        if not any(t.target == target and t.issue == issue
-                   for t in sources.tasks()):
-            raise HTTPException(404, f"no task {target}/{issue}")
+    def _require_task(ref: TaskRef):
+        task = _resolve(ref)
+        if task is None:
+            raise HTTPException(404, f"no task {ref.target}/{ref.issue}")
+        return task
 
-    def _accepted(action: str, target: str, issue: int, payload: dict,
-                 op: Operator):
-        name = sources.submit_intent(action, target, issue, payload,
-                                     op.login)
+    def _accepted(action: str, ref: TaskRef, payload: dict, op: Operator):
+        name = sources.submit_intent(action, ref.target, ref.issue, payload,
+                                     op.login, ref.repo)
         return JSONResponse({"status": "pending", "intent": name},
                             status_code=202)
 
-    @app.post("/api/task/{target}/{issue}/reply", status_code=202)
-    def intent_reply(target: str, issue: int, req: ReplyReq,
+    def _backlog_rows(ref: TaskRef) -> list:
+        """The queue rows `ref` names on its target."""
+        target = targets_by_name.get(ref.target)
+        return [] if target is None else [
+            row for row in _rank_rows(target)[0]
+            if row["number"] == ref.issue and ref.repo in ("", row.get("repo", ""))]
+
+    def _named(ref: TaskRef) -> TaskRef:
+        """`ref` with the repository of the task or queue row it names, when
+        there is one: an old reference reaches the one item of that number,
+        409 when several."""
+        task = _resolve(ref)
+        rows = _backlog_rows(ref)
+        archived = sources.archived_named(ref.target, ref.issue) if not ref.repo else []
+        repos = list(dict.fromkeys(
+            [t.repo for t in archived] + ([task.repo] if task is not None else [])
+            + [row.get("repo", "") for row in rows]))
+        if len(repos) > 1:
+            raise ambiguous(ref.target, ref.issue, repos)
+        if task is not None:
+            return TaskRef(*ref[:2], task.repo)
+        return TaskRef(*ref[:2], repos[0]) if repos else ref
+
+    @task_routes(app, "post", "/reply", status_code=202)
+    def intent_reply(req: ReplyReq, ref: TaskRef = REF,
                      op: Operator = Depends(current_operator)):
         # NO _require_task: the contract is "never drop a message", and that
         # includes an unclaimed backlog issue (a pre-briefing delivered at
         # claim time) and a done/failed tombstone (delivered if it restarts).
         # The queue is keyed by issue and survives every task lifecycle, so
         # there is nothing here to 404 against.
-        return _accepted("reply", target, issue, {"text": req.text}, op)
+        return _accepted("reply", _named(ref), {"text": req.text}, op)
 
-    @app.post("/api/task/{target}/{issue}/answers", status_code=202,
-              dependencies=[Depends(_capped_body)])
-    def intent_answers(target: str, issue: int, req: AnswersReq,
+    @task_routes(app, "post", "/answers", status_code=202,
+                 dependencies=[Depends(_capped_body)])
+    def intent_answers(req: AnswersReq, ref: TaskRef = REF,
                        op: Operator = Depends(current_operator)):
-        _require_task(target, issue)
-        return _accepted("answers", target, issue,
+        task = _require_task(ref)
+        return _accepted("answers", TaskRef(*ref[:2], task.repo),
                          req.model_dump(mode="json"), op)
 
-    @app.post("/api/task/{target}/{issue}/park", status_code=202)
-    def intent_park(target: str, issue: int,
+    @task_routes(app, "post", "/park", status_code=202)
+    def intent_park(ref: TaskRef = REF,
                     op: Operator = Depends(current_operator)):
-        _require_task(target, issue)
-        return _accepted("park", target, issue, {}, op)
+        return _accepted("park", TaskRef(*ref[:2], _require_task(ref).repo), {}, op)
 
-    @app.post("/api/task/{target}/{issue}/kill", status_code=202)
-    def intent_kill(target: str, issue: int,
+    @task_routes(app, "post", "/kill", status_code=202)
+    def intent_kill(ref: TaskRef = REF,
                     op: Operator = Depends(current_operator)):
-        _require_task(target, issue)
-        return _accepted("kill", target, issue, {}, op)
+        return _accepted("kill", TaskRef(*ref[:2], _require_task(ref).repo), {}, op)
 
-    @app.post("/api/task/{target}/{issue}/cancel", status_code=202)
-    def intent_cancel(target: str, issue: int,
+    @task_routes(app, "post", "/cancel", status_code=202)
+    def intent_cancel(ref: TaskRef = REF,
                       op: Operator = Depends(current_operator)):
         # NO _require_task: a backlog card with no task file cancels too —
         # the target in the path lets the dispatcher retire the board card.
-        return _accepted("cancel", target, issue, {}, op)
+        named = _named(ref)
+        if _resolve(named) is None and not _backlog_rows(named):
+            raise HTTPException(404, f"no task or queue issue {ref.target}/{ref.issue}")
+        return _accepted("cancel", named, {}, op)
 
-    @app.post("/api/task/{target}/{issue}/retry", status_code=202)
-    def intent_retry(target: str, issue: int,
+    @task_routes(app, "post", "/retry", status_code=202)
+    def intent_retry(ref: TaskRef = REF,
                      op: Operator = Depends(current_operator)):
-        if not any(q.get("target") == target and q.get("task_issue") == issue
-                   for q in sources.quarantine_entries()):
+        repos = [q.get("repo", "") for q in sources.quarantine_entries()
+                 if (q.get("target"), q.get("task_issue")) == (ref.target, ref.issue)
+                 and ref.repo in ("", q.get("repo", ""))]
+        if len(repos) > 1:
+            raise ambiguous(ref.target, ref.issue, repos)
+        if not repos:
             raise HTTPException(
-                404, f"issue {target}/{issue} is not quarantined")
-        return _accepted("retry", target, issue, {}, op)
+                404, f"issue {ref.target}/{ref.issue} is not quarantined")
+        return _accepted("retry", TaskRef(*ref[:2], repos[0]), {}, op)
 
-    @app.post("/api/task/{target}/{issue}/resume", status_code=202)
-    def intent_resume(target: str, issue: int, req: ResumeReq,
+    @task_routes(app, "post", "/resume", status_code=202)
+    def intent_resume(req: ResumeReq, ref: TaskRef = REF,
                       op: Operator = Depends(current_operator)):
-        task = _find_task(target, issue)
+        task = _find_task(ref)
+        target, issue = task.target, task.issue
         if task.stage in TERMINAL_STAGES and not resumable_crash(task):
             # The dispatcher would drop it; say so instead of queueing it.
             raise HTTPException(409, f"task {target}/{issue} is {task.stage.value} "
                                 "and cannot be resumed")
-        configured_target = targets_by_name.get(task.target)
+        configured_target = _target(task.target, task.repo)
         policy = policy_for(_cfg(), configured_target)
         configured = policy.model_ids()
         if req.model and req.model not in configured:
@@ -744,27 +882,28 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             payload["model"] = req.model
         if req.bypass_usage:
             payload["bypass_usage"] = True
-        return _accepted("resume", target, issue, payload, op)
+        return _accepted("resume", TaskRef(target, issue, task.repo), payload, op)
 
-    def _queue_candidate(configured_target, target: str, issue: int):
-        rows, _as_of, stale = sources.rank_rows(configured_target)
-        row = next((candidate for candidate in rows
-                    if candidate.get("number") == issue
-                    and read_model._is_candidate(candidate)), None)
-        if row is not None:
-            return row
-        detail = (f"queue for {target!r} is stale"
-                  if stale else f"no runnable task {target}/{issue}")
+    def _queue_candidate(configured_target, ref: TaskRef):
+        rows, _as_of, stale = _rank_rows(configured_target)
+        found = [candidate for candidate in rows
+                 if candidate.get("number") == ref.issue
+                 and ref.repo in ("", candidate.get("repo", ""))
+                 and read_model._is_candidate(candidate)]
+        if len(found) > 1:
+            raise ambiguous(ref.target, ref.issue, [c.get("repo", "") for c in found])
+        if found:
+            return found[0]
+        detail = (f"queue for {ref.target!r} is stale"
+                  if stale else f"no runnable task {ref.target}/{ref.issue}")
         raise HTTPException(409 if stale else 404, detail)
 
-    def _runnable_work(configured_target, target: str, issue: int):
-        task = next((candidate for candidate in sources.tasks()
-                     if (candidate.target, candidate.issue) == (target, issue)),
-                    None)
+    def _runnable_work(configured_target, ref: TaskRef):
+        task = _resolve(ref)
         if task is None:
-            return None, _queue_candidate(configured_target, target, issue)
+            return None, _queue_candidate(configured_target, ref)
         if task.stage in TERMINAL_STAGES:
-            raise HTTPException(422, f"task {target}/{issue} is terminal")
+            raise HTTPException(422, f"task {ref.target}/{ref.issue} is terminal")
         return task, None
 
     def _run_model(configured_target, target: str, req: RunReq, task, row):
@@ -785,28 +924,32 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                     or _model_for(live, task, _order(_mode(live), usages, now), usages, now))
         return _candidate_model(live, configured_target, row, _order(_mode(live)))
 
-    def _arm_run(target: str, issue: int, req: RunReq, task, model: str,
-                 op: Operator):
+    def _arm_run(ref: TaskRef, req: RunReq, task, model: str, op: Operator):
         if task is not None and task.park:
             payload = {"model": model}
             if req.bypass_usage:
                 payload["bypass_usage"] = True
-            return _accepted("resume", target, issue, payload, op)
+            return _accepted("resume", ref, payload, op)
         sources.set_execution_override(
-            target, issue, model=model, bypass_usage=req.bypass_usage)
-        sources.append_event("execution-forced", target=target, issue=issue,
-                             actor=op.login, detail=f"model={model}")
-        return {"ok": True, "reason": f"#{issue} will run with {model}"}
+            ref.target, ref.issue, model=model, bypass_usage=req.bypass_usage,
+            repo=ref.repo)
+        sources.append_event("execution-forced", target=ref.target,
+                             issue=ref.issue, actor=op.login,
+                             detail=f"model={model}", repo=ref.repo)
+        return {"ok": True, "reason": f"#{ref.issue} will run with {model}"}
 
-    @app.post("/api/task/{target}/{issue}/run")
-    def force_run(target: str, issue: int, req: RunReq,
+    @task_routes(app, "post", "/run")
+    def force_run(req: RunReq, ref: TaskRef = REF,
                   op: Operator = Depends(current_operator)):
-        configured_target = targets_by_name.get(target)
+        configured_target = targets_by_name.get(ref.target)
         if configured_target is None:
-            raise HTTPException(404, f"unknown target {target!r}")
-        task, row = _runnable_work(configured_target, target, issue)
-        model = _run_model(configured_target, target, req, task, row)
-        return _arm_run(target, issue, req, task, model, op)
+            raise HTTPException(404, f"unknown target {ref.target!r}")
+        # Name the identity first: archived, active and every matching queue
+        # row, runnable or not. Eligibility must never pick among them.
+        task, row = _runnable_work(configured_target, _named(ref))
+        repo = task.repo if task is not None else row.get("repo", "")
+        model = _run_model(_target(ref.target, repo), ref.target, req, task, row)
+        return _arm_run(TaskRef(ref.target, ref.issue, repo), req, task, model, op)
 
     @app.get("/api/pending-intents")
     def pending_intents(op: Operator = Depends(current_operator)):

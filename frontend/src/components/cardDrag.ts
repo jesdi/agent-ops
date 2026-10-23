@@ -3,6 +3,7 @@ import type { DragEvent } from 'react'
 export interface DraggedCard {
   issue: number
   target: string
+  repo?: string
   title: string
 }
 

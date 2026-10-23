@@ -70,6 +70,7 @@ _TEMPLATES = {
     "pr_feedback": "💬 {ref} {title} — review feedback on the PR; queued for rework.\n{note}\n{url}",
     "pr_updated": "🔁 {ref} {title} — feedback addressed, PR updated: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
     "task_done": "🎉 {ref} {title} — PR merged; task done. {note}\n{url}",
+    "partial_merge_guidance": "❓ {ref} {title} — a required PR closed without merge after another merged (parked, slot freed):\n{note}\n{url}\nNothing was reverted. Reply to THIS message with how to proceed.",
     "pr_closed": "🚫 {ref} {title} — PR closed without merge: {note}\n{url}",
     "unit_failed": ("🚨 {unit} FAILED on {host}. Logs:\n"
                     "ssh agent@{host} journalctl --user -u {unit} -n 50"),
@@ -102,6 +103,8 @@ def render(template: str, multi_target: bool = False, **ctx) -> str:
                                       multi_target)}
     text = _TEMPLATES[template].format(**ctx)
     if template in ("awaiting_plan_review", "plan_parked", "parked_question") and ctx.get("console"):
-        text += (f"\nread & approve: {ctx['console']}/task/"
-                 f"{ctx['target']}/{ctx['issue']}")
+        repo = ctx.get("repo", "").replace("/", "~")
+        where = f"{ctx['target']}/{repo}/{ctx['issue']}" if repo \
+            else f"{ctx['target']}/{ctx['issue']}"
+        text += f"\nread & approve: {ctx['console']}/task/{where}"
     return text

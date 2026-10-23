@@ -47,7 +47,8 @@ def test_sock_path_lives_in_its_own_dir(tmp_path):
     assert sock_path(tmp_path) == tmp_path / "wait" / "wait.sock"
 
 
-def test_stop_hook_script_pings_waitd():
+def test_stop_hook_script_pings_waitd(monkeypatch):
+    monkeypatch.setattr("dispatcher.waitd._legacy_peer_matches", lambda *args: True)
     # The real regression: sessions run the hook inside a container where
     # only the wait dir is mounted — the script must resolve the socket
     # via AGENT_OPS_STATE_DIR and reach waitd through it.
@@ -77,7 +78,8 @@ def test_stop_hook_script_pings_waitd():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_stop_hook_script_legacy_worktree_still_pings():
+def test_stop_hook_script_legacy_worktree_still_pings(monkeypatch):
+    monkeypatch.setattr("dispatcher.waitd._legacy_peer_matches", lambda *args: True)
     # An old worktree's task.json predates the target field — the hook must
     # default to "" so the ping still lands, via waitd's legacy fallback.
     tmpdir = tempfile.mkdtemp(prefix="w_")
@@ -120,7 +122,8 @@ def _await_listening(sock: Path):
     pytest.fail("waitd never started accepting connections")
 
 
-def test_serve_end_to_end():
+def test_serve_end_to_end(monkeypatch):
+    monkeypatch.setattr("dispatcher.waitd._legacy_peer_matches", lambda *args: True)
     # Use a short temp dir to avoid AF_UNIX path length limit (~104 bytes on macOS)
     tmpdir = tempfile.mkdtemp(prefix="w_")
     try:

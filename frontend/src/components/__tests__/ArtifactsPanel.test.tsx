@@ -1,4 +1,5 @@
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { renderWithProviders } from '../../test/render'
@@ -6,7 +7,7 @@ import { ArtifactsPanel } from '../ArtifactsPanel'
 import { RequestPanel } from '../RequestPanel'
 
 const spec = {
-  id: 'spec', name: 'Specification', path: 'docs/spec.md', media_type: 'text/markdown',
+  id: 'spec', repo: '', name: 'Specification', path: 'docs/spec.md', media_type: 'text/markdown',
   updated_at: '2026-09-13T00:00:00Z', stage: 'spec', status: 'published',
   url: '/api/task/widget/42/artifacts/spec', github_url: 'https://github.com/o/r/blob/task/42/docs/spec.md',
 }
@@ -94,4 +95,26 @@ test('failed artifact query preserves the review link and local request content'
   expect(await screen.findByText(/Could not load the GitHub spec link/)).toBeInTheDocument()
   expect(screen.getByRole('heading', { name: 'Local design' })).toBeInTheDocument()
   expect(screen.getByRole('link', { name: 'open review' })).toBeInTheDocument()
+})
+
+test('same-named artifacts of different repositories are told apart', async () => {
+  seed([{ ...spec, repo: 'o/front' }, { ...spec, id: 'spec2', repo: 'o/back', url: '/api/task/widget/42/artifacts/spec2' }])
+  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  expect(await screen.findByRole('link', { name: 'Open Specification (o/front)' })).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Open Specification (o/back)' })).toBeInTheDocument()
+})
+
+test('a pending spec repository is chosen from the panel', async () => {
+  let chosen: unknown
+  server.use(
+    http.get('/api/task/widget/42/artifacts', () =>
+      HttpResponse.json({ items: [], expired: false, expires_at: '', spec_repo_choices: ['o/front', 'o/back'] })),
+    http.post('/api/task/widget/42/spec-repo', async ({ request }) => {
+      chosen = await request.json()
+      return HttpResponse.json({ status: 'pending', intent: 'x' }, { status: 202 })
+    }),
+  )
+  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  await userEvent.click(await screen.findByRole('button', { name: 'Use o/back' }))
+  await waitFor(() => expect(chosen).toEqual({ spec_repo: 'o/back' }))
 })

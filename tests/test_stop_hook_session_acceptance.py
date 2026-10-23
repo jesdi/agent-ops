@@ -117,9 +117,12 @@ def hook_fixture():
 @pytest.fixture
 def served_hook(hook_fixture):
     # Run the public server in a separate process so cleanup stops the server
-    # before the socket's temporary directory is removed.
+    # before the socket's temporary directory is removed. Authentication is
+    # covered separately; this process models a verified legacy container peer.
     program = (
-        "import sys; from dispatcher.waitd import serve, sock_path; "
+        "import sys; from dispatcher import waitd; "
+        "waitd._legacy_peer_matches = lambda *args: True; "
+        "from dispatcher.waitd import serve, sock_path; "
         "serve(sock_path(sys.argv[1]), sys.argv[1])"
     )
     server = subprocess.Popen(

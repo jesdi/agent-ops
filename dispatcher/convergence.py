@@ -13,11 +13,15 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+MIGRATION_LOCK = "migration.lock"
+
+
 @contextmanager
-def pass_lock(state_dir: str, timeout: float | None = None):
+def pass_lock(state_dir: str, timeout: float | None = None,
+              name: str = "convergence.lock"):
     """Hold the lock. `timeout` None waits as long as it takes; else raise
     TimeoutError when the lock is still held after `timeout` seconds."""
-    path = Path(state_dir) / "convergence.lock"
+    path = Path(state_dir) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as fh:
         _acquire(fh.fileno(), timeout)
@@ -40,3 +44,9 @@ def _acquire(fd: int, timeout: float | None) -> None:
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"convergence.lock still held after {timeout}s") from None
             time.sleep(0.1)
+
+
+def claim_lock(state_dir: str):
+    """The lock around one claim's decision and its saved state: a separate
+    file, since the pass already holds convergence.lock."""
+    return pass_lock(state_dir, name="claims.lock")

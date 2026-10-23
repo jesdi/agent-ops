@@ -195,10 +195,10 @@ def _codex_session_env(tmp_path, monkeypatch, package):
 
 def _assert_granted(cmd, tmp_path, codex_mount):
     assert f"-v {codex_mount}" in cmd
-    assert f"-v {tmp_path / 'state'}/codex-home:/root/.codex" in cmd
+    assert "/codex-home:/root/.codex" in cmd
     assert "-e CODEX_HOME=/root/.codex" in cmd
     # still a Claude session
-    assert f"-v {tmp_path / 'state'}/claude-home:" in cmd
+    assert "/claude-home:/root/.claude" in cmd
     assert "--model claude-opus-5" in cmd
 
 

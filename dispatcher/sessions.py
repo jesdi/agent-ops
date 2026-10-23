@@ -14,8 +14,11 @@ instead of raising: is_alive → False, captures → "", idle_seconds → None,
 mutations best-effort — except a launch, which raises (see _launch)."""
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import shlex
+import shutil
 import subprocess
 import time
 import os
@@ -23,21 +26,46 @@ from pathlib import Path
 from typing import Mapping
 
 from dispatcher import containers, herdr, workspace
+from dispatcher.containers import token_dir
 from dispatcher.models import Entry
 from dispatcher.runtimes import runtime_for
-from dispatcher.state import clear_session
+from dispatcher.state import (ScopeRefused, TaskBundle, clear_session, issue_execution_token,
+                              owns_task_session, read_bundle, save_bundle, task_key)
+
+log = logging.getLogger(__name__)
+
+# A running scoped session gets a new token this long before the old expires.
+RENEW_MARGIN = 600
+# What a reader without the credential service shows for a scoped session.
+HIDDEN = "live output hidden: project secrets"
 
 
-def session_name(target: str, issue: int) -> str:
-    return f"task-{target}-{issue}"
+def session_name(target: str, issue: int, repo: str = "") -> str:
+    """The execution label. An empty repo keeps `task-<target>-<issue>`. A
+    repository adds a digest of its full task key, so two repositories of one
+    target never share a tab, container or snapshot, and dotted names
+    (`a.b` + `c` against `a` + `b.c`) cannot collide. The readable part uses
+    only Podman name characters ([a-zA-Z0-9_.-]): `~` becomes `.`."""
+    key = task_key(target, issue, repo)
+    if not repo:
+        return f"task-{key}"
+    return f"task-{key.replace('~', '.')}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
 
 
 def podman_cmd(target: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
-               second: Entry | None = None, clone: str = "") -> str:
-    return containers.session_cmd(session_name(target, issue), worktree, memory,
+               second: Entry | None = None, clone: str = "",
+               repo: str = "", scoped_token: bool = False,
+               secret_names: tuple[str, ...] = (), sandbox_plan=None) -> str:
+    return containers.session_cmd(session_name(target, issue, repo), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  second=second, clone=clone)
+                                  second=second, clone=clone, issue=issue,
+                                  scoped_token=scoped_token, secret_names=secret_names,
+                                  **({"sandbox_plan": sandbox_plan} if sandbox_plan else {}))
+
+
+# The deployed checkout this module is imported from.
+RUNTIME_CHECKOUT = Path(__file__).resolve().parent.parent
 
 
 # The idle time of a session that is not `working` but whose status just
@@ -53,37 +81,65 @@ class Sessions:
 
     def __init__(self, dry_run: bool = False, memory: str = "2g",
                  cpus: str = "2", state_dir: str | Path | None = None,
-                 clones: Mapping[str, str] | None = None):
+                 clones: Mapping[str, str] | None = None,
+                 credentials=None, sandbox_clones=(), sandbox=None,
+                 members: Mapping[str, frozenset[str]] | None = None):
+        # ExecutionCredentials: when set, every launch runs on a scoped App token.
+        self.sandbox_clones = frozenset(sandbox_clones)
+        self.credentials = credentials
+        # an injected task sandbox (else each clone's own); project -> its member repositories
+        self.sandbox = sandbox
+        self.members = members or {}
         self.dry_run = dry_run
         self.memory = memory
         self.cpus = cpus
         self.state_dir = Path(state_dir) if state_dir else None
-        # target name -> its configured clone path: the only source of the
-        # clone a session's container mounts. Without an entry for a target
-        # nothing is launched for it.
+        # target name or "owner/name" repository -> its configured clone
+        # path: the only source of the clone a session's container mounts.
+        # Without an entry nothing is launched.
         self.clones = clones if clones is not None else {}
+        # execution label -> its project secrets, the values its pane output is
+        # redacted of (see _redacted); filled at launch, else on first read.
+        self._secrets: dict[str, dict[str, str]] = {}
 
-    def _tab(self, target: str, issue: int) -> herdr.Tab | None:
-        return herdr.Tab.find(session_name(target, issue))
+    def _legacy_owned(self, target: str, issue: int, repo: str) -> bool:
+        """A live unqualified `task-<T>-<N>` session belongs to `repo` only
+        when its launch record says so; it is never renamed underneath it."""
+        return bool(repo) and self.state_dir is not None and owns_task_session(
+            self.state_dir, target, issue, repo)
 
-    def is_alive(self, target: str, issue: int) -> bool:
+    def _tab(self, target: str, issue: int, repo: str = "") -> herdr.Tab | None:
+        tab = herdr.Tab.find(session_name(target, issue, repo))
+        if tab is None and self._legacy_owned(target, issue, repo):
+            tab = herdr.Tab.find(session_name(target, issue))
+        return tab
+
+    def is_alive(self, target: str, issue: int, repo: str = "") -> bool:
         """Alive means the tab exists AND its shell is busy — a CLI that
         has exited back to the host shell reads dead (the crash path owns
         it), and a tab restored by a herdr server restart reads dead.
         `main._inject_login_code` still re-verifies the prompt with
         `capture_tail` before typing."""
-        tab = self._tab(target, issue)
+        tab = self._tab(target, issue, repo)
         return tab is not None and tab.alive
 
     def _launch(self, target: str, issue: int, worktree: str, model: str,
                 args: str, effort: str = "",
-                second: Entry | None = None) -> None:
+                second: Entry | None = None, repo: str = "") -> None:
+        name = session_name(target, issue, repo)
         # The clone comes from the target's configuration, never from the
         # worktree's `.git` pointer, which the session can rewrite.
-        clone = self.clones.get(target)
+        # A repository's own entry wins over its target's, so two
+        # repositories of one project never share a clone.
+        clone = self.clones.get(repo) or self.clones.get(target)
         if not clone:
             raise RuntimeError(f"no configured clone for target {target!r}: "
-                               f"nothing is launched for {session_name(target, issue)}")
+                               f"nothing is launched for {name}")
+        # The deployed runtime checkout is never a task's clone: task edits
+        # must not change the code the dispatcher runs.
+        if Path(clone).resolve() == RUNTIME_CHECKOUT:
+            raise RuntimeError(f"clone of {target!r} is the runtime checkout "
+                               f"{RUNTIME_CHECKOUT}: nothing is launched for {name}")
         # A checkout with no `.git` entry is gone or half-removed. Only its
         # presence is checked: what it says is the session's to write.
         if not os.path.lexists(Path(worktree) / ".git"):
@@ -93,79 +149,246 @@ class Sessions:
         # worktree: the case _fail_task_crash exists for) then leaves no
         # workspace and no empty tab behind for a task that will never launch.
         runtime = runtime_for(model)
-        cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
-                         model, args, effort=effort,
-                         second=second, clone=clone)
+        # With a credential service the execution holds only its repository's
+        # App token, minted fresh per launch (a resume relaunches, so it is
+        # replaced); a denial raises here and never falls back to the host
+        # GitHub login. Without one the legacy host login stays mounted.
+        scoped = self.credentials is not None
+        project_env, token_env = self._grant(name, target, issue, repo) if scoped else ({}, {})
+        cmd = self._launch_command(target, issue, worktree, model, args, effort,
+                                   second, repo, clone, scoped, tuple(project_env))
         workspace.install_stop_hook(worktree)
+        if repo and self.state_dir is not None:
+            workspace.bind_execution(worktree, repo, issue_execution_token(
+                self.state_dir, target, issue, repo))
         tab = herdr.Tab.ensure(
-            target, session_name(target, issue), worktree,
+            target, name, worktree,
             # herdr's hint for detecting an agent behind a wrapper (podman
             # here). Tab-level env so the shell inherits it into every launch
             # and it never appears in the typed command; a herdr concern, so
             # it lives here and never in containers.session_cmd — the
             # headless triage container shares that module and must NOT read
             # as an agent.
-            env={"HERDR_AGENT": runtime.herdr_agent})
+            env={**project_env, "HERDR_AGENT": runtime.herdr_agent, **token_env})
         # Raise, never return quietly: the caller would record a stage that
         # never started, and the next pass would report a phantom crash with
         # nothing to show (#363). A raise fails the task with this reason.
         if tab is None:
-            raise RuntimeError(f"herdr gave no tab for {session_name(target, issue)}"
+            raise RuntimeError(f"herdr gave no tab for {name}"
                                " — server down or out of step with the CLI?")
         if not tab.run(cmd):
-            raise RuntimeError(f"herdr refused the launch command for "
-                               f"{session_name(target, issue)}")
+            raise RuntimeError(f"herdr refused the launch command for {name}")
+
+    def _grant(self, name, target, issue, repo):
+        """(project env, token env) of a scoped launch: one token per repository of the
+        recorded scope, else the origin repository's alone."""
+        bundle = self._recorded_bundle(target, issue, repo)
+        repos = tuple(r.repo for r in bundle.repositories) if bundle else (repo or target,)
+        self._require_provisioned(target, issue, repo, bundle)
+        origin = repo or repos[0]
+        register = getattr(self.credentials, "register_execution", None)
+        if register:
+            register(name, repos if bundle else repos[0], "task")
+        # Resolved before the token is minted: an unavailable reference refuses the launch
+        # (MissingSecretReference) before anything is minted or started.
+        project_env = self.credentials.project_env(name)
+        self._secrets[name] = project_env
+        held = {r: self.credentials.refresh(name, r, "task") for r in dict.fromkeys((origin, *repos))}
+        credential = held.pop(origin)
+        self._deliver_token(name, origin, credential, held)
+        return project_env, {"GH_TOKEN": credential.token}
+
+    def _require_provisioned(self, target, issue, repo, bundle):
+        """Refuse before any credential is granted when a confirmed scope outgrew
+        the task's sandbox: its added repositories have no checkout there yet."""
+        clone = self.clones.get(repo) or self.clones.get(target)
+        if not bundle or not clone:
+            return
+        sandbox, plan = self._task_sandbox(clone, issue)
+        missing = {r.repo for r in bundle.repositories} - set(getattr(plan, "checkouts", ()) or ())
+        if sandbox is not None and missing:
+            raise RuntimeError(f"{target}#{issue}: sandbox lacks {sorted(missing)} of the "
+                               "confirmed scope; provisioning must complete before it resumes")
+
+    def _launch_command(self, target, issue, worktree, model, args, effort,
+                        second, repo, clone, scoped, secret_names):
+        sandbox, plan = self._task_sandbox(clone, issue, worktree)
+        if sandbox is not None:
+            result = sandbox.resume(plan.ref)
+            if not result.ready:
+                raise RuntimeError(f"sandbox resume failed: {result.failure}")
+        cmd = podman_cmd(target, issue, worktree, self.memory, self.cpus,
+                         model, args, effort=effort, second=second, clone=clone, repo=repo,
+                         scoped_token=scoped, secret_names=secret_names,
+                         **({"sandbox_plan": plan} if plan else {}))
+        if sandbox is not None:
+            from dispatcher.sandbox_runtime import session_command
+            cmd = session_command(sandbox, plan.ref, cmd)
+        return cmd
+
+    def _task_sandbox(self, clone, issue, worktree=None):
+        from dispatcher.sandbox_runtime import execution_ref, for_clone
+
+        sandbox = self.sandbox or for_clone(clone)
+        try:
+            plan = sandbox._plan_for(execution_ref(clone, issue))
+        except FileNotFoundError:
+            if clone in self.sandbox_clones:
+                raise RuntimeError("task sandbox has not been prepared")
+            return None, None  # an existing legacy session may finish safely
+        if worktree is not None and Path(plan.checkout).resolve() != Path(worktree).resolve():
+            raise RuntimeError("session checkout differs from its owned sandbox")
+        return sandbox, plan
+
+    def _deliver_token(self, name: str, repo: str, credential, also: Mapping = {}) -> None:
+        """Write the session's current token where its container reads it
+        (containers.TOKEN_FILE), and the scope renew_tokens needs, host-side.
+        A bundle's further repositories each get their own `gh-token.<owner>~<name>`."""
+        directory = Path(token_dir(containers._state_dir(), name))
+        directory.mkdir(parents=True, exist_ok=True)
+        for file, token in ((("gh-token", credential.token),
+                             *((f"gh-token.{r.replace('/', '~')}", c.token) for r, c in also.items()))):
+            replacement = directory / f"{file}.new"
+            replacement.touch(mode=0o600)
+            replacement.write_text(token)
+            replacement.replace(directory / file)
+        Path(f"{directory}.scope").write_text(json.dumps(
+            {"repo": repo, "also": list(also),
+             "expires_at": min(c.expires_at for c in (credential, *also.values()))}))
+
+    def renew_tokens(self) -> None:
+        """Replace the token of every running scoped session that expires
+        within RENEW_MARGIN. A failure is logged and retried next pass; it
+        never falls back to the host login."""
+        if self.credentials is None or self.dry_run:
+            return
+        tokens = Path(containers._state_dir()) / "tokens"
+        for scope in tokens.glob("*.scope"):
+            name = scope.name.removesuffix(".scope")
+            if herdr.tab_absent(name):
+                shutil.rmtree(tokens / name, ignore_errors=True)
+                scope.unlink(missing_ok=True)
+                continue
+            try:
+                meta = json.loads(scope.read_text())
+                if meta["expires_at"] - self.credentials.clock() > RENEW_MARGIN:
+                    continue
+                refresh = lambda r: self.credentials.refresh(name, r, "task")  # noqa: E731
+                self._deliver_token(name, meta["repo"], refresh(meta["repo"]),
+                                    {r: refresh(r) for r in meta.get("also", [])})
+            except Exception:  # noqa: BLE001 — visible, retried next pass
+                log.exception("Token renewal failed for %s", name)
 
     def spawn_stage(self, target: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "",
-                    second: Entry | None = None) -> None:
+                    second: Entry | None = None, repo: str = "", bundle=None) -> None:
         """Start a fresh conversation; real launches require state_dir."""
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
-                  f"{session_name(target, issue)} at {worktree}")
+                  f"{session_name(target, issue, repo)} at {worktree}")
             return
         if self.state_dir is None:
             raise ValueError("state_dir is required for a fresh session launch")
-        clear_session(self.state_dir, target, issue)
+        self._admit(target, issue, repo, bundle)
+        clear_session(self.state_dir, target, issue, repo=repo)
         workspace.write_worktree_file(worktree, ".agent",
                                       f"prompt-{stage_name}.md", prompt)
         self._launch(target, issue, worktree, model,
                      f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort,
-                     second=second)
+                     second=second, repo=repo)
+
+    def _check_scope(self, target: str, repo: str, bundle: TaskBundle) -> None:
+        names = {r.repo for r in bundle.repositories}
+        if (not names <= self.members.get(target, frozenset())
+                or (repo and repo not in names)
+                or (bundle.spec_repo and bundle.spec_repo not in names)):
+            raise ScopeRefused(f"{target}: repository scope {sorted(names)} is not the project's")
+
+    def _recorded_bundle(self, target: str, issue: int, repo: str) -> TaskBundle | None:
+        """The recorded scope, re-validated: what a session may hold is never read
+        from its own reports."""
+        bundle = self.state_dir and read_bundle(self.state_dir, target, issue, repo=repo)
+        if bundle:
+            self._check_scope(target, repo, bundle)
+        return bundle or None
+
+    @staticmethod
+    def _refuse_unconfirmed_widening(target, issue, bundle, stored):
+        """A recorded scope changes only through state.confirm_scope."""
+        if (bundle.scope_revision != stored.scope_revision
+                or not {r.repo for r in bundle.repositories} <= {r.repo for r in stored.repositories}):
+            raise ScopeRefused(f"{target}#{issue}: only an operator-confirmed revision "
+                               f"widens the recorded scope (revision {stored.scope_revision})")
+
+    def _admit(self, target: str, issue: int, repo: str, bundle: TaskBundle | None) -> None:
+        """Validate and record the controller's bundle before anything is launched.
+        Without one the recorded scope stands; a recorded scope is never
+        replaced here (see state.confirm_scope)."""
+        if bundle is None:
+            return
+        self._check_scope(target, repo, bundle)
+        stored = read_bundle(self.state_dir, target, issue, repo=repo)
+        if stored:
+            self._refuse_unconfirmed_widening(target, issue, bundle, stored)
+            return    # the recorded bundle stands, spec repository choice included
+        save_bundle(self.state_dir, target, issue, bundle, repo=repo)
 
     def resume(self, target: str, issue: int, worktree: str, message: str,
                model: str, effort: str = "", second: Entry | None = None,
-               *, session_id: str) -> None:
+               *, session_id: str, repo: str = "") -> None:
         if self.dry_run:
-            print(f"[dry-run] resume {session_name(target, issue)} on {model} "
+            print(f"[dry-run] resume {session_name(target, issue, repo)} on {model} "
                   f"at {worktree}")
             return
         runtime = runtime_for(model)
+        containers.migrate_conversation(
+            containers._state_dir(), session_name(target, issue, repo), runtime, session_id, worktree)
         self._launch(target, issue, worktree, model,
                      runtime.resume(session_id, shlex.quote(message)), effort=effort,
-                     second=second)
+                     second=second, repo=repo)
 
-    def capture_tail(self, target: str, issue: int, lines: int = 25) -> str:
+    def _redacted(self, target: str, issue: int, repo: str, text: str | None) -> str:
+        """Pane output with the execution's project secret values redacted:
+        those of its launch, or the credential service's after a restart.
+        Values that cannot be known withhold the whole text (fail closed). A
+        reader without the service (the console) withholds every scoped
+        session's output: its launch left a token scope marker the session
+        cannot reach. Only legacy sessions, which hold no secrets, show raw."""
+        name = session_name(target, issue, repo)
+        if not text:
+            return ""
+        if self.credentials is None:
+            scoped = os.path.lexists(f"{token_dir(containers._state_dir(), name)}.scope")
+            return HIDDEN if scoped else text
+        if name not in self._secrets:
+            try:
+                self._secrets[name] = self.credentials.project_env(name)
+            except Exception:  # noqa: BLE001 — unknown values: show nothing
+                log.warning("Output of %s withheld: its secrets are unknown", name)
+                return ""
+        return workspace.redact(text, self._secrets[name])
+
+    def capture_tail(self, target: str, issue: int, lines: int = 25,
+                     repo: str = "") -> str:
         if self.dry_run:
             return ""
-        tab = self._tab(target, issue)
-        text = tab.read("visible", lines) if tab else None
-        if text is None:
-            return ""
+        tab = self._tab(target, issue, repo)
+        text = self._redacted(target, issue, repo, tab.read("visible", lines) if tab else None)
         return "\n".join(text.rstrip().splitlines()[-lines:])
 
-    def capture_history(self, target: str, issue: int, lines: int = 2000) -> str:
+    def capture_history(self, target: str, issue: int, lines: int = 2000,
+                        repo: str = "") -> str:
         """Console-owned pane history (true scrollback, unlike capture_tail —
         the dispatcher's stall/login classification input). recent-unwrapped
         joins soft wraps, so the console renders the lines the CLI drew.
         Degrades to '' so a wedged server never 500s the history view."""
         if self.dry_run:
             return ""
-        tab = self._tab(target, issue)
+        tab = self._tab(target, issue, repo)
         text = tab.read("recent-unwrapped", lines) if tab else None
-        return "" if text is None else text.rstrip()
+        return self._redacted(target, issue, repo, text).rstrip()
 
-    def idle_seconds(self, target: str, issue: int) -> float | None:
+    def idle_seconds(self, target: str, issue: int, repo: str = "") -> float | None:
         """Seconds the session has been static; None = unknown (dry-run,
         herdr error) — callers must not treat it as stalled. Computed from
         the agent lifecycle, not screen activity: `working` is never idle,
@@ -179,31 +402,31 @@ class Sessions:
         0.0 means herdr says `working` and nothing else: every other status
         returns a strictly positive number (_MIN_IDLE at the least), so a
         caller can read idle 0 as "working" (machine._poke_actions)."""
-        state = self.agent_state(target, issue)
+        state = self.agent_state(target, issue, repo)
         if state is None:
             return None
         status, seq = state
         if status == "working":
             return 0.0
-        return self._since_change(target, issue, status, seq)
+        return self._since_change(target, issue, status, seq, repo)
 
-    def agent_state(self, target: str, issue: int) -> tuple[str, int] | None:
+    def agent_state(self, target: str, issue: int, repo: str = "") -> tuple[str, int] | None:
         """herdr's (agent status, state-change counter) for the task's tab;
         None when herdr cannot be asked (dry-run, no tab, server error)."""
         if self.dry_run:
             return None
-        tab = self._tab(target, issue)
+        tab = self._tab(target, issue, repo)
         return tab.agent_state() if tab else None
 
-    def _sidecar(self, target: str, issue: int) -> Path | None:
+    def _sidecar(self, target: str, issue: int, repo: str = "") -> Path | None:
         if self.state_dir is None:
             return None
         return (self.state_dir / "herdr-status"
-                / f"{session_name(target, issue)}.json")
+                / f"{session_name(target, issue, repo)}.json")
 
     def _since_change(self, target: str, issue: int, status: str,
-                      seq: int) -> float | None:
-        path = self._sidecar(target, issue)
+                      seq: int, repo: str = "") -> float | None:
+        path = self._sidecar(target, issue, repo)
         if path is None:
             return None
         now = time.time()
@@ -222,24 +445,24 @@ class Sessions:
         except (OSError, KeyError, TypeError, ValueError):
             return None  # unknown, never a stale number
 
-    def forget_status(self, target: str, issue: int) -> None:
-        path = self._sidecar(target, issue)
+    def forget_status(self, target: str, issue: int, repo: str = "") -> None:
+        path = self._sidecar(target, issue, repo)
         if path is not None:
             try:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
 
-    def send_text(self, target: str, issue: int, text: str) -> bool:
+    def send_text(self, target: str, issue: int, text: str, repo: str = "") -> bool:
         """Type text into the live pane as-is (login-code injection, pokes),
         then Enter as a separate key. True when both were delivered."""
         if self.dry_run:
-            print(f"[dry-run] send text to {session_name(target, issue)}")
+            print(f"[dry-run] send text to {session_name(target, issue, repo)}")
             return False
-        tab = self._tab(target, issue)
+        tab = self._tab(target, issue, repo)
         return tab is not None and tab.send_text(text) and tab.send_keys("enter")
 
-    def _snapshot(self, target: str, issue: int) -> None:
+    def _snapshot(self, target: str, issue: int, repo: str = "") -> None:
         """Last words: persist the pane history before the kill so the
         console can still show a dead session's output. An empty capture
         (already-dead session, wedged server) writes nothing — end() runs
@@ -248,30 +471,39 @@ class Sessions:
         if self.state_dir is None:
             return
         try:
-            history = self.capture_history(target, issue)
+            history = self.capture_history(target, issue, **({"repo": repo} if repo else {}))
             if not history:
                 return
             path = (self.state_dir / "snapshots" /
-                    f"{session_name(target, issue)}.txt")
+                    f"task-{task_key(target, issue, repo)}.txt")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(history)
         except OSError:
             return
 
-    def end(self, target: str, issue: int) -> None:
+    def end(self, target: str, issue: int, repo: str = "") -> None:
         if self.dry_run:
-            print(f"[dry-run] end session {session_name(target, issue)}")
+            print(f"[dry-run] end session {session_name(target, issue, repo)}")
             return
-        name = session_name(target, issue)
-        self._snapshot(target, issue)
-        tab = self._tab(target, issue)
+        self._snapshot(target, issue, repo)
+        tab = self._tab(target, issue, repo)
         if tab is not None:
             tab.close()  # HUPs the shell and the -it podman
-        # Belt and braces: the container may outlive the HUP.
-        subprocess.run(["podman", "rm", "-f", name],
-                       capture_output=True, timeout=60)
-        # Pre-rekey containers are named task-<issue> and nothing renames them,
-        # so a wedged one leaks unless end() reaches for that name too.
-        subprocess.run(["podman", "rm", "-f", f"task-{issue}"],
-                       capture_output=True, timeout=60)
-        self.forget_status(target, issue)
+        # Belt and braces: the container may outlive the HUP. The unqualified
+        # `task-<T>-<N>` is removed only for a caller that owns it; the
+        # pre-rekey `task-<issue>` is shared by every target, so only an
+        # unqualified caller may remove it.
+        names = [session_name(target, issue, repo)]
+        if not repo:
+            names += [session_name(target, issue), f"task-{issue}"]
+        elif self._legacy_owned(target, issue, repo):
+            names.append(session_name(target, issue))
+        for name in dict.fromkeys(names):
+            subprocess.run(["podman", "rm", "-f", name],
+                           capture_output=True, timeout=60)
+        clone = self.clones.get(repo) or self.clones.get(target)
+        if clone:
+            sandbox, plan = self._task_sandbox(clone, issue)
+            if sandbox is not None:
+                sandbox.park(plan.ref)
+        self.forget_status(target, issue, repo)

@@ -20,7 +20,8 @@ from typing import Callable
 
 from dispatcher import triage
 from dispatcher.sessions import session_name
-from dispatcher.state import TaskState, consumes_capacity, load_all
+from dispatcher.state import (TaskState, consumes_capacity, load_all,
+                              session_owner)
 
 MESSAGE = ("Your session was moved from tmux to herdr by a deploy; the "
            "previous turn was interrupted. Continue where you left off.")
@@ -69,6 +70,13 @@ def _remove_container(name: str) -> str:
     return f"no container {name} to remove"
 
 
+def _owns_legacy_name(state_dir, task: TaskState, tasks: list[TaskState]) -> bool:
+    """A legacy session name is shared by same-number tasks of two
+    repositories: it belongs to this one only when its launch record says so.
+    A missing record proves nothing."""
+    return not task.repo or session_owner(state_dir, task.target, task.issue) == task.repo
+
+
 def migrate(state_dir: str | Path,
             wake: Callable[[TaskState, str], None]) -> list[str]:
     """Kill every `task-<target>-<issue>` / legacy `task-<issue>` tmux
@@ -84,16 +92,22 @@ def migrate(state_dir: str | Path,
     throughout: a tmux/podman failure is logged in the returned lines,
     never raised."""
     lines: list[str] = []
-    for task in load_all(state_dir):
-        name, legacy = session_name(task.target, task.issue), f"task-{task.issue}"
-        live = [n for n in (name, legacy) if _has_session(n)]
+    tasks = load_all(state_dir)
+    for task in tasks:
+        if not _owns_legacy_name(state_dir, task, tasks):
+            continue
+        # The bare `task-<issue>` is shared by every target: a repository-
+        # qualified task never owns it.
+        name = session_name(task.target, task.issue)
+        names = [name] if task.repo else [name, f"task-{task.issue}"]
+        live = [n for n in names if _has_session(n)]
         if not live:
             continue
         # Kill first, wake last: the wake is what queues the task for a
         # herdr resume, and it must never be queued while its tmux session
         # and container are still up.
         lines.extend(_kill_session(n) for n in live)
-        lines.extend(_remove_container(n) for n in (name, legacy))
+        lines.extend(_remove_container(n) for n in names)
         if not consumes_capacity(task):
             lines.append(f"ended {name} (not resumed: stage "
                          f"{task.stage.value}"

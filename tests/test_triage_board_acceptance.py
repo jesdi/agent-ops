@@ -32,10 +32,14 @@ class Gh:
         if "mutation" in query:
             self.mutations.append(" ".join(args))
             return ok()
+        if "repositoryOwner" in query:
+            return ok(json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": SCHEMA["projectId"]}}}}))
         if args[1:3] == ["api", "graphql"]:
             return subprocess.CompletedProcess(
                 args, self.board_rc, _page(self.nodes), "API rate limit exceeded")
         if args[1] == "api":
+            if "--paginate" in args:
+                return ok(json.dumps([[i for i in self.issues if i["state"] == "OPEN"]]))
             return subprocess.CompletedProcess(args, 1, "", "not an org")
         if args[1:3] == ["label", "list"]:
             return ok(json.dumps(LABELS))

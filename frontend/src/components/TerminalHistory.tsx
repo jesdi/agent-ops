@@ -9,10 +9,12 @@ import { useTaskHistory } from '../hooks/useResources'
  */
 export function TerminalHistory({
   target,
+  repo = '',
   issue,
   onClose,
 }: {
   target: string
+  repo?: string
   issue: number
   onClose: () => void
 }) {
@@ -35,7 +37,7 @@ export function TerminalHistory({
     }
   }
 
-  const query = useTaskHistory(target, issue, true)
+  const query = useTaskHistory(target, issue, true, repo)
 
   useEffect(() => {
     const el = paneRef.current

@@ -8,6 +8,9 @@ const VERDICT_DETAIL: Partial<Record<string, (nc: NextClaimView) => string>> = {
   'will-claim':    (nc) => `will claim #${nc.next_issue}`,
   'budget-blocked':(nc) => nc.blocked_by || `budget resets in ${formatDuration(nc.minutes_to_reset * 60)}`,
   'capacity-full': ()   => 'capacity full — waits for a free slot',
+  'total-limit':   ()   => 'unfinished-task limit reached — waits for one to finish',
+  'reserved-places':()  => 'remaining places are reserved for other projects',
+  'project-paused':()   => 'project paused — existing work only',
   'no-candidates': ()   => 'queue empty — nothing to claim',
   // claims-paused: the dispatcher pass will still run; only claiming is skipped
   // while a triage sweep is pending. Distinct from errors and from empty queue.

@@ -162,13 +162,13 @@ def test_cancel_writes_intent_for_a_live_task(tmp_path):
 
 
 def test_cancel_accepts_an_unclaimed_backlog_issue(tmp_path):
-    # A backlog card has no task file; the target in the path is all the
-    # dispatcher needs to retire the board card and close the issue.
+    # An unclaimed issue must be present on the selected project's queue.
     fake, client = rig(tmp_path)
-    r = client.post("/api/task/portfolio_eval/999/cancel", headers=HEADERS,
+    fake.rank["alpha"] = ([{"number": 999}], "now", False)
+    r = client.post("/api/task/alpha/999/cancel", headers=HEADERS,
                     json={})
     assert r.status_code == 202
-    assert fake.intents == [("cancel", "portfolio_eval", 999, {},
+    assert fake.intents == [("cancel", "alpha", 999, {},
                              "jesdi@github")]
 
 

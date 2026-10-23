@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from dispatcher.answers import QUESTION_ID
-from dispatcher.state import read_regular
+from dispatcher.state import TaskState, read_bundle, read_regular
 
 MIN_BYTES = 1500
 MIN_TICKET_BYTES = 200   # a small ticket is legitimately short
@@ -208,18 +208,50 @@ def _read_plan_file(p: Path) -> bytes | None:
         return None
 
 
+def task_plan_worktree(task: TaskState, state_dir=None) -> str:
+    """Checkout owning spec and tickets; session control remains in the origin."""
+    from dispatcher.containers import _state_dir
+
+    bundle = read_bundle(state_dir or _state_dir(), task.target, task.issue, repo=task.repo)
+    if bundle and bundle.spec_repo:
+        return next(r.worktree for r in bundle.repositories if r.repo == bundle.spec_repo)
+    return task.worktree
+
+
+def task_review_worktree(task: TaskState, state_dir=None) -> str:
+    """Review pages may predate the spec repository selection in the origin."""
+    root = task_plan_worktree(task, state_dir)
+    return root if os.path.lexists(Path(root) / REVIEW_PAGE) else task.worktree
+
+
+def task_plan_revision(task: TaskState, artifact: str) -> PlanRevision:
+    """Bind the selected checkout's plan and review page to the recorded scope."""
+    from dispatcher.containers import _state_dir
+
+    revision = plan_revision(task_plan_worktree(task), artifact, task.spec_path,
+                             review_worktree=task_review_worktree(task))
+    bundle = read_bundle(_state_dir(), task.target, task.issue, repo=task.repo)
+    if bundle is None or not revision.fingerprint:
+        return revision
+    scope = f"{bundle.scope_revision}\0{bundle.spec_repo}\0" + "\0".join(
+        r.repo for r in bundle.repositories)
+    return PlanRevision(revision.path, hashlib.sha256(
+        revision.fingerprint.encode() + b"\0" + scope.encode()).hexdigest())
+
+
 def plan_revision(worktree: str | Path, artifact: str,
-                  spec_path: str = "") -> PlanRevision:
+                  spec_path: str = "", *, review_worktree: str | None = None) -> PlanRevision:
     """The plan revision on disk: the review page's path, and a digest over the
     page, the ticket files and the spec folder's three files (names and
     bytes). Every file is read without following a symlink and without
     blocking, up to a size limit. Never raises: a file that is there and
     cannot be read that way makes the revision unavailable."""
     root = Path(worktree)
-    rel = _page_path(root, artifact)
+    page_root = Path(review_worktree or worktree)
+    rel = _page_path(page_root, artifact)
     if rel is None:
         return PlanRevision(artifact, "", "review page is outside the worktree")
-    problem, _ = _page_problem(root / rel)
+    problem, _ = _page_problem(page_root / rel)
     if problem:
         return PlanRevision(rel, "", problem)
     tickets = ticket_files(root / TICKETS_DIR)
@@ -229,7 +261,7 @@ def plan_revision(worktree: str | Path, artifact: str,
     if spec_files is None:
         return PlanRevision(rel, "", f"the spec folder of {spec_path} is outside the worktree")
     digest = hashlib.sha256()
-    for p in [root / rel, *tickets, *spec_files]:
+    for p in [page_root / rel, *tickets, *spec_files]:
         data = _read_plan_file(p)
         if data is None:
             return PlanRevision(rel, "", (

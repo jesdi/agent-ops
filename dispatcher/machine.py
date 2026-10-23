@@ -15,7 +15,8 @@ from typing import NamedTuple
 
 from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, CheckResult, PlanRevision,
                                   check_spec,
-                                  check_tickets, count_open_questions, plan_revision)
+                                  check_tickets, count_open_questions, task_plan_revision,
+                                  task_plan_worktree, task_review_worktree)
 from dispatcher.loops import (Decision, Loop, Outcome, ReportedRound, Retry, evaluate,
                               retry_left, unattended_rounds_used)
 from dispatcher.state import (IN_FLIGHT_STAGES, WHY_BAD_SIGNAL, WHY_DECISION,
@@ -167,7 +168,8 @@ SPEC_NO_REVIEW = ('the spec stage has no review gate and status '
 
 def _artifact_path(task: TaskState, signal: StageSignal) -> Path:
     p = Path(signal.artifact)
-    return p if p.is_absolute() else Path(task.worktree) / p
+    root = task_review_worktree(task) if p.as_posix() == REVIEW_PAGE else task_plan_worktree(task)
+    return p if p.is_absolute() else Path(root) / p
 
 
 def _loop_actions(task: TaskState, signal: StageSignal,
@@ -290,7 +292,7 @@ def _plan_ready_actions(task: TaskState, signal: StageSignal,
     """The plan stage's ready report: the gate skip or gate entry. Nothing
     reaches the operator, and no implement session starts, before the ticket
     check."""
-    revision = plan_revision(task.worktree, signal.artifact, task.spec_path)
+    revision = task_plan_revision(task, signal.artifact)
     result, failed = _checked_plan(task, revision)
     if failed:
         return failed
@@ -309,7 +311,7 @@ def _gate_ready_actions(task: TaskState, signal: StageSignal,
     `working` signal that a pass saw, and what the console offers is stale.
     A respawn's first ready report completes its already charged round.
     A task that waited at the gate never skips it."""
-    revision = plan_revision(task.worktree, signal.artifact, task.spec_path)
+    revision = task_plan_revision(task, signal.artifact)
     if task.operator_request and _armed_for(task.operator_request, revision):
         return [ParkForReview(ReviewPark.GRACE)] if grace_elapsed else [NoOp()]
     disarm: list[object] = [DisarmPlanApproval()] if task.operator_request else []
@@ -346,7 +348,7 @@ def _skips_gate(task: TaskState, signal: StageSignal,
     The page is the prescribed file, and the report must name that file:
     it is what the gate would show. It is read last, only when everything
     else holds. Anything else waits at the gate."""
-    page = Path(task.worktree) / REVIEW_PAGE
+    page = Path(task_review_worktree(task)) / REVIEW_PAGE
     try:
         return (not task.gated
                 and task.track in gate_free and not task.asked
@@ -362,7 +364,7 @@ def _checked_plan(task: TaskState,
     """The check of a ready report: the ticket set, and that the plan can be
     read as one revision (what a request is armed for). Same outcome when
     either fails."""
-    result = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    result = check_tickets(Path(task_plan_worktree(task)) / TICKETS_DIR)
     if result.ok and revision.problem:
         result = CheckResult(False, revision.problem)
     return result, _check_failed(task, result)
@@ -370,7 +372,7 @@ def _checked_plan(task: TaskState,
 
 def _checked_tickets(task: TaskState) -> tuple[CheckResult, list[object]]:
     """The ticket set's check, and the actions when it fails (else empty)."""
-    result = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    result = check_tickets(Path(task_plan_worktree(task)) / TICKETS_DIR)
     return result, _check_failed(task, result)
 
 

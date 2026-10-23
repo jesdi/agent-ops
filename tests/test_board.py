@@ -22,7 +22,8 @@ SCHEMA = {
 def _node(item_id, number, title="", status=None, impact=None, effort=None,
           area=None):
     return {"id": item_id,
-            "content": {"number": number} if number is not None else None,
+            "content": {"number": number, "repository": {"nameWithOwner": "o/a"}}
+            if number is not None else None,
             "title": {"text": title},
             "status": {"name": status} if status else None,
             "area": {"name": area} if area else None,
@@ -34,6 +35,23 @@ def _page(nodes, cursor=None):
     return json.dumps({"data": {"node": {"items": {
         "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
         "nodes": nodes}}}})
+
+
+def registered_board_gh(calls, project_id="REG"):
+    """gh for a registered board with no cards or issues; every argv is recorded in `calls`."""
+    def run(argv, **kw):
+        calls.append(argv)
+        if argv[1:3] == ["project", "field-list"]:
+            out = json.dumps({"fields": [{"name": n, "id": f"{project_id}_{n}", "options": []}
+                                         for n in ("Status", "Impact", "Effort", "Score", "Area")]})
+        elif "repositoryOwner" in " ".join(argv):
+            out = json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": project_id}}}})
+        elif argv[1:3] == ["api", "graphql"]:
+            out = _page([])
+        else:  # the repository's issue list and open-issue pages
+            out = "[]"
+        return subprocess.CompletedProcess(argv, 0, out, "")
+    return run
 
 
 class FakeGh:
@@ -53,8 +71,12 @@ class FakeGh:
         if "mutation" in query:
             self.mutations.append(args)
             rc = 1 if self.fail_mutations else 0
+        elif "repositoryOwner" in query:
+            out = json.dumps({"data": {"repositoryOwner": {"projectV2": {"id": SCHEMA["projectId"]}}}})
         elif args[1:3] == ["api", "graphql"]:
             out = self.pages.pop(0)
+        elif args[1] == "api":
+            out = json.dumps([[i for i in self.issues if i["state"] == "OPEN"]])
         elif args[1:3] == ["issue", "list"]:
             out = json.dumps(self.issues)
         return subprocess.CompletedProcess(args, rc, out, "rate limited" if rc else "")
@@ -91,15 +113,25 @@ def test_fetch_items_follows_pagination_and_never_uses_item_list():
     assert "cursor=c1" in calls[1] and "cursor=c1" not in calls[0]
 
 
-def test_join_uses_the_title_when_the_token_cannot_see_the_issue():
+def test_join_refuses_title_when_the_token_cannot_see_the_issue():
     items = [board.Item("I1", None, "Private task", "Ready", 3, 1, "infra")]
-    joined = board.join(items, [_issue(9, "Private task"), _issue(10, "Other")])
-    assert joined[9].id == "I1" and 10 not in joined
+    joined = board.join(items, [_issue(9, "Private task"), _issue(10, "Other")], "o/a")
+    assert joined == {}
 
 
 def test_join_skips_a_title_two_issues_share():
     items = [board.Item("I1", None, "Dup", None, None, None, None)]
-    assert board.join(items, [_issue(1, "Dup"), _issue(2, "Dup")]) == {}
+    assert board.join(items, [_issue(1, "Dup"), _issue(2, "Dup")], "o/a") == {}
+
+
+def test_join_excludes_a_sibling_repository_s_card_with_the_same_number():
+    frontend = board.Item("FE12", 12, "Frontend bug", "Ready", 3, 1, "infra",
+                           repo="example/shop-frontend")
+    backend = board.Item("BE12", 12, "Backend bug", "Ready", 3, 1, "infra",
+                          repo="example/shop-backend")
+    joined = board.join([frontend, backend], [_issue(12, "Frontend bug")],
+                         "example/shop-frontend")
+    assert joined[12].id == "FE12"
 
 
 def test_no_board_pointer_in_the_clone_means_no_board(tmp_path):
@@ -187,3 +219,18 @@ def test_repair_reports_a_refused_write_and_continues(clone):
                     fail_mutations=True)
     lines = brd.repair()
     assert len(lines) == 2 and all("NOT repaired" in l for l in lines)
+
+
+def test_add_missing_adds_only_issues_without_a_card_and_sets_nothing(clone):
+    class Gh(FakeGh):
+        def __call__(self, args, **kw):
+            if args[1:3] == ["issue", "view"]:
+                return subprocess.CompletedProcess(args, 0, json.dumps({"id": f"N{args[3]}"}), "")
+            return super().__call__(args, **kw)
+
+    gh = Gh([_page([_node("I1", 1, status="Ready")])], [_issue(1), _issue(3)])
+    brd = board.read("o/a", clone, run=gh)
+    assert brd.add_missing() == ["#3 added to the board"]
+    [mutation] = gh.mutations
+    assert "c=N3" in mutation and "addProjectV2ItemById" in " ".join(mutation)
+    assert "updateProjectV2ItemFieldValue" not in " ".join(mutation)

@@ -42,11 +42,11 @@ export function useTimeline() {
   })
 }
 
-export function useTaskDetail(target: string, issue: number) {
+export function useTaskDetail(target: string, issue: number, repo = '') {
   const refetchInterval = useFallbackInterval()
   return useQuery({
-    queryKey: queryKeys.task(target, issue),
-    queryFn: () => api.taskDetail(target, issue),
+    queryKey: queryKeys.task(target, issue, repo),
+    queryFn: () => api.taskDetail(target, issue, repo),
     refetchInterval,
   })
 }
@@ -56,10 +56,10 @@ export function useTaskDetail(target: string, issue: number) {
  * polled task-detail path — a 2000-line tail is ~150KB. staleTime:0 because
  * the live screen has moved on every time the view is reopened.
  */
-export function useTaskHistory(target: string, issue: number, enabled: boolean) {
+export function useTaskHistory(target: string, issue: number, enabled: boolean, repo = '') {
   return useQuery({
-    queryKey: queryKeys.taskHistory(target, issue),
-    queryFn: () => api.taskHistory(target, issue),
+    queryKey: queryKeys.taskHistory(target, issue, repo),
+    queryFn: () => api.taskHistory(target, issue, repo),
     enabled,
     staleTime: 0,
   })
@@ -67,10 +67,10 @@ export function useTaskHistory(target: string, issue: number, enabled: boolean) 
 
 /** Lazy: `enabled` gates the fetch so a collapsed panel costs nothing.
  *  retry:false — the backend already degrades gh failures into the payload. */
-export function useIssueDescription(target: string, issue: number, enabled: boolean) {
+export function useIssueDescription(target: string, issue: number, enabled: boolean, repo = '') {
   return useQuery({
-    queryKey: queryKeys.description(target, issue),
-    queryFn: () => api.taskDescription(target, issue),
+    queryKey: queryKeys.description(target, issue, repo),
+    queryFn: () => api.taskDescription(target, issue, repo),
     enabled,
     retry: false,
   })
@@ -83,11 +83,11 @@ export function useIssueDescription(target: string, issue: number, enabled: bool
  *  event carries the request). */
 // ponytail: fires unconditionally (no enabled guard); add `enabled` if
 //   request traffic matters (e.g. many concurrent task panes).
-export function useTaskRequest(target: string, issue: number, pollMs?: number) {
+export function useTaskRequest(target: string, issue: number, pollMs?: number, repo = '') {
   const refetchInterval = useFallbackInterval() || pollMs || false
   return useQuery({
-    queryKey: queryKeys.request(target, issue),
-    queryFn: () => api.taskRequest(target, issue),
+    queryKey: queryKeys.request(target, issue, repo),
+    queryFn: () => api.taskRequest(target, issue, repo),
     retry: false,
     refetchInterval,
   })
@@ -102,11 +102,11 @@ export function usePendingIntents() {
   })
 }
 
-export function useTaskArtifacts(target: string, issue: number) {
+export function useTaskArtifacts(target: string, issue: number, repo = '') {
   const refetchInterval = useFallbackInterval()
   return useQuery({
-    queryKey: queryKeys.artifacts(target, issue),
-    queryFn: () => api.taskArtifacts(target, issue),
+    queryKey: queryKeys.artifacts(target, issue, repo),
+    queryFn: () => api.taskArtifacts(target, issue, repo),
     retry: false,
     refetchInterval,
   })

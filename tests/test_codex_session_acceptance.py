@@ -42,7 +42,7 @@ def test_codex_spawn_mounts_host_binary_and_codex_home(tmp_path, monkeypatch,
     assert f"-v {mount}" in cmd
 
     # codex-home mount + CODEX_HOME, no claude-home, no CLAUDE_*.
-    assert f"-v {tmp_path / 'state'}/codex-home:/root/.codex" in cmd
+    assert "/task-homes/task-42/codex-home:/root/.codex" in cmd
     assert "-e CODEX_HOME=/root/.codex" in cmd
     assert "claude-home" not in cmd
     assert "CLAUDE_CONFIG_DIR" not in cmd

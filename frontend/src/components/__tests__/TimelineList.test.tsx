@@ -4,12 +4,12 @@ import { TimelineList } from '../TimelineList'
 import type { EventEntry } from '../../lib/api'
 
 const targeted: EventEntry = {
-  ts: '2026-07-25T11:30:00Z', event: 'stage-started', target: 'widget',
+  ts: '2026-07-25T11:30:00Z', event: 'stage-started', target: 'widget', repo: '',
   issue: 41, stage: 'implement', model: 'opus', actor: 'dispatcher', detail: '',
 }
 
 const targetless: EventEntry = {
-  ts: '2026-07-25T10:00:00Z', event: 'intent-applied', target: '',
+  ts: '2026-07-25T10:00:00Z', event: 'intent-applied', target: '', repo: '',
   issue: 42, stage: '', model: '', actor: 'operator', detail: 'reply',
 }
 

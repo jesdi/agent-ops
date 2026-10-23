@@ -24,7 +24,8 @@ def _events_path(state_dir: str | Path) -> Path:
 
 def append_event(state_dir: str | Path, event: str, *, target: str = "",
                  issue: int = 0, stage: str = "", model: str = "",
-                 actor: str = "dispatcher", detail: str = "") -> None:
+                 actor: str = "dispatcher", detail: str = "",
+                 repo: str = "") -> None:
     try:
         p = _events_path(state_dir)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -33,7 +34,8 @@ def append_event(state_dir: str | Path, event: str, *, target: str = "",
             p.rename(p.with_name(f"events-{stamp}.jsonl"))
         line = json.dumps({"ts": _now(), "event": event, "target": target,
                            "issue": issue, "stage": stage, "model": model,
-                           "actor": actor, "detail": detail})
+                           "actor": actor, "detail": detail,
+                           "repo": repo})
         with p.open("a") as fh:
             fh.write(line + "\n")
     except Exception as exc:

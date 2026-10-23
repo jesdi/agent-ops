@@ -669,3 +669,141 @@ def test_max_open_loaded_defaults_ten_and_must_cover_capacity(tmp_path):
     assert load_config(write_yaml(tmp_path, top_extra={"max_open": 12})).max_open == 12
     with pytest.raises(ValueError, match="max_open"):
         load_config(write_yaml(tmp_path, top_extra={"max_open": 1}))
+
+
+# --- ticket 01: project membership schema (CONFIG seam) ---
+#
+# `projects:` is a new top-level key, parallel to the legacy `targets:` list.
+# One project owns a nonempty set of repositories and one board identity
+# (board_owner + board_number); repository identity (including alternate
+# URL spellings) and board identity must each be unique across projects.
+# New projects are paused by default (`enabled: false`), representable
+# explicitly.
+
+def _repo(key_suffix: str, repo: str) -> dict:
+    return {
+        "repo": repo,
+        "clone_path": f"/repos/{key_suffix}",
+        "worktrees_path": f"/repos/{key_suffix}.worktrees",
+        "rank_cmd": "rank",
+        "gate_cmd": "make gate",
+    }
+
+
+def _project(key: str, *, board_owner: str = "example", board_number: int = 1,
+             repositories: list[dict] | None = None, enabled: object = None) -> dict:
+    project = {
+        "key": key,
+        "name": key,
+        "board_owner": board_owner,
+        "board_number": board_number,
+        "status_field_id": "F",
+        "status_ready_option_id": "R",
+        "status_in_progress_option_id": "I",
+        "repositories": repositories if repositories is not None else [
+            _repo(key, f"example/{key}")],
+    }
+    if enabled is not None:
+        project["enabled"] = enabled
+    return project
+
+
+def test_project_with_two_repositories_loads_as_one_project(tmp_path):
+    """shop containing frontend and backend loads as a single project
+    sharing one board, not two."""
+    shop = _project("shop", repositories=[
+        _repo("shop-frontend", "example/shop-frontend"),
+        _repo("shop-backend", "example/shop-backend"),
+    ])
+    cfg = load_config(write_yaml(tmp_path, top_extra={"projects": [shop]}))
+    assert len(cfg.projects) == 1
+    project = cfg.projects[0]
+    assert project.key == "shop"
+    assert {r.repo for r in project.repositories} == {
+        "example/shop-frontend", "example/shop-backend"}
+    assert project.board_owner == "example"
+    assert project.board_number == 1
+
+
+@pytest.mark.parametrize("alias", [
+    "example/analytics",
+    "https://github.com/example/analytics",
+    "https://github.com/example/analytics.git",
+    "git@github.com:example/analytics.git",
+])
+def test_duplicate_repository_across_projects_is_rejected_including_url_aliases(
+        tmp_path, alias):
+    """Two projects naming the same verified repository identity are
+    rejected, even when the second spelling is an alternate URL form."""
+    analytics = _project("analytics", board_number=1)
+    analytics_copy = _project("analytics-copy", board_number=2, repositories=[
+        _repo("analytics-copy", alias)])
+    with pytest.raises(ValueError, match="analytics"):
+        load_config(write_yaml(tmp_path, top_extra={
+            "projects": [analytics, analytics_copy]}))
+
+
+def test_duplicate_board_across_projects_is_rejected(tmp_path):
+    """Two projects naming the same board (owner + number) are rejected."""
+    analytics = _project("analytics", board_owner="example", board_number=7,
+                          repositories=[_repo("analytics", "example/analytics")])
+    billing = _project("billing", board_owner="example", board_number=7,
+                        repositories=[_repo("billing", "example/billing")])
+    with pytest.raises(ValueError, match="board"):
+        load_config(write_yaml(tmp_path, top_extra={
+            "projects": [analytics, billing]}))
+
+
+def test_legacy_single_repo_target_still_resolves_without_creating_a_project(tmp_path):
+    """A legacy single-repository target (under `targets:`) keeps resolving
+    its own issue/workspace/PR/model configuration exactly as before, and
+    does not spawn a second project or pause existing work."""
+    cfg = load_config(write_yaml(tmp_path))
+    assert cfg.targets[0].repo == "o/r"
+    assert cfg.targets[0].gate_cmd == "make gate"
+    assert policy_for(cfg, cfg.targets[0]) == DEFAULT_POLICY
+    assert cfg.projects == []
+
+
+def test_project_missing_required_field_raises_project_specific_error(tmp_path):
+    """A required field missing from a project's repository (gate_cmd, as
+    for a legacy target) names the offending project, not a generic error."""
+    broken = _repo("shop", "example/shop")
+    del broken["gate_cmd"]
+    shop = _project("shop", repositories=[broken])
+    with pytest.raises(ValueError, match="shop"):
+        load_config(write_yaml(tmp_path, top_extra={"projects": [shop]}))
+
+
+def test_project_invalid_field_type_raises_project_specific_error(tmp_path):
+    """An invalid type on a project field (board_number as a string) is
+    rejected with the project identified, not a silent coercion."""
+    shop = _project("shop", board_number="not-a-number")
+    with pytest.raises(ValueError, match="shop"):
+        load_config(write_yaml(tmp_path, top_extra={"projects": [shop]}))
+
+
+def test_new_project_is_paused_by_default_and_can_be_explicitly_stated(tmp_path):
+    """New onboarding configuration can explicitly represent paused state;
+    omitting it also means paused, never silently enabled."""
+    quiet = _project("quiet")
+    cfg = load_config(write_yaml(tmp_path, top_extra={"projects": [quiet]}))
+    assert cfg.projects[0].enabled is False
+
+    explicit = _project("explicit", board_number=2, enabled=False)
+    cfg = load_config(write_yaml(tmp_path, top_extra={"projects": [explicit]}))
+    assert cfg.projects[0].enabled is False
+
+    live = _project("live", board_number=3, enabled=True)
+    cfg = load_config(write_yaml(tmp_path, top_extra={"projects": [live]}))
+    assert cfg.projects[0].enabled is True
+
+
+def test_config_without_projects_key_is_unaffected(tmp_path):
+    """Existing single-repository deployments with no `projects:` key at all
+    keep loading exactly as before: only the legacy target records exist,
+    and no project records are introduced where none were declared."""
+    cfg = load_config(write_yaml(tmp_path))
+    assert cfg.projects == []
+    assert len(cfg.targets) == 1
+    assert cfg.targets[0].name == "t"

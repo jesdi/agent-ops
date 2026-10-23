@@ -4,7 +4,7 @@ import type {
 } from '../lib/api'
 
 export const parkedCard: TaskCard = {
-  issue: 42, target: 'widget', title: 'Fix login redirect',
+  issue: 42, target: 'widget', repo: '', title: 'Fix login redirect',
   stage: 'implement', park: 'parked', park_reason: 'decision', column: 'parked', slot: 1,
   branch: 'fix/login-redirect', model: 'sonnet', track: 'standard', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?', feedback_pending: false,
@@ -14,7 +14,7 @@ export const parkedCard: TaskCard = {
 }
 
 export const reviewCard: TaskCard = {
-  issue: 44, target: 'widget', title: 'Add search feature',
+  issue: 44, target: 'widget', repo: '', title: 'Add search feature',
   stage: 'awaiting-plan-review', park: 'awaiting-review', park_reason: '', column: 'needs-review',
   slot: -1,
   branch: 'feat/search', model: 'opus', track: 'standard', park_note_pending: false,
@@ -25,7 +25,7 @@ export const reviewCard: TaskCard = {
 }
 
 export const inProgressCard: TaskCard = {
-  issue: 41, target: 'widget', title: 'Add CSV export',
+  issue: 41, target: 'widget', repo: '', title: 'Add CSV export',
   stage: 'implement', park: '', park_reason: '', column: 'in-progress', slot: 2,
   branch: 'feat/csv-export', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
@@ -36,7 +36,7 @@ export const inProgressCard: TaskCard = {
 
 // The motivating pair: both sit in the Parked column, only one holds a unit.
 export const loginParkedCard: TaskCard = {
-  issue: 45, target: 'widget', title: 'Rate-limit webhooks',
+  issue: 45, target: 'widget', repo: '', title: 'Rate-limit webhooks',
   stage: 'spec', park: 'parked-login', park_reason: 'login', column: 'parked', slot: 0,
   branch: 'feat/rate-limit', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
@@ -46,7 +46,7 @@ export const loginParkedCard: TaskCard = {
 }
 
 export const ciParkedCard: TaskCard = {
-  issue: 46, target: 'widget', title: 'Fix nightly digest',
+  issue: 46, target: 'widget', repo: '', title: 'Fix nightly digest',
   stage: 'implement', park: 'awaiting-ci', park_reason: '', column: 'awaiting-ci', slot: 1,
   branch: 'fix/nightly-digest', model: 'sonnet', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
@@ -116,10 +116,12 @@ export const usageCcusage: UsageView = {
 }
 
 export const taskDetail: TaskDetail = {
+  title: parkedCard.title,
+  repo: '',
   card: parkedCard,
   pane_tail: '? Should I use the staging redirect URL or prod?\n> ',
   session_alive: true,
-  worktree: '/home/agent/worktrees/task-42',
+  worktree: '/home/agent/repos/widget.sandboxes/checkouts/widget-task-42-t3f9a1c2d4e5b6a70',
   messages: [],
   delivery_contract: 'will deliver when the session resumes',
   track_when: 'Everything.',
@@ -127,11 +129,13 @@ export const taskDetail: TaskDetail = {
   effort: 3,
   labels: ['auto'],
   timeline: [],
+  required_prs: [],
+  dependency_errors: [],
 }
 
 export const failures: FailuresView = {
   quarantined: [{
-    target: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
+    target: 'widget', repo: '', task_issue: 38, blocker_repo: 'jesdi/widget',
     blocker_issue: 39, fingerprint: 'pytest::test_auth_flow',
     created_at: '2026-07-24T22:10:00Z', blocker_open: true,
   }],
@@ -143,9 +147,9 @@ export const failures: FailuresView = {
 
 export const history: HistoryView = {
   events: [
-    { ts: '2026-07-25T11:30:00Z', event: 'stage-started', target: 'widget',
+    { ts: '2026-07-25T11:30:00Z', event: 'stage-started', target: 'widget', repo: '',
       issue: 41, stage: 'implement', model: 'opus', actor: 'dispatcher', detail: '' },
-    { ts: '2026-07-25T10:00:00Z', event: 'parked', target: 'widget',
+    { ts: '2026-07-25T10:00:00Z', event: 'parked', target: 'widget', repo: '',
       issue: 42, stage: 'implement', model: 'sonnet', actor: 'dispatcher',
       detail: 'question' },
   ],

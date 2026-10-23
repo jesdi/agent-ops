@@ -101,3 +101,25 @@ it('GET task detail hits /api/task/{target}/{issue}', async () => {
   await api.taskDetail('agent_ops', 42)
   expect(requestedPath).toBe('/api/task/agent_ops/42')
 })
+
+it('addresses two repositories sharing an issue number on their own routes', async () => {
+  const seen: string[] = []
+  server.use(
+    http.post('/api/task/shop/:repository/:issue/park', ({ request }) => {
+      seen.push(new URL(request.url).pathname)
+      return HttpResponse.json({ status: 'pending', intent: 'i' }, { status: 202 })
+    }),
+    http.post('/api/queue/boost', async ({ request }) => {
+      seen.push(JSON.stringify(await request.json()))
+      return HttpResponse.json({ ok: true, reason: '' })
+    }),
+  )
+  await api.park('shop', 12, 'example/shop-frontend')
+  await api.park('shop', 12, 'example/shop-backend')
+  await api.queueBoost(12, 1, 'example/shop-backend')
+  expect(seen).toEqual([
+    '/api/task/shop/example~shop-frontend/12/park',
+    '/api/task/shop/example~shop-backend/12/park',
+    '{"issue":12,"amount":1,"repo":"example/shop-backend"}',
+  ])
+})

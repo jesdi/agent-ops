@@ -17,7 +17,7 @@ export function useWontDo() {
     setError(null)
   }
   const mutation = useMutation({
-    mutationFn: (card: DraggedCard) => api.cancel(card.target, card.issue),
+    mutationFn: (card: DraggedCard) => api.cancel(card.target, card.issue, card.repo),
     onSuccess: () => {
       dismiss()
       void queryClient.invalidateQueries({ queryKey: queryKeys.pendingIntents })

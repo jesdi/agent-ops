@@ -5,14 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
+import shutil
 import stat
+import warnings
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import NamedTuple
+from typing import Iterable, NamedTuple
 
 from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
                                ModelPolicy, Order, candidates, pick_provider,
@@ -169,6 +172,29 @@ NO_POKES = MappingProxyType({"poked_since": 0.0, "pokes": 0})
 
 
 @dataclass(frozen=True)
+class RequiredPR:
+    """One repository-qualified PR a task needs merged. `state` is open |
+    merged | closed (closed without merge); the cursors and the CI-fix
+    counter belong to this PR alone, so equal numbers in two repositories
+    never share them."""
+    repo: str
+    number: int
+    state: str = "open"
+    head: str = ""
+    check_cursor: str = ""
+    feedback_cursor: str = ""
+    conflict_cursor: str = ""
+    ci_fix_attempts: int = 0
+    feedback_rounds: int = 0
+    outcome: str = ""      # the last poll's classification: quiet | feedback | check-failed | ...
+    checks: str = ""       # the last CI read of this PR: check-failed | pending | passing | "" unread
+    depends_on: tuple[str, ...] = ()   # "owner/name#N" prerequisites: PRs of this task's required set
+
+
+CI_FIX_LIMIT = 3     # automated CI-fix attempts per required PR
+
+
+@dataclass(frozen=True)
 class TaskState:
     issue: int
     target: str
@@ -251,6 +277,29 @@ class TaskState:
     # worktree-contained path resolves — so an answers request never exists
     # without a valid path.
     operator_request: "OperatorRequest | None" = None
+    # Canonical "owner/name" of the origin repository. "" = a legacy record
+    # whose repository is not proven (see migrate_legacy).
+    repo: str = ""
+    # The PRs this task needs merged; non-empty = authoritative, the task is
+    # done only when every one is merged. The revision names that set.
+    required_prs: tuple[RequiredPR, ...] = ()
+    required_set_revision: int = 0
+    # "owner/name#N" of the PRs the queued fix round repairs; each is charged
+    # when the round is actually launched, not when the failure is observed.
+    repair_prs: tuple[str, ...] = ()
+    # The PR a review-feedback round repairs; feedback is not a CI attempt.
+    feedback_pr: str = ""
+    # Automated CI fixes spent on the single PR; feedback and resume never reset it.
+    ci_fix_attempts: int = 0
+    # The partial-merge outcome the operator was last asked about.
+    partial_incident: str = ""
+    # Durable send reservation: an ambiguous transport outcome is never replayed.
+    partial_delivery: str = ""
+    # Charged before spawning; an interrupted launch requires reconciliation.
+    repair_launch_reserved: bool = False
+    ci_repair_pending: bool = False  # failed verification wake awaiting repair admission
+    # Explicit operator exclusions survive discovery and bundle validation.
+    dropped_pr_repos: tuple[str, ...] = ()
 
     @property
     def continued_stage(self) -> Stage:
@@ -296,6 +345,9 @@ class StageSignal:
     # Plan ready report: the question blocks the session counted in its
     # review page. None = missing or not a non-negative integer.
     open_questions: int | None = None
+    # Initial exploration proposal only; the controller validates membership
+    # and provisions it at the spec -> plan boundary. Never a late expansion.
+    repositories: tuple[str, ...] = ()
 
 
 # The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
@@ -303,22 +355,131 @@ class StageSignal:
 WAKE_BLOCKED_PREFIX = "wake-blocked-"
 
 
-def task_key(target: str, issue: int) -> str:
-    """`<target>-<issue>`: the (target, issue) key every per-task file in
-    state_dir is named by."""
-    return f"{target}-{issue}"
+@dataclass(frozen=True)
+class TaskRepository:
+    """One required repository of a task bundle: its owned checkout and branch."""
+    repo: str          # "owner/name", a member of the task's project
+    worktree: str
+    branch: str
+
+
+@dataclass(frozen=True)
+class TaskBundle:
+    """The controller-recorded repository scope of one task. `source` is where
+    the scope came from ("definition" | "exploration"); `spec_repo` is the member
+    repository holding the task's spec/plan ("" = not yet selected); a widened
+    scope is a new `scope_revision`."""
+    repositories: tuple[TaskRepository, ...]
+    scope_revision: int = 1
+    source: str = "definition"
+    spec_repo: str = ""
+
+    @property
+    def awaits_spec_repo(self) -> bool:
+        """Several repositories and none chosen for the spec/plan: a sole
+        repository owns them."""
+        return not self.spec_repo and len(self.repositories) > 1
+
+
+class ScopeRefused(Exception):
+    """A repository scope or spec repository outside the task's project, or a
+    widening nobody confirmed."""
+
+
+def _bundle_path(state_dir: str | Path, target: str, issue: int, repo: str) -> Path:
+    return Path(state_dir) / f"bundle-{task_key(target, issue, repo)}.json"
+
+
+def save_bundle(state_dir: str | Path, target: str, issue: int, bundle: TaskBundle, *,
+                repo: str = "") -> None:
+    write_json_atomic(_bundle_path(state_dir, target, issue, repo), asdict(bundle))
+
+
+def read_bundle(state_dir: str | Path, target: str, issue: int, *,
+                repo: str = "") -> TaskBundle | None:
+    """The task's recorded scope, or None when it runs on its origin repository alone."""
+    try:
+        raw = json.loads(_bundle_path(state_dir, target, issue, repo).read_text())
+    except FileNotFoundError:
+        return None
+    return TaskBundle(**{**raw, "repositories": tuple(
+        TaskRepository(**r) for r in raw["repositories"])})
+
+
+def save_pending_spec_repo(state_dir, target, issue, spec_repo, *, repo="") -> None:
+    """Remember definition ownership while exploration has not established scope."""
+    path = Path(state_dir) / f"spec-owner-{task_key(target, issue, repo)}.json"
+    write_json_atomic(path, {"spec_repo": spec_repo})
+
+
+def pending_spec_repo(state_dir, target, issue, *, repo="") -> str:
+    path = Path(state_dir) / f"spec-owner-{task_key(target, issue, repo)}.json"
+    try:
+        return json.loads(path.read_text())["spec_repo"]
+    except FileNotFoundError:
+        return ""
+
+
+def _recorded(state_dir, target, issue, repo) -> TaskBundle:
+    bundle = read_bundle(state_dir, target, issue, repo=repo)
+    if bundle is None:
+        raise ScopeRefused(f"{target}#{issue} has no recorded repository scope")
+    return bundle
+
+
+def select_spec_repo(state_dir: str | Path, target: str, issue: int, spec_repo: str, *,
+                     repo: str = "", members: Iterable[str]) -> TaskBundle:
+    """Record the operator's spec/plan repository choice; ScopeRefused outside `members`."""
+    bundle = _recorded(state_dir, target, issue, repo)
+    if spec_repo not in set(members) or spec_repo not in {r.repo for r in bundle.repositories}:
+        raise ScopeRefused(f"{spec_repo!r} is not a repository of this task's project scope")
+    bundle = replace(bundle, spec_repo=spec_repo)
+    save_bundle(state_dir, target, issue, bundle, repo=repo)
+    return bundle
+
+
+def confirm_scope(state_dir: str | Path, target: str, issue: int, add: Iterable[TaskRepository], *,
+                  repo: str = "", members: Iterable[str]) -> TaskBundle:
+    """Operator confirmation of a wider scope: a new scope revision."""
+    bundle, add = _recorded(state_dir, target, issue, repo), tuple(add)
+    if not {r.repo for r in add} <= set(members):
+        raise ScopeRefused("a repository outside the project cannot join the task scope")
+    held = {r.repo for r in bundle.repositories}
+    bundle = replace(bundle, scope_revision=bundle.scope_revision + 1, repositories=(
+        *bundle.repositories, *(r for r in add if r.repo not in held)))
+    save_bundle(state_dir, target, issue, bundle, repo=repo)
+    return bundle
+
+
+def task_key(target: str, issue: int, repo: str = "") -> str:
+    """`<target>-<issue>`, or `<owner>~<name>~<target>-<issue>` when the task's
+    repository is proven: the key every per-task file in state_dir is named
+    by. Two repositories of one target never share a key."""
+    key = f"{target}-{issue}"
+    return f"{repo.replace('/', '~')}~{key}" if repo else key
 
 
 def parse_task_key(name: str) -> tuple[str, int] | None:
     """(target, issue) from a `<target>-<issue>` key, else None (including
     a legacy bare `<issue>`). rpartition, since target names may themselves
-    contain '-'."""
+    contain '-'. A repository-qualified key is not a legacy one: None."""
+    if "~" in name:
+        return None
     target, _, issue = name.rpartition("-")
     return (target, int(issue)) if target and issue.isdigit() else None
 
 
-def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"task-{task_key(target, issue)}.json"
+def parse_qualified_task_key(name: str) -> tuple[str, str, int] | None:
+    """(repo, target, issue) from an `<owner>~<name>~<target>-<issue>` key,
+    else None: the inverse of task_key for a proven repository."""
+    owner, sep1, rest = name.partition("~")
+    repo_name, sep2, tail = rest.partition("~")
+    parsed = parse_task_key(tail) if sep1 and sep2 else None
+    return (f"{owner}/{repo_name}", *parsed) if parsed else None
+
+
+def _path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / f"task-{task_key(target, issue, repo)}.json"
 
 
 def _legacy_path(state_dir: str | Path, issue: int) -> Path:
@@ -329,7 +490,7 @@ def _previous(state_dir: str | Path, ts: TaskState) -> TaskState | None:
     """The state a save replaces; None also when the file cannot be read:
     the save is what repairs it."""
     try:
-        return load(state_dir, ts.target, ts.issue)
+        return load(state_dir, ts.target, ts.issue, repo=ts.repo)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
@@ -342,9 +503,11 @@ def save(state_dir: str | Path, ts: TaskState) -> None:
         ts = replace(ts, terminal_at=stamp)
     else:
         ts = replace(ts, terminal_at="")
-    _write_task(_path(state_dir, ts.target, ts.issue), ts)
+    _write_task(_path(state_dir, ts.target, ts.issue, ts.repo), ts)
     # Lazy migration: the first save under the new key retires the legacy twin.
-    _retire_legacy(state_dir, ts.target, ts.issue)
+    # A qualified task owns no legacy file: that would be a guess.
+    if not ts.repo:
+        _retire_legacy(state_dir, ts.target, ts.issue)
 
 
 def _retire_legacy(state_dir: str | Path, target: str, issue: int) -> None:
@@ -439,6 +602,10 @@ def _read(p: Path) -> TaskState | None:
                 path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
         else:
             raise ValueError(f"unrecognized operator_request kind {kind!r}")
+    d["repair_prs"] = tuple(d.get("repair_prs") or ())
+    d["dropped_pr_repos"] = tuple(d.get("dropped_pr_repos") or ())
+    d["required_prs"] = tuple(RequiredPR(**{**r, "depends_on": tuple(r.get("depends_on") or ())})
+                              for r in d.get("required_prs") or ())
     d.pop("artifact", None)        # retired field (slice 24)
     # Retired fields: one implement session, no cursor and no ticket tracks.
     for retired in ("ticket_cursor", "ticket_tracks", "ticket_names",
@@ -447,9 +614,10 @@ def _read(p: Path) -> TaskState | None:
     return TaskState(**d)
 
 
-def load(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
-    ts = _read(_path(state_dir, target, issue))
-    if ts is not None:
+def load(state_dir: str | Path, target: str, issue: int, *,
+         repo: str = "") -> TaskState | None:
+    ts = _read(_path(state_dir, target, issue, repo))
+    if ts is not None or repo:
         return ts
     legacy = _read(_legacy_path(state_dir, issue))
     # A legacy file speaks only for its own target.
@@ -476,12 +644,13 @@ def load_all(state_dir: str | Path) -> list[TaskState]:
         # Identity comes from the JSON, never the filename stem.
         if ts is not None:
             tasks.append(ts)
-    return sorted(tasks, key=lambda t: (t.target, t.issue))
+    return sorted(tasks, key=lambda t: (t.target, t.issue, t.repo))
 
 
-def delete(state_dir: str | Path, target: str, issue: int) -> None:
-    _path(state_dir, target, issue).unlink(missing_ok=True)
-    _retire_legacy(state_dir, target, issue)
+def delete(state_dir: str | Path, target: str, issue: int, *, repo: str = "") -> None:
+    _path(state_dir, target, issue, repo).unlink(missing_ok=True)
+    if not repo:
+        _retire_legacy(state_dir, target, issue)
 
 
 def max_slots(capacity: int) -> int:
@@ -502,12 +671,78 @@ def holds_slot(t: TaskState) -> bool:
             and (not t.park or t.park == PARK_LOGIN))
 
 
-def allocate_slot(existing: list[TaskState], max_slots: int) -> int | None:
+def allocate_slot(existing: list[TaskState], max_slots: int,
+                  reserved: Iterable[int] = ()) -> int | None:
+    """`reserved`: the slots of owners that are not tasks (reserved_slots())."""
     held = {t.slot for t in existing if holds_slot(t) and t.slot != NO_SLOT}
+    held.update(reserved)
     for slot in range(max_slots):
         if slot not in held:
             return slot
     return None
+
+
+ALLOCATIONS_FILE = "allocations.json"
+
+
+@dataclass(frozen=True)
+class Allocation:
+    """One execution slot and who holds it. owner_kind: task | triage |
+    verification."""
+
+    owner_kind: str
+    owner_id: str
+    slot: int
+
+
+def _stored_allocations(state_dir: str | Path) -> list[Allocation]:
+    """The holds of owners that are not unparked tasks: a verification, a
+    triage sweep, a task whose containers are not yet confirmed stopped."""
+    try:
+        rows = json.loads((Path(state_dir) / ALLOCATIONS_FILE).read_text())
+        return [Allocation(**row) for row in rows]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def hold(state_dir: str | Path, kind: str, owner_id: str, slot: int) -> None:
+    kept = [a for a in _stored_allocations(state_dir)
+            if (a.owner_kind, a.owner_id) != (kind, owner_id)]
+    _write_allocations(state_dir, [*kept, Allocation(kind, owner_id, slot)])
+
+
+def release(state_dir: str | Path, kind: str, owner_id: str) -> None:
+    stored = _stored_allocations(state_dir)
+    kept = [a for a in stored if (a.owner_kind, a.owner_id) != (kind, owner_id)]
+    if len(kept) != len(stored):
+        _write_allocations(state_dir, kept)
+
+
+def _write_allocations(state_dir: str | Path, rows: list[Allocation]) -> None:
+    path = Path(state_dir) / ALLOCATIONS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.stem, suffix=".tmp")
+    with os.fdopen(fd, "w") as stream:
+        json.dump([asdict(a) for a in rows], stream)
+    os.replace(temporary, path)
+
+
+def allocations(state_dir: str | Path) -> list[Allocation]:
+    """The one execution allocation view: every slot held by a task, a triage
+    sweep or an onboarding verification. Slots are unique across owners."""
+    tasks = [Allocation("task", task_key(t.target, t.issue, t.repo), t.slot)
+             for t in load_all(state_dir) if holds_slot(t) and t.slot != NO_SLOT]
+    return [*tasks, *_stored_allocations(state_dir)]
+
+
+def reserved_slots(state_dir: str | Path) -> set[int]:
+    return {a.slot for a in _stored_allocations(state_dir) if a.slot != NO_SLOT}
+
+
+def held_count(state_dir: str | Path) -> int:
+    """Capacity units held by verifications and tasks still stopping. Tasks
+    that run are counted by active(), a running triage sweep by its tab."""
+    return sum(a.owner_kind != "triage" for a in _stored_allocations(state_dir))
 
 
 def _open_questions(raw: object) -> int | None:
@@ -560,6 +795,10 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
     try:
         d = json.loads(raw)
         note = d.get("note", "")
+        repositories = d.get("repositories", [])
+        if not isinstance(repositories, list) or not all(
+                isinstance(repo, str) and repo for repo in repositories):
+            raise ValueError("repositories must be an array of repository names")
         return StageSignal(
             stage=str(d["stage"]),
             status=str(d["status"]),
@@ -570,6 +809,7 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
             round=_signal_int(d, "round"),
             track=str(d.get("track", "") or ""),
             open_questions=_open_questions(d.get("open_questions")),
+            repositories=tuple(repositories),
         )
     except (ValueError, KeyError, TypeError, AttributeError, RecursionError,
             OverflowError):
@@ -603,21 +843,21 @@ class SessionRecord:
     stage: str
 
 
-def _session_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"session-{task_key(target, issue)}"
+def _session_path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / f"session-{task_key(target, issue, repo)}"
 
 
 def write_session(state_dir: str | Path, target: str, issue: int,
-                  record: SessionRecord) -> None:
+                  record: SessionRecord, *, repo: str = "") -> None:
     """Replace a task's conversation atomically; only waitd writes it."""
-    write_json_atomic(_session_path(state_dir, target, issue), asdict(record))
+    write_json_atomic(_session_path(state_dir, target, issue, repo), asdict(record))
 
 
-def read_session(state_dir: str | Path, target: str,
-                 issue: int) -> SessionRecord | None:
+def read_session(state_dir: str | Path, target: str, issue: int, *,
+                 repo: str = "") -> SessionRecord | None:
     """Read a task's conversation; missing or malformed records are absent."""
     try:
-        d = json.loads(_session_path(state_dir, target, issue).read_text())
+        d = json.loads(_session_path(state_dir, target, issue, repo).read_text())
         session_id, stage = d["session_id"], d["stage"]
         if not isinstance(session_id, str) or not session_id:
             return None
@@ -628,24 +868,26 @@ def read_session(state_dir: str | Path, target: str,
         return None
 
 
-def clear_session(state_dir: str | Path, target: str, issue: int) -> None:
+def clear_session(state_dir: str | Path, target: str, issue: int, *,
+                  repo: str = "") -> None:
     """Remove only the task's conversation; a missing record is harmless."""
-    _session_path(state_dir, target, issue).unlink(missing_ok=True)
+    _session_path(state_dir, target, issue, repo).unlink(missing_ok=True)
 
 
-def _waiting_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"waiting-{task_key(target, issue)}"
+def _waiting_path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / f"waiting-{task_key(target, issue, repo)}"
 
 
 def _legacy_waiting_path(state_dir: str | Path, issue: int) -> Path:
     return Path(state_dir) / f"waiting-{issue}"
 
 
-def mark_waiting(state_dir: str | Path, target: str, issue: int) -> None:
-    p = _waiting_path(state_dir, target, issue)
+def mark_waiting(state_dir: str | Path, target: str, issue: int, *,
+                 repo: str = "") -> None:
+    p = _waiting_path(state_dir, target, issue, repo)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.touch()
-    _background_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins
+    _background_path(state_dir, target, issue, repo).unlink(missing_ok=True)  # latest turn end wins
 
 
 @dataclass(frozen=True)
@@ -655,8 +897,8 @@ class BackgroundWait:
     reported: float          # time of the latest report
 
 
-def _background_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"background-{task_key(target, issue)}"
+def _background_path(state_dir: str | Path, target: str, issue: int, repo: str = "") -> Path:
+    return Path(state_dir) / f"background-{task_key(target, issue, repo)}"
 
 
 def _identity(entry) -> str:
@@ -665,54 +907,473 @@ def _identity(entry) -> str:
     return json.dumps(entry, sort_keys=True)
 
 
-def read_background(state_dir: str | Path, target: str, issue: int) -> BackgroundWait | None:
+def read_background(state_dir: str | Path, target: str, issue: int, *,
+                    repo: str = "") -> BackgroundWait | None:
     try:
-        d = json.loads(_background_path(state_dir, target, issue).read_text())
+        d = json.loads(_background_path(state_dir, target, issue, repo).read_text())
         return BackgroundWait(tuple(d["tasks"]), float(d["since"]), float(d["reported"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
 def mark_background(state_dir: str | Path, target: str, issue: int,
-                    tasks: list, now: float | None = None) -> None:
+                    tasks: list, now: float | None = None, *, repo: str = "") -> None:
     now = time.time() if now is None else now
     ids = tuple(_identity(t) for t in tasks)
-    old = read_background(state_dir, target, issue)
+    old = read_background(state_dir, target, issue, repo=repo)
     since = old.since if old and set(ids) <= set(old.tasks) else now
-    p = _background_path(state_dir, target, issue)
+    p = _background_path(state_dir, target, issue, repo)
     p.parent.mkdir(parents=True, exist_ok=True)
-    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
+    _waiting_path(state_dir, target, issue, repo).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
     tmp = p.with_name(p.name + ".tmp")  # with_suffix would truncate a dotted target
     tmp.write_text(json.dumps({"tasks": list(ids), "since": since, "reported": now}))
     tmp.replace(p)
 
 
-def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
-    return (_waiting_path(state_dir, target, issue).exists()
-            or _legacy_waiting_path(state_dir, issue).exists())
+def has_waiting(state_dir: str | Path, target: str, issue: int, *,
+                repo: str = "") -> bool:
+    return (_waiting_path(state_dir, target, issue, repo).exists()
+            or (not repo and _legacy_waiting_path(state_dir, issue).exists()))
 
 
-def clear_turn_markers(state_dir: str | Path, target: str, issue: int) -> None:
+def clear_turn_markers(state_dir: str | Path, target: str, issue: int, *,
+                       repo: str = "") -> None:
     """Remove every turn-end marker (waiting, legacy waiting, background).
     The only way a background marker goes besides a waiting ping: every
     session end or replacement calls it, so a new session never inherits an
     old clock."""
-    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)
-    _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
-    _background_path(state_dir, target, issue).unlink(missing_ok=True)
+    _waiting_path(state_dir, target, issue, repo).unlink(missing_ok=True)
+    if not repo:
+        _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
+    _background_path(state_dir, target, issue, repo).unlink(missing_ok=True)
 
 
-def archive_root(state_dir: str | Path, target: str, issue: int) -> Path:
+def archive_root(state_dir: str | Path, target: str, issue: int, *,
+                 repo: str = "") -> Path:
     """Task archive namespace, shared by its snapshot and retained artifacts."""
-    key = hashlib.sha256(f"{target}\0{issue}".encode()).hexdigest()
+    ident = f"{repo}\0{target}\0{issue}" if repo else f"{target}\0{issue}"
+    key = hashlib.sha256(ident.encode()).hexdigest()
     return Path(state_dir) / "artifacts" / key
 
 
 def archive(state_dir: str | Path, task: TaskState) -> None:
     if task.stage in TERMINAL_STAGES:
-        _write_task(archive_root(state_dir, task.target, task.issue) / "task.json", task)
+        _write_task(archive_root(state_dir, task.target, task.issue,
+                                 repo=task.repo) / "task.json", task)
 
 
-def load_archived(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
-    task = _read(archive_root(state_dir, target, issue) / "task.json")
+def load_archived(state_dir: str | Path, target: str, issue: int, *,
+                  repo: str = "") -> TaskState | None:
+    task = _read(archive_root(state_dir, target, issue, repo=repo) / "task.json")
     return task if task and task.stage in TERMINAL_STAGES else None
+
+
+def archived_named(state_dir: str | Path, target: str, issue: int) -> list[TaskState]:
+    """Every archived task of this target and number, whatever its repository:
+    what an old, repository-less reference may name."""
+    found = []
+    for path in (Path(state_dir) / "artifacts").glob("*/task.json"):
+        try:
+            task = _read(path)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if task and task.stage in TERMINAL_STAGES and (task.target, task.issue) == (target, issue):
+            found.append(task)
+    return found
+
+
+def _unqualified(paths) -> set[tuple[str, int]]:
+    found = set()
+    for p in paths:
+        try:
+            ts = _read(p)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if ts is not None and not ts.repo:
+            found.add((ts.target, ts.issue))
+    return found
+
+
+_SIDECAR_GLOBS = (("session-*", "session-", ""), ("waiting-*", "waiting-", ""),
+                  ("background-*", "background-", ""),
+                  ("wake-blocked-*", WAKE_BLOCKED_PREFIX, ""),
+                  # directory names of execution_overrides.DIR and failures.quarantine_path
+                  ("execution-overrides/*.json", "", ".json"),
+                  ("quarantine/*.json", "", ".json"),
+                  ("messages/*.jsonl", "", ".jsonl"))
+
+
+def _legacy_identities(root: Path, proven: dict[str, str]) -> set[tuple[str, int]]:
+    """(target, issue) of every unqualified record of a proven target."""
+    found = _unqualified(root.glob("task-*.json"))
+    found |= _sidecar_identities(root)
+    found |= _unqualified(root.glob("artifacts/*/task.json"))
+    found |= _unqualified_intents(root)
+    return {(t, i) for t, i in found if t in proven}
+
+
+def _sidecar_identities(root: Path) -> set[tuple[str, int]]:
+    """(target, issue) parsed from the name of every sidecar file."""
+    names = [p.name.removeprefix(pre).removesuffix(suf)
+             for pattern, pre, suf in _SIDECAR_GLOBS for p in root.glob(pattern)
+             if not p.name.startswith("session-owner-")]
+    return {k for k in map(parse_task_key, names) if k}
+
+
+def _unqualified_intents(root: Path) -> set[tuple[str, int]]:
+    found = set()
+    for p in (root / "intents").glob("*.json"):
+        try:
+            rec = json.loads(p.read_text())
+            if not rec.get("repo"):
+                found.add((rec["target"], int(rec["issue"])))
+        except (OSError, json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+            continue
+    return found
+
+
+def _copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp")
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, dst)
+
+
+def _task_sources(root: Path, target: str, issue: int) -> list[Path]:
+    """The unqualified task files of one identity: the target-keyed one and
+    the issue-only one load() still reads (which speaks only for its target)."""
+    found = []
+    for p in (_path(root, target, issue), _legacy_path(root, issue)):
+        try:
+            ts = _read(p)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if ts is not None and not ts.repo and ts.target == target:
+            found.append(p)
+    return found
+
+
+def _read_messages(p: Path) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for raw in p.read_text().splitlines():
+        try:
+            d = json.loads(raw)
+            out.setdefault(str(d["id"]), d)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue   # same as messages._parse: a malformed line is dropped
+    return out
+
+
+def _merge_messages(src: Path, dst: Path) -> None:
+    """Fold a legacy queue into the qualified one: every id of both survives,
+    and a message delivered in either stays delivered."""
+    merged = _read_messages(dst)
+    for mid, d in _read_messages(src).items():
+        if mid not in merged:
+            merged[mid] = d
+        elif d.get("delivered_at") and not merged[mid].get("delivered_at"):
+            merged[mid]["delivered_at"] = d["delivered_at"]
+    rows = sorted(merged.values(), key=lambda d: str(d.get("created_at", "")))
+    tmp = dst.with_name(dst.name + ".tmp")
+    tmp.write_text("".join(json.dumps(d) + "\n" for d in rows))
+    os.replace(tmp, dst)
+    _verify_messages(src, dst)
+
+
+def _verify_messages(src: Path, dst: Path) -> None:
+    """Verify every source id and its delivery status survived the merge."""
+    after = _read_messages(dst)
+    if any(mid not in after or (d.get("delivered_at") and not after[mid].get("delivered_at"))
+           for mid, d in _read_messages(src).items()):
+        raise OSError(f"migration of {src} not verified")
+
+
+def _migrate_intents(root: Path, target: str, issue: int, repo: str) -> None:
+    """Hand each pending unqualified intent of the task to the repository."""
+    for p in sorted((root / "intents").glob("*.json")):
+        try:
+            rec = json.loads(p.read_text())
+            owned = (rec["target"] == target and int(rec["issue"]) == issue
+                     and not rec.get("repo"))
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if owned:
+            write_json_atomic(p, {**rec, "repo": repo})
+
+
+class _MigrationConflict(Exception):
+    """Both copies survive until an operator resolves ambiguous ownership/content."""
+
+
+def _migration_bytes(path: Path, identity: tuple[str, int, str] | None) -> bytes:
+    if identity is None:
+        return path.read_bytes()
+    target, issue, repo = identity
+    try:
+        task = _read(path)
+        if task is None or (task.target, task.issue) != (target, issue):
+            raise ValueError("wrong task identity")
+        if task.repo not in ("", repo):
+            raise ValueError("wrong repository")
+        return json.dumps(asdict(replace(task, repo=repo)), sort_keys=True).encode()
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise _MigrationConflict(f"invalid task replacement {path}: {exc}") from exc
+
+
+def _reconcile_copy(root: Path, src: Path, dst: Path,
+                    identity: tuple[str, int, str] | None = None) -> None:
+    """Three-way copy: only replace a destination known to be unchanged.
+
+    The journal records the last agreed source version. A destination-only
+    update wins; a source-only update is copied; concurrent edits are retained
+    in place for explicit resolution. No timestamps or existence-based guesses.
+    """
+    journal = root / "migration-copies.json"
+    versions = json.loads(journal.read_text()) if journal.exists() else {}
+    key = str(src.relative_to(root)) + " -> " + str(dst.relative_to(root))
+    source = _migration_bytes(src, identity)
+    digest = hashlib.sha256(source).hexdigest()
+    if _destination_wins(src, dst, identity, digest, versions.get(key)):
+        return  # the source was copied before the destination changed
+    _write_copy(src, dst, identity, source)
+    versions[key] = digest
+    write_json_atomic(journal, versions)
+
+
+def _destination_wins(src: Path, dst: Path, identity: tuple[str, int, str] | None,
+                      digest: str, previous: str | None) -> bool:
+    """True when only the destination changed since the last agreed copy;
+    raise when both sides changed or the destination's owner is unverified."""
+    if not dst.exists():
+        return False
+    if identity is not None and _read_repository(dst) != identity[2]:
+        raise _MigrationConflict(f"unverified repository ownership: {dst}")
+    current = hashlib.sha256(_migration_bytes(dst, identity)).hexdigest()
+    if current == digest:
+        return False
+    if digest == previous:
+        return True
+    if current != previous:
+        raise _MigrationConflict(f"conflicting migration copies: {src} and {dst}")
+    return False
+
+
+def _write_copy(src: Path, dst: Path, identity: tuple[str, int, str] | None,
+                source: bytes) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if identity is None:
+        _copy_file(src, dst)
+    else:
+        write_json_atomic(dst, json.loads(source))
+    if _migration_bytes(dst, identity) != source:
+        raise OSError(f"migration of {src} not verified")
+
+
+def _read_repository(path: Path) -> str:
+    try:
+        return json.loads(path.read_text()).get("repo", "")
+    except (json.JSONDecodeError, AttributeError):
+        return ""
+
+
+def _migrate_files(root: Path, target: str, issue: int, repo: str) -> list[Path]:
+    """Reconcile task and sidecars before retiring any original."""
+    originals = _task_sources(root, target, issue)
+    dst = _path(root, target, issue, repo)
+    for src in originals:
+        _reconcile_copy(root, src, dst, (target, issue, repo))
+    pairs = zip(_sidecar_paths(root, target, issue),
+                _sidecar_paths(root, target, issue, repo))
+    for src, new in pairs:
+        if src.exists():
+            _reconcile_copy(root, src, new)
+            originals.append(src)
+    # waiting-<issue> speaks for the bare task-<issue>.json; move it only with that record
+    legacy_waiting = _legacy_waiting_path(root, issue)
+    if _legacy_path(root, issue) in originals and legacy_waiting.exists():
+        _reconcile_copy(root, legacy_waiting, _waiting_path(root, target, issue, repo))
+        originals.append(legacy_waiting)
+    originals += _migrate_messages(root, target, issue, repo)
+    _migrate_intents(root, target, issue, repo)
+    return originals
+
+
+def _migrate_messages(root: Path, target: str, issue: int, repo: str) -> list[Path]:
+    """Copy or merge the legacy queue; return its original for deferred removal."""
+    src = root / "messages" / f"{task_key(target, issue)}.jsonl"
+    if not src.exists():
+        return []
+    dst = root / "messages" / f"{task_key(target, issue, repo)}.jsonl"
+    if dst.exists():
+        _merge_messages(src, dst)
+    else:
+        _copy_file(src, dst)
+    return [src]
+
+
+def _bare_message_queues(root: Path) -> list[Path]:
+    return sorted(p for p in (root / "messages").glob("*.jsonl") if p.stem.isdigit())
+
+
+def unproven_message_queues(state_dir: str | Path, proven: dict[str, str]) -> list[str]:
+    """Issue-only queues require a sole project and no unmapped legacy owners."""
+    if len(proven) == 1 and not unproven_legacy(state_dir, proven):
+        return []
+    root = Path(state_dir)
+    return [str(p.relative_to(root)) for p in _bare_message_queues(root)]
+
+
+def _normalize_message_queues(root: Path, proven: dict[str, str]) -> None:
+    """Normalize provably owned pre-project queues before repository qualification.
+
+    Merge by message id and verify delivery history before removing a source;
+    an interrupted migration can safely repeat this step.
+    """
+    if len(proven) != 1 or unproven_message_queues(root, proven):
+        return
+    target = next(iter(proven))
+    for src in _bare_message_queues(root):
+        dst = root / "messages" / f"{task_key(target, int(src.stem))}.jsonl"
+        if dst.exists():
+            _merge_messages(src, dst)
+        else:
+            _copy_file(src, dst)
+        _verify_messages(src, dst)
+        src.unlink()
+
+
+def _sidecar_paths(root: Path, target: str, issue: int, repo: str = "") -> list[Path]:
+    k = task_key(target, issue, repo)
+    return [_session_path(root, target, issue, repo), _waiting_path(root, target, issue, repo),
+            _background_path(root, target, issue, repo),
+            root / "execution-overrides" / f"{k}.json", root / "quarantine" / f"{k}.json",
+            root / f"{WAKE_BLOCKED_PREFIX}{k}"]
+
+
+def _verify_tree(old_root: Path, new_root: Path) -> None:
+    if {p.relative_to(old_root) for p in old_root.rglob("*")} \
+            - {p.relative_to(new_root) for p in new_root.rglob("*")}:
+        raise OSError(f"migration of {old_root} not verified")
+
+
+def _migrate_archive(root: Path, target: str, issue: int, repo: str) -> list[Path]:
+    old_root = archive_root(root, target, issue)
+    if not old_root.is_dir():
+        return []
+    new_root = archive_root(root, target, issue, repo=repo)
+
+    def copy(src, dst):
+        src, dst = Path(src), Path(dst)
+        identity = (target, issue, repo) if src == old_root / "task.json" else None
+        _reconcile_copy(root, src, dst, identity)
+        return str(dst)
+
+    shutil.copytree(old_root, new_root, dirs_exist_ok=True, copy_function=copy)
+    _verify_tree(old_root, new_root)
+    return [old_root]
+
+
+def migrate_legacy(state_dir: str | Path, proven: dict[str, str],
+                   live_targets: Sequence[str] = ()) -> list[tuple[str, int]]:
+    """Migrate proven identities, retaining originals on ambiguous conflicts;
+    returns the (target, issue) of every unresolved conflict.
+
+    Copies are journaled and reconciled on retries. Original records remain
+    until every replacement has been verified; message queues merge by id.
+    A target in `live_targets` has a running legacy session: its tasks keep
+    their session owner even before a first completion record exists.
+    """
+    root = Path(state_dir)
+    _normalize_message_queues(root, proven)
+    originals: list[Path] = []
+    unresolved: list[tuple[str, int]] = []
+    for target, issue in sorted(_legacy_identities(root, proven)):
+        repo = proven[target]
+        try:
+            # a live legacy session keeps its owner once its task is qualified
+            live = target in live_targets or _session_path(root, target, issue).exists()
+            pending = _migrate_files(root, target, issue, repo)
+            pending += _migrate_archive(root, target, issue, repo)
+        except _MigrationConflict as exc:
+            warnings.warn(f"migration unresolved for {target}#{issue}: {exc}",
+                          RuntimeWarning)
+            unresolved.append((target, issue))
+            continue
+        if live and not session_owner(root, target, issue):
+            record_session_owner(root, target, issue, repo)
+        originals += pending
+    for src in originals:
+        shutil.rmtree(src) if src.is_dir() else src.unlink()
+    return unresolved
+
+
+def unproven_legacy(state_dir: str | Path, proven: dict[str, str]) -> list[tuple[str, int]]:
+    """(target, issue) of every unqualified record no proven mapping covers."""
+    root = Path(state_dir)
+    found = _unqualified(root.glob("task-*.json")) | _sidecar_identities(root)
+    found |= _unqualified(root.glob("artifacts/*/task.json")) | _unqualified_intents(root)
+    return sorted((t, i) for t, i in found if t not in proven)
+
+
+def session_owner(state_dir: str | Path, target: str, issue: int) -> str:
+    """The repository a launch record names as owner of the shared session
+    name; "" when no record exists."""
+    try:
+        return session_owner_path(state_dir, target, issue).read_text()
+    except (OSError, ValueError):
+        return ""
+
+
+def owns_task_session(state_dir: str | Path, target: str, issue: int, repo: str) -> bool:
+    """Only a launch record proves which repository owns a shared session name.
+
+    Task inventories can shrink and are not evidence of session ownership.
+    Empty repositories retain the pre-qualification session contract.
+    """
+    if not repo:
+        return True
+    return session_owner(state_dir, target, issue) == repo
+
+
+def session_owner_path(state_dir: str | Path, target: str, issue: int) -> Path:
+    return Path(state_dir) / f"session-owner-{task_key(target, issue)}"
+
+
+def record_session_owner(state_dir: str | Path, target: str, issue: int, repo: str) -> None:
+    path = session_owner_path(state_dir, target, issue)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(repo)
+
+
+def _token_path(state_dir: str | Path, target: str, issue: int, repo: str) -> Path:
+    return Path(state_dir) / "execution-tokens" / task_key(target, issue, repo)
+
+
+def issue_execution_token(state_dir: str | Path, target: str, issue: int,
+                          repo: str) -> str:
+    """A fresh secret for one launch of one repository's execution. Only that
+    execution's worktree holds it, so its Stop ping can prove which
+    execution sent it; a sibling's session cannot read it."""
+    path = _token_path(state_dir, target, issue, repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_hex(16)
+    path.write_text(token)
+    path.chmod(0o600)
+    return token
+
+
+def token_issued(state_dir: str | Path, target: str, issue: int, repo: str) -> bool:
+    """True once this repository's execution was launched with a token: its
+    hook then carries one, so a tokenless ping cannot speak for it."""
+    return _token_path(state_dir, target, issue, repo).exists()
+
+
+def execution_token_matches(state_dir: str | Path, target: str, issue: int,
+                            repo: str, presented: object) -> bool:
+    """True when `presented` is the token issued for this identity. A missing
+    token file never matches: a declared repository must prove itself."""
+    try:
+        issued = _token_path(state_dir, target, issue, repo).read_text()
+    except OSError:
+        return False
+    return isinstance(presented, str) and secrets.compare_digest(issued, presented)

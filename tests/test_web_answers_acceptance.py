@@ -169,6 +169,6 @@ def test_missing_login_header_is_401_on_both_routes(tmp_path):
 
 def test_openapi_lists_the_route_and_the_new_fields(tmp_path):
     schema = create_app(make_config(tmp_path), FakeSources()).openapi()
-    assert "post" in schema["paths"][URL.replace("alpha", "{target}").replace("7", "{issue}")]
+    assert "post" in schema["paths"]["/api/task/{project}/{repository_id}/{issue}/answers"]
     props = schema["components"]["schemas"]["OperatorRequest"]["properties"]
     assert "revision" in props and "answers" in props

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Override shared credential helpers; gh reads the current token on each request.
+set -eu
+exec /usr/bin/git -c credential.helper= -c 'credential.helper=!/opt/agent-ops-auth/gh auth git-credential' "$@"

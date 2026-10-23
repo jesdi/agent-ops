@@ -74,12 +74,14 @@ def plan_ready(row: dict) -> QueuePlan:
     return QueuePlan(ok=True, reason=f"#{issue} marked Ready", set_ready=True)
 
 
-def apply_plan(github, target, issue: int, plan: QueuePlan) -> None:
+def apply_plan(github, target, issue: int, plan: QueuePlan,
+               repo: str = "") -> None:
     if not plan.ok:
         return
+    kw = {"repo": repo} if repo else {}  # an unqualified write keeps its old call
     if plan.set_boost is not None:
-        github.set_boost(target, issue, plan.set_boost)
+        github.set_boost(target, issue, plan.set_boost, **kw)
     if plan.set_ready:
-        github.set_status(target, issue, target.status_ready_option_id)
+        github.set_status(target, issue, target.status_ready_option_id, **kw)
     if plan.add_auto:
-        github.add_label(target, issue, "auto")
+        github.add_label(target, issue, "auto", **kw)

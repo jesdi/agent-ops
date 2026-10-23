@@ -90,6 +90,9 @@ class FakeGitHub:
     def set_status(self, target, issue, option_id):
         self.statused.append((issue, option_id))
 
+    def issue_view(self, repo, number):
+        return {"body": ""}
+
     def candidates(self, target):
         return self.cands_by_target.get(target.name, self.cands)
 
@@ -174,21 +177,21 @@ class FakeSessions:
     # post-rekey — but the fakes still record/key by issue alone, since every
     # test here (bar the target-disambiguation ones) uses a single target and
     # the recorded issue is what assertions check.
-    def is_alive(self, target, issue):
+    def is_alive(self, target, issue, repo=""):
         return issue in self.alive_set
 
-    def idle_seconds(self, target, issue):
+    def idle_seconds(self, target, issue, repo=""):
         self.idle_queried.append(issue)
         return self.idle.get(issue)
 
-    def agent_state(self, target, issue):
+    def agent_state(self, target, issue, repo=""):
         return None  # herdr cannot be asked: a background wait holds
 
-    def send_text(self, target, issue, text):
+    def send_text(self, target, issue, text, repo=""):
         self.sent_text.append((issue, text))
         return True
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
+    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None, repo=""):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
@@ -196,18 +199,18 @@ class FakeSessions:
         self.spawn_calls.append((target, issue))
 
     def resume(self, target, issue, worktree, message, model, effort="", second=None,
-               *, session_id=None):
+               *, session_id=None, repo=""):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.resumed.append((issue, message, model, effort))
         self.resume_calls.append((target, issue))
 
-    def capture_tail(self, target, issue, lines=25):
+    def capture_tail(self, target, issue, lines=25, repo=""):
         self.call_log.append(("capture_tail", target, issue))
         return self.tail
 
-    def end(self, target, issue):
+    def end(self, target, issue, repo=""):
         self.ended.append(issue)
         self.end_calls.append((target, issue))
         self.call_log.append(("end", target, issue))
@@ -265,7 +268,7 @@ def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
 
 
 def patch_workspace(monkeypatch, tmp_path):
-    def fake_create(target, issue, dry_run=False):
+    def fake_create(target, issue, dry_run=False, credentials=None):
         wt = Path(target.worktrees_path) / f"task-{issue}"
         (wt / ".agent").mkdir(parents=True, exist_ok=True)
         return str(wt)
@@ -1231,7 +1234,7 @@ def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monke
     gh = FakeGitHub([Candidate(42, "Bad", "u42"), Candidate(43, "Good", "u43")])
     sess = FakeSessions()
 
-    def failing_workspace(target, issue, dry_run=False):
+    def failing_workspace(target, issue, dry_run=False, credentials=None):
         if issue == 42:
             raise RuntimeError("pipenv: no python 3.13")
         wt = Path(target.worktrees_path) / f"task-{issue}"
@@ -1258,7 +1261,7 @@ def test_workspace_failure_second_pass_dedupes(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     gh = FakeGitHub([Candidate(42, "Bad", "u42")])
 
-    def failing_workspace(target, issue, dry_run=False):
+    def failing_workspace(target, issue, dry_run=False, credentials=None):
         raise RuntimeError("pipenv: no python 3.13")
 
     monkeypatch.setattr(main, "create_workspace", failing_workspace)

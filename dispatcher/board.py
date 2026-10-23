@@ -9,8 +9,8 @@ items.
 Two tokens are in play on the box: the stored fine-grained auth reads the
 repo, and the classic project-scope token (GH_PROJECT_TOKEN) reads and writes
 the board. The project token cannot expand a private repo's issues, so an
-item's issue number can be absent; the title is then the join key (GitHub
-syncs linked-item titles to issue titles)."""
+item's issue number can be absent. Such cards are unavailable until GitHub
+exposes their repository-qualified identity."""
 from __future__ import annotations
 
 import json
@@ -19,6 +19,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+from dispatcher.config import normalize_repo
 
 GH_TIMEOUT = 120
 META_PATH = Path(".backlog") / "project-meta.json"
@@ -31,7 +33,7 @@ query($project: ID!, $cursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       id
-      content { ... on Issue { number } }
+      content { ... on Issue { number repository { nameWithOwner } } }
       title: fieldValueByName(name: "Title") { ... on ProjectV2ItemFieldTextValue { text } }
       status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
       area: fieldValueByName(name: "Area") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
@@ -47,10 +49,18 @@ class BoardError(Exception):
     pass
 
 
-def project_env() -> dict[str, str] | None:
+def project_env(board: str | None = None, credentials=None) -> dict[str, str] | None:
     """User-owned Projects v2 are invisible to fine-grained PATs, so board
     calls run with GH_TOKEN set to the classic project-scope token
-    (GH_PROJECT_TOKEN); every other gh call keeps the stored auth."""
+    (GH_PROJECT_TOKEN); every other gh call keeps the stored auth.
+
+    With a credential service the token is the trusted board credential for
+    `board` ("owner/number"); an unregistered board raises CredentialDenied
+    and never falls back to GH_PROJECT_TOKEN."""
+    if credentials is not None:
+        from dispatcher.execution_credentials import TRUSTED
+        token = credentials.acquire(TRUSTED, board, "board").token
+        return {**os.environ, "GH_TOKEN": token}
     token = os.environ.get("GH_PROJECT_TOKEN")
     return {**os.environ, "GH_TOKEN": token} if token else None
 
@@ -64,6 +74,7 @@ class Item:
     impact: float | None
     effort: float | None
     area: str | None
+    repo: str | None = None  # "owner/name"; None when GitHub doesn't expose it
 
 
 def _value(node: dict, alias: str):
@@ -82,38 +93,32 @@ def fetch_items(project_id: str, gh: Callable[[list[str]], str]) -> list[Item]:
             args += ["-f", f"cursor={cursor}"]
         page = json.loads(gh(args))["data"]["node"]["items"]
         for node in page["nodes"]:
+            content = node.get("content") or {}
             items.append(Item(
                 id=node["id"],
-                number=(node.get("content") or {}).get("number"),
+                number=content.get("number"),
                 title=_value(node, "title") or "",
                 status=_value(node, "status"),
                 impact=_value(node, "impact"),
                 effort=_value(node, "effort"),
-                area=_value(node, "area")))
+                area=_value(node, "area"),
+                repo=(content.get("repository") or {}).get("nameWithOwner")))
         if not page["pageInfo"]["hasNextPage"]:
             return items
         cursor = page["pageInfo"]["endCursor"]
 
 
-def _unique(pairs) -> dict:
-    """key -> value for the keys that occur exactly once."""
-    seen: dict = {}
-    for key, value in pairs:
-        seen.setdefault(key, []).append(value)
-    return {key: values[0] for key, values in seen.items() if len(values) == 1}
+def join(items: list[Item], issues: list[dict], repo: str) -> dict[int, Item]:
+    """Join only exposed repository-qualified issue identities.
 
-
-def join(items: list[Item], issues: list[dict]) -> dict[int, Item]:
-    """issue number -> its board item. `issues` rows carry number + title.
-    An item without a number joins by title; a title shared by two issues or
-    two items is ambiguous and joins nothing."""
-    joined = {item.number: item for item in items if item.number is not None}
-    numbers = _unique((row.get("title") or "", row["number"]) for row in issues)
-    untitled = _unique((i.title, i) for i in items if i.number is None)
-    for title, item in untitled.items():
-        if title in numbers:
-            joined.setdefault(numbers[title], item)
-    return joined
+    Titles cannot establish which repository owns a redacted card, even
+    when a title occurs only once in this repository's issue list.
+    """
+    numbers = {row["number"] for row in issues}
+    norm_repo = normalize_repo(repo)
+    return {item.number: item for item in items
+            if item.repo is not None and normalize_repo(item.repo) == norm_repo
+            and item.number in numbers}
 
 
 # -- the triage sweep's view --------------------------------------------------
@@ -121,8 +126,7 @@ def join(items: list[Item], issues: list[dict]) -> dict[int, Item]:
 
 @dataclass(frozen=True)
 class Schema:
-    """Field and option ids from the target clone's committed
-    `.backlog/project-meta.json` (written by the backlog skill's `setup`)."""
+    """Field and option ids from clone metadata or the registered board's API."""
     project_id: str
     status_field: str
     impact_field: str
@@ -172,6 +176,15 @@ class Board:
     items: dict[int, Item]   # issue number -> item
     issues: dict[int, dict]  # every issue: number, title, state, stateReason
     run: Callable = subprocess.run
+    # Trusted authorization of this board ("owner/number" from the dispatcher
+    # configuration, never from the clone): a mutation of any other board is
+    # refused before gh runs.
+    credentials: object = None
+    key: str | None = None
+    # Node id the registered board `key` resolves to, set by read(); a
+    # credentialed mutation of any other project is refused.
+    bound: str | None = None
+    repo: str | None = None
 
     def _open(self) -> list[int]:
         return sorted(n for n, row in self.issues.items()
@@ -194,12 +207,16 @@ class Board:
             "effort": item.effort, "area": item.area}
 
     def _mutate(self, item: Item, sets: dict[str, str]) -> None:
+        env = project_env(self.key, self.credentials)
+        if self.credentials is not None and self.bound != self.schema.project_id:
+            raise BoardError(f"project {self.schema.project_id!r} is not the "
+                             f"registered board {self.key!r}")
         body = " ".join(f"{alias}:{_set(field, value)}"
                         for alias, (field, value) in sets.items())
         _gh(self.run, ["api", "graphql", "-f", f"p={self.schema.project_id}",
                        "-f", f"i={item.id}", "-f",
                        f"query=mutation($p:ID!,$i:ID!){{{body}}}"],
-            env=project_env())
+            env=env)
 
     def score(self, number: int, impact: object, effort: object,
               area: object) -> None:
@@ -225,6 +242,30 @@ class Board:
             "status": (s.status_field,
                        f'singleSelectOptionId:"{s.statuses["Ready"]}"')})
 
+    def add_missing(self) -> list[str]:
+        """Add each open issue without a card, once; existing cards, statuses
+        and labels are never touched, and a new card has no status. Adding an
+        issue already on the board returns its card, so a repeat is harmless."""
+        if self.repo is None:
+            return []
+        lines = []
+        for number in self.off_board():
+            try:
+                env = project_env(self.key, self.credentials)
+                if self.credentials is not None and self.bound != self.schema.project_id:
+                    raise BoardError(f"project {self.schema.project_id!r} is not "
+                                     f"the registered board {self.key!r}")
+                node = json.loads(_gh(self.run, ["issue", "view", str(number), "--repo",
+                                                 self.repo, "--json", "id"]))["id"]
+                _gh(self.run, ["api", "graphql", "-f", f"p={self.schema.project_id}",
+                               "-f", f"c={node}", "-f",
+                               "query=mutation($p:ID!,$c:ID!){addProjectV2ItemById("
+                               "input:{projectId:$p,contentId:$c}){item{id}}}"], env=env)
+                lines.append(f"#{number} added to the board")
+            except (BoardError, subprocess.SubprocessError, ValueError, KeyError) as e:
+                lines.append(f"#{number} NOT added to the board ({e})")
+        return lines
+
     def repair(self) -> list[str]:
         """Closed issues whose card still shows an open status: the board's
         "Item closed" workflow does not always run. One report line each."""
@@ -249,14 +290,78 @@ class Board:
         return lines
 
 
-def read(repo: str, clone_path: str, run=subprocess.run) -> Board | None:
+_OWNER_PROJECT_QUERY = """
+query($login: String!, $number: Int!) {
+  repositoryOwner(login: $login) { ... on ProjectV2Owner {
+    projectV2(number: $number) { id } } }
+}
+"""
+
+
+def resolve_project_id(key: str, gh: Callable[[list[str]], str]) -> str:
+    """The node id of the registered board "owner/number", asked of GitHub
+    with the trusted credential, so clone metadata cannot redirect a board
+    call to another project."""
+    owner, _, number = key.rpartition("/")
+    try:
+        data = json.loads(gh(["api", "graphql", "-f", f"query={_OWNER_PROJECT_QUERY}",
+                              "-f", f"login={owner}", "-F", f"number={int(number)}"]))
+        return data["data"]["repositoryOwner"]["projectV2"]["id"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise BoardError(f"cannot resolve registered board {key!r}") from e
+
+
+def registered_schema(key: str, gh: Callable[[list[str]], str]) -> Schema:
+    """Discover mappings from the configured board when the clone has no metadata."""
+    project_id = resolve_project_id(key, gh)
+    owner, _, number = key.rpartition("/")
+    data = json.loads(gh(["project", "field-list", number, "--owner", owner,
+                          "--format", "json", "--limit", "1000"]))
+    rows = data["fields"]
+    if data.get("totalCount", len(rows)) != len(rows):
+        raise BoardError("board field listing is incomplete")
+    fields = {}
+    for name in ("Status", "Impact", "Effort", "Score", "Area"):
+        matches = [f for f in rows if f["name"] == name]
+        if len(matches) != 1:
+            raise BoardError(f"required board field {name!r} missing or ambiguous")
+        fields[name] = matches[0]
+    return Schema(project_id, fields["Status"]["id"], fields["Impact"]["id"],
+                  fields["Effort"]["id"], fields["Score"]["id"], fields["Area"]["id"],
+                  {o["name"]: o["id"] for o in fields["Status"]["options"]},
+                  {o["name"]: o["id"] for o in fields["Area"]["options"]})
+
+
+def open_issues(repo: str, run) -> list[dict]:
+    """Complete open inventory, independent of the bounded closed-card repair list.
+
+    REST issues includes pull requests; those are never imported as issues.
+    Repository reads use repository auth rather than the trusted board token.
+    """
+    pages = json.loads(_gh(run, ["api", f"repos/{normalize_repo(repo)}/issues?state=open&per_page=100",
+                                "--paginate", "--slurp"]))
+    return [{"number": row["number"], "title": row["title"], "state": "OPEN"}
+            for page in pages for row in page if "pull_request" not in row]
+
+
+def read(repo: str, clone_path: str, run=subprocess.run, credentials=None,
+         key: str | None = None) -> Board | None:
     schema = load_schema(clone_path)
-    if schema is None:
+    if schema is None and key is None:
         return None
-    env = project_env()
+    env = project_env(key, credentials)
+    bound = None
+    if key is not None:
+        bound = resolve_project_id(key, lambda args: _gh(run, args, env))
+        if schema is None or schema.project_id != bound:
+            schema = registered_schema(key, lambda args: _gh(run, args, env))
+            if schema.project_id != bound:
+                raise BoardError("registered board identity changed during discovery")
     items = fetch_items(schema.project_id, lambda args: _gh(run, args, env))
     rows = json.loads(_gh(run, [
         "issue", "list", "--repo", repo, "--state", "all", "--limit", "1000",
         "--json", "number,title,state,stateReason"]))
-    return Board(schema=schema, items=join(items, rows),
-                 issues={r["number"]: r for r in rows}, run=run)
+    rows.extend(open_issues(repo, run))
+    return Board(schema=schema, items=join(items, rows, repo),
+                 issues={r["number"]: r for r in rows}, run=run,
+                 credentials=credentials, key=key, bound=bound, repo=repo)
