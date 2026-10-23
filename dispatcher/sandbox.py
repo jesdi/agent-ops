@@ -19,6 +19,7 @@ import fcntl
 import hashlib
 import math
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from functools import wraps
@@ -335,6 +336,14 @@ def _digest(ref: str) -> str:
     return "t" + hashlib.sha256(ref.encode()).hexdigest()[:16]
 
 
+def _checkout_label(project: str, ref: str) -> str:
+    """`<project>-task-<issue>`, one path component, so an operator sees whose
+    checkout it is; the digest after it keeps the name unique."""
+    issue = ref.rpartition("#")[2]
+    name = re.sub(r"[^A-Za-z0-9_-]", "_", project)
+    return f"{name}-task-{issue}" if issue.isdigit() else name
+
+
 def _plan_from_json(data: dict) -> ServicePlan:
     containers = tuple(ContainerSpec(**{**c, "mounts": tuple(Mount(**m) for m in c["mounts"])})
                        for c in data["containers"])
@@ -492,7 +501,7 @@ class TaskSandbox:
 
     def _plan(self, ref, req, composes, allocation) -> ServicePlan:
         prefix = _digest(ref)
-        checkout = str(self.state_dir / "checkouts" / prefix)
+        checkout = str(self.state_dir / "checkouts" / f"{_checkout_label(req.project, ref)}-{prefix}")
         checkouts = {req.repo: checkout, **{
             m.repo: f"{checkout}-{i}" for i, m in enumerate(req.members, 1)}}
         group, network = f"{prefix}-group", f"{prefix}-net"

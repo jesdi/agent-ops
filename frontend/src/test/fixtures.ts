@@ -121,7 +121,7 @@ export const taskDetail: TaskDetail = {
   card: parkedCard,
   pane_tail: '? Should I use the staging redirect URL or prod?\n> ',
   session_alive: true,
-  worktree: '/home/agent/worktrees/task-42',
+  worktree: '/home/agent/repos/widget.sandboxes/checkouts/widget-task-42-t3f9a1c2d4e5b6a70',
   messages: [],
   delivery_contract: 'will deliver when the session resumes',
   track_when: 'Everything.',

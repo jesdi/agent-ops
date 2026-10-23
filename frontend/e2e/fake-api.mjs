@@ -158,7 +158,7 @@ function taskDetail(target, issue) {
     pane_tail: Array.from({ length: 80 }, (_, i) => `tool output line ${i + 1}`).join('\n')
       + '\n? Should I use the staging redirect URL or prod?\n> ',
     session_alive: true,
-    worktree: `/home/agent/worktrees/task-${issue}`,
+    worktree: `/home/agent/repos/widget.sandboxes/checkouts/widget-task-${issue}-t3f9a1c2d4e5b6a70`,
     ci_run_id: 0, effort: 3, labels: ['auto'],
     timeline: [],
     required_prs: [], dependency_errors: [],

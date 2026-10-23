@@ -412,3 +412,12 @@ def test_combined_demand_over_the_allowance_is_reported(world):
 
     assert {b.kind for b in blocked.value.blockers} == {"resource-allowance"}
     assert world.box.plans == {}
+
+
+def test_checkout_directory_names_the_project_and_the_task(world):
+    """Two projects' #42 get distinct checkouts that say whose task each is."""
+    plans = [world.sandbox.prepare(world.add(f"{p}#42", p)) for p in ("alpha", "beta")]
+
+    names = [Path(plan.checkout).name for plan in plans]
+    assert names[0].startswith("alpha-task-42-") and names[1].startswith("beta-task-42-")
+    assert names[0] != names[1]

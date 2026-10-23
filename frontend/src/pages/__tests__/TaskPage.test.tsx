@@ -33,7 +33,7 @@ it('renders card, pane tail, and worktree', async () => {
   expect(screen.getByTestId('pane-tail').textContent).toContain(
     'staging redirect URL',
   )
-  expect(screen.getByText('/home/agent/worktrees/task-42')).toBeInTheDocument()
+  expect(screen.getByText('/home/agent/repos/widget.sandboxes/checkouts/widget-task-42-t3f9a1c2d4e5b6a70')).toBeInTheDocument()
 })
 
 it('reply POSTs the text and refetches pending intents — no optimistic state flip', async () => {
