@@ -10,15 +10,32 @@ sessions to a finished PR.
 The dedicated VPS that runs the dispatcher and all sessions. There is exactly one.
 _Avoid_: server, host, VPS (in prose — "box" everywhere)
 
+**Project**:
+The operator-named unit of work on the box: one GitHub Projects board and
+one or more repositories. It is paused or enabled, has its own web tab, and
+may carry its own model policy and `max_active`. Its name is a short slug,
+unique on the box and never changed after registration.
+_Avoid_: target (retired), board (the board is one part of a project)
+
+**Repository**:
+A GitHub repository that belongs to exactly one project, with its own clone,
+worktrees and commands (setup, gate, verify). Known by a short name, unique on
+the box and never changed (existing target names carried over as is), and by
+its GitHub repository id, which decides uniqueness whatever URL spelling names
+it. A task belongs to a repository: its identity is (repository, issue).
+A change needed in another project's repository is an issue filed in that
+repository, never a task reaching across projects.
+_Avoid_: target (retired), repo (in prose)
+
 **Capacity**:
-How many sessions the box runs at once, shared by every target. Each pass
+How many sessions the box runs at once, shared by every project. Each pass
 spends it on work already in flight first, then claims new issues one unit at
-a time: each unit goes to the target with the fewest active tasks that still
+a time: each unit goes to the project with the fewest active tasks that still
 has a candidate and is under its `max_active`, ties to the one that claimed
 least recently. Claims also stop at `max_open`, the box-wide cap on
 unfinished tasks (parked and pr-open ones hold no capacity but still hold a
 worktree).
-_Avoid_: slots per target (there are none; `max_active` is only a cap)
+_Avoid_: slots per project (there are none; `max_active` is only a cap)
 
 **Session**:
 One `podman run … claude` invocation in a herdr tab, working a single stage of
@@ -38,7 +55,7 @@ _Avoid_: phase, step
 
 **Session record**:
 The task's recorded conversation ID and continued stage, stored in
-`<state_dir>/session-<target>-<issue>` and written only by waitd after a root
+`<state_dir>/session-<repository>-<issue>` and written only by waitd after a root
 turn ends. A resume names that ID when its stage matches (`plan` for
 `awaiting-plan-review`); otherwise the continued stage starts a new conversation.
 Every fresh stage launch and the task's flush remove the
@@ -150,8 +167,8 @@ is in implement.
 **Gate**:
 The target repository's own green check (`gate_cmd` in targets.yaml —
 tests, lint, CRAP), run by the implement session for every ticket and in review.
-End to end (`verify_cmd`) is separate and runs once, off-box. A target with
-no `verify_cmd` has no pre-PR e2e run; the PR's GitHub checks are the only
+End to end (`verify_cmd`) is separate and runs once, off-box. A repository
+with no `verify_cmd` has no pre-PR e2e run; the PR's GitHub checks are the only
 e2e signal.
 _Avoid_: verification ladder
 
@@ -249,7 +266,7 @@ weekly window or unavailable usage is never session-bound.
 
 **Priority mode**:
 The one box-wide choice of which provider's entries are tried first on every
-list the box routes (the stage lists of every track, of every target's own
+list the box routes (the stage lists of every track, of every project's own
 policy, and the triage list): `auto`, or the name of a provider. A provider's
 name puts its entries first and the rest after, each group in written order,
 and the session-bound rule is not applied; `auto` orders by session-bound,
@@ -267,7 +284,7 @@ The `models:` block (triage list, tracks, untracked, pinned, review_second)
 as stored from the console's Settings page in
 `<state_dir>/model-settings.json` (`dispatcher/model_settings.py`). When
 present it replaces the targets.yaml block for the dispatcher, triage and the
-console; a target's own `models:` block still wins. Read at every config load,
+console; a project's own `models:` block still wins. Read at every config load,
 again by the pass inside the pass lock, and by the console on every read, so
 a save applies from the next pass. The console stores it under that lock
 (409 when a pass holds it for more than 30 s), and refuses a block that fails
@@ -338,7 +355,7 @@ the code disagree, the code wins. Every stage prompt says so.
 _Avoid_: living spec, source of truth (for `specs/`)
 
 **Repo skills**:
-Skills scoped to a target repo, declared in that repo's `.my-skills.json` and
+Skills scoped to a repository, declared in that repo's `.my-skills.json` and
 synced by `@jesdi/skills-cli`. Distinct from process skills.
 
 **Process skills**:
@@ -354,7 +371,7 @@ Mac tool that writes the design into a `spec-ready` issue body. They live in
 the claude-home seed (agent-ops-infra, ADR 0003): the jesdi ones pinned in
 its `.my-skills.json` and installed with `@jesdi/skills-cli`, the mattpocock
 ones vendored as files (`make vendor-skills`); never a plugin, never carried
-by target repos.
+by project repositories.
 
 ## Loop-policy ownership
 
@@ -394,7 +411,7 @@ A model-limited queue candidate or claimed task may carry a durable, one-shot
 execution override. Queue claims and active stage transitions store it under
 `execution-overrides/`; a parked task carries it through the existing resume
 intent and `TaskState.resume_model_override` / `resume_bypass_usage`. The
-requested model must belong to the target's configured policy. A wake that
+requested model must belong to the project's configured policy. A wake that
 names no model launches on a stored execution override; a wake that names
 one wins, and the stored override is used up with that launch. The choice
 survives ordinary capacity, slot, or provisioning denial and is consumed only
@@ -450,7 +467,7 @@ puts it back in the plan stage.
 
 The web layer READS `operator_request`; it never infers a request from park state.
 
-**Endpoint and UI**: one `/api/task/{target}/{issue}/request` → `OperatorRequest | null` with a
+**Endpoint and UI**: one `/api/task/{repository}/{issue}/request` → `OperatorRequest | null` with a
 discriminated `readable | unavailable` content union. One `RequestPanel` + media renderer in the
 frontend. Approval is only possible on a `readable` plan-approval request.
 
@@ -481,7 +498,7 @@ Request handling must remain independent of loop comparisons, reset logic, model
   `provision/skills-pins.json` in agent-ops-infra, run `make vendor-skills`, merge, and the updater converges the box; don't
   install anything on the box by hand."
 — "Should I also add it to portfolio_eval's `.my-skills.json`?"
-— "No — that's for repo skills. Process skills never ride target repos."
+— "No — that's for repo skills. Process skills never ride project repositories."
 
 ## Task review artifacts
 
@@ -498,7 +515,7 @@ a GitHub link. Spec publication retains its existing gate backstop.
 
 `dispatcher/task_artifacts.py` owns collection, stored content, publication
 references and cleanup. The store lives in `state_dir/artifacts/`, keyed by
-both target and issue. The web reads it through authenticated artifact routes.
+both repository and issue. The web reads it through authenticated artifact routes.
 Each artifact has a stable route which redirects to GitHub or serves isolated
 content. Generated HTML/SVG has an opaque sandbox origin and no API access.
 After merge, GitHub destinations use the last verified published commit,
