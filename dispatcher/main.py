@@ -1073,7 +1073,8 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
         if res.kind == "merged":
             try:
                 _finish_merged(cfg, deps, target, task, dry_run)
-            except (subprocess.CalledProcessError, OSError) as exc:
+            except (subprocess.CalledProcessError,
+                    subprocess.TimeoutExpired, OSError) as exc:
                 print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
                       file=sys.stderr)
                 continue
@@ -1138,7 +1139,13 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
                    task: TaskState, dry_run: bool = False) -> None:
     """Ordered so a mid-sequence gh failure retries next pass (a merged PR
     still reads merged): board first (the raising step), then teardown
-    (best-effort by construction), then the state flip that stops polling."""
+    (best-effort by construction), then the state flip that stops polling.
+    The issue close comes first of all: an issue the operator closed (even as
+    not planned) is left as it is, and a failed close retries before any
+    teardown."""
+    if (not dry_run and deps.github.issue_state(target.repo, task.issue)
+            == "OPEN"):
+        deps.github.close_issue(target.repo, task.issue)
     if target.status_done_option_id:
         deps.github.set_status(target, task.issue, target.status_done_option_id)
     else:

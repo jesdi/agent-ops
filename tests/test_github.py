@@ -687,3 +687,17 @@ def test_item_lookup_never_lists_the_whole_board_with_item_list(monkeypatch):
     assert not any("item-list" in a for a in calls)
     query = next(a for a in calls if a[:3] == ["gh", "api", "graphql"])
     assert "project=PROJ_NODE" in query
+
+
+def test_close_issue_closes_as_completed_and_dry_run_is_a_noop(monkeypatch):
+    calls = []
+    monkeypatch.setattr(github, "_run",
+                        lambda args, cwd=None, env=None: calls.append(args) or "")
+    github.GitHubClient().close_issue("o/r", 42)
+    close = calls[0]
+    assert "close" in close and "42" in close and "o/r" in close
+    assert "--reason" in close and "completed" in close
+    assert "not planned" not in close
+    calls.clear()
+    github.GitHubClient(dry_run=True).close_issue("o/r", 42)
+    assert calls == []

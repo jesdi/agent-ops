@@ -125,6 +125,9 @@ class FakeGitHub:
             raise subprocess.CalledProcessError(1, ["gh"])
         return self.issue_states.get((repo, number), "OPEN")
 
+    def close_issue(self, repo, number):
+        self.issue_states[(repo, number)] = "CLOSED"
+
     def append_blocked_by(self, target, issue, blocker):
         self.blocked_by.append((issue, blocker))
 

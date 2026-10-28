@@ -249,6 +249,13 @@ class GitHubClient:
         _run(["gh", "issue", "comment", str(issue),
               "--repo", target.repo, "--body", body])
 
+    def close_issue(self, repo: str, number: int) -> None:
+        if self.dry_run:
+            print(f"[dry-run] close_issue {repo}#{number}")
+            return
+        _run(["gh", "issue", "close", str(number), "--repo", repo,
+              "--reason", "completed"])
+
     def claim(self, target: Target, cand: Candidate) -> None:
         if self.dry_run:
             print(f"[dry-run] claim #{cand.number} ({cand.title})")
