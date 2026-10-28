@@ -194,6 +194,9 @@ class GitHubClient:
                     "--json", "title,body,url"])
         return json.loads(out)
 
+    def issue_body(self, target: Target, issue: int) -> str:
+        return self.issue_view(target.repo, issue).get("body") or ""
+
     def issue_state(self, repo: str, number: int) -> str:
         if self.dry_run:
             print(f"[dry-run] issue_state {repo}#{number} -> OPEN")

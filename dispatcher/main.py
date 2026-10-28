@@ -37,6 +37,7 @@ from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
 from dispatcher import spec_publish, task_artifacts
+from dispatcher import base_line
 from dispatcher.artifacts import TICKETS_DIR, page_revision, plan_revision
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
@@ -65,7 +66,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               read_stage_signal,
                               implement_done, resumable_crash, shown_stage,
                               save, task_key)
-from dispatcher.workspace import (append_worktree_file, create_workspace,
+from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
 import telegram.inbound as inbound
@@ -2019,7 +2020,7 @@ def _round_counts(targets: list[Target],
 
 
 def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
-                  slot: int, wt: str, launch: Launch) -> TaskState:
+                  slot: int, wt: str, launch: Launch, base: str = "main") -> TaskState:
     """Board mutation is last and irreversible: state is saved and the
     `claimed` event appended first, so a crash before the claim leaves a
     recoverable partial claim rather than a silently lost slot. A failure
@@ -2028,7 +2029,7 @@ def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
                      stage=Stage.QUEUED, slot=slot, worktree=wt,
                      branch=f"agent/task-{cand.number}",
                      title=cand.title, updated_at=_now(),
-                     effort=cand.effort, labels=cand.labels,
+                     effort=cand.effort, labels=cand.labels, base=base,
                      track=track_from_labels(cand.labels, policy_for(cfg, target)))
     save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
     eventlog.append_event(cfg.state_dir, "claimed", target=target.name,
@@ -2041,6 +2042,17 @@ def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
         deps.github.release(target, cand.number, "claim/spawn failed after provisioning")
         raise
     return task
+
+
+def _wait_in_ready(cfg: Config, deps: Deps, target: Target, number: int,
+                   key: str, why: str) -> None:
+    """Leave the issue in Ready; ping the operator only the first time for this key."""
+    if base_line.is_recorded(cfg.state_dir, target.name, number, key):
+        return
+    # The notifier returns 0 on a failed send: record only a delivered ping, so a
+    # failed one is retried on the next pass.
+    if deps.notifier.send("status", lines=[f"#{number} waits in Ready: {why}"]):
+        base_line.record_wait(cfg.state_dir, target.name, number, key)
 
 
 def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
@@ -2073,11 +2085,28 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
             del in_round[name]
             continue
         cand, launch = picked
+        try:
+            body = deps.github.issue_body(target, cand.number)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                OSError, ValueError) as exc:  # ValueError: gh printed JSON that does not parse
+            # Unclaimed and still Ready: the next pass reads it again, and
+            # the round goes on to the other candidates.
+            print(f"[warn] body of #{cand.number} not read: {exc}", file=sys.stderr)
+            continue
+        base = base_line.parse_base(body)
+        if base is None:
+            _wait_in_ready(cfg, deps, target, cand.number, "invalid", "its base line names no valid branch")
+            continue
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
             return
         try:
-            wt = create_workspace(target, cand.number, "main", dry_run=dry_run)
+            wt = create_workspace(target, cand.number, base, dry_run=dry_run)
+        except MissingBaseError:
+            # Not claimed, not a failure: the issue stays Ready and every pass
+            # asks again; the operator hears once per issue and base.
+            _wait_in_ready(cfg, deps, target, cand.number, f"base:{base}", f"base branch {base} is not on origin")
+            continue
         except Exception:
             # Board never claimed (claim is last, still Ready) → no release
             # needed; report + quarantine, and the pass survives.
@@ -2090,7 +2119,8 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
             # retries its remaining candidates, and other targets keep claiming.
             del in_round[name]
             continue
-        _commit_claim(cfg, deps, target, cand, slot, wt, launch)
+        base_line.clear_wait(cfg.state_dir, target.name, cand.number)
+        _commit_claim(cfg, deps, target, cand, slot, wt, launch, base)
         counts[target.name] += 1
         last[target.name] = _now()
         free -= 1  # checked before the next pull, so no candidate is vetted (or swept) that cannot be claimed

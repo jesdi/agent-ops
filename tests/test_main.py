@@ -74,6 +74,9 @@ class FakeGitHub:
         self.comments = []           # (issue, body)
         self.comment_raises = False
 
+    def issue_body(self, target, issue):
+        return ""
+
     def rank_rows(self, target):
         if self.boost_raises:
             raise subprocess.CalledProcessError(1, ["rank"])

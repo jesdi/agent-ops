@@ -187,6 +187,7 @@ class TaskState:
     effort: int | None = None            # board Effort at claim time
     labels: tuple[str, ...] = ()         # board labels at claim time
     track: str = ""                      # configured track name (spec/2026-09-14-model-tracks)
+    base: str = "main"                   # branch the task was made from; fixed at claim, older files load as main
     # providers that ran implement: first use first, no repeats
     implement_providers: list[str] = field(default_factory=list)
     # models.pick_key(stage) -> "provider/model[@effort]", sticky per key;
