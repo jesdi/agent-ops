@@ -612,7 +612,7 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     ctx = dict(
         issue_number=task.issue, issue_title=task.title,
         issue_url=_url(target, task.issue), repo=target.repo,
-        branch=task.branch, slot=task.slot,
+        branch=task.branch, base=task.base, slot=task.slot,
         backend_port=8100 + task.slot, frontend_port=5200 + task.slot,
         verify_cmd=target.verify_cmd.format(slot=task.slot),
         gate_cmd=target.gate_cmd.format(slot=task.slot),

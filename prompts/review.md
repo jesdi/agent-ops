@@ -5,7 +5,7 @@ issue #$issue_number ("$issue_title", $issue_url) in $repo. Branch $branch
 carries the implementation of every ticket. You did not write it and you
 inherit nothing from the sessions that did: read only primary sources — the
 issue thread, the spec at `$spec_path`, the tickets under `$tickets_dir`,
-and the diff itself (`git diff origin/main...HEAD`) — never a summary of
+and the diff itself (`git diff origin/$base...HEAD`) — never a summary of
 them. Nobody is watching this chat.
 
 ## Signals (write `.agent/stage.json`, then do what the line says)
@@ -26,7 +26,7 @@ implement session ruled. You still do your own review (step 2) in full;
 steps 4, 5, 6 and 9 each say what to do when their result is already there.
 
 ## 2. Review and fix, bounded
-Run the `review-diff` skill on `origin/main...HEAD` with the spec at
+Run the `review-diff` skill on `origin/$base...HEAD` with the spec at
 `$spec_path`; its gate is `$gate_cmd`. It reports spec, correctness and
 structure findings separately; act on all three. Check every acceptance
 criterion in every ticket against the diff too. Fix what you
@@ -80,7 +80,7 @@ from the branch, an earlier session did this step: go on.
 Only when `.agent/pr-body.md` exists: `git rm` `proposal.md` and `design.md`
 from the folder of `$spec_path`, and every file under `docs/review/` that
 this task added
-(`git diff --name-only --diff-filter=A origin/main...HEAD -- docs/review/`).
+(`git diff --name-only --diff-filter=A origin/$base...HEAD -- docs/review/`).
 `spec.md` stays, and so does every file another change put on main. Check
 with `git ls-files`, not by eye: a file deleted on disk and still tracked is
 not removed yet.
@@ -94,7 +94,7 @@ not, push `$branch` with a plain push.
 
 ## 7. Gate and rebase
 Run `$gate_cmd`; it must pass. Then:
-    git fetch origin && git rebase origin/main
+    git fetch origin && git rebase origin/$base
 On conflicts use the `resolving-merge-conflicts` skill: trace what each side
 intended before choosing, never pick a side mechanically. After any
 conflict rerun `$gate_cmd` — a resolution ships only on green gates. Push
@@ -115,7 +115,7 @@ and put them right after the first line, replacing them if an earlier
 session left them there. Evidence holds the gate and e2e results; when the
 diff touches UI, add the before/after screenshots of the `pr-visual-diff`
 skill.
-Then `gh pr create --repo $repo --head $branch --body-file .agent/pr-body.md`;
+Then `gh pr create --repo $repo --head $branch --base $base --body-file .agent/pr-body.md`;
 the first line of that body is `Closes #$issue_number`. One issue is one
 branch is one PR: if step 1 found an open pull request for `$branch`, do not
 open a second one; give it the body with
