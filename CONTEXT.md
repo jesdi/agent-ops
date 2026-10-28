@@ -27,6 +27,27 @@ A change needed in another project's repository is an issue filed in that
 repository, never a task reaching across projects.
 _Avoid_: target (retired), repo (in prose)
 
+**Onboarding**:
+Adding one project to the box, started from the terminal or the console and
+driven by the box alone. Its record holds an ordered list of steps, each
+pending, waiting (on something outside, nothing for the operator to do),
+blocked (the operator must act, named with a link), failed (retried on
+resume) or verified, plus every resource it created. One record per project:
+repeating the onboarding resumes it, and an open onboarding already holds its
+repositories. Complete when every step is verified; the project ends paused.
+_Avoid_: setup, registration (registration is one part of it)
+
+**Proposal**:
+What an onboarding detected and will apply, shown for confirmation:
+repositories, commands, services, secret references, board, temporary writes.
+Every edit makes a new revision; a confirmation names the revision it
+confirms. An edit after confirmation sends the onboarding back to confirm.
+
+**Abandon**:
+Stopping an onboarding before its config merges: its repositories are freed
+and its open infra PR is closed; nothing else is deleted.
+_Avoid_: cancel (a task is canceled), delete
+
 **Capacity**:
 How many sessions the box runs at once, shared by every project. Each pass
 spends it on work already in flight first, then claims new issues one unit at
