@@ -2077,7 +2077,7 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
         if slot is None:
             return
         try:
-            wt = create_workspace(target, cand.number, dry_run=dry_run)
+            wt = create_workspace(target, cand.number, "main", dry_run=dry_run)
         except Exception:
             # Board never claimed (claim is last, still Ready) → no release
             # needed; report + quarantine, and the pass survives.

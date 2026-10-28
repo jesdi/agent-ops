@@ -353,7 +353,58 @@ def exclude_local_state(clone_path: str) -> None:
                             text + "\n".join(missing) + "\n")
 
 
-def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
+class MissingBaseError(RuntimeError):
+    """The task's base is not a branch on origin."""
+
+
+def _git_ok(args: list[str], cwd: str) -> bool:
+    try:
+        _sh(args, cwd=cwd)
+    except subprocess.CalledProcessError:
+        return False
+    return True
+
+
+def _fetch_base(target: Target, base: str) -> str:
+    """Fetch origin and return the tracking ref of `base`, fetched by its exact
+    name. origin itself is asked whether the branch exists (ls-remote exits 2
+    when it does not), and the explicit refspec updates the tracking ref
+    whatever remote.origin.fetch maps, so a stale ref of a deleted base, or one
+    a narrow refspec never prunes, never passes for the base."""
+    _sh(["git", "fetch", "--prune", "origin"], cwd=target.clone_path)
+    head = f"refs/heads/{base}"
+    try:
+        _sh(["git", "ls-remote", "--exit-code", "origin", head], cwd=target.clone_path)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 2:
+            raise MissingBaseError(f"base branch {base!r} is not on origin") from exc
+        raise
+    ref = f"refs/remotes/origin/{base}"
+    _sh(["git", "fetch", "origin", f"+{head}:{ref}"], cwd=target.clone_path)
+    return ref
+
+
+def _check_reused_base(target: Target, branch: str, base_ref: str) -> None:
+    """A reused task branch must hold no commit outside the base: one made
+    from another base (the issue's base line edited between a failed
+    provisioning and its retry) would carry that base's commits into the PR."""
+    if not _git_ok(["git", "merge-base", "--is-ancestor", branch, base_ref],
+                   target.clone_path):
+        raise RuntimeError(
+            f"branch {branch!r} has commits outside {base_ref!r}; refusing "
+            f"to reuse it for that base — this needs manual inspection")
+
+
+def _advance_to_base(wt: str, base_ref: str) -> None:
+    """Move a reused checkout to the tip of its base. _check_reused_base has
+    shown the branch holds no commit of its own, so this is a fast-forward; it
+    keeps a checkout made from an older base (main, before the issue named
+    feat/new-cart) or an older tip of the same base from starting behind."""
+    _sh(["git", "merge", "--ff-only", "--quiet", base_ref], cwd=wt)
+
+
+def create_workspace(target: Target, issue: int, base: str = "main",
+                     dry_run: bool = False) -> str:
     wt = str(Path(target.worktrees_path) / f"task-{issue}")
     branch = f"agent/task-{issue}"
     if dry_run:
@@ -375,6 +426,9 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
                 f"worktree {wt} exists but failed its health check "
                 f"({problem}); refusing to reuse it — this needs manual "
                 f"inspection, not a silent retry")
+        base_ref = _fetch_base(target, base)
+        _check_reused_base(target, branch, base_ref)
+        _advance_to_base(wt, base_ref)
         _mark_provisioned(wt)
     elif _branch_exists(target.clone_path, branch):
         # Worktree was removed (e.g. manual cleanup) but the branch
@@ -394,12 +448,14 @@ def create_workspace(target: Target, issue: int, dry_run: bool = False) -> str:
                 f"branch {branch!r} is already checked out at {other!r}; "
                 f"refusing to `git worktree add -f` a second checkout at "
                 f"{wt!r} — this needs manual inspection, not a silent -f")
-        _sh(["git", "fetch", "origin"], cwd=target.clone_path)
+        base_ref = _fetch_base(target, base)
+        _check_reused_base(target, branch, base_ref)
         _sh(["git", "worktree", "add", "-f", wt, branch], cwd=target.clone_path)
+        _advance_to_base(wt, base_ref)
         _mark_provisioned(wt)
     else:
-        _sh(["git", "fetch", "origin"], cwd=target.clone_path)
-        _sh(["git", "worktree", "add", "-b", branch, wt, "origin/main"],
+        base_ref = _fetch_base(target, base)
+        _sh(["git", "worktree", "add", "-b", branch, wt, base_ref],
             cwd=target.clone_path)
         _mark_provisioned(wt)
     if target.setup_cmd:
