@@ -18,7 +18,7 @@ function seed(items = [spec], expired = false) {
 
 test('persistent artifacts open stable URLs in new tabs without an approval request', async () => {
   seed()
-  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  renderWithProviders(<ArtifactsPanel repository="widget" issue={42} />)
   const link = await screen.findByRole('link', { name: 'Open Specification' })
   expect(link).toHaveAttribute('href', spec.url)
   expect(link).toHaveAttribute('target', '_blank')
@@ -27,7 +27,7 @@ test('persistent artifacts open stable URLs in new tabs without an approval requ
 
 test('expired copies have no open link while GitHub artifacts remain', async () => {
   seed([spec, { ...spec, id: 'prototype', name: 'Prototype', status: 'expired', url: '', github_url: '' }], true)
-  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  renderWithProviders(<ArtifactsPanel repository="widget" issue={42} />)
   expect(await screen.findByRole('link', { name: 'Open Specification' })).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: 'Open Prototype' })).not.toBeInTheDocument()
   expect(screen.getByText('Expired')).toBeInTheDocument()
@@ -38,7 +38,7 @@ test('approval panel links to published spec beside the review link', async () =
   server.use(http.get('/api/task/widget/42/request', () => HttpResponse.json({
     kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Design' },
   })))
-  renderWithProviders(<RequestPanel target="widget" issue={42} />)
+  renderWithProviders(<RequestPanel repository="widget" issue={42} />)
   expect(await screen.findByRole('link', { name: 'View spec on GitHub ↗' })).toHaveAttribute('href', spec.url)
   expect(screen.getByRole('link', { name: 'open review' })).toBeInTheDocument()
 })
@@ -48,7 +48,7 @@ test('publication failure preserves local review', async () => {
   server.use(http.get('/api/task/widget/42/request', () => HttpResponse.json({
     kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Design' },
   })))
-  renderWithProviders(<RequestPanel target="widget" issue={42} />)
+  renderWithProviders(<RequestPanel repository="widget" issue={42} />)
   expect(await screen.findByText(/hasn’t been published/)).toBeInTheDocument()
   expect(screen.getByRole('link', { name: 'open review' })).toBeInTheDocument()
   expect(screen.queryByRole('link', { name: 'View spec on GitHub ↗' })).not.toBeInTheDocument()
@@ -60,26 +60,26 @@ test.each([
   ['unavailable', '', 'text/plain', 'Content unavailable'],
 ])('describes %s %s %s artifact availability', async (status, github_url, media_type, label) => {
   seed([{ ...spec, status, github_url, media_type, url: status === 'unavailable' ? '' : spec.url }])
-  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  renderWithProviders(<ArtifactsPanel repository="widget" issue={42} />)
   expect(await screen.findByText(`${label} · spec`)).toBeInTheDocument()
   if (status === 'unavailable') expect(screen.getByText('Unavailable')).toBeInTheDocument()
 })
 
 test('empty registry explains where review material will appear', async () => {
   seed([])
-  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  renderWithProviders(<ArtifactsPanel repository="widget" issue={42} />)
   expect(await screen.findByText(/No artifacts yet/)).toBeInTheDocument()
 })
 
 test('failed artifact query shows an error', async () => {
   server.use(http.get('/api/task/widget/42/artifacts', () => HttpResponse.json({ detail: 'registry offline' }, { status: 500 })))
-  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  renderWithProviders(<ArtifactsPanel repository="widget" issue={42} />)
   expect(await screen.findByRole('alert')).toHaveTextContent('registry offline')
 })
 
 test('active task has latest-version guidance without cleanup date', async () => {
   server.use(http.get('/api/task/widget/42/artifacts', () => HttpResponse.json({ items: [spec], expired: false, expires_at: '' })))
-  renderWithProviders(<ArtifactsPanel target="widget" issue={42} />)
+  renderWithProviders(<ArtifactsPanel repository="widget" issue={42} />)
   expect(await screen.findByText('Links open the latest version in a new tab.')).toBeInTheDocument()
 })
 
@@ -90,7 +90,7 @@ test('failed artifact query preserves the review link and local request content'
       kind: 'plan-approval', content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/markdown', text: '# Local design' },
     })),
   )
-  renderWithProviders(<RequestPanel target="widget" issue={42} />)
+  renderWithProviders(<RequestPanel repository="widget" issue={42} />)
   expect(await screen.findByText(/Could not load the GitHub spec link/)).toBeInTheDocument()
   expect(screen.getByRole('heading', { name: 'Local design' })).toBeInTheDocument()
   expect(screen.getByRole('link', { name: 'open review' })).toBeInTheDocument()

@@ -28,22 +28,22 @@ def pending(stored: ExecutionOverride | None, resume_model: str,
     return ExecutionOverride(stored.model, stored.bypass_usage or resume_bypass)
 
 
-def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / DIR / f"{target}-{issue}.json"
+def _path(state_dir: str | Path, repository: str, issue: int) -> Path:
+    return Path(state_dir) / DIR / f"{repository}-{issue}.json"
 
 
-def save(state_dir: str | Path, target: str, issue: int,
+def save(state_dir: str | Path, repository: str, issue: int,
          override: ExecutionOverride) -> None:
-    path = _path(state_dir, target, issue)
+    path = _path(state_dir, repository, issue)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(asdict(override), indent=2))
     tmp.replace(path)
 
 
-def load(state_dir: str | Path, target: str,
+def load(state_dir: str | Path, repository: str,
          issue: int) -> ExecutionOverride | None:
-    path = _path(state_dir, target, issue)
+    path = _path(state_dir, repository, issue)
     if not path.exists():
         return None
     try:
@@ -56,5 +56,5 @@ def load(state_dir: str | Path, target: str,
         return None
 
 
-def delete(state_dir: str | Path, target: str, issue: int) -> None:
-    _path(state_dir, target, issue).unlink(missing_ok=True)
+def delete(state_dir: str | Path, repository: str, issue: int) -> None:
+    _path(state_dir, repository, issue).unlink(missing_ok=True)

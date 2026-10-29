@@ -3,11 +3,11 @@ from dataclasses import replace
 from pathlib import Path
 
 import dispatcher.workspace as workspace
-from dispatcher.config import Target
+from dispatcher.config import Repository
 
 
-def target(tmp_path: Path) -> Target:
-    return Target(
+def repository(tmp_path: Path) -> Repository:
+    return Repository(
         name="portfolio_eval", repo="jesdi/portfolio_eval",
         clone_path=str(tmp_path / "repo"),
         worktrees_path=str(tmp_path / "repo.worktrees"),
@@ -20,7 +20,7 @@ def target(tmp_path: Path) -> Target:
 
 
 def test_create_workspace(tmp_path: Path, monkeypatch):
-    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -33,7 +33,7 @@ def test_create_workspace(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    t = target(tmp_path)
+    t = repository(tmp_path)
     wt = workspace.create_workspace(t, 42)
 
     assert wt == str(tmp_path / "repo.worktrees" / "task-42")
@@ -56,7 +56,7 @@ def test_create_workspace(tmp_path: Path, monkeypatch):
     assert setup_cwd == wt
     assert setup_timeout == 1800
 
-    assert json.loads((Path(wt) / ".agent" / "task.json").read_text()) == {"issue": 42, "target": "portfolio_eval", "branch": "agent/task-42"}
+    assert json.loads((Path(wt) / ".agent" / "task.json").read_text()) == {"issue": 42, "repository": "portfolio_eval", "branch": "agent/task-42"}
     hook = Path(wt) / ".agent" / "stop-hook.sh"
     assert hook.exists() and hook.stat().st_mode & 0o111
     settings = json.loads((Path(wt) / ".claude" / "settings.local.json").read_text())
@@ -75,7 +75,7 @@ def test_create_workspace_skips_setup_when_no_setup_cmd(tmp_path: Path, monkeypa
     container runs at all — not a podman invocation with an empty command
     tail. create_workspace must still create the worktree and return its
     path."""
-    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -88,7 +88,7 @@ def test_create_workspace_skips_setup_when_no_setup_cmd(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    t = replace(target(tmp_path), setup_cmd="")
+    t = replace(repository(tmp_path), setup_cmd="")
 
     wt = workspace.create_workspace(t, 42)
 
@@ -125,7 +125,7 @@ def test_create_workspace_reuses_existing_worktree_dir(tmp_path: Path, monkeypat
     skip straight to the setup step. The reused directory is a real,
     healthy checkout here (see the unhealthy-reuse test below for the
     Finding-1 rejection path)."""
-    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -133,7 +133,7 @@ def test_create_workspace_reuses_existing_worktree_dir(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    t = target(tmp_path)
+    t = repository(tmp_path)
     wt_path = Path(t.worktrees_path) / "task-42"
     _make_healthy_worktree(wt_path, "agent/task-42")
 
@@ -143,7 +143,7 @@ def test_create_workspace_reuses_existing_worktree_dir(tmp_path: Path, monkeypat
     assert not any(a[:3] == ["git", "worktree", "add"] for a in calls), \
         "worktree already exists; git worktree add must be skipped entirely"
     assert any(a[0] == "podman" for a in calls), "setup step must still run"
-    assert json.loads((wt_path / ".agent" / "task.json").read_text()) == {"issue": 42, "target": "portfolio_eval", "branch": "agent/task-42"}
+    assert json.loads((wt_path / ".agent" / "task.json").read_text()) == {"issue": 42, "repository": "portfolio_eval", "branch": "agent/task-42"}
 
 
 def test_create_workspace_raises_on_unhealthy_reused_worktree(tmp_path: Path, monkeypatch):
@@ -160,7 +160,7 @@ def test_create_workspace_raises_on_unhealthy_reused_worktree(tmp_path: Path, mo
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    t = target(tmp_path)
+    t = repository(tmp_path)
     wt_path = Path(t.worktrees_path) / "task-42"
     wt_path.mkdir(parents=True)
     (wt_path / ".git").write_text(
@@ -178,7 +178,7 @@ def test_create_workspace_reuses_existing_branch(tmp_path: Path, monkeypatch):
     """Worktree removed but the branch left behind (e.g. manual cleanup):
     add the worktree onto the existing branch instead of trying to create
     it again with -b, which would die on "branch already exists"."""
-    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -192,7 +192,7 @@ def test_create_workspace_reuses_existing_branch(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setattr(workspace, "_branch_exists", lambda clone_path, branch: True)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    t = target(tmp_path)
+    t = repository(tmp_path)
 
     wt = workspace.create_workspace(t, 42)
 
@@ -207,7 +207,7 @@ def test_create_workspace_raises_when_branch_checked_out_elsewhere(tmp_path: Pat
     """Finding 2: a single -f is enough for git to add a worktree on a
     branch that's already checked out somewhere else. Scenario: an
     operator preserves a crashed tree by relocating it (`git worktree move
-    task-42 task-42.crashed`) — the target worktree path is now free but
+    task-42 task-42.crashed`) — the repository worktree path is now free but
     the branch is still live at the relocated path. `-f` must not be
     allowed to spin up a second checkout of that branch; the new session
     and the preserved autopsy tree would then fight over one branch ref."""
@@ -220,7 +220,7 @@ def test_create_workspace_raises_when_branch_checked_out_elsewhere(tmp_path: Pat
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    t = target(tmp_path)
+    t = repository(tmp_path)
     clone = Path(t.clone_path)
     clone.mkdir(parents=True)
     sp.run(["git", "init", "-q", str(clone)], check=True)
@@ -234,7 +234,7 @@ def test_create_workspace_raises_when_branch_checked_out_elsewhere(tmp_path: Pat
     crashed = clone.parent / "task-42.crashed"
     sp.run(["git", "-C", str(clone), "worktree", "add", "-q", "-b",
             "agent/task-42", str(crashed)], check=True)
-    # target worktree path (task-42) is never created — this is the
+    # repository worktree path (task-42) is never created — this is the
     # "worktree removed, branch survived" case that normally takes -f.
 
     with pytest.raises(Exception, match="is already checked out at"):
@@ -247,13 +247,13 @@ def test_create_workspace_raises_when_branch_checked_out_elsewhere(tmp_path: Pat
 def test_create_workspace_reuses_worktree_marked_provisioned_despite_deleted_file(
         tmp_path: Path, monkeypatch):
     """Finding 4: the reuse path exists for the "worktree add succeeded,
-    setup failed" retry, and setup runs arbitrary target-repo code inside
+    setup failed" retry, and setup runs arbitrary repository-repo code inside
     the worktree. If that code deletes a tracked file (e.g. regenerating a
     lockfile) and then fails partway, every later retry would otherwise
     see a `D` line in `git status --porcelain` and raise forever. The
     `provisioned` marker — written right after `git worktree add` succeeds
     — lets a retry skip that heuristic entirely."""
-    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
     def fake_sh(args, cwd, timeout=300, log=None):
@@ -261,7 +261,7 @@ def test_create_workspace_reuses_worktree_marked_provisioned_despite_deleted_fil
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    t = target(tmp_path)
+    t = repository(tmp_path)
     wt_path = Path(t.worktrees_path) / "task-42"
     _make_healthy_worktree(wt_path, "agent/task-42")
     (wt_path / "README.md").unlink()  # setup-step deleted a tracked file
@@ -275,7 +275,7 @@ def test_create_workspace_reuses_worktree_marked_provisioned_despite_deleted_fil
     assert not any(a[:3] == ["git", "worktree", "add"] for a in calls), \
         "worktree is marked provisioned; git worktree add must be skipped"
     assert any(a[0] == "podman" for a in calls), "setup step must still run"
-    assert json.loads((wt_path / ".agent" / "task.json").read_text()) == {"issue": 42, "target": "portfolio_eval", "branch": "agent/task-42"}
+    assert json.loads((wt_path / ".agent" / "task.json").read_text()) == {"issue": 42, "repository": "portfolio_eval", "branch": "agent/task-42"}
 
 
 def test_create_workspace_raises_on_deleted_file_without_marker(
@@ -292,7 +292,7 @@ def test_create_workspace_raises_on_deleted_file_without_marker(
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
-    t = target(tmp_path)
+    t = repository(tmp_path)
     wt_path = Path(t.worktrees_path) / "task-42"
     _make_healthy_worktree(wt_path, "agent/task-42")
     (wt_path / "README.md").unlink()  # no marker written for this one
@@ -316,7 +316,7 @@ def test_branch_exists_probe_tolerates_missing_clone(tmp_path: Path):
 def test_dry_run_creates_nothing(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(workspace, "_sh",
                         lambda a, cwd, timeout=300: (_ for _ in ()).throw(AssertionError))
-    wt = workspace.create_workspace(target(tmp_path), 42, dry_run=True)
+    wt = workspace.create_workspace(repository(tmp_path), 42, dry_run=True)
     assert not Path(wt).exists()
 
 
@@ -339,7 +339,7 @@ def test_setup_output_written_to_setup_log(tmp_path: Path, monkeypatch):
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(workspace.subprocess, "run", fake_run)
-    t = target(tmp_path)
+    t = repository(tmp_path)
     with pytest.raises(subprocess.CalledProcessError):
         workspace.create_workspace(t, 42)
     log = Path(t.worktrees_path) / "task-42" / ".agent" / "setup.log"
@@ -360,7 +360,7 @@ def test_setup_timeout_still_writes_partial_log(tmp_path: Path, monkeypatch):
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(workspace.subprocess, "run", fake_run)
-    t = target(tmp_path)
+    t = repository(tmp_path)
     with pytest.raises(subprocess.TimeoutExpired):
         workspace.create_workspace(t, 42)
     log = Path(t.worktrees_path) / "task-42" / ".agent" / "setup.log"
@@ -372,7 +372,7 @@ def test_create_workspace_seeds_claude_trust(tmp_path: Path, monkeypatch):
     claude-home's .claude.json: stage containers run interactive `claude`
     with nobody attached, so a first-run wizard or folder-trust dialog
     stalls the task forever (task #192 sat on the theme picker for 1.5h)."""
-    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     def fake_sh(args, cwd, timeout=300, log=None):
         if "worktree" in args:
             wt = Path(args[-2])
@@ -390,7 +390,7 @@ def test_create_workspace_seeds_claude_trust(tmp_path: Path, monkeypatch):
     (home / ".claude.json").write_text(json.dumps(
         {"machineID": "m1", "projects": {"/old": {"lastCost": 1}}}))
 
-    wt = workspace.create_workspace(target(tmp_path), 42)
+    wt = workspace.create_workspace(repository(tmp_path), 42)
 
     data = json.loads((home / ".claude.json").read_text())
     assert data["hasCompletedOnboarding"] is True
@@ -418,12 +418,12 @@ def test_seed_claude_state_survives_missing_or_corrupt_file(tmp_path: Path,
 # ---------------------------------------------------------------------------
 
 def _make_real_worktree_in_clone(tmp_path: Path, issue_num: int):
-    """Build a real git repo at target.clone_path and add a worktree for
-    agent/task-{issue_num}, returning (target, wt_path_str).  Matches the
+    """Build a real git repo at repository.clone_path and add a worktree for
+    agent/task-{issue_num}, returning (repository, wt_path_str).  Matches the
     pattern of _make_healthy_worktree but roots the base repo at
-    target.clone_path so git worktree commands run there correctly."""
+    repository.clone_path so git worktree commands run there correctly."""
     import subprocess as sp
-    t = target(tmp_path)
+    t = repository(tmp_path)
     clone = Path(t.clone_path)
     clone.mkdir(parents=True, exist_ok=True)
     sp.run(["git", "init", "-q", str(clone)], check=True)
@@ -467,7 +467,7 @@ def test_remove_workspace_dry_run_deletes_nothing(tmp_path: Path):
 
 
 def test_remove_workspace_survives_already_gone(tmp_path: Path):
-    t = target(tmp_path)
+    t = repository(tmp_path)
     # clone_path doesn't exist; nope/ doesn't exist; branch never created —
     # remove_workspace must swallow all errors and return normally.
     workspace.remove_workspace(t, str(tmp_path / "nope"), "agent/task-56")
@@ -497,8 +497,8 @@ def test_install_stop_hook_never_leaves_half_written_settings(tmp_path, monkeypa
 # .agent/ is local state: git must not offer it for a commit (real git)
 # ---------------------------------------------------------------------------
 
-def _clone_with_origin(tmp_path: Path, monkeypatch) -> Target:
-    """A real clone at target.clone_path whose origin has a `main`."""
+def _clone_with_origin(tmp_path: Path, monkeypatch) -> Repository:
+    """A real clone at repository.clone_path whose origin has a `main`."""
     import subprocess as sp
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     origin = tmp_path / "origin"
@@ -508,7 +508,7 @@ def _clone_with_origin(tmp_path: Path, monkeypatch) -> Target:
     sp.run(["git", "-C", str(origin), "-c", "user.email=t@example.com",
             "-c", "user.name=test", "-c", "commit.gpgsign=false", "commit",
             "-q", "-m", "init"], check=True)
-    t = replace(target(tmp_path), setup_cmd="")
+    t = replace(repository(tmp_path), setup_cmd="")
     sp.run(["git", "clone", "-q", str(origin), t.clone_path], check=True)
     return t
 
@@ -521,7 +521,7 @@ def _untracked(wt: str) -> str:
 
 def test_agent_dir_is_ignored_by_git_in_a_task_worktree(tmp_path: Path, monkeypatch):
     """A session's `git add -A` must never stage the ledger, the tickets or
-    the plan summary, even when the target's own .gitignore lacks `.agent/`."""
+    the plan summary, even when the repository's own .gitignore lacks `.agent/`."""
     t = _clone_with_origin(tmp_path, monkeypatch)
 
     wt = workspace.create_workspace(t, 42)

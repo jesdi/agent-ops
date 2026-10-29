@@ -15,8 +15,8 @@ def test_openapi_export_prints_schema_with_contract_paths():
     paths = schema["paths"]
     for p in ("/api/board", "/api/queue", "/api/usage", "/api/failures",
               "/api/history", "/api/pending-intents",
-              "/api/task/{target}/{issue}",
-              "/api/task/{target}/{issue}/request"):
+              "/api/task/{repository}/{issue}",
+              "/api/task/{repository}/{issue}/request"):
         assert p in paths, f"missing {p}"
     names = schema["components"]["schemas"]
     for n in ("BoardView", "QueueView", "TaskDetail", "UsageView", "GateView",

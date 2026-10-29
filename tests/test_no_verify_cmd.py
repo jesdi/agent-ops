@@ -19,9 +19,9 @@ from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
                              pr_open_task)
 
 # The scenario's own wording: "the rendered prompt states that no off-box
-# e2e run exists for this target". The implementer's "no pre-PR e2e"
+# e2e run exists for this repository". The implementer's "no pre-PR e2e"
 # fragment must contain this phrase verbatim.
-NO_E2E_PHRASE = "no off-box e2e run exists for this target"
+NO_E2E_PHRASE = "no off-box e2e run exists for this repository"
 
 # The PR-body "Verification" line must ask for gate verification and must
 # NOT promise an e2e run URL when there is none to promise.
@@ -31,7 +31,7 @@ E2E_URL_PHRASE = "e2e run URL"
 
 def cfg_no_verify(tmp_path):
     c = cfg(tmp_path)
-    return dc_replace(c, targets=[dc_replace(c.targets[0], verify_cmd="")])
+    return dc_replace(c, repositories=[dc_replace(c.repositories[0], verify_cmd="")])
 
 
 def test_review_prompt_without_verify_cmd_states_no_pre_pr_e2e(tmp_path):
@@ -39,8 +39,8 @@ def test_review_prompt_without_verify_cmd_states_no_pre_pr_e2e(tmp_path):
     make_task(c, issue=42, stage=Stage.REVIEW, track="standard")
     d = deps(sess=FakeSessions())
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.REVIEW,
+    main._spawn_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task, Stage.REVIEW,
                                        lambda m: True, tuple))
     prompt = d.sessions.spawned[-1][3]
 
@@ -57,8 +57,8 @@ def test_review_prompt_without_verify_cmd_pr_body_asks_gate_not_e2e_url(tmp_path
     make_task(c, issue=42, stage=Stage.REVIEW, track="standard")
     d = deps(sess=FakeSessions())
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.REVIEW,
+    main._spawn_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task, Stage.REVIEW,
                                        lambda m: True, tuple))
     prompt = d.sessions.spawned[-1][3]
 
@@ -72,8 +72,8 @@ def test_address_review_prompt_without_verify_cmd_has_no_e2e_step(tmp_path):
              pr_number=7)
     d = deps(sess=FakeSessions())
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task,
+    main._spawn_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task,
                                        Stage.ADDRESS_REVIEW, lambda m: True, tuple))
     prompt = d.sessions.spawned[-1][3]
 
@@ -88,8 +88,8 @@ def test_review_and_address_review_prompts_with_verify_cmd_keep_e2e_step(tmp_pat
 
     make_task(c, issue=42, stage=Stage.REVIEW, track="standard", slot=0)
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.REVIEW,
+    main._spawn_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task, Stage.REVIEW,
                                        lambda m: True, tuple))
     review_prompt = d.sessions.spawned[-1][3]
     assert "awaiting-ci" in review_prompt
@@ -99,8 +99,8 @@ def test_review_and_address_review_prompts_with_verify_cmd_keep_e2e_step(tmp_pat
     make_task(c, issue=43, stage=Stage.ADDRESS_REVIEW, track="standard",
              pr_number=7, slot=1)
     task = load(c.state_dir, "portfolio_eval", 43)
-    main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task,
+    main._spawn_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task,
                                        Stage.ADDRESS_REVIEW, lambda m: True, tuple))
     address_review_prompt = d.sessions.spawned[-1][3]
     assert "awaiting-ci" in address_review_prompt

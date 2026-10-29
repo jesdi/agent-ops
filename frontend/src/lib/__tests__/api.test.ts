@@ -52,7 +52,7 @@ it('coerces an array-shaped 422 detail to a renderable string', async () => {
   )
 })
 
-it('POST cancel is keyed by target and issue like every other intent', async () => {
+it('POST cancel is keyed by repository and issue like every other intent', async () => {
   const bodies: unknown[] = []
   server.use(
     http.post('/api/task/portfolio_eval/42/cancel', async ({ request }) => {
@@ -80,13 +80,13 @@ it('POST intent action returns 202 pending', async () => {
   expect(res.status).toBe('pending')
 })
 
-it('GET task detail hits /api/task/{target}/{issue}', async () => {
+it('GET task detail hits /api/task/{repository}/{issue}', async () => {
   let requestedPath = ''
   server.use(
-    http.get('/api/task/:target/:issue', ({ params }) => {
-      requestedPath = `/api/task/${params.target}/${params.issue}`
+    http.get('/api/task/:repository/:issue', ({ params }) => {
+      requestedPath = `/api/task/${params.repository}/${params.issue}`
       return HttpResponse.json({
-        card: { issue: 42, target: 'agent_ops', title: 't', stage: 's',
+        card: { issue: 42, repository: 'agent_ops', title: 't', stage: 's',
           park: '', park_note: '', column: 'c', slot: -1, branch: 'b',
           model: 'm', park_note_pending: false, feedback_pending: false,
           updated_at: '', consuming_capacity: false,

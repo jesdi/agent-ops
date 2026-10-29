@@ -6,7 +6,7 @@ scenarios "the plan session signals the gate with the page", "a page without
 the template marker is bounced" and "a page over the size limit is bounced".
 Black-box, through dispatcher.main.run_pass over the fakes of tests/test_main.py
 (helpers of tests/test_plan_review_gate_acceptance.py), the console route
-GET /api/task/{target}/{issue}/request and the rendered plan prompt.
+GET /api/task/{repository}/{issue}/request and the rendered plan prompt.
 """
 import os
 import re

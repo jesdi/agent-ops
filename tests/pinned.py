@@ -32,7 +32,7 @@ DENY_ARCHITECTURE = ("gpt-astra", FABLE)     # its implement and review lists
 
 def task(stage=Stage.IMPLEMENT, track="architecture", **kw):
     """A task that exists only in memory."""
-    return TaskState(issue=42, target="t", stage=stage, slot=1, worktree="",
+    return TaskState(issue=42, repository="t", stage=stage, slot=1, worktree="",
                      branch="b", title="", updated_at="u", track=track, **kw)
 
 
@@ -46,10 +46,10 @@ def raw(c, issue=42):
         state._path(c.state_dir, "portfolio_eval", issue).read_text())
 
 
-def rewrite(state_dir, target, *drop, **over):
+def rewrite(state_dir, repository, *drop, **over):
     """Issue 42's state file without the keys `drop` and with `over`: the
     file as older code wrote it."""
-    p = state._path(state_dir, target, 42)
+    p = state._path(state_dir, repository, 42)
     doc = json.loads(p.read_text())
     p.write_text(json.dumps(
         {**{k: v for k, v in doc.items() if k not in drop}, **over}))

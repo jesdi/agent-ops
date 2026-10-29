@@ -27,7 +27,7 @@ const VIEW: ModelSettingsView = {
   efforts: { anthropic: ['low', 'medium', 'high', 'xhigh', 'max'], openai: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
   default_provider: 'anthropic',
   known_models: { anthropic: ['claude-opus-5', 'claude-sonnet-5'], openai: ['gpt-luna'] },
-  target_overrides: [],
+  repository_overrides: [],
 }
 const STORED: ModelSettingsView = { ...VIEW, revision: 'r1', source: 'console', set_by: 'jesdi', set_at: new Date().toISOString() }
 

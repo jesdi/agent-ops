@@ -16,8 +16,8 @@ export function TaskCardView({ card, pendingActions }: {
   return (
     <CompactCard
       testId={`card-${card.issue}`}
-      drag={{ issue: card.issue, target: card.target, title: card.title }}
-      to={`/task/${card.target}/${card.issue}`}
+      drag={{ issue: card.issue, repository: card.repository, title: card.title }}
+      to={`/task/${card.repository}/${card.issue}`}
       variant="task"
       accent={card.slot >= 0 ? slotBorder(card.slot) : 'border-l-transparent'}
       badges={<>
@@ -32,7 +32,7 @@ export function TaskCardView({ card, pendingActions }: {
       signals={<>
         <TaskCardSignals card={card} />
         {card.admission && (
-          <AdmissionWarning target={card.target} issue={card.issue} admission={card.admission} />
+          <AdmissionWarning repository={card.repository} issue={card.issue} admission={card.admission} />
         )}
       </>}
       detail={<TaskCardDetail card={card} />}

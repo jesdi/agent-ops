@@ -1,7 +1,7 @@
 """Queue view + synchronous queue actions through queue_ops."""
 from fastapi.testclient import TestClient
 
-from tests.webfakes import (FakeSources, HEADERS, make_config, make_target,
+from tests.webfakes import (FakeSources, HEADERS, make_config, make_repository,
                             make_task)
 from web.app import create_app
 
@@ -11,9 +11,9 @@ ROW = {"number": 9, "title": "Add feature", "url": "https://x/9",
        "score": 4.2, "boost": 0}
 
 
-def rig(tmp_path, targets=None):
+def rig(tmp_path, repositories=None):
     fake = FakeSources()
-    cfg = make_config(tmp_path, targets=targets)
+    cfg = make_config(tmp_path, repositories=repositories)
     return fake, TestClient(create_app(cfg, fake))
 
 
@@ -22,8 +22,8 @@ def test_queue_view_marks_in_flight_and_stale(tmp_path):
     fake.rank["alpha"] = ([dict(ROW)], "2026-07-25T10:00:00+00:00", True)
     fake.tasks_list = [make_task(issue=9)]
     body = client.get("/api/queue", headers=HEADERS).json()
-    tq = body["targets"][0]
-    assert tq["target"] == "alpha" and tq["stale"] is True
+    tq = body["repositories"][0]
+    assert tq["repository"] == "alpha" and tq["stale"] is True
     assert tq["as_of"] == "2026-07-25T10:00:00+00:00"
     assert tq["rows"][0]["in_flight"] is True
     assert tq["rows"][0]["score"] == 4.2
@@ -36,10 +36,10 @@ def test_boost_applies_plan_and_logs_event(tmp_path):
                     json={"issue": 9, "amount": 3})
     assert r.status_code == 200
     assert r.json()["ok"] is True
-    target_name, issue, plan = fake.applied_plans[0]
-    assert (target_name, issue) == ("alpha", 9)
+    repository_name, issue, plan = fake.applied_plans[0]
+    assert (repository_name, issue) == ("alpha", 9)
     assert plan.set_boost == 3
-    event, target, issue, actor, _ = fake.appended[0]
+    event, repository, issue, actor, _ = fake.appended[0]
     assert event == "queue-boost" and actor == "jesdi@github"
 
 
@@ -50,9 +50,9 @@ def test_boost_unknown_issue_404(tmp_path):
     assert r.status_code == 404
 
 
-def test_boost_ambiguous_across_targets_409(tmp_path):
-    targets = [make_target("alpha"), make_target("beta", "jesdi/beta")]
-    fake, client = rig(tmp_path, targets=targets)
+def test_boost_ambiguous_across_repositories_409(tmp_path):
+    repositories = [make_repository("alpha"), make_repository("beta", "jesdi/beta")]
+    fake, client = rig(tmp_path, repositories=repositories)
     fake.rank["alpha"] = ([dict(ROW)], "t", False)
     fake.rank["beta"] = ([dict(ROW)], "t", False)
     r = client.post("/api/queue/boost", headers=HEADERS,
@@ -141,13 +141,13 @@ def test_queue_view_still_serves_stale_rows(tmp_path):
     fake, client = rig(tmp_path)
     fake.rank["alpha"] = ([dict(ROW)], "2026-07-25T10:00:00+00:00", True)
     body = client.get("/api/queue", headers=HEADERS).json()
-    assert body["targets"][0]["stale"] is True
-    assert body["targets"][0]["rows"][0]["number"] == 9
+    assert body["repositories"][0]["stale"] is True
+    assert body["repositories"][0]["rows"][0]["number"] == 9
 
 
-def test_fresh_target_write_is_unaffected_by_another_stale_target(tmp_path):
-    targets = [make_target("alpha"), make_target("beta", "jesdi/beta")]
-    fake, client = rig(tmp_path, targets=targets)
+def test_fresh_repository_write_is_unaffected_by_another_stale_repository(tmp_path):
+    repositories = [make_repository("alpha"), make_repository("beta", "jesdi/beta")]
+    fake, client = rig(tmp_path, repositories=repositories)
     fake.rank["alpha"] = ([dict(ROW)], "t", False)
     fake.rank["beta"] = ([], "2026-07-25T10:00:00+00:00", True)
     r = client.post("/api/queue/boost", headers=HEADERS,

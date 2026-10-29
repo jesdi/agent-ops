@@ -2,7 +2,7 @@
 
 Three classes: provisioning and pass-crash file on cfg.infra_repo
 (dispatcher-side bugs a session container cannot fix); session-crash files
-on the target repo, where a native `Blocked by:` body line is free.
+on the repository's repo, where a native `Blocked by:` body line is free.
 Fingerprint files under state_dir/failures/ dedupe; quarantine records
 under state_dir/quarantine/ stop a provisioning-failed task from being
 re-claimed until its blocker issue closes."""
@@ -21,7 +21,7 @@ from dispatcher.config import Config
 @dataclass(frozen=True)
 class FailureReport:
     klass: str     # "provisioning" | "session-crash" | "pass-crash"
-    target: str    # target name, "" for pass crashes
+    repository: str    # repository name, "" for pass crashes
     issue: int     # task issue number, 0 for pass crashes
     title: str     # human summary; used in the issue title and Telegram ping
     error: str     # exception text / traceback
@@ -39,8 +39,8 @@ def _error_signature(error: str) -> str:
 
 def fingerprint(report: FailureReport) -> str:
     key = f"{report.klass}|{report.issue}|{_error_signature(report.error)}"
-    if report.target:   # box-level failures (no target) keep their old hash
-        key = f"{report.target}|{key}"
+    if report.repository:   # box-level failures (no repository) keep their old hash
+        key = f"{report.repository}|{key}"
     return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
@@ -75,8 +75,8 @@ def reported(state_dir: str | Path, report: FailureReport) -> bool:
 def _route(cfg: Config, report: FailureReport) -> str:
     """Repo to file the issue on; "" = no issue (degrade to ping-only)."""
     if report.klass == "session-crash":
-        for t in cfg.targets:
-            if t.name == report.target:
+        for t in cfg.repositories:
+            if t.name == report.repository:
                 return t.repo
         return ""
     return cfg.infra_repo
@@ -85,8 +85,8 @@ def _route(cfg: Config, report: FailureReport) -> str:
 def _task_url(cfg: Config, report: FailureReport) -> str:
     if not report.issue:
         return ""
-    for t in cfg.targets:
-        if t.name == report.target:
+    for t in cfg.repositories:
+        if t.name == report.repository:
             return f"https://github.com/{t.repo}/issues/{report.issue}"
     return ""
 
@@ -117,7 +117,7 @@ def report_failure(cfg: Config, deps, report: FailureReport,
                   f"(infra_repo unset?): {report.title}", file=sys.stderr)
         deps.notifier.send("task_failed", issue=report.issue,
                            title=report.title, url=url, note=report.klass,
-                           target=report.target)
+                           repository=report.repository)
         # Marker is written LAST: a create_issue outage above leaves no
         # marker, so the next pass retries the report.
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -142,14 +142,14 @@ def setup_log_tail(worktree: str) -> str:
         return ""
 
 
-def quarantine_path(state_dir: str | Path, target_name: str,
+def quarantine_path(state_dir: str | Path, repository_name: str,
                     issue: int) -> Path:
-    return Path(state_dir) / "quarantine" / f"{target_name}-{issue}.json"
+    return Path(state_dir) / "quarantine" / f"{repository_name}-{issue}.json"
 
 
-def write_quarantine(state_dir: str | Path, target_name: str, issue: int,
+def write_quarantine(state_dir: str | Path, repository_name: str, issue: int,
                      blocker_repo: str, blocker_issue: int, fp: str) -> None:
-    p = quarantine_path(state_dir, target_name, issue)
+    p = quarantine_path(state_dir, repository_name, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({
         "task_issue": issue,
@@ -160,12 +160,12 @@ def write_quarantine(state_dir: str | Path, target_name: str, issue: int,
     }, indent=2))
 
 
-def check_quarantine(state_dir: str | Path, github, target_name: str,
+def check_quarantine(state_dir: str | Path, github, repository_name: str,
                      issue: int) -> bool:
     """True = still quarantined (skip the candidate). Deleting the record
     file manually force-retries; closing the blocker issue deletes it here,
     making the candidate claimable in the same pass."""
-    p = quarantine_path(state_dir, target_name, issue)
+    p = quarantine_path(state_dir, repository_name, issue)
     if not p.exists():
         return False
     try:

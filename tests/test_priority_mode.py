@@ -194,14 +194,14 @@ def test_mode_openai_review_after_a_sonnet_implement_pick_goes_to_openai(
     assert launched(sess) == [SOL_ID]
 
 
-def test_mode_openai_orders_a_targets_own_policy(tmp_path, monkeypatch):
+def test_mode_openai_orders_a_repositories_own_policy(tmp_path, monkeypatch):
     save_mode(tmp_path)
     own = parse_policy({"triage": [SONNET], "untracked": "standard", "tracks": {
         "standard": {"when": "x", "spec": [OPUS, SOL], "plan": [OPUS, SOL],
                      "implement": [OPUS, SOL], "review": [OPUS, SOL]}}})
     c = cfg(tmp_path)
     c = dc_replace(c, pace=PACE,
-                   targets=[dc_replace(c.targets[0], models=own)])
+                   repositories=[dc_replace(c.repositories[0], models=own)])
     monkeypatch.setattr(main, "fetch_all",
                         lambda cfg, **k: anthropic_hungry())
 

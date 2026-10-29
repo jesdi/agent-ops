@@ -94,32 +94,32 @@ def test_task_detail_and_404(tmp_path):
     assert client.get("/api/task/alpha/999", headers=HEADERS).status_code == 404
 
 
-def test_task_detail_scoped_by_target(tmp_path):
-    """Same issue number claimed on two different targets: the route must
-    disambiguate on the full (target, issue) pair, not the bare issue
+def test_task_detail_scoped_by_repository(tmp_path):
+    """Same issue number claimed on two different repositories: the route must
+    disambiguate on the full (repository, issue) pair, not the bare issue
     number — this is the scenario the old /api/task/{issue} route could
     never resolve correctly."""
-    from tests.webfakes import make_target
+    from tests.webfakes import make_repository
     fake = FakeSources()
-    cfg = make_config(tmp_path, targets=[
-        make_target("agent_ops", "jesdi/agent-ops"),
-        make_target("portfolio_eval", "jesdi/portfolio-eval")])
+    cfg = make_config(tmp_path, repositories=[
+        make_repository("agent_ops", "jesdi/agent-ops"),
+        make_repository("portfolio_eval", "jesdi/portfolio-eval")])
     client = TestClient(create_app(cfg, fake))
     fake.tasks_list = [
-        make_task(issue=42, target="agent_ops",
+        make_task(issue=42, repository="agent_ops",
                   worktree="/tmp/worktrees/agent_ops/42"),
-        make_task(issue=42, target="portfolio_eval",
+        make_task(issue=42, repository="portfolio_eval",
                   worktree="/tmp/worktrees/portfolio_eval/42"),
     ]
     r = client.get("/api/task/agent_ops/42", headers=HEADERS)
     assert r.status_code == 200
-    assert r.json()["card"]["target"] == "agent_ops"
+    assert r.json()["card"]["repository"] == "agent_ops"
     r2 = client.get("/api/task/portfolio_eval/42", headers=HEADERS)
     assert r2.status_code == 200
     assert r2.json()["worktree"] != r.json()["worktree"]
 
 
-def test_task_detail_unknown_target_is_404(tmp_path):
+def test_task_detail_unknown_repository_is_404(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7)]
     assert client.get("/api/task/nonexistent/7",
@@ -259,7 +259,7 @@ def test_usage_unavailable(tmp_path):
 
 def test_failures_joins_blocker_state(tmp_path):
     fake, client = rig(tmp_path)
-    fake.quarantine = [{"target": "alpha", "task_issue": 7,
+    fake.quarantine = [{"repository": "alpha", "task_issue": 7,
                         "blocker_repo": "jesdi/agent-ops",
                         "blocker_issue": 31, "fingerprint": "abc",
                         "created_at": "2026-07-25T09:05:00"}]
@@ -273,7 +273,7 @@ def test_failures_joins_blocker_state(tmp_path):
 
 def test_failures_blocker_unknown_is_null(tmp_path):
     fake, client = rig(tmp_path)
-    fake.quarantine = [{"target": "alpha", "task_issue": 7,
+    fake.quarantine = [{"repository": "alpha", "task_issue": 7,
                         "blocker_repo": "r", "blocker_issue": 1,
                         "fingerprint": "f", "created_at": "c"}]
     body = client.get("/api/failures", headers=HEADERS).json()
@@ -282,7 +282,7 @@ def test_failures_blocker_unknown_is_null(tmp_path):
 
 def test_history_respects_limit(tmp_path):
     fake, client = rig(tmp_path)
-    fake.events = [{"ts": f"t{i}", "event": "claimed", "target": "alpha",
+    fake.events = [{"ts": f"t{i}", "event": "claimed", "repository": "alpha",
                     "issue": i, "stage": "spec", "model": "m",
                     "actor": "dispatcher", "detail": ""}
                    for i in range(10)]
@@ -328,7 +328,7 @@ def test_board_carries_next_claim_ghosts_and_timeline(tmp_path):
     # Event timestamp well in the past so stage_timeline produces an ongoing
     # segment (now - claimed_at >> 1 s) regardless of time of day.
     fake.events = [{"ts": "2026-07-31T10:00:00+00:00", "event": "claimed",
-                    "target": "alpha", "issue": 7, "stage": "queued",
+                    "repository": "alpha", "issue": 7, "stage": "queued",
                     "model": "", "actor": "dispatcher", "detail": ""}]
     body = client.get("/api/board", headers=HEADERS).json()
     assert body["next_claim"]["next_issue"] == 73
@@ -433,10 +433,10 @@ def test_task_detail_200_with_mixed_timezone_events(tmp_path):
     fake.tasks_list = [make_task(issue=7)]
     fake.events = [
         {"ts": "2026-07-31T10:00:00+00:00", "event": "claimed",
-         "target": "alpha", "issue": 7, "stage": "queued", "model": "",
+         "repository": "alpha", "issue": 7, "stage": "queued", "model": "",
          "actor": "dispatcher", "detail": ""},
         {"ts": "2026-07-31T11:00:00", "event": "stage-started",  # NAIVE
-         "target": "alpha", "issue": 7, "stage": "spec", "model": "",
+         "repository": "alpha", "issue": 7, "stage": "spec", "model": "",
          "actor": "dispatcher", "detail": ""},
     ]
     resp = client.get("/api/task/alpha/7", headers=HEADERS)
@@ -472,11 +472,11 @@ def test_board_degrades_to_200_on_corrupt_events(tmp_path):
 
 
 def test_description_for_task_and_ghost(tmp_path):
-    """With `target` in the path there is no cross-target ambiguity to
+    """With `repository` in the path there is no cross-repository ambiguity to
     resolve: a claimed issue and a ghost (not yet claimed, still on the
-    target's queue) both resolve straight to targets_by_name[target].repo.
-    An issue that is neither a task nor on this target's queue is still a
-    true 404 — target-scoping removed the old ambiguity check, not the
+    repository's queue) both resolve straight to repositories_by_name[repository].repo.
+    An issue that is neither a task nor on this repository's queue is still a
+    true 404 — repository-scoping removed the old ambiguity check, not the
     existence check."""
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7)]
@@ -498,27 +498,27 @@ def test_description_for_task_and_ghost(tmp_path):
                       headers=HEADERS).status_code == 404
 
 
-def test_description_404_on_unknown_target(tmp_path):
-    """The old issue-only route had to scan every target's queue for a hit
+def test_description_404_on_unknown_repository(tmp_path):
+    """The old issue-only route had to scan every repository's queue for a hit
     and could find the number on two of them at once — hence the old 409
-    ambiguity contract. With `target` in the path that scan (and the
-    ambiguity it could hit) is gone; an unrecognised target name is still a
-    404, same as any target-scoped route."""
+    ambiguity contract. With `repository` in the path that scan (and the
+    ambiguity it could hit) is gone; an unrecognised repository name is still a
+    404, same as any repository-scoped route."""
     fake, client = rig(tmp_path)
-    resp = client.get("/api/task/nonexistent-target/73/description",
+    resp = client.get("/api/task/nonexistent-repository/73/description",
                       headers=HEADERS)
     assert resp.status_code == 404
 
 
-def test_description_resolves_each_targets_own_repo(tmp_path):
-    """Two targets can both hold issue #73 as a claimed task (or a ghost) —
+def test_description_resolves_each_repositories_own_repo(tmp_path):
+    """Two repositories can both hold issue #73 as a claimed task (or a ghost) —
     the old issue-only route could only guess (or 409) which repo's body to
-    serve. With `target` in the path each call must resolve strictly to
-    THAT target's repo, never the other one's, even for the same number."""
-    from tests.webfakes import make_target
+    serve. With `repository` in the path each call must resolve strictly to
+    THAT repository's repo, never the other one's, even for the same number."""
+    from tests.webfakes import make_repository
     fake = FakeSources()
-    cfg = make_config(tmp_path, targets=[make_target("alpha", "jesdi/alpha"),
-                                         make_target("beta", "jesdi/beta")])
+    cfg = make_config(tmp_path, repositories=[make_repository("alpha", "jesdi/alpha"),
+                                              make_repository("beta", "jesdi/beta")])
     client = TestClient(create_app(cfg, fake))
     r73 = [{"number": 73, "title": "t", "url": "u", "status": "Ready",
             "labels": ["auto"], "blocked": False, "score": 1.0, "boost": 0}]

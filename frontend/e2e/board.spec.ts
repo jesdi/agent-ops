@@ -22,7 +22,7 @@ test('empty columns are chips and the Wont do chip takes a drop', async ({ page 
 
   await showColumn(page, 'parked')
   // Not dragTo: the chip accepts a drop only after a dragover, and Playwright
-  // needs a second move over the target to fire one reliably. Even so, about
+  // needs a second move over the repository to fire one reliably. Even so, about
   // one synthetic drag in a hundred never starts (the card stays where it
   // is and no drop fires), so the gesture is repeated until the board asks.
   const confirm = page.getByTestId('wont-do-confirm')

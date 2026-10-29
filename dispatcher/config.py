@@ -16,7 +16,7 @@ from dispatcher.usage import PaceConfig
 
 
 @dataclass(frozen=True)
-class Target:
+class Repository:
     name: str
     repo: str  # "owner/name"
     clone_path: str
@@ -43,7 +43,7 @@ class Config:
     capacity: int
     session_memory: str
     session_cpus: str
-    targets: list[Target]
+    repositories: list[Repository]
     infra_repo: str = ""  # repo for dispatcher-side failure issues; "" degrades to ping-only
     models: ModelPolicy = DEFAULT_POLICY
     console_url: str = ""  # web console base URL for Telegram deep links; "" = no link line
@@ -128,22 +128,22 @@ def _pace(raw: dict) -> PaceConfig:
     return pace
 
 
-def _target(raw: dict, capacity: int) -> Target:
+def _repository(raw: dict, capacity: int) -> Repository:
     fields = dict(raw)
     has_models = "models" in fields
     models = fields.pop("models", None)
     name = fields.get("name")
     if not str(fields.get("gate_cmd") or "").strip():
-        raise ValueError(f"target {name!r}: gate_cmd is required "
+        raise ValueError(f"repository {name!r}: gate_cmd is required "
                          "(the session runs it after every ticket)")
     max_active = fields.get("max_active")
     if max_active is not None and (
         isinstance(max_active, bool) or not isinstance(max_active, int)
         or not 1 <= max_active <= capacity
     ):
-        raise ValueError(f"target {name!r}: max_active must be an integer between "
+        raise ValueError(f"repository {name!r}: max_active must be an integer between "
                          f"1 and capacity ({capacity}), got {max_active!r}")
-    return Target(**fields, models=parse_policy(models) if has_models else None)
+    return Repository(**fields, models=parse_policy(models) if has_models else None)
 
 
 def _grace_minutes(raw: dict) -> int | None:
@@ -188,7 +188,7 @@ def load_config(path: str | Path) -> Config:
         max_open=_max_open(raw, capacity),
         session_memory=str(raw.get("session_memory", "2g")),
         session_cpus=str(raw.get("session_cpus", "2")),
-        targets=[_target(t, capacity) for t in raw.get("targets", [])],
+        repositories=[_repository(t, capacity) for t in raw.get("targets", [])],
         infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
@@ -239,26 +239,26 @@ def apply_stored_models(boot: Config) -> Config:
     return replace(cfg, models_origin=model_settings.Origin(revision, stored))
 
 
-def policy_for(cfg: Config, target: Target | None) -> ModelPolicy:
-    """The policy `target` runs: its own one replaces the global one
+def policy_for(cfg: Config, repository: Repository | None) -> ModelPolicy:
+    """The policy `repository` runs: its own one replaces the global one
     wholesale — rule lists are never merged, because merge order would make
-    first-match-wins ambiguous. No target (one removed from targets.yaml):
+    first-match-wins ambiguous. No repository (one removed from targets.yaml):
     the global one."""
-    return (target.models if target else None) or cfg.models
+    return (repository.models if repository else None) or cfg.models
 
 
-def stranded(cfg: Config, target: Target | None, task: TaskState, stage: str) -> str:
+def stranded(cfg: Config, repository: Repository | None, task: TaskState, stage: str) -> str:
     """models.stranded for `task` under `cfg`, launching `stage`."""
-    return models.stranded(policy_for(cfg, target), task.track, task.picks,
+    return models.stranded(policy_for(cfg, repository), task.track, task.picks,
                            stage, referenced_providers(cfg))
 
 
 def routed_providers(cfg: Config) -> frozenset[str]:
     """Every provider some routed list names: the global triage list and the
-    stage lists of every track, of the global policy and of every target's
+    stage lists of every track, of the global policy and of every repository's
     own. The priority mode may name one of these. Not routed: `review_second`,
-    and a target policy's own triage list (the sweep runs `cfg.models.triage`)."""
-    policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
+    and a repository policy's own triage list (the sweep runs `cfg.models.triage`)."""
+    policies = [cfg.models, *(t.models for t in cfg.repositories if t.models is not None)]
     staged = (e for p in policies for t in p.tracks.values()
               for entries in t.stages.values() for e in entries)
     return frozenset(e.provider for e in (*cfg.models.triage, *staged))
@@ -271,7 +271,7 @@ def referenced_providers(cfg: Config) -> frozenset[str]:
     adapter reads); one you route to without an adapter shows as
     unavailable (and main() warns once at startup). A policy's review_second counts too: the
     gate that grants it needs its provider's usage."""
-    policies = [cfg.models, *(t.models for t in cfg.targets if t.models is not None)]
+    policies = [cfg.models, *(t.models for t in cfg.repositories if t.models is not None)]
     ids = [*(m for p in policies for m in p.model_ids()),
            *(p.review_second.model_id for p in policies if p.review_second)]
     return frozenset(m.partition("/")[0] for m in ids)

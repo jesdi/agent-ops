@@ -4,9 +4,9 @@ import subprocess
 from dataclasses import replace as dc_replace
 
 import dispatcher.github as github
-from dispatcher.config import Target
+from dispatcher.config import Repository
 
-TARGET = Target(
+REPOSITORY = Repository(
     name="portfolio_eval", repo="jesdi/portfolio_eval",
     clone_path="/home/agent/repos/portfolio_eval",
     worktrees_path="/home/agent/repos/portfolio_eval.worktrees",
@@ -44,7 +44,7 @@ RANKED = json.dumps([
 
 def test_candidates_carry_effort_and_labels(monkeypatch):
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
-    got = {c.number: c for c in github.GitHubClient().candidates(TARGET)}
+    got = {c.number: c for c in github.GitHubClient().candidates(REPOSITORY)}
     assert got[7].effort == 1
     assert got[7].labels == ("auto",)
     assert got[11].effort == 3
@@ -55,7 +55,7 @@ def test_candidates_tolerate_missing_effort(monkeypatch):
     unscored = json.dumps([{"number": 12, "title": "F", "url": "u12",
                             "labels": ["auto"], "status": "Ready", "blocked": False}])
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: unscored)
-    got = github.GitHubClient().candidates(TARGET)
+    got = github.GitHubClient().candidates(REPOSITORY)
     assert got[0].effort is None
 
 
@@ -67,9 +67,9 @@ def test_candidates_filters_and_keeps_rank_order(monkeypatch):
         return RANKED
 
     monkeypatch.setattr(github, "_run", fake_run)
-    got = github.GitHubClient().candidates(TARGET)
+    got = github.GitHubClient().candidates(REPOSITORY)
     assert [c.number for c in got] == [7, 11]
-    assert calls[0][1] == TARGET.clone_path
+    assert calls[0][1] == REPOSITORY.clone_path
 
 
 def test_claim_sets_status_and_comments(monkeypatch):
@@ -86,7 +86,7 @@ def test_claim_sets_status_and_comments(monkeypatch):
 
     monkeypatch.setattr(github, "_run", fake_run)
     c = github.Candidate(number=7, title="A", url="u7")
-    github.GitHubClient().claim(TARGET, c)
+    github.GitHubClient().claim(REPOSITORY, c)
     edit = next(a for a in calls if "item-edit" in a)
     assert "ITEM7" in edit and "INPROG" in edit and "F1" in edit
     comment = next(a for a in calls if "comment" in a)
@@ -106,7 +106,7 @@ def test_release_comments_and_resets_board(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.GitHubClient().release(TARGET, 7, "session crashed")
+    github.GitHubClient().release(REPOSITORY, 7, "session crashed")
     edit = next(a for a in calls if "item-edit" in a)
     assert "READY" in edit
     comment = next(a for a in calls if "comment" in a)
@@ -126,7 +126,7 @@ def test_cancel_comments_moves_board_and_closes_issue(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    t = dc_replace(TARGET, status_wont_do_option_id="WONTDO")
+    t = dc_replace(REPOSITORY, status_wont_do_option_id="WONTDO")
     github.GitHubClient().cancel(t, 7)
     edit = next(a for a in calls if "item-edit" in a)
     assert "WONTDO" in edit and "ITEM7" in edit
@@ -145,7 +145,7 @@ def test_cancel_without_board_option_still_closes_issue(monkeypatch, caplog):
 
     monkeypatch.setattr(github, "_run", fake_run)
     with caplog.at_level("WARNING", logger="dispatcher.github"):
-        github.GitHubClient().cancel(TARGET, 7)  # status_wont_do_option_id == ""
+        github.GitHubClient().cancel(REPOSITORY, 7)  # status_wont_do_option_id == ""
     assert not any("item-edit" in a for a in calls)
     assert any("close" in a for a in calls)
     # the skipped board write is a logging event, not a bare print
@@ -172,7 +172,7 @@ def test_item_id_title_join_when_content_redacted(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.GitHubClient().claim(TARGET, github.Candidate(7, "A", "u7"))
+    github.GitHubClient().claim(REPOSITORY, github.Candidate(7, "A", "u7"))
     edit = next(a for a, _ in calls if "item-edit" in a)
     assert "ITEM7" in edit
 
@@ -191,21 +191,21 @@ def test_item_id_title_join_ambiguous_duplicate_titles_raises(monkeypatch):
     monkeypatch.setattr(github, "_run", fake_run)
     import pytest
     with pytest.raises(LookupError):
-        github.GitHubClient()._item_id(TARGET, 7)
+        github.GitHubClient()._item_id(REPOSITORY, 7)
 
 
 def test_run_status_running_is_empty(monkeypatch):
     import dispatcher.github as gh
     monkeypatch.setattr(gh, "_run",
                         lambda a, cwd=None: '{"status":"in_progress","conclusion":null}')
-    assert github.GitHubClient().run_status(TARGET, 4242) == ""
+    assert github.GitHubClient().run_status(REPOSITORY, 4242) == ""
 
 
 def test_run_status_completed_returns_conclusion(monkeypatch):
     import dispatcher.github as gh
     monkeypatch.setattr(gh, "_run",
                         lambda a, cwd=None: '{"status":"completed","conclusion":"failure"}')
-    assert github.GitHubClient().run_status(TARGET, 4242) == "failure"
+    assert github.GitHubClient().run_status(REPOSITORY, 4242) == "failure"
 
 
 def test_dry_run_mutates_nothing(monkeypatch, capsys):
@@ -214,9 +214,9 @@ def test_dry_run_mutates_nothing(monkeypatch, capsys):
 
     monkeypatch.setattr(github, "_run", fake_run)
     cli = github.GitHubClient(dry_run=True)
-    cli.claim(TARGET, github.Candidate(7, "A", "u7"))
-    cli.comment(TARGET, 7, "hi")
-    cli.set_status(TARGET, 7, "READY")
+    cli.claim(REPOSITORY, github.Candidate(7, "A", "u7"))
+    cli.comment(REPOSITORY, 7, "hi")
+    cli.set_status(REPOSITORY, 7, "READY")
     out = capsys.readouterr().out
     assert "[dry-run]" in out
 
@@ -235,7 +235,7 @@ def test_project_commands_use_project_token(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.GitHubClient().claim(TARGET, github.Candidate(7, "A", "u7"))
+    github.GitHubClient().claim(REPOSITORY, github.Candidate(7, "A", "u7"))
     for args, env in calls:
         if args[:2] in (["gh", "project"], ["gh", "api"]):
             assert env is not None and env["GH_TOKEN"] == "classic-tok"
@@ -257,7 +257,7 @@ def test_project_commands_without_token_inherit_ambient_auth(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.GitHubClient().set_status(TARGET, 7, "READY")
+    github.GitHubClient().set_status(REPOSITORY, 7, "READY")
     assert calls and all(env is None for _, env in calls)
 
 
@@ -300,12 +300,12 @@ def test_issue_state_parses_json(monkeypatch):
     assert github.GitHubClient().issue_state("jesdi/agent-ops", 501) == "CLOSED"
 
 
-BOOST_TARGET = dc_replace(TARGET, boost_field_id="FB")
+BOOST_REPOSITORY = dc_replace(REPOSITORY, boost_field_id="FB")
 
 
 def test_rank_rows_normalizes_missing_boost(monkeypatch):
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
-    rows = github.GitHubClient().rank_rows(TARGET)
+    rows = github.GitHubClient().rank_rows(REPOSITORY)
     assert [r["number"] for r in rows] == [7, 8, 9, 10, 11]
     assert all(r["boost"] == 0 for r in rows)
 
@@ -315,7 +315,7 @@ def test_rank_rows_keeps_boost_when_present(monkeypatch):
                           "labels": ["auto"], "status": "Ready",
                           "blocked": False, "score": 2.0, "boost": 99}])
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: ranked)
-    assert github.GitHubClient().rank_rows(TARGET)[0]["boost"] == 99
+    assert github.GitHubClient().rank_rows(REPOSITORY)[0]["boost"] == 99
 
 
 def test_set_boost_edits_number_field_with_project_token(monkeypatch):
@@ -332,7 +332,7 @@ def test_set_boost_edits_number_field_with_project_token(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.GitHubClient().set_boost(BOOST_TARGET, 7, -2)
+    github.GitHubClient().set_boost(BOOST_REPOSITORY, 7, -2)
     edit, env = next((a, e) for a, e in calls if "item-edit" in a)
     assert "ITEM7" in edit and "FB" in edit
     assert edit[edit.index("--number") + 1] == "-2"
@@ -347,7 +347,7 @@ def test_add_label_uses_repo_auth(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.GitHubClient().add_label(TARGET, 7, "auto")
+    github.GitHubClient().add_label(REPOSITORY, 7, "auto")
     args, env = calls[0]
     assert args[:4] == ["gh", "issue", "edit", "7"]
     assert "--add-label" in args and "auto" in args
@@ -360,8 +360,8 @@ def test_boost_dry_run_mutates_nothing(monkeypatch, capsys):
 
     monkeypatch.setattr(github, "_run", fake_run)
     cli = github.GitHubClient(dry_run=True)
-    cli.set_boost(BOOST_TARGET, 7, 99)
-    cli.add_label(TARGET, 7, "auto")
+    cli.set_boost(BOOST_REPOSITORY, 7, 99)
+    cli.add_label(REPOSITORY, 7, "auto")
     assert "[dry-run]" in capsys.readouterr().out
 
 
@@ -396,7 +396,7 @@ def _blocked_by_rig(monkeypatch, body):
 
 def test_append_blocked_by_appends_parseable_line(monkeypatch):
     calls = _blocked_by_rig(monkeypatch, "Original body.")
-    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    github.GitHubClient().append_blocked_by(REPOSITORY, 42, 77)
     edit = next(a for a in calls if "edit" in a)
     new_body = edit[edit.index("--body") + 1]
     m = RANK_BLOCKED_RE.search(new_body)
@@ -406,14 +406,14 @@ def test_append_blocked_by_appends_parseable_line(monkeypatch):
 
 def test_append_blocked_by_idempotent(monkeypatch):
     calls = _blocked_by_rig(monkeypatch, "Body.\n\nBlocked by: #77\n")
-    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    github.GitHubClient().append_blocked_by(REPOSITORY, 42, 77)
     assert not any("edit" in a for a in calls)
 
 
 def test_append_blocked_by_distinct_blocker_appended(monkeypatch):
     # #7 referenced must not swallow #77, and a different blocker adds a line.
     calls = _blocked_by_rig(monkeypatch, "Body.\n\nBlocked by: #7\n")
-    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    github.GitHubClient().append_blocked_by(REPOSITORY, 42, 77)
     edit = next(a for a in calls if "edit" in a)
     new_body = edit[edit.index("--body") + 1]
     assert len(RANK_BLOCKED_RE.findall(new_body)) == 2
@@ -421,7 +421,7 @@ def test_append_blocked_by_distinct_blocker_appended(monkeypatch):
 
 def test_append_blocked_by_empty_body(monkeypatch):
     calls = _blocked_by_rig(monkeypatch, "")
-    github.GitHubClient().append_blocked_by(TARGET, 42, 77)
+    github.GitHubClient().append_blocked_by(REPOSITORY, 42, 77)
     edit = next(a for a in calls if "edit" in a)
     new_body = edit[edit.index("--body") + 1]
     assert RANK_BLOCKED_RE.search(new_body)
@@ -431,7 +431,7 @@ def test_append_blocked_by_dry_run(monkeypatch, capsys):
     monkeypatch.setattr(
         github, "_run",
         lambda a, cwd=None, env=None: (_ for _ in ()).throw(AssertionError))
-    github.GitHubClient(dry_run=True).append_blocked_by(TARGET, 42, 77)
+    github.GitHubClient(dry_run=True).append_blocked_by(REPOSITORY, 42, 77)
     assert "[dry-run]" in capsys.readouterr().out
 
 
@@ -445,7 +445,7 @@ def test_rank_rows_casts_string_boost_to_int(monkeypatch):
          "status": "Ready", "blocked": False, "score": 1.0, "boost": None},
     ])
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: ranked)
-    rows = github.GitHubClient().rank_rows(TARGET)
+    rows = github.GitHubClient().rank_rows(REPOSITORY)
     assert [r["boost"] for r in rows] == [5, 0, 0]
     assert all(isinstance(r["boost"], int) for r in rows)
 
@@ -484,19 +484,19 @@ def test_pr_view_fetches_expected_fields(monkeypatch):
 
     monkeypatch.setattr(github, "_run", fake_run)
     gh = github.GitHubClient()
-    d = gh.pr_view(TARGET, 12)
+    d = gh.pr_view(REPOSITORY, 12)
     assert d["state"] == "OPEN"
-    assert seen[0] == ["gh", "pr", "view", "12", "--repo", TARGET.repo,
+    assert seen[0] == ["gh", "pr", "view", "12", "--repo", REPOSITORY.repo,
                        "--json", "state,mergedAt,reviewDecision,reviews,comments,mergeable,headRefOid,headRefName"]
 
 
 def test_pr_number_for_branch(monkeypatch):
     monkeypatch.setattr(github, "_run",
                         lambda args, cwd=None, env=None: json.dumps([{"number": 34}]))
-    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+    assert github.GitHubClient().pr_number_for_branch(REPOSITORY, "agent/task-7") == 34
     monkeypatch.setattr(github, "_run",
                         lambda args, cwd=None, env=None: "[]")
-    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 0
+    assert github.GitHubClient().pr_number_for_branch(REPOSITORY, "agent/task-7") == 0
 
 
 def test_pr_number_for_branch_prefers_the_open_pr(monkeypatch):
@@ -505,17 +505,17 @@ def test_pr_number_for_branch_prefers_the_open_pr(monkeypatch):
     PR the dispatcher watches forever."""
     monkeypatch.setattr(github, "_run", lambda args, cwd=None, env=None: json.dumps(
         [{"number": 12, "state": "CLOSED"}, {"number": 34, "state": "OPEN"}]))
-    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+    assert github.GitHubClient().pr_number_for_branch(REPOSITORY, "agent/task-7") == 34
     # Same rows in the opposite order resolve identically.
     monkeypatch.setattr(github, "_run", lambda args, cwd=None, env=None: json.dumps(
         [{"number": 34, "state": "OPEN"}, {"number": 12, "state": "CLOSED"}]))
-    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+    assert github.GitHubClient().pr_number_for_branch(REPOSITORY, "agent/task-7") == 34
 
 
 def test_pr_number_for_branch_falls_back_to_the_newest_closed(monkeypatch):
     monkeypatch.setattr(github, "_run", lambda args, cwd=None, env=None: json.dumps(
         [{"number": 34, "state": "MERGED"}, {"number": 12, "state": "CLOSED"}]))
-    assert github.GitHubClient().pr_number_for_branch(TARGET, "agent/task-7") == 34
+    assert github.GitHubClient().pr_number_for_branch(REPOSITORY, "agent/task-7") == 34
 
 
 def test_delete_branch_swallows_gh_errors(monkeypatch):
@@ -523,13 +523,13 @@ def test_delete_branch_swallows_gh_errors(monkeypatch):
         raise subprocess.CalledProcessError(1, args)
 
     monkeypatch.setattr(github, "_run", boom)
-    github.GitHubClient().delete_branch(TARGET, "agent/task-7")  # no raise
+    github.GitHubClient().delete_branch(REPOSITORY, "agent/task-7")  # no raise
 
 
 def test_delete_branch_dry_run_calls_nothing(monkeypatch):
     monkeypatch.setattr(github, "_run",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError))
-    github.GitHubClient(dry_run=True).delete_branch(TARGET, "agent/task-7")
+    github.GitHubClient(dry_run=True).delete_branch(REPOSITORY, "agent/task-7")
 
 
 def workflow_run(*, id=10, workflow=1, number=1, attempt=1, event="pull_request",
@@ -557,15 +557,15 @@ def test_ci_reads_actions_and_statuses_with_current_head_and_pagination(monkeypa
                              "created_at": "2026-09-12T09:00:00Z"}]])
 
     monkeypatch.setattr(github, "_run", fake_run)
-    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    got = github.GitHubClient().ci_statuses(REPOSITORY, "abc", "agent/task-7")
     assert got == [CIStatus("failure", "2026-09-12T10:00:00Z"),
                    CIStatus("timed_out", "2026-09-12T10:00:00Z"),
                    CIStatus("error", "2026-09-12T11:00:00Z")]
     assert calls == [
-        ["gh", "api", f"repos/{TARGET.repo}/actions/runs", "--method", "GET",
+        ["gh", "api", f"repos/{REPOSITORY.repo}/actions/runs", "--method", "GET",
          "--paginate", "--slurp", "-f", "head_sha=abc", "-f", "per_page=100",
          "-f", "branch=agent/task-7"],
-        ["gh", "api", f"repos/{TARGET.repo}/commits/abc/statuses?per_page=100",
+        ["gh", "api", f"repos/{REPOSITORY.repo}/commits/abc/statuses?per_page=100",
          "--paginate", "--slurp"]]
 
 
@@ -579,7 +579,7 @@ def test_newest_run_supersedes_red_but_other_workflows_and_events_survive(monkey
             workflow_run(id=16, branch="main")]
     monkeypatch.setattr(github, "_run", lambda args: json.dumps(
         [{"workflow_runs": runs}] if "actions/runs" in args[2] else [[]]))
-    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    got = github.GitHubClient().ci_statuses(REPOSITORY, "abc", "agent/task-7")
     assert got == [CIStatus("success", "2026-09-12T10:00:00Z"),
                    CIStatus("failure", "2026-09-12T10:00:00Z"),
                    CIStatus("failure", "2026-09-12T10:00:00Z")]
@@ -590,7 +590,7 @@ def test_running_rerun_supersedes_failed_attempt(monkeypatch):
                                          conclusion=None)]
     monkeypatch.setattr(github, "_run", lambda args: json.dumps(
         [{"workflow_runs": runs}] if "actions/runs" in args[2] else [[]]))
-    assert github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7") == []
+    assert github.GitHubClient().ci_statuses(REPOSITORY, "abc", "agent/task-7") == []
 
 
 def test_new_failure_after_rerun_uses_new_timestamp(monkeypatch):
@@ -598,7 +598,7 @@ def test_new_failure_after_rerun_uses_new_timestamp(monkeypatch):
     runs = [workflow_run(attempt=2, updated="2026-09-12T11:00:00Z"), workflow_run()]
     monkeypatch.setattr(github, "_run", lambda args: json.dumps(
         [{"workflow_runs": runs}] if "actions/runs" in args[2] else [[]]))
-    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    got = github.GitHubClient().ci_statuses(REPOSITORY, "abc", "agent/task-7")
     assert got == [CIStatus("failure", "2026-09-12T11:00:00Z")]
     assert classify({"state": "OPEN"}, "", "agent-bot", ci_statuses=got,
                     check_cursor="2026-09-12T10:00:00Z").kind == "check-failed"
@@ -612,7 +612,7 @@ def test_new_pending_commit_status_supersedes_old_failure(monkeypatch):
                   "created_at": "2026-09-12T10:00:00Z"}]]
     monkeypatch.setattr(github, "_run", lambda args: json.dumps(
         [{"workflow_runs": []}] if "actions/runs" in args[2] else statuses))
-    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    got = github.GitHubClient().ci_statuses(REPOSITORY, "abc", "agent/task-7")
     assert classify({"state": "OPEN"}, "", "agent-bot", ci_statuses=got).kind == "quiet"
 
 
@@ -625,9 +625,9 @@ def test_commit_status_denial_does_not_hide_failed_action(monkeypatch, caplog):
         raise subprocess.CalledProcessError(1, args, stderr="HTTP 403: statuses denied")
 
     monkeypatch.setattr(github, "_run", fake_run)
-    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    got = github.GitHubClient().ci_statuses(REPOSITORY, "abc", "agent/task-7")
     assert got == [CIStatus("failure", "2026-09-12T10:00:00Z")]
-    assert "statuses denied" in caplog.text and TARGET.repo in caplog.text
+    assert "statuses denied" in caplog.text and REPOSITORY.repo in caplog.text
 
 
 def test_actions_denial_does_not_hide_failed_commit_status(monkeypatch, caplog):
@@ -640,7 +640,7 @@ def test_actions_denial_does_not_hide_failed_commit_status(monkeypatch, caplog):
                              "created_at": "2026-09-12T11:00:00Z"}]])
 
     monkeypatch.setattr(github, "_run", fake_run)
-    got = github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7")
+    got = github.GitHubClient().ci_statuses(REPOSITORY, "abc", "agent/task-7")
     assert got == [CIStatus("error", "2026-09-12T11:00:00Z")]
     assert "actions denied" in caplog.text
 
@@ -650,7 +650,7 @@ def test_missing_head_does_not_query_repository_wide_ci(monkeypatch):
         raise AssertionError(args)
 
     monkeypatch.setattr(github, "_run", unexpected)
-    assert github.GitHubClient().ci_statuses(TARGET, "", "agent/task-7") == []
+    assert github.GitHubClient().ci_statuses(REPOSITORY, "", "agent/task-7") == []
 
 
 def test_actions_timeout_does_not_discard_commit_statuses(monkeypatch, caplog):
@@ -663,7 +663,7 @@ def test_actions_timeout_does_not_discard_commit_statuses(monkeypatch, caplog):
                              "created_at": "2026-09-12T11:00:00Z"}]])
 
     monkeypatch.setattr(github, "_run", fake_run)
-    assert github.GitHubClient().ci_statuses(TARGET, "abc", "agent/task-7") == [
+    assert github.GitHubClient().ci_statuses(REPOSITORY, "abc", "agent/task-7") == [
         CIStatus("failure", "2026-09-12T11:00:00Z")]
     assert "timed out" in caplog.text
 
@@ -683,7 +683,7 @@ def test_item_lookup_never_lists_the_whole_board_with_item_list(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    assert github.GitHubClient()._item_id(TARGET, 7) == "ITEM7"
+    assert github.GitHubClient()._item_id(REPOSITORY, 7) == "ITEM7"
     assert not any("item-list" in a for a in calls)
     query = next(a for a in calls if a[:3] == ["gh", "api", "graphql"])
     assert "project=PROJ_NODE" in query

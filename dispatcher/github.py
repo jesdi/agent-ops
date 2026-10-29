@@ -10,7 +10,7 @@ import subprocess
 from dataclasses import dataclass
 
 from dispatcher import board
-from dispatcher.config import Target
+from dispatcher.config import Repository
 from dispatcher.pr_poll import CIStatus
 
 log = logging.getLogger(__name__)
@@ -56,13 +56,13 @@ class GitHubClient:
                 return ""
         return self._viewer_login
 
-    def pr_view(self, target: Target, pr_number: int) -> dict:
-        out = _run(["gh", "pr", "view", str(pr_number), "--repo", target.repo,
+    def pr_view(self, repository: Repository, pr_number: int) -> dict:
+        out = _run(["gh", "pr", "view", str(pr_number), "--repo", repository.repo,
                     "--json",
                     "state,mergedAt,reviewDecision,reviews,comments,mergeable,headRefOid,headRefName"])
         return json.loads(out)
 
-    def ci_statuses(self, target: Target, head: str, branch: str) -> list[CIStatus]:
+    def ci_statuses(self, repository: Repository, head: str, branch: str) -> list[CIStatus]:
         """PAT-compatible CI reads, isolated from PR lifecycle reads.
 
         Each source can fail independently; unreadable CI is warned about,
@@ -73,16 +73,16 @@ class GitHubClient:
             return results
         for source in (self._workflow_statuses, self._commit_statuses):
             try:
-                results.extend(source(target, head, branch))
+                results.extend(source(repository, head, branch))
             except (subprocess.SubprocessError, OSError, ValueError) as exc:
                 detail = getattr(exc, "stderr", None) or str(exc)
                 log.warning("CI poll failed (%s) for %s at %s: %s",
-                            source.__name__, target.repo, head, detail.strip())
+                            source.__name__, repository.repo, head, detail.strip())
         return results
 
-    def _workflow_statuses(self, target: Target, head: str,
+    def _workflow_statuses(self, repository: Repository, head: str,
                            branch: str) -> list[CIStatus]:
-        args = ["gh", "api", f"repos/{target.repo}/actions/runs",
+        args = ["gh", "api", f"repos/{repository.repo}/actions/runs",
                 "--method", "GET", "--paginate", "--slurp",
                 "-f", f"head_sha={head}", "-f", "per_page=100"]
         if branch:
@@ -105,10 +105,10 @@ class GitHubClient:
         return [CIStatus(run.get("conclusion") or "", run.get("updated_at") or "")
                 for run in latest.values() if run["status"] == "completed"]
 
-    def _commit_statuses(self, target: Target, head: str,
+    def _commit_statuses(self, repository: Repository, head: str,
                          branch: str) -> list[CIStatus]:
         pages = json.loads(_run([
-            "gh", "api", f"repos/{target.repo}/commits/{head}/statuses?per_page=100",
+            "gh", "api", f"repos/{repository.repo}/commits/{head}/statuses?per_page=100",
             "--paginate", "--slurp"]))
         latest: dict[str, dict] = {}
         for page in pages:
@@ -119,13 +119,13 @@ class GitHubClient:
         return [CIStatus(status["state"], status.get("created_at") or "")
                 for status in latest.values()]
 
-    def pr_number_for_branch(self, target: Target, branch: str) -> int:
+    def pr_number_for_branch(self, repository: Repository, branch: str) -> int:
         """The task's PR for `branch`, resolved deterministically: `gh pr
         list` gives no ordering guarantee, so a branch that had an earlier
         closed PR and a newer open one would otherwise leave gh to decide
         which PR the dispatcher watches forever. Prefer the open one; among
         equals take the highest number (the most recent)."""
-        out = _run(["gh", "pr", "list", "--repo", target.repo,
+        out = _run(["gh", "pr", "list", "--repo", repository.repo,
                     "--head", branch, "--state", "all",
                     "--json", "number,state", "--limit", "50"])
         rows = json.loads(out)
@@ -135,42 +135,42 @@ class GitHubClient:
                                         r.get("number") or 0))
         return best["number"]
 
-    def run_status(self, target: Target, run_id: int) -> str:
-        out = _run(["gh", "run", "view", str(run_id), "--repo", target.repo,
+    def run_status(self, repository: Repository, run_id: int) -> str:
+        out = _run(["gh", "run", "view", str(run_id), "--repo", repository.repo,
                     "--json", "status,conclusion"])
         d = json.loads(out)
         return (d.get("conclusion") or "") if d.get("status") == "completed" else ""
 
-    def rank_rows(self, target: Target) -> list[dict]:
+    def rank_rows(self, repository: Repository) -> list[dict]:
         """rank_cmd --json rows in rank order; `boost` normalized to an int
         (old vendored skills may not emit it yet, and the board can hand back
         a string or an empty value for an unset field)."""
-        out = _run(shlex.split(target.rank_cmd), cwd=target.clone_path)
+        out = _run(shlex.split(repository.rank_cmd), cwd=repository.clone_path)
         rows = json.loads(out)
         for row in rows:
             row["boost"] = int(row.get("boost") or 0)
         return rows
 
-    def candidates(self, target: Target) -> list[Candidate]:
+    def candidates(self, repository: Repository) -> list[Candidate]:
         return [
             Candidate(number=r["number"], title=r["title"], url=r["url"],
                       effort=r.get("effort"), labels=tuple(r.get("labels") or ()))
-            for r in self.rank_rows(target)
+            for r in self.rank_rows(repository)
             if r["status"] == "Ready" and not r["blocked"] and "auto" in r["labels"]
         ]
 
-    def _project_node_id(self, target: Target) -> str:
-        key = f"{target.project_owner}/{target.project_number}"
+    def _project_node_id(self, repository: Repository) -> str:
+        key = f"{repository.project_owner}/{repository.project_number}"
         if key not in self._project_node_ids:
-            out = _run(["gh", "project", "view", str(target.project_number),
-                        "--owner", target.project_owner, "--format", "json"],
+            out = _run(["gh", "project", "view", str(repository.project_number),
+                        "--owner", repository.project_owner, "--format", "json"],
                        env=_project_env())
             self._project_node_ids[key] = json.loads(out)["id"]
         return self._project_node_ids[key]
 
-    def _item_id(self, target: Target, issue: int) -> str:
+    def _item_id(self, repository: Repository, issue: int) -> str:
         items = board.fetch_items(
-            self._project_node_id(target),
+            self._project_node_id(repository),
             lambda args: _run(["gh"] + args, env=_project_env()))
         for item in items:
             if item.number == issue:
@@ -180,13 +180,13 @@ class GitHubClient:
         # to issue titles, so the title — fetched with the stored repo auth —
         # is the join key.
         title = json.loads(_run(["gh", "issue", "view", str(issue),
-                                 "--repo", target.repo,
+                                 "--repo", repository.repo,
                                  "--json", "title"]))["title"]
         matches = [item.id for item in items
                    if item.number is None and item.title == title]
         if len(matches) == 1:
             return matches[0]
-        raise LookupError(f"issue #{issue} not on project {target.project_number}"
+        raise LookupError(f"issue #{issue} not on project {repository.project_number}"
                           f" (title join: {len(matches)} items match {title!r})")
 
     def issue_view(self, repo: str, number: int) -> dict:
@@ -194,8 +194,8 @@ class GitHubClient:
                     "--json", "title,body,url"])
         return json.loads(out)
 
-    def issue_body(self, target: Target, issue: int) -> str:
-        return self.issue_view(target.repo, issue).get("body") or ""
+    def issue_body(self, repository: Repository, issue: int) -> str:
+        return self.issue_view(repository.repo, issue).get("body") or ""
 
     def issue_state(self, repo: str, number: int) -> str:
         if self.dry_run:
@@ -215,39 +215,39 @@ class GitHubClient:
                     "--title", title, "--body", body])
         return int(out.strip().rstrip("/").rsplit("/", 1)[-1])
 
-    def set_status(self, target: Target, issue: int, option_id: str) -> None:
+    def set_status(self, repository: Repository, issue: int, option_id: str) -> None:
         if self.dry_run:
             print(f"[dry-run] set_status #{issue} -> {option_id}")
             return
         _run(["gh", "project", "item-edit",
-              "--id", self._item_id(target, issue),
-              "--project-id", self._project_node_id(target),
-              "--field-id", target.status_field_id,
+              "--id", self._item_id(repository, issue),
+              "--project-id", self._project_node_id(repository),
+              "--field-id", repository.status_field_id,
               "--single-select-option-id", option_id], env=_project_env())
 
-    def set_boost(self, target: Target, issue: int, value: int) -> None:
+    def set_boost(self, repository: Repository, issue: int, value: int) -> None:
         if self.dry_run:
             print(f"[dry-run] set_boost #{issue} -> {value}")
             return
         _run(["gh", "project", "item-edit",
-              "--id", self._item_id(target, issue),
-              "--project-id", self._project_node_id(target),
-              "--field-id", target.boost_field_id,
+              "--id", self._item_id(repository, issue),
+              "--project-id", self._project_node_id(repository),
+              "--field-id", repository.boost_field_id,
               "--number", str(value)], env=_project_env())
 
-    def add_label(self, target: Target, issue: int, label: str) -> None:
+    def add_label(self, repository: Repository, issue: int, label: str) -> None:
         if self.dry_run:
             print(f"[dry-run] add_label #{issue} +{label}")
             return
         _run(["gh", "issue", "edit", str(issue),
-              "--repo", target.repo, "--add-label", label])
+              "--repo", repository.repo, "--add-label", label])
 
-    def comment(self, target: Target, issue: int, body: str) -> None:
+    def comment(self, repository: Repository, issue: int, body: str) -> None:
         if self.dry_run:
             print(f"[dry-run] comment #{issue}: {body}")
             return
         _run(["gh", "issue", "comment", str(issue),
-              "--repo", target.repo, "--body", body])
+              "--repo", repository.repo, "--body", body])
 
     def close_issue(self, repo: str, number: int) -> None:
         if self.dry_run:
@@ -256,58 +256,58 @@ class GitHubClient:
         _run(["gh", "issue", "close", str(number), "--repo", repo,
               "--reason", "completed"])
 
-    def claim(self, target: Target, cand: Candidate) -> None:
+    def claim(self, repository: Repository, cand: Candidate) -> None:
         if self.dry_run:
             print(f"[dry-run] claim #{cand.number} ({cand.title})")
             return
-        self.set_status(target, cand.number, target.status_in_progress_option_id)
-        self.comment(target, cand.number, "🤖 picked up by agent-ops")
+        self.set_status(repository, cand.number, repository.status_in_progress_option_id)
+        self.comment(repository, cand.number, "🤖 picked up by agent-ops")
 
-    def release(self, target: Target, issue: int, reason: str) -> None:
+    def release(self, repository: Repository, issue: int, reason: str) -> None:
         if self.dry_run:
             print(f"[dry-run] release #{issue}: {reason}")
             return
-        self.comment(target, issue,
+        self.comment(repository, issue,
                      f"🤖 agent-ops released this task: {reason}. "
                      f"Worktree preserved for autopsy.")
-        self.set_status(target, issue, target.status_ready_option_id)
+        self.set_status(repository, issue, repository.status_ready_option_id)
 
-    def cancel(self, target: Target, issue: int) -> None:
+    def cancel(self, repository: Repository, issue: int) -> None:
         """Operator won't-do: unlike release(), the card leaves the claim
         pool for good (Wont do, not Ready) and the issue closes as not
         planned."""
         if self.dry_run:
             print(f"[dry-run] cancel #{issue}")
             return
-        self.comment(target, issue,
+        self.comment(repository, issue,
                      "🤖 canceled by operator — moved to Wont do.")
-        if target.status_wont_do_option_id:
-            self.set_status(target, issue, target.status_wont_do_option_id)
+        if repository.status_wont_do_option_id:
+            self.set_status(repository, issue, repository.status_wont_do_option_id)
         else:
             log.warning("%s: status_wont_do_option_id unset — board not "
-                        "updated for canceled #%d", target.name, issue)
-        _run(["gh", "issue", "close", str(issue), "--repo", target.repo,
+                        "updated for canceled #%d", repository.name, issue)
+        _run(["gh", "issue", "close", str(issue), "--repo", repository.repo,
               "--reason", "not planned"])
 
-    def delete_branch(self, target: Target, branch: str) -> None:
+    def delete_branch(self, repository: Repository, branch: str) -> None:
         """Best-effort: repos with delete-branch-on-merge already removed
         it, and a 422/404 must not abort the done path."""
         if self.dry_run:
-            print(f"[dry-run] delete_branch {target.repo}:{branch}")
+            print(f"[dry-run] delete_branch {repository.repo}:{branch}")
             return
         try:
             _run(["gh", "api", "-X", "DELETE",
-                  f"repos/{target.repo}/git/refs/heads/{branch}"])
+                  f"repos/{repository.repo}/git/refs/heads/{branch}"])
         except (subprocess.CalledProcessError, OSError):
             pass
 
-    def append_blocked_by(self, target: Target, issue: int,
+    def append_blocked_by(self, repository: Repository, issue: int,
                           blocker: int) -> None:
         if self.dry_run:
             print(f"[dry-run] append_blocked_by #{issue} <- #{blocker}")
             return
         body = json.loads(_run(["gh", "issue", "view", str(issue),
-                                "--repo", target.repo,
+                                "--repo", repository.repo,
                                 "--json", "body"]))["body"] or ""
         # Idempotent: skip if a Blocked-by line already references this
         # blocker. \b keeps #7 from matching inside #77.
@@ -315,5 +315,5 @@ class GitHubClient:
             return
         line = f"Blocked by: #{blocker}"
         new_body = f"{body.rstrip()}\n\n{line}\n" if body.strip() else f"{line}\n"
-        _run(["gh", "issue", "edit", str(issue), "--repo", target.repo,
+        _run(["gh", "issue", "edit", str(issue), "--repo", repository.repo,
               "--body", new_body])

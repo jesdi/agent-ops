@@ -149,7 +149,7 @@ def test_a_turn_that_fails_after_it_saved_the_plan_gate_stays_resumable(
 
 
 class NoTail(FakeSessions):
-    def capture_tail(self, target, issue, lines=25):
+    def capture_tail(self, repository, issue, lines=25):
         raise RuntimeError("herdr down")
 
 
@@ -173,7 +173,7 @@ class Corrupting(FakeSessions):
         super().__init__()
         self.path = path
 
-    def is_alive(self, target, issue):
+    def is_alive(self, repository, issue):
         self.path.write_text("{not json")
         raise RuntimeError("boom")
 

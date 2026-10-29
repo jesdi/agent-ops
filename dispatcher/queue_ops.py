@@ -74,12 +74,12 @@ def plan_ready(row: dict) -> QueuePlan:
     return QueuePlan(ok=True, reason=f"#{issue} marked Ready", set_ready=True)
 
 
-def apply_plan(github, target, issue: int, plan: QueuePlan) -> None:
+def apply_plan(github, repository, issue: int, plan: QueuePlan) -> None:
     if not plan.ok:
         return
     if plan.set_boost is not None:
-        github.set_boost(target, issue, plan.set_boost)
+        github.set_boost(repository, issue, plan.set_boost)
     if plan.set_ready:
-        github.set_status(target, issue, target.status_ready_option_id)
+        github.set_status(repository, issue, repository.status_ready_option_id)
     if plan.add_auto:
-        github.add_label(target, issue, "auto")
+        github.add_label(repository, issue, "auto")

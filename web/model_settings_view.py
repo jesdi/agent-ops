@@ -104,7 +104,7 @@ class ModelSettingsView(BaseModel):
     efforts: dict[str, list[str]]   # provider -> its effort vocabulary
     default_provider: str           # the provider of a bare model id
     known_models: dict[str, list[str]]  # provider -> models either block names
-    target_overrides: list[str]     # targets whose own models: block wins
+    repository_overrides: list[str]     # repositories whose own models: block wins
 
 
 def view(cfg: Config, yaml_models: ModelPolicy) -> ModelSettingsView:
@@ -118,7 +118,7 @@ def view(cfg: Config, yaml_models: ModelPolicy) -> ModelSettingsView:
         efforts={p: list(e) for p, e in PROVIDER_EFFORTS.items()},
         default_provider=DEFAULT_PROVIDER,
         known_models=_known_models(cfg.models, yaml_models),
-        target_overrides=[t.name for t in cfg.targets if t.models is not None])
+        repository_overrides=[t.name for t in cfg.repositories if t.models is not None])
 
 
 def _known_models(*policies: ModelPolicy) -> dict[str, list[str]]:

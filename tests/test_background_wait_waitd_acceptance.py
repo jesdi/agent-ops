@@ -11,12 +11,12 @@ TASK = {"id": "b1", "type": "shell", "command": "make crap-gate"}
 
 
 def _ping(d, **kw):
-    handle_ping(json.dumps({"issue": N, "target": T, **kw}).encode(), d)
+    handle_ping(json.dumps({"issue": N, "repository": T, **kw}).encode(), d)
 
 
-def _bg(d, target=T):
+def _bg(d, repository=T):
     from dispatcher.state import read_background
-    return read_background(d, target, N)
+    return read_background(d, repository, N)
 
 
 def _place(d, tasks, now):
@@ -52,8 +52,8 @@ def test_report_removes_waiting_and_waiting_removes_background(tmp_path):
     assert _bg(tmp_path) is None
 
 
-def test_empty_target_report_is_legacy_waiting_no_background(tmp_path):
-    handle_ping(json.dumps({"issue": N, "target": "",
+def test_empty_repository_report_is_legacy_waiting_no_background(tmp_path):
+    handle_ping(json.dumps({"issue": N, "repository": "",
                             "background_tasks": [TASK]}).encode(), tmp_path)
     assert (tmp_path / f"waiting-{N}").exists()
     assert _bg(tmp_path) is None
@@ -102,7 +102,7 @@ def test_clear_turn_markers_removes_both_markers(tmp_path):
     assert _bg(tmp_path) is None
 
 
-def test_marker_scoped_to_target(tmp_path):
+def test_marker_scoped_to_repository(tmp_path):
     _ping(tmp_path, background_tasks=[TASK])
     assert _bg(tmp_path) is not None
     assert _bg(tmp_path, "other") is None

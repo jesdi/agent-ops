@@ -3,13 +3,13 @@ import dispatcher.main as main
 from dispatcher.github import Candidate
 
 from tests.test_main import FakeGitHub, FakeSessions, deps, patch_usage, patch_workspace
-from tests.test_multi_project_capacity import mk_task, two_target_cfg
+from tests.test_multi_project_capacity import mk_task, two_repository_cfg
 
 
-def test_rank_runs_only_for_targets_that_get_a_turn(tmp_path, monkeypatch):
+def test_rank_runs_only_for_repositories_that_get_a_turn(tmp_path, monkeypatch):
     """capacity 3, factorial at 2 active, portfolio_eval at 0: the one free
     unit goes to portfolio_eval, and factorial's candidates() (its rank_cmd)
-    never runs — eagerly ranking every target would call it."""
+    never runs — eagerly ranking every repository would call it."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
 
@@ -18,14 +18,14 @@ def test_rank_runs_only_for_targets_that_get_a_turn(tmp_path, monkeypatch):
             super().__init__(*a, **kw)
             self.candidates_calls = []
 
-        def candidates(self, target):
-            self.candidates_calls.append(target.name)
-            return super().candidates(target)
+        def candidates(self, repository):
+            self.candidates_calls.append(repository.name)
+            return super().candidates(repository)
 
-    c = two_target_cfg(tmp_path)
+    c = two_repository_cfg(tmp_path)
     mk_task(c, "factorial", 1, slot=0)
     mk_task(c, "factorial", 2, slot=1)
-    gh = CountingGitHub(cands_by_target={
+    gh = CountingGitHub(cands_by_repository={
         "portfolio_eval": [Candidate(10, "PE candidate", "u10")],
         "factorial": [Candidate(20, "F candidate", "u20")],
     })

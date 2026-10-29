@@ -8,7 +8,7 @@ import type { GhostCard } from '../../lib/api'
 import { server } from '../../test/msw-server'
 
 const ghost: GhostCard = {
-  number: 73, target: 'widget', title: 'Ship dark mode',
+  number: 73, repository: 'widget', title: 'Ship dark mode',
   url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 2,
 }
 

@@ -13,7 +13,7 @@ def test_write_intent_round_trips_through_list(tmp_path):
                 / "1753430000000-portfolio_eval-42-reply.json")
     [it] = intents.list_intents(tmp_path)
     assert it.action == "reply"
-    assert it.target == "portfolio_eval"
+    assert it.repository == "portfolio_eval"
     assert it.issue == 42
     assert it.payload == {"text": "use oauth"}
     assert it.actor == "jesdi@github"
@@ -24,9 +24,9 @@ def test_write_intent_round_trips_through_list(tmp_path):
 def test_write_intent_file_body_schema(tmp_path):
     p = intents.write_intent(tmp_path, "kill", "portfolio_eval", 7, {}, "op", 1)
     d = json.loads(p.read_text())
-    assert set(d) == {"action", "target", "issue", "payload", "actor",
+    assert set(d) == {"action", "repository", "issue", "payload", "actor",
                       "created_at"}
-    assert d["action"] == "kill" and d["target"] == "portfolio_eval"
+    assert d["action"] == "kill" and d["repository"] == "portfolio_eval"
     assert d["issue"] == 7 and d["payload"] == {}
 
 
@@ -77,16 +77,16 @@ def test_delete_intent_removes_file_and_is_idempotent(tmp_path):
     intents.delete_intent(it)  # second delete must not raise
 
 
-def test_intent_roundtrip_carries_target(tmp_path):
+def test_intent_roundtrip_carries_repository(tmp_path):
     intents.write_intent(tmp_path, "kill", "agent_ops", 7, {}, "op", 1000)
     [i] = intents.list_intents(tmp_path)
-    assert (i.target, i.issue, i.action) == ("agent_ops", 7, "kill")
+    assert (i.repository, i.issue, i.action) == ("agent_ops", 7, "kill")
 
 
-def test_legacy_intent_without_target_still_listed(tmp_path):
+def test_legacy_intent_without_repository_still_listed(tmp_path):
     d = tmp_path / "intents"; d.mkdir()
     (d / "999-7-kill.json").write_text(json.dumps(
         {"action": "kill", "issue": 7, "payload": {}, "actor": "op",
          "created_at": "2026-08-26T00:00:00+00:00"}))
     [i] = intents.list_intents(tmp_path)
-    assert (i.target, i.issue) == ("", 7)
+    assert (i.repository, i.issue) == ("", 7)

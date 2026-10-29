@@ -22,7 +22,7 @@ def _events_path(state_dir: str | Path) -> Path:
     return Path(state_dir) / EVENTS_FILE
 
 
-def append_event(state_dir: str | Path, event: str, *, target: str = "",
+def append_event(state_dir: str | Path, event: str, *, repository: str = "",
                  issue: int = 0, stage: str = "", model: str = "",
                  actor: str = "dispatcher", detail: str = "") -> None:
     try:
@@ -31,7 +31,7 @@ def append_event(state_dir: str | Path, event: str, *, target: str = "",
         if p.exists() and p.stat().st_size > MAX_BYTES:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             p.rename(p.with_name(f"events-{stamp}.jsonl"))
-        line = json.dumps({"ts": _now(), "event": event, "target": target,
+        line = json.dumps({"ts": _now(), "event": event, "repository": repository,
                            "issue": issue, "stage": stage, "model": model,
                            "actor": actor, "detail": detail})
         with p.open("a") as fh:
@@ -51,5 +51,7 @@ def read_tail(state_dir: str | Path, limit: int = 200) -> list[dict]:
         except json.JSONDecodeError:
             continue
         if isinstance(d, dict):
+            if "target" in d:   # lines written before the rename
+                d.setdefault("repository", d.pop("target"))
             events.append(d)
     return events[-limit:]

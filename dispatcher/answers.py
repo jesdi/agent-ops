@@ -210,7 +210,7 @@ def without_superseded(pending: list[intents.Intent],
     groups: dict[tuple[str, int], list[intents.Intent]] = {}
     for i in pending:
         if i.action == "answers":
-            groups.setdefault((i.target, i.issue), []).append(i)
+            groups.setdefault((i.repository, i.issue), []).append(i)
     losers = {i.path for g in groups.values() for i in _superseded(g, task_for)}
     for i in pending:
         if i.path in losers:

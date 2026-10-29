@@ -11,8 +11,8 @@ from dispatcher import tmux_migration
 from dispatcher.state import Stage, TaskState, save
 
 
-def _task(state_dir, issue, target="acme", park="", stage=Stage.IMPLEMENT):
-    ts = TaskState(issue=issue, target=target, stage=stage, slot=0,
+def _task(state_dir, issue, repository="acme", park="", stage=Stage.IMPLEMENT):
+    ts = TaskState(issue=issue, repository=repository, stage=stage, slot=0,
                    worktree=f"/wt/task-{issue}", branch=f"agent/task-{issue}",
                    title=f"task {issue}", updated_at="2026-09-03T00:00:00Z",
                    park=park)
@@ -30,18 +30,18 @@ class FakeShell:
         self.raises = raises
         self.events = []
 
-    def _resolve(self, target):
+    def _resolve(self, repository):
         """tmux's own `-t` resolution, prefix footgun included: `=name` is
         exact, while a BARE name matches exactly or — failing that — by
         prefix, so with only `task-acme-42` alive `-t task-acme-4` resolves
         to it. Modelled here so a call that drops the `=` kills the wrong
         session in the test too."""
-        if target.startswith("="):
-            name = target[1:]
+        if repository.startswith("="):
+            name = repository[1:]
             return name if name in self.sessions else None
-        if target in self.sessions:
-            return target
-        prefixed = sorted(s for s in self.sessions if s.startswith(target))
+        if repository in self.sessions:
+            return repository
+        prefixed = sorted(s for s in self.sessions if s.startswith(repository))
         return prefixed[0] if prefixed else None
 
     def run(self, args, **kwargs):
@@ -62,7 +62,7 @@ class FakeShell:
         raise AssertionError(f"unexpected call: {args}")
 
     def wake(self, task, text):
-        self.events.append(f"wake {task.target}-{task.issue} {text}")
+        self.events.append(f"wake {task.repository}-{task.issue} {text}")
 
 
 @pytest.fixture
@@ -131,9 +131,9 @@ def test_a_login_parked_task_with_a_live_session_migrates_too(tmp_path, shell):
 def test_a_session_name_that_is_a_prefix_of_a_live_one_is_not_confused(
         tmp_path, shell):
     """`tmux -t <name>` resolves by exact name and THEN by prefix, so a bare
-    target for task 4 matches live `task-acme-42` — killing task 42's
+    repository for task 4 matches live `task-acme-42` — killing task 42's
     session and stranding it (never woken → reads dead → FAILED). Every
-    target must therefore be tmux's exact form, `=<name>`."""
+    repository must therefore be tmux's exact form, `=<name>`."""
     state = tmp_path / "state"
     _task(state, 4)                        # no session of its own
     _task(state, 42)                       # the live one, under the new name
@@ -148,9 +148,9 @@ def test_a_session_name_that_is_a_prefix_of_a_live_one_is_not_confused(
     assert "tmux kill-session -t =task-acme-4" not in sh.events
     assert "tmux kill-session -t =task-5" not in sh.events
     assert "tmux kill-session -t =task-acme-42" in sh.events
-    targets = [e.split(" -t ", 1)[1] for e in sh.events
-               if e.startswith("tmux ")]
-    assert all(t.startswith("=") for t in targets), targets
+    repositories = [e.split(" -t ", 1)[1] for e in sh.events
+                    if e.startswith("tmux ")]
+    assert all(t.startswith("=") for t in repositories), repositories
 
 
 def test_a_live_session_the_dispatcher_would_not_drive_is_ended_not_woken(

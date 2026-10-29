@@ -24,27 +24,27 @@ def parse_base(body: str) -> str | None:
     return v if _BRANCH.fullmatch(v) else None
 
 
-def _path(state_dir: str, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"base-wait-{target}-{issue}.json"
+def _path(state_dir: str, repository: str, issue: int) -> Path:
+    return Path(state_dir) / f"base-wait-{repository}-{issue}.json"
 
 
-def is_recorded(state_dir: str, target: str, issue: int, key: str) -> bool:
-    """True when the operator was already pinged for (target, issue) waiting on `key`.
+def is_recorded(state_dir: str, repository: str, issue: int, key: str) -> bool:
+    """True when the operator was already pinged for (repository, issue) waiting on `key`.
     A torn or unreadable record counts as none."""
     try:
-        return json.loads(_path(state_dir, target, issue).read_text()).get("key") == key
+        return json.loads(_path(state_dir, repository, issue).read_text()).get("key") == key
     except (OSError, ValueError, AttributeError):
         return False
 
 
-def record_wait(state_dir: str, target: str, issue: int, key: str) -> None:
+def record_wait(state_dir: str, repository: str, issue: int, key: str) -> None:
     """Record the ping for `key`; atomic, so a crash never leaves a torn file."""
-    p = _path(state_dir, target, issue)
+    p = _path(state_dir, repository, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps({"key": key}))
     tmp.replace(p)
 
 
-def clear_wait(state_dir: str, target: str, issue: int) -> None:
-    _path(state_dir, target, issue).unlink(missing_ok=True)
+def clear_wait(state_dir: str, repository: str, issue: int) -> None:
+    _path(state_dir, repository, issue).unlink(missing_ok=True)

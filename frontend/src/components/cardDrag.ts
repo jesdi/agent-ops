@@ -2,7 +2,7 @@ import type { DragEvent } from 'react'
 
 export interface DraggedCard {
   issue: number
-  target: string
+  repository: string
   title: string
 }
 

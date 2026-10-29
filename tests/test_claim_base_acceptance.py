@@ -1,7 +1,7 @@
 """Ticket 02: a claim reads the issue's base; a missing base waits in Ready.
 
 Black-box through dispatcher.main.run_pass with a fake GitHub that serves issue
-bodies (`issue_body(target, issue) -> str`), a fake notifier and a workspace
+bodies (`issue_body(repository, issue) -> str`), a fake notifier and a workspace
 step faked at its boundary: it records the base it is given and raises
 workspace.MissingBaseError for a base that is not on the fake origin.
 """
@@ -26,7 +26,7 @@ class BodyGitHub(FakeGitHub):
         super().__init__(**kw)
         self.bodies = bodies  # issue -> body; edit it between passes
 
-    def issue_body(self, target, issue):
+    def issue_body(self, repository, issue):
         return self.bodies.get(issue, "")
 
 
@@ -37,11 +37,11 @@ class Origin:
         self.branches = set(branches)
         self.calls = []  # (issue, base)
 
-        def fake_create(target, issue, base="main", dry_run=False):
+        def fake_create(repository, issue, base="main", dry_run=False):
             self.calls.append((issue, base))
             if base not in self.branches:
                 raise workspace.MissingBaseError(f"base {base!r} is not on origin")
-            wt = Path(target.worktrees_path) / f"task-{issue}"
+            wt = Path(repository.worktrees_path) / f"task-{issue}"
             (wt / ".agent").mkdir(parents=True, exist_ok=True)
             return str(wt)
         monkeypatch.setattr(main, "create_workspace", fake_create)
@@ -126,7 +126,7 @@ def test_base_edited_after_claim_does_not_change(box):
 
 def test_task_file_without_a_base_field_loads_as_main(tmp_path):
     c = cfg(tmp_path)
-    save(c.state_dir, TaskState(issue=17, target="portfolio_eval", stage=Stage.REVIEW,
+    save(c.state_dir, TaskState(issue=17, repository="portfolio_eval", stage=Stage.REVIEW,
                                 slot=0, worktree="/w", branch="agent/task-17",
                                 title="t", updated_at="2026-07-21T00:00:00+00:00"))
     p = Path(c.state_dir) / "task-portfolio_eval-17.json"
@@ -208,7 +208,7 @@ def test_other_provisioning_failure_still_reports_and_quarantines(tmp_path, monk
     c = dc_replace(cfg(tmp_path), infra_repo="jesdi/agent-ops")
     seen = []
 
-    def boom(target, issue, base="main", dry_run=False):
+    def boom(repository, issue, base="main", dry_run=False):
         seen.append(base)
         raise RuntimeError("disk full")
     monkeypatch.setattr(main, "create_workspace", boom)

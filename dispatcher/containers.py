@@ -2,7 +2,7 @@
 one-shot setup runs (workspace.py). Both mount the worktree AND the main
 clone at their host paths — a worktree's .git is a file pointing into
 <clone>/.git/worktrees/<name>, so git inside the container needs both. The
-clone path is always the target's configured one, handed in by the caller:
+clone path is always the repository's configured one, handed in by the caller:
 that pointer is session-writable and is never read here."""
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
 
     The string runs in a host shell, so every value in it is one quoted
     shell word; only `args` is shell text, and its caller quotes it. `clone`
-    is the target's configured clone path: nothing here is read from the
+    is the repository's configured clone path: nothing here is read from the
     worktree (its `.git` pointer is session-writable) except the task
     branch, which task_branch validates. With no clone none is mounted; the
     launcher refuses to launch without one."""
@@ -189,7 +189,7 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
 
 def setup_cmd(name: str, worktree: str, setup: str, clone: str) -> list[str]:
     """One-shot provisioning container: argv, never a shell line. `clone` is
-    the target's configured clone path."""
+    the repository's configured clone path."""
     return [
         "podman", "run", "--rm", "--name", name,
         "-v", f"{worktree}:{worktree}", "-w", worktree,

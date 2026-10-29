@@ -8,11 +8,11 @@ import { useTaskHistory } from '../hooks/useResources'
  * Attach is external via `herdr --remote box`.
  */
 export function TerminalHistory({
-  target,
+  repository,
   issue,
   onClose,
 }: {
-  target: string
+  repository: string
   issue: number
   onClose: () => void
 }) {
@@ -35,7 +35,7 @@ export function TerminalHistory({
     }
   }
 
-  const query = useTaskHistory(target, issue, true)
+  const query = useTaskHistory(repository, issue, true)
 
   useEffect(() => {
     const el = paneRef.current

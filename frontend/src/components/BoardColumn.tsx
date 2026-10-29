@@ -51,10 +51,10 @@ export function DegradedMarkers({ stale, error }: Degraded) {
 export function BoardColumn({ view: { column, count, degraded, onCardDrop }, pendingByKey, active, tabbed, children }: {
   view: ColumnView
   /**
-   * Keyed `${target}#${issue}`. A legacy (target-less) pending intent is
-   * stored under the key `#${issue}` (empty target) and applies to any card
-   * with that issue number, since the intent file predates the target field
-   * and cannot be attributed to one target over another.
+   * Keyed `${repository}#${issue}`. A legacy (repository-less) pending intent is
+   * stored under the key `#${issue}` (empty repository) and applies to any card
+   * with that issue number, since the intent file predates the repository field
+   * and cannot be attributed to one repository over another.
    */
   pendingByKey: ReadonlyMap<string, readonly string[]>
   /** The phone tab on screen; below md every other column is hidden. */
@@ -91,12 +91,12 @@ export function BoardColumn({ view: { column, count, degraded, onCardDrop }, pen
       <div data-testid={`scroll-${column.key}`} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
         {column.cards.map((card) => (
           <TaskCardView
-            // Issue numbers are per-target: alpha#73 and beta#73 must not
+            // Issue numbers are per-repository: alpha#73 and beta#73 must not
             // collide on one React key.
-            key={`${card.target}#${card.issue}`}
+            key={`${card.repository}#${card.issue}`}
             card={card}
             pendingActions={[
-              ...(pendingByKey.get(`${card.target}#${card.issue}`) ?? []),
+              ...(pendingByKey.get(`${card.repository}#${card.issue}`) ?? []),
               ...(pendingByKey.get(`#${card.issue}`) ?? []),
             ]}
           />

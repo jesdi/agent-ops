@@ -33,7 +33,7 @@ LIVE_ID = "01a11028-9f0c-75f3-8b77-a5b5e6dfb370"
 CLAUDE_ID = "7b0c2a1e-3f4d-4c5b-9a6e-1d2f3a4b5c6d"
 CODEX_MODEL = "openai/gpt-6-astra"
 CLAUDE_MODEL = "anthropic/claude-opus-5-5"
-TARGET = "portfolio_eval"
+REPOSITORY = "portfolio_eval"
 
 
 class RecordingSessions(FakeSessions):
@@ -45,20 +45,20 @@ class RecordingSessions(FakeSessions):
         self.launch_real = launch_real
         self.resume_records = []
 
-    def resume(self, target, issue, worktree, message, model, effort="",
+    def resume(self, repository, issue, worktree, message, model, effort="",
                second=None, *, session_id=None):
         self.resume_records.append({
-            "target": target, "issue": issue, "worktree": worktree,
+            "repository": repository, "issue": issue, "worktree": worktree,
             "message": message, "model": model, "session_id": session_id,
         })
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model,
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model,
                     effort="", second=None):
-        super().spawn_stage(target, issue, worktree, prompt, stage_name,
+        super().spawn_stage(repository, issue, worktree, prompt, stage_name,
                             model, effort, second)
         if self.launch_real:
             Sessions(state_dir=self.state_dir).spawn_stage(
-                target, issue, worktree, prompt, stage_name, model,
+                repository, issue, worktree, prompt, stage_name, model,
                 effort=effort, second=second)
 
 
@@ -84,18 +84,18 @@ def _task(c, issue, stage, *, session_id=CODEX_ID, park=PARK_HUMAN,
     wt = make_task(c, issue=issue, stage=stage, park=park, slot=slot,
                    picks={continued_stage: model}, **kw)
     (wt / ".git").write_text(
-        f"gitdir: {c.targets[0].clone_path}/.git/worktrees/task-{issue}\n")
-    write_session(c.state_dir, TARGET, issue,
+        f"gitdir: {c.repositories[0].clone_path}/.git/worktrees/task-{issue}\n")
+    write_session(c.state_dir, REPOSITORY, issue,
                   SessionRecord(session_id=session_id, stage=continued_stage))
     return wt
 
 
 def _reply(c, issue, text, request_id=1):
-    intents.write_intent(c.state_dir, "reply", TARGET, issue,
+    intents.write_intent(c.state_dir, "reply", REPOSITORY, issue,
                          {"text": text}, "operator", request_id)
 
 
-def _tab_fake(monkeypatch, calls, *, target="acme", issue=42, on_start=None):
+def _tab_fake(monkeypatch, calls, *, repository="acme", issue=42, on_start=None):
     """Reuse the stateful fake server and adapt only its task/workspace labels."""
     herdr_fake_creating(monkeypatch, calls)
     original = herdr._run
@@ -106,8 +106,8 @@ def _tab_fake(monkeypatch, calls, *, target="acme", issue=42, on_start=None):
         result = original(args)
         if result is not None:
             result.stdout = result.stdout.replace(
-                "task-acme-42", f"task-{target}-{issue}").replace(
-                    '"acme"', json.dumps(target))
+                "task-acme-42", f"task-{repository}-{issue}").replace(
+                    '"acme"', json.dumps(repository))
         return result
 
     monkeypatch.setattr(herdr, "_run", run)
@@ -160,7 +160,7 @@ def test_operator_approval_resumes_the_recorded_plan_in_its_worktree(
     assert (resume["issue"], resume["session_id"], resume["worktree"], resume["model"]) == (
         384, CODEX_ID, str(wt), CODEX_MODEL)
     assert "Approved, go on" in resume["message"]
-    assert messages.undelivered(c.state_dir, TARGET, 384) == []
+    assert messages.undelivered(c.state_dir, REPOSITORY, 384) == []
     assert sessions.spawned == []
 
 
@@ -176,7 +176,7 @@ def test_operator_reply_resumes_the_recorded_claude_implement_session(
     assert (resume["issue"], resume["session_id"], resume["worktree"], resume["model"]) == (
         370, CLAUDE_ID, str(wt), CLAUDE_MODEL)
     assert "Use the existing endpoint" in resume["message"]
-    assert messages.undelivered(c.state_dir, TARGET, 370) == []
+    assert messages.undelivered(c.state_dir, REPOSITORY, 370) == []
     assert sessions.spawned == []
 
 
@@ -204,7 +204,7 @@ def test_interleaved_codex_tasks_keep_their_own_id_worktree_and_reply(
         assert ids[sibling] not in str(resume)
         assert str(worktrees[sibling]) not in str(resume)
         assert replies[sibling] not in resume["message"]
-        assert messages.undelivered(c.state_dir, TARGET, issue) == []
+        assert messages.undelivered(c.state_dir, REPOSITORY, issue) == []
 
 
 def test_resume_leaves_a_live_codex_sibling_and_its_record_untouched(
@@ -212,16 +212,16 @@ def test_resume_leaves_a_live_codex_sibling_and_its_record_untouched(
     c = _config(tmp_path, monkeypatch)
     _task(c, 370, Stage.REVIEW, session_id=LIVE_ID, park="", slot=0,
           updated_at=(datetime.now(timezone.utc) - timedelta(seconds=11)).isoformat())
-    before = read_session(c.state_dir, TARGET, 370)
+    before = read_session(c.state_dir, REPOSITORY, 370)
     wt = _task(c, 384, Stage.REVIEW)
     _reply(c, 384, "Approved")
     sessions = RecordingSessions(c.state_dir, alive={370})
     main.run_pass(c, deps(sess=sessions))
     (resume,) = sessions.resume_records
     assert (resume["issue"], resume["session_id"], resume["worktree"]) == (384, CODEX_ID, str(wt))
-    assert (TARGET, 370) not in sessions.end_calls
-    assert sessions.is_alive(TARGET, 370)
-    assert read_session(c.state_dir, TARGET, 370) == before
+    assert (REPOSITORY, 370) not in sessions.end_calls
+    assert sessions.is_alive(REPOSITORY, 370)
+    assert read_session(c.state_dir, REPOSITORY, 370) == before
 
 
 def test_attach_with_a_valid_record_resumes_by_id_with_an_empty_note(
@@ -243,12 +243,12 @@ def test_resume_by_id_retains_its_record_and_logs_an_empty_detail(
         tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
     _task(c, 384, Stage.REVIEW)
-    before = read_session(c.state_dir, TARGET, 384)
+    before = read_session(c.state_dir, REPOSITORY, 384)
     _reply(c, 384, "Continue")
     sessions = RecordingSessions(c.state_dir)
     main.run_pass(c, deps(sess=sessions))
     assert sessions.resume_records[0]["session_id"] == CODEX_ID
-    assert read_session(c.state_dir, TARGET, 384) == before
+    assert read_session(c.state_dir, REPOSITORY, 384) == before
     (event,) = [event for event in eventlog.read_tail(c.state_dir)
                 if event["event"] == "resumed" and event["issue"] == 384]
     assert event["detail"] == ""
@@ -264,11 +264,11 @@ def test_plan_fresh_launch_clears_the_spec_record_before_the_tab_starts(
         "stage": "spec", "status": "done", "artifact": "spec.md", "track": "standard",
     }))
     observed = []
-    _tab_fake(monkeypatch, [], target=TARGET, issue=384,
-              on_start=lambda phase: observed.append((phase, read_session(c.state_dir, TARGET, 384))))
+    _tab_fake(monkeypatch, [], repository=REPOSITORY, issue=384,
+              on_start=lambda phase: observed.append((phase, read_session(c.state_dir, REPOSITORY, 384))))
     sessions = RecordingSessions(c.state_dir, alive={384}, launch_real=True)
     main.run_pass(c, deps(sess=sessions))
-    assert load(c.state_dir, TARGET, 384).stage is Stage.PLAN
+    assert load(c.state_dir, REPOSITORY, 384).stage is Stage.PLAN
     assert sessions.spawned[0][1] == "plan"
     assert observed and all(record is None for _, record in observed)
     assert observed[0][0] == ["tab", "create"]
@@ -283,11 +283,11 @@ def test_review_fresh_launch_clears_the_implement_record_before_the_tab_starts(
         "stage": "implement", "status": "done", "note": "4/4 tickets merged",
     }))
     observed = []
-    _tab_fake(monkeypatch, [], target=TARGET, issue=370,
-              on_start=lambda phase: observed.append((phase, read_session(c.state_dir, TARGET, 370))))
+    _tab_fake(monkeypatch, [], repository=REPOSITORY, issue=370,
+              on_start=lambda phase: observed.append((phase, read_session(c.state_dir, REPOSITORY, 370))))
     sessions = RecordingSessions(c.state_dir, alive={370}, launch_real=True)
     main.run_pass(c, deps(sess=sessions))
-    assert load(c.state_dir, TARGET, 370).stage is Stage.REVIEW
+    assert load(c.state_dir, REPOSITORY, 370).stage is Stage.REVIEW
     assert sessions.spawned[0][1] == "review"
     assert observed and all(record is None for _, record in observed)
     assert observed[0][0] == ["tab", "create"]
@@ -296,30 +296,30 @@ def test_review_fresh_launch_clears_the_implement_record_before_the_tab_starts(
 def test_parking_keeps_the_session_record(tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
     wt = _task(c, 384, Stage.REVIEW, park="", slot=0)
-    before = read_session(c.state_dir, TARGET, 384)
+    before = read_session(c.state_dir, REPOSITORY, 384)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "review", "status": "blocked", "note": "need a token",
     }))
     main.run_pass(c, deps(sess=RecordingSessions(c.state_dir, alive={384})))
-    assert load(c.state_dir, TARGET, 384).park == PARK_HUMAN
-    assert read_session(c.state_dir, TARGET, 384) == before
+    assert load(c.state_dir, REPOSITORY, 384).park == PARK_HUMAN
+    assert read_session(c.state_dir, REPOSITORY, 384) == before
 
 
 def test_session_end_keeps_the_session_record(tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
     _task(c, 384, Stage.REVIEW)
-    before = read_session(c.state_dir, TARGET, 384)
+    before = read_session(c.state_dir, REPOSITORY, 384)
     _fake_podman(monkeypatch)
-    Sessions(state_dir=c.state_dir).end(TARGET, 384)
-    assert read_session(c.state_dir, TARGET, 384) == before
+    Sessions(state_dir=c.state_dir).end(REPOSITORY, 384)
+    assert read_session(c.state_dir, REPOSITORY, 384) == before
 
 
 def test_flushing_a_task_removes_its_session_record(tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
     _task(c, 384, Stage.DONE, park="", done_at="2000-01-01T00:00:00+00:00")
     main.run_pass(c, deps(sess=RecordingSessions(c.state_dir)))
-    assert load(c.state_dir, TARGET, 384) is None
-    assert read_session(c.state_dir, TARGET, 384) is None
+    assert load(c.state_dir, REPOSITORY, 384) is None
+    assert read_session(c.state_dir, REPOSITORY, 384) is None
 
 
 @pytest.mark.parametrize("model, session_id, prefix", [
@@ -334,7 +334,7 @@ def test_crash_repro_names_the_recorded_conversation(
     github = FakeGitHub()
     main.run_pass(c, deps(gh=github, sess=RecordingSessions(c.state_dir)))
     ((repo, _, report),) = github.created_issues
-    assert repo == c.targets[0].repo
+    assert repo == c.repositories[0].repo
     assert f"cd {wt} && {prefix} {session_id}" in report
     repro = next(line for line in report.splitlines() if line.startswith("- repro:"))
     assert "--last" not in repro

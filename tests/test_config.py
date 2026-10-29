@@ -34,7 +34,7 @@ def test_load_config(tmp_path: Path):
     cfg = load_config(p)
     assert cfg.capacity == 3
     assert cfg.pace.budget_threshold == 0.8
-    t = cfg.targets[0]
+    t = cfg.repositories[0]
     assert t.repo == "jesdi/portfolio_eval"
     assert t.verify_cmd == "make e2e-slot SLOT={slot}"
     assert t.status_field_id == "PVTSSF_xxx"
@@ -50,7 +50,7 @@ def test_defaults(tmp_path: Path):
     assert cfg.pace.budget_threshold == 0.8
     assert cfg.pace.racing_minutes == 30
     assert cfg.pace.racing_threshold == 0.95
-    assert cfg.targets == []
+    assert cfg.repositories == []
 
 
 # --- env-var override tests (FIX #1) ---
@@ -117,7 +117,7 @@ def test_console_url_loaded_and_trailing_slash_stripped(tmp_path: Path):
     assert load_config(p).console_url == "https://box.tail.ts.net"
 
 
-_TARGET_YAML = """
+_REPOSITORY_YAML = """
 state_dir: /tmp/state
 targets:
   - name: t
@@ -136,18 +136,18 @@ targets:
 """
 
 
-def test_target_boost_field_id_parsed(tmp_path, monkeypatch):
+def test_repository_boost_field_id_parsed(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     path = tmp_path / "targets.yaml"
-    path.write_text(_TARGET_YAML + "    boost_field_id: PVTF_B1\n")
-    assert load_config(path).targets[0].boost_field_id == "PVTF_B1"
+    path.write_text(_REPOSITORY_YAML + "    boost_field_id: PVTF_B1\n")
+    assert load_config(path).repositories[0].boost_field_id == "PVTF_B1"
 
 
-def test_target_boost_field_id_defaults_empty(tmp_path, monkeypatch):
+def test_repository_boost_field_id_defaults_empty(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     path = tmp_path / "targets.yaml"
-    path.write_text(_TARGET_YAML)
-    assert load_config(path).targets[0].boost_field_id == ""
+    path.write_text(_REPOSITORY_YAML)
+    assert load_config(path).repositories[0].boost_field_id == ""
 
 
 WITH_MODELS = """\
@@ -200,19 +200,19 @@ def test_global_policy_is_parsed(tmp_path: Path):
     assert str(cfg.models.triage[0]) == "anthropic/claude-sonnet-5@medium"
 
 
-def test_target_policy_replaces_the_global_one(tmp_path: Path):
+def test_repository_policy_replaces_the_global_one(tmp_path: Path):
     p = tmp_path / "targets.yaml"
     p.write_text(WITH_MODELS)
     cfg = load_config(p)
-    target = cfg.targets[0]
-    assert list(policy_for(cfg, target).tracks) == ["only"]   # replaced wholesale, not merged
+    repository = cfg.repositories[0]
+    assert list(policy_for(cfg, repository).tracks) == ["only"]   # replaced wholesale, not merged
 
 
-def test_target_without_models_inherits_the_global_policy(tmp_path: Path):
+def test_repository_without_models_inherits_the_global_policy(tmp_path: Path):
     p = tmp_path / "targets.yaml"
     p.write_text(SAMPLE)          # the module-level sample has no models: block
     cfg = load_config(p)
-    assert policy_for(cfg, cfg.targets[0]) is cfg.models
+    assert policy_for(cfg, cfg.repositories[0]) is cfg.models
 
 
 def test_absent_models_block_is_the_default_policy(tmp_path: Path):
@@ -243,7 +243,7 @@ def test_referenced_providers_come_from_every_entry(tmp_path: Path):
     assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})
 
 
-WITH_EMPTY_TARGET_MODELS = """\
+WITH_EMPTY_REPOSITORY_MODELS = """\
 state_dir: /tmp/s
 models:
   triage: [claude-opus-5]
@@ -273,16 +273,16 @@ targets:
 """
 
 
-def test_target_with_empty_models_block_opts_out_of_global_policy(tmp_path: Path):
-    """An explicit `models: {}` on a target means "override with nothing",
+def test_repository_with_empty_models_block_opts_out_of_global_policy(tmp_path: Path):
+    """An explicit `models: {}` on a repository means "override with nothing",
     not "inherit the global policy" — it's the natural way to opt one
-    target out of global tracks (finding B)."""
+    repository out of global tracks (finding B)."""
     p = tmp_path / "targets.yaml"
-    p.write_text(WITH_EMPTY_TARGET_MODELS)
+    p.write_text(WITH_EMPTY_REPOSITORY_MODELS)
     cfg = load_config(p)
-    target = cfg.targets[0]
-    assert policy_for(cfg, target) == DEFAULT_POLICY
-    # the global policy still has its own tracks — only the target opted out
+    repository = cfg.repositories[0]
+    assert policy_for(cfg, repository) == DEFAULT_POLICY
+    # the global policy still has its own tracks — only the repository opted out
     assert list(cfg.models.tracks) == ["standard"]
 
 
@@ -312,16 +312,16 @@ def test_spec_review_grace_minutes_is_read_from_yaml(tmp_path: Path):
     assert load_config(p).spec_review_grace_minutes == 0
 
 
-def write_yaml(tmp_path: Path, target_extra: dict | None = None, top_extra: dict | None = None) -> Path:
-    """Helper to write a minimal targets.yaml with optional target and top-level extras.
+def write_yaml(tmp_path: Path, repository_extra: dict | None = None, top_extra: dict | None = None) -> Path:
+    """Helper to write a minimal targets.yaml with optional repository and top-level extras.
 
     Returns the path to the written YAML file.
     """
-    target_extra = target_extra or {}
+    repository_extra = repository_extra or {}
     top_extra = top_extra or {}
 
-    # Base target configuration
-    target = {
+    # Base repository configuration
+    repository = {
         "name": "t",
         "repo": "o/r",
         "clone_path": "/c",
@@ -336,12 +336,12 @@ def write_yaml(tmp_path: Path, target_extra: dict | None = None, top_extra: dict
         "status_ready_option_id": "R",
         "status_in_progress_option_id": "I",
     }
-    target.update(target_extra)
+    repository.update(repository_extra)
 
     # Build YAML content
     yaml_dict = {
         "state_dir": "/tmp/state",
-        "targets": [target],
+        "targets": [repository],
     }
     yaml_dict.update(top_extra)
 
@@ -353,19 +353,19 @@ def write_yaml(tmp_path: Path, target_extra: dict | None = None, top_extra: dict
 
 
 def test_status_done_option_id_loaded_and_defaults_empty(tmp_path):
-    cfg = load_config(write_yaml(tmp_path, target_extra={
+    cfg = load_config(write_yaml(tmp_path, repository_extra={
         "status_done_option_id": "d0ne"}))
-    assert cfg.targets[0].status_done_option_id == "d0ne"
+    assert cfg.repositories[0].status_done_option_id == "d0ne"
     cfg = load_config(write_yaml(tmp_path))
-    assert cfg.targets[0].status_done_option_id == ""
+    assert cfg.repositories[0].status_done_option_id == ""
 
 
 def test_status_wont_do_option_id_loaded_and_defaults_empty(tmp_path):
-    cfg = load_config(write_yaml(tmp_path, target_extra={
+    cfg = load_config(write_yaml(tmp_path, repository_extra={
         "status_wont_do_option_id": "w0nt"}))
-    assert cfg.targets[0].status_wont_do_option_id == "w0nt"
+    assert cfg.repositories[0].status_wont_do_option_id == "w0nt"
     cfg = load_config(write_yaml(tmp_path))
-    assert cfg.targets[0].status_wont_do_option_id == ""
+    assert cfg.repositories[0].status_wont_do_option_id == ""
 
 
 def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
@@ -404,7 +404,7 @@ targets:
 def test_gate_cmd_is_loaded(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"; p.write_text(GATED_YAML)
-    assert load_config(p).targets[0].gate_cmd == "make gate SLOT={slot}"
+    assert load_config(p).repositories[0].gate_cmd == "make gate SLOT={slot}"
 
 
 def test_missing_gate_cmd_fails_at_load(tmp_path, monkeypatch):
@@ -481,7 +481,7 @@ def test_session_week_share_for_an_unreferenced_provider_fails_config_load(tmp_p
 
 # --- ticket 01: config accepts the multi-project shape ---
 
-TARGET_NO_OPTIONAL_CMDS = """
+REPOSITORY_NO_OPTIONAL_CMDS = """
 state_dir: /tmp/s
 targets:
   - name: alpha
@@ -498,11 +498,11 @@ targets:
 """
 
 
-def test_target_with_no_setup_or_verify_cmd_loads_with_empty_defaults(tmp_path, monkeypatch):
+def test_repository_with_no_setup_or_verify_cmd_loads_with_empty_defaults(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
-    p.write_text(TARGET_NO_OPTIONAL_CMDS)
-    t = load_config(p).targets[0]
+    p.write_text(REPOSITORY_NO_OPTIONAL_CMDS)
+    t = load_config(p).repositories[0]
     assert t.setup_cmd == ""
     assert t.verify_cmd == ""
 
@@ -511,11 +511,11 @@ def test_max_active_within_capacity_loads(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
     p.write_text(GATED_YAML + "    max_active: 2\n")
-    assert load_config(p).targets[0].max_active == 2
+    assert load_config(p).repositories[0].max_active == 2
 
 
 @pytest.mark.parametrize("bad_value", [0, 4])  # capacity defaults to 3
-def test_max_active_out_of_bounds_fails_naming_target_and_field(tmp_path, monkeypatch, bad_value):
+def test_max_active_out_of_bounds_fails_naming_repository_and_field(tmp_path, monkeypatch, bad_value):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
     p.write_text(GATED_YAML + f"    max_active: {bad_value}\n")
@@ -529,7 +529,7 @@ def test_spec_review_grace_minutes_null_means_never(tmp_path):
     assert load_config(p).spec_review_grace_minutes is None
 
 
-def test_missing_gate_cmd_error_names_target_and_field(tmp_path, monkeypatch):
+def test_missing_gate_cmd_error_names_repository_and_field(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
     p.write_text(GATED_YAML.replace('    gate_cmd: "make gate SLOT={slot}"\n', ""))
@@ -540,7 +540,7 @@ def test_missing_gate_cmd_error_names_target_and_field(tmp_path, monkeypatch):
 def test_example_yaml_loads_cleanly_and_documents_new_fields():
     path = Path(__file__).resolve().parent.parent / "targets.example.yaml"
     cfg = load_config(path)
-    assert cfg.targets  # loads cleanly end to end
+    assert cfg.repositories  # loads cleanly end to end
 
     text = path.read_text()
     lines = text.splitlines()
@@ -559,7 +559,7 @@ def test_example_yaml_loads_cleanly_and_documents_new_fields():
 
 
 @pytest.mark.parametrize("bad_value", ["2", True, False, 2.5])
-def test_max_active_wrong_type_fails_naming_target_and_field(tmp_path, monkeypatch, bad_value):
+def test_max_active_wrong_type_fails_naming_repository_and_field(tmp_path, monkeypatch, bad_value):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
     p.write_text(GATED_YAML + f"    max_active: {bad_value!r}\n")
@@ -575,8 +575,8 @@ def test_spec_review_grace_minutes_wrong_type_fails(tmp_path, bad_value):
         load_config(p)
 
 
-def test_referenced_providers_includes_target_policies(tmp_path):
-    target_models = """\
+def test_referenced_providers_includes_repository_policies(tmp_path):
+    repository_models = """\
     models:
       triage: [anthropic/m]
       untracked: t
@@ -590,7 +590,7 @@ def test_referenced_providers_includes_target_policies(tmp_path):
 """
     p = tmp_path / "targets.yaml"
     p.write_text(SAMPLE.replace("    status_in_progress_option_id: def456\n",
-                                "    status_in_progress_option_id: def456\n" + target_models))
+                                "    status_in_progress_option_id: def456\n" + repository_models))
     assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})
 
 
@@ -609,7 +609,7 @@ models:
 """
 
 
-@pytest.mark.parametrize("where", ["global", "target"])
+@pytest.mark.parametrize("where", ["global", "repository"])
 def test_referenced_providers_includes_review_second(tmp_path, where):
     """Claude-only tracks plus review_second: openai must still be fetched,
     or the gate fails closed and the second model never fires."""
@@ -642,10 +642,10 @@ TRIAGE, STAGE = (("triage: [anthropic/m]", "triage: [openai/m]"),
 @pytest.mark.parametrize("where,swap,routed", [
     ("global", TRIAGE, {"anthropic", "openai"}),
     ("global", STAGE, {"anthropic", "openai"}),
-    ("target", STAGE, {"anthropic", "openai"}),
-    # the sweep routes only the global triage list: a target's is never run
-    ("target", TRIAGE, {"anthropic"}),
-], ids=["global-triage", "global-stage", "target-stage", "target-triage"])
+    ("repository", STAGE, {"anthropic", "openai"}),
+    # the sweep routes only the global triage list: a repository's is never run
+    ("repository", TRIAGE, {"anthropic"}),
+], ids=["global-triage", "global-stage", "repository-stage", "repository-triage"])
 def test_routed_providers_are_the_global_triage_and_every_policys_stage_lists(
         tmp_path, where, swap, routed):
     from dispatcher.config import routed_providers

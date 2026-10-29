@@ -5,13 +5,13 @@ from dispatcher import eventlog
 
 
 def test_append_writes_one_json_line_with_all_fields(tmp_path):
-    eventlog.append_event(tmp_path, "claimed", target="portfolio_eval",
+    eventlog.append_event(tmp_path, "claimed", repository="portfolio_eval",
                           issue=42, stage="queued", model="", detail="")
     lines = (tmp_path / "events.jsonl").read_text().splitlines()
     assert len(lines) == 1
     d = json.loads(lines[0])
     assert d["event"] == "claimed"
-    assert d["target"] == "portfolio_eval"
+    assert d["repository"] == "portfolio_eval"
     assert d["issue"] == 42
     assert d["stage"] == "queued"
     assert d["model"] == ""

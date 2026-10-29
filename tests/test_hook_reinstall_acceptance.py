@@ -12,7 +12,7 @@ import dispatcher.workspace as workspace
 from dispatcher import herdr
 from dispatcher.sessions import Sessions
 from tests.test_containers import make_worktree
-from tests.test_workspace import target
+from tests.test_workspace import repository
 
 REPO_HOOK = Path(__file__).resolve().parent.parent / "hooks" / "stop-hook.sh"
 STOP = {"hooks": {"Stop": [{"hooks": [{
@@ -148,7 +148,7 @@ def test_dry_run_writes_nothing(tmp_path, wt_seen, op):
 
 
 def test_create_workspace_matches_a_launched_worktree(tmp_path, monkeypatch, wt_seen):
-    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     wt, seen = wt_seen
     spawn(wt)
     launched = snapshot(wt)
@@ -160,7 +160,7 @@ def test_create_workspace_matches_a_launched_worktree(tmp_path, monkeypatch, wt_
             (w / ".git").write_text(f"gitdir: {tmp_path / 'repo'}/.git/worktrees/task-42\n")
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
-    created = snapshot(workspace.create_workspace(target(tmp_path), 42))
+    created = snapshot(workspace.create_workspace(repository(tmp_path), 42))
     assert launched["hook"] == REPO_HOOK.read_text()
     assert launched["exec"]
     assert launched["settings"] is not None

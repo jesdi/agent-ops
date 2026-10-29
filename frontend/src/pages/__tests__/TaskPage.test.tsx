@@ -14,7 +14,7 @@ function renderTask(route = '/task/widget/42') {
       <Link to="/task/widget/43">go to 43</Link>
       <Link to="/task/other/42">go to other/42</Link>
       <Routes>
-        <Route path="/task/:target/:issue" element={<TaskPage />} />
+        <Route path="/task/:repository/:issue" element={<TaskPage />} />
       </Routes>
     </>,
     { route },
@@ -179,7 +179,7 @@ it('a later success clears the inline error', async () => {
 
 it('a dead session explains itself on load and still offers history', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () =>
+    http.get('/api/task/:repository/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         session_alive: false,
@@ -208,7 +208,7 @@ it('shows the console read-only with the external attach recipe', async () => {
 
 it('toggles between the live tail and the scrollable history', async () => {
   server.use(
-    http.get('/api/task/:target/:issue/history', () =>
+    http.get('/api/task/:repository/:issue/history', () =>
       HttpResponse.json({ text: 'older line\nstaging redirect URL' }),
     ),
   )
@@ -242,34 +242,34 @@ it('history state does not carry over to the next task navigated to', async () =
 it('a non-numeric issue param renders not-found instead of requesting /api/task/NaN', async () => {
   renderWithProviders(
     <Routes>
-      <Route path="/task/:target/:issue" element={<TaskPage />} />
+      <Route path="/task/:repository/:issue" element={<TaskPage />} />
     </Routes>,
     { route: '/task/widget/abc' },
   )
   expect(await screen.findByText(/is not a task number/)).toBeInTheDocument()
 })
 
-it('a missing target renders not-found instead of requesting /api/task//<issue>', async () => {
+it('a missing repository renders not-found instead of requesting /api/task//<issue>', async () => {
   // react-router never matches an empty dynamic segment (a bare "/task//42"
-  // simply has no matching route), so the only way an empty/missing target
+  // simply has no matching route), so the only way an empty/missing repository
   // reaches TaskPage is via useParams() resolving with no ancestor <Route>
   // match — rendering TaskPage with no wrapping <Routes>/<Route> reproduces
   // exactly that params shape.
   renderWithProviders(<TaskPage />)
-  expect(await screen.findByText(/a task needs a target/)).toBeInTheDocument()
+  expect(await screen.findByText(/a task needs a repository/)).toBeInTheDocument()
 })
 
-it('reads target and issue from the route and requests the matching endpoint', async () => {
+it('reads repository and issue from the route and requests the matching endpoint', async () => {
   let requestedPath = ''
   server.use(
-    http.get('/api/task/:target/:issue', ({ params }) => {
-      requestedPath = `/api/task/${params.target}/${params.issue}`
+    http.get('/api/task/:repository/:issue', ({ params }) => {
+      requestedPath = `/api/task/${params.repository}/${params.issue}`
       return HttpResponse.json(taskDetail)
     }),
   )
   renderWithProviders(
     <Routes>
-      <Route path="/task/:target/:issue" element={<TaskPage />} />
+      <Route path="/task/:repository/:issue" element={<TaskPage />} />
     </Routes>,
     { route: '/task/agent_ops/42' },
   )
@@ -297,7 +297,7 @@ it('park does not wipe typed reply text', async () => {
 
 it('a non-404 server error renders an error message, not a ghost view', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () =>
+    http.get('/api/task/:repository/:issue', () =>
       HttpResponse.json({ detail: 'internal error' }, { status: 500 }),
     ),
   )
@@ -324,7 +324,7 @@ it('hides the request panel when /request returns null', async () => {
 
 it('a parked task shows the parked panel with the note, not the dead banner', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () =>
+    http.get('/api/task/:repository/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         session_alive: false,
@@ -355,7 +355,7 @@ it('the reply button says it wakes a parked task', async () => {
 
 it('an unparked task keeps the plain send label and no parked panel', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () =>
+    http.get('/api/task/:repository/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         card: { ...taskDetail.card, park: '', park_note: '' },
@@ -403,7 +403,7 @@ it('links to claude.ai/code so mobile can use the Claude app instead of a termin
 
 it('keeps the Open in Claude link when the session is dead', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () =>
+    http.get('/api/task/:repository/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         session_alive: false,
@@ -423,7 +423,7 @@ it('keeps the Open in Claude link when the session is dead', async () => {
 })
 
 it('claimed task shows description toggle and stage timeline', async () => {
-  server.use(http.get('/api/task/:target/:issue', () => HttpResponse.json({
+  server.use(http.get('/api/task/:repository/:issue', () => HttpResponse.json({
     ...taskDetail,
     timeline: [
       { label: 'spec', seconds: 2400, kind: 'stage', ongoing: false },
@@ -441,7 +441,7 @@ it('claimed task shows description toggle and stage timeline', async () => {
 
 it('unclaimed issue renders the slim ghost view instead of an error', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
+    http.get('/api/task/:repository/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
     http.get('/api/task/widget/73/description', () => HttpResponse.json({
       title: 'Ship dark mode', body: 'B', url: 'u',
       fetched_at: '2026-08-01T12:00:00Z', error: '',
@@ -455,7 +455,7 @@ it('unclaimed issue renders the slim ghost view instead of an error', async () =
 
 it('a failing queue action from the ghost view surfaces its error text', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
+    http.get('/api/task/:repository/:issue', () => HttpResponse.json({ detail: 'no task 73' }, { status: 404 })),
     http.get('/api/task/widget/73/description', () => HttpResponse.json({
       title: 'Ship dark mode', body: 'B', url: 'u',
       fetched_at: '2026-08-01T12:00:00Z', error: '',
@@ -683,7 +683,7 @@ it.each([
 
 it('shows the track and its meaning in the header', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () =>
+    http.get('/api/task/:repository/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         track_when: 'Touches auth.',

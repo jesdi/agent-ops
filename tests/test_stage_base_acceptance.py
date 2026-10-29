@@ -95,7 +95,7 @@ def test_task_saved_without_a_base_uses_main(c):
     d = json.loads(f.read_text())
     d.pop("base", None)
     f.write_text(json.dumps(d))
-    signal(Path(c.targets[0].worktrees_path) / "task-17", stage="implement",
+    signal(Path(c.repositories[0].worktrees_path) / "task-17", stage="implement",
            status="done", note="")
     sess = FakeSessions(alive={17})
     main.run_pass(c, deps(sess=sess))
@@ -108,5 +108,5 @@ def test_task_saved_without_a_base_uses_main(c):
 @pytest.mark.parametrize("verify_cmd", ["make e2e-slot SLOT={slot}", ""])
 @pytest.mark.parametrize("stage", ["spec", "plan", "implement", "review", "address-review"])
 def test_every_stage_renders_for_a_task_with_a_base(c, stage, verify_cmd):
-    c = dc_replace(c, targets=[dc_replace(c.targets[0], verify_cmd=verify_cmd)])
+    c = dc_replace(c, repositories=[dc_replace(c.repositories[0], verify_cmd=verify_cmd)])
     assert run_for(c, stage, base=NEW)

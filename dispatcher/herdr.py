@@ -5,8 +5,8 @@ plain text, exit 2), a timeout, a missing binary, an unparseable reply —
 reads as None / False, and mutations are best-effort.
 
 IDs (`w1`, `w1:t3`, `w1:p3`) are opaque and are never persisted: `Tab` is
-the way callers resolve by label on every operation (workspace = target,
-tab = task-<target>-<issue>) rather than holding an id. This module knows
+the way callers resolve by label on every operation (workspace = repository,
+tab = task-<repository>-<issue>) rather than holding an id. This module knows
 nothing about tasks; dispatcher/sessions.py and triage.py own that
 mapping."""
 from __future__ import annotations
@@ -118,7 +118,7 @@ def ensure_workspace(label: str, cwd: str) -> str | None:
 
 def tab(label: str) -> tuple[str, str] | None:
     """(workspace_id, tab_id) of the first tab labelled `label`. `tab list`
-    without --workspace is server-wide, so one call covers every target."""
+    without --workspace is server-wide, so one call covers every repository."""
     result = _call(["tab", "list"])
     if result is None:
         return None

@@ -121,15 +121,15 @@ def test_build_board_groups_and_counts():
 
 
 def _scored_queue(*pairs):
-    """(target, number, score) triples -> the queues shape build_board reads,
-    grouped by target. score=None models a card no longer in the ranking."""
-    by_target: dict[str, list[dict]] = {}
-    for target, number, score in pairs:
-        by_target.setdefault(target, []).append(
+    """(repository, number, score) triples -> the queues shape build_board reads,
+    grouped by repository. score=None models a card no longer in the ranking."""
+    by_repository: dict[str, list[dict]] = {}
+    for repository, number, score in pairs:
+        by_repository.setdefault(repository, []).append(
             {"number": number, "status": "Ready", "blocked": False,
              "labels": ["auto"], "title": f"t{number}",
              "url": f"https://x/{number}", "boost": 0, "score": score})
-    return list(by_target.items())
+    return list(by_repository.items())
 
 
 def test_task_cards_carry_their_backlog_score():
@@ -288,7 +288,7 @@ from web.read_model import (claimed_at, claimed_at_index, cycle_seconds,
 
 
 def ev(ts, event, issue, stage="", detail=""):
-    return {"ts": ts, "event": event, "target": "alpha", "issue": issue,
+    return {"ts": ts, "event": event, "repository": "alpha", "issue": issue,
             "stage": stage, "model": "", "actor": "dispatcher",
             "detail": detail}
 
@@ -306,31 +306,31 @@ def test_claimed_at_index_first_wins_and_ignores_other_events():
     assert claimed_at_index(events) == {("alpha", 7): T0, ("alpha", 8): T1}
 
 
-def test_claimed_at_index_separates_targets():
+def test_claimed_at_index_separates_repositories():
     """A merged alpha#73 from weeks ago must not win setdefault over a
     freshly claimed beta#73 — issue numbers are per-repo."""
     events = [ev(T0, "claimed", 73),
-              {**ev(T2, "claimed", 73), "target": "beta"}]
+              {**ev(T2, "claimed", 73), "repository": "beta"}]
     idx = claimed_at_index(events)
     assert claimed_at(idx, "alpha", 73) == T0
     assert claimed_at(idx, "beta", 73) == T2
 
 
-def test_claimed_at_falls_back_to_untargeted_legacy_lines():
-    """Log lines written before events carried `target` are still read for
-    whatever target asks — the pre-fix behaviour, preserved."""
-    idx = claimed_at_index([{**ev(T0, "claimed", 7), "target": ""}])
+def test_claimed_at_falls_back_to_legacy_lines_without_repository():
+    """Log lines written before events carried `repository` are still read for
+    whatever repository asks — the pre-fix behaviour, preserved."""
+    idx = claimed_at_index([{**ev(T0, "claimed", 7), "repository": ""}])
     assert claimed_at(idx, "alpha", 7) == T0
     assert claimed_at(idx, "beta", 7) == T0
     assert claimed_at({}, "alpha", 7) == ""
 
 
-def test_median_cycle_attributes_durations_per_target():
+def test_median_cycle_attributes_durations_per_repository():
     """alpha#73 claimed long ago + beta#73 claimed recently: beta's cycle must
     be measured from beta's own claim, not alpha's."""
     events = [ev("2026-07-01T00:00:00+00:00", "claimed", 73),  # alpha, old
-              {**ev(T0, "claimed", 73), "target": "beta"},
-              {**ev(T1, "merged", 73), "target": "beta"}]
+              {**ev(T0, "claimed", 73), "repository": "beta"},
+              {**ev(T1, "merged", 73), "repository": "beta"}]
     assert median_cycle_seconds(events) == 2400.0  # 40m, not 31 days
 
 
@@ -397,6 +397,13 @@ def test_stage_timeline_open_segment_is_ongoing_and_other_issues_ignored():
     assert tl[0].seconds == 9000.0  # T0 -> NOW
 
 
+def test_stage_timeline_skips_an_event_with_an_unreadable_ts():
+    events = [ev(T0, "claimed", 7), ev("garbage", "parked", 7, "spec"),
+              ev(T1, "merged", 7)]
+    tl = stage_timeline(events, "alpha", 7, now=NOW)
+    assert [(e.label, e.seconds) for e in tl] == [("queued", 2400.0)]
+
+
 def test_stage_timeline_empty_for_unknown_or_rotated_issue():
     assert stage_timeline([], "alpha", 7, now=NOW) == []
 
@@ -431,17 +438,17 @@ def test_stage_timeline_all_naive_still_works():
                                                   ("spec", 1200.0)]
 
 
-def test_stage_timeline_separates_targets_sharing_an_issue_number():
-    """Two targets can claim the same issue number (issues are per-repo).
+def test_stage_timeline_separates_repositories_sharing_an_issue_number():
+    """Two repositories can claim the same issue number (issues are per-repo).
     Their event streams must not interleave — same rationale as
     claimed_at_index. beta's merged event must not close alpha's open
     stage-started segment, and vice versa."""
     events = [ev(T0, "claimed", 7),                         # alpha
               ev(T0, "stage-started", 7, "spec"),            # alpha
-              {**ev(T1, "claimed", 7), "target": "beta"},
+              {**ev(T1, "claimed", 7), "repository": "beta"},
               {**ev(T2, "stage-started", 7, "implement"),
-               "target": "beta"},
-              {**ev(T3, "merged", 7), "target": "beta"}]     # beta only
+               "repository": "beta"},
+              {**ev(T3, "merged", 7), "repository": "beta"}]     # beta only
     alpha_tl = stage_timeline(events, "alpha", 7, now=NOW)
     beta_tl = stage_timeline(events, "beta", 7, now=NOW)
     assert [(e.label, e.ongoing) for e in alpha_tl] == [("spec", True)]
@@ -449,12 +456,12 @@ def test_stage_timeline_separates_targets_sharing_an_issue_number():
         ("queued", False), ("implement", False)]
 
 
-def test_stage_timeline_keeps_legacy_targetless_rows_for_any_target():
-    """Events logged before `target` existed on the schema land with no
-    target key at all and must still surface for whichever target asks —
+def test_stage_timeline_keeps_legacy_rows_without_repository_for_any_repository():
+    """Events logged before `repository` existed on the schema land with no
+    repository key at all and must still surface for whichever repository asks —
     the same fallback convention as claimed_at()."""
-    events = [{**ev(T0, "claimed", 7), "target": ""},
-              {**ev(T1, "stage-started", 7, "spec"), "target": ""}]
+    events = [{**ev(T0, "claimed", 7), "repository": ""},
+              {**ev(T1, "stage-started", 7, "spec"), "repository": ""}]
     tl = stage_timeline(events, "alpha", 7, now=NOW)
     assert [(e.label, e.ongoing) for e in tl] == [
         ("queued", False), ("spec", True)]
@@ -511,7 +518,7 @@ def test_next_claim_will_claim_head_of_queue():
                                       row(72, labels=()),
                                       row(73)])], max_active={}, last_claimed={})
     assert v.verdict == "will-claim"
-    assert (v.next_issue, v.next_target) == (73, "alpha")
+    assert (v.next_issue, v.next_repository) == (73, "alpha")
     assert v.next_pass_eta == "2026-08-01T12:36:00+00:00"  # finished + 10m
 
 
@@ -554,19 +561,19 @@ def test_next_claim_unknown_on_bad_interval():
                       max_active={}, last_claimed={}).verdict == "unknown"
 
 
-def test_next_claim_counts_active_per_target_for_the_pick():
-    # Capacity is box-wide (3 of 4 used), but the pick counts each target's
+def test_next_claim_counts_active_per_repository_for_the_pick():
+    # Capacity is box-wide (3 of 4 used), but the pick counts each repository's
     # own active tasks: beta at 1 beats alpha at 2. Counting every task as
     # "mine" would tie them and pick alpha by list order.
-    alpha_tasks = [make_task(issue=1, target="alpha"),
-                   make_task(issue=2, target="alpha")]
-    beta_tasks = [make_task(issue=3, target="beta")]
+    alpha_tasks = [make_task(issue=1, repository="alpha"),
+                   make_task(issue=2, repository="alpha")]
+    beta_tasks = [make_task(issue=3, repository="beta")]
     v = next_claim(HB, now=NOW, tasks=alpha_tasks + beta_tasks, capacity=4,
                    gate=GATE_OK,
                    queues=[("alpha", [row(10)]), ("beta", [row(20)])],
                    max_active={}, last_claimed={})
     assert v.verdict == "will-claim"
-    assert v.next_target == "beta"
+    assert v.next_repository == "beta"
     assert v.next_issue == 20
 
 
@@ -700,7 +707,7 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
         max_active={}, last_claimed={})
     # ghosts: candidates only, minus in-flight; rank order preserved
     assert [g.number for g in queued(board).ghosts] == [73]
-    assert queued(board).ghosts[0].target == "alpha"
+    assert queued(board).ghosts[0].repository == "alpha"
     assert all(c.ghosts == [] for c in board.columns if c.key != "queued")
     assert board.next_claim.verdict == "will-claim"
     assert board.next_claim.next_issue == 73
@@ -724,13 +731,13 @@ def test_build_board_degrades_without_events_or_heartbeat():
     assert card.claimed_at == "" and card.cycle_seconds is None
 
 
-# ---- cross-target issue-number collision tests ----------------------------
+# ---- cross-repository issue-number collision tests ----------------------------
 
-def test_build_board_cross_target_ghost_not_suppressed():
+def test_build_board_cross_repository_ghost_not_suppressed():
     """alpha#73 in-flight must NOT hide beta#73 ghost — issue numbers are
     per-repo. Old bare-number `known` would suppress the beta ghost; this
-    test fails against that code and passes after the (target, issue) fix."""
-    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    test fails against that code and passes after the (repository, issue) fix."""
+    tasks = [make_task(issue=73, repository="alpha", stage=Stage.IMPLEMENT)]
     queues = [
         ("alpha", [row(73)]),   # alpha#73 already in-flight — no ghost
         ("beta",  [row(73)]),   # beta#73 is a different issue — should ghost
@@ -740,17 +747,17 @@ def test_build_board_cross_target_ghost_not_suppressed():
         events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
         queues=queues, queue_stale=False,
         claims_paused=False, triage_running=False, max_active={}, last_claimed={})
-    ghost_targets = [(g.number, g.target) for g in queued(board).ghosts]
-    assert (73, "beta") in ghost_targets, \
+    ghost_repositories = [(g.number, g.repository) for g in queued(board).ghosts]
+    assert (73, "beta") in ghost_repositories, \
         "beta#73 ghost missing — known set wrongly keyed on bare issue number"
-    assert (73, "alpha") not in ghost_targets, \
-        "alpha#73 ghost present — in-flight task not excluded on same target"
+    assert (73, "alpha") not in ghost_repositories, \
+        "alpha#73 ghost present — in-flight task not excluded on same repository"
 
 
-def test_build_board_same_target_still_excluded():
+def test_build_board_same_repository_still_excluded():
     """alpha#73 in-flight must still NOT appear as an alpha ghost (regression
-    guard: the fix must not accidentally stop excluding same-target issues)."""
-    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    guard: the fix must not accidentally stop excluding same-repository issues)."""
+    tasks = [make_task(issue=73, repository="alpha", stage=Stage.IMPLEMENT)]
     board = build_board(
         tasks, capacity=4, models={},
         events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
@@ -759,11 +766,11 @@ def test_build_board_same_target_still_excluded():
     assert [g.number for g in queued(board).ghosts] == [74]
 
 
-def test_next_claim_cross_target_not_suppressed():
+def test_next_claim_cross_repository_not_suppressed():
     """alpha#73 in-flight must NOT prevent beta#73 from being the will-claim
     head. Old bare-number `known` skips beta#73; this test fails against that
-    code and passes after the (target, issue) fix."""
-    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    code and passes after the (repository, issue) fix."""
+    tasks = [make_task(issue=73, repository="alpha", stage=Stage.IMPLEMENT)]
     queues = [
         ("alpha", []),        # alpha has no additional candidates
         ("beta",  [row(73)]), # beta#73 should be claimable
@@ -772,12 +779,12 @@ def test_next_claim_cross_target_not_suppressed():
                    queues=queues, claims_paused=False, triage_running=False,
                    max_active={}, last_claimed={})
     assert v.verdict == "will-claim"
-    assert v.next_target == "beta" and v.next_issue == 73
+    assert v.next_repository == "beta" and v.next_issue == 73
 
 
-def test_next_claim_same_target_still_skipped():
+def test_next_claim_same_repository_still_skipped():
     """alpha#73 in-flight must still be skipped on alpha's own queue."""
-    tasks = [make_task(issue=73, target="alpha", stage=Stage.IMPLEMENT)]
+    tasks = [make_task(issue=73, repository="alpha", stage=Stage.IMPLEMENT)]
     queues = [("alpha", [row(73), row(74)])]
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
                    queues=queues, claims_paused=False, triage_running=False,
@@ -785,9 +792,9 @@ def test_next_claim_same_target_still_skipped():
     assert v.verdict == "will-claim" and v.next_issue == 74
 
 
-def test_next_claim_capacity_full_when_another_target_fills_the_box():
+def test_next_claim_capacity_full_when_another_repository_fills_the_box():
     """Capacity is box-wide: alpha holding both units leaves beta nothing."""
-    tasks = [make_task(issue=n, target="alpha", stage=Stage.IMPLEMENT)
+    tasks = [make_task(issue=n, repository="alpha", stage=Stage.IMPLEMENT)
              for n in (1, 2)]
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=2, gate=GATE_OK,
                    queues=[("alpha", []), ("beta", [row(9)])],
@@ -795,12 +802,12 @@ def test_next_claim_capacity_full_when_another_target_fills_the_box():
     assert v.verdict == "capacity-full"
 
 
-def test_next_claim_names_the_target_with_fewest_active():
-    tasks = [make_task(issue=1, target="alpha", stage=Stage.IMPLEMENT)]
+def test_next_claim_names_the_repository_with_fewest_active():
+    tasks = [make_task(issue=1, repository="alpha", stage=Stage.IMPLEMENT)]
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
                    queues=[("alpha", [row(5)]), ("beta", [row(9)])],
                    max_active={}, last_claimed={})
-    assert (v.verdict, v.next_target, v.next_issue) == ("will-claim", "beta", 9)
+    assert (v.verdict, v.next_repository, v.next_issue) == ("will-claim", "beta", 9)
 
 
 def test_next_claim_tie_goes_to_least_recently_claimed():
@@ -808,17 +815,17 @@ def test_next_claim_tie_goes_to_least_recently_claimed():
                    queues=[("alpha", [row(5)]), ("beta", [row(9)])],
                    last_claimed={"alpha": "2026-08-01T09:00:00+00:00",
                                  "beta": "2026-08-01T08:00:00+00:00"}, max_active={})
-    assert v.next_target == "beta"
+    assert v.next_repository == "beta"
 
 
-def test_next_claim_skips_a_target_at_max_active():
-    tasks = [make_task(issue=1, target="alpha", stage=Stage.IMPLEMENT)]
+def test_next_claim_skips_a_repository_at_max_active():
+    tasks = [make_task(issue=1, repository="alpha", stage=Stage.IMPLEMENT)]
     queues = [("alpha", [row(5)]), ("beta", [row(9)])]
-    beta_busy = tasks + [make_task(issue=n, target="beta", stage=Stage.IMPLEMENT)
+    beta_busy = tasks + [make_task(issue=n, repository="beta", stage=Stage.IMPLEMENT)
                          for n in (2, 3)]
     v = next_claim(HB, now=NOW, tasks=beta_busy, capacity=4, gate=GATE_OK,
                    queues=queues, max_active={"alpha": 1}, last_claimed={})
-    assert (v.verdict, v.next_target) == ("will-claim", "beta")
+    assert (v.verdict, v.next_repository) == ("will-claim", "beta")
     v = next_claim(HB, now=NOW, tasks=tasks, capacity=4, gate=GATE_OK,
                    queues=[("alpha", [row(5)])], max_active={"alpha": 1}, last_claimed={})
     assert v.verdict == "capacity-full"
@@ -902,18 +909,18 @@ def test_task_detail_carries_thread_and_contract():
         "will deliver when the session resumes")
 
 
-def test_task_detail_timeline_does_not_interleave_targets_sharing_an_issue():
+def test_task_detail_timeline_does_not_interleave_repositories_sharing_an_issue():
     """alpha#7 and beta#7 are different tasks (issue numbers are per-repo).
-    Each task_detail must see only its own target's transition events, plus
-    any legacy target-less rows — never the other target's."""
+    Each task_detail must see only its own repository's transition events, plus
+    any legacy repository-less rows — never the other repository's."""
     events = [ev(T0, "claimed", 7),                        # alpha
               ev(T0, "stage-started", 7, "spec"),           # alpha
-              {**ev(T1, "claimed", 7), "target": "beta"},
+              {**ev(T1, "claimed", 7), "repository": "beta"},
               {**ev(T2, "stage-started", 7, "implement"),
-               "target": "beta"},
-              {**ev(T3, "merged", 7), "target": "beta"}]
-    alpha = make_task(issue=7, target="alpha")
-    beta = make_task(issue=7, target="beta")
+               "repository": "beta"},
+              {**ev(T3, "merged", 7), "repository": "beta"}]
+    alpha = make_task(issue=7, repository="alpha")
+    beta = make_task(issue=7, repository="beta")
     alpha_detail = task_detail(alpha, model="m",
                                pane_tail="", session_alive=False,
                                events=events, now=NOW)

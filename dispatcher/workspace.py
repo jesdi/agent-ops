@@ -11,7 +11,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from dispatcher import containers
-from dispatcher.config import Target
+from dispatcher.config import Repository
 
 HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
 
@@ -55,11 +55,11 @@ def _plain_name(name: str) -> str:
     return name
 
 
-def write_task_identity(wt: str | Path, issue: int, target: str, branch: str) -> None:
+def write_task_identity(wt: str | Path, issue: int, repository: str, branch: str) -> None:
     """.agent/task.json: the Stop hook's ping identity and the guardrail's
     branch. Always written from the dispatcher's own task state."""
     write_worktree_file(wt, ".agent", "task.json", json.dumps(
-        {"issue": issue, "target": target, "branch": branch}))
+        {"issue": issue, "repository": repository, "branch": branch}))
 
 
 def write_worktree_file(root: str | Path, subdir: str, name: str,
@@ -337,7 +337,7 @@ def exclude_local_state(clone_path: str) -> None:
     from the common directory only, never from a worktree's own, so the
     lines go in the clone's. Lines already there are kept, none is added twice.
 
-    `clone_path` is the target's configured clone, never a path taken from a
+    `clone_path` is the repository's configured clone, never a path taken from a
     task worktree or from git: a worktree's `.git` file and the clone's git
     metadata are session-writable, and would name any directory on the host.
     The file is the fixed <clone_path>/.git/info/exclude, and `.git` and
@@ -365,31 +365,31 @@ def _git_ok(args: list[str], cwd: str) -> bool:
     return True
 
 
-def _fetch_base(target: Target, base: str) -> str:
+def _fetch_base(repository: Repository, base: str) -> str:
     """Fetch origin and return the tracking ref of `base`, fetched by its exact
     name. origin itself is asked whether the branch exists (ls-remote exits 2
     when it does not), and the explicit refspec updates the tracking ref
     whatever remote.origin.fetch maps, so a stale ref of a deleted base, or one
     a narrow refspec never prunes, never passes for the base."""
-    _sh(["git", "fetch", "--prune", "origin"], cwd=target.clone_path)
+    _sh(["git", "fetch", "--prune", "origin"], cwd=repository.clone_path)
     head = f"refs/heads/{base}"
     try:
-        _sh(["git", "ls-remote", "--exit-code", "origin", head], cwd=target.clone_path)
+        _sh(["git", "ls-remote", "--exit-code", "origin", head], cwd=repository.clone_path)
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 2:
             raise MissingBaseError(f"base branch {base!r} is not on origin") from exc
         raise
     ref = f"refs/remotes/origin/{base}"
-    _sh(["git", "fetch", "origin", f"+{head}:{ref}"], cwd=target.clone_path)
+    _sh(["git", "fetch", "origin", f"+{head}:{ref}"], cwd=repository.clone_path)
     return ref
 
 
-def _check_reused_base(target: Target, branch: str, base_ref: str) -> None:
+def _check_reused_base(repository: Repository, branch: str, base_ref: str) -> None:
     """A reused task branch must hold no commit outside the base: one made
     from another base (the issue's base line edited between a failed
     provisioning and its retry) would carry that base's commits into the PR."""
     if not _git_ok(["git", "merge-base", "--is-ancestor", branch, base_ref],
-                   target.clone_path):
+                   repository.clone_path):
         raise RuntimeError(
             f"branch {branch!r} has commits outside {base_ref!r}; refusing "
             f"to reuse it for that base — this needs manual inspection")
@@ -403,9 +403,9 @@ def _advance_to_base(wt: str, base_ref: str) -> None:
     _sh(["git", "merge", "--ff-only", "--quiet", base_ref], cwd=wt)
 
 
-def create_workspace(target: Target, issue: int, base: str = "main",
+def create_workspace(repository: Repository, issue: int, base: str = "main",
                      dry_run: bool = False) -> str:
-    wt = str(Path(target.worktrees_path) / f"task-{issue}")
+    wt = str(Path(repository.worktrees_path) / f"task-{issue}")
     branch = f"agent/task-{issue}"
     if dry_run:
         print(f"[dry-run] create worktree {wt} on {branch}")
@@ -426,11 +426,11 @@ def create_workspace(target: Target, issue: int, base: str = "main",
                 f"worktree {wt} exists but failed its health check "
                 f"({problem}); refusing to reuse it — this needs manual "
                 f"inspection, not a silent retry")
-        base_ref = _fetch_base(target, base)
-        _check_reused_base(target, branch, base_ref)
+        base_ref = _fetch_base(repository, base)
+        _check_reused_base(repository, branch, base_ref)
         _advance_to_base(wt, base_ref)
         _mark_provisioned(wt)
-    elif _branch_exists(target.clone_path, branch):
+    elif _branch_exists(repository.clone_path, branch):
         # Worktree was removed (e.g. manual cleanup) but the branch
         # survived — attach a fresh worktree to it instead of trying to
         # (re)create the branch with -b, which would die on "already
@@ -442,30 +442,30 @@ def create_workspace(target: Target, issue: int, base: str = "main",
         # preserved a crashed tree via `git worktree move`) — guard
         # against that before touching -f: it must only ever resolve the
         # registered-but-missing case it exists for.
-        other = _worktree_registered_at(target.clone_path, branch)
+        other = _worktree_registered_at(repository.clone_path, branch)
         if other is not None and os.path.realpath(other) != os.path.realpath(wt):
             raise RuntimeError(
                 f"branch {branch!r} is already checked out at {other!r}; "
                 f"refusing to `git worktree add -f` a second checkout at "
                 f"{wt!r} — this needs manual inspection, not a silent -f")
-        base_ref = _fetch_base(target, base)
-        _check_reused_base(target, branch, base_ref)
-        _sh(["git", "worktree", "add", "-f", wt, branch], cwd=target.clone_path)
+        base_ref = _fetch_base(repository, base)
+        _check_reused_base(repository, branch, base_ref)
+        _sh(["git", "worktree", "add", "-f", wt, branch], cwd=repository.clone_path)
         _advance_to_base(wt, base_ref)
         _mark_provisioned(wt)
     else:
-        base_ref = _fetch_base(target, base)
+        base_ref = _fetch_base(repository, base)
         _sh(["git", "worktree", "add", "-b", branch, wt, base_ref],
-            cwd=target.clone_path)
+            cwd=repository.clone_path)
         _mark_provisioned(wt)
-    if target.setup_cmd:
-        _sh(containers.setup_cmd(f"task-{target.name}-{issue}-setup", wt,
-                                 target.setup_cmd, target.clone_path),
+    if repository.setup_cmd:
+        _sh(containers.setup_cmd(f"task-{repository.name}-{issue}-setup", wt,
+                                 repository.setup_cmd, repository.clone_path),
             cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
 
-    write_task_identity(wt, issue, target.name, branch)
+    write_task_identity(wt, issue, repository.name, branch)
 
-    exclude_local_state(target.clone_path)
+    exclude_local_state(repository.clone_path)
 
     install_stop_hook(wt)
 
@@ -473,7 +473,7 @@ def create_workspace(target: Target, issue: int, base: str = "main",
     return wt
 
 
-def remove_workspace(target: Target, wt: str, branch: str,
+def remove_workspace(repository: Repository, wt: str, branch: str,
                      dry_run: bool = False) -> None:
     """Merged-task teardown — the ONE sanctioned worktree deletion (the
     module rule "worktrees are never auto-deleted" still holds for crashed
@@ -486,14 +486,14 @@ def remove_workspace(target: Target, wt: str, branch: str,
 
     try:
         _sh(["git", "worktree", "remove", "--force", wt],
-            cwd=target.clone_path)
+            cwd=repository.clone_path)
     except (OSError, subprocess.SubprocessError):
         shutil.rmtree(wt, ignore_errors=True)
         try:
-            _sh(["git", "worktree", "prune"], cwd=target.clone_path)
+            _sh(["git", "worktree", "prune"], cwd=repository.clone_path)
         except (OSError, subprocess.SubprocessError):
             pass
     try:
-        _sh(["git", "branch", "-D", branch], cwd=target.clone_path)
+        _sh(["git", "branch", "-D", branch], cwd=repository.clone_path)
     except (OSError, subprocess.SubprocessError):
         pass  # already gone, or never created locally

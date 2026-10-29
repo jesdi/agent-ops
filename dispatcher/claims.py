@@ -1,4 +1,4 @@
-"""Which target the next free capacity unit goes to. Shared by the
+"""Which repository the next free capacity unit goes to. Shared by the
 dispatcher's claim round and the console's next-claim forecast, so the two
 can never disagree about the order."""
 from __future__ import annotations
@@ -13,7 +13,7 @@ from dispatcher.state import TERMINAL_STAGES, TaskState, active
 
 def box_free(capacity: int, tasks: list[TaskState], triage_running: bool) -> int:
     """Free capacity across the whole box. `tasks` must be every task, not
-    one target's: capacity is one number shared by all targets. A running
+    one repository's: capacity is one number shared by all repositories. A running
     triage sweep holds a unit that active() cannot see (a herdr tab, not a
     TaskState)."""
     return capacity - len(active(tasks)) - int(triage_running)
@@ -35,12 +35,12 @@ def claim_room(capacity: int, max_open: int, tasks: list[TaskState],
                max_open - len(open_tasks(tasks)))
 
 
-def pick_target(names: list[str], active_counts: Mapping[str, int],
-                last_claimed: Mapping[str, str],
-                max_active: Mapping[str, int | None]) -> str | None:
-    """Fewest active among targets under their `max_active`, ties to the
+def pick_repository(names: list[str], active_counts: Mapping[str, int],
+                    last_claimed: Mapping[str, str],
+                    max_active: Mapping[str, int | None]) -> str | None:
+    """Fewest active among repositories under their `max_active`, ties to the
     least recent claim ("" = never claimed = oldest), then list order (min is
-    stable). None when every target is capped."""
+    stable). None when every repository is capped."""
     open_ = [n for n in names
              if max_active.get(n) is None or active_counts[n] < max_active[n]]
     return min(open_, key=lambda n: (active_counts[n], last_claimed.get(n, "")),
@@ -48,8 +48,8 @@ def pick_target(names: list[str], active_counts: Mapping[str, int],
 
 
 def last_claims(state_dir: str | Path) -> dict[str, str]:
-    """Each target's latest `claimed` ts in events.jsonl. Rotation drops old
-    history; a target that then looks never-claimed only loses a tie."""
+    """Each repository's latest `claimed` ts in events.jsonl. Rotation drops old
+    history; a repository that then looks never-claimed only loses a tie."""
     p = Path(state_dir) / EVENTS_FILE
     if not p.exists():
         return {}
@@ -62,7 +62,8 @@ def last_claims(state_dir: str | Path) -> dict[str, str]:
         except json.JSONDecodeError:
             continue
         if isinstance(e, dict) and e.get("event") == "claimed":
-            target, ts = e.get("target", ""), e.get("ts", "")
-            if isinstance(target, str) and isinstance(ts, str):
-                last[target] = max(last.get(target, ""), ts)
+            repository = e.get("repository", e.get("target", ""))
+            ts = e.get("ts", "")
+            if isinstance(repository, str) and isinstance(ts, str):
+                last[repository] = max(last.get(repository, ""), ts)
     return last

@@ -5,24 +5,24 @@ import subprocess
 
 from dispatcher import eventlog, execution_overrides, state
 from dispatcher.queue_ops import QueuePlan
-from tests.webfakes import make_config, make_target
+from tests.webfakes import make_config, make_repository
 from web.sources import DESCRIPTION_TTL_SECONDS, RANK_TTL_SECONDS, Sources
 
 
 class FakeGitHub:
     def __init__(self):
-        self.rows = {}          # target name -> list[dict]
+        self.rows = {}          # repository name -> list[dict]
         self.calls = 0
         self.fail = False
         self.states = {}        # (repo, number) -> "OPEN"/"CLOSED"/None
         self.state_calls = []   # (repo, number) per issue_state call
         self.boosts = []
 
-    def rank_rows(self, target):
+    def rank_rows(self, repository):
         self.calls += 1
         if self.fail:
             raise RuntimeError("gh exploded")
-        return self.rows.get(target.name, [])
+        return self.rows.get(repository.name, [])
 
     def issue_state(self, repo, number):
         self.state_calls.append((repo, number))
@@ -31,13 +31,13 @@ class FakeGitHub:
             raise RuntimeError("gh failed")
         return v
 
-    def set_boost(self, target, issue, value):
-        self.boosts.append((target.name, issue, value))
+    def set_boost(self, repository, issue, value):
+        self.boosts.append((repository.name, issue, value))
 
-    def set_status(self, target, issue, option_id):
+    def set_status(self, repository, issue, option_id):
         pass
 
-    def add_label(self, target, issue, label):
+    def add_label(self, repository, issue, label):
         pass
 
 
@@ -47,13 +47,13 @@ class FakeSessions:
         self.histories = {}
         self.alive = set()
 
-    def capture_tail(self, target, issue, lines=25):
+    def capture_tail(self, repository, issue, lines=25):
         return self.tails.get(issue, "")
 
-    def capture_history(self, target, issue, lines=2000):
+    def capture_history(self, repository, issue, lines=2000):
         return self.histories.get(issue, "")
 
-    def is_alive(self, target, issue):
+    def is_alive(self, repository, issue):
         return issue in self.alive
 
 
@@ -100,14 +100,14 @@ def test_rank_rows_cached_within_ttl(tmp_path):
                         "blocked": False, "score": 1.0, "boost": 0}]
     clock = FakeClock()
     _, src = make_sources(tmp_path, github=gh, clock=clock)
-    target = make_target()
-    rows1, as_of1, stale1 = src.rank_rows(target)
-    rows2, as_of2, stale2 = src.rank_rows(target)
+    repository = make_repository()
+    rows1, as_of1, stale1 = src.rank_rows(repository)
+    rows2, as_of2, stale2 = src.rank_rows(repository)
     assert gh.calls == 1
     assert rows1 == rows2 and as_of1 == as_of2
     assert stale1 is False and stale2 is False
     clock.t += RANK_TTL_SECONDS + 1
-    src.rank_rows(target)
+    src.rank_rows(repository)
     assert gh.calls == 2
 
 
@@ -116,11 +116,11 @@ def test_rank_failure_serves_stale_cache(tmp_path):
     gh.rows["alpha"] = [{"number": 9, "boost": 0}]
     clock = FakeClock()
     _, src = make_sources(tmp_path, github=gh, clock=clock)
-    target = make_target()
-    rows, as_of, _ = src.rank_rows(target)
+    repository = make_repository()
+    rows, as_of, _ = src.rank_rows(repository)
     clock.t += RANK_TTL_SECONDS + 1
     gh.fail = True
-    rows2, as_of2, stale = src.rank_rows(target)
+    rows2, as_of2, stale = src.rank_rows(repository)
     assert rows2 == rows and as_of2 == as_of and stale is True
 
 
@@ -128,7 +128,7 @@ def test_rank_failure_without_cache_is_empty_stale(tmp_path):
     gh = FakeGitHub()
     gh.fail = True
     _, src = make_sources(tmp_path, github=gh)
-    rows, as_of, stale = src.rank_rows(make_target())
+    rows, as_of, stale = src.rank_rows(make_repository())
     assert rows == [] and stale is True and as_of
 
 
@@ -211,7 +211,7 @@ def test_failure_and_quarantine_entries(tmp_path):
     assert fps == [{"fingerprint": "abc123def456", "repo": "jesdi/alpha",
                     "issue": 4, "when": "2026-07-25T09:00:00"}]
     qs = src.quarantine_entries()
-    assert qs[0]["target"] == "alpha" and qs[0]["task_issue"] == 7
+    assert qs[0]["repository"] == "alpha" and qs[0]["task_issue"] == 7
 
 
 def test_issue_open_maps_states_and_failures(tmp_path):
@@ -225,7 +225,7 @@ def test_issue_open_maps_states_and_failures(tmp_path):
 
 
 def test_events_tail_via_real_eventlog(tmp_path):
-    eventlog.append_event(tmp_path, "claimed", target="alpha", issue=7,
+    eventlog.append_event(tmp_path, "claimed", repository="alpha", issue=7,
                           stage="spec", actor="dispatcher")
     _, src = make_sources(tmp_path)
     tail = src.events_tail(10)
@@ -264,7 +264,7 @@ def test_submit_intent_survives_kick_failure(tmp_path):
 def test_apply_queue_plan_delegates_to_queue_ops(tmp_path):
     gh = FakeGitHub()
     _, src = make_sources(tmp_path, github=gh)
-    src.apply_queue_plan(make_target(), 9,
+    src.apply_queue_plan(make_repository(), 9,
                          QueuePlan(ok=True, set_boost=3))
     assert gh.boosts == [("alpha", 9, 3)]
 
@@ -326,7 +326,7 @@ def test_quarantine_and_intent_entries_tolerate_oserror(tmp_path):
 class WedgedSessions(FakeSessions):
     """tmux server that never answers: capture_tail RAISES TimeoutExpired."""
 
-    def capture_tail(self, target, issue, lines=25):
+    def capture_tail(self, repository, issue, lines=25):
         raise subprocess.TimeoutExpired(["tmux", "capture-pane"], 30)
 
 
@@ -349,7 +349,7 @@ def test_pane_history_delegates_to_capture_history(tmp_path):
 
 def test_pane_history_degrades_to_empty_on_tmux_error(tmp_path):
     class BoomSessions(FakeSessions):
-        def capture_history(self, target, issue, lines=2000):
+        def capture_history(self, repository, issue, lines=2000):
             raise TimeoutError("tmux wedged")
     sess = BoomSessions()
     sess.alive.add(7)
@@ -392,7 +392,7 @@ def test_pane_history_falls_back_to_snapshot_when_dead(tmp_path):
 
 def test_pane_tail_wedged_is_alive_degrades_to_empty(tmp_path):
     class WedgedSessions(FakeSessions):
-        def is_alive(self, target, issue):
+        def is_alive(self, repository, issue):
             raise subprocess.TimeoutExpired(cmd="tmux", timeout=30)
 
     _write_snapshot(tmp_path, 7, "snapshot")
@@ -603,7 +603,7 @@ def test_quarantine_key_comes_from_the_filename_not_the_body(tmp_path):
     _quarantine(tmp_path, "alpha-73.json", task_issue=999, blocker_repo="r",
                 blocker_issue=1, fingerprint="f", created_at="c")
     entry, = src.quarantine_entries()
-    assert (entry["target"], entry["task_issue"]) == ("alpha", 73)
+    assert (entry["repository"], entry["task_issue"]) == ("alpha", 73)
 
 
 def test_state_fingerprint_board_and_usage_follow_the_priority_mode(tmp_path):

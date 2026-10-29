@@ -15,7 +15,7 @@ from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PARK_WAKE,
                               AnswersRequest, PlanApprovalRequest, Stage, save,
                               task_key)
 
-from tests.test_answers_intent_acceptance import (ISSUE, PLAN_FILE, REV, TARGET,
+from tests.test_answers_intent_acceptance import (ISSUE, PLAN_FILE, REV, REPOSITORY,
                                                   _drain, _events, _file,
                                                   _gate, _intent, _setup,
                                                   _task, _texts)
@@ -162,10 +162,10 @@ def test_a_draft_on_a_new_revision_is_not_blocked_by_an_old_submission(tmp_path,
 def test_a_corrupt_task_file_fails_only_its_own_answers_intent(tmp_path, monkeypatch, capsys):
     c = _setup(tmp_path, monkeypatch)
     _gate(c)
-    (Path(c.state_dir) / f"task-{task_key(TARGET, ISSUE)}.json").write_text("{not json")
+    (Path(c.state_dir) / f"task-{task_key(REPOSITORY, ISSUE)}.json").write_text("{not json")
     make_task(c, issue=7, park=PARK_HUMAN, slot=NO_SLOT)
     _intent(c, {"format": "a"}, ms=1)
-    intents.write_intent(c.state_dir, "reply", TARGET, 7, {"text": "go"},
+    intents.write_intent(c.state_dir, "reply", REPOSITORY, 7, {"text": "go"},
                          actor="jesdi", epoch_ms=2)
 
     _drain(c)
@@ -173,7 +173,7 @@ def test_a_corrupt_task_file_fails_only_its_own_answers_intent(tmp_path, monkeyp
     assert intents.list_intents(c.state_dir) == []
     (e,) = _events(c, "intent-applied")
     assert (e["issue"], e["detail"]) == (7, "reply")
-    assert [m.text for m in messages.undelivered(c.state_dir, TARGET, 7)] == ["go"]
+    assert [m.text for m in messages.undelivered(c.state_dir, REPOSITORY, 7)] == ["go"]
     assert "failed" in capsys.readouterr().err
 
 

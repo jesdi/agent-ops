@@ -14,7 +14,7 @@ const DIST = fileURLToPath(new URL('../dist/', import.meta.url))
 const PORT = 8481
 
 const parkedCard = {
-  issue: 42, target: 'widget', title: 'Fix login redirect',
+  issue: 42, repository: 'widget', title: 'Fix login redirect',
   stage: 'implement', park: 'parked', park_reason: 'decision', column: 'parked', slot: -1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?',
@@ -51,9 +51,9 @@ const pinnedCards = () => [
 ]
 
 const seedGhosts = () => [
-  { number: 73, target: 'widget', title: 'Ship dark mode',
+  { number: 73, repository: 'widget', title: 'Ship dark mode',
     url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
-  { number: 74, target: 'widget', title: 'Fix flaky test',
+  { number: 74, repository: 'widget', title: 'Fix flaky test',
     url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
 ]
 
@@ -80,10 +80,10 @@ const state = {
     next_claim: {
       verdict: 'will-claim',
       next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
-      next_issue: 73, next_target: 'widget', minutes_to_reset: 0, blocked_by: '',
+      next_issue: 73, next_repository: 'widget', minutes_to_reset: 0, blocked_by: '',
     },
   },
-  queue: { targets: [] },
+  queue: { repositories: [] },
   usage: {
     providers: [
       {
@@ -144,10 +144,10 @@ function contractFor(card) {
   return 'will deliver at the next session boundary — this session is still running'
 }
 
-function taskDetail(target, issue) {
+function taskDetail(repository, issue) {
   const card = state.board.columns
     .flatMap((c) => c.cards)
-    .find((c) => c.target === target && c.issue === issue)
+    .find((c) => c.repository === repository && c.issue === issue)
   if (!card) return null
   return {
     card,
@@ -209,7 +209,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/api/pending-intents') {
     return json(200, { intents: state.intents })
   }
-  // Task routes are keyed by (target, issue), mirroring web/app.py.
+  // Task routes are keyed by (repository, issue), mirroring web/app.py.
   const detailMatch = url.pathname.match(/^\/api\/task\/([^/]+)\/(\d+)$/)
   if (detailMatch && req.method === 'GET') {
     const detail = taskDetail(detailMatch[1], Number(detailMatch[2]))
@@ -221,13 +221,13 @@ const server = createServer(async (req, res) => {
   if (/^\/api\/task\/[^/]+\/\d+\/request$/.test(url.pathname)) return json(200, null)
   const descMatch = url.pathname.match(/^\/api\/task\/([^/]+)\/(\d+)\/description$/)
   if (descMatch && req.method === 'GET') {
-    const target = descMatch[1]
+    const repository = descMatch[1]
     const n = Number(descMatch[2])
     // Mirror real backend precedence: claimed task first, then queue ghost,
     // then 404 — identical to web/app.py task_description().
     const claimedCard = state.board.columns
       .flatMap((c) => c.cards)
-      .find((c) => c.target === target && c.issue === n)
+      .find((c) => c.repository === repository && c.issue === n)
     if (claimedCard) {
       return json(200, {
         title: claimedCard.title,
@@ -237,7 +237,7 @@ const server = createServer(async (req, res) => {
       })
     }
     const ghost = queued().ghosts.find(
-      (g) => g.target === target && g.number === n)
+      (g) => g.repository === repository && g.number === n)
     if (ghost) {
       return json(200, {
         title: ghost.title, body: `## Goal\nBody of issue ${n}.`,
@@ -250,7 +250,7 @@ const server = createServer(async (req, res) => {
     /^\/api\/task\/([^/]+)\/(\d+)\/(reply|park|kill|cancel|retry|resume)$/,
   )
   if (intentMatch && req.method === 'POST') {
-    const target = intentMatch[1]
+    const repository = intentMatch[1]
     const issue = Number(intentMatch[2])
     const action = intentMatch[3]
     let body = ''
@@ -259,12 +259,12 @@ const server = createServer(async (req, res) => {
       let text = ''
       try { text = (JSON.parse(body || '{}').text) ?? '' } catch { /* no body */ }
       state.intents.push({
-        action, target, issue, actor: 'dev@localhost', text,
+        action, repository, issue, actor: 'dev@localhost', text,
         created_at: new Date().toISOString(),
       })
       push(['board'])
       json(202, { status: 'pending',
-                  intent: `${Date.now()}-${target}-${issue}-${action}` })
+                  intent: `${Date.now()}-${repository}-${issue}-${action}` })
     })
     return
   }
@@ -323,7 +323,7 @@ const server = createServer(async (req, res) => {
     state.board.next_claim = {
       verdict: 'will-claim',
       next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
-      next_issue: 73, next_target: 'widget', minutes_to_reset: 0, blocked_by: '',
+      next_issue: 73, next_repository: 'widget', minutes_to_reset: 0, blocked_by: '',
     }
     return json(200, { ok: true })
   }

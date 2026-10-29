@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dispatcher import eventlog, execution_overrides, intents as intents_mod
-from dispatcher.config import Config, Target
+from dispatcher.config import Config, Repository
 from dispatcher.models import parse_policy
 from dispatcher.state import PARK_HUMAN, Stage, TaskState, save
 import dispatcher.main as main
@@ -36,8 +36,8 @@ MULTI_PROVIDER_POLICY = parse_policy({
 })
 
 
-def _target(name="alpha"):
-    return Target(
+def _repository(name="alpha"):
+    return Repository(
         name=name, repo=f"jesdi/{name}", clone_path=f"/tmp/clones/{name}",
         worktrees_path=f"/tmp/worktrees/{name}", rank_cmd="false",
         setup_cmd="", verify_cmd="", project_number=1, project_owner="jesdi",
@@ -47,7 +47,7 @@ def _target(name="alpha"):
 
 def _config(state_dir):
     return Config(state_dir=str(state_dir), capacity=2, session_memory="2g",
-                 session_cpus="2", targets=[_target()],
+                 session_cpus="2", repositories=[_repository()],
                  models=MULTI_PROVIDER_POLICY)
 
 
@@ -130,7 +130,7 @@ def test_dispatcher_drops_a_cross_provider_resume_intent_and_records_an_event(
     wt = tmp_path / "worktrees" / "alpha" / "task-7"
     (wt / ".agent").mkdir(parents=True, exist_ok=True)
     task = TaskState(
-        issue=7, target="alpha", stage=Stage.IMPLEMENT, slot=0,
+        issue=7, repository="alpha", stage=Stage.IMPLEMENT, slot=0,
         worktree=str(wt), branch="agent/task-7", title="t",
         updated_at="2026-07-25T00:00:00+00:00", track="standard",
         park=PARK_HUMAN, park_msg_id=55,

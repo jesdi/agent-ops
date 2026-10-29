@@ -57,7 +57,7 @@ AGENT_INFO = ('{"id":"cli:agent:get","result":{"agent":{"agent":"claude",'
               '"tab_id":"w1:t2","workspace_id":"w1","terminal_id":"t2",'
               '"focused":false,"revision":12},"type":"agent_info"}}')
 AGENT_NOT_FOUND = ('{"error":{"code":"agent_not_found","message":'
-                   '"agent target w1:p9 not found"},"id":"cli:agent:get"}')
+                   '"agent repository w1:p9 not found"},"id":"cli:agent:get"}')
 
 
 def test_run_degrades_on_missing_binary_and_timeout(monkeypatch):

@@ -138,7 +138,7 @@ def _fake_podman(monkeypatch, seen=None):
 
 # --- naming and the container command ----------------------------------------
 
-def test_session_name_includes_target():
+def test_session_name_includes_repository():
     assert sessions.session_name("agent_ops", 7) == "task-agent_ops-7"
 
 
@@ -603,7 +603,7 @@ def test_end_snapshots_then_closes_the_tab_and_removes_both_containers(tmp_path,
 
 
 def test_end_on_a_dead_task_still_removes_both_container_names(monkeypatch):
-    """Containers created before the (target, issue) rekey are named
+    """Containers created before the (repository, issue) rekey are named
     task-<issue>; nothing ever renames them, so a wedged one would leak
     until reboot if end() reached for one name only."""
     calls = []
@@ -682,7 +682,7 @@ def test_launch_mounts_the_configured_clone_not_what_the_worktree_names(tmp_path
         assert "id>x" not in cmd and "/a;" not in cmd
 
 
-def test_launch_for_a_target_with_no_configured_clone_raises_and_runs_nothing(
+def test_launch_for_a_repository_with_no_configured_clone_raises_and_runs_nothing(
         tmp_path, monkeypatch):
     wt = _worktree(tmp_path)
     calls = []

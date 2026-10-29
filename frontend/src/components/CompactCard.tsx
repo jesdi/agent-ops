@@ -30,7 +30,7 @@ export function CompactCard({ testId, drag, to, variant, accent = '', badges, st
   detail: ReactNode
 }) {
   const { expanded, detailId, toggle, onPointerUp } = useExpand()
-  const id = `${drag.target}#${drag.issue}`
+  const id = `${drag.repository}#${drag.issue}`
   const style = VARIANT[variant]
   return (
     <article

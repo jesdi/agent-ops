@@ -15,7 +15,7 @@ function renderApp() {
           <Suspense fallback={<p>loading page…</p>}>
             <Routes>
               <Route path="/" element={<p>board content</p>} />
-              <Route path="/task/:target/:issue" element={<BrokenTaskPage />} />
+              <Route path="/task/:repository/:issue" element={<BrokenTaskPage />} />
             </Routes>
           </Suspense>
         </PageErrorBoundary>

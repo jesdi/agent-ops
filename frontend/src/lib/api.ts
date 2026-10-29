@@ -36,7 +36,7 @@ export type TrackSetting = components['schemas']['TrackSetting']
 
 export interface PendingIntent {
   action: string
-  target: string
+  repository: string
   issue: number
   actor: string
   created_at: string
@@ -105,16 +105,16 @@ const put = <T>(path: string, body: unknown) =>
 export const api = {
   boardSnapshot: () => request<components['schemas']['BoardSnapshot']>('/board/snapshot'),
   board: () => request<BoardView>('/board'),
-  taskDetail: (target: string, issue: number) =>
-    request<TaskDetail>(`/task/${target}/${issue}`),
-  taskHistory: (target: string, issue: number, lines = 2000) =>
-    request<PaneHistory>(`/task/${target}/${issue}/history?lines=${lines}`),
+  taskDetail: (repository: string, issue: number) =>
+    request<TaskDetail>(`/task/${repository}/${issue}`),
+  taskHistory: (repository: string, issue: number, lines = 2000) =>
+    request<PaneHistory>(`/task/${repository}/${issue}/history?lines=${lines}`),
   usage: () => request<UsageView>('/usage'),
   failures: () => request<FailuresView>('/failures'),
   history: (limit = 200) => request<HistoryView>(`/history?limit=${limit}`),
   pendingIntents: () => request<PendingIntentsView>('/pending-intents'),
   // Queue actions — applied immediately, 200 or 422. Issue-only: the queue
-  // (GitHub project board rank) has no per-target route.
+  // (GitHub project board rank) has no per-repository route.
   queueBoost: (issue: number, amount: number) =>
     post<QueueActionResult>('/queue/boost', { issue, amount }),
   queueNext: (issue: number, force: boolean) =>
@@ -131,36 +131,36 @@ export const api = {
   resetModelSettings: (revision: string) =>
     request<ModelSettingsView>(`/settings/models?revision=${encodeURIComponent(revision)}`, { method: 'DELETE' }),
   // Intent actions — 202 accepted, applied by the next dispatcher pass.
-  reply: (target: string, issue: number, text: string) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/reply`, { text }),
+  reply: (repository: string, issue: number, text: string) =>
+    post<IntentAccepted>(`/task/${repository}/${issue}/reply`, { text }),
   // keepalive: a pagehide flush still reaches the server while the page unloads.
-  answers: (target: string, issue: number, body: components['schemas']['AnswersReq']) =>
-    request<IntentAccepted>(`/task/${target}/${issue}/answers`,
+  answers: (repository: string, issue: number, body: components['schemas']['AnswersReq']) =>
+    request<IntentAccepted>(`/task/${repository}/${issue}/answers`,
       { method: 'POST', body: JSON.stringify(body), keepalive: true }),
-  park: (target: string, issue: number) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/park`, {}),
-  kill: (target: string, issue: number) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/kill`, {}),
+  park: (repository: string, issue: number) =>
+    post<IntentAccepted>(`/task/${repository}/${issue}/park`, {}),
+  kill: (repository: string, issue: number) =>
+    post<IntentAccepted>(`/task/${repository}/${issue}/kill`, {}),
   // No _require_task server-side: a backlog card with no task file cancels too.
-  cancel: (target: string, issue: number) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/cancel`, {}),
-  retry: (target: string, issue: number) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/retry`, {}),
-  resume: (target: string, issue: number, options: ResumeOptions = {}) =>
-    post<IntentAccepted>(`/task/${target}/${issue}/resume`, {
+  cancel: (repository: string, issue: number) =>
+    post<IntentAccepted>(`/task/${repository}/${issue}/cancel`, {}),
+  retry: (repository: string, issue: number) =>
+    post<IntentAccepted>(`/task/${repository}/${issue}/retry`, {}),
+  resume: (repository: string, issue: number, options: ResumeOptions = {}) =>
+    post<IntentAccepted>(`/task/${repository}/${issue}/resume`, {
       ...(options.text ? { text: options.text } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(options.bypassUsage ? { bypass_usage: true } : {}),
     }),
-  forceRun: (target: string, issue: number, options: ResumeOptions = {}) =>
-    post<QueueActionResult>(`/task/${target}/${issue}/run`, {
+  forceRun: (repository: string, issue: number, options: ResumeOptions = {}) =>
+    post<QueueActionResult>(`/task/${repository}/${issue}/run`, {
       ...(options.model ? { model: options.model } : {}),
       ...(options.bypassUsage ? { bypass_usage: true } : {}),
     }),
-  taskDescription: (target: string, issue: number) =>
-    request<IssueDescription>(`/task/${target}/${issue}/description`),
-  taskArtifacts: (target: string, issue: number) =>
-    request<ArtifactsView>(`/task/${target}/${issue}/artifacts`),
-  taskRequest: (target: string, issue: number) =>
-    request<OperatorRequest | null>(`/task/${target}/${issue}/request`),
+  taskDescription: (repository: string, issue: number) =>
+    request<IssueDescription>(`/task/${repository}/${issue}/description`),
+  taskArtifacts: (repository: string, issue: number) =>
+    request<ArtifactsView>(`/task/${repository}/${issue}/artifacts`),
+  taskRequest: (repository: string, issue: number) =>
+    request<OperatorRequest | null>(`/task/${repository}/${issue}/request`),
 }

@@ -32,7 +32,7 @@ from dispatcher.waitd import sock_path
 
 REPO = Path(__file__).resolve().parent.parent
 HOOK = REPO / "hooks" / "stop-hook.sh"
-TARGET = "portfolio_eval"
+REPOSITORY = "portfolio_eval"
 ISSUE = 370
 CLAUDE_ID = "7b0c2a1e-3f4d-4c5b-9a6e-1d2f3a4b5c6d"
 ROOT_ID = "01a11028-ed88-72c0-a20f-b801e1eff4a6"
@@ -102,11 +102,11 @@ def hook_fixture():
         agent = base / "wt" / ".agent"
         state.mkdir()
         agent.mkdir(parents=True)
-        (agent / "task.json").write_text(json.dumps({"target": TARGET, "issue": ISSUE}))
+        (agent / "task.json").write_text(json.dumps({"repository": REPOSITORY, "issue": ISSUE}))
         shutil.copyfile(HOOK, agent / "stop-hook.sh")
         fixture = HookFixture(state, agent.parent, agent / "stop-hook.sh")
         save(state, TaskState(
-            issue=ISSUE, target=TARGET, stage=Stage.IMPLEMENT, slot=0,
+            issue=ISSUE, repository=REPOSITORY, stage=Stage.IMPLEMENT, slot=0,
             worktree=str(fixture.worktree), branch=f"agent/task-{ISSUE}",
             title="Record the task's own conversation",
             updated_at="2026-10-06T09:00:00+00:00",
@@ -200,15 +200,15 @@ def _run_with_open_stdin(fixture, argument):
 
 
 def _assert_waiting(fixture):
-    assert has_waiting(fixture.state, TARGET, ISSUE)
-    assert read_background(fixture.state, TARGET, ISSUE) is None
+    assert has_waiting(fixture.state, REPOSITORY, ISSUE)
+    assert read_background(fixture.state, REPOSITORY, ISSUE) is None
 
 
 def test_claude_implement_turn_records_stdin_session_and_waits(served_hook):
     result = _run(served_hook, stdin=json.dumps({"session_id": CLAUDE_ID}))
 
     assert result.returncode == 0, result.stderr
-    assert read_session(served_hook.state, TARGET, ISSUE) == SessionRecord(CLAUDE_ID, "implement")
+    assert read_session(served_hook.state, REPOSITORY, ISSUE) == SessionRecord(CLAUDE_ID, "implement")
     _assert_waiting(served_hook)
 
 
@@ -219,11 +219,11 @@ def test_claude_working_turn_records_session_and_background_without_waiting(serv
     }))
 
     assert result.returncode == 0, result.stderr
-    assert read_session(served_hook.state, TARGET, ISSUE) == SessionRecord(CLAUDE_ID, "implement")
-    background = read_background(served_hook.state, TARGET, ISSUE)
+    assert read_session(served_hook.state, REPOSITORY, ISSUE) == SessionRecord(CLAUDE_ID, "implement")
+    background = read_background(served_hook.state, REPOSITORY, ISSUE)
     assert background is not None
     assert background.tasks == ("gate-1",)
-    assert not has_waiting(served_hook.state, TARGET, ISSUE)
+    assert not has_waiting(served_hook.state, REPOSITORY, ISSUE)
 
 
 @pytest.mark.parametrize("stdin", INVALID_STDIN)
@@ -231,7 +231,7 @@ def test_claude_unusable_stdin_waits_without_recording(served_hook, stdin):
     result = _run(served_hook, stdin=stdin)
 
     assert result.returncode == 0, result.stderr
-    assert read_session(served_hook.state, TARGET, ISSUE) is None
+    assert read_session(served_hook.state, REPOSITORY, ISSUE) is None
     _assert_waiting(served_hook)
 
 
@@ -240,25 +240,25 @@ def test_codex_root_argument_records_its_thread_and_waits(served_hook):
     result = _run(served_hook, arguments=(_notify(ROOT_ID),))
 
     assert result.returncode == 0, result.stderr
-    assert read_session(served_hook.state, TARGET, ISSUE) == SessionRecord(ROOT_ID, "implement")
+    assert read_session(served_hook.state, REPOSITORY, ISSUE) == SessionRecord(ROOT_ID, "implement")
     _assert_waiting(served_hook)
 
 
 @pytest.mark.parametrize("prior_background", [False, True], ids=["no-marker", "background"])
 def test_codex_subagent_argument_preserves_root_record_and_markers(served_hook, prior_background):
     original = SessionRecord(ROOT_ID, "implement")
-    write_session(served_hook.state, TARGET, ISSUE, original)
+    write_session(served_hook.state, REPOSITORY, ISSUE, original)
     if prior_background:
-        mark_background(served_hook.state, TARGET, ISSUE, [BACKGROUND_TASK], now=1000)
-    background = read_background(served_hook.state, TARGET, ISSUE)
+        mark_background(served_hook.state, REPOSITORY, ISSUE, [BACKGROUND_TASK], now=1000)
+    background = read_background(served_hook.state, REPOSITORY, ISSUE)
     _rollout(served_hook, CHILD_IDS[0], subagent=True)
 
     result = _run(served_hook, arguments=(_notify(CHILD_IDS[0]),))
 
     assert result.returncode == 0, result.stderr
-    assert read_session(served_hook.state, TARGET, ISSUE) == original
-    assert read_background(served_hook.state, TARGET, ISSUE) == background
-    assert not has_waiting(served_hook.state, TARGET, ISSUE)
+    assert read_session(served_hook.state, REPOSITORY, ISSUE) == original
+    assert read_background(served_hook.state, REPOSITORY, ISSUE) == background
+    assert not has_waiting(served_hook.state, REPOSITORY, ISSUE)
 
 
 def test_codex_three_subagents_wait_only_after_root_turn_ends(served_hook):
@@ -267,15 +267,15 @@ def test_codex_three_subagents_wait_only_after_root_turn_ends(served_hook):
         _rollout(served_hook, thread_id, subagent=True)
         result = _run(served_hook, arguments=(_notify(thread_id),))
         assert result.returncode == 0, result.stderr
-        assert not has_waiting(served_hook.state, TARGET, ISSUE)
-        assert read_background(served_hook.state, TARGET, ISSUE) is None
-        assert read_session(served_hook.state, TARGET, ISSUE) is None
+        assert not has_waiting(served_hook.state, REPOSITORY, ISSUE)
+        assert read_background(served_hook.state, REPOSITORY, ISSUE) is None
+        assert read_session(served_hook.state, REPOSITORY, ISSUE) is None
 
     result = _run(served_hook, arguments=(_notify(ROOT_ID),))
 
     assert result.returncode == 0, result.stderr
     _assert_waiting(served_hook)
-    assert read_session(served_hook.state, TARGET, ISSUE) == SessionRecord(ROOT_ID, "implement")
+    assert read_session(served_hook.state, REPOSITORY, ISSUE) == SessionRecord(ROOT_ID, "implement")
 
 
 @pytest.mark.parametrize("argument", INVALID_ARGUMENTS)
@@ -283,7 +283,7 @@ def test_codex_unusable_argument_waits_without_recording(served_hook, argument):
     result = _run(served_hook, arguments=(argument,))
 
     assert result.returncode == 0, result.stderr
-    assert read_session(served_hook.state, TARGET, ISSUE) is None
+    assert read_session(served_hook.state, REPOSITORY, ISSUE) is None
     _assert_waiting(served_hook)
 
 
@@ -292,7 +292,7 @@ def test_codex_argument_exits_while_stdin_pipe_remains_open(served_hook):
 
     assert _run_with_open_stdin(served_hook, _notify(ROOT_ID)) == 0
 
-    assert read_session(served_hook.state, TARGET, ISSUE) == SessionRecord(ROOT_ID, "implement")
+    assert read_session(served_hook.state, REPOSITORY, ISSUE) == SessionRecord(ROOT_ID, "implement")
     _assert_waiting(served_hook)
 
 
@@ -304,7 +304,7 @@ def test_codex_argument_wins_over_competing_claude_stdin(served_hook):
     }))
 
     assert result.returncode == 0, result.stderr
-    assert read_session(served_hook.state, TARGET, ISSUE) == SessionRecord(ROOT_ID, "implement")
+    assert read_session(served_hook.state, REPOSITORY, ISSUE) == SessionRecord(ROOT_ID, "implement")
     _assert_waiting(served_hook)
 
 
@@ -319,7 +319,7 @@ def test_quoted_or_backslashed_id_does_not_corrupt_ping(served_hook, session_id,
     assert result.returncode == 0, result.stderr
     _assert_waiting(served_hook)
     if runtime == "claude":
-        assert read_session(served_hook.state, TARGET, ISSUE) == SessionRecord(session_id, "implement")
+        assert read_session(served_hook.state, REPOSITORY, ISSUE) == SessionRecord(session_id, "implement")
 
 
 # Each down-server case uses the same input shape exercised above. Three

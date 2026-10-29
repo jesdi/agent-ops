@@ -6,21 +6,21 @@ from telegram.templates import render
 
 
 def test_templates_carry_url_session_and_attach_hint():
-    # The tmux session name is now task-<target>-<issue> (Task 2's rekey); a
+    # The tmux session name is now task-<repository>-<issue> (Task 2's rekey); a
     # legacy-adopted session is renamed to this on first touch, so this is
     # the correct name for the operator-facing text to print.
     for name in ["awaiting_plan_review", "stage_blocked", "pr_opened",
                  "artifact_failed", "session_crashed"]:
         msg = render(name, issue=42, title="Add widget",
                      url="https://github.com/x/y/issues/42", note="n",
-                     target="acme")
+                     repository="acme")
         assert "https://github.com/x/y/issues/42" in msg
         assert "task-acme-42" in msg
         assert "mosh agent-vps -- tmux attach -t task-acme-42" in msg
 
 
 def test_budget_templates_do_not_reference_a_fictitious_session():
-    # budget_stall/budget_resume are box-wide events (issue=0, no target) —
+    # budget_stall/budget_resume are box-wide events (issue=0, no repository) —
     # there is no single task's session to attach to, so unlike the
     # per-task templates above these must never grow a session/attach line.
     for name in ["budget_stall", "budget_resume"]:
@@ -43,7 +43,7 @@ def test_send_posts_to_bot_api(monkeypatch):
         return {}
     monkeypatch.setattr(notify, "_http_post", capture_and_return)
     notify.Notifier().send("pr_opened", issue=42, title="t", url="u", note="",
-                           target="acme")
+                           repository="acme")
     assert seen["url"] == "https://api.telegram.org/botTOK/sendMessage"
     assert seen["payload"]["chat_id"] == "CHAT"
     assert "task-acme-42" in seen["payload"]["text"]
@@ -55,7 +55,7 @@ def test_missing_env_drops_quietly(monkeypatch, capsys):
     monkeypatch.setattr(notify, "_http_post",
                         lambda url, payload: (_ for _ in ()).throw(AssertionError))
     notify.Notifier().send("pr_opened", issue=42, title="t", url="u", note="",
-                           target="acme")
+                           repository="acme")
     assert "TELEGRAM" in capsys.readouterr().err
 
 
@@ -63,7 +63,7 @@ def test_dry_run_prints(monkeypatch, capsys):
     monkeypatch.setattr(notify, "_http_post",
                         lambda url, payload: (_ for _ in ()).throw(AssertionError))
     notify.Notifier(dry_run=True).send("pr_opened", issue=42, title="t", url="u",
-                                       note="", target="acme")
+                                       note="", repository="acme")
     assert "[dry-run]" in capsys.readouterr().out
 
 
@@ -96,15 +96,15 @@ def test_queue_template_joins_lines():
 def test_awaiting_plan_review_includes_console_link_when_configured():
     msg = render("awaiting_plan_review", issue=42, title="Add widget",
                  url="https://github.com/x/y/issues/42", note="n",
-                 target="acme", console="https://box.tail.ts.net")
+                 repository="acme", console="https://box.tail.ts.net")
     assert "read & approve: https://box.tail.ts.net/task/acme/42" in msg
 
 
 def test_awaiting_plan_review_unchanged_without_console():
     with_empty = render("awaiting_plan_review", issue=42, title="t",
-                        url="u", note="n", target="acme", console="")
+                        url="u", note="n", repository="acme", console="")
     without = render("awaiting_plan_review", issue=42, title="t",
-                     url="u", note="n", target="acme")
+                     url="u", note="n", repository="acme")
     assert with_empty == without
     assert "read & approve" not in with_empty
 
@@ -117,7 +117,7 @@ def test_notifier_injects_console_url(monkeypatch):
                         lambda url, payload: seen.update(payload=payload) or {})
     notify.Notifier(console_url="https://box.tail.ts.net").send(
         "awaiting_plan_review", issue=42, title="t", url="u", note="",
-        target="acme")
+        repository="acme")
     assert "read & approve: https://box.tail.ts.net/task/acme/42" in seen["payload"]["text"]
 
 
@@ -125,7 +125,7 @@ def test_needs_relogin_template():
     text = render("needs_relogin", issue=42, title="t",
                   url="https://github.com/o/r/issues/42",
                   login_url="https://claude.ai/oauth/authorize?x=1",
-                  note="(no session output for 10m)", target="acme")
+                  note="(no session output for 10m)", repository="acme")
     assert "https://claude.ai/oauth/authorize?x=1" in text
     assert "task-acme-42" in text
     assert "claude-home" in text
@@ -135,7 +135,7 @@ def test_needs_relogin_template():
 def test_plan_parked_message_explains_the_park_and_the_way_back():
     msg = render("plan_parked", issue=42, title="Add widget",
                  url="https://github.com/x/y/issues/42", note="…pane tail…",
-                 target="acme")
+                 repository="acme")
     assert "#42" in msg and "https://github.com/x/y/issues/42" in msg
     assert "Reply to THIS message" in msg   # the wake path
     assert "task-acme-42" in msg            # /attach hint carries the session
@@ -144,7 +144,7 @@ def test_plan_parked_message_explains_the_park_and_the_way_back():
 def test_plan_session_stopped_message_claims_no_ready_plan_and_names_the_way_back():
     msg = render("plan_session_stopped", issue=42, title="Add widget",
                  url="https://github.com/x/y/issues/42", note="…pane tail…",
-                 target="acme", rounds=2, console="https://box.ts.net")
+                 repository="acme", rounds=2, console="https://box.ts.net")
     assert "ready" not in msg
     assert "plan session stopped at the review gate" in msg and "2 unattended" in msg
     assert "Reply to THIS message to continue" in msg and "task-acme-42" in msg
@@ -154,7 +154,7 @@ def test_plan_session_stopped_message_claims_no_ready_plan_and_names_the_way_bac
 
 def test_plan_parked_carries_the_console_deep_link_when_configured():
     msg = render("plan_parked", issue=42, title="t", url="u", note="n",
-                 target="acme", console="https://box.ts.net")
+                 repository="acme", console="https://box.ts.net")
     assert "https://box.ts.net/task/acme/42" in msg
 
 
@@ -166,19 +166,19 @@ def test_plan_parked_carries_the_console_deep_link_when_configured():
 ])
 def test_pr_lifecycle_templates_render(template, frag):
     text = render(template, issue=7, title="Add widget", url="u", note="n",
-                  target="acme")
+                  repository="acme")
     assert "#7" in text and "Add widget" in text and frag in text
 
 
 def test_pr_updated_carries_the_new_style_session_name():
     text = render("pr_updated", issue=7, title="t", url="u", note="n",
-                  target="acme")
+                  repository="acme")
     assert "task-acme-7" in text
 
 
 def test_resumed_for_attach_carries_the_new_style_session_name():
     text = render("resumed_for_attach", issue=42, title="t", url="u",
-                  target="acme")
+                  repository="acme")
     assert "task-acme-42" in text
     assert "mosh agent-vps -- tmux attach -t task-acme-42" in text
 
@@ -290,11 +290,11 @@ def test_loop_and_review_templates_render():
     for template, frag in (("review_started", "review started"),
                            ("last_round", "last round"),
                            ("pr_attention", "needs attention")):
-        text = render(template, issue=3, title="T", url="u", note="n", target="alpha")
+        text = render(template, issue=3, title="T", url="u", note="n", repository="alpha")
         assert frag in text and "#3" in text
 
 
 def test_parked_question_carries_the_console_deep_link_when_configured():
     text = render("parked_question", issue=12, title="T", url="u", note="q",
-                  target="alpha", console="https://box")
+                  repository="alpha", console="https://box")
     assert "https://box/task/alpha/12" in text

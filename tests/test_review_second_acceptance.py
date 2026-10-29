@@ -101,14 +101,14 @@ class GrantSessions(FakeSessions):
         super().__init__(**kw)
         self.spawn_seconds, self.resume_seconds = [], []
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model,
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model,
                     effort="", second=None):
-        super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
+        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
         self.spawn_seconds.append((stage_name, second))
 
-    def resume(self, target, issue, worktree, message, model, effort="",
+    def resume(self, repository, issue, worktree, message, model, effort="",
                second=None, *, session_id=None):
-        super().resume(target, issue, worktree, message, model, effort,
+        super().resume(repository, issue, worktree, message, model, effort,
                        session_id=session_id)
         self.resume_seconds.append(second)
 
@@ -134,11 +134,11 @@ def _usages(monkeypatch, openai_ok: bool):
 
 def _implement_done(c, issue=2):
     """An implement task whose last ticket is done: the next pass spawns review."""
-    wt = Path(c.targets[0].worktrees_path) / f"task-{issue}"
+    wt = Path(c.repositories[0].worktrees_path) / f"task-{issue}"
     (wt / ".agent").mkdir(parents=True)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "done", "note": ""}))
-    save(c.state_dir, TaskState(issue=issue, target="portfolio_eval",
+    save(c.state_dir, TaskState(issue=issue, repository="portfolio_eval",
                                 stage=Stage.IMPLEMENT, slot=1,
                                 ticket_count=1,
                                 worktree=str(wt), branch=f"agent/task-{issue}",

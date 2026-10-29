@@ -25,7 +25,7 @@ from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
                              patch_workspace)
 
 ISSUE = 412
-TARGET = "portfolio_eval"
+REPOSITORY = "portfolio_eval"
 REV = "rev-1"
 PLAN_FILE = ".agent/review-answers.json"
 SPEC_FILE = ".agent/questionnaire-answers.json"
@@ -50,7 +50,7 @@ def _gate(c, park=PARK_REVIEW, revision=REV):
 def _intent(c, answers, submit=None, revision=REV, ms=1):
     """Write an answers intent; return its created_at."""
     p = intents.write_intent(
-        c.state_dir, "answers", TARGET, ISSUE,
+        c.state_dir, "answers", REPOSITORY, ISSUE,
         {"answers": answers, "submit": submit, "revision": revision},
         actor="jesdi", epoch_ms=ms)
     return json.loads(p.read_text())["created_at"]
@@ -70,11 +70,11 @@ def _events(c, name):
 
 
 def _texts(c):
-    return [m.text for m in messages.undelivered(c.state_dir, TARGET, ISSUE)]
+    return [m.text for m in messages.undelivered(c.state_dir, REPOSITORY, ISSUE)]
 
 
 def _task(c):
-    return load(c.state_dir, TARGET, ISSUE)
+    return load(c.state_dir, REPOSITORY, ISSUE)
 
 
 def _dropped(c, reason):

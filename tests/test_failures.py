@@ -5,7 +5,7 @@ from dispatcher.failures import FailureReport
 
 
 def report(**kw):
-    base = dict(klass="provisioning", target="portfolio_eval", issue=192,
+    base = dict(klass="provisioning", repository="portfolio_eval", issue=192,
                 title="provisioning failed: Add widget",
                 error="Traceback (most recent call last):\n  ...\n"
                       "RuntimeError: no python 3.13",
@@ -30,10 +30,10 @@ def test_fingerprint_distinct_per_class_and_issue():
     assert failures.fingerprint(base) != failures.fingerprint(report(issue=7))
 
 
-def test_same_issue_number_on_two_targets_files_two_issues(tmp_path):
+def test_same_issue_number_on_two_repositories_files_two_issues(tmp_path):
     c, d = cfg(tmp_path), FakeDeps()
-    failures.report_failure(c, d, report(target="alpha", issue=7))
-    failures.report_failure(c, d, report(target="beta", issue=7))
+    failures.report_failure(c, d, report(repository="alpha", issue=7))
+    failures.report_failure(c, d, report(repository="beta", issue=7))
     assert len(d.github.created) == 2
 
 
@@ -60,7 +60,7 @@ def test_issue_body_none_placeholders():
     assert "## Log tail\n```\n(none)\n```" in body
 
 
-from dispatcher.config import Config, Target
+from dispatcher.config import Config, Repository
 
 
 class FakeGitHub:
@@ -96,7 +96,7 @@ def cfg(tmp_path, infra_repo="jesdi/agent-ops"):
     return Config(
         state_dir=str(tmp_path / "state"), capacity=3,
         session_memory="2g", session_cpus="2",
-        targets=[Target(
+        repositories=[Repository(
             name="portfolio_eval", repo="jesdi/portfolio_eval",
             clone_path=str(tmp_path / "repo"),
             worktrees_path=str(tmp_path / "repo.worktrees"),
@@ -126,7 +126,7 @@ def test_provisioning_routes_to_infra_repo(tmp_path):
     assert failures.reported(c.state_dir, report())
 
 
-def test_session_crash_routes_to_target_repo(tmp_path):
+def test_session_crash_routes_to_repository_repo(tmp_path):
     c, d = cfg(tmp_path), FakeDeps()
     failures.report_failure(c, d, report(klass="session-crash"))
     assert d.github.created[0][0] == "jesdi/portfolio_eval"
@@ -135,7 +135,7 @@ def test_session_crash_routes_to_target_repo(tmp_path):
 def test_pass_crash_routes_to_infra_repo(tmp_path):
     c, d = cfg(tmp_path), FakeDeps()
     failures.report_failure(
-        c, d, report(klass="pass-crash", target="", issue=0,
+        c, d, report(klass="pass-crash", repository="", issue=0,
                      title="(dispatcher)", worktree=""))
     repo, title, body = d.github.created[0]
     assert repo == "jesdi/agent-ops"

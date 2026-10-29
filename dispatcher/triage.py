@@ -145,7 +145,7 @@ def save_cursors(state_dir: str | Path, cursors: dict[str, str]) -> None:
 
 
 def triage_repos(cfg: Config) -> list[str]:
-    repos = [t.repo for t in cfg.targets]
+    repos = [t.repo for t in cfg.repositories]
     if cfg.infra_repo and cfg.infra_repo not in repos:
         repos.append(cfg.infra_repo)
     return repos
@@ -156,7 +156,7 @@ class SweepError(Exception):
 
 
 def _clone_for(cfg: Config, repo: str) -> str:
-    for t in cfg.targets:
+    for t in cfg.repositories:
         if t.repo == repo:
             return t.clone_path
     return str(Path.home() / "agent-ops")
@@ -167,8 +167,8 @@ def _session_name(repo: str) -> str:
 
 
 def _policy_for_repo(cfg: Config, repo: str):
-    target = next((t for t in cfg.targets if t.repo == repo), None)
-    return policy_for(cfg, target)
+    repository = next((t for t in cfg.repositories if t.repo == repo), None)
+    return policy_for(cfg, repository)
 
 
 def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
@@ -233,11 +233,11 @@ def _board(cfg: Config, repo: str, lines: list[str], run):
     """The repo's board, with stale cards repaired and what the sweep cannot
     reach reported. None for a repo without a board, and when the board cannot
     be read: labels are still worth triaging without it."""
-    target = next((t for t in cfg.targets if t.repo == repo), None)
-    if target is None:
+    repository = next((t for t in cfg.repositories if t.repo == repo), None)
+    if repository is None:
         return None
     try:
-        brd = board.read(repo, target.clone_path, run=run)
+        brd = board.read(repo, repository.clone_path, run=run)
     except Exception as e:  # noqa: BLE001 — degrade to label-only triage
         lines.append(f"{repo}: board unavailable, labels only — {e}")
         return None

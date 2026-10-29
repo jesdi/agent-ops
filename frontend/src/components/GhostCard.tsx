@@ -19,8 +19,8 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
   return (
     <CompactCard
       testId={`ghost-${ghost.number}`}
-      drag={{ issue: ghost.number, target: ghost.target, title: ghost.title }}
-      to={`/task/${ghost.target}/${ghost.number}`}
+      drag={{ issue: ghost.number, repository: ghost.repository, title: ghost.title }}
+      to={`/task/${ghost.repository}/${ghost.number}`}
       variant="ghost"
       badges={isNext && <span className={chip.running}>next</span>}
       detail={<>
@@ -31,7 +31,7 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
           </div>
         )}
         {ghost.admission && (
-          <AdmissionWarning target={ghost.target} issue={ghost.number} admission={ghost.admission} />
+          <AdmissionWarning repository={ghost.repository} issue={ghost.number} admission={ghost.admission} />
         )}
         <div className="mt-2 flex gap-1">
           <button type="button" className={ACTION} disabled={busy} onClick={() => onBoost(ghost.number, 1)}>Boost</button>

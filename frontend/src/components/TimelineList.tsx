@@ -28,9 +28,9 @@ export function TimelineList({ events }: { events: EventEntry[] }) {
           <span className={chip[EVENT_TONE[e.event] ?? 'neutral']}>
             {e.event}
           </span>
-          {e.target ? (
-            <Link to={`/task/${e.target}/${e.issue}`} className="underline">
-              {e.target}#{e.issue}
+          {e.repository ? (
+            <Link to={`/task/${e.repository}/${e.issue}`} className="underline">
+              {e.repository}#{e.issue}
             </Link>
           ) : (
             <span className="text-ink-muted">#{e.issue}</span>

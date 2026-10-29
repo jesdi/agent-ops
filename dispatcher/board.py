@@ -121,7 +121,7 @@ def join(items: list[Item], issues: list[dict]) -> dict[int, Item]:
 
 @dataclass(frozen=True)
 class Schema:
-    """Field and option ids from the target clone's committed
+    """Field and option ids from the repository clone's committed
     `.backlog/project-meta.json` (written by the backlog skill's `setup`)."""
     project_id: str
     status_field: str

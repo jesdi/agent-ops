@@ -2,7 +2,7 @@
 name, and an attach hint."""
 from __future__ import annotations
 
-_ATTACH = "attach: `mosh agent-vps -- tmux attach -t task-{target}-{issue}`"
+_ATTACH = "attach: `mosh agent-vps -- tmux attach -t task-{repository}-{issue}`"
 
 # Telegram's sendMessage hard limit is 4096 characters; over it the API
 # returns 400 and Notifier.send swallows the OSError — the whole message
@@ -31,19 +31,19 @@ _RELOGIN = ("ssh -t agent@{host} 'CLAUDE_CONFIG_DIR=$HOME/agent-ops-state/"
             "claude-home $HOME/.local/bin/claude' then /login")
 
 _TEMPLATES = {
-    "awaiting_plan_review": "📝 {ref} {title} — spec and plan ready for review.\n{url}\nsession task-{target}-{issue} · {note}\n" + _ATTACH,
-    "stage_blocked": "🚧 {ref} {title} — stage blocked: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "pr_opened": "✅ {ref} {title} — PR opened: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "artifact_failed": "❌ {ref} {title} — artifact sanity check failed: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "plan_retry": "🔁 {ref} {title} — plan signal rejected; resuming the session to fix it: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "session_crashed": "💀 {ref} {title} — session died mid-stage. Worktree preserved for autopsy.\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "awaiting_plan_review": "📝 {ref} {title} — spec and plan ready for review.\n{url}\nsession task-{repository}-{issue} · {note}\n" + _ATTACH,
+    "stage_blocked": "🚧 {ref} {title} — stage blocked: {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
+    "pr_opened": "✅ {ref} {title} — PR opened: {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
+    "artifact_failed": "❌ {ref} {title} — artifact sanity check failed: {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
+    "plan_retry": "🔁 {ref} {title} — plan signal rejected; resuming the session to fix it: {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
+    "session_crashed": "💀 {ref} {title} — session died mid-stage. Worktree preserved for autopsy.\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
     # Box-wide events (issue=0, no single owning task) — never had a real
     # session to attach to, so unlike every per-task template above these
     # carry no session/attach line at all. They stay on a bare "#{issue}"
-    # regardless of multi_target: there is no single project to name.
+    # regardless of multi_repository: there is no single project to name.
     "budget_stall": "⏳ #{issue} {title} — usage gate closed; resumes when headroom returns. {note}\n{url}",
     "budget_resume": "▶️ #{issue} {title} — usage gate open again; resuming. {note}\n{url}",
-    "implement_started": "🛠 {ref} {title} — implement started, one session for {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "implement_started": "🛠 {ref} {title} — implement started, one session for {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
     "parked_question": "❓ {ref} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
     "plan_parked": ("🌙 {ref} {title} — spec and plan ready and parked for review. "
                     "Session ended; capacity and slot released.\n{note}\n{url}\n"
@@ -56,7 +56,7 @@ _TEMPLATES = {
                              "Reply to THIS message to continue (your reply starts the "
                              "plan session again), or /attach {issue}.\n" + _ATTACH),
     "needs_relogin": ("🔐 {ref} {title} — Claude Code needs re-login. "
-                      "Session task-{target}-{issue} is parked but still LIVE.\n"
+                      "Session task-{repository}-{issue} is parked but still LIVE.\n"
                       "Authorize here:\n{login_url}\n\n{note}\n{url}\n"
                       "Shared claude-home: one re-login likely fixes every "
                       "session on this box.\n"
@@ -64,11 +64,11 @@ _TEMPLATES = {
                       + _ATTACH),
     "resumed_for_attach": "🎹 {ref} {title} — session resumed and holding for you.\n{url}\n" + _ATTACH,
     "task_failed": "🔥 {ref} {title} — {note}\n{url}",
-    "review_started": "🔍 {ref} {title} — every ticket landed; review started. {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
-    "last_round": "⚠️ {ref} {title} — {note}: last round before this task parks.\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "review_started": "🔍 {ref} {title} — every ticket landed; review started. {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
+    "last_round": "⚠️ {ref} {title} — {note}: last round before this task parks.\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
     "pr_attention": "🔴 {ref} {title} — PR needs attention ({note}); queued for rework.\n{url}",
     "pr_feedback": "💬 {ref} {title} — review feedback on the PR; queued for rework.\n{note}\n{url}",
-    "pr_updated": "🔁 {ref} {title} — feedback addressed, PR updated: {note}\n{url}\nsession task-{target}-{issue}\n" + _ATTACH,
+    "pr_updated": "🔁 {ref} {title} — feedback addressed, PR updated: {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
     "task_done": "🎉 {ref} {title} — PR merged; task done. {note}\n{url}",
     "pr_closed": "🚫 {ref} {title} — PR closed without merge: {note}\n{url}",
     "unit_failed": ("🚨 {unit} FAILED on {host}. Logs:\n"
@@ -81,13 +81,13 @@ _TEMPLATES = {
 }
 
 
-def task_ref(target: str, issue: int, multi_target: bool) -> str:
-    """How a message names a task: `target#issue` once the box runs more
+def task_ref(repository: str, issue: int, multi_repository: bool) -> str:
+    """How a message names a task: `repository#issue` once the box runs more
     than one project, a bare `#issue` otherwise."""
-    return f"{target}#{issue}" if multi_target and target else f"#{issue}"
+    return f"{repository}#{issue}" if multi_repository and repository else f"#{issue}"
 
 
-def render(template: str, multi_target: bool = False, **ctx) -> str:
+def render(template: str, multi_repository: bool = False, **ctx) -> str:
     if template == "daily_digest":
         return "📋 agent-ops daily digest\n" + "\n".join(ctx["lines"])
     if template == "status":
@@ -98,10 +98,10 @@ def render(template: str, multi_target: bool = False, **ctx) -> str:
         return _triage_report(list(ctx["lines"]),
                               ctx.get("triage_dir") or "<state_dir>/triage/")
     if "issue" in ctx:
-        ctx = {**ctx, "ref": task_ref(ctx.get("target", ""), ctx["issue"],
-                                      multi_target)}
+        ctx = {**ctx, "ref": task_ref(ctx.get("repository", ""), ctx["issue"],
+                                      multi_repository)}
     text = _TEMPLATES[template].format(**ctx)
     if template in ("awaiting_plan_review", "plan_parked", "parked_question") and ctx.get("console"):
         text += (f"\nread & approve: {ctx['console']}/task/"
-                 f"{ctx['target']}/{ctx['issue']}")
+                 f"{ctx['repository']}/{ctx['issue']}")
     return text

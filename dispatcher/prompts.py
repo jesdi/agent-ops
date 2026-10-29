@@ -18,7 +18,7 @@ _TEMPLATE_FILES = {
 }
 
 # review.md/address_review.md's e2e sections (Signals bullet, the step
-# itself, and review.md's Verification line) vary by whether the target has
+# itself, and review.md's Verification line) vary by whether the repository has
 # a verify_cmd. Each variant lives in one small fragment file with
 # ===KEY=== sections, so the mode-specific wording lives in one place
 # instead of branching in Python per section.

@@ -1,6 +1,6 @@
 """Acceptance tests for ticket 03 (pinned tracks): the console shows the pin
 and offers the override. Black-box: web.app.create_app through TestClient
-(GET /api/board, /api/task/<target>/<issue>, /api/usage, POST .../run)."""
+(GET /api/board, /api/task/<repository>/<issue>, /api/usage, POST .../run)."""
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone

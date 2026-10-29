@@ -22,7 +22,7 @@ class Herdr(FakeSessions):
         super().__init__(**kw)
         self.state = state
 
-    def agent_state(self, target, issue):
+    def agent_state(self, repository, issue):
         return self.state
 
 
@@ -65,10 +65,10 @@ class WakesBetweenReads(FakeSessions):
         self.reads += 1
         return self.reads > 1
 
-    def agent_state(self, target, issue):
+    def agent_state(self, repository, issue):
         return ("working", 6) if self._woke() else ("idle", 5)
 
-    def idle_seconds(self, target, issue):
+    def idle_seconds(self, repository, issue):
         return 0.0 if self._woke() else 11 * MIN
 
 

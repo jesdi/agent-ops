@@ -36,8 +36,8 @@ def _setup(tmp_path, monkeypatch, issue, pr, states):
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
     base = cfg(tmp_path)
-    c = dc_replace(base, targets=[dc_replace(
-        base.targets[0], status_done_option_id="D0")])
+    c = dc_replace(base, repositories=[dc_replace(
+        base.repositories[0], status_done_option_id="D0")])
     t = pr_open_task(c, issue=issue, pr_number=pr)
     gh = ClosingGitHub(issue_states=states)
     gh.pr_payloads[pr] = payload(**MERGED)

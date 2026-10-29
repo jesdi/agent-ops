@@ -11,14 +11,14 @@ export const defaultHandlers = [
   http.get('/api/failures', () => HttpResponse.json(fx.failures)),
   http.get('/api/history', () => HttpResponse.json(fx.history)),
   http.get('/api/pending-intents', () => HttpResponse.json(fx.noPendingIntents)),
-  http.get('/api/task/:target/:issue', () => HttpResponse.json(fx.taskDetail)),
-  http.get('/api/task/:target/:issue/artifact', () =>
+  http.get('/api/task/:repository/:issue', () => HttpResponse.json(fx.taskDetail)),
+  http.get('/api/task/:repository/:issue/artifact', () =>
     HttpResponse.json({ detail: 'no artifact recorded' }, { status: 404 }),
   ),
-  http.get('/api/task/:target/:issue/artifacts', () =>
+  http.get('/api/task/:repository/:issue/artifacts', () =>
     HttpResponse.json({ items: [], expires_at: '', expired: false }),
   ),
-  http.get('/api/task/:target/:issue/request', () =>
+  http.get('/api/task/:repository/:issue/request', () =>
     HttpResponse.json(null),
   ),
 ]

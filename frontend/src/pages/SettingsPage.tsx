@@ -17,7 +17,7 @@ interface TrackForm extends Record<Stage, EntrySetting[]> {
   plan_review: boolean
 }
 // Tracks are a list and untracked/pinned name them by id: a rename must not
-// reorder, merge or retarget them, even while two tracks share a name.
+// reorder, merge or repoint them, even while two tracks share a name.
 interface Form extends Omit<ModelsSetting, 'tracks' | 'untracked' | 'pinned'> {
   tracks: TrackForm[]
   untracked: number
@@ -184,10 +184,10 @@ function SourceHeader({ view }: { view: ModelSettingsView }) {
       reset it. A stage that already started keeps its model.
     </p>
     {view.error && <p role="alert" className={banner.failed}>{view.error}. The targets.yaml block is in force.</p>}
-    {view.target_overrides.length > 0 && (
+    {view.repository_overrides.length > 0 && (
       <p className={banner.waiting}>
-        These targets have their own <code>models:</code> block in targets.yaml, which these settings
-        do not change: {view.target_overrides.join(', ')}.
+        These repositories have their own <code>models:</code> block in targets.yaml, which these settings
+        do not change: {view.repository_overrides.join(', ')}.
       </p>
     )}
   </>

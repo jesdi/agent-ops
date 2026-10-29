@@ -14,30 +14,30 @@ from dispatcher.state import (SessionRecord, load, mark_background,
                               mark_waiting, write_session)
 
 
-def _load_session_task(state_dir, target: str, issue: int):
+def _load_session_task(state_dir, repository: str, issue: int):
     try:
-        return load(state_dir, target, issue)
+        return load(state_dir, repository, issue)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
         # TaskState's loader calls .get on operator_request; malformed nested
         # data (for example, []) raises AttributeError instead of TypeError.
-        print(f"waitd: cannot read task {target}#{issue} for session recording: {exc}",
+        print(f"waitd: cannot read task {repository}#{issue} for session recording: {exc}",
               file=sys.stderr)
         return None
 
 
-def _record_session(rec: dict, state_dir, target: str, issue: int,
+def _record_session(rec: dict, state_dir, repository: str, issue: int,
                     cwd: str | None = None) -> None:
     session_id = rec.get("session_id")
-    if not target or not isinstance(session_id, str) or not session_id:
+    if not repository or not isinstance(session_id, str) or not session_id:
         return
-    task = _load_session_task(state_dir, target, issue)
+    task = _load_session_task(state_dir, repository, issue)
     if task is None or (cwd is not None and task.worktree != cwd):
         return
     try:
-        write_session(state_dir, target, issue,
+        write_session(state_dir, repository, issue,
                       SessionRecord(session_id, task.continued_stage.value))
     except OSError as exc:
-        print(f"waitd: cannot record session for {target}#{issue}: {exc}", file=sys.stderr)
+        print(f"waitd: cannot record session for {repository}#{issue}: {exc}", file=sys.stderr)
 
 
 def _read_codex_metadata(path: Path, session_id: str) -> dict | None:
@@ -68,42 +68,42 @@ def _codex_metadata(state_dir, session_id) -> dict | None:
     return None
 
 
-def _mark_waiting(state_dir, target: str, issue: int) -> None:
-    if target:
-        mark_waiting(state_dir, target, issue)
+def _mark_waiting(state_dir, repository: str, issue: int) -> None:
+    if repository:
+        mark_waiting(state_dir, repository, issue)
     else:  # ping from a pre-rename worktree — legacy marker, read via fallback
         p = Path(state_dir) / f"waiting-{issue}"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
 
 
-def _handle_codex_ping(rec: dict, state_dir, target: str, issue: int) -> None:
+def _handle_codex_ping(rec: dict, state_dir, repository: str, issue: int) -> None:
     metadata = _codex_metadata(state_dir, rec.get("session_id"))
     source = metadata.get("source") if metadata is not None else None
     if isinstance(source, dict) and "subagent" in source:
         return
     if isinstance(source, str) and isinstance(metadata.get("cwd"), str):
-        _record_session(rec, state_dir, target, issue, cwd=metadata["cwd"])
-    _mark_waiting(state_dir, target, issue)
+        _record_session(rec, state_dir, repository, issue, cwd=metadata["cwd"])
+    _mark_waiting(state_dir, repository, issue)
 
 
 def handle_ping(body: bytes, state_dir) -> None:
     try:
         rec = json.loads(body)
         issue = int(rec["issue"])
-        target = str(rec.get("target", ""))
+        repository = str(rec.get("repository", rec.get("target", "")))
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         print(f"waitd: dropping corrupt ping: {body!r}", file=sys.stderr)
         return
     if rec.get("runtime") == "codex":
-        _handle_codex_ping(rec, state_dir, target, issue)
+        _handle_codex_ping(rec, state_dir, repository, issue)
         return
-    _record_session(rec, state_dir, target, issue)
+    _record_session(rec, state_dir, repository, issue)
     bg = rec.get("background_tasks")
-    if target and isinstance(bg, list) and bg:
-        mark_background(state_dir, target, issue, bg)
+    if repository and isinstance(bg, list) and bg:
+        mark_background(state_dir, repository, issue, bg)
     else:
-        _mark_waiting(state_dir, target, issue)
+        _mark_waiting(state_dir, repository, issue)
 
 
 class _Server(UnixStreamServer):
