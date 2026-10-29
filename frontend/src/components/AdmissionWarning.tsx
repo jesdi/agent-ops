@@ -11,8 +11,8 @@ function shortModel(model: string): string {
   return model.split('/').at(-1)?.replace(/^claude-/, '') ?? model
 }
 
-export function AdmissionWarning({ target, issue, admission }: {
-  target: string
+export function AdmissionWarning({ repository, issue, admission }: {
+  repository: string
   issue: number
   admission: Admission
 }) {
@@ -21,13 +21,13 @@ export function AdmissionWarning({ target, issue, admission }: {
   const queryClient = useQueryClient()
   const override = useMutation({
     mutationFn: ({ model, bypassUsage }: { model: string; bypassUsage: boolean }) =>
-      api.forceRun(target, issue, { model, bypassUsage }),
+      api.forceRun(repository, issue, { model, bypassUsage }),
     onSuccess: () => {
       setError(null)
       setOpen(false)
       void queryClient.invalidateQueries({ queryKey: queryKeys.pendingIntents })
       void queryClient.invalidateQueries({ queryKey: queryKeys.board })
-      void queryClient.invalidateQueries({ queryKey: queryKeys.task(target, issue) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.task(repository, issue) })
     },
     onError: (err) => setError(err instanceof ApiError ? err.detail : String(err)),
   })

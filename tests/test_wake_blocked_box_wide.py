@@ -1,25 +1,25 @@
 """Every refused woken/feedback task is marked, not just the first hungry
-one box-wide: which cards show "capacity full" must not depend on target
+one box-wide: which cards show "capacity full" must not depend on repository
 order or on earlier passes."""
 from dispatcher.state import PARK_WAKE, Stage
 
 from tests.test_main import FakeSessions, deps, patch_usage, patch_workspace
-from tests.test_multi_project_capacity import (mk_task, two_target_cfg,
+from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
 
 
 def _full_box(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
-    c = two_target_cfg(tmp_path)
+    c = two_repository_cfg(tmp_path)
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
     mk_task(c, "factorial", 5, slot=2)
     return c
 
 
-def _detail(c, target, issue):
-    return [e["detail"] for e in wake_blocked_events(c, target, issue)]
+def _detail(c, repository, issue):
+    return [e["detail"] for e in wake_blocked_events(c, repository, issue)]
 
 
 def test_every_hungry_woken_task_is_marked(tmp_path, monkeypatch):

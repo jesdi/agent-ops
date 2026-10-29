@@ -1,35 +1,35 @@
 """Acceptance tests for ticket 03: messages and slot markers keyed by
-(target, issue) instead of a bare issue number.
+(repository, issue) instead of a bare issue number.
 
 Spec: specs/multi-project-box/spec.md requirement 10 and its four scenarios
 ("a reply reaches only its own project", "a slot-starved task marks only its
-own card", "legacy files migrate while one target is configured", "legacy
-message files are not guessed at with several targets").
+own card", "legacy files migrate while one repository is configured", "legacy
+message files are not guessed at with several repositories").
 Design: specs/multi-project-box/design.md, "Forced by red-team" and "Legacy
 key migration".
 
 These tests assume interface shapes the ticket leaves to the implementer,
-per design.md's Seams section ("dispatcher.messages ... now taking target"
-and "web.sources.Sources.messages(target, issue) / undelivered_counts() /
+per design.md's Seams section ("dispatcher.messages ... now taking repository"
+and "web.sources.Sources.messages(repository, issue) / undelivered_counts() /
 wake_blocked_issues()"). Documented here so the implementer can hold to them
 or deliberately diverge:
 
 - dispatcher.messages.append/undelivered/mark_delivered/all_messages gain a
-  `target: str` positional parameter placed right after `state_dir`, matching
-  every other (state_dir, target, issue, ...) seam in this codebase (e.g.
+  `repository: str` positional parameter placed right after `state_dir`, matching
+  every other (state_dir, repository, issue, ...) seam in this codebase (e.g.
   execution_overrides.load, task_artifacts.read). New on-disk path:
-  messages/{target}-{issue}.jsonl.
-- web.sources.Sources.messages(target, issue) — was messages(issue).
+  messages/{repository}-{issue}.jsonl.
+- web.sources.Sources.messages(repository, issue) — was messages(issue).
 - web.sources.Sources.undelivered_counts() returns dict[tuple[str, int], int]
-  keyed by (target, issue) — was dict[int, int]. This is the fix for the
-  cross-target gap web/app.py's own comment names at the `mail.get(t.issue,
+  keyed by (repository, issue) — was dict[int, int]. This is the fix for the
+  cross-repository gap web/app.py's own comment names at the `mail.get(t.issue,
   0)` call sites.
-- The wake-blocked marker file becomes wake-blocked-{target}-{issue} (was
-  wake-blocked-{issue}), and Sources.wake_blocked_issues() parses the target
+- The wake-blocked marker file becomes wake-blocked-{repository}-{issue} (was
+  wake-blocked-{issue}), and Sources.wake_blocked_issues() parses the repository
   out of the filename directly instead of cross-joining every bare-issue
-  marker against every configured target.
-- Legacy migration (single target: rename messages/{issue}.jsonl and
-  wake-blocked-{issue} to the target-keyed name; 2+ targets: drop the legacy
+  marker against every configured repository.
+- Legacy migration (single repository: rename messages/{issue}.jsonl and
+  wake-blocked-{issue} to the repository-keyed name; 2+ repositories: drop the legacy
   wake-blocked marker, leave the legacy message file in place with a stderr
   warning naming it) runs once at the top of dispatcher.main.run_pass.
 """
@@ -41,29 +41,29 @@ import dispatcher.main as main
 from dispatcher import messages
 from dispatcher.state import NO_SLOT, PARK_WAKE, Stage, TaskState, save, SessionRecord, write_session
 from tests import webfakes
-from tests.test_main import ADMIT_ALL, cfg as single_target_cfg, deps as main_deps, patch_usage
+from tests.test_main import ADMIT_ALL, cfg as single_repository_cfg, deps as main_deps, patch_usage
 from web.sources import Sources
 
 
-def two_target_cfg(tmp_path):
-    """portfolio_eval (existing single-target fixture) plus a second
-    'factorial' target sharing the same shape, listed in that order."""
-    c = single_target_cfg(tmp_path)
-    pe = c.targets[0]
+def two_repository_cfg(tmp_path):
+    """portfolio_eval (existing single-repository fixture) plus a second
+    'factorial' repository sharing the same shape, listed in that order."""
+    c = single_repository_cfg(tmp_path)
+    pe = c.repositories[0]
     factorial = dc_replace(
         pe, name="factorial", repo="jesdi/factorial",
         clone_path=str(tmp_path / "factorial_repo"),
         worktrees_path=str(tmp_path / "factorial_repo.worktrees"))
-    return dc_replace(c, targets=[pe, factorial])
+    return dc_replace(c, repositories=[pe, factorial])
 
 
-def make_task_for(c, target_name, issue, stage=Stage.IMPLEMENT, slot=0,
+def make_task_for(c, repository_name, issue, stage=Stage.IMPLEMENT, slot=0,
                   updated_at="2026-07-21T00:00:00+00:00", track="standard",
                   **kw):
-    target = next(t for t in c.targets if t.name == target_name)
-    wt = Path(target.worktrees_path) / f"task-{issue}"
+    repository = next(t for t in c.repositories if t.name == repository_name)
+    wt = Path(repository.worktrees_path) / f"task-{issue}"
     (wt / ".agent").mkdir(parents=True, exist_ok=True)
-    ts = TaskState(issue=issue, target=target_name, stage=stage, slot=slot,
+    ts = TaskState(issue=issue, repository=repository_name, stage=stage, slot=slot,
                    worktree=str(wt), branch=f"agent/task-{issue}", title="t",
                    updated_at=updated_at, track=track, **kw)
     save(c.state_dir, ts)
@@ -84,7 +84,7 @@ def _legacy_message_file(state_dir, issue, text):
 
 def test_reply_reaches_only_its_own_project(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
-    c = two_target_cfg(tmp_path)
+    c = two_repository_cfg(tmp_path)
     write_session(c.state_dir, "portfolio_eval", 7, SessionRecord("portfolio-7", "implement"))
     write_session(c.state_dir, "factorial", 7, SessionRecord("factorial-7", "implement"))
     make_task_for(c, "portfolio_eval", issue=7, park=PARK_WAKE)
@@ -97,7 +97,7 @@ def test_reply_reaches_only_its_own_project(tmp_path, monkeypatch):
     main.run_pass(c, d)
 
     assert len(d.sessions.resumed) == 2
-    prompts = {target: message for (target, issue), (_, message, *_)
+    prompts = {repository: message for (repository, issue), (_, message, *_)
                in zip(d.sessions.resume_calls, d.sessions.resumed)
                if issue == 7}
     assert "use the v2 endpoint" not in prompts["portfolio_eval"]
@@ -109,12 +109,12 @@ def test_reply_reaches_only_its_own_project(tmp_path, monkeypatch):
 
 # -- checkbox 2: console thread + unread count via web.sources.Sources ------
 
-def test_sources_messages_and_mail_count_are_target_scoped(tmp_path):
+def test_sources_messages_and_mail_count_are_repository_scoped(tmp_path):
     cfg_ = webfakes.make_config(
         tmp_path / "state",
-        targets=[webfakes.make_target("portfolio_eval", "jesdi/portfolio_eval"),
-                 webfakes.make_target("factorial", "jesdi/factorial")])
-    # Write the queue file directly at the NEW target-keyed path, so this
+        repositories=[webfakes.make_repository("portfolio_eval", "jesdi/portfolio_eval"),
+                      webfakes.make_repository("factorial", "jesdi/factorial")])
+    # Write the queue file directly at the NEW repository-keyed path, so this
     # test's failure is attributable to Sources' own (still bare-issue)
     # signature rather than to dispatcher.messages'.
     p = Path(cfg_.state_dir) / "messages" / "factorial-7.jsonl"
@@ -132,10 +132,10 @@ def test_sources_messages_and_mail_count_are_target_scoped(tmp_path):
     assert src.undelivered_counts() == {("factorial", 7): 1}
 
 
-# -- checkbox 3: slot marker is scoped to its own target ---------------------
+# -- checkbox 3: slot marker is scoped to its own repository ---------------------
 
-def test_wake_blocked_marker_is_scoped_to_its_own_target(tmp_path):
-    c = two_target_cfg(tmp_path)
+def test_wake_blocked_marker_is_scoped_to_its_own_repository(tmp_path):
+    c = two_repository_cfg(tmp_path)
     c = dc_replace(c, capacity=1)
     # The box is full (two active tasks, capacity 1), so factorial#12 stays
     # woken and is marked — the marker must not leak to portfolio_eval#12.
@@ -152,11 +152,11 @@ def test_wake_blocked_marker_is_scoped_to_its_own_target(tmp_path):
     assert ("portfolio_eval", 12) not in blocked
 
 
-# -- checkbox 4: legacy migration with one target ----------------------------
+# -- checkbox 4: legacy migration with one repository ----------------------------
 
-def test_legacy_message_file_migrates_with_a_single_target(tmp_path, monkeypatch):
+def test_legacy_message_file_migrates_with_a_single_repository(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
-    c = single_target_cfg(tmp_path)
+    c = single_repository_cfg(tmp_path)
     write_session(c.state_dir, "portfolio_eval", 412, SessionRecord("portfolio-412", "implement"))
     make_task_for(c, "portfolio_eval", issue=412, park=PARK_WAKE)
     _legacy_message_file(c.state_dir, 412, "drop the caching layer")
@@ -166,17 +166,17 @@ def test_legacy_message_file_migrates_with_a_single_target(tmp_path, monkeypatch
 
     new_path = Path(c.state_dir) / "messages" / "portfolio_eval-412.jsonl"
     old_path = Path(c.state_dir) / "messages" / "412.jsonl"
-    assert new_path.exists(), "legacy file was not migrated to the target-keyed name"
+    assert new_path.exists(), "legacy file was not migrated to the repository-keyed name"
     assert not old_path.exists(), "legacy bare-issue file was left behind"
     assert any(issue == 412 and "drop the caching layer" in message
               for issue, message, *_ in d.sessions.resumed)
 
 
-# -- checkbox 5: legacy files are not guessed at with several targets -------
+# -- checkbox 5: legacy files are not guessed at with several repositories -------
 
-def test_legacy_message_file_is_not_migrated_with_two_targets(tmp_path, monkeypatch, capsys):
+def test_legacy_message_file_is_not_migrated_with_two_repositories(tmp_path, monkeypatch, capsys):
     patch_usage(monkeypatch)
-    c = two_target_cfg(tmp_path)
+    c = two_repository_cfg(tmp_path)
     write_session(c.state_dir, "portfolio_eval", 3, SessionRecord("portfolio-3", "implement"))
     write_session(c.state_dir, "factorial", 3, SessionRecord("factorial-3", "implement"))
     make_task_for(c, "portfolio_eval", issue=3, park=PARK_WAKE)

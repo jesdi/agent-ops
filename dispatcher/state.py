@@ -1,4 +1,4 @@
-"""Per-task runtime state (~/agent-ops-state/task-<target>-<issue>.json) and the
+"""Per-task runtime state (~/agent-ops-state/task-<repository>-<issue>.json) and the
 stage.json signal sessions write into their worktree."""
 from __future__ import annotations
 
@@ -171,7 +171,7 @@ NO_POKES = MappingProxyType({"poked_since": 0.0, "pokes": 0})
 @dataclass(frozen=True)
 class TaskState:
     issue: int
-    target: str
+    repository: str
     stage: Stage
     slot: int
     worktree: str
@@ -299,27 +299,27 @@ class StageSignal:
     open_questions: int | None = None
 
 
-# The "waiting for a free slot" marker, wake-blocked-<target>-<issue> in
+# The "waiting for a free slot" marker, wake-blocked-<repository>-<issue> in
 # state_dir. Written by dispatcher.main, read by web.sources.
 WAKE_BLOCKED_PREFIX = "wake-blocked-"
 
 
-def task_key(target: str, issue: int) -> str:
-    """`<target>-<issue>`: the (target, issue) key every per-task file in
+def task_key(repository: str, issue: int) -> str:
+    """`<repository>-<issue>`: the (repository, issue) key every per-task file in
     state_dir is named by."""
-    return f"{target}-{issue}"
+    return f"{repository}-{issue}"
 
 
 def parse_task_key(name: str) -> tuple[str, int] | None:
-    """(target, issue) from a `<target>-<issue>` key, else None (including
-    a legacy bare `<issue>`). rpartition, since target names may themselves
+    """(repository, issue) from a `<repository>-<issue>` key, else None (including
+    a legacy bare `<issue>`). rpartition, since repository names may themselves
     contain '-'."""
-    target, _, issue = name.rpartition("-")
-    return (target, int(issue)) if target and issue.isdigit() else None
+    repository, _, issue = name.rpartition("-")
+    return (repository, int(issue)) if repository and issue.isdigit() else None
 
 
-def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"task-{task_key(target, issue)}.json"
+def _path(state_dir: str | Path, repository: str, issue: int) -> Path:
+    return Path(state_dir) / f"task-{task_key(repository, issue)}.json"
 
 
 def _legacy_path(state_dir: str | Path, issue: int) -> Path:
@@ -330,7 +330,7 @@ def _previous(state_dir: str | Path, ts: TaskState) -> TaskState | None:
     """The state a save replaces; None also when the file cannot be read:
     the save is what repairs it."""
     try:
-        return load(state_dir, ts.target, ts.issue)
+        return load(state_dir, ts.repository, ts.issue)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
@@ -343,16 +343,16 @@ def save(state_dir: str | Path, ts: TaskState) -> None:
         ts = replace(ts, terminal_at=stamp)
     else:
         ts = replace(ts, terminal_at="")
-    _write_task(_path(state_dir, ts.target, ts.issue), ts)
+    _write_task(_path(state_dir, ts.repository, ts.issue), ts)
     # Lazy migration: the first save under the new key retires the legacy twin.
-    _retire_legacy(state_dir, ts.target, ts.issue)
+    _retire_legacy(state_dir, ts.repository, ts.issue)
 
 
-def _retire_legacy(state_dir: str | Path, target: str, issue: int) -> None:
-    """Unlink task-{issue}.json only when it speaks for `target`; another
-    target's task with the same issue number must survive."""
+def _retire_legacy(state_dir: str | Path, repository: str, issue: int) -> None:
+    """Unlink task-{issue}.json only when it speaks for `repository`; another
+    repository's task with the same issue number must survive."""
     legacy = _read(_legacy_path(state_dir, issue))
-    if legacy is not None and legacy.target == target:
+    if legacy is not None and legacy.repository == repository:
         _legacy_path(state_dir, issue).unlink(missing_ok=True)
 
 
@@ -420,6 +420,8 @@ def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
     d = json.loads(p.read_text())
+    if "target" in d:   # files written before the rename
+        d["repository"] = d.pop("target")
     d["stage"] = Stage(d["stage"])
     if d["stage"] in TERMINAL_STAGES:
         d["terminal_at"] = d.get("terminal_at") or d.get("done_at") or d["updated_at"]
@@ -448,13 +450,13 @@ def _read(p: Path) -> TaskState | None:
     return TaskState(**d)
 
 
-def load(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
-    ts = _read(_path(state_dir, target, issue))
+def load(state_dir: str | Path, repository: str, issue: int) -> TaskState | None:
+    ts = _read(_path(state_dir, repository, issue))
     if ts is not None:
         return ts
     legacy = _read(_legacy_path(state_dir, issue))
-    # A legacy file speaks only for its own target.
-    return legacy if legacy is not None and legacy.target == target else None
+    # A legacy file speaks only for its own repository.
+    return legacy if legacy is not None and legacy.repository == repository else None
 
 
 def load_all(state_dir: str | Path) -> list[TaskState]:
@@ -462,7 +464,7 @@ def load_all(state_dir: str | Path) -> list[TaskState]:
     field after a partial upgrade) is skipped rather than taking the whole
     scan down — callers like _prune_snapshots and capacity/slot accounting
     need every OTHER task's state to stay visible. A directly-addressed file
-    (load()) still raises: silently losing one task from a targeted lookup
+    (load()) still raises: silently losing one task from a lookup by repository
     is worse than a loud crash, but silently losing it from a scan that
     every other task depends on (allocate_slot, active()) is worse still."""
     root = Path(state_dir)
@@ -477,12 +479,12 @@ def load_all(state_dir: str | Path) -> list[TaskState]:
         # Identity comes from the JSON, never the filename stem.
         if ts is not None:
             tasks.append(ts)
-    return sorted(tasks, key=lambda t: (t.target, t.issue))
+    return sorted(tasks, key=lambda t: (t.repository, t.issue))
 
 
-def delete(state_dir: str | Path, target: str, issue: int) -> None:
-    _path(state_dir, target, issue).unlink(missing_ok=True)
-    _retire_legacy(state_dir, target, issue)
+def delete(state_dir: str | Path, repository: str, issue: int) -> None:
+    _path(state_dir, repository, issue).unlink(missing_ok=True)
+    _retire_legacy(state_dir, repository, issue)
 
 
 def max_slots(capacity: int) -> int:
@@ -604,21 +606,21 @@ class SessionRecord:
     stage: str
 
 
-def _session_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"session-{task_key(target, issue)}"
+def _session_path(state_dir: str | Path, repository: str, issue: int) -> Path:
+    return Path(state_dir) / f"session-{task_key(repository, issue)}"
 
 
-def write_session(state_dir: str | Path, target: str, issue: int,
+def write_session(state_dir: str | Path, repository: str, issue: int,
                   record: SessionRecord) -> None:
     """Replace a task's conversation atomically; only waitd writes it."""
-    write_json_atomic(_session_path(state_dir, target, issue), asdict(record))
+    write_json_atomic(_session_path(state_dir, repository, issue), asdict(record))
 
 
-def read_session(state_dir: str | Path, target: str,
+def read_session(state_dir: str | Path, repository: str,
                  issue: int) -> SessionRecord | None:
     """Read a task's conversation; missing or malformed records are absent."""
     try:
-        d = json.loads(_session_path(state_dir, target, issue).read_text())
+        d = json.loads(_session_path(state_dir, repository, issue).read_text())
         session_id, stage = d["session_id"], d["stage"]
         if not isinstance(session_id, str) or not session_id:
             return None
@@ -629,24 +631,24 @@ def read_session(state_dir: str | Path, target: str,
         return None
 
 
-def clear_session(state_dir: str | Path, target: str, issue: int) -> None:
+def clear_session(state_dir: str | Path, repository: str, issue: int) -> None:
     """Remove only the task's conversation; a missing record is harmless."""
-    _session_path(state_dir, target, issue).unlink(missing_ok=True)
+    _session_path(state_dir, repository, issue).unlink(missing_ok=True)
 
 
-def _waiting_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"waiting-{task_key(target, issue)}"
+def _waiting_path(state_dir: str | Path, repository: str, issue: int) -> Path:
+    return Path(state_dir) / f"waiting-{task_key(repository, issue)}"
 
 
 def _legacy_waiting_path(state_dir: str | Path, issue: int) -> Path:
     return Path(state_dir) / f"waiting-{issue}"
 
 
-def mark_waiting(state_dir: str | Path, target: str, issue: int) -> None:
-    p = _waiting_path(state_dir, target, issue)
+def mark_waiting(state_dir: str | Path, repository: str, issue: int) -> None:
+    p = _waiting_path(state_dir, repository, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.touch()
-    _background_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins
+    _background_path(state_dir, repository, issue).unlink(missing_ok=True)  # latest turn end wins
 
 
 @dataclass(frozen=True)
@@ -656,8 +658,8 @@ class BackgroundWait:
     reported: float          # time of the latest report
 
 
-def _background_path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return Path(state_dir) / f"background-{task_key(target, issue)}"
+def _background_path(state_dir: str | Path, repository: str, issue: int) -> Path:
+    return Path(state_dir) / f"background-{task_key(repository, issue)}"
 
 
 def _identity(entry) -> str:
@@ -666,54 +668,54 @@ def _identity(entry) -> str:
     return json.dumps(entry, sort_keys=True)
 
 
-def read_background(state_dir: str | Path, target: str, issue: int) -> BackgroundWait | None:
+def read_background(state_dir: str | Path, repository: str, issue: int) -> BackgroundWait | None:
     try:
-        d = json.loads(_background_path(state_dir, target, issue).read_text())
+        d = json.loads(_background_path(state_dir, repository, issue).read_text())
         return BackgroundWait(tuple(d["tasks"]), float(d["since"]), float(d["reported"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
-def mark_background(state_dir: str | Path, target: str, issue: int,
+def mark_background(state_dir: str | Path, repository: str, issue: int,
                     tasks: list, now: float | None = None) -> None:
     now = time.time() if now is None else now
     ids = tuple(_identity(t) for t in tasks)
-    old = read_background(state_dir, target, issue)
+    old = read_background(state_dir, repository, issue)
     since = old.since if old and set(ids) <= set(old.tasks) else now
-    p = _background_path(state_dir, target, issue)
+    p = _background_path(state_dir, repository, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
-    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
-    tmp = p.with_name(p.name + ".tmp")  # with_suffix would truncate a dotted target
+    _waiting_path(state_dir, repository, issue).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
+    tmp = p.with_name(p.name + ".tmp")  # with_suffix would truncate a dotted repository
     tmp.write_text(json.dumps({"tasks": list(ids), "since": since, "reported": now}))
     tmp.replace(p)
 
 
-def has_waiting(state_dir: str | Path, target: str, issue: int) -> bool:
-    return (_waiting_path(state_dir, target, issue).exists()
+def has_waiting(state_dir: str | Path, repository: str, issue: int) -> bool:
+    return (_waiting_path(state_dir, repository, issue).exists()
             or _legacy_waiting_path(state_dir, issue).exists())
 
 
-def clear_turn_markers(state_dir: str | Path, target: str, issue: int) -> None:
+def clear_turn_markers(state_dir: str | Path, repository: str, issue: int) -> None:
     """Remove every turn-end marker (waiting, legacy waiting, background).
     The only way a background marker goes besides a waiting ping: every
     session end or replacement calls it, so a new session never inherits an
     old clock."""
-    _waiting_path(state_dir, target, issue).unlink(missing_ok=True)
+    _waiting_path(state_dir, repository, issue).unlink(missing_ok=True)
     _legacy_waiting_path(state_dir, issue).unlink(missing_ok=True)
-    _background_path(state_dir, target, issue).unlink(missing_ok=True)
+    _background_path(state_dir, repository, issue).unlink(missing_ok=True)
 
 
-def archive_root(state_dir: str | Path, target: str, issue: int) -> Path:
+def archive_root(state_dir: str | Path, repository: str, issue: int) -> Path:
     """Task archive namespace, shared by its snapshot and retained artifacts."""
-    key = hashlib.sha256(f"{target}\0{issue}".encode()).hexdigest()
+    key = hashlib.sha256(f"{repository}\0{issue}".encode()).hexdigest()
     return Path(state_dir) / "artifacts" / key
 
 
 def archive(state_dir: str | Path, task: TaskState) -> None:
     if task.stage in TERMINAL_STAGES:
-        _write_task(archive_root(state_dir, task.target, task.issue) / "task.json", task)
+        _write_task(archive_root(state_dir, task.repository, task.issue) / "task.json", task)
 
 
-def load_archived(state_dir: str | Path, target: str, issue: int) -> TaskState | None:
-    task = _read(archive_root(state_dir, target, issue) / "task.json")
+def load_archived(state_dir: str | Path, repository: str, issue: int) -> TaskState | None:
+    task = _read(archive_root(state_dir, repository, issue) / "task.json")
     return task if task and task.stage in TERMINAL_STAGES else None

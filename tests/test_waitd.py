@@ -15,8 +15,8 @@ from tests.test_stop_hook_background_acceptance import SHELL, N, T, env, run_hoo
 
 
 def test_ping_marks_waiting(tmp_path):
-    # No target in the ping (pre-rename worktree) — lands as the legacy
-    # marker, readable through any target via Task 1's fallback.
+    # No repository in the ping (pre-rename worktree) — lands as the legacy
+    # marker, readable through any repository via Task 1's fallback.
     handle_ping(b'{"issue": 42}', tmp_path)
     assert has_waiting(tmp_path, "portfolio_eval", 42)
 
@@ -27,8 +27,8 @@ def test_corrupt_ping_is_dropped(tmp_path):
     assert list(tmp_path.glob("waiting-*")) == []
 
 
-def test_waitd_ping_with_target_marks_scoped(tmp_path):
-    handle_ping(json.dumps({"issue": 3, "target": "agent_ops"}).encode(),
+def test_waitd_ping_with_repository_marks_scoped(tmp_path):
+    handle_ping(json.dumps({"issue": 3, "repository": "agent_ops"}).encode(),
                tmp_path)
     assert has_waiting(tmp_path, "agent_ops", 3)
     assert not has_waiting(tmp_path, "portfolio_eval", 3)
@@ -63,7 +63,7 @@ def test_stop_hook_script_pings_waitd():
         agent_dir = state_dir / "wt" / ".agent"
         agent_dir.mkdir(parents=True)
         (agent_dir / "task.json").write_text(
-            json.dumps({"issue": 187, "target": "agent_ops"}))
+            json.dumps({"issue": 187, "repository": "agent_ops"}))
         script = Path(__file__).parent.parent / "hooks" / "stop-hook.sh"
         shutil.copy(script, agent_dir / "stop-hook.sh")
         r = subprocess.run(["bash", str(agent_dir / "stop-hook.sh")],
@@ -78,7 +78,7 @@ def test_stop_hook_script_pings_waitd():
 
 
 def test_stop_hook_script_legacy_worktree_still_pings():
-    # An old worktree's task.json predates the target field — the hook must
+    # An old worktree's task.json predates the repository field — the hook must
     # default to "" so the ping still lands, via waitd's legacy fallback.
     tmpdir = tempfile.mkdtemp(prefix="w_")
     try:
@@ -149,7 +149,7 @@ def test_serve_end_to_end():
                 self.sock.connect(str(sock))
 
         conn = UnixConn("localhost")
-        body = json.dumps({"issue": 7, "target": "portfolio_eval"})
+        body = json.dumps({"issue": 7, "repository": "portfolio_eval"})
         conn.request("POST", "/waiting", body=body,
                      headers={"Content-Type": "application/json",
                               "Content-Length": str(len(body))})

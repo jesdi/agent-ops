@@ -43,11 +43,11 @@ def env():
     shutil.rmtree(d, ignore_errors=True)
 
 
-def run_hook(state, stage=WORKING, stdin="", args=(), target=T, **kw):
+def run_hook(state, stage=WORKING, stdin="", args=(), repository=T, **kw):
     """stage: dict -> stage.json, str -> raw stage.json, None -> absent."""
     agent = state / "wt" / ".agent"
     agent.mkdir(parents=True, exist_ok=True)
-    task = {"issue": N} | ({"target": target} if target else {})
+    task = {"issue": N} | ({"repository": repository} if repository else {})
     (agent / "task.json").write_text(json.dumps(task))
     sj = agent / "stage.json"
     sj.unlink(missing_ok=True)
@@ -138,7 +138,7 @@ def test_no_waitd_socket_exits_zero(tmp_path, tasks):
     assert run_hook(tmp_path, stdin=bg_input(*tasks)).returncode == 0
 
 
-def test_task_without_target_pings_legacy_waiting(env):
+def test_task_without_repository_pings_legacy_waiting(env):
     from dispatcher.state import has_waiting
-    assert run_hook(env, target=None, stdin="").returncode == 0
+    assert run_hook(env, repository=None, stdin="").returncode == 0
     assert has_waiting(env, "portfolio_eval", N)

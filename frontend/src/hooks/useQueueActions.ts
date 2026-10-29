@@ -9,9 +9,9 @@ import { queryKeys } from './queryKeys'
  * three action helpers that each post immediately and on success invalidate
  * both the board cache (so ghost cards re-rank) AND every cached task query
  * (so a slim task-view component refreshes without needing any board-specific
- * wiring). Queue actions are issue-only (no per-target route) and callers
- * (board ghosts, the ghost task view) never know which target the issue will
- * land on ahead of the claim, so task queries — now keyed by (target, issue)
+ * wiring). Queue actions are issue-only (no per-repository route) and callers
+ * (board ghosts, the ghost task view) never know which repository the issue will
+ * land on ahead of the claim, so task queries — now keyed by (repository, issue)
  * — are invalidated by the `['task']` prefix rather than one exact key.
  *
  * The hook's surface is fully component-agnostic: drop it into any component

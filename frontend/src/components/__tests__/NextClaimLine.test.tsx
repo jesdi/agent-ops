@@ -6,7 +6,7 @@ import type { NextClaimView } from '../../lib/api'
 
 const base: NextClaimView = {
   verdict: 'will-claim', next_pass_eta: '', next_issue: 73,
-  next_target: 'alpha', minutes_to_reset: 0, blocked_by: '',
+  next_repository: 'alpha', minutes_to_reset: 0, blocked_by: '',
 }
 
 function withEta(secondsFromNow: number): NextClaimView {

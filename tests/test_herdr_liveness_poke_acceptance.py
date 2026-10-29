@@ -34,7 +34,7 @@ class HerdrSessions(FakeSessions):
         super().__init__(**kw)
         self.state = dict(state or {})
 
-    def agent_state(self, target, issue):
+    def agent_state(self, repository, issue):
         return self.state.get(issue)
 
     def stop(self, status="done", idle=30.0):
@@ -298,7 +298,7 @@ def test_replacing_stage_launch_clears_the_poke_clock(tmp_path, monkeypatch):
 
 def _decide(*, waiting=True, idle=30.0, since=0.0, pokes=0, now=1_000_000.0,
             cap=10800, stall_after=600.0, signal="working"):
-    task = TaskState(issue=N, target=T, stage=Stage.REVIEW, slot=0, worktree="/w",
+    task = TaskState(issue=N, repository=T, stage=Stage.REVIEW, slot=0, worktree="/w",
                      branch="b", title="t", updated_at="", track="standard")
     extra = {}
     if since:                                    # poke-clock inputs only where a row needs them

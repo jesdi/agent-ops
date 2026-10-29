@@ -69,7 +69,7 @@ def applied(tmp_path, extra=""):
     return apply_stored_models(load_config(write_config(tmp_path, extra)))
 
 
-def test_a_stored_block_replaces_the_targets_yaml_one(tmp_path):
+def test_a_stored_block_replaces_the_repositories_yaml_one(tmp_path):
     model_settings.save(state_dir(tmp_path), BLOCK, actor="jesdi",
                         now=datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc))
     assert list(load_config(write_config(tmp_path)).models.tracks) == ["standard"]
@@ -85,7 +85,7 @@ def test_a_stored_block_replaces_the_targets_yaml_one(tmp_path):
     ({}, "must not be empty"),
     (None, "must be a mapping"),   # a null block is checked like any other
 ])
-def test_a_bad_stored_block_falls_back_to_targets_yaml_and_says_why(tmp_path, models, why):
+def test_a_bad_stored_block_falls_back_to_repositories_yaml_and_says_why(tmp_path, models, why):
     store(tmp_path, models)
     cfg = applied(tmp_path)
     assert list(cfg.models.tracks) == ["standard"]
@@ -186,8 +186,8 @@ def test_an_invalid_block_is_refused_and_nothing_is_stored(tmp_path, change, why
 
 
 def test_a_block_that_drops_a_track_in_use_is_refused(tmp_path):
-    busy = make_task(issue=9, target="portfolio_eval", track="standard")
-    done = make_task(issue=10, target="portfolio_eval", track="standard", stage=Stage.DONE)
+    busy = make_task(issue=9, repository="portfolio_eval", track="standard")
+    done = make_task(issue=10, repository="portfolio_eval", track="standard", stage=Stage.DONE)
     _, _, client = rig(tmp_path, [busy, done])
     r = client.put("/api/settings/models", headers=HEADERS, json=save(BODY))
     assert r.status_code == 422
@@ -200,7 +200,7 @@ def test_a_block_that_drops_the_provider_of_a_picked_stage_is_refused(tmp_path):
     """The next stage already runs on openai: with no openai entry left, no
     usage is read for it and the gate never admits the stage again."""
     store(tmp_path, BLOCK)
-    picked = make_task(issue=9, target="portfolio_eval", track="fast",
+    picked = make_task(issue=9, repository="portfolio_eval", track="fast",
                        stage=Stage.IMPLEMENT, picks={"implement": "openai/gpt-luna@high"})
     _, _, client = rig(tmp_path, [picked])
     revision = client.get("/api/settings/models", headers=HEADERS).json()["revision"]
@@ -265,7 +265,7 @@ def test_the_dispatcher_parks_a_launch_picked_on_a_provider_no_entry_names(tmp_p
                                 "review": "openai/gpt-luna@high"})
     (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
 
-    main._drive_task(c, deps(sess=FakeSessions(alive={42})), c.targets[0],
+    main._drive_task(c, deps(sess=FakeSessions(alive={42})), c.repositories[0],
                      load(c.state_dir, "portfolio_eval", 42), ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)

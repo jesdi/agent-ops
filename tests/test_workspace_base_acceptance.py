@@ -1,4 +1,4 @@
-"""create_workspace(target, issue, base) against a real git origin and clone.
+"""create_workspace(repository, issue, base) against a real git origin and clone.
 
 Real git on purpose: what these tests pin is git's own behavior (fetch --prune,
 ls-remote exit codes, refspecs, ancestry, fast-forward), which a faked `_sh`
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.workspace as workspace
-from dispatcher.config import Target
+from dispatcher.config import Repository
 
 
 def git(cwd, *args) -> str:
@@ -39,7 +39,7 @@ def env(tmp_path):
     commit(origin, "base")
     clone = tmp_path / "clone"
     git(tmp_path, "clone", str(origin), str(clone))
-    t = Target(
+    t = Repository(
         name="shop", repo="jesdi/shop", clone_path=str(clone),
         worktrees_path=str(tmp_path / "clone.worktrees"), rank_cmd="rank",
         project_number=1, project_owner="jesdi", status_field_id="F",

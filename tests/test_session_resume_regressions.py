@@ -38,7 +38,7 @@ def test_operator_wake_passes_option_shaped_id_literally_to_the_tab(
     _task(c, 384, Stage.REVIEW, model=model, session_id=session_id,
           park=PARK_WAKE, slot=0)
     calls = []
-    _tab_fake(monkeypatch, calls, target="portfolio_eval", issue=384)
+    _tab_fake(monkeypatch, calls, repository="portfolio_eval", issue=384)
     messages.append(c.state_dir, "portfolio_eval", 384,
                     "It's approved; use $(the token) safely", "operator")
 

@@ -322,16 +322,16 @@ def test_review_of_a_pinned_track_keeps_the_written_order_when_first_is_independ
     assert launched(sess) == [(f"anthropic/{FABLE}", "high")]
 
 
-# --- a target's own policy -------------------------------------------------------
+# --- a repository's own policy -------------------------------------------------------
 
-def test_a_targets_own_pinned_list_applies_and_the_global_one_does_not(
+def test_a_repositories_own_pinned_list_applies_and_the_global_one_does_not(
         tmp_path, monkeypatch):
     own = policy_raw(pinned=["standard"])
     own["tracks"]["standard"]["implement"] = [f"{SOL}@medium", f"{SONNET}@medium"]
     base = cfg(tmp_path)
     c = make_cfg(tmp_path, monkeypatch, ahead(), models=policy())
-    c = dc_replace(c, targets=[dc_replace(
-        base.targets[0], models=parse_policy(own))])
+    c = dc_replace(c, repositories=[dc_replace(
+        base.repositories[0], models=parse_policy(own))])
     enter(c, 42, "standard", Stage.PLAN)
     enter(c, 43, "architecture", Stage.PLAN)
     sess = run_pass(c, 42, 43)

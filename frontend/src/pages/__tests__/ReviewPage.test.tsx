@@ -30,7 +30,7 @@ beforeEach(() => {
 
 async function renderReview() {
   const view = renderWithProviders(
-    <Routes><Route path="/task/:target/:issue/review" element={<ReviewPage />} /></Routes>,
+    <Routes><Route path="/task/:repository/:issue/review" element={<ReviewPage />} /></Routes>,
     { route: '/task/widget/42/review' },
   )
   const frame = await screen.findByTestId('review-frame') as HTMLIFrameElement
@@ -137,7 +137,7 @@ test.each([
 ])('says why there is no page (%#)', async (value, text) => {
   req = value
   renderWithProviders(
-    <Routes><Route path="/task/:target/:issue/review" element={<ReviewPage />} /></Routes>,
+    <Routes><Route path="/task/:repository/:issue/review" element={<ReviewPage />} /></Routes>,
     { route: '/task/widget/42/review' },
   )
   expect(await screen.findByText(text)).toBeInTheDocument()

@@ -43,21 +43,21 @@ class RecordingSessions(FakeSessions):
         self.launches = []
         self.continuations = []
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name,
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name,
                     model, effort="", second=None):
         self.launches.append({
-            "target": target, "issue": issue, "worktree": worktree,
+            "repository": repository, "issue": issue, "worktree": worktree,
             "prompt": prompt, "stage": stage_name, "model": model,
             "effort": effort,
         })
         self.alive_set.add(issue)
 
-    def resume(self, target, issue, worktree, message, model, effort="",
+    def resume(self, repository, issue, worktree, message, model, effort="",
                second=None, session_id=None):
         # Accept T04's session_id keyword. Any call, named or implicit,
         # violates T05's fresh-conversation path.
         self.continuations.append({
-            "target": target, "issue": issue, "worktree": worktree,
+            "repository": repository, "issue": issue, "worktree": worktree,
             "message": message, "model": model, "session_id": session_id,
         })
         self.alive_set.add(issue)
@@ -161,19 +161,19 @@ def _pass(c, dependencies, before):
     assert dependencies.sessions.continuations == []
     assert len(dependencies.sessions.launches) == 1
     launch = dependencies.sessions.launches[0]
-    assert (launch["target"], launch["issue"], launch["worktree"]) == (
-        before.target, before.issue, before.worktree)
+    assert (launch["repository"], launch["issue"], launch["worktree"]) == (
+        before.repository, before.issue, before.worktree)
     assert launch["model"] == before.picks[launch["stage"]]
-    return launch, load(c.state_dir, before.target, before.issue)
+    return launch, load(c.state_dir, before.repository, before.issue)
 
 
 def _assert_delivered(c, before, queued, prompt):
     stored = {message.id: message for message in messages.all_messages(
-        c.state_dir, before.target, before.issue)}
+        c.state_dir, before.repository, before.issue)}
     for message in queued:
         assert message.text in prompt
         assert stored[message.id].delivered_at
-    assert messages.undelivered(c.state_dir, before.target, before.issue) == []
+    assert messages.undelivered(c.state_dir, before.repository, before.issue) == []
 
 
 def _assert_stage_prompt(launch, before, stage):
@@ -212,7 +212,7 @@ def test_resumed_event_explains_exactly_why_the_conversation_is_new(
     _pass(c, d, before)
     resumed = [entry for entry in eventlog.read_tail(c.state_dir)
                if entry["event"] == "resumed"
-               and entry["target"] == before.target and entry["issue"] == before.issue]
+               and entry["repository"] == before.repository and entry["issue"] == before.issue]
     assert len(resumed) == 1
     wrong_stage = "review" if before.stage is Stage.SPEC else "spec"
     expected = (f"new conversation: session recorded for {wrong_stage}"

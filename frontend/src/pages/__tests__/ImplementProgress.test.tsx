@@ -11,11 +11,11 @@ import { TaskPage } from '../TaskPage'
 // these tests go red.
 function renderWith(progress: string | null) {
   server.use(
-    http.get('/api/task/:target/:issue', () =>
+    http.get('/api/task/:repository/:issue', () =>
       HttpResponse.json({ ...taskDetail, implement_progress: progress })),
     ...defaultHandlers)
   return renderWithProviders(
-    <Routes><Route path="/task/:target/:issue" element={<TaskPage />} /></Routes>,
+    <Routes><Route path="/task/:repository/:issue" element={<TaskPage />} /></Routes>,
     { route: '/task/widget/42' })
 }
 
@@ -29,7 +29,7 @@ it('shows no progress line and no placeholder when there is none', async () => {
   // Not vacuous: a line shows first, then goes away when the report is null.
   const { queryClient } = renderWith('2/4 tickets merged')
   await screen.findByTestId('implement-progress')
-  server.use(http.get('/api/task/:target/:issue', () =>
+  server.use(http.get('/api/task/:repository/:issue', () =>
     HttpResponse.json({ ...taskDetail, implement_progress: null })))
   await queryClient.invalidateQueries()
   await waitFor(() =>

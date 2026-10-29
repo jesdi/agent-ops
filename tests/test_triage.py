@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from dispatcher import herdr, triage
-from dispatcher.config import Config, Target
+from dispatcher.config import Config, Repository
 from dispatcher.models import parse_policy
 from dispatcher.triage_apply import ApplyResult
 from tests.usagefakes import session_usage
@@ -102,14 +102,14 @@ def _herdr_fake_creating(monkeypatch, calls, workspace=None, pane_run_ok=True):
     monkeypatch.setattr(herdr, "_run", _run)
 
 
-def _cfg(tmp_path, targets=(), infra=""):
+def _cfg(tmp_path, repositories=(), infra=""):
     return Config(
         state_dir=str(tmp_path), capacity=2, session_memory="1500m",
-        session_cpus="2", targets=list(targets), infra_repo=infra)
+        session_cpus="2", repositories=list(repositories), infra_repo=infra)
 
 
-def _target(name, repo):
-    return Target(
+def _repository(name, repo):
+    return Repository(
         name=name, repo=repo, clone_path=f"/repos/{name}",
         worktrees_path=f"/repos/{name}.wt", rank_cmd="", setup_cmd="",
         verify_cmd="", project_number=1, project_owner="o",
@@ -199,9 +199,9 @@ def test_load_cursors_drops_uninterpretable_cursor(tmp_path):
     assert triage.load_cursors(tmp_path) == {"o/s": "2026-07-30T05:30:00Z"}
 
 
-def test_triage_repos_targets_then_infra_deduped(tmp_path):
+def test_triage_repos_repositories_then_infra_deduped(tmp_path):
     cfg = _cfg(tmp_path,
-               targets=[_target("a", "o/a"), _target("b", "o/b")],
+               repositories=[_repository("a", "o/a"), _repository("b", "o/b")],
                infra="o/infra")
     assert triage.triage_repos(cfg) == ["o/a", "o/b", "o/infra"]
     cfg2 = replace(cfg, infra_repo="o/a")
@@ -245,7 +245,7 @@ RESULT = ApplyResult(labeled=1, comments=0, closes=("close #1 as not planned —
 
 
 def _sweep_cfg(tmp_path):
-    return _cfg(tmp_path, targets=[_target("a", "o/a")], infra="")
+    return _cfg(tmp_path, repositories=[_repository("a", "o/a")], infra="")
 
 
 def test_sweep_happy_path_advances_cursor_and_reports(tmp_path):
@@ -290,7 +290,7 @@ def test_sweep_empty_window_advances_cursor_no_session(tmp_path):
 
 
 def test_sweep_failure_isolated_cursor_untouched(tmp_path):
-    cfg = _cfg(tmp_path, targets=[_target("a", "o/a"), _target("b", "o/b")])
+    cfg = _cfg(tmp_path, repositories=[_repository("a", "o/a"), _repository("b", "o/b")])
     deps = FakeDeps()
     triage.save_cursors(tmp_path, {"o/a": OLD, "o/b": OLD})
 
@@ -460,7 +460,7 @@ def test_sweep_rejected_decisions_reported(tmp_path):
 
 
 def test_clone_for(tmp_path):
-    cfg = _cfg(tmp_path, targets=[_target("a", "o/a")], infra="o/infra")
+    cfg = _cfg(tmp_path, repositories=[_repository("a", "o/a")], infra="o/infra")
     assert triage._clone_for(cfg, "o/a") == "/repos/a"
     assert triage._clone_for(cfg, "o/infra").endswith("/agent-ops")
 
@@ -779,7 +779,7 @@ def test_tick_waits_when_capacity_full(tmp_path, monkeypatch):
     monkeypatch.setattr(triage, "running", lambda: False)
     for issue in (1, 2):
         save(tmp_path, TaskState(
-            issue=issue, target="a", stage=Stage.IMPLEMENT, slot=issue - 1,
+            issue=issue, repository="a", stage=Stage.IMPLEMENT, slot=issue - 1,
             worktree="/w", branch="b", title="t", updated_at="now"))
     calls = []
     monkeypatch.setattr(triage.subprocess, "run",

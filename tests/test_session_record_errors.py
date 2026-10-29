@@ -9,7 +9,7 @@ from dispatcher.state import (SessionRecord, Stage, TaskState, has_waiting,
                               read_session, save)
 from dispatcher.waitd import handle_ping
 
-TARGET = "portfolio_eval"
+REPOSITORY = "portfolio_eval"
 ISSUE = 370
 FIRST_ID = "7b0c2a1e-3f4d-4c5b-9a6e-1d2f3a4b5c6d"
 SECOND_ID = "9d8c7b6a-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
@@ -18,7 +18,7 @@ BACKGROUND_TASK = {"id": "gate-1", "type": "shell", "command": "make crap-gate"}
 
 def _task(state_dir):
     save(state_dir, TaskState(
-        issue=ISSUE, target=TARGET, stage=Stage.IMPLEMENT, slot=0,
+        issue=ISSUE, repository=REPOSITORY, stage=Stage.IMPLEMENT, slot=0,
         worktree="/home/agent/repos/portfolio_eval.worktrees/task-370",
         branch="agent/task-370", title="Record the task's conversation",
         updated_at="2026-10-06T09:00:00+00:00",
@@ -27,21 +27,21 @@ def _task(state_dir):
 
 def _ping(state_dir, session_id, background_tasks=None):
     handle_ping(json.dumps({
-        "issue": ISSUE, "target": TARGET, "session_id": session_id,
+        "issue": ISSUE, "repository": REPOSITORY, "session_id": session_id,
         "background_tasks": background_tasks,
     }).encode(), state_dir)
 
 
 def _prior_marker(state_dir, background_tasks):
     if background_tasks:
-        mark_waiting(state_dir, TARGET, ISSUE)
+        mark_waiting(state_dir, REPOSITORY, ISSUE)
     else:
-        mark_background(state_dir, TARGET, ISSUE, [BACKGROUND_TASK], now=1000)
+        mark_background(state_dir, REPOSITORY, ISSUE, [BACKGROUND_TASK], now=1000)
 
 
 def _assert_markers(state_dir, background_tasks):
-    assert has_waiting(state_dir, TARGET, ISSUE) is (background_tasks is None)
-    background = read_background(state_dir, TARGET, ISSUE)
+    assert has_waiting(state_dir, REPOSITORY, ISSUE) is (background_tasks is None)
+    background = read_background(state_dir, REPOSITORY, ISSUE)
     if background_tasks:
         assert background is not None
         assert background.tasks == ("gate-1",)
@@ -59,11 +59,11 @@ def test_deeply_nested_rollout_keeps_prior_record_and_reports_waiting(tmp_path):
         "[" * 10000 + "]" * 10000 + "\n")
 
     handle_ping(json.dumps({
-        "issue": ISSUE, "target": TARGET, "session_id": SECOND_ID, "runtime": "codex",
+        "issue": ISSUE, "repository": REPOSITORY, "session_id": SECOND_ID, "runtime": "codex",
     }).encode(), tmp_path)
 
     _assert_markers(tmp_path, None)
-    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+    assert read_session(tmp_path, REPOSITORY, ISSUE) == SessionRecord(FIRST_ID, "implement")
 
 
 @pytest.mark.parametrize("background_tasks", [None, [BACKGROUND_TASK]],
@@ -77,16 +77,16 @@ def test_bad_task_state_keeps_prior_session_and_updates_turn_markers(
         tmp_path, capsys, background_tasks, broken_state):
     _task(tmp_path)
     _ping(tmp_path, FIRST_ID)
-    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+    assert read_session(tmp_path, REPOSITORY, ISSUE) == SessionRecord(FIRST_ID, "implement")
     _prior_marker(tmp_path, background_tasks)
     (tmp_path / "task-portfolio_eval-370.json").write_text(broken_state)
 
     _ping(tmp_path, SECOND_ID, background_tasks)
 
     _assert_markers(tmp_path, background_tasks)
-    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+    assert read_session(tmp_path, REPOSITORY, ISSUE) == SessionRecord(FIRST_ID, "implement")
     error = capsys.readouterr().err
-    assert "waitd:" in error and TARGET in error and str(ISSUE) in error
+    assert "waitd:" in error and REPOSITORY in error and str(ISSUE) in error
 
 
 @pytest.mark.parametrize("background_tasks", [None, [BACKGROUND_TASK]],
@@ -95,7 +95,7 @@ def test_malformed_operator_request_keeps_session_and_updates_turn_markers(
         tmp_path, capsys, background_tasks):
     _task(tmp_path)
     _ping(tmp_path, FIRST_ID)
-    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+    assert read_session(tmp_path, REPOSITORY, ISSUE) == SessionRecord(FIRST_ID, "implement")
     _prior_marker(tmp_path, background_tasks)
     task_path = tmp_path / "task-portfolio_eval-370.json"
     task_doc = json.loads(task_path.read_text())
@@ -105,9 +105,9 @@ def test_malformed_operator_request_keeps_session_and_updates_turn_markers(
     _ping(tmp_path, SECOND_ID, background_tasks)
 
     _assert_markers(tmp_path, background_tasks)
-    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+    assert read_session(tmp_path, REPOSITORY, ISSUE) == SessionRecord(FIRST_ID, "implement")
     error = capsys.readouterr().err
-    assert "waitd:" in error and TARGET in error and str(ISSUE) in error
+    assert "waitd:" in error and REPOSITORY in error and str(ISSUE) in error
 
 
 @pytest.mark.parametrize("background_tasks", [None, [BACKGROUND_TASK]],
@@ -120,9 +120,9 @@ def test_unreadable_task_state_still_updates_turn_markers(
     _ping(tmp_path, FIRST_ID, background_tasks)
 
     _assert_markers(tmp_path, background_tasks)
-    assert read_session(tmp_path, TARGET, ISSUE) is None
+    assert read_session(tmp_path, REPOSITORY, ISSUE) is None
     error = capsys.readouterr().err
-    assert "waitd:" in error and TARGET in error and str(ISSUE) in error
+    assert "waitd:" in error and REPOSITORY in error and str(ISSUE) in error
 
 
 @pytest.mark.parametrize("background_tasks", [None, [BACKGROUND_TASK]],
@@ -136,9 +136,9 @@ def test_unwritable_session_record_still_updates_turn_markers(
     _ping(tmp_path, FIRST_ID, background_tasks)
 
     _assert_markers(tmp_path, background_tasks)
-    assert read_session(tmp_path, TARGET, ISSUE) is None
+    assert read_session(tmp_path, REPOSITORY, ISSUE) is None
     error = capsys.readouterr().err
-    assert "waitd:" in error and TARGET in error and str(ISSUE) in error
+    assert "waitd:" in error and REPOSITORY in error and str(ISSUE) in error
 
 
 @pytest.mark.parametrize("background_tasks", [None, [BACKGROUND_TASK]],
@@ -147,7 +147,7 @@ def test_failed_record_replacement_keeps_prior_session_and_updates_turn_markers(
         tmp_path, monkeypatch, capsys, background_tasks):
     _task(tmp_path)
     _ping(tmp_path, FIRST_ID)
-    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+    assert read_session(tmp_path, REPOSITORY, ISSUE) == SessionRecord(FIRST_ID, "implement")
     _prior_marker(tmp_path, background_tasks)
     replace_file = os.replace
 
@@ -161,6 +161,6 @@ def test_failed_record_replacement_keeps_prior_session_and_updates_turn_markers(
     _ping(tmp_path, SECOND_ID, background_tasks)
 
     _assert_markers(tmp_path, background_tasks)
-    assert read_session(tmp_path, TARGET, ISSUE) == SessionRecord(FIRST_ID, "implement")
+    assert read_session(tmp_path, REPOSITORY, ISSUE) == SessionRecord(FIRST_ID, "implement")
     error = capsys.readouterr().err
-    assert "waitd:" in error and TARGET in error and str(ISSUE) in error
+    assert "waitd:" in error and REPOSITORY in error and str(ISSUE) in error

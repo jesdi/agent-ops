@@ -4,7 +4,7 @@ import type {
 } from '../lib/api'
 
 export const parkedCard: TaskCard = {
-  issue: 42, target: 'widget', title: 'Fix login redirect',
+  issue: 42, repository: 'widget', title: 'Fix login redirect',
   stage: 'implement', park: 'parked', park_reason: 'decision', column: 'parked', slot: 1,
   branch: 'fix/login-redirect', model: 'sonnet', track: 'standard', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?', feedback_pending: false,
@@ -14,7 +14,7 @@ export const parkedCard: TaskCard = {
 }
 
 export const reviewCard: TaskCard = {
-  issue: 44, target: 'widget', title: 'Add search feature',
+  issue: 44, repository: 'widget', title: 'Add search feature',
   stage: 'awaiting-plan-review', park: 'awaiting-review', park_reason: '', column: 'needs-review',
   slot: -1,
   branch: 'feat/search', model: 'opus', track: 'standard', park_note_pending: false,
@@ -25,7 +25,7 @@ export const reviewCard: TaskCard = {
 }
 
 export const inProgressCard: TaskCard = {
-  issue: 41, target: 'widget', title: 'Add CSV export',
+  issue: 41, repository: 'widget', title: 'Add CSV export',
   stage: 'implement', park: '', park_reason: '', column: 'in-progress', slot: 2,
   branch: 'feat/csv-export', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
@@ -36,7 +36,7 @@ export const inProgressCard: TaskCard = {
 
 // The motivating pair: both sit in the Parked column, only one holds a unit.
 export const loginParkedCard: TaskCard = {
-  issue: 45, target: 'widget', title: 'Rate-limit webhooks',
+  issue: 45, repository: 'widget', title: 'Rate-limit webhooks',
   stage: 'spec', park: 'parked-login', park_reason: 'login', column: 'parked', slot: 0,
   branch: 'feat/rate-limit', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
@@ -46,7 +46,7 @@ export const loginParkedCard: TaskCard = {
 }
 
 export const ciParkedCard: TaskCard = {
-  issue: 46, target: 'widget', title: 'Fix nightly digest',
+  issue: 46, repository: 'widget', title: 'Fix nightly digest',
   stage: 'implement', park: 'awaiting-ci', park_reason: '', column: 'awaiting-ci', slot: 1,
   branch: 'fix/nightly-digest', model: 'sonnet', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
@@ -71,7 +71,7 @@ export const board: BoardView = {
   ],
   capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3, slots_held: [1, 2] },
   queue_stale: false, median_cycle_seconds: null,
-  next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_target: '', minutes_to_reset: 0, blocked_by: '' },
+  next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_repository: '', minutes_to_reset: 0, blocked_by: '' },
 }
 
 const weekAll: WindowView = { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok', required_pace: 1.1 }
@@ -131,7 +131,7 @@ export const taskDetail: TaskDetail = {
 
 export const failures: FailuresView = {
   quarantined: [{
-    target: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
+    repository: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
     blocker_issue: 39, fingerprint: 'pytest::test_auth_flow',
     created_at: '2026-07-24T22:10:00Z', blocker_open: true,
   }],
@@ -143,9 +143,9 @@ export const failures: FailuresView = {
 
 export const history: HistoryView = {
   events: [
-    { ts: '2026-07-25T11:30:00Z', event: 'stage-started', target: 'widget',
+    { ts: '2026-07-25T11:30:00Z', event: 'stage-started', repository: 'widget',
       issue: 41, stage: 'implement', model: 'opus', actor: 'dispatcher', detail: '' },
-    { ts: '2026-07-25T10:00:00Z', event: 'parked', target: 'widget',
+    { ts: '2026-07-25T10:00:00Z', event: 'parked', repository: 'widget',
       issue: 42, stage: 'implement', model: 'sonnet', actor: 'dispatcher',
       detail: 'question' },
   ],
@@ -153,7 +153,7 @@ export const history: HistoryView = {
 
 export const noPendingIntents: PendingIntentsView = { intents: [] }
 export const pendingReplyIntent: PendingIntentsView = {
-  intents: [{ action: 'reply', target: 'widget', issue: 42, actor: 'dev@localhost',
+  intents: [{ action: 'reply', repository: 'widget', issue: 42, actor: 'dev@localhost',
               created_at: '2026-07-25T11:58:00Z' }],
 }
 

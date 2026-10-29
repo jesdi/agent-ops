@@ -20,7 +20,7 @@ from tests.test_main import (LOGIN_TAIL, Reply, deps, patch_events,
 
 
 class Undelivered(HerdrSessions):
-    def send_text(self, target, issue, text):
+    def send_text(self, repository, issue, text):
         return False
 
 
@@ -33,20 +33,20 @@ class RealIdle(Sessions):
         self.state = {N: (status, seq)}
         self.sent_text, self.ended = [], []
 
-    def is_alive(self, target, issue):
+    def is_alive(self, repository, issue):
         return True
 
-    def agent_state(self, target, issue):
+    def agent_state(self, repository, issue):
         return self.state.get(issue)
 
-    def capture_tail(self, target, issue, lines=25):
+    def capture_tail(self, repository, issue, lines=25):
         return "…pane tail…"
 
-    def send_text(self, target, issue, text):
+    def send_text(self, repository, issue, text):
         self.sent_text.append((issue, text))
         return True
 
-    def end(self, target, issue):
+    def end(self, repository, issue):
         self.ended.append(issue)
 
 

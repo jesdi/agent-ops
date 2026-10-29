@@ -190,9 +190,9 @@ it('several pending intents on one issue all render — none silently dropped', 
     http.get('/api/pending-intents', () =>
       HttpResponse.json({
         intents: [
-          { action: 'reply', target: 'widget', issue: 42, actor: 'dev@localhost',
+          { action: 'reply', repository: 'widget', issue: 42, actor: 'dev@localhost',
             created_at: '2026-07-25T11:58:00Z' },
-          { action: 'kill', target: 'widget', issue: 42, actor: 'dev@localhost',
+          { action: 'kill', repository: 'widget', issue: 42, actor: 'dev@localhost',
             created_at: '2026-07-25T11:59:00Z' },
         ],
       }),
@@ -286,11 +286,11 @@ test('queued column renders ghost cards in rank order with count and stale hint'
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: withGhosts([
-      { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
-      { number: 74, target: 'widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
+      { number: 73, repository: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 74, repository: 'widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
     ]),
     queue_stale: true,
-    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'widget' },
+    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_repository: 'widget' },
   })))
   renderWithProviders(<BoardPage />)
   const queued = await screen.findByTestId('column-queued')
@@ -301,17 +301,17 @@ test('queued column renders ghost cards in rank order with count and stale hint'
   expect(within(ghosts[0]!).getByText('next')).toBeInTheDocument()
 })
 
-test('same issue number on two targets renders two distinct ghosts', async () => {
+test('same issue number on two repositories renders two distinct ghosts', async () => {
   // Issue numbers are per-repo, so alpha#73 and beta#73 are different work.
-  // The ghost key must include the target (duplicate React keys otherwise),
-  // and only the forecast target may wear the "next" badge.
+  // The ghost key must include the repository (duplicate React keys otherwise),
+  // and only the forecast repository may wear the "next" badge.
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: withGhosts([
-      { number: 73, target: 'alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
-      { number: 73, target: 'beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
+      { number: 73, repository: 'alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, repository: 'beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
     ]),
-    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_target: 'beta' },
+    next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_repository: 'beta' },
   })))
   renderWithProviders(<BoardPage />)
   const queued = await screen.findByTestId('column-queued')
@@ -326,7 +326,7 @@ test('a failed queue action shows its error marker in the Queued header', async 
     http.get('/api/board', () => HttpResponse.json({
       ...fx_board,
       columns: withGhosts([
-        { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+        { number: 73, repository: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
       ]),
       queue_stale: true,
       next_claim: { ...fx_board.next_claim, verdict: 'no-candidates' },
@@ -349,7 +349,7 @@ test('a Queued column holding only ghosts stays in the row', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: withGhosts([
-      { number: 73, target: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, repository: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
     ]),
   })))
   renderWithProviders(<BoardPage />)
@@ -366,7 +366,7 @@ test('an empty Queued chip still carries the stale marker', async () => {
   expect(screen.queryByTestId('column-queued')).not.toBeInTheDocument()
 })
 
-it('a task card links to /task/{target}/{issue}', async () => {
+it('a task card links to /task/{repository}/{issue}', async () => {
   renderWithProviders(<BoardPage />)
   await waitFor(() => expect(screen.getByTestId('card-41')).toBeInTheDocument())
   expect(within(screen.getByTestId('card-41')).getByRole('link')).toHaveAttribute(
@@ -374,13 +374,13 @@ it('a task card links to /task/{target}/{issue}', async () => {
   )
 })
 
-it('two claimed cards sharing an issue number across targets both render with distinct keys', async () => {
-  // Issue numbers are per-target: alpha#73 and beta#73 are different work.
-  // BoardColumn's card key must include the target, or React would collapse
+it('two claimed cards sharing an issue number across repositories both render with distinct keys', async () => {
+  // Issue numbers are per-repository: alpha#73 and beta#73 are different work.
+  // BoardColumn's card key must include the repository, or React would collapse
   // one card into the other (silently dropping it, not just warning).
   const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-  const cardA = { ...inProgressCard, target: 'alpha', issue: 73, title: 'Alpha claimed work' }
-  const cardB = { ...inProgressCard, target: 'beta', issue: 73, title: 'Beta claimed work' }
+  const cardA = { ...inProgressCard, repository: 'alpha', issue: 73, title: 'Alpha claimed work' }
+  const cardB = { ...inProgressCard, repository: 'beta', issue: 73, title: 'Beta claimed work' }
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: fx_board.columns.map((c) =>
@@ -397,10 +397,10 @@ it('two claimed cards sharing an issue number across targets both render with di
   errorSpy.mockRestore()
 })
 
-it('a legacy target-less pending intent still badges the card by issue', async () => {
+it('a legacy repository-less pending intent still badges the card by issue', async () => {
   server.use(
     http.get('/api/pending-intents', () => HttpResponse.json({
-      intents: [{ action: 'reply', target: '', issue: 42, actor: 'dev@localhost',
+      intents: [{ action: 'reply', repository: '', issue: 42, actor: 'dev@localhost',
                   created_at: '2026-07-25T11:58:00Z' }],
     })),
   )
@@ -417,7 +417,7 @@ test('header shows next-claim line and median cycle', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     median_cycle_seconds: 7200,
-    next_claim: { verdict: 'capacity-full', next_pass_eta: new Date(Date.now() + 300_000).toISOString(), next_issue: 0, next_target: '', minutes_to_reset: 0 },
+    next_claim: { verdict: 'capacity-full', next_pass_eta: new Date(Date.now() + 300_000).toISOString(), next_issue: 0, next_repository: '', minutes_to_reset: 0 },
   })))
   renderWithProviders(<BoardPage />)
   expect(await screen.findByTestId('next-claim')).toHaveTextContent(/capacity full/i)
@@ -540,7 +540,7 @@ describe('phone tabs', () => {
         await boardHeld
         return HttpResponse.json({
           ...fx_board,
-          columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }], columns),
+          columns: withGhosts([{ number: 73, repository: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }], columns),
         })
       }),
     )
@@ -577,7 +577,7 @@ describe('phone tabs', () => {
       await boardHeld
       return HttpResponse.json({
         ...fx_board,
-        columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
+        columns: withGhosts([{ number: 73, repository: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
       })
     }))
     renderWithProviders(<BoardPage />, { route: '/?column=queued' })
@@ -590,7 +590,7 @@ describe('phone tabs', () => {
   it('Queued counts its ghosts', async () => {
     server.use(http.get('/api/board', () => HttpResponse.json({
       ...fx_board,
-      columns: withGhosts([{ number: 73, target: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
+      columns: withGhosts([{ number: 73, repository: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
     })))
     renderWithProviders(<BoardPage />)
     expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()
@@ -601,7 +601,7 @@ describe('phone tabs', () => {
 test('phone header: one summary line with capacity and the next-claim verdict', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
-    next_claim: { verdict: 'capacity-full', next_pass_eta: new Date(Date.now() + 300_000).toISOString(), next_issue: 0, next_target: '', minutes_to_reset: 0, blocked_by: '' },
+    next_claim: { verdict: 'capacity-full', next_pass_eta: new Date(Date.now() + 300_000).toISOString(), next_issue: 0, next_repository: '', minutes_to_reset: 0, blocked_by: '' },
   })))
   renderWithProviders(<BoardPage />)
   const summary = await screen.findByRole('button', { name: /2\/3 active capacity full — waits for a free slot/ })

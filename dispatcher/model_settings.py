@@ -1,7 +1,7 @@
 """The `models:` block the console's settings page stores
 (`<state_dir>/model-settings.json`). When present it replaces the `models:`
 block of targets.yaml for the dispatcher, triage and the console; deleting it
-brings the targets.yaml block back. A target's own `models:` block still
+brings the targets.yaml block back. A repository's own `models:` block still
 replaces both (config.policy_for). config.apply_stored_models applies it."""
 from __future__ import annotations
 

@@ -47,9 +47,9 @@ def test_unknown_api_path_is_404_not_the_spa_shell(tmp_path):
 
 def test_spa_shell_is_never_cached(tmp_path):
     """index.html carries no Cache-Control, so a phone browser heuristically
-    kept a pre-target-route shell for weeks: its stale bundle called
+    kept a pre-repository-route shell for weeks: its stale bundle called
     /api/task/<issue>/description, which the current backend parsed as
-    (target=<issue>, issue="description") and 422'd. The shell must revalidate
+    (repository=<issue>, issue="description") and 422'd. The shell must revalidate
     on every load; hashed assets under /assets/ may cache forever."""
     dist = tmp_path / "dist"
     (dist / "assets").mkdir(parents=True)

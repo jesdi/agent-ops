@@ -30,7 +30,7 @@ class HerdrSessions(FakeSessions):
         super().__init__(**kw)
         self.state = dict(state or {})
 
-    def agent_state(self, target, issue):
+    def agent_state(self, repository, issue):
         return self.state.get(issue)
 
 

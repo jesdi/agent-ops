@@ -14,7 +14,7 @@ const desc = {
 
 test('collapsed by default; fetches only on expand; renders markdown', async () => {
   server.use(http.get('/api/task/widget/73/description', () => HttpResponse.json(desc)))
-  const { queryClient } = renderWithProviders(<DescriptionPanel target="widget" issue={73} defaultOpen={false} />)
+  const { queryClient } = renderWithProviders(<DescriptionPanel repository="widget" issue={73} defaultOpen={false} />)
   // fetchStatus flips to 'fetching' synchronously during the observer's useEffect,
   // which RTL's render-wrapping act() flushes before returning. This happens before
   // any MSW response arrives (proven: adding delay(50) to the handler — a macrotask
@@ -38,32 +38,32 @@ test('collapsed by default; fetches only on expand; renders markdown', async () 
 test('backend error payload renders as an explicit message', async () => {
   server.use(http.get('/api/task/widget/73/description', () =>
     HttpResponse.json({ ...desc, title: '', body: '', url: '', error: 'gh: timeout' })))
-  renderWithProviders(<DescriptionPanel target="widget" issue={73} defaultOpen />)
+  renderWithProviders(<DescriptionPanel repository="widget" issue={73} defaultOpen />)
   expect(await screen.findByText(/description unavailable: gh: timeout/)).toBeInTheDocument()
 })
 
 test('transport failure renders explicit error, not a blank panel', async () => {
   server.use(http.get('/api/task/widget/73/description', () =>
     HttpResponse.json({ detail: 'gh: unreachable' }, { status: 500 })))
-  renderWithProviders(<DescriptionPanel target="widget" issue={73} defaultOpen />)
+  renderWithProviders(<DescriptionPanel repository="widget" issue={73} defaultOpen />)
   expect(await screen.findByText(/description unavailable: gh: unreachable/)).toBeInTheDocument()
 })
 
 test('empty body renders the no-description fallback, not a blank panel', async () => {
   server.use(http.get('/api/task/widget/73/description', () =>
     HttpResponse.json({ ...desc, body: '', error: '' })))
-  renderWithProviders(<DescriptionPanel target="widget" issue={73} defaultOpen />)
+  renderWithProviders(<DescriptionPanel repository="widget" issue={73} defaultOpen />)
   // ReactMarkdown renders _no description_ as <em>no description</em>
   expect(await screen.findByText(/no description/)).toBeInTheDocument()
 })
 
 test('an ambiguous issue number degrades to explicit unavailable text', async () => {
   // The description route now answers 409 when the same number sits on two
-  // targets' queues, rather than serving the first repo's body. The panel
+  // repositories' queues, rather than serving the first repo's body. The panel
   // must say so rather than render a blank or a wrong description.
   server.use(http.get('/api/task/widget/73/description', () =>
-    HttpResponse.json({ detail: 'issue 73 is ambiguous across targets' },
+    HttpResponse.json({ detail: 'issue 73 is ambiguous across repositories' },
       { status: 409 })))
-  renderWithProviders(<DescriptionPanel target="widget" issue={73} defaultOpen />)
+  renderWithProviders(<DescriptionPanel repository="widget" issue={73} defaultOpen />)
   expect(await screen.findByText(/description unavailable/)).toBeInTheDocument()
 })

@@ -15,18 +15,18 @@ import { renderWithProviders } from '../../test/render'
 
 it('a card pinned to its own track shows the pin once, not "track" as well', async () => {
   renderWithProviders(<TaskCardView card={pinnedCard} />)
-  await userEvent.click(screen.getByRole('button', { name: `Details for ${pinnedCard.target}#${pinnedCard.issue}` }))
+  await userEvent.click(screen.getByRole('button', { name: `Details for ${pinnedCard.repository}#${pinnedCard.issue}` }))
   expect(screen.getByText('pinned to frontend')).toBeInTheDocument()
   expect(screen.queryByText(/track frontend/)).toBeNull()
 })
 
 it('the task page pinned to its own track shows the pin once', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () => HttpResponse.json({ ...taskDetail, card: pinnedCard })),
+    http.get('/api/task/:repository/:issue', () => HttpResponse.json({ ...taskDetail, card: pinnedCard })),
     ...defaultHandlers)
   renderWithProviders(
-    <Routes><Route path="/task/:target/:issue" element={<TaskPage />} /></Routes>,
-    { route: `/task/${pinnedCard.target}/${pinnedCard.issue}` })
+    <Routes><Route path="/task/:repository/:issue" element={<TaskPage />} /></Routes>,
+    { route: `/task/${pinnedCard.repository}/${pinnedCard.issue}` })
   const header = (await screen.findByText(/pinned to frontend/)).parentElement!
   expect(header).toHaveTextContent(/claude-fable-5-1 · pinned to frontend · branch/)
 })

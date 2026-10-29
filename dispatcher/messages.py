@@ -1,7 +1,7 @@
 """Durable per-issue operator message queue
-(~/agent-ops-state/messages/<target>-<issue>.jsonl).
+(~/agent-ops-state/messages/<repository>-<issue>.jsonl).
 
-Keyed by (TARGET, ISSUE), not task — two projects can share an issue
+Keyed by (REPOSITORY, ISSUE), not task — two projects can share an issue
 number, and a reply must never cross into the other one's prompt. Not keyed
 by task because an unclaimed backlog issue has no task-<N>.json,
 and the queue must survive done/failed/retry cycles that delete or rewrite
@@ -43,8 +43,8 @@ def _dir(state_dir: str | Path) -> Path:
     return Path(state_dir) / MESSAGES_DIR
 
 
-def _path(state_dir: str | Path, target: str, issue: int) -> Path:
-    return _dir(state_dir) / f"{task_key(target, issue)}.jsonl"
+def _path(state_dir: str | Path, repository: str, issue: int) -> Path:
+    return _dir(state_dir) / f"{task_key(repository, issue)}.jsonl"
 
 
 def _parse(raw: str, where: Path) -> Message | None:
@@ -66,34 +66,34 @@ def _dump(m: Message) -> str:
                        "delivered_at": m.delivered_at or None})
 
 
-def append(state_dir: str | Path, target: str, issue: int, text: str,
+def append(state_dir: str | Path, repository: str, issue: int, text: str,
            actor: str) -> Message:
     m = Message(id=str(uuid.uuid4()), text=text, actor=actor,
                 created_at=_now())
-    p = _path(state_dir, target, issue)
+    p = _path(state_dir, repository, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a") as fh:
         fh.write(_dump(m) + "\n")
     return m
 
 
-def all_messages(state_dir: str | Path, target: str, issue: int) -> list[Message]:
-    p = _path(state_dir, target, issue)
+def all_messages(state_dir: str | Path, repository: str, issue: int) -> list[Message]:
+    p = _path(state_dir, repository, issue)
     if not p.exists():
         return []
     out = [_parse(raw, p) for raw in p.read_text().splitlines() if raw.strip()]
     return [m for m in out if m is not None]
 
 
-def undelivered(state_dir: str | Path, target: str, issue: int) -> list[Message]:
-    return [m for m in all_messages(state_dir, target, issue) if not m.delivered_at]
+def undelivered(state_dir: str | Path, repository: str, issue: int) -> list[Message]:
+    return [m for m in all_messages(state_dir, repository, issue) if not m.delivered_at]
 
 
-def mark_delivered(state_dir: str | Path, target: str, issue: int,
+def mark_delivered(state_dir: str | Path, repository: str, issue: int,
                    ids: Sequence[str]) -> None:
     """Stamp delivered_at on the named ids. Already-stamped messages keep
     their original timestamp, so a re-drain never rewrites history."""
-    p = _path(state_dir, target, issue)
+    p = _path(state_dir, repository, issue)
     if not p.exists():
         return
     wanted = set(ids)
@@ -101,15 +101,15 @@ def mark_delivered(state_dir: str | Path, target: str, issue: int,
     kept = [m if (m.id not in wanted or m.delivered_at)
             else Message(id=m.id, text=m.text, actor=m.actor,
                          created_at=m.created_at, delivered_at=stamp)
-            for m in all_messages(state_dir, target, issue)]
+            for m in all_messages(state_dir, repository, issue)]
     tmp = p.with_suffix(".tmp")
     tmp.write_text("".join(_dump(m) + "\n" for m in kept))
     tmp.replace(p)
 
 
 def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
-    """(target, issue) -> number of queued (undelivered) messages. Used by
-    the board badge; files not named `<target>-<issue>.jsonl` (including
+    """(repository, issue) -> number of queued (undelivered) messages. Used by
+    the board badge; files not named `<repository>-<issue>.jsonl` (including
     legacy issue-only ones) are ignored."""
     d = _dir(state_dir)
     if not d.exists():
@@ -125,12 +125,12 @@ def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
     return out
 
 
-def _merge_legacy(state_dir: str | Path, target: str, issue: int,
+def _merge_legacy(state_dir: str | Path, repository: str, issue: int,
                   p: Path, dest: Path) -> None:
-    """Fold legacy file `p` into an existing target-keyed `dest`. Atomic
+    """Fold legacy file `p` into an existing repository-keyed `dest`. Atomic
     tmp+replace like mark_delivered; ids already present are skipped, so a
     crash before the unlink never duplicates on re-run."""
-    existing = all_messages(state_dir, target, issue)
+    existing = all_messages(state_dir, repository, issue)
     seen = {m.id for m in existing}
     legacy = [m for m in (_parse(raw, p) for raw in
                           p.read_text().splitlines() if raw.strip())
@@ -142,10 +142,10 @@ def _merge_legacy(state_dir: str | Path, target: str, issue: int,
     p.unlink()
 
 
-def migrate_legacy(state_dir: str | Path, targets: Sequence[str]) -> None:
+def migrate_legacy(state_dir: str | Path, repositories: Sequence[str]) -> None:
     """Take over pre-multi-project `<issue>.jsonl` files. With exactly one
-    target they are renamed to that target's key — merged with an existing
-    target-keyed file rather than clobbering it. With several they
+    repository they are renamed to that repository's key — merged with an existing
+    repository-keyed file rather than clobbering it. With several they
     cannot be attributed, so they are left in place with a warning."""
     d = _dir(state_dir)
     if not d.exists():
@@ -153,14 +153,14 @@ def migrate_legacy(state_dir: str | Path, targets: Sequence[str]) -> None:
     for p in sorted(d.glob("*.jsonl")):
         if not p.stem.isdigit():
             continue
-        if len(targets) != 1:
+        if len(repositories) != 1:
             print(f"[warn] legacy message file {p} not delivered: several "
-                  f"targets are configured, so its project is unknown",
+                  f"repositories are configured, so its project is unknown",
                   file=sys.stderr)
             continue
         issue = int(p.stem)
-        dest = _path(state_dir, targets[0], issue)
+        dest = _path(state_dir, repositories[0], issue)
         if not dest.exists():
             p.replace(dest)
             continue
-        _merge_legacy(state_dir, targets[0], issue, p, dest)
+        _merge_legacy(state_dir, repositories[0], issue, p, dest)

@@ -186,7 +186,7 @@ def test_session_cmd_injects_the_task_branch_from_task_json(tmp_path: Path, monk
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     wt, _ = make_worktree(tmp_path)
     agent = Path(wt) / ".agent"; agent.mkdir()
-    (agent / "task.json").write_text('{"issue": 42, "target": "pe", "branch": "agent/task-42"}')
+    (agent / "task.json").write_text('{"issue": 42, "repository": "pe", "branch": "agent/task-42"}')
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
     assert "-e AGENT_OPS_TASK_BRANCH=agent/task-42 " in cmd
 

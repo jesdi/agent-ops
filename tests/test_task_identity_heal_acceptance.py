@@ -17,10 +17,10 @@ from tests.test_main import FakeSessions, deps
 from tests.test_plan_gate_stage_loss_acceptance import _approve, _gated, _setup
 from tests.test_plan_review_gate_acceptance import BRANCH, GATE, ISSUE, _task
 
-TARGET = "portfolio_eval"
-HEALED = {"issue": ISSUE, "target": TARGET, "branch": BRANCH}
+REPOSITORY = "portfolio_eval"
+HEALED = {"issue": ISSUE, "repository": REPOSITORY, "branch": BRANCH}
 OLD_SHAPE = json.dumps({"issue": ISSUE})
-PLANTED = json.dumps({"issue": ISSUE, "target": TARGET, "branch": "main"})
+PLANTED = json.dumps({"issue": ISSUE, "repository": REPOSITORY, "branch": "main"})
 
 
 class RecordingSessions(FakeSessions):
@@ -99,7 +99,7 @@ def test_a_missing_or_malformed_identity_file_is_healed_on_launch(
 def _stop_hook_ping(wt, session_id):
     """What hooks/stop-hook.sh sends: the identity from task.json plus the session id."""
     task = json.loads(_identity(wt).read_text())
-    return json.dumps({"issue": task["issue"], "target": task.get("target", ""),
+    return json.dumps({"issue": task["issue"], "repository": task.get("repository", ""),
                        "session_id": session_id}).encode()
 
 
@@ -112,7 +112,7 @@ def test_a_healed_worktree_records_and_resumes_its_conversation(tmp_path, monkey
     sess.alive_set.add(ISSUE)
     handle_ping(_stop_hook_ping(wt, "abc-123"), c.state_dir)
     main.run_pass(c, deps(sess=sess))
-    rec = read_session(c.state_dir, TARGET, ISSUE)
+    rec = read_session(c.state_dir, REPOSITORY, ISSUE)
     assert rec is not None and rec.session_id == "abc-123"
 
     # the operator wakes it: the recorded conversation continues

@@ -7,12 +7,12 @@ sources are fine: no I/O happens at schema-build time.
 import json
 from unittest.mock import MagicMock
 
-from dispatcher.config import Config, Target
+from dispatcher.config import Config, Repository
 from web.app import create_app
 
 
 def _minimal_config() -> Config:
-    target = Target(
+    repository = Repository(
         name="alpha", repo="jesdi/alpha",
         clone_path="/tmp/clones/alpha",
         worktrees_path="/tmp/worktrees/alpha",
@@ -23,7 +23,7 @@ def _minimal_config() -> Config:
     )
     return Config(
         state_dir="/tmp/agent-ops-openapi", capacity=2,
-        session_memory="2g", session_cpus="2", targets=[target],
+        session_memory="2g", session_cpus="2", repositories=[repository],
     )
 
 

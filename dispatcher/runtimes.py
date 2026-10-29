@@ -75,7 +75,7 @@ CLAUDE = Runtime(
     # non-edit action, which no one is attached to answer.
     #
     # --remote-control <name>: every box session is reachable from claude.ai
-    # / the Claude app, named after its task (task-<target>-<issue>) so it is
+    # / the Claude app, named after its task (task-<repository>-<issue>) so it is
     # identifiable there. Remote Control is interactive-only (the headless -p
     # keepalive cannot and need not use it) and needs the claude-home OAuth
     # login, which the mounted store provides. It is a session-config flag,

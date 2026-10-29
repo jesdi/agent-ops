@@ -63,8 +63,8 @@ def _isolated_state_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
 
 
-class _EveryTarget(dict):
-    """A clones mapping that answers every target with one path."""
+class _EveryRepository(dict):
+    """A clones mapping that answers every repository with one path."""
 
     def __init__(self, clone: str):
         super().__init__()
@@ -75,16 +75,16 @@ class _EveryTarget(dict):
 
 
 @pytest.fixture(autouse=True)
-def _a_clone_for_every_target(tmp_path, monkeypatch):
-    """Production builds Sessions with the configured clone of each target
-    and launches nothing for a target without one. A test that builds
-    `Sessions()` with no `clones` gets <tmp_path>/clone for every target, so
+def _a_clone_for_every_repository(tmp_path, monkeypatch):
+    """Production builds Sessions with the configured clone of each repository
+    and launches nothing for a repository without one. A test that builds
+    `Sessions()` with no `clones` gets <tmp_path>/clone for every repository, so
     launch tests need not repeat it; a test of the rule passes `clones`."""
     from dispatcher import sessions
     real = sessions.Sessions.__init__
 
     def init(self, *args, clones=None, **kw):
-        real(self, *args, clones=_EveryTarget(str(tmp_path / "clone"))
+        real(self, *args, clones=_EveryRepository(str(tmp_path / "clone"))
              if clones is None else clones, **kw)
     monkeypatch.setattr(sessions.Sessions, "__init__", init)
 

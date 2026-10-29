@@ -5,7 +5,7 @@ Spec: specs/2026-10-06-openspec-pipeline/spec.md, requirements 5-8 and 10 and
 their scenarios; design.md (Decisions, Data model, Seams). Black-box, through
 dispatcher.main.run_pass over the fakes of tests/test_main.py, with a real git
 repo (bare origin) behind the task's worktree so the publish step is real.
-The console test goes through GET /api/task/{target}/{issue}/request.
+The console test goes through GET /api/task/{repository}/{issue}/request.
 """
 import json
 import re

@@ -14,20 +14,20 @@ class FakeGitHub:
         self.boosts, self.statused, self.labeled = [], [], []
         self.calls = []   # global order across the three mutators
 
-    def set_boost(self, target, issue, value):
+    def set_boost(self, repository, issue, value):
         self.boosts.append((issue, value))
         self.calls.append("set_boost")
 
-    def set_status(self, target, issue, option_id):
+    def set_status(self, repository, issue, option_id):
         self.statused.append((issue, option_id))
         self.calls.append("set_status")
 
-    def add_label(self, target, issue, label):
+    def add_label(self, repository, issue, label):
         self.labeled.append((issue, label))
         self.calls.append("add_label")
 
 
-class FakeTarget:
+class FakeRepository:
     status_ready_option_id = "R"
 
 
@@ -131,7 +131,7 @@ def test_apply_plan_executes_boost_then_ready_then_label():
     gh = FakeGitHub()
     plan = QueuePlan(ok=True, reason="", set_boost=99, set_ready=True,
                      add_auto=True)
-    queue_ops.apply_plan(gh, FakeTarget(), 7, plan)
+    queue_ops.apply_plan(gh, FakeRepository(), 7, plan)
     assert gh.calls == ["set_boost", "set_status", "add_label"]
     assert gh.boosts == [(7, 99)]
     assert gh.statused == [(7, "R")]
@@ -140,14 +140,14 @@ def test_apply_plan_executes_boost_then_ready_then_label():
 
 def test_apply_plan_skips_unset_actions():
     gh = FakeGitHub()
-    queue_ops.apply_plan(gh, FakeTarget(), 7,
+    queue_ops.apply_plan(gh, FakeRepository(), 7,
                          QueuePlan(ok=True, reason="", set_boost=-1))
     assert gh.calls == ["set_boost"] and gh.boosts == [(7, -1)]
 
 
 def test_apply_plan_rejected_plan_is_a_noop():
     gh = FakeGitHub()
-    queue_ops.apply_plan(gh, FakeTarget(), 7,
+    queue_ops.apply_plan(gh, FakeRepository(), 7,
                          QueuePlan(ok=False, reason="nope", set_boost=99,
                                    set_ready=True, add_auto=True))
     assert gh.calls == []

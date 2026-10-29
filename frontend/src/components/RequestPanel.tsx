@@ -7,9 +7,9 @@ import { breakAfterSeparators } from '../lib/format'
 import { banner } from '../lib/tone'
 
 /** The operator answers a request on its full-screen review route. */
-export function RequestPanel({ target, issue }: { target: string; issue: number }) {
-  const req = useTaskRequest(target, issue)
-  const artifacts = useTaskArtifacts(target, issue)
+export function RequestPanel({ repository, issue }: { repository: string; issue: number }) {
+  const req = useTaskRequest(repository, issue)
+  const artifacts = useTaskArtifacts(repository, issue)
   const spec = artifacts.data?.items.find((item) => item.id === 'spec')
 
   if (req.isError) {
@@ -39,7 +39,7 @@ export function RequestPanel({ target, issue }: { target: string; issue: number 
             className="inline-flex min-h-11 items-center justify-center rounded border border-border px-3 text-sm font-medium">
             View spec on GitHub ↗
           </a>}
-          <Link to={`/task/${target}/${issue}/review`}
+          <Link to={`/task/${repository}/${issue}/review`}
             className="inline-flex min-h-11 items-center justify-center rounded bg-ink px-3 text-sm font-medium text-surface-raised">
             open review
           </Link>

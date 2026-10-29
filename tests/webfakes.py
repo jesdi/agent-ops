@@ -1,5 +1,5 @@
 """Hand-written fakes and builders shared by the web/ test suite."""
-from dispatcher.config import Config, Target
+from dispatcher.config import Config, Repository
 from dispatcher import execution_overrides, state
 from dispatcher.models import parse_policy
 from tests.usagefakes import session_usage
@@ -9,8 +9,8 @@ from web.sources import Sources, ArtifactListing
 HEADERS = {"Tailscale-User-Login": "jesdi@github"}
 
 
-def make_target(name="alpha", repo="jesdi/alpha"):
-    return Target(
+def make_repository(name="alpha", repo="jesdi/alpha"):
+    return Repository(
         name=name, repo=repo, clone_path="/tmp/clones/" + name,
         worktrees_path="/tmp/worktrees/" + name, rank_cmd="false",
         setup_cmd="", verify_cmd="", project_number=1, project_owner="jesdi",
@@ -27,16 +27,16 @@ def tracks_policy(**stage_lists):
                          "tracks": {"standard": {"when": "Everything.", **stages}}})
 
 
-def make_config(state_dir, targets=None, capacity=2):
+def make_config(state_dir, repositories=None, capacity=2):
     return Config(
         state_dir=str(state_dir), capacity=capacity, session_memory="2g",
-        session_cpus="2", targets=list(targets or [make_target()]),
+        session_cpus="2", repositories=list(repositories or [make_repository()]),
         models=tracks_policy())
 
 
 def make_task(issue=7, **kw):
     defaults = dict(
-        issue=issue, target="alpha", stage=Stage.IMPLEMENT, slot=0,
+        issue=issue, repository="alpha", stage=Stage.IMPLEMENT, slot=0,
         worktree=f"/tmp/worktrees/alpha/{issue}", branch=f"task/{issue}",
         title=f"Task {issue}", updated_at="2026-07-25T10:00:00+00:00",
         track="standard")
@@ -50,7 +50,7 @@ class FakeSources:
     def __init__(self, state_dir=None):
         self.state_dir = state_dir
         self.tasks_list = []
-        self.rank = {}            # target name -> (rows, as_of, stale)
+        self.rank = {}            # repository name -> (rows, as_of, stale)
         self.descriptions = {}    # (repo, number) -> dict
         self.usages = {"anthropic": session_usage(0.5)}
         self.quarantine = []
@@ -63,51 +63,51 @@ class FakeSources:
         self.alive = set()
         self.intents = []         # (action, issue, payload, actor)
         self.pending = []
-        self.applied_plans = []   # (target_name, issue, plan)
-        self.appended = []        # (event, target, issue, actor, detail)
+        self.applied_plans = []   # (repository_name, issue, plan)
+        self.appended = []        # (event, repository, issue, actor, detail)
         self.fingerprint = ('{"board": "a", "failures": "a",'
                             ' "history": "0", "queue": "a", "usage": "a"}')
         self.heartbeat = None     # dict | None returned by pass_heartbeat()
         self._claims_paused = False
         self._triage_running = False
-        self.messages_by_key = {}     # (target, issue) -> list[msgq.Message]
-        self.undelivered = {}         # (target, issue) -> int
-        self.blocked_wakes = set()    # (target, issue) with a wake-blocked marker
-        self.execution_overrides = {}  # (target, issue) -> model/bypass tuple
+        self.messages_by_key = {}     # (repository, issue) -> list[msgq.Message]
+        self.undelivered = {}         # (repository, issue) -> int
+        self.blocked_wakes = set()    # (repository, issue) with a wake-blocked marker
+        self.execution_overrides = {}  # (repository, issue) -> model/bypass tuple
 
     def tasks(self):
         return list(self.tasks_list)
 
-    def task(self, target, issue):
-        active = next((t for t in self.tasks_list if (t.target, t.issue) == (target, issue)), None)
+    def task(self, repository, issue):
+        active = next((t for t in self.tasks_list if (t.repository, t.issue) == (repository, issue)), None)
         if active is not None or self.state_dir is None:
             return active
-        return state.load_archived(self.state_dir, target, issue)
+        return state.load_archived(self.state_dir, repository, issue)
 
-    def artifacts(self, target, issue):
+    def artifacts(self, repository, issue):
         if self.state_dir is None:
             return ArtifactListing([], "", False)
-        return Sources.artifacts(self, target, issue)
+        return Sources.artifacts(self, repository, issue)
 
-    def _artifact_status(self, target, issue, item, expired):
-        return Sources._artifact_status(self, target, issue, item, expired)
+    def _artifact_status(self, repository, issue, item, expired):
+        return Sources._artifact_status(self, repository, issue, item, expired)
 
-    def artifact_content(self, target, issue, artifact_id):
-        return Sources.artifact_content(self, target, issue, artifact_id)
+    def artifact_content(self, repository, issue, artifact_id):
+        return Sources.artifact_content(self, repository, issue, artifact_id)
 
-    def rank_rows(self, target):
-        return self.rank.get(target.name,
+    def rank_rows(self, repository):
+        return self.rank.get(repository.name,
                              ([], "2026-07-25T00:00:00+00:00", False))
 
     def usage(self, routed=()):
         return self.usages
 
-    def execution_override(self, target, issue):
-        stored = self.execution_overrides.get((target, issue))
+    def execution_override(self, repository, issue):
+        stored = self.execution_overrides.get((repository, issue))
         return stored and execution_overrides.ExecutionOverride(*stored)
 
-    def set_execution_override(self, target, issue, *, model, bypass_usage):
-        self.execution_overrides[(target, issue)] = (model, bypass_usage)
+    def set_execution_override(self, repository, issue, *, model, bypass_usage):
+        self.execution_overrides[(repository, issue)] = (model, bypass_usage)
 
     def quarantine_entries(self):
         return list(self.quarantine)
@@ -133,29 +133,29 @@ class FakeSources:
     def stage_signal(self, worktree):
         return None
 
-    def pane_tail(self, target, issue):
+    def pane_tail(self, repository, issue):
         return self.pane_tails.get(issue, "")
 
-    def pane_history(self, target, issue, lines=2000):
+    def pane_history(self, repository, issue, lines=2000):
         self.history_calls.append((issue, lines))
         return self.pane_histories.get(issue, "")
 
-    def session_alive(self, target, issue):
+    def session_alive(self, repository, issue):
         return issue in self.alive
 
-    def submit_intent(self, action, target, issue, payload, actor):
-        self.intents.append((action, target, issue, payload, actor))
-        return f"1753430000000-{target}-{issue}-{action}.json"
+    def submit_intent(self, action, repository, issue, payload, actor):
+        self.intents.append((action, repository, issue, payload, actor))
+        return f"1753430000000-{repository}-{issue}-{action}.json"
 
     def pending_intents(self):
         return list(self.pending)
 
-    def apply_queue_plan(self, target, issue, plan):
-        self.applied_plans.append((target.name, issue, plan))
+    def apply_queue_plan(self, repository, issue, plan):
+        self.applied_plans.append((repository.name, issue, plan))
 
-    def append_event(self, event, *, target="", issue=0, actor="",
+    def append_event(self, event, *, repository="", issue=0, actor="",
                      detail=""):
-        self.appended.append((event, target, issue, actor, detail))
+        self.appended.append((event, repository, issue, actor, detail))
 
     def state_fingerprint(self):
         return self.fingerprint
@@ -166,8 +166,8 @@ class FakeSources:
             {"title": "", "body": "", "url": "", "fetched_at": "",
              "error": "not seeded"})
 
-    def messages(self, target, issue):
-        return self.messages_by_key.get((target, issue), [])
+    def messages(self, repository, issue):
+        return self.messages_by_key.get((repository, issue), [])
 
     def undelivered_counts(self):
         return dict(self.undelivered)

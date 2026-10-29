@@ -115,7 +115,7 @@ def test_task_file_at_the_gate_from_before_the_gated_flag_never_skips(tmp_path):
     (tmp_path / ".agent").mkdir()
     write_tickets(tmp_path, 1)
     (tmp_path / SUMMARY).write_text(NONE_SUMMARY)
-    t = TaskState(issue=ISSUE, target="portfolio_eval", slot=0, branch=BRANCH,
+    t = TaskState(issue=ISSUE, repository="portfolio_eval", slot=0, branch=BRANCH,
                   stage=Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path),
                   title="t", updated_at="2026-10-13T00:00:00+00:00", track="trivial")
     ready = StageSignal("plan", "awaiting-review", artifact=SUMMARY, open_questions=0)
@@ -304,7 +304,7 @@ def _skip_inputs(tmp_path, **kw):
     from dispatcher.machine import _skips_gate
     (tmp_path / ".agent").mkdir(exist_ok=True)
     (tmp_path / SUMMARY).write_text(NONE_SUMMARY)
-    t = TaskState(issue=ISSUE, target="portfolio_eval", slot=0, branch=BRANCH,
+    t = TaskState(issue=ISSUE, repository="portfolio_eval", slot=0, branch=BRANCH,
                   stage=Stage.PLAN, worktree=str(tmp_path), title="t",
                   updated_at="2026-10-13T00:00:00+00:00", track="trivial")
     sig = StageSignal("plan", "awaiting-review", artifact=SUMMARY, open_questions=0)

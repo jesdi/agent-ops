@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from dispatcher import usage_providers as up
-from dispatcher.config import Config, Target
+from dispatcher.config import Config, Repository
 from dispatcher.usage import ProviderUsage, WindowKind
 from tests.usagefakes import FakeUsage, session_usage
 
@@ -28,7 +28,7 @@ def creds(tmp_path: Path) -> Path:
 
 def cfg(tmp_path, models=None):
     return Config(state_dir=str(tmp_path), capacity=1, session_memory="1g",
-                  session_cpus="2", targets=[],
+                  session_cpus="2", repositories=[],
                   **({"models": models} if models else {}))
 
 

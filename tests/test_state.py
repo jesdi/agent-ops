@@ -31,7 +31,7 @@ from dispatcher.state import (
 def make(issue=101, stage=Stage.SPEC, slot=0, **kw):
     return TaskState(
         issue=issue,
-        target="portfolio_eval",
+        repository="portfolio_eval",
         stage=stage,
         slot=slot,
         worktree=f"/home/agent/repos/portfolio_eval.worktrees/task-{issue}",
@@ -127,7 +127,7 @@ from dispatcher.state import (clear_turn_markers, has_waiting, mark_waiting,
 
 
 def _task(issue=1, stage=Stage.IMPLEMENT, park=""):
-    return TaskState(issue=issue, target="t", stage=stage, slot=0,
+    return TaskState(issue=issue, repository="t", stage=stage, slot=0,
                      worktree="/tmp/wt", branch=f"agent/task-{issue}",
                      title="x", updated_at="2026-07-21T00:00:00+00:00",
                      park=park)
@@ -137,7 +137,7 @@ def test_old_state_file_without_park_fields_loads(tmp_path):
     # Backward-readable across the deploy: pre-park JSON has no new keys.
     import json
     (tmp_path / "task-7.json").write_text(json.dumps({
-        "issue": 7, "target": "t", "stage": "implement", "slot": 0,
+        "issue": 7, "repository": "t", "stage": "implement", "slot": 0,
         "worktree": "/tmp/wt", "branch": "agent/task-7", "title": "x",
         "updated_at": "2026-07-14T00:00:00+00:00"}))
     ts = load(tmp_path, "t", 7)
@@ -264,7 +264,7 @@ def test_waiting_marker_lifecycle(tmp_path):
 
 def test_effort_and_labels_roundtrip(tmp_path: Path):
     ts = TaskState(
-        issue=101, target="portfolio_eval", stage=Stage.SPEC, slot=0,
+        issue=101, repository="portfolio_eval", stage=Stage.SPEC, slot=0,
         worktree="/wt", branch="agent/task-101", title="Add widget",
         updated_at="2026-07-14T12:00:00+00:00",
         effort=3, labels=("auto", "frontend"),
@@ -278,7 +278,7 @@ def test_effort_and_labels_roundtrip(tmp_path: Path):
 
 def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
     (tmp_path / "task-55.json").write_text(json.dumps({
-        "issue": 55, "target": "portfolio_eval", "stage": "implement", "slot": 1,
+        "issue": 55, "repository": "portfolio_eval", "stage": "implement", "slot": 1,
         "worktree": "/wt", "branch": "agent/task-55", "title": "Old task",
         "updated_at": "2026-07-01T00:00:00+00:00", "park": "", "ci_run_id": 0,
         "park_msg_id": 0, "hold_for_attach": False,
@@ -315,7 +315,7 @@ def test_slot_less_state_round_trips(tmp_path):
 
 
 def test_park_note_roundtrips_and_defaults_empty(tmp_path):
-    t = TaskState(issue=9, target="alpha", stage=Stage.IMPLEMENT, slot=0,
+    t = TaskState(issue=9, repository="alpha", stage=Stage.IMPLEMENT, slot=0,
                   worktree="/w", branch="b", title="t",
                   updated_at="2026-07-30T00:00:00+00:00")
     assert t.park_note == ""
@@ -325,7 +325,7 @@ def test_park_note_roundtrips_and_defaults_empty(tmp_path):
 
 def test_load_tolerates_state_files_without_park_note(tmp_path):
     # Pre-feature task-<N>.json files have no park_note key.
-    t = TaskState(issue=9, target="alpha", stage=Stage.IMPLEMENT, slot=0,
+    t = TaskState(issue=9, repository="alpha", stage=Stage.IMPLEMENT, slot=0,
                   worktree="/w", branch="b", title="t",
                   updated_at="2026-07-30T00:00:00+00:00")
     save(tmp_path, t)
@@ -345,7 +345,7 @@ def test_new_stages_exist_and_flight_membership():
 
 
 def test_pr_fields_default_and_roundtrip(tmp_path):
-    ts = TaskState(issue=7, target="t", stage=Stage.PR_OPEN, slot=0,
+    ts = TaskState(issue=7, repository="t", stage=Stage.PR_OPEN, slot=0,
                    worktree="w", branch="b", title="x",
                    updated_at="2026-07-30T00:00:00+00:00")
     assert (ts.pr_number, ts.feedback_cursor, ts.feedback_pending,
@@ -360,7 +360,7 @@ def test_pr_fields_default_and_roundtrip(tmp_path):
 
 
 def test_old_state_file_without_pr_fields_loads(tmp_path):
-    ts = TaskState(issue=8, target="t", stage=Stage.PR_OPEN, slot=0,
+    ts = TaskState(issue=8, repository="t", stage=Stage.PR_OPEN, slot=0,
                    worktree="w", branch="b", title="x",
                    updated_at="2026-07-30T00:00:00+00:00")
     save(tmp_path, ts)
@@ -373,7 +373,7 @@ def test_old_state_file_without_pr_fields_loads(tmp_path):
 
 
 def test_delete_removes_state_file_and_is_idempotent(tmp_path):
-    ts = TaskState(issue=9, target="t", stage=Stage.DONE, slot=-1,
+    ts = TaskState(issue=9, repository="t", stage=Stage.DONE, slot=-1,
                    worktree="w", branch="b", title="x",
                    updated_at="2026-07-30T00:00:00+00:00")
     save(tmp_path, ts)
@@ -434,7 +434,7 @@ def test_task_state_has_no_pending_reply_field():
 def test_load_tolerates_a_retired_pending_reply_key(tmp_path):
     import json
     from dispatcher.state import load, save
-    save(tmp_path, TaskState(issue=5, target="t", stage=Stage.IMPLEMENT,
+    save(tmp_path, TaskState(issue=5, repository="t", stage=Stage.IMPLEMENT,
                              slot=0, worktree="/w", branch="b", title="x",
                              updated_at="2026-08-12T00:00:00+00:00"))
     p = tmp_path / "task-t-5.json"
@@ -447,7 +447,7 @@ def test_load_tolerates_a_retired_pending_reply_key(tmp_path):
 def test_a_task_file_written_before_the_asked_field_loads_as_not_asked(tmp_path):
     import json
     from dispatcher.state import load, save
-    save(tmp_path, TaskState(issue=5, target="t", stage=Stage.SPEC,
+    save(tmp_path, TaskState(issue=5, repository="t", stage=Stage.SPEC,
                              slot=0, worktree="/w", branch="b", title="x",
                              updated_at="2026-08-12T00:00:00+00:00", asked=True))
     p = tmp_path / "task-t-5.json"
@@ -520,24 +520,24 @@ def test_the_two_predicates_agree_over_the_mixed_fixture():
             == [t.issue for t in tasks if consumes_capacity(t)] == [1, 2, 7])
 
 
-# Tests for (target, issue) keying with legacy fallback
-def _ts(issue, target, **kw):
+# Tests for (repository, issue) keying with legacy fallback
+def _ts(issue, repository, **kw):
     from dispatcher.state import Stage, TaskState
-    base = dict(issue=issue, target=target, stage=Stage.SPEC, slot=0,
-                worktree=f"/wt/{target}-{issue}", branch=f"agent/task-{issue}",
+    base = dict(issue=issue, repository=repository, stage=Stage.SPEC, slot=0,
+                worktree=f"/wt/{repository}-{issue}", branch=f"agent/task-{issue}",
                 title="t", updated_at="2026-08-26T00:00:00+00:00")
     base.update(kw)
     return TaskState(**base)
 
 
-def test_same_issue_number_two_targets_coexist(tmp_path):
+def test_same_issue_number_two_repositories_coexist(tmp_path):
     from dispatcher import state
     state.save(tmp_path, _ts(42, "portfolio_eval"))
     state.save(tmp_path, _ts(42, "agent_ops"))
     assert (tmp_path / "task-portfolio_eval-42.json").exists()
     assert (tmp_path / "task-agent_ops-42.json").exists()
     loaded = state.load_all(tmp_path)
-    assert {(t.target, t.issue) for t in loaded} == {
+    assert {(t.repository, t.issue) for t in loaded} == {
         ("portfolio_eval", 42), ("agent_ops", 42)}
     assert state.load(tmp_path, "agent_ops", 42).worktree == "/wt/agent_ops-42"
 
@@ -548,7 +548,7 @@ def test_legacy_state_file_read_and_upgraded_on_save(tmp_path):
     legacy = tmp_path / "task-7.json"
     d = state.asdict(_ts(7, "portfolio_eval")); d["stage"] = "spec"
     legacy.write_text(json.dumps(d))
-    # load_all sees it; load() with the right target finds it, wrong target misses
+    # load_all sees it; load() with the right repository finds it, wrong repository misses
     assert [t.issue for t in state.load_all(tmp_path)] == [7]
     assert state.load(tmp_path, "portfolio_eval", 7) is not None
     assert state.load(tmp_path, "agent_ops", 7) is None
@@ -558,7 +558,7 @@ def test_legacy_state_file_read_and_upgraded_on_save(tmp_path):
     assert (tmp_path / "task-portfolio_eval-7.json").exists()
 
 
-def test_save_keeps_another_targets_legacy_file(tmp_path):
+def test_save_keeps_another_repositories_legacy_file(tmp_path):
     import json
     from dispatcher import state
     d = state.asdict(_ts(7, "alpha")); d["stage"] = "spec"
@@ -577,7 +577,7 @@ def test_delete_removes_both_stylings(tmp_path):
     assert not (tmp_path / "task-9.json").exists()
 
 
-def test_waiting_marker_target_scoped_with_legacy_fallback(tmp_path):
+def test_waiting_marker_repository_scoped_with_legacy_fallback(tmp_path):
     from dispatcher import state
     state.mark_waiting(tmp_path, "agent_ops", 5)
     assert state.has_waiting(tmp_path, "agent_ops", 5)
@@ -602,7 +602,7 @@ def test_loop_caps_defaults_match_the_spec():
 def test_orchestration_fields_default_and_round_trip(tmp_path):
     from dataclasses import replace
     from dispatcher.state import Stage, TaskState, load, save
-    ts = TaskState(issue=9, target="t", stage=Stage.IMPLEMENT, slot=0,
+    ts = TaskState(issue=9, repository="t", stage=Stage.IMPLEMENT, slot=0,
                    worktree="/wt", branch="agent/task-9", title="t",
                    updated_at="2026-09-07T00:00:00+00:00")
     assert (ts.spec_path, ts.ticket_count) == ("", 0)
@@ -620,7 +620,7 @@ def test_legacy_state_file_without_orchestration_fields_loads(tmp_path):
     import json
     from dispatcher.state import Stage, load
     (tmp_path / "task-t-9.json").write_text(json.dumps({
-        "issue": 9, "target": "t", "stage": "implement", "slot": 0,
+        "issue": 9, "repository": "t", "stage": "implement", "slot": 0,
         "worktree": "/wt", "branch": "b", "title": "t",
         "updated_at": "2026-09-07T00:00:00+00:00"}))
     ts = load(tmp_path, "t", 9)
@@ -650,7 +650,7 @@ def test_explicit_null_operator_request_suppresses_legacy_derivation(tmp_path):
     request, even though a leftover artifact is present. The explicit null
     wins; the legacy artifact must not resurrect a request."""
     (tmp_path / "task-alpha-7.json").write_text(json.dumps({
-        "issue": 7, "target": "alpha", "stage": "awaiting-plan-review",
+        "issue": 7, "repository": "alpha", "stage": "awaiting-plan-review",
         "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
         "updated_at": "2026-09-08T00:00:00+00:00",
         "artifact": "/wt/docs/specs/x.md",
@@ -664,7 +664,7 @@ def test_a_gate_record_without_a_request_loads_with_none(tmp_path):
     """No operator_request key at the gate: nothing is derived; the next pass
     re-arms the request from the plan signal (machine.ArmPlanApproval)."""
     (tmp_path / "task-alpha-8.json").write_text(json.dumps({
-        "issue": 8, "target": "alpha", "stage": "awaiting-plan-review",
+        "issue": 8, "repository": "alpha", "stage": "awaiting-plan-review",
         "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
         "updated_at": "2026-09-08T00:00:00+00:00",
     }))
@@ -680,7 +680,7 @@ def test_a_gate_record_without_a_request_loads_with_none(tmp_path):
 def test_old_gate_stage_and_request_are_no_longer_valid(tmp_path, field, value):
     """The spec gate's stage and request kind are gone (the migration rewrites
     old files), and a plan-approval request needs its summary path."""
-    doc = {"issue": 8, "target": "alpha", "stage": "awaiting-plan-review",
+    doc = {"issue": 8, "repository": "alpha", "stage": "awaiting-plan-review",
            "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
            "updated_at": "2026-09-08T00:00:00+00:00", field: value}
     (tmp_path / "task-alpha-8.json").write_text(json.dumps(doc))
@@ -693,7 +693,7 @@ def test_legacy_record_not_at_gate_derives_none(tmp_path):
     """A legacy record in any stage other than AWAITING_PLAN_REVIEW must
     derive operator_request=None (no request)."""
     (tmp_path / "task-alpha-9.json").write_text(json.dumps({
-        "issue": 9, "target": "alpha", "stage": "implement",
+        "issue": 9, "repository": "alpha", "stage": "implement",
         "slot": 0, "worktree": "/wt", "branch": "b", "title": "t",
         "updated_at": "2026-09-08T00:00:00+00:00",
         # NO operator_request key — legacy record, non-gate stage
@@ -706,7 +706,7 @@ def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
     """All four loop counters survive a raw JSON record that includes
     operator_request plus non-zero counters (covers new-format load path)."""
     (tmp_path / "task-alpha-10.json").write_text(json.dumps({
-        "issue": 10, "target": "alpha", "stage": "awaiting-plan-review",
+        "issue": 10, "repository": "alpha", "stage": "awaiting-plan-review",
         "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
         "updated_at": "2026-09-08T00:00:00+00:00",
         "review_rounds": 1, "gate_rounds": 2, "e2e_rounds": 3, "ci_rounds": 4,
@@ -724,7 +724,7 @@ def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
 def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):
     """M1: save() -> load() round-trip preserves answers operator_request + counters."""
     ts = TaskState(
-        issue=20, target="alpha", stage=Stage.SPEC, slot=-1,
+        issue=20, repository="alpha", stage=Stage.SPEC, slot=-1,
         worktree=str(tmp_path), branch="b", title="t",
         updated_at="2026-09-08T00:00:00+00:00",
         review_rounds=1, gate_rounds=2, e2e_rounds=3, ci_rounds=4,

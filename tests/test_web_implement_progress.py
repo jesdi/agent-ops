@@ -14,10 +14,10 @@ from web.sources import Sources
 
 
 class _NoSessions:
-    def is_alive(self, target, issue):
+    def is_alive(self, repository, issue):
         return False
 
-    def capture_tail(self, target, issue):
+    def capture_tail(self, repository, issue):
         return ""
 
 

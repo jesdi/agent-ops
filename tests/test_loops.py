@@ -12,7 +12,7 @@ from dispatcher.state import LoopCaps, Stage, TaskState
 def _task(**kw) -> TaskState:
     """Minimal TaskState for testing. Only override what a slice cares about."""
     defaults = dict(
-        issue=1, target="test", stage=Stage.REVIEW, slot=0,
+        issue=1, repository="test", stage=Stage.REVIEW, slot=0,
         worktree="/tmp/wt", branch="main", title="T", updated_at="2025-01-01T00:00:00Z",
     )
     defaults.update(kw)

@@ -24,7 +24,7 @@ def test_plan_gate_exposes_the_review_page_as_an_approval_request(tmp_path, park
     agent_dir.mkdir()
     (agent_dir / "review.html").write_text('<meta name="agent-ops-review" content="1">## Tickets')
     (tmp_path / "task-alpha-7.json").write_text(json.dumps({
-        "issue": 7, "target": "alpha", "stage": "awaiting-plan-review",
+        "issue": 7, "repository": "alpha", "stage": "awaiting-plan-review",
         "slot": -1 if park else 0, "worktree": str(wt),
         "branch": "agent/task-7", "title": "Fix login redirect",
         "updated_at": "2026-09-08T10:00:00+00:00",
@@ -59,7 +59,7 @@ def test_answers_request_serves_readable_content(tmp_path):
     qa_file.parent.mkdir(parents=True)
     qa_file.write_text("## Questions\n\n1. What?")
     (tmp_path / "task-alpha-11.json").write_text(json.dumps({
-        "issue": 11, "target": "alpha", "stage": "spec",
+        "issue": 11, "repository": "alpha", "stage": "spec",
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-11", "title": "Questionnaire task",
         "updated_at": "2026-09-08T10:00:00+00:00",
@@ -93,7 +93,7 @@ def test_unknown_operator_request_kind_rejected_at_load(tmp_path):
     wt = tmp_path / "worktree"
     wt.mkdir()
     (tmp_path / "task-alpha-12.json").write_text(json.dumps({
-        "issue": 12, "target": "alpha", "stage": "spec",
+        "issue": 12, "repository": "alpha", "stage": "spec",
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-12", "title": "Unknown kind task",
         "updated_at": "2026-09-08T10:00:00+00:00",
@@ -116,7 +116,7 @@ def test_plan_approval_missing_file_returns_200_unavailable(tmp_path):
     wt = tmp_path / "worktree"
     wt.mkdir()
     (tmp_path / "task-alpha-20.json").write_text(json.dumps({
-        "issue": 20, "target": "alpha", "stage": "awaiting-plan-review",
+        "issue": 20, "repository": "alpha", "stage": "awaiting-plan-review",
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-20", "title": "Missing summary task",
         "updated_at": "2026-09-08T10:00:00+00:00",
@@ -141,7 +141,7 @@ def test_answers_missing_file_returns_200_unavailable(tmp_path):
     wt = tmp_path / "worktree"
     wt.mkdir()
     (tmp_path / "task-alpha-21.json").write_text(json.dumps({
-        "issue": 21, "target": "alpha", "stage": "spec",
+        "issue": 21, "repository": "alpha", "stage": "spec",
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-21", "title": "Missing answers task",
         "updated_at": "2026-09-08T10:00:00+00:00",
@@ -169,7 +169,7 @@ def test_answers_non_utf8_file_returns_200_unavailable(tmp_path):
     bad = agent_dir / "bad.md"
     bad.write_bytes(b"\xff\xfe invalid utf8 \x80")
     (tmp_path / "task-alpha-22.json").write_text(json.dumps({
-        "issue": 22, "target": "alpha", "stage": "spec",
+        "issue": 22, "repository": "alpha", "stage": "spec",
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-22", "title": "Non-UTF8 answers task",
         "updated_at": "2026-09-08T10:00:00+00:00",
@@ -197,7 +197,7 @@ def test_answers_out_of_worktree_path_returns_200_unavailable(tmp_path):
     outside.write_text("outside")
     # Store a relative path that resolves outside the worktree (e.g. ../../outside.md)
     (tmp_path / "task-alpha-23.json").write_text(json.dumps({
-        "issue": 23, "target": "alpha", "stage": "spec",
+        "issue": 23, "repository": "alpha", "stage": "spec",
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-23", "title": "Escaping path task",
         "updated_at": "2026-09-08T10:00:00+00:00",
@@ -221,7 +221,7 @@ def test_existing_non_gate_task_returns_null_request(tmp_path):
     wt = tmp_path / "worktree"
     wt.mkdir()
     (tmp_path / "task-alpha-9.json").write_text(json.dumps({
-        "issue": 9, "target": "alpha", "stage": "implement",
+        "issue": 9, "repository": "alpha", "stage": "implement",
         "slot": 0, "worktree": str(wt),
         "branch": "agent/task-9", "title": "Add dark mode",
         "updated_at": "2026-09-08T10:00:00+00:00",

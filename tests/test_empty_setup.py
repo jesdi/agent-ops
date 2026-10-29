@@ -1,7 +1,7 @@
-"""Ticket 06 acceptance: claiming a candidate for a target with no
+"""Ticket 06 acceptance: claiming a candidate for a repository with no
 `setup_cmd` must not run a provisioning container and must not be treated
 as a provisioning failure — the task lands in the spec stage exactly like
-a target that does provision. Exercises the REAL create_workspace (not the
+a repository that does provision. Exercises the REAL create_workspace (not the
 patch_workspace fake other test_main.py tests use), with only git
 subprocess calls faked, so the empty-setup_cmd skip is actually observed.
 """
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import dispatcher.workspace as workspace
 from dispatcher import failures
-from dispatcher.config import Config, Target
+from dispatcher.config import Config, Repository
 from dispatcher.github import Candidate
 from dispatcher.state import Stage, load
 
@@ -21,7 +21,7 @@ def cfg_no_setup(tmp_path: Path) -> Config:
     return Config(
         state_dir=str(tmp_path / "state"), capacity=3,
         session_memory="2g", session_cpus="2",
-        targets=[Target(
+        repositories=[Repository(
             name="factorial", repo="jesdi/factorial",
             clone_path=str(tmp_path / "repo"),
             worktrees_path=str(tmp_path / "repo.worktrees"),
@@ -52,7 +52,7 @@ def fake_git_sh(tmp_path):
 
 def test_claim_with_empty_setup_cmd_runs_no_container_and_reaches_spec(
         tmp_path, monkeypatch):
-    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real target has
+    (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls, fake_sh = fake_git_sh(tmp_path)
     monkeypatch.setattr(workspace, "_sh", fake_sh)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")

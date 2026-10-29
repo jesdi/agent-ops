@@ -95,13 +95,13 @@ test('at 390px with openai chosen the chip and pace texts fit and do not collide
     return { x, y, width, height, text: text.textContent ?? '' }
   })
   expect(heading.text.trim()).toBe('openai')
-  const targets: Box[] = [(await chip.boundingBox())!]
-  for (let i = 0; i < 2; i++) targets.push((await paces.nth(i).boundingBox())!)
-  for (const b of targets) {
+  const repositories: Box[] = [(await chip.boundingBox())!]
+  for (let i = 0; i < 2; i++) repositories.push((await paces.nth(i).boundingBox())!)
+  for (const b of repositories) {
     expect(b.x).toBeGreaterThanOrEqual(0)
     expect(b.x + b.width).toBeLessThanOrEqual(390)
   }
-  const [c, ...ps] = targets
+  const [c, ...ps] = repositories
   expect(overlap(c!, heading)).toBe(false)
   for (const p of ps) expect(overlap(c!, p)).toBe(false)
 })

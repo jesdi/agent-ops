@@ -38,8 +38,8 @@ def _run(args: list[str], timeout: int) -> int | None:
         return None
 
 
-def _target(name: str) -> str:
-    """tmux's exact-match target form. A bare `-t <name>` resolves by exact
+def _repository(name: str) -> str:
+    """tmux's exact-match repository form. A bare `-t <name>` resolves by exact
     name and THEN by prefix, so with only `task-acme-42` alive `has-session
     -t task-acme-4` succeeds and `kill-session -t task-acme-4` kills task
     42 — and this module probes every task in load_all(), tombstones
@@ -48,11 +48,11 @@ def _target(name: str) -> str:
 
 
 def _has_session(name: str) -> bool:
-    return _run(["tmux", "has-session", "-t", _target(name)], 30) == 0
+    return _run(["tmux", "has-session", "-t", _repository(name)], 30) == 0
 
 
 def _kill_session(name: str) -> str:
-    rc = _run(["tmux", "kill-session", "-t", _target(name)], 30)
+    rc = _run(["tmux", "kill-session", "-t", _repository(name)], 30)
     if rc == 0:
         return f"killed tmux session {name}"
     if rc is None:
@@ -71,7 +71,7 @@ def _remove_container(name: str) -> str:
 
 def migrate(state_dir: str | Path,
             wake: Callable[[TaskState, str], None]) -> list[str]:
-    """Kill every `task-<target>-<issue>` / legacy `task-<issue>` tmux
+    """Kill every `task-<repository>-<issue>` / legacy `task-<issue>` tmux
     session that belongs to a known task and remove both container names.
     Then, and only for a task the dispatcher would still drive —
     `state.consumes_capacity`: an in-flight stage, unparked or
@@ -85,7 +85,7 @@ def migrate(state_dir: str | Path,
     never raised."""
     lines: list[str] = []
     for task in load_all(state_dir):
-        name, legacy = session_name(task.target, task.issue), f"task-{task.issue}"
+        name, legacy = session_name(task.repository, task.issue), f"task-{task.issue}"
         live = [n for n in (name, legacy) if _has_session(n)]
         if not live:
             continue

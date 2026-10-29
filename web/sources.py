@@ -16,7 +16,7 @@ from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
                         priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
-from dispatcher.config import Target
+from dispatcher.config import Repository
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
 from dispatcher.sessions import session_name
@@ -71,39 +71,39 @@ class Sources:
     def tasks(self) -> list[TaskState]:
         return state.load_all(self._state_dir)
 
-    def task(self, target: str, issue: int) -> TaskState | None:
+    def task(self, repository: str, issue: int) -> TaskState | None:
         active = next((task for task in self.tasks()
-                       if (task.target, task.issue) == (target, issue)), None)
-        return active or state.load_archived(self.state_dir, target, issue)
+                       if (task.repository, task.issue) == (repository, issue)), None)
+        return active or state.load_archived(self.state_dir, repository, issue)
 
-    def execution_override(self, target: str, issue: int):
-        return execution_overrides.load(self.state_dir, target, issue)
+    def execution_override(self, repository: str, issue: int):
+        return execution_overrides.load(self.state_dir, repository, issue)
 
-    def set_execution_override(self, target: str, issue: int, *, model: str,
+    def set_execution_override(self, repository: str, issue: int, *, model: str,
                                bypass_usage: bool) -> None:
         execution_overrides.save(
-            self.state_dir, target, issue,
+            self.state_dir, repository, issue,
             execution_overrides.ExecutionOverride(model, bypass_usage))
         self._kick_dispatcher()
 
-    def artifacts(self, target: str, issue: int) -> ArtifactListing:
-        index = task_artifacts.read(self.state_dir, target, issue)
-        resources = [ArtifactResource(item, self._artifact_status(target, issue, item, index.expired))
+    def artifacts(self, repository: str, issue: int) -> ArtifactListing:
+        index = task_artifacts.read(self.state_dir, repository, issue)
+        resources = [ArtifactResource(item, self._artifact_status(repository, issue, item, index.expired))
                      for item in index.items]
         return ArtifactListing(resources, index.expires_at, index.expired)
 
-    def _artifact_status(self, target: str, issue: int, item: task_artifacts.StoredArtifact,
+    def _artifact_status(self, repository: str, issue: int, item: task_artifacts.StoredArtifact,
                          expired: bool) -> ArtifactStatus:
         if item.publication:
             return "published"
         if expired:
             return "expired"
-        if task_artifacts.content_path(self.state_dir, target, issue, item.id):
+        if task_artifacts.content_path(self.state_dir, repository, issue, item.id):
             return "local"
         return "unavailable"
 
-    def artifact_content(self, target: str, issue: int, artifact_id: str) -> bytes | None:
-        path = task_artifacts.content_path(self.state_dir, target, issue, artifact_id)
+    def artifact_content(self, repository: str, issue: int, artifact_id: str) -> bytes | None:
+        path = task_artifacts.content_path(self.state_dir, repository, issue, artifact_id)
         if path is None:
             return None
         try:
@@ -111,18 +111,18 @@ class Sources:
         except FileNotFoundError:
             return None
 
-    def rank_rows(self, target: Target) -> tuple[list[dict], str, bool]:
+    def rank_rows(self, repository: Repository) -> tuple[list[dict], str, bool]:
         now = self._clock()
-        cached = self._rank_cache.get(target.name)
+        cached = self._rank_cache.get(repository.name)
         if cached and now - cached["fetched_at"] < RANK_TTL_SECONDS:
             return cached["rows"], cached["as_of"], False
         try:
-            rows = self._github.rank_rows(target)
+            rows = self._github.rank_rows(repository)
         except Exception:
             if cached:  # never a blank queue if a cache ever existed
                 return cached["rows"], cached["as_of"], True
             return [], _iso(now), True
-        self._rank_cache[target.name] = {
+        self._rank_cache[repository.name] = {
             "rows": rows, "fetched_at": now, "as_of": _iso(now)}
         return rows, _iso(now), False
 
@@ -166,7 +166,7 @@ class Sources:
         route's "is this issue quarantined?" check.
 
         Keyed the way failures.check_quarantine keys them: by FILENAME
-        (`{target}-{issue}.json`), which is the only thing a lookup can match,
+        (`{repository}-{issue}.json`), which is the only thing a lookup can match,
         so a body whose task_issue disagrees with its name cannot shift the
         key that /api/task/{issue}/retry validates against. Names that do not
         fit the scheme fall back to the body's task_issue.
@@ -187,7 +187,7 @@ class Sources:
         entries = []
         for p in sorted(root.glob("*.json")) if root.exists() else []:
             parsed = state.parse_task_key(p.stem)
-            target, keyed_issue = parsed if parsed else ("", None)
+            repository, keyed_issue = parsed if parsed else ("", None)
             try:
                 d = json.loads(p.read_text())
             except (OSError, ValueError):
@@ -198,8 +198,8 @@ class Sources:
             # record that is missing a field.
             entry = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
                      "fingerprint": "", "created_at": "", **d}
-            entry["target"] = (target if keyed_issue is not None
-                               else p.stem.rsplit("-", 1)[0])
+            entry["repository"] = (repository if keyed_issue is not None
+                                   else p.stem.rsplit("-", 1)[0])
             if keyed_issue is not None:
                 entry["task_issue"] = keyed_issue
             entries.append(entry)
@@ -280,36 +280,36 @@ class Sources:
     def stage_signal(self, worktree: str) -> state.StageSignal | None:
         return state.read_stage_signal(worktree)
 
-    def pane_tail(self, target: str, issue: int) -> str:
+    def pane_tail(self, repository: str, issue: int) -> str:
         try:
-            if self._sessions.is_alive(target, issue):
-                return self._sessions.capture_tail(target, issue)
+            if self._sessions.is_alive(repository, issue):
+                return self._sessions.capture_tail(repository, issue)
         except Exception:
             # capture runs the session CLI with timeout=30, which RAISES on a wedged
             # server. A missing tail degrades the task view; it must never
             # 500 it (cf. issue_open degrading to None).
             return ""
-        return self._read_snapshot(target, issue)
+        return self._read_snapshot(repository, issue)
 
-    def pane_history(self, target: str, issue: int, lines: int = 2000) -> str:
+    def pane_history(self, repository: str, issue: int, lines: int = 2000) -> str:
         try:
-            if self._sessions.is_alive(target, issue):
-                return self._sessions.capture_history(target, issue, lines)
+            if self._sessions.is_alive(repository, issue):
+                return self._sessions.capture_history(repository, issue, lines)
         except Exception:
             # Same degrade contract as pane_tail: a wedged session server
             # (capture_history runs with timeout=30 and RAISES) must never
             # 500 the history view.
             return ""
-        return self._read_snapshot(target, issue)
+        return self._read_snapshot(repository, issue)
 
-    def _read_snapshot(self, target: str, issue: int) -> str:
+    def _read_snapshot(self, repository: str, issue: int) -> str:
         """Dead session: serve the scrollback Sessions.end() persisted, keyed
-        by the session name (task-<target>-<issue>.txt). Falls back to
+        by the session name (task-<repository>-<issue>.txt). Falls back to
         the legacy task-<issue>.txt for a snapshot written before this
         deploy — Sessions.end() only ever writes the modern name, so a
-        legacy file only exists from before the (target, issue) rekey.
+        legacy file only exists from before the (repository, issue) rekey.
         Missing/unreadable file (pre-feature parks) degrades to ''."""
-        for name in (f"{session_name(target, issue)}.txt",
+        for name in (f"{session_name(repository, issue)}.txt",
                     f"task-{issue}.txt"):
             try:
                 return (self.state_dir / "snapshots" / name).read_text()
@@ -320,8 +320,8 @@ class Sources:
                 continue
         return ""
 
-    def session_alive(self, target: str, issue: int) -> bool:
-        return self._sessions.is_alive(target, issue)
+    def session_alive(self, repository: str, issue: int) -> bool:
+        return self._sessions.is_alive(repository, issue)
 
     def pending_intents(self) -> list[dict]:
         root = self.state_dir / "intents"
@@ -332,7 +332,7 @@ class Sources:
             except (json.JSONDecodeError, OSError):
                 continue
             out.append({"action": d.get("action", ""),
-                        "target": d.get("target", ""),
+                        "repository": d.get("repository", d.get("target", "")),
                         "issue": d.get("issue", 0),
                         "actor": d.get("actor", ""),
                         "created_at": d.get("created_at", ""),
@@ -381,16 +381,16 @@ class Sources:
                            "usage": usage, "failures": failures,
                            "history": history}, sort_keys=True)
 
-    def messages(self, target: str, issue: int) -> list:
-        return msgq.all_messages(self._state_dir, target, issue)
+    def messages(self, repository: str, issue: int) -> list:
+        return msgq.all_messages(self._state_dir, repository, issue)
 
     def undelivered_counts(self) -> dict[tuple[str, int], int]:
         return msgq.undelivered_counts(self._state_dir)
 
     def wake_blocked_issues(self) -> set[tuple[str, int]]:
-        """(target, issue) pairs currently denied a wake for want of a free
-        slot/capacity, parsed from wake-blocked-<target>-<issue> markers.
-        A legacy issue-only marker names no target and is skipped; the
+        """(repository, issue) pairs currently denied a wake for want of a free
+        slot/capacity, parsed from wake-blocked-<repository>-<issue> markers.
+        A legacy issue-only marker names no repository and is skipped; the
         dispatcher migrates or drops those at pass start."""
         out: set[tuple[str, int]] = set()
         for p in self.state_dir.glob(f"{state.WAKE_BLOCKED_PREFIX}*"):
@@ -407,18 +407,18 @@ class Sources:
         except (OSError, subprocess.SubprocessError) as e:
             print(f"dispatcher kick failed (non-fatal): {e}")
 
-    def submit_intent(self, action: str, target: str, issue: int,
+    def submit_intent(self, action: str, repository: str, issue: int,
                       payload: dict, actor: str) -> str:
-        path = write_intent(self._state_dir, action, target, issue,
+        path = write_intent(self._state_dir, action, repository, issue,
                             payload, actor, int(self._clock() * 1000))
         self._kick_dispatcher()
         return path.name
 
-    def apply_queue_plan(self, target: Target, issue: int,
+    def apply_queue_plan(self, repository: Repository, issue: int,
                          plan: QueuePlan) -> None:
-        queue_ops.apply_plan(self._github, target, issue, plan)
+        queue_ops.apply_plan(self._github, repository, issue, plan)
 
-    def append_event(self, event: str, *, target: str = "", issue: int = 0,
+    def append_event(self, event: str, *, repository: str = "", issue: int = 0,
                      actor: str = "", detail: str = "") -> None:
-        eventlog.append_event(self._state_dir, event, target=target,
+        eventlog.append_event(self._state_dir, event, repository=repository,
                               issue=issue, actor=actor, detail=detail)

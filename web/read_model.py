@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, StrictBool, StrictStr
 
 from dispatcher import messages as msgq
 from dispatcher import priority
-from dispatcher.claims import claim_room, pick_target
+from dispatcher.claims import claim_room, pick_repository
 from dispatcher.models import Entry
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
@@ -154,7 +154,7 @@ class TaskAdmissionView(BaseModel):
 
 class TaskCard(BaseModel):
     issue: int
-    target: str
+    repository: str
     title: str
     stage: str
     park: str
@@ -194,7 +194,7 @@ class GhostCard(BaseModel):
     """A ranked, not-yet-claimed candidate: exactly what _claim_new would
     consume next, rendered in the Queued column ahead of being claimed."""
     number: int
-    target: str
+    repository: str
     title: str
     url: str
     score: float | None
@@ -241,7 +241,7 @@ def task_card(t: TaskState, *, model: str,
               admission: TaskAdmissionView | None = None,
               pinned_track: str = "") -> TaskCard:
     return TaskCard(
-        issue=t.issue, target=t.target, title=t.title,
+        issue=t.issue, repository=t.repository, title=t.title,
         stage=shown_stage(t), park=t.park,
         park_note=t.park_note,
         park_reason=_park_reason(t),
@@ -278,8 +278,8 @@ def _task_cards(tasks: list[TaskState], *,
                 ) -> list[TaskCard]:
     cards = []
     for task in tasks:
-        key = (task.target, task.issue)
-        at = claimed_at(claimed, task.target, task.issue)
+        key = (task.repository, task.issue)
+        at = claimed_at(claimed, task.repository, task.issue)
         cards.append(task_card(
             task, model=models.get(key, ""), claimed_at=at,
             cycle_seconds=cycle_seconds(at, task.done_at),
@@ -363,12 +363,12 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 max_open: int = sys.maxsize,
                 pinned_tracks: dict[tuple[str, int], str] | None = None,
                 ) -> BoardView:
-    # Key on (target, issue) so alpha#73 does not hide beta#73. Issue numbers
-    # are per-repo; bare numbers would wrongly suppress cross-target candidates
+    # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
+    # are per-repo; bare numbers would wrongly suppress cross-repository candidates
     # (cf. dispatcher/main.py:223 which acknowledges number collisions).
-    known = {(t.target, t.issue) for t in tasks}
+    known = {(t.repository, t.issue) for t in tasks}
     ghost_admissions = candidate_admissions or {}
-    ghosts = [GhostCard(number=r["number"], target=name,
+    ghosts = [GhostCard(number=r["number"], repository=name,
                         title=r.get("title", ""), url=r.get("url", ""),
                         score=r.get("score"), boost=int(r.get("boost") or 0),
                         admission=ghost_admissions.get((name, r["number"])))
@@ -431,7 +431,7 @@ def task_detail(t: TaskState, *, model: str,
                 admission: TaskAdmissionView | None = None,
                 track_when: str = "",
                 pinned_track: str = "") -> TaskDetail:
-    at = claimed_at(claimed_at_index(events), t.target, t.issue)
+    at = claimed_at(claimed_at_index(events), t.repository, t.issue)
     msgs = messages or []
     return TaskDetail(
         card=task_card(t, model=model, pinned_track=pinned_track,
@@ -445,7 +445,7 @@ def task_detail(t: TaskState, *, model: str,
         messages=message_views(msgs, pending_sends or []),
         delivery_contract=delivery_contract(t, wake_blocked=wake_blocked),
         ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
-        timeline=stage_timeline(events, t.target, t.issue, now=now),
+        timeline=stage_timeline(events, t.repository, t.issue, now=now),
         track_when=track_when,
         implement_progress=_implement_progress(t, signal))
 
@@ -602,7 +602,7 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
 
 
 class QuarantineEntry(BaseModel):
-    target: str
+    repository: str
     task_issue: int
     blocker_repo: str
     blocker_issue: int
@@ -626,7 +626,7 @@ class FailuresView(BaseModel):
 class EventEntry(BaseModel):
     ts: str
     event: str
-    target: str
+    repository: str
     issue: int
     stage: str
     model: str
@@ -650,21 +650,21 @@ class QueueRow(BaseModel):
     in_flight: bool
 
 
-class TargetQueue(BaseModel):
-    target: str
+class RepositoryQueue(BaseModel):
+    repository: str
     as_of: str
     stale: bool
     rows: list[QueueRow]
 
 
 class QueueView(BaseModel):
-    targets: list[TargetQueue]
+    repositories: list[RepositoryQueue]
 
 
-def target_queue(name: str, rows: list[dict], as_of: str, stale: bool,
-                 in_flight: set[int]) -> TargetQueue:
-    return TargetQueue(
-        target=name, as_of=as_of, stale=stale,
+def repository_queue(name: str, rows: list[dict], as_of: str, stale: bool,
+                     in_flight: set[int]) -> RepositoryQueue:
+    return RepositoryQueue(
+        repository=name, as_of=as_of, stale=stale,
         rows=[QueueRow(
             number=r["number"], title=r.get("title", ""),
             url=r.get("url", ""), status=r.get("status", ""),
@@ -689,28 +689,28 @@ def _parse_ts(iso: str) -> datetime | None:
 
 
 def claimed_at_index(events: list[dict]) -> dict[tuple[str, int], str]:
-    """(target, issue) -> ts of its FIRST claimed event. events.jsonl rotates
+    """(repository, issue) -> ts of its FIRST claimed event. events.jsonl rotates
     at a size cap, so a task may have no claimed event at all — absent means
     unknown.
 
     Keyed on the pair, not the bare number: issue numbers are per-repo, so a
     merged alpha#73 from weeks ago would otherwise win the setdefault over a
     freshly claimed beta#73 and report a month-old claim time. Log lines
-    written before events carried `target` land under ("", issue) and are read
-    back as a fallback for any target — see claimed_at()."""
+    written before events carried `repository` land under ("", issue) and are read
+    back as a fallback for any repository — see claimed_at()."""
     out: dict[tuple[str, int], str] = {}
     for e in events:
         if e.get("event") == "claimed" and e.get("issue"):
-            out.setdefault((str(e.get("target") or ""), e["issue"]),
+            out.setdefault((str(e.get("repository") or ""), e["issue"]),
                            e.get("ts", ""))
     return out
 
 
-def claimed_at(index: dict[tuple[str, int], str], target: str,
+def claimed_at(index: dict[tuple[str, int], str], repository: str,
                issue: int) -> str:
-    """Exact (target, issue) match, else the untargeted legacy entry, else ""
-    — never another target's claim."""
-    return index.get((target, issue)) or index.get(("", issue), "")
+    """Exact (repository, issue) match, else the legacy entry with no repository, else ""
+    — never another repository's claim."""
+    return index.get((repository, issue)) or index.get(("", issue), "")
 
 
 def cycle_seconds(claimed_iso: str, done_iso: str) -> float | None:
@@ -732,7 +732,7 @@ def median_cycle_seconds(events: list[dict], last: int = 20) -> float | None:
     cycles = [c for e in events
               if e.get("event") == "merged" and e.get("issue")
               if (c := cycle_seconds(
-                  claimed_at(claimed, str(e.get("target") or ""), e["issue"]),
+                  claimed_at(claimed, str(e.get("repository") or ""), e["issue"]),
                   e.get("ts", ""))) is not None]
     if not cycles:
         return None
@@ -748,7 +748,7 @@ class NextClaimView(BaseModel):
     verdict: str          # will-claim|no-candidates|capacity-full|budget-blocked|claims-paused|unknown
     next_pass_eta: str    # ISO; "" when verdict == "unknown"
     next_issue: int = 0
-    next_target: str = ""
+    next_repository: str = ""
     minutes_to_reset: float = 0
     blocked_by: str = ""
 
@@ -778,11 +778,11 @@ def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
 
 def _queue_heads(queues: list[tuple[str, list[dict]]],
                  tasks: list[TaskState]) -> dict[str, int]:
-    """target -> its front-of-queue candidate issue, over rows not already
-    known as tasks. Key on (target, issue) — same rationale as build_board:
+    """repository -> its front-of-queue candidate issue, over rows not already
+    known as tasks. Key on (repository, issue) — same rationale as build_board:
     issue numbers are per-repo so alpha#73 must not shadow beta#73 in the
     claim forecast."""
-    known = {(t.target, t.issue) for t in tasks}
+    known = {(t.repository, t.issue) for t in tasks}
     heads = {}
     for name, rows in queues:
         mine = [r["number"] for r in rows
@@ -802,8 +802,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                last_claimed: Mapping[str, str],
                max_open: int = sys.maxsize) -> NextClaimView:
     """A forecast of what the claim round (dispatcher main._claim_new)
-    consumes next, from data already on the board request. The target comes
-    from the same claims.pick_target the dispatcher uses, over box-wide free
+    consumes next, from data already on the board request. The repository comes
+    from the same claims.pick_repository the dispatcher uses, over box-wide free
     capacity. It is a PARTIAL mirror, deliberately: the gates it models are
     the ones readable from local state (heartbeat, usage, capacity,
     max_active, the triage pause, the cached rank rows).
@@ -838,27 +838,35 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     if not heads:
         return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
     running = active(tasks)
-    counts = {n: sum(t.target == n for t in running) for n in heads}
-    name = (pick_target(list(heads), counts, last_claimed, max_active)
+    counts = {n: sum(t.repository == n for t in running) for n in heads}
+    name = (pick_repository(list(heads), counts, last_claimed, max_active)
             if claim_room(capacity, max_open, tasks, triage_running) > 0
             else None)
     if name is None:
         return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
     return NextClaimView(verdict="will-claim", next_pass_eta=eta,
-                         next_issue=heads[name], next_target=name)
+                         next_issue=heads[name], next_repository=name)
 
 
-def stage_timeline(events: list[dict], target: str, issue: int, *,
+def _on_timeline(e: dict, repository: str, issue: int) -> bool:
+    """A transition event of this (repository, issue); an event with no
+    repository key predates the key and counts for any repository."""
+    return (e.get("issue") == issue
+            and (e.get("repository") or "") in ("", repository)
+            and e.get("event") in _TIMELINE_EVENTS)
+
+
+def stage_timeline(events: list[dict], repository: str, issue: int, *,
                    now: datetime) -> list[TimelineEntry]:
     """Closed segments between this issue's transition events, in order; the
     open tail (no merged yet) ends at `now` with ongoing=True. Sub-second
     segments (claimed -> immediate spec spawn) are dropped as noise.
 
-    Keyed on (target, issue), not the bare number: issue numbers are
-    per-repo, so two targets claiming the same issue number must not have
+    Keyed on (repository, issue), not the bare number: issue numbers are
+    per-repo, so two repositories claiming the same issue number must not have
     their claimed/parked/resumed/merged events interleave into one garbled
-    timeline. Log lines written before events carried `target` land with no
-    target key and are read back for any target — same fallback convention
+    timeline. Log lines written before events carried `repository` land with no
+    repository key and are read back for any repository — same fallback convention
     as claimed_at()/claimed_at_index()."""
     out: list[TimelineEntry] = []
     open_seg: tuple[str, str, datetime] | None = None  # (label, kind, start)
@@ -884,9 +892,7 @@ def stage_timeline(events: list[dict], target: str, issue: int, *,
 
     last_stage = ""
     for e in events:
-        if (e.get("issue") != issue
-                or (e.get("target") or "") not in ("", target)
-                or e.get("event") not in _TIMELINE_EVENTS):
+        if not _on_timeline(e, repository, issue):
             continue
         ts = _parse_ts(e.get("ts", ""))
         if ts is None:

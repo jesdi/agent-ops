@@ -40,9 +40,9 @@ class ArtifactsView(BaseModel):
     expired: bool
 
 
-def _view(resource: ArtifactResource, target: str, issue: int) -> ArtifactView:
+def _view(resource: ArtifactResource, repository: str, issue: int) -> ArtifactView:
     item = resource.item
-    url = f"/api/task/{quote(target, safe='')}/{issue}/artifacts/{item.id}"
+    url = f"/api/task/{quote(repository, safe='')}/{issue}/artifacts/{item.id}"
     return ArtifactView(
         id=item.id, name=item.name, path=item.path, media_type=item.media_type,
         updated_at=item.updated_at, stage=item.stage, status=resource.status,
@@ -62,28 +62,28 @@ def _preview(item: StoredArtifact, content: bytes) -> Response:
 def router(sources, find_task) -> APIRouter:
     routes = APIRouter()
 
-    @routes.get("/api/task/{target}/{issue}/artifacts", response_model=ArtifactsView)
-    def artifacts(target: str, issue: int, op: Operator = Depends(current_operator)):
-        find_task(target, issue)
-        index = sources.artifacts(target, issue)
-        items = [_view(resource, target, issue) for resource in index.items]
+    @routes.get("/api/task/{repository}/{issue}/artifacts", response_model=ArtifactsView)
+    def artifacts(repository: str, issue: int, op: Operator = Depends(current_operator)):
+        find_task(repository, issue)
+        index = sources.artifacts(repository, issue)
+        items = [_view(resource, repository, issue) for resource in index.items]
         return ArtifactsView(items=items, expires_at=index.expires_at, expired=index.expired)
 
-    @routes.get("/api/task/{target}/{issue}/artifacts/{artifact_id}")
-    def open_artifact(target: str, issue: int, artifact_id: str,
+    @routes.get("/api/task/{repository}/{issue}/artifacts/{artifact_id}")
+    def open_artifact(repository: str, issue: int, artifact_id: str,
                       op: Operator = Depends(current_operator)):
-        find_task(target, issue)
-        index = sources.artifacts(target, issue)
+        find_task(repository, issue)
+        index = sources.artifacts(repository, issue)
         resource = next((r for r in index.items if r.item.id == artifact_id), None)
         if resource is None:
             raise HTTPException(404, "artifact not found")
-        return _open_resource(sources, target, issue, resource)
+        return _open_resource(sources, repository, issue, resource)
 
 
     return routes
 
 
-def _open_resource(sources, target: str, issue: int, resource: ArtifactResource) -> Response:
+def _open_resource(sources, repository: str, issue: int, resource: ArtifactResource) -> Response:
     item = resource.item
     if resource.status == "published":
         return RedirectResponse(item.publication.url, status_code=302, headers=HEADERS)
@@ -91,7 +91,7 @@ def _open_resource(sources, target: str, issue: int, resource: ArtifactResource)
         raise HTTPException(410, "artifact expired")
     if resource.status == "unavailable":
         raise HTTPException(404, "artifact content unavailable")
-    content = sources.artifact_content(target, issue, item.id)
+    content = sources.artifact_content(repository, issue, item.id)
     if content is None:
         raise HTTPException(410, "artifact content no longer available")
     return _preview(item, content)

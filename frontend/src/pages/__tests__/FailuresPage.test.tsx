@@ -23,7 +23,7 @@ it('blocker_open null renders "blocker state unknown"', async () => {
     http.get('/api/failures', () =>
       HttpResponse.json({
         quarantined: [{
-          target: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
+          repository: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
           blocker_issue: 39, fingerprint: 'f', created_at: '2026-07-24T22:10:00Z',
           blocker_open: null,
         }],
@@ -42,7 +42,7 @@ it('blocker_open false renders "blocker closed" and not "blocker state unknown"'
     http.get('/api/failures', () =>
       HttpResponse.json({
         quarantined: [{
-          target: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
+          repository: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
           blocker_issue: 39, fingerprint: 'f', created_at: '2026-07-24T22:10:00Z',
           blocker_open: false,
         }],

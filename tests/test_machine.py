@@ -40,7 +40,7 @@ def tickets(tmp_path, n=2, bad=False):
 
 
 def task(stage, worktree="/tmp/wt", issue=101, park=""):
-    return TaskState(issue=issue, target="portfolio_eval", stage=stage, slot=0,
+    return TaskState(issue=issue, repository="portfolio_eval", stage=stage, slot=0,
                      worktree=worktree, branch=f"agent/task-{issue}",
                      title="Add widget", updated_at="2026-07-14T12:00:00+00:00",
                      park=park)

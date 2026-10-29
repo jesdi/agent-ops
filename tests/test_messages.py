@@ -1,4 +1,4 @@
-"""Per-(target, issue) operator message queue: append, drain, stamp, survive corruption."""
+"""Per-(repository, issue) operator message queue: append, drain, stamp, survive corruption."""
 import json
 from pathlib import Path
 
@@ -88,7 +88,7 @@ def test_undelivered_counts_ignores_non_issue_filenames(tmp_path):
     assert messages.undelivered_counts(tmp_path) == {("t", 42): 1}
 
 
-def test_queues_are_per_target_and_counts_parse_hyphenated_targets(tmp_path):
+def test_queues_are_per_repository_and_counts_parse_hyphenated_repositories(tmp_path):
     messages.append(tmp_path, "agent-ops", 7, "mine", "op")
     messages.append(tmp_path, "factorial", 7, "theirs", "op")
     assert [m.text for m in messages.all_messages(tmp_path, "agent-ops", 7)] == [
@@ -106,7 +106,7 @@ def _legacy(tmp_path, issue, mid, text):
     return p
 
 
-def test_migrate_legacy_merges_into_an_existing_target_file(tmp_path):
+def test_migrate_legacy_merges_into_an_existing_repository_file(tmp_path):
     kept = messages.append(tmp_path, "t", 42, "already here", "op")
     legacy = _legacy(tmp_path, 42, kept.id, "already here")  # crash re-run
     _legacy(tmp_path, 42, "old-1", "from before")
@@ -118,7 +118,7 @@ def test_migrate_legacy_merges_into_an_existing_target_file(tmp_path):
     assert not list((Path(tmp_path) / messages.MESSAGES_DIR).glob("*.tmp"))
 
 
-def test_migrate_legacy_leaves_files_alone_with_several_targets(tmp_path, capsys):
+def test_migrate_legacy_leaves_files_alone_with_several_repositories(tmp_path, capsys):
     legacy = _legacy(tmp_path, 3, "old-1", "ambiguous")
     messages.migrate_legacy(tmp_path, ["a", "b"])
     assert legacy.exists()

@@ -14,7 +14,7 @@ import { renderWithProviders } from '../../test/render'
 
 async function expandedDetail(card: TaskCard) {
   renderWithProviders(<TaskCardView card={card} />)
-  const chevron = screen.getByRole('button', { name: `Details for ${card.target}#${card.issue}` })
+  const chevron = screen.getByRole('button', { name: `Details for ${card.repository}#${card.issue}` })
   await userEvent.click(chevron)
   return document.getElementById(chevron.getAttribute('aria-controls')!)!
 }
@@ -34,7 +34,7 @@ it('a task whose launch is not pinned shows no pin', async () => {
 
 async function openWarning(admission: object) {
   renderWithProviders(
-    <AdmissionWarning target="widget" issue={52} admission={admission as never} />)
+    <AdmissionWarning repository="widget" issue={52} admission={admission as never} />)
   await userEvent.click(screen.getByRole('button', { name: /capacity limited/i }))
   return screen.getByRole('dialog', { name: /model capacity options/i })
 }

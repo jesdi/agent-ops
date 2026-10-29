@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from dispatcher import triage
-from dispatcher.config import Config, Target
+from dispatcher.config import Config, Repository
 from tests.test_board import SCHEMA, _issue, _node, _page
 from tests.usagefakes import session_usage
 
@@ -81,13 +81,13 @@ def cfg(tmp_path):
     (clone / ".backlog").mkdir(parents=True)
     (clone / ".backlog" / "project-meta.json").write_text(json.dumps(SCHEMA))
     state = tmp_path / "state"
-    target = Target(
+    repository = Repository(
         name="a", repo="o/a", clone_path=str(clone), worktrees_path="/w",
         rank_cmd="r", project_number=1, project_owner="o",
         status_field_id="F_STATUS", status_ready_option_id="o_ready",
         status_in_progress_option_id="o_prog", gate_cmd="make gate")
     cfg = Config(state_dir=str(state), capacity=2, session_memory="1500m",
-                 session_cpus="2", targets=[target])
+                 session_cpus="2", repositories=[repository])
     triage.save_cursors(state, {"o/a": OLD})
     return cfg
 
@@ -171,9 +171,9 @@ def test_the_sweep_tab_receives_the_board_token(monkeypatch):
     assert triage._launch_env()["GH_PROJECT_TOKEN"] == "classic-tok"
 
 
-def test_a_repo_that_is_not_a_target_gets_labels_only(cfg):
+def test_a_repo_that_is_not_a_repository_gets_labels_only(cfg):
     from dataclasses import replace
-    cfg = replace(cfg, targets=[], infra_repo="o/infra")
+    cfg = replace(cfg, repositories=[], infra_repo="o/infra")
     triage.save_cursors(cfg.state_dir, {"o/infra": OLD})
     gh = Gh([], [_issue(1, "issue 1")], window=[1])
     lines, seen = _sweep(cfg, gh, {"issues": [

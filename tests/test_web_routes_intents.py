@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 from dispatcher.state import Stage
 from dispatcher.config import Config
-from tests.webfakes import (FakeSources, HEADERS, make_config, make_target,
+from tests.webfakes import (FakeSources, HEADERS, make_config, make_repository,
                            make_task, tracks_policy)
 from web.app import create_app
 
@@ -162,7 +162,7 @@ def test_cancel_writes_intent_for_a_live_task(tmp_path):
 
 
 def test_cancel_accepts_an_unclaimed_backlog_issue(tmp_path):
-    # A backlog card has no task file; the target in the path is all the
+    # A backlog card has no task file; the repository in the path is all the
     # dispatcher needs to retire the board card and close the issue.
     fake, client = rig(tmp_path)
     r = client.post("/api/task/portfolio_eval/999/cancel", headers=HEADERS,
@@ -175,7 +175,7 @@ def test_cancel_accepts_an_unclaimed_backlog_issue(tmp_path):
 def test_retry_validates_against_quarantine_not_tasks(tmp_path):
     fake, client = rig(tmp_path)
     # issue 12 has no task-12.json but IS quarantined -> allowed
-    fake.quarantine = [{"target": "alpha", "task_issue": 12,
+    fake.quarantine = [{"repository": "alpha", "task_issue": 12,
                         "blocker_repo": "r", "blocker_issue": 1,
                         "fingerprint": "f", "created_at": "c"}]
     assert client.post("/api/task/alpha/12/retry", headers=HEADERS,
@@ -228,7 +228,7 @@ def test_resume_of_a_crashed_task_is_accepted(tmp_path):
 def test_resume_of_a_crashed_task_is_checked_against_the_crashed_stage_pick(
         tmp_path):
     cfg = Config(state_dir=str(tmp_path), capacity=2, session_memory="2g",
-                 session_cpus="2", targets=[make_target()],
+                 session_cpus="2", repositories=[make_repository()],
                  models=tracks_policy(implement=["claude-opus-5",
                                                  "openai/gpt-5-codex"]))
     fake = FakeSources()

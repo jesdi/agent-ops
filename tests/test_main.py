@@ -10,7 +10,7 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import execution_overrides, failures, spec_publish
-from dispatcher.config import Config, Target
+from dispatcher.config import Config, Repository
 from dispatcher.github import Candidate
 from dispatcher.pr_poll import CIStatus
 from dispatcher.models import parse_policy
@@ -46,12 +46,12 @@ DENY_ALL = lambda m: main.Verdict(admitted=False, provider="anthropic", binding=
 class FakeGitHub:
     def __init__(self, cands=(), run_conclusion="", run_status_raises=False,
                  issue_states=None, issue_state_raises=False, rows=(),
-                 cands_by_target=None):
+                 cands_by_repository=None):
         self.cands = list(cands)
-        # Per-target override: real candidates() is target-scoped (rank_cmd
-        # differs per target). Tests with one target never set this and
+        # Per-repository override: real candidates() is repository-scoped (rank_cmd
+        # differs per repository). Tests with one repository never set this and
         # candidates() falls back to self.cands as before.
-        self.cands_by_target = dict(cands_by_target or {})
+        self.cands_by_repository = dict(cands_by_repository or {})
         self.claimed, self.released, self.canceled = [], [], []
         self.run_conclusion = run_conclusion  # "" = still running
         self.run_status_raises = run_status_raises
@@ -74,43 +74,43 @@ class FakeGitHub:
         self.comments = []           # (issue, body)
         self.comment_raises = False
 
-    def issue_body(self, target, issue):
+    def issue_body(self, repository, issue):
         return ""
 
-    def rank_rows(self, target):
+    def rank_rows(self, repository):
         if self.boost_raises:
             raise subprocess.CalledProcessError(1, ["rank"])
         return self.rows
 
-    def set_boost(self, target, issue, value):
+    def set_boost(self, repository, issue, value):
         if self.lookup_raises:
             raise LookupError(f"issue {issue} not found in project items")
         self.boosts.append((issue, value))
 
-    def add_label(self, target, issue, label):
+    def add_label(self, repository, issue, label):
         self.labeled.append((issue, label))
 
-    def set_status(self, target, issue, option_id):
+    def set_status(self, repository, issue, option_id):
         self.statused.append((issue, option_id))
 
-    def candidates(self, target):
-        return self.cands_by_target.get(target.name, self.cands)
+    def candidates(self, repository):
+        return self.cands_by_repository.get(repository.name, self.cands)
 
-    def claim(self, target, cand):
+    def claim(self, repository, cand):
         self.claimed.append(cand.number)
 
-    def comment(self, target, issue, body):
+    def comment(self, repository, issue, body):
         if self.comment_raises:
             raise subprocess.CalledProcessError(1, ["gh"])
         self.comments.append((issue, body))
 
-    def release(self, target, issue, reason):
+    def release(self, repository, issue, reason):
         self.released.append((issue, reason))
 
-    def cancel(self, target, issue):
+    def cancel(self, repository, issue):
         self.canceled.append(issue)
 
-    def run_status(self, target, run_id):
+    def run_status(self, repository, run_id):
         if self.run_status_raises:
             raise subprocess.CalledProcessError(1, ["gh"])
         return self.run_conclusion
@@ -128,13 +128,13 @@ class FakeGitHub:
     def close_issue(self, repo, number):
         self.issue_states[(repo, number)] = "CLOSED"
 
-    def append_blocked_by(self, target, issue, blocker):
+    def append_blocked_by(self, repository, issue, blocker):
         self.blocked_by.append((issue, blocker))
 
     def viewer_login(self):
         return self.login
 
-    def pr_view(self, target, pr_number):
+    def pr_view(self, repository, pr_number):
         if self.pr_view_raises:
             raise subprocess.CalledProcessError(1, ["gh"])
         # Unknown PRs read as quiet/open, so tests that merely pass through
@@ -143,15 +143,15 @@ class FakeGitHub:
             "state": "OPEN", "mergedAt": None, "reviewDecision": "",
             "reviews": [], "comments": []})
 
-    def ci_statuses(self, target, head, branch):
+    def ci_statuses(self, repository, head, branch):
         self.ci_calls.append((head, branch))
         return self.ci
 
-    def pr_number_for_branch(self, target, branch):
+    def pr_number_for_branch(self, repository, branch):
         return self.branch_prs.get(branch, 0)
 
-    def delete_branch(self, target, branch):
-        self.deleted_branches.append((target.repo, branch))
+    def delete_branch(self, repository, branch):
+        self.deleted_branches.append((repository.repo, branch))
 
 
 class FakeSessions:
@@ -163,10 +163,10 @@ class FakeSessions:
         self.tail = tail
         self.spawned, self.resumed, self.ended = [], [], []
         self.sent_text = []
-        self.end_calls = []  # (target, issue) — the target end() actually got
-        self.call_log = []  # ("capture_tail"|"end", target, issue) — ordered
-        # Parallel (target, issue) records for spawn_stage/resume, so
-        # multi-target tests can assert which target a spawn/resume was for
+        self.end_calls = []  # (repository, issue) — the repository end() actually got
+        self.call_log = []  # ("capture_tail"|"end", repository, issue) — ordered
+        # Parallel (repository, issue) records for spawn_stage/resume, so
+        # multi-repository tests can assert which repository a spawn/resume was for
         # without disturbing the existing spawned/resumed tuple shapes.
         self.spawn_calls = []
         self.resume_calls = []
@@ -176,47 +176,47 @@ class FakeSessions:
         self.resume_raises = set(resume_raises)
         self.spawn_raises = set(spawn_raises)
 
-    # Every method takes `target` first, matching dispatcher.sessions.Sessions
+    # Every method takes `repository` first, matching dispatcher.sessions.Sessions
     # post-rekey — but the fakes still record/key by issue alone, since every
-    # test here (bar the target-disambiguation ones) uses a single target and
+    # test here (bar the repository-disambiguation ones) uses a single repository and
     # the recorded issue is what assertions check.
-    def is_alive(self, target, issue):
+    def is_alive(self, repository, issue):
         return issue in self.alive_set
 
-    def idle_seconds(self, target, issue):
+    def idle_seconds(self, repository, issue):
         self.idle_queried.append(issue)
         return self.idle.get(issue)
 
-    def agent_state(self, target, issue):
+    def agent_state(self, repository, issue):
         return None  # herdr cannot be asked: a background wait holds
 
-    def send_text(self, target, issue, text):
+    def send_text(self, repository, issue, text):
         self.sent_text.append((issue, text))
         return True
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.spawned.append((issue, stage_name, model, prompt, effort))
-        self.spawn_calls.append((target, issue))
+        self.spawn_calls.append((repository, issue))
 
-    def resume(self, target, issue, worktree, message, model, effort="", second=None,
+    def resume(self, repository, issue, worktree, message, model, effort="", second=None,
                *, session_id=None):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.resumed.append((issue, message, model, effort))
-        self.resume_calls.append((target, issue))
+        self.resume_calls.append((repository, issue))
 
-    def capture_tail(self, target, issue, lines=25):
-        self.call_log.append(("capture_tail", target, issue))
+    def capture_tail(self, repository, issue, lines=25):
+        self.call_log.append(("capture_tail", repository, issue))
         return self.tail
 
-    def end(self, target, issue):
+    def end(self, repository, issue):
         self.ended.append(issue)
-        self.end_calls.append((target, issue))
-        self.call_log.append(("end", target, issue))
+        self.end_calls.append((repository, issue))
+        self.call_log.append(("end", repository, issue))
 
 
 class FakeNotifier:
@@ -225,16 +225,16 @@ class FakeNotifier:
         self.sent = []
         self.contexts = []
         self.calls = []  # (template, ctx) — parallel record; sent stays template-only
-        # Target of each send, taken from ctx["target"] when the caller
-        # passes one (None otherwise) — lets multi-target tests assert which
+        # Repository of each send, taken from ctx["repository"] when the caller
+        # passes one (None otherwise) — lets multi-repository tests assert which
         # project's notification fired without touching `sent`/`contexts`.
-        self.targets = []
+        self.repositories = []
 
     def send(self, template, **ctx):
         self.sent.append(template)
         self.contexts.append((template, ctx))
         self.calls.append((template, ctx))
-        self.targets.append(ctx.get("target"))
+        self.repositories.append(ctx.get("repository"))
         return self.msg_id
 
 
@@ -242,7 +242,7 @@ def cfg(tmp_path: Path) -> Config:
     return Config(
         state_dir=str(tmp_path / "state"), capacity=3,
         session_memory="2g", session_cpus="2",
-        targets=[Target(
+        repositories=[Repository(
             name="portfolio_eval", repo="jesdi/portfolio_eval",
             clone_path=str(tmp_path / "repo"),
             worktrees_path=str(tmp_path / "repo.worktrees"),
@@ -271,8 +271,8 @@ def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
 
 
 def patch_workspace(monkeypatch, tmp_path):
-    def fake_create(target, issue, base="main", dry_run=False):
-        wt = Path(target.worktrees_path) / f"task-{issue}"
+    def fake_create(repository, issue, base="main", dry_run=False):
+        wt = Path(repository.worktrees_path) / f"task-{issue}"
         (wt / ".agent").mkdir(parents=True, exist_ok=True)
         return str(wt)
 
@@ -290,9 +290,9 @@ def make_task(c, issue=42, stage=Stage.IMPLEMENT, slot=0,
               session=True, **kw):
     """A saved task. Its session has ended a turn, so its conversation is
     recorded and a continuation resumes it; `session=False` leaves no record."""
-    wt = Path(c.targets[0].worktrees_path) / f"task-{issue}"
+    wt = Path(c.repositories[0].worktrees_path) / f"task-{issue}"
     (wt / ".agent").mkdir(parents=True, exist_ok=True)
-    ts = TaskState(issue=issue, target="portfolio_eval", stage=stage, slot=slot,
+    ts = TaskState(issue=issue, repository="portfolio_eval", stage=stage, slot=slot,
                    worktree=str(wt), branch=f"agent/task-{issue}", title="t",
                    updated_at=updated_at, track=track, **kw)
     save(c.state_dir, ts)
@@ -324,7 +324,7 @@ def test_new_candidate_claimed_and_spec_spawned(tmp_path, monkeypatch):
     ts = load(c.state_dir, "portfolio_eval", 42)
     assert ts.stage is Stage.SPEC and ts.slot == 0 and ts.title == "Add widget"
     sig = json.loads(
-        (Path(c.targets[0].worktrees_path) / "task-42" / ".agent" / "stage.json")
+        (Path(c.repositories[0].worktrees_path) / "task-42" / ".agent" / "stage.json")
         .read_text())
     assert sig == {"stage": "spec", "status": "working",
                    "model": "anthropic/claude-opus-5", "effort": ""}
@@ -347,9 +347,9 @@ def test_capacity_blocks_new_claims(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     for i, issue in enumerate([1, 2, 3]):
-        wt = Path(c.targets[0].worktrees_path) / f"task-{issue}"
+        wt = Path(c.repositories[0].worktrees_path) / f"task-{issue}"
         (wt / ".agent").mkdir(parents=True)
-        save(c.state_dir, TaskState(issue=issue, target="portfolio_eval",
+        save(c.state_dir, TaskState(issue=issue, repository="portfolio_eval",
                                     stage=Stage.SPEC, slot=i, worktree=str(wt),
                                     branch=f"agent/task-{issue}", title="t",
                                     updated_at="2026-07-14T00:00:00+00:00",
@@ -381,7 +381,7 @@ def test_forced_queue_candidate_claims_despite_usage_gate(tmp_path, monkeypatch)
     gh = FakeGitHub([Candidate(42, "Forced", "u42")])
     sess = FakeSessions()
 
-    main._claim_new(c, deps(gh, sess), [c.targets[0]], DENY_ALL, tuple, False)
+    main._claim_new(c, deps(gh, sess), [c.repositories[0]], DENY_ALL, tuple, False)
 
     assert gh.claimed == [42]
     assert [spawn[:3] for spawn in sess.spawned] == [
@@ -401,7 +401,7 @@ def test_override_model_without_bypass_still_checked_by_usage_gate(tmp_path, mon
             model="claude-sonnet-4-6", bypass_usage=False))
 
     launch, bypass, _ = main._choose_launch(
-        c, c.targets[0], task, Stage.IMPLEMENT, DENY_ALL, tuple,
+        c, c.repositories[0], task, Stage.IMPLEMENT, DENY_ALL, tuple,
         main._execution_override_for(c, task, Stage.IMPLEMENT))
 
     assert (launch, bypass) == (None, False)
@@ -415,7 +415,7 @@ def test_forced_queue_candidate_keeps_choice_when_no_slot(tmp_path, monkeypatch)
     execution_overrides.save(c.state_dir, "portfolio_eval", 42, choice)
 
     main._claim_new(c, deps(FakeGitHub([Candidate(42, "Forced", "u42")])),
-                    [c.targets[0]], DENY_ALL, tuple, False)
+                    [c.repositories[0]], DENY_ALL, tuple, False)
 
     assert execution_overrides.load(
         c.state_dir, "portfolio_eval", 42) == choice
@@ -431,28 +431,28 @@ def test_slot_exhaustion_stops_the_claim_round(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
     gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
 
-    main._claim_new(c, deps(gh), c.targets, ADMIT_ALL, tuple, False)
+    main._claim_new(c, deps(gh), c.repositories, ADMIT_ALL, tuple, False)
 
     assert gh.claimed == []
 
 
-def test_active_task_for_an_unconfigured_target_does_not_break_the_round(
+def test_active_task_for_an_unconfigured_repository_does_not_break_the_round(
         tmp_path, monkeypatch):
-    """A target that has since left targets.yaml can still have an
+    """A repository that has since left targets.yaml can still have an
     in-flight task on disk. _round_counts must not crash looking it up, and
-    the round must still claim normally for the targets still configured."""
+    the round must still claim normally for the repositories still configured."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    orphan_wt = Path(c.targets[0].worktrees_path) / "task-orphan-1"
+    orphan_wt = Path(c.repositories[0].worktrees_path) / "task-orphan-1"
     (orphan_wt / ".agent").mkdir(parents=True, exist_ok=True)
     save(c.state_dir, TaskState(
-        issue=1, target="retired_target", stage=Stage.IMPLEMENT, slot=0,
+        issue=1, repository="retired_repository", stage=Stage.IMPLEMENT, slot=0,
         worktree=str(orphan_wt), branch="agent/task-1", title="t",
         updated_at="2026-07-21T00:00:00+00:00", track="standard"))
     gh = FakeGitHub([Candidate(42, "Add widget", "u42")])
 
-    main._claim_new(c, deps(gh), c.targets, ADMIT_ALL, tuple, False)
+    main._claim_new(c, deps(gh), c.repositories, ADMIT_ALL, tuple, False)
 
     assert gh.claimed == [42]
 
@@ -731,7 +731,7 @@ def test_spawn_writes_effort_into_stage_json_and_models_log(tmp_path, monkeypatc
     gh = FakeGitHub([Candidate(42, "T", "u42", labels=("auto", "track:deep"))])
     c = cfg(tmp_path)
     main.run_pass(c, deps(gh, FakeSessions()))
-    agent_dir = Path(c.targets[0].worktrees_path) / "task-42" / ".agent"
+    agent_dir = Path(c.repositories[0].worktrees_path) / "task-42" / ".agent"
     sig = json.loads((agent_dir / "stage.json").read_text())
     assert (sig["model"], sig["effort"]) == ("anthropic/claude-fable-5-1", "high")
     assert (agent_dir / "models.log").read_text().strip().endswith(
@@ -749,7 +749,7 @@ def test_budget_edge_keys_on_the_untracked_spec_entry(tmp_path, monkeypatch):
 
 
 def test_drive_task_admits_per_spawned_stage_model(tmp_path, monkeypatch):
-    """Stage model routing in _drive_task: SpawnStage uses the target stage's
+    """Stage model routing in _drive_task: SpawnStage uses the repository stage's
     model, not a single global flag. Fable over pace on task A's PLAN just
     skips to the next entry in the deep track's plan list (Opus) rather than
     blocking — resolution walks the list, it doesn't stop at the first deny.
@@ -759,7 +759,7 @@ def test_drive_task_admits_per_spawned_stage_model(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     # Task A: SPEC + done signal → SpawnStage(PLAN); deep's
     # plan list is [Fable@high, Opus] — Fable over pace, so Opus wins.
-    wt_a = Path(c.targets[0].worktrees_path) / "task-1"
+    wt_a = Path(c.repositories[0].worktrees_path) / "task-1"
     (wt_a / ".agent").mkdir(parents=True)
     spec = wt_a / "spec.md"
     spec.write_text("# t — design\n\n## Problem\n\n" + "x " * 400
@@ -767,17 +767,17 @@ def test_drive_task_admits_per_spawned_stage_model(tmp_path, monkeypatch):
     (wt_a / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md",
          "track": "deep"}))
-    save(c.state_dir, TaskState(issue=1, target="portfolio_eval",
+    save(c.state_dir, TaskState(issue=1, repository="portfolio_eval",
                                 stage=Stage.SPEC, slot=0,
                                 worktree=str(wt_a), branch="agent/task-1",
                                 title="A", track="deep",
                                 updated_at="2026-07-14T00:00:00+00:00"))
     # Task B: IMPLEMENT done → SpawnStage(REVIEW) → trivial → Sonnet
-    wt_b = Path(c.targets[0].worktrees_path) / "task-2"
+    wt_b = Path(c.repositories[0].worktrees_path) / "task-2"
     (wt_b / ".agent").mkdir(parents=True)
     (wt_b / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "done", "note": ""}))
-    save(c.state_dir, TaskState(issue=2, target="portfolio_eval",
+    save(c.state_dir, TaskState(issue=2, repository="portfolio_eval",
                                 stage=Stage.IMPLEMENT, slot=1,
                                 ticket_count=1,
                                 worktree=str(wt_b), branch="agent/task-2",
@@ -1041,14 +1041,14 @@ def test_spec_done_advances_to_plan(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    wt = Path(c.targets[0].worktrees_path) / "task-42"
+    wt = Path(c.repositories[0].worktrees_path) / "task-42"
     (wt / ".agent").mkdir(parents=True)
     spec = wt / "spec.md"
     spec.write_text("# t — design\n\n## Problem\n\n" + "x " * 400
                     + "\n\n## Decisions\n\n" + "y " * 400)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md", "track": "standard"}))
-    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+    save(c.state_dir, TaskState(issue=42, repository="portfolio_eval",
                                 stage=Stage.SPEC, slot=0,
                                 worktree=str(wt), branch="agent/task-42",
                                 title="t", track="standard",
@@ -1063,14 +1063,14 @@ def test_plan_format_failure_retries_in_session_then_fails(tmp_path, monkeypatch
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "plan"))
-    wt = Path(c.targets[0].worktrees_path) / "task-42"
+    wt = Path(c.repositories[0].worktrees_path) / "task-42"
     (wt / ".agent" / "tickets").mkdir(parents=True)
     # Malformed ticket set: too small and missing required patterns
     (wt / ".agent" / "tickets" / "01-bad.md").write_text("# tiny\n")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "awaiting-review", "note": "",
          "artifact": ".agent/review.html"}))
-    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+    save(c.state_dir, TaskState(issue=42, repository="portfolio_eval",
                                 stage=Stage.PLAN, slot=0, worktree=str(wt),
                                 branch="agent/task-42", title="t",
                                 track="standard",
@@ -1109,14 +1109,14 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    wt = Path(c.targets[0].worktrees_path) / "task-42"
+    wt = Path(c.repositories[0].worktrees_path) / "task-42"
     (wt / ".agent").mkdir(parents=True)
     spec = wt / "spec.md"
     spec.write_text("# t — design\n\n## Problem\n\n" + "x " * 400
                     + "\n\n## Decisions\n\n" + "y " * 400)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "spec", "status": "done", "note": "", "artifact": "spec.md", "track": "standard"}))
-    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+    save(c.state_dir, TaskState(issue=42, repository="portfolio_eval",
                                 stage=Stage.SPEC, slot=0,
                                 worktree=str(wt), branch="agent/task-42",
                                 title="t", track="standard",
@@ -1127,13 +1127,13 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
             super().__init__(alive)
             self.ops = []
 
-        def end(self, target, issue):
+        def end(self, repository, issue):
             self.ops.append(("end", issue))
-            super().end(target, issue)
+            super().end(repository, issue)
 
-        def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
+        def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None):
             self.ops.append(("spawn", stage_name))
-            super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
+            super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
 
     sess = OrderedSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
@@ -1144,9 +1144,9 @@ def test_dead_session_is_crash(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    wt = Path(c.targets[0].worktrees_path) / "task-42"
+    wt = Path(c.repositories[0].worktrees_path) / "task-42"
     (wt / ".agent").mkdir(parents=True)
-    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+    save(c.state_dir, TaskState(issue=42, repository="portfolio_eval",
                                 stage=Stage.IMPLEMENT, slot=0, worktree=str(wt),
                                 branch="agent/task-42", title="t", track="standard",
                                 updated_at="2026-07-14T00:00:00+00:00"))
@@ -1169,7 +1169,7 @@ def test_dead_session_files_diagnosis_issue_and_blocks(tmp_path, monkeypatch):
     main.run_pass(c, d)
 
     repo, title, body = gh.created_issues[0]
-    assert repo == "jesdi/portfolio_eval", "session crashes file on the TARGET repo"
+    assert repo == "jesdi/portfolio_eval", "session crashes file on the REPOSITORY repo"
     assert "session-crash" in title and "implement" in title
     assert "- class: session-crash" in body
     assert "…pane tail…" in body  # FakeSessions.capture_tail
@@ -1208,7 +1208,7 @@ def test_crash_path_ends_the_session_after_reporting(tmp_path, monkeypatch):
     d = deps(gh, sess)
     main.run_pass(c, d)
 
-    # end() must have been called for (target, issue)
+    # end() must have been called for (repository, issue)
     assert ("portfolio_eval", 42) in sess.end_calls, "end() not called on crash"
 
     # capture_tail must precede end in the unified call log
@@ -1229,7 +1229,7 @@ def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monke
     """create_workspace failure: no claim, no state file, one issue + one
     ping, quarantine written, and the pass exits cleanly (regression: one
     bad candidate killed the pass). Capped at one provisioning failure per
-    target per pass, so the NEXT candidate (43) is NOT claimed this pass —
+    repository per pass, so the NEXT candidate (43) is NOT claimed this pass —
     a systemic fault is far likelier than a per-candidate one, and the next
     pass retries 43."""
     patch_usage(monkeypatch)
@@ -1237,10 +1237,10 @@ def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monke
     gh = FakeGitHub([Candidate(42, "Bad", "u42"), Candidate(43, "Good", "u43")])
     sess = FakeSessions()
 
-    def failing_workspace(target, issue, base="main", dry_run=False):
+    def failing_workspace(repository, issue, base="main", dry_run=False):
         if issue == 42:
             raise RuntimeError("pipenv: no python 3.13")
-        wt = Path(target.worktrees_path) / f"task-{issue}"
+        wt = Path(repository.worktrees_path) / f"task-{issue}"
         (wt / ".agent").mkdir(parents=True, exist_ok=True)
         return str(wt)
 
@@ -1264,7 +1264,7 @@ def test_workspace_failure_second_pass_dedupes(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     gh = FakeGitHub([Candidate(42, "Bad", "u42")])
 
-    def failing_workspace(target, issue, base="main", dry_run=False):
+    def failing_workspace(repository, issue, base="main", dry_run=False):
         raise RuntimeError("pipenv: no python 3.13")
 
     monkeypatch.setattr(main, "create_workspace", failing_workspace)
@@ -1327,7 +1327,7 @@ def test_release_called_when_claim_fails(tmp_path, monkeypatch):
     c = cfg(tmp_path)
 
     class ClaimFailsGitHub(FakeGitHub):
-        def claim(self, target, cand):
+        def claim(self, repository, cand):
             raise RuntimeError("GitHub API error")
 
     gh = ClaimFailsGitHub([Candidate(42, "Add widget", "u42")])
@@ -1343,7 +1343,7 @@ def test_release_called_when_claim_fails(tmp_path, monkeypatch):
 
 def test_digest(tmp_path, monkeypatch):
     c = cfg(tmp_path)
-    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+    save(c.state_dir, TaskState(issue=42, repository="portfolio_eval",
                                 stage=Stage.AWAITING_PLAN_REVIEW, slot=0,
                                 worktree="/x", branch="b", title="t",
                                 updated_at="2026-07-14T00:00:00+00:00"))
@@ -1378,7 +1378,7 @@ def test_waiting_marker_pokes_stopped_session(tmp_path, monkeypatch):
         {"stage": "implement", "status": "working"}))
     mark_waiting(c.state_dir, "portfolio_eval", 42)
     sess = FakeSessions(alive={42}, idle={42: 30.0})
-    sess.agent_state = lambda target, issue: ("done", 5)   # read again before typing
+    sess.agent_state = lambda repository, issue: ("done", 5)   # read again before typing
     main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == "" and len(sess.sent_text) == 1 and t.pokes == 1
@@ -1534,10 +1534,10 @@ def test_attach_command_sets_hold(tmp_path, monkeypatch):
 
 def test_attach_with_an_ambiguous_issue_number_wakes_nothing(tmp_path, monkeypatch):
     from tests.test_mpb_t03_messages_and_markers import (make_task_for,
-                                                          two_target_cfg)
+                                                          two_repository_cfg)
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
-    c = two_target_cfg(tmp_path)
+    c = two_repository_cfg(tmp_path)
     make_task_for(c, "portfolio_eval", 7, park=PARK_HUMAN, park_msg_id=55)
     make_task_for(c, "factorial", 7, park=PARK_HUMAN, park_msg_id=56)
     patch_events(monkeypatch, [Command(name="attach", issue=7)])
@@ -1817,17 +1817,17 @@ def test_next_blocked_never_forced(tmp_path, monkeypatch):
                for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
 
 
-def test_boost_ambiguous_across_targets_asks_to_disambiguate(tmp_path, monkeypatch):
+def test_boost_ambiguous_across_repositories_asks_to_disambiguate(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    c = dc_replace(c, targets=[c.targets[0],
-                               dc_replace(c.targets[0], name="other")])
-    gh = FakeGitHub(rows=[row(7)])   # rank_rows returns #7 for BOTH targets
+    c = dc_replace(c, repositories=[c.repositories[0],
+                                    dc_replace(c.repositories[0], name="other")])
+    gh = FakeGitHub(rows=[row(7)])   # rank_rows returns #7 for BOTH repositories
     d = deps(gh)
     patch_events(monkeypatch, [Command(name="boost", issue=7, amount=1)])
     main.run_pass(c, d)
     assert gh.boosts == []
-    assert any("multiple targets" in l
+    assert any("multiple repositories" in l
                for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
 
 
@@ -1867,7 +1867,7 @@ def test_command_lookup_error_next_reports_and_pass_survives(tmp_path, monkeypat
 def test_command_value_error_queue_reports_and_pass_survives(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
 
-    def bad_rank_rows(target):
+    def bad_rank_rows(repository):
         raise ValueError("malformed JSON from rank output")
 
     gh = FakeGitHub(rows=[row(7)])
@@ -1931,11 +1931,11 @@ def test_queue_shows_demote_marker_and_truncates(tmp_path, monkeypatch):
     assert "… 3 more" in lines
 
 
-def test_queue_labels_each_target_and_reports_empty(tmp_path, monkeypatch):
+def test_queue_labels_each_repository_and_reports_empty(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    c = dc_replace(c, targets=[c.targets[0],
-                               dc_replace(c.targets[0], name="other")])
+    c = dc_replace(c, repositories=[c.repositories[0],
+                                    dc_replace(c.repositories[0], name="other")])
     d = deps(FakeGitHub(rows=[]))
     patch_events(monkeypatch, [Command(name="queue")])
     main.run_pass(c, d)
@@ -1966,7 +1966,7 @@ def test_forced_active_task_uses_choice_at_next_stage(tmp_path):
             model="claude-sonnet-4-6", bypass_usage=True))
     sess = FakeSessions(alive=(42,))
 
-    main._drive_task(c, deps(sess=sess), c.targets[0],
+    main._drive_task(c, deps(sess=sess), c.repositories[0],
                      load(c.state_dir, "portfolio_eval", 42), DENY_ALL, tuple)
 
     assert [spawn[:3] for spawn in sess.spawned] == [
@@ -1988,7 +1988,7 @@ def test_failed_launch_keeps_the_operators_one_time_choice(tmp_path):
     execution_overrides.save(c.state_dir, "portfolio_eval", 42, choice)
 
     main._drive_task(c, deps(sess=FakeSessions(alive=(42,), spawn_raises={42})),
-                     c.targets[0], load(c.state_dir, "portfolio_eval", 42),
+                     c.repositories[0], load(c.state_dir, "portfolio_eval", 42),
                      DENY_ALL, tuple)
 
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
@@ -2023,11 +2023,11 @@ def test_models_log_appends_one_line_per_spawn(tmp_path, monkeypatch):
 def test_status_lines_carry_the_resolved_model(tmp_path):
     c = cfg(tmp_path)
     save(c.state_dir, TaskState(
-        issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
+        issue=42, repository="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
         worktree="/wt", branch="agent/task-42", title="Fix rounding",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     save(c.state_dir, TaskState(
-        issue=43, target="portfolio_eval", stage=Stage.SPEC, slot=1,
+        issue=43, repository="portfolio_eval", stage=Stage.SPEC, slot=1,
         worktree="/wt2", branch="agent/task-43", title="New chart",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     lines = main._status_lines(c)
@@ -2051,7 +2051,7 @@ def test_status_line_for_task_parked_at_plan_review_shows_the_plan_model(tmp_pat
     policy stage key."""
     c = _plan_on_sonnet(cfg(tmp_path))
     save(c.state_dir, TaskState(
-        issue=42, target="portfolio_eval", stage=Stage.AWAITING_PLAN_REVIEW,
+        issue=42, repository="portfolio_eval", stage=Stage.AWAITING_PLAN_REVIEW,
         slot=0, worktree="/wt", branch="agent/task-42", title="New chart",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     lines = main._status_lines(c)
@@ -2073,10 +2073,10 @@ def test_resume_at_plan_review_gate_uses_the_plan_model(tmp_path, monkeypatch):
     assert sess.resumed == [(42, "Continue.", "anthropic/claude-sonnet-5", "")]
 
 
-def test_status_lines_survive_a_task_whose_target_is_gone(tmp_path):
+def test_status_lines_survive_a_task_whose_repository_is_gone(tmp_path):
     c = cfg(tmp_path)
     save(c.state_dir, TaskState(
-        issue=44, target="retired_target", stage=Stage.PLAN, slot=0,
+        issue=44, repository="retired_repository", stage=Stage.PLAN, slot=0,
         worktree="/wt", branch="agent/task-44", title="Orphan",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     lines = main._status_lines(c)
@@ -2089,7 +2089,7 @@ def test_orphaned_task_at_the_plan_review_gate_still_maps_to_the_plan_model(
     # normal path, or a task parked at the gate misreports its model.
     c = _plan_on_sonnet(cfg(tmp_path))
     save(c.state_dir, TaskState(
-        issue=45, target="retired_target", stage=Stage.AWAITING_PLAN_REVIEW,
+        issue=45, repository="retired_repository", stage=Stage.AWAITING_PLAN_REVIEW,
         slot=0, worktree="/wt", branch="agent/task-45", title="Orphan chart",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
     lines = main._status_lines(c)
@@ -2103,7 +2103,7 @@ def test_status_line_for_a_parked_task_puts_model_before_park(tmp_path):
     [model] segment must come before the pre-existing [park] segment."""
     c = cfg(tmp_path)
     save(c.state_dir, TaskState(
-        issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
+        issue=42, repository="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
         worktree="/wt", branch="agent/task-42", title="Fix rounding",
         updated_at="2026-07-24T00:00:00+00:00", track="standard",
         park=PARK_HUMAN))
@@ -2119,7 +2119,7 @@ def test_status_counts_the_slot_the_triage_sweep_holds(tmp_path, monkeypatch):
     which is the operator's primary visibility surface lying."""
     c = cfg(tmp_path)
     save(c.state_dir, TaskState(
-        issue=42, target="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
+        issue=42, repository="portfolio_eval", stage=Stage.IMPLEMENT, slot=0,
         worktree="/wt", branch="agent/task-42", title="Fix rounding",
         updated_at="2026-07-24T00:00:00+00:00"))
     assert main._status_lines(c)[-1] == f"capacity 1/{c.capacity}"
@@ -2146,7 +2146,7 @@ def test_status_reply_content_carries_the_status_lines(tmp_path, monkeypatch):
 def test_digest_content_carries_the_status_lines(tmp_path):
     """Finding C: the digest's payload was likewise never asserted on."""
     c = cfg(tmp_path)
-    save(c.state_dir, TaskState(issue=42, target="portfolio_eval",
+    save(c.state_dir, TaskState(issue=42, repository="portfolio_eval",
                                 stage=Stage.AWAITING_PLAN_REVIEW, slot=0,
                                 worktree="/x", branch="b", title="t",
                                 updated_at="2026-07-14T00:00:00+00:00"))
@@ -2157,15 +2157,15 @@ def test_digest_content_carries_the_status_lines(tmp_path):
     assert any(line.startswith("#42 ") for line in ctx["lines"])
 
 
-def test_target_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
-    """Finding D: a per-target `models:` override was only ever verified in
+def test_repository_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
+    """Finding D: a per-repository `models:` override was only ever verified in
     isolation against `policy_for` — never end-to-end through `_spawn_stage`.
     The global POLICY's untracked/standard track resolves to Opus; the
-    target's OWN policy must win instead and resolve to its own model."""
+    repository's OWN policy must win instead and resolve to its own model."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    target_policy = parse_policy({
+    repository_policy = parse_policy({
         "triage": ["claude-sonnet-5"],
         "untracked": "standard",
         "tracks": {"standard": {
@@ -2173,7 +2173,7 @@ def test_target_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
             "spec": ["claude-fable-5-1"], "plan": ["claude-fable-5-1"],
             "implement": ["claude-fable-5-1"], "review": ["claude-fable-5-1"]}},
     })
-    c = dc_replace(c, targets=[dc_replace(c.targets[0], models=target_policy)])
+    c = dc_replace(c, repositories=[dc_replace(c.repositories[0], models=repository_policy)])
     gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
@@ -2191,7 +2191,7 @@ def test_claim_and_spawn_append_claimed_and_stage_started_events(tmp_path, monke
     events = eventlog.read_tail(c.state_dir)
     assert [(e["event"], e["issue"]) for e in events] == [
         ("claimed", 42), ("stage-started", 42)]
-    assert events[0]["target"] == "portfolio_eval"
+    assert events[0]["repository"] == "portfolio_eval"
     assert events[1]["stage"] == "spec"
     assert events[1]["model"] == "anthropic/claude-opus-5"
 
@@ -2262,21 +2262,21 @@ def test_crash_appends_failed_event(tmp_path, monkeypatch):
 from dispatcher import intents as intents_mod
 
 
-def test_apply_intent_resolves_by_target(tmp_path):
-    """A target-carrying kill intent must resolve to exactly that target's
-    task — even when a different target happens to have a task with the
-    identical issue number. Regression for the (target, issue) rekey:
-    _task_for_intent looks up by (target, issue), not by issue alone, so
+def test_apply_intent_resolves_by_repository(tmp_path):
+    """A repository-carrying kill intent must resolve to exactly that repository's
+    task — even when a different repository happens to have a task with the
+    identical issue number. Regression for the (repository, issue) rekey:
+    _task_for_intent looks up by (repository, issue), not by issue alone, so
     killing agent_ops#42 must leave portfolio_eval#42 completely untouched."""
     c = cfg(tmp_path)
-    c = dc_replace(c, targets=[c.targets[0],
-                               dc_replace(c.targets[0], name="agent_ops",
-                                          repo="jesdi/agent-ops")])
-    make_task(c, issue=42)  # portfolio_eval#42 — make_task's default target
-    wt2 = Path(c.targets[1].worktrees_path) / "task-42"
+    c = dc_replace(c, repositories=[c.repositories[0],
+                                    dc_replace(c.repositories[0], name="agent_ops",
+                                               repo="jesdi/agent-ops")])
+    make_task(c, issue=42)  # portfolio_eval#42 — make_task's default repository
+    wt2 = Path(c.repositories[1].worktrees_path) / "task-42"
     (wt2 / ".agent").mkdir(parents=True, exist_ok=True)
     save(c.state_dir, TaskState(
-        issue=42, target="agent_ops", stage=Stage.IMPLEMENT, slot=1,
+        issue=42, repository="agent_ops", stage=Stage.IMPLEMENT, slot=1,
         worktree=str(wt2), branch="agent/task-42", title="t",
         updated_at="2026-07-21T00:00:00+00:00"))
     intents_mod.write_intent(c.state_dir, "kill", "agent_ops", 42, {}, "op", 1)
@@ -2310,36 +2310,36 @@ def test_reply_intent_wakes_parked_task_and_is_deleted(tmp_path, monkeypatch):
                if e["event"] == "intent-applied"]
     assert applied[0]["actor"] == "jesdi@github"
     assert applied[0]["detail"] == "reply" and applied[0]["issue"] == 42
-    assert applied[0]["target"] == "portfolio_eval"
+    assert applied[0]["repository"] == "portfolio_eval"
 
 
-def test_intent_applied_event_carries_target_resolved_from_legacy_intent(tmp_path, monkeypatch):
-    """A legacy intent file (target=="", predates target-keying) carries no
-    target of its own, but if it resolves unambiguously to one task, the
-    intent-applied event must carry THAT task's target — not "" — so the
-    console's timeline link (/task/{target}/{issue}) is never blank."""
+def test_intent_applied_event_carries_repository_resolved_from_legacy_intent(tmp_path, monkeypatch):
+    """A legacy intent file (repository=="", predates repository-keying) carries no
+    repository of its own, but if it resolves unambiguously to one task, the
+    intent-applied event must carry THAT task's repository — not "" — so the
+    console's timeline link (/task/{repository}/{issue}) is never blank."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    make_task(c, issue=42)  # portfolio_eval#42 — make_task's default target
+    make_task(c, issue=42)  # portfolio_eval#42 — make_task's default repository
     intents_mod.write_intent(c.state_dir, "reply", "", 42, {"text": "hi"},
                              "op", 1)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     applied = [e for e in eventlog.read_tail(c.state_dir)
                if e["event"] == "intent-applied"]
     assert applied[0]["issue"] == 42
-    assert applied[0]["target"] == "portfolio_eval"
+    assert applied[0]["repository"] == "portfolio_eval"
 
 
-def test_legacy_reply_intent_with_no_task_and_several_targets_is_dropped(
+def test_legacy_reply_intent_with_no_task_and_several_repositories_is_dropped(
         tmp_path, monkeypatch, capsys):
-    """A target-less reply for an issue with no task cannot be attributed
-    when several targets are configured: it is dropped with a warning, never
+    """A repository-less reply for an issue with no task cannot be attributed
+    when several repositories are configured: it is dropped with a warning, never
     queued under a guessed project."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    c = dc_replace(c, targets=[c.targets[0],
-                               dc_replace(c.targets[0], name="factorial")])
+    c = dc_replace(c, repositories=[c.repositories[0],
+                                    dc_replace(c.repositories[0], name="factorial")])
     intents_mod.write_intent(c.state_dir, "reply", "", 42, {"text": "hi"},
                              "op", 1)
     main._apply_intents(c, deps())
@@ -2425,7 +2425,7 @@ def test_kill_intent_survives_release_failure(tmp_path, monkeypatch):
     make_task(c, issue=42)
 
     class ReleaseFailsGitHub(FakeGitHub):
-        def release(self, target, issue, reason):
+        def release(self, repository, issue, reason):
             raise RuntimeError("gh outage")
 
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
@@ -2450,11 +2450,11 @@ def test_kill_intent_does_not_reclaim_released_issue_same_pass(tmp_path, monkeyp
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
 
 
-def test_kill_intent_with_target_ends_a_stray_session_with_no_state_file(tmp_path):
-    """A target-carrying kill intent must be able to end a session even when
+def test_kill_intent_with_repository_ends_a_stray_session_with_no_state_file(tmp_path):
+    """A repository-carrying kill intent must be able to end a session even when
     there is no task file to resolve — e.g. _flush_done deleted a DONE
     task's state while its tmux session leaked (never actually ended). The
-    operator's kill intent still names its target, so nothing stops the
+    operator's kill intent still names its repository, so nothing stops the
     session from being ended even though there is no task left to
     tombstone."""
     c = cfg(tmp_path)
@@ -2490,7 +2490,7 @@ def test_cancel_intent_survives_github_failure(tmp_path, monkeypatch):
     make_task(c, issue=42)
 
     class CancelFailsGitHub(FakeGitHub):
-        def cancel(self, target, issue):
+        def cancel(self, repository, issue):
             raise RuntimeError("gh outage")
 
     intents_mod.write_intent(c.state_dir, "cancel", "portfolio_eval", 42, {}, "op", 1)
@@ -2549,8 +2549,8 @@ def test_reopened_canceled_issue_is_claimed_again(tmp_path, monkeypatch):
     assert reopened and reopened[0]["issue"] == 42
 
 
-def test_cancel_intent_without_task_file_uses_intent_target(tmp_path, monkeypatch):
-    # A backlog card has no task file; the intent itself names the target
+def test_cancel_intent_without_task_file_uses_intent_repository(tmp_path, monkeypatch):
+    # A backlog card has no task file; the intent itself names the repository
     # so the board/issue side still happens. No tombstone is written.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -2566,7 +2566,7 @@ def test_cancel_intent_without_task_file_uses_intent_target(tmp_path, monkeypatc
 
 
 def test_legacy_cancel_intent_with_no_matching_task_is_skipped(tmp_path, monkeypatch):
-    # A pre-target intent file names no target; with no unique task to
+    # A pre-repository intent file names no repository; with no unique task to
     # borrow one from there is no board to write and no session to end.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -2640,17 +2640,17 @@ def test_resume_intent_with_an_unconfigured_model_is_dropped_with_an_event(
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
-    # A legacy intent (no target): the event still names the task's target.
+    # A legacy intent (no repository): the event still names the task's repository.
     intents_mod.write_intent(c.state_dir, "resume", "", 42,
                              {"model": "openai/gpt-nope"}, "op", 1)
     main._apply_intents(c, deps())
 
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_HUMAN
     [event] = [e for e in eventlog.read_tail(c.state_dir) if e["issue"] == 42]
-    assert (event["event"], event["target"], event["model"]) == (
+    assert (event["event"], event["repository"], event["model"]) == (
         "intent-dropped", "portfolio_eval", "openai/gpt-nope")
     assert event["detail"] == (
-        "model 'openai/gpt-nope' is not configured for target 'portfolio_eval'")
+        "model 'openai/gpt-nope' is not configured for repository 'portfolio_eval'")
 
 
 def test_resume_intent_can_override_a_wake_without_duplicate_message(
@@ -3021,7 +3021,7 @@ def test_login_park_clears_the_waiting_marker(tmp_path, monkeypatch):
         {"stage": "implement", "status": "working"}))
     mark_waiting(c.state_dir, "portfolio_eval", 42)
     sess = FakeSessions(alive=[42], tail=LOGIN_TAIL, idle={42: 30.0})
-    sess.agent_state = lambda target, issue: ("done", 5)
+    sess.agent_state = lambda repository, issue: ("done", 5)
     main.run_pass(c, deps(sess=sess))
     assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN
     assert sess.sent_text == []         # nothing typed into the login prompt
@@ -3074,7 +3074,7 @@ def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatc
     assert t.park == PARK_REVIEW
     assert t.slot == NO_SLOT
     assert t.stage is Stage.AWAITING_PLAN_REVIEW   # stage preserved
-    assert t.park_msg_id == 77                     # reply-to-wake target
+    assert t.park_msg_id == 77                     # reply-to-wake repository
     assert sess.ended == [42]
     assert "plan_parked" in d.notifier.sent
 
@@ -3362,12 +3362,12 @@ def test_plain_text_asks_which_when_a_human_park_and_a_gate_park_coexist(
     assert "status" in d.notifier.sent  # the "Which task?" prompt lists both
 
 
-def test_which_task_prompt_names_the_project_when_multi_target(
+def test_which_task_prompt_names_the_project_when_multi_repository(
         tmp_path, monkeypatch):
-    from tests.test_multi_project_capacity import two_target_cfg
+    from tests.test_multi_project_capacity import two_repository_cfg
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
-    c = two_target_cfg(tmp_path)
+    c = two_repository_cfg(tmp_path)
     make_task(c, issue=42, park=PARK_HUMAN, park_msg_id=55)
     make_task(c, issue=43, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT,
               park=PARK_REVIEW, park_msg_id=56)
@@ -3403,7 +3403,7 @@ def test_two_slot_less_woken_tasks_get_distinct_slots(tmp_path, monkeypatch):
 def test_status_line_says_no_slot_for_a_gate_parked_task(tmp_path):
     c = cfg(tmp_path)
     save(c.state_dir, TaskState(
-        issue=42, target="portfolio_eval", stage=Stage.AWAITING_PLAN_REVIEW,
+        issue=42, repository="portfolio_eval", stage=Stage.AWAITING_PLAN_REVIEW,
         slot=NO_SLOT, worktree="/wt", branch="agent/task-42", title="Add widget",
         updated_at="2026-07-28T00:00:00+00:00", park=PARK_REVIEW,
         effort=1, labels=("auto",)))
@@ -3419,18 +3419,18 @@ class LiveUntilEnded(FakeSessions):
     frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
     express across a dozen passes."""
 
-    def spawn_stage(self, target, issue, worktree, prompt, stage_name, model, effort="", second=None):
-        super().spawn_stage(target, issue, worktree, prompt, stage_name, model, effort)
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None):
+        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
         self.alive_set.add(issue)
 
-    def resume(self, target, issue, worktree, message, model, effort="", second=None,
+    def resume(self, repository, issue, worktree, message, model, effort="", second=None,
                *, session_id=None):
-        super().resume(target, issue, worktree, message, model, effort,
+        super().resume(repository, issue, worktree, message, model, effort,
                        session_id=session_id)
         self.alive_set.add(issue)
 
-    def end(self, target, issue):
-        super().end(target, issue)
+    def end(self, repository, issue):
+        super().end(repository, issue)
         self.alive_set.discard(issue)
 
 
@@ -3588,7 +3588,7 @@ def patch_teardown(monkeypatch):
     removed = []
     monkeypatch.setattr(
         main, "remove_workspace",
-        lambda target, wt, branch, dry_run=False: removed.append(
+        lambda repository, wt, branch, dry_run=False: removed.append(
             (wt, branch, dry_run)))
     return removed
 
@@ -3603,8 +3603,8 @@ def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
     base = cfg(tmp_path)
-    c = dc_replace(base, targets=[dc_replace(
-        base.targets[0], status_done_option_id="D0")])
+    c = dc_replace(base, repositories=[dc_replace(
+        base.repositories[0], status_done_option_id="D0")])
     t = pr_open_task(c)
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(state="MERGED",
@@ -3617,7 +3617,7 @@ def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
     assert (42, "D0") in gh.statused
     assert 42 in sess.ended
     assert removed == [(t.worktree, t.branch, False)]
-    assert (c.targets[0].repo, t.branch) in gh.deleted_branches
+    assert (c.repositories[0].repo, t.branch) in gh.deleted_branches
     assert "task_done" in notif.sent
 
 
@@ -3713,12 +3713,12 @@ def test_finish_merged_gh_failure_leaves_task_pr_open_and_pass_survives(
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
     base = cfg(tmp_path)
-    c = dc_replace(base, targets=[dc_replace(
-        base.targets[0], status_done_option_id="D0")])
+    c = dc_replace(base, repositories=[dc_replace(
+        base.repositories[0], status_done_option_id="D0")])
     pr_open_task(c)
 
     class SetStatusFails(FakeGitHub):
-        def set_status(self, target, issue, option_id):
+        def set_status(self, repository, issue, option_id):
             raise subprocess.CalledProcessError(1, ["gh"])
 
     gh = SetStatusFails()
@@ -3829,8 +3829,8 @@ def test_pending_feedback_not_spawned_when_budget_low(tmp_path, monkeypatch):
 
 def merged_cfg(tmp_path):
     base = cfg(tmp_path)
-    return dc_replace(base, targets=[dc_replace(
-        base.targets[0], status_done_option_id="D0")])
+    return dc_replace(base, repositories=[dc_replace(
+        base.repositories[0], status_done_option_id="D0")])
 
 
 def test_dry_run_pass_does_not_tear_down_a_merged_task(tmp_path, monkeypatch):
@@ -4262,7 +4262,7 @@ def test_ci_conclusion_becomes_a_dispatcher_message(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, park=PARK_CI, ci_run_id=4242)
     main._wake_ci(c, deps(gh=FakeGitHub(run_conclusion="failure")),
-                  c.targets[0])
+                  c.repositories[0])
     from dispatcher import messages
     queued = messages.undelivered(c.state_dir, "portfolio_eval", 42)
     assert len(queued) == 1
@@ -4279,8 +4279,8 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     messages.append(c.state_dir, "portfolio_eval", 42, "pre-brief: use the v2 API", "jesdi@github")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True, tuple))
+    main._spawn_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple))
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
@@ -4293,8 +4293,8 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
     make_task(c, issue=42, stage=Stage.QUEUED)
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True, tuple))
+    main._spawn_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple))
     assert "## Operator messages" not in d.sessions.spawned[-1][3]
 
 
@@ -4329,8 +4329,8 @@ def test_retry_plan_delivers_queued_messages_too(tmp_path):
     messages.append(c.state_dir, "portfolio_eval", 42, "keep the scope small", "jesdi@github")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._retry_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.PLAN,
+    main._retry_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task, Stage.PLAN,
                                        lambda m: True, tuple),
                       main.RetryStage(Stage.PLAN, "missing Goal line",
                                       main.loops.Retry.PLAN_TICKETS))
@@ -4354,7 +4354,7 @@ def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
 def test_park_for_input_frees_the_slot(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=1)
-    main._park_for_input(c, deps(), c.targets[0], load(c.state_dir, "portfolio_eval", 42),
+    main._park_for_input(c, deps(), c.repositories[0], load(c.state_dir, "portfolio_eval", 42),
                          note="which redirect URL?")
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN and t.slot == NO_SLOT
@@ -4363,7 +4363,7 @@ def test_park_for_input_frees_the_slot(tmp_path):
 def test_park_for_ci_frees_the_slot(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=2)
-    main._park_for_ci(c, deps(), c.targets[0], load(c.state_dir, "portfolio_eval", 42),
+    main._park_for_ci(c, deps(), c.repositories[0], load(c.state_dir, "portfolio_eval", 42),
                       run_id=4242)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_CI and t.slot == NO_SLOT
@@ -4523,7 +4523,7 @@ def test_reconcile_drops_a_marker_left_by_a_vanished_task(tmp_path):
     assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
-def test_legacy_wake_blocked_marker_is_rekeyed_with_one_target(tmp_path):
+def test_legacy_wake_blocked_marker_is_rekeyed_with_one_repository(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=NO_SLOT, park=PARK_WAKE)
     legacy = Path(c.state_dir) / "wake-blocked-42"
@@ -4533,10 +4533,10 @@ def test_legacy_wake_blocked_marker_is_rekeyed_with_one_target(tmp_path):
     assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
-def test_legacy_wake_blocked_marker_is_dropped_with_several_targets(tmp_path):
+def test_legacy_wake_blocked_marker_is_dropped_with_several_repositories(tmp_path):
     c = cfg(tmp_path)
-    c = dc_replace(c, targets=[c.targets[0],
-                               dc_replace(c.targets[0], name="factorial")])
+    c = dc_replace(c, repositories=[c.repositories[0],
+                                    dc_replace(c.repositories[0], name="factorial")])
     legacy = Path(c.state_dir) / "wake-blocked-42"
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.touch()
@@ -4949,8 +4949,8 @@ def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
               e2e_rounds=1, ci_rounds=3)
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.SPEC, lambda m: True, tuple))
+    main._spawn_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
     assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
@@ -4960,7 +4960,7 @@ def test_successful_ci_wake_preserves_all_counters(tmp_path):
     c = cfg(tmp_path)
     make_task(c, stage=Stage.IMPLEMENT, park=PARK_CI, ci_run_id=99,
               review_rounds=1, gate_rounds=1, e2e_rounds=2, ci_rounds=1)
-    main._wake_ci(c, deps(gh=FakeGitHub(run_conclusion="success")), c.targets[0])
+    main._wake_ci(c, deps(gh=FakeGitHub(run_conclusion="success")), c.repositories[0])
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_WAKE
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 1, 2, 1)
@@ -5135,7 +5135,7 @@ def test_ordinary_blocked_park_clears_stale_operator_request(tmp_path):
                    spec_path="docs/specs/design.md",
                    review_rounds=1, gate_rounds=2, e2e_rounds=0, ci_rounds=1)
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._park_for_input(c, deps(notifier=FakeNotifier()), c.targets[0],
+    main._park_for_input(c, deps(notifier=FakeNotifier()), c.repositories[0],
                          task, "blocked by test", is_answers=False)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
@@ -5156,7 +5156,7 @@ def test_loop_exhaustion_park_clears_stale_operator_request(tmp_path):
               spec_path="docs/specs/design.md",
               review_rounds=1, gate_rounds=0, e2e_rounds=2, ci_rounds=0)
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._park_exhausted(c, deps(notifier=FakeNotifier()), c.targets[0],
+    main._park_exhausted(c, deps(notifier=FakeNotifier()), c.repositories[0],
                          task, "e2e loop exceeded its cap of 2 rounds")
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
@@ -5180,8 +5180,8 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
                    spec_path="docs/specs/design.md")
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
-    main._spawn_stage(c, d, c.targets[0], task,
-                      main._launch_for(c, c.targets[0], task, Stage.IMPLEMENT,
+    main._spawn_stage(c, d, c.repositories[0], task,
+                      main._launch_for(c, c.repositories[0], task, Stage.IMPLEMENT,
                                        lambda m: True, tuple))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
@@ -5283,7 +5283,7 @@ def test_ci_park_clears_operator_request(tmp_path):
                    review_rounds=1, gate_rounds=0, e2e_rounds=0, ci_rounds=2)
     task = load(c.state_dir, "portfolio_eval", 42)
     main._park_for_ci(c, deps(sess=FakeSessions(alive={42})),
-                      c.targets[0], task, run_id=9999)
+                      c.repositories[0], task, run_id=9999)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_CI and t.ci_run_id == 9999
     assert t.operator_request is None, (
@@ -5406,7 +5406,7 @@ def test_terminal_pr_does_not_require_ci_access(tmp_path, monkeypatch, state, ex
     client = github.GitHubClient()
     gh.pr_view = client.pr_view
     gh.ci_statuses = client.ci_statuses
-    main._poll_prs(c, deps(gh), c.targets[0])
+    main._poll_prs(c, deps(gh), c.repositories[0])
     assert load(c.state_dir, "portfolio_eval", 42).stage is expected
     assert len(calls) == 1  # terminal lifecycle never calls either CI endpoint
 
@@ -5427,7 +5427,7 @@ def test_ci_denial_does_not_block_feedback_or_conflicts(tmp_path, monkeypatch, c
 
     monkeypatch.setattr(github, "_run", denied)
     gh.ci_statuses = github.GitHubClient().ci_statuses
-    main._poll_prs(c, deps(gh), c.targets[0])
+    main._poll_prs(c, deps(gh), c.repositories[0])
     task = load(c.state_dir, "portfolio_eval", 42)
     assert task.feedback_pending
     assert task.attention == ("feedback" if feedback else "conflict")
@@ -5442,7 +5442,7 @@ def test_parked_pr_does_not_poll_or_spend_ci_rounds(tmp_path):
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload()
     gh.ci = [CIStatus("failure", "2026-09-12T10:00:00Z")]
-    main._poll_prs(c, deps(gh), c.targets[0])
+    main._poll_prs(c, deps(gh), c.repositories[0])
     assert gh.ci_calls == []
     assert load(c.state_dir, "portfolio_eval", 42).ci_rounds == 2
 
@@ -5509,7 +5509,7 @@ def test_a_launch_that_raises_on_resume_fails_resumable_again(tmp_path, monkeypa
 
 
 def test_expired_fails_closed_on_bad_or_missing_terminal_at():
-    t = TaskState(issue=1, target="portfolio_eval", stage=Stage.DONE, slot=NO_SLOT,
+    t = TaskState(issue=1, repository="portfolio_eval", stage=Stage.DONE, slot=NO_SLOT,
                   worktree="", branch="", title="", updated_at="")
     assert not main._expired(dc_replace(t, terminal_at=""), 0)
     assert not main._expired(dc_replace(t, terminal_at="not-a-date"), 0)
@@ -5518,7 +5518,7 @@ def test_expired_fails_closed_on_bad_or_missing_terminal_at():
     assert main._expired(dc_replace(t, terminal_at="2026-07-01T00:00:00"), 0)  # naive = UTC
 
 
-def test_flush_skips_teardown_for_a_task_whose_target_left_the_config(
+def test_flush_skips_teardown_for_a_task_whose_repository_left_the_config(
         tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
@@ -5526,7 +5526,7 @@ def test_flush_skips_teardown_for_a_task_whose_target_left_the_config(
     make_task(c, issue=1, stage=Stage.CANCELED, slot=NO_SLOT)   # ancient
     from dispatcher.state import delete
     save(c.state_dir, dc_replace(load(c.state_dir, "portfolio_eval", 1),
-                                 target="gone"))
+                                 repository="gone"))
     delete(c.state_dir, "portfolio_eval", 1)
     main.run_pass(c, deps(FakeGitHub()))
     assert removed == []
@@ -6216,13 +6216,13 @@ def test_agent_directory_that_is_a_symlink_fails_the_launch_and_not_the_pass(
 
 def test_launch_and_resume_write_the_exclude_lines_in_the_configured_clone_only(
         tmp_path, monkeypatch):
-    """The lines heal on every launch and resume, at the clone the target's
+    """The lines heal on every launch and resume, at the clone the repository's
     configuration names. The worktree's own `.git` pointer, which a session
     can rewrite, decides nothing."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    info = Path(c.targets[0].clone_path) / ".git" / "info"
+    info = Path(c.repositories[0].clone_path) / ".git" / "info"
     info.mkdir(parents=True)
     outside = tmp_path / "outside-git"
     (outside / "info").mkdir(parents=True)
@@ -6244,7 +6244,7 @@ def test_unusable_clone_git_dir_does_not_stop_a_resume(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     outside = tmp_path / "outside-git"
     (outside / "info").mkdir(parents=True)
-    clone = Path(c.targets[0].clone_path)
+    clone = Path(c.repositories[0].clone_path)
     clone.mkdir()
     (clone / ".git").symlink_to(outside, target_is_directory=True)
     make_task(c, issue=43, stage=Stage.IMPLEMENT, slot=NO_SLOT, park=PARK_WAKE)

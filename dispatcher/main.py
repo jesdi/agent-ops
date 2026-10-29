@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Callable
 
 from dispatcher.convergence import pass_lock
-from dispatcher.config import (Config, Target, apply_stored_models,
+from dispatcher.config import (Config, Repository, apply_stored_models,
                                load_config, policy_for,
                                referenced_providers, routed_providers, stranded)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
@@ -104,10 +104,10 @@ def _cursor_now() -> str:
             - timedelta(seconds=1)).isoformat()
 
 
-def _policy(cfg: Config, target: Target | None) -> ModelPolicy:
-    """target is None for a task whose target has left the config — it still
+def _policy(cfg: Config, repository: Repository | None) -> ModelPolicy:
+    """repository is None for a task whose repository has left the config — it still
     resolves, against the global policy."""
-    return policy_for(cfg, target)
+    return policy_for(cfg, repository)
 
 
 @dataclass(frozen=True)
@@ -126,7 +126,7 @@ class Launch:
         return self.entry.model_id
 
 
-def _launch_for(cfg: Config, target: Target | None, task: TaskState,
+def _launch_for(cfg: Config, repository: Repository | None, task: TaskState,
                 stage: Stage, admitted: Admitted,
                 order: Order) -> Launch | None:
     """The stage's recorded pick, else the first admitted of the entries the
@@ -135,7 +135,7 @@ def _launch_for(cfg: Config, target: Target | None, task: TaskState,
     pick = stage_pick(task.picks, stage.value)
     if pick:
         return Launch(stage, parse_entry(pick, "pick"))
-    entries = launch_entries(task, _policy(cfg, target), order, stage.value)
+    entries = launch_entries(task, _policy(cfg, repository), order, stage.value)
     entry = next((e for e in entries if admitted(e.model_id)), None)
     return Launch(stage, entry) if entry else None
 
@@ -144,10 +144,10 @@ def _admitted(admit: Admit, bypass: bool) -> Admitted:
     return (lambda m: True) if bypass else (lambda m: admit(m).admitted)
 
 
-def _with_second(cfg: Config, target: Target | None, launch: Launch,
+def _with_second(cfg: Config, repository: Repository | None, launch: Launch,
                  admit: Admit) -> Launch:
     """Grant the second model on the gate itself: a bypass never covers it."""
-    second = second_model(_policy(cfg, target), launch.stage.value,
+    second = second_model(_policy(cfg, repository), launch.stage.value,
                           launch.entry, _admitted(admit, False))
     return replace(launch, second=second)
 
@@ -159,21 +159,21 @@ def _execution_override_for(cfg: Config, task: TaskState,
     The web's task snapshot can precede a stage transition. Drop an obsolete
     cross-provider choice, including its bypass, before selecting a launch.
     """
-    override = execution_overrides.load(cfg.state_dir, task.target, task.issue)
+    override = execution_overrides.load(cfg.state_dir, task.repository, task.issue)
     if override is None or not override.model:
         return override
     refusal = override_refusal(task.picks, stage.value, override.model)
     if refusal:
-        execution_overrides.delete(cfg.state_dir, task.target, task.issue)
+        execution_overrides.delete(cfg.state_dir, task.repository, task.issue)
         eventlog.append_event(cfg.state_dir, "execution-override-dropped",
-                              target=task.target, issue=task.issue,
+                              repository=task.repository, issue=task.issue,
                               stage=stage.value, model=override.model, detail=refusal)
         return None
     return override
 
 
 def _choose_launch(
-        cfg: Config, target: Target | None, task: TaskState, stage: Stage,
+        cfg: Config, repository: Repository | None, task: TaskState, stage: Stage,
         admit: Admit, order: Order,
         override: execution_overrides.ExecutionOverride | None,
 ) -> tuple[Launch | None, bool, str]:
@@ -188,42 +188,42 @@ def _choose_launch(
     if override is not None and override.model:
         launch = Launch(stage, parse_entry(override.model, "override"))
         if bypass or admit(launch.model).admitted:
-            return _with_second(cfg, target, launch, admit), bypass, ""
+            return _with_second(cfg, repository, launch, admit), bypass, ""
         return None, bypass, ""
-    launch = _launch_for(cfg, target, task, stage, _admitted(admit, bypass), order)
+    launch = _launch_for(cfg, repository, task, stage, _admitted(admit, bypass), order)
     if launch is None or (not bypass and not admit(launch.model).admitted):
-        return None, bypass, stranded(cfg, target, task, stage.value)
-    return _with_second(cfg, target, launch, admit), bypass, ""
+        return None, bypass, stranded(cfg, repository, task, stage.value)
+    return _with_second(cfg, repository, launch, admit), bypass, ""
 
 
-def _action_launch(cfg: Config, target: Target, task: TaskState, stage: Stage | None,
+def _action_launch(cfg: Config, repository: Repository, task: TaskState, stage: Stage | None,
                    admit: Admit, order: Order) -> tuple[Launch | None, bool, str]:
     """_choose_launch for the stage an action launches; nothing when it
     launches none."""
     if stage is None:
         return None, False, ""
-    return _choose_launch(cfg, target, task, stage, admit, order,
+    return _choose_launch(cfg, repository, task, stage, admit, order,
                           _execution_override_for(cfg, task, stage))
 
 
-def _candidate_launch(cfg: Config, target: Target, cand: Candidate,
+def _candidate_launch(cfg: Config, repository: Repository, cand: Candidate,
                       admit: Admit, order: Order) -> tuple[Launch | None, bool]:
     """An unclaimed candidate has no picks: its spec entry comes from the
     track its labels name (else the untracked track)."""
-    policy = policy_for(cfg, target)
-    probe = TaskState(issue=cand.number, target=target.name, stage=Stage.QUEUED,
+    policy = policy_for(cfg, repository)
+    probe = TaskState(issue=cand.number, repository=repository.name, stage=Stage.QUEUED,
                       slot=NO_SLOT, worktree="", branch="", title=cand.title,
                       updated_at="", track=track_from_labels(cand.labels, policy))
-    launch, bypass, _ = _choose_launch(cfg, target, probe, Stage.SPEC, admit, order,
+    launch, bypass, _ = _choose_launch(cfg, repository, probe, Stage.SPEC, admit, order,
                                        _execution_override_for(cfg, probe, Stage.SPEC))
     return launch, bypass   # no picks and a configured track: nothing strands it
 
 
-def _consume_execution_choice(cfg: Config, target: str, issue: int) -> None:
-    execution_overrides.delete(cfg.state_dir, target, issue)
+def _consume_execution_choice(cfg: Config, repository: str, issue: int) -> None:
+    execution_overrides.delete(cfg.state_dir, repository, issue)
 
 
-def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
+def _display_entry(cfg: Config, repository: Repository | None, task: TaskState) -> str:
     """The entry a task runs or would run next, for status lines: its pick for
     the next launch, else the first of the entries that launch walks
     (state.launch_entries), else ''. No usage reading here, so the order is
@@ -232,7 +232,7 @@ def _display_entry(cfg: Config, target: Target | None, task: TaskState) -> str:
     pick = stage_pick(task.picks, next_stage(task))
     if pick:
         return pick
-    entries = launch_entries(task, _policy(cfg, target), priority.order(
+    entries = launch_entries(task, _policy(cfg, repository), priority.order(
         priority.load(cfg.state_dir, routed_providers(cfg)), {},
         datetime.now(timezone.utc), cfg.pace))
     return str(entries[0]) if entries else ""
@@ -253,11 +253,11 @@ def _log_model(worktree: str, stage: Stage, model: str) -> None:
                          f"{_now()} {stage.value} {model}\n")
 
 
-def _url(target: Target, issue: int) -> str:
-    return f"https://github.com/{target.repo}/issues/{issue}"
+def _url(repository: Repository, issue: int) -> str:
+    return f"https://github.com/{repository.repo}/issues/{issue}"
 
 
-def _queue_message(cfg: Config, target: str, issue: int, text: str,
+def _queue_message(cfg: Config, repository: str, issue: int, text: str,
                    actor: str) -> None:
     """Every message the agent should eventually read goes here — operator
     replies AND dispatcher-authored ones (CI conclusions, "the operator
@@ -271,7 +271,7 @@ def _queue_message(cfg: Config, target: str, issue: int, text: str,
     messages" in the next resume prompt."""
     if not text.strip():
         return
-    messages.append(cfg.state_dir, target, issue, text, actor)
+    messages.append(cfg.state_dir, repository, issue, text, actor)
 
 
 def _message_block(msgs: list[messages.Message]) -> str:
@@ -285,20 +285,20 @@ def _message_block(msgs: list[messages.Message]) -> str:
     return "\n".join(lines)
 
 
-def _drain(cfg: Config, target: str, issue: int) -> tuple[str, list[str]]:
+def _drain(cfg: Config, repository: str, issue: int) -> tuple[str, list[str]]:
     """(block, ids) for everything queued on this issue. The caller stamps
     the ids only AFTER the session actually took the prompt, so a spawn that
     raises leaves the mail queued for the next attempt. Ids are captured
     here, not re-derived later, so a message that arrives during the spawn is
     not stamped as delivered without ever being shown."""
-    msgs = messages.undelivered(cfg.state_dir, target, issue)
+    msgs = messages.undelivered(cfg.state_dir, repository, issue)
     return _message_block(msgs), [m.id for m in msgs]
 
 
 def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
           actor: str = "dispatcher", *, model_override: str = "",
           bypass_usage: bool = False) -> None:
-    _queue_message(cfg, task.target, task.issue, text, actor)
+    _queue_message(cfg, task.repository, task.issue, text, actor)
     task = loops.reset(task, ResetCause.OPERATOR_WAKE)
     save(cfg.state_dir, replace(task, park=PARK_WAKE, hold_for_attach=hold,
                                 resume_model_override=model_override,
@@ -325,18 +325,18 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     re-reads blocked/awaiting-ci, re-parks, and ENDS the session that was
     just re-authenticated."""
     if relogin.classify_login(
-            deps.sessions.capture_tail(task.target, task.issue)) is None:
+            deps.sessions.capture_tail(task.repository, task.issue)) is None:
         deps.notifier.send("status", lines=[
             f"{_ref(cfg, task)} is no longer at a login prompt — code NOT typed "
             f"(the pane would have run it as a shell command). Still parked; "
             f"attach to the session to sort it out."])
         return
-    deps.sessions.send_text(task.target, task.issue, code.strip())
-    clear_turn_markers(cfg.state_dir, task.target, task.issue)
+    deps.sessions.send_text(task.repository, task.issue, code.strip())
+    clear_turn_markers(cfg.state_dir, task.repository, task.issue)
     signal = read_stage_signal(task.worktree)
     if signal is not None and signal.status != "working":
-        by_name = {t.name: t for t in cfg.targets}
-        model = _display_entry(cfg, by_name.get(task.target), task)
+        by_name = {t.name: t for t in cfg.repositories}
+        model = _display_entry(cfg, by_name.get(task.repository), task)
         try:
             write_worktree_file(task.worktree, ".agent", "stage.json", json.dumps(
                 {"stage": task.stage.value, "status": "working", "model": model}))
@@ -347,16 +347,16 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     save(cfg.state_dir, replace(task, park="", park_msg_id=0,
                                 park_note="", updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "login-code-injected",
-                          target=task.target, issue=task.issue,
+                          repository=task.repository, issue=task.issue,
                           stage=task.stage.value, detail="login code injected")
 
 
 def _status_lines(cfg: Config) -> list[str]:
-    by_name = {t.name: t for t in cfg.targets}
+    by_name = {t.name: t for t in cfg.repositories}
     tasks = [t for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
     lines = []
     for t in tasks:
-        model = _display_entry(cfg, by_name.get(t.target), t)
+        model = _display_entry(cfg, by_name.get(t.repository), t)
         slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
         lines.append(f"{_ref(cfg, t)} {t.title} — {shown_stage(t)} [{model}]"
                      + (f" [{t.park}]" if t.park else "") + f" {slot}")
@@ -373,47 +373,68 @@ def _status_lines(cfg: Config) -> list[str]:
 
 
 def _ref(cfg: Config, task: TaskState) -> str:
-    return task_ref(task.target, task.issue, len(cfg.targets) > 1)
+    return task_ref(task.repository, task.issue, len(cfg.repositories) > 1)
 
 
 def _find_rows(cfg: Config, deps: Deps, issue: int) -> list[tuple]:
-    return [(target, row)
-            for target in cfg.targets
-            for row in deps.github.rank_rows(target)
+    return [(repository, row)
+            for repository in cfg.repositories
+            for row in deps.github.rank_rows(repository)
             if row["number"] == issue]
 
 
 def _queue_lines(cfg: Config, deps: Deps) -> list[str]:
     lines: list[str] = []
-    for target in cfg.targets:
-        rows = deps.github.rank_rows(target)
-        if len(cfg.targets) > 1:
-            lines.append(f"[{target.name}]")
-        available = [r for r in rows
-                     if not r["blocked"] and r.get("status") != "In progress"]
-        for idx, r in enumerate(available[:10], start=1):
-            boost = r.get("boost", 0)
-            marker = f" ↑{boost}" if boost > 0 else (f" ↓{-boost}" if boost < 0 else "")
-            value = r.get("score")
-            score = f"{value:.2f}" if value is not None else "—"
-            lines.append(f"{idx}.{marker} [{score}] #{r['number']} {r['title']}")
-        if len(available) > 10:
-            lines.append(f"… {len(available) - 10} more")
-        in_progress = [r for r in rows if r.get("status") == "In progress"]
-        if in_progress:
-            lines.append("In progress: "
-                         + ", ".join(f"#{r['number']}" for r in in_progress))
-        blocked = [r for r in rows if r["blocked"]]
-        if blocked:
-            lines.append("Blocked: "
-                         + ", ".join(f"#{r['number']}" for r in blocked))
-        if not rows:
-            lines.append("(queue empty)")
+    for repository in cfg.repositories:
+        if len(cfg.repositories) > 1:
+            lines.append(f"[{repository.name}]")
+        lines += _rank_lines(deps.github.rank_rows(repository))
     return lines
 
 
+def _rank_lines(rows: list[dict]) -> list[str]:
+    available = [r for r in rows
+                 if not r["blocked"] and r.get("status") != "In progress"]
+    return _available_lines(available) + _summary_lines(rows)
+
+
+def _available_lines(available: list[dict]) -> list[str]:
+    """The top ten workable rows, numbered, plus a count of the rest."""
+    lines = [_rank_line(idx, r)
+             for idx, r in enumerate(available[:10], start=1)]
+    if len(available) > 10:
+        lines.append(f"… {len(available) - 10} more")
+    return lines
+
+
+def _rank_line(idx: int, row: dict) -> str:
+    boost = row.get("boost", 0)
+    marker = f" ↑{boost}" if boost > 0 else (f" ↓{-boost}" if boost < 0 else "")
+    value = row.get("score")
+    score = f"{value:.2f}" if value is not None else "—"
+    return f"{idx}.{marker} [{score}] #{row['number']} {row['title']}"
+
+
+def _summary_lines(rows: list[dict]) -> list[str]:
+    """The in-progress and blocked issue lists, or a note that the queue is
+    empty."""
+    lines = _issue_list("In progress", [r for r in rows
+                                        if r.get("status") == "In progress"])
+    lines += _issue_list("Blocked", [r for r in rows if r["blocked"]])
+    if not rows:
+        lines.append("(queue empty)")
+    return lines
+
+
+def _issue_list(label: str, rows: list[dict]) -> list[str]:
+    """One "<label>: #1, #2" line, or none when there are no rows."""
+    if not rows:
+        return []
+    return [f"{label}: " + ", ".join(f"#{r['number']}" for r in rows)]
+
+
 def _locate(cfg: Config, deps: Deps, issue: int):
-    """Resolve an issue to (target, row); reports and returns None when it
+    """Resolve an issue to (repository, row); reports and returns None when it
     can't."""
     hits = _find_rows(cfg, deps, issue)
     if not hits:
@@ -421,7 +442,7 @@ def _locate(cfg: Config, deps: Deps, issue: int):
         return None
     if len(hits) > 1:
         deps.notifier.send("status", lines=[
-            f"#{issue} exists in multiple targets ("
+            f"#{issue} exists in multiple repositories ("
             + ", ".join(t.name for t, _ in hits)
             + ") — not yet supported, edit the board directly"])
         return None
@@ -432,9 +453,9 @@ def _handle_boost(cfg: Config, deps: Deps, issue: int, amount: int) -> None:
     located = _locate(cfg, deps, issue)
     if not located:
         return
-    target, row = located
+    repository, row = located
     plan = queue_ops.plan_boost(row, amount)
-    queue_ops.apply_plan(deps.github, target, issue, plan)
+    queue_ops.apply_plan(deps.github, repository, issue, plan)
     deps.notifier.send("status", lines=plan.reason.split("\n"))
 
 
@@ -442,9 +463,9 @@ def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
     located = _locate(cfg, deps, issue)
     if not located:
         return
-    target, row = located
+    repository, row = located
     plan = queue_ops.plan_next(row, force)
-    queue_ops.apply_plan(deps.github, target, issue, plan)
+    queue_ops.apply_plan(deps.github, repository, issue, plan)
     deps.notifier.send("status", lines=plan.reason.split("\n"))
 
 
@@ -485,7 +506,7 @@ def _handle_command(cfg: Config, deps: Deps, tasks: list[TaskState],
 
 def _handle_attach(cfg: Config, deps: Deps, tasks: list[TaskState],
                    issue: int) -> None:
-    """A bare number names one task only while no other target has the same
+    """A bare number names one task only while no other repository has the same
     number parked; when two do, wake nothing and list them."""
     match = [t for t in tasks if t.issue == issue and t.park]
     if len(match) == 1:
@@ -537,11 +558,11 @@ def _handle_plain(cfg: Config, deps: Deps, reply_parked: list[TaskState],
             + [f"{_ref(cfg, t)} {t.title}" for t in reply_parked]))
 
 
-def _notify(deps: Deps, target: Target, task: TaskState, template: str,
+def _notify(deps: Deps, repository: Repository, task: TaskState, template: str,
             note: str = "") -> None:
     deps.notifier.send(template, issue=task.issue, title=task.title,
-                       url=_url(target, task.issue), note=note,
-                       target=target.name)
+                       url=_url(repository, task.issue), note=note,
+                       repository=repository.name)
 
 
 def _heal_identity(task: TaskState) -> None:
@@ -549,20 +570,20 @@ def _heal_identity(task: TaskState) -> None:
     task's own state, whatever the file held. A failure is logged and the
     launch goes on."""
     try:
-        write_task_identity(task.worktree, task.issue, task.target, task.branch)
+        write_task_identity(task.worktree, task.issue, task.repository, task.branch)
     except OSError as exc:
         print(f"[warn] task identity not written for #{task.issue}: {exc}",
               file=sys.stderr)
 
 
-def _heal_exclude(target: Target, task: TaskState) -> None:
+def _heal_exclude(repository: Repository, task: TaskState) -> None:
     """Before a launch or a resume: a worktree made before the exclude lines
-    existed gets them now. The path is the target's configured clone, never
+    existed gets them now. The path is the repository's configured clone, never
     one taken from the worktree. The lines are a protection, not a
     precondition for a task that already exists: a failure is logged and the
     launch goes on."""
     try:
-        exclude_local_state(target.clone_path)
+        exclude_local_state(repository.clone_path)
     except OSError as exc:
         print(f"[warn] exclude lines not written for #{task.issue}: {exc}",
               file=sys.stderr)
@@ -596,46 +617,46 @@ def _with_implement_provider(task: TaskState, stage: Stage, entry) -> list[str]:
     return providers
 
 
-def _spawn_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _spawn_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                  launch: Launch, spec_path: str = "") -> TaskState:
     # Logical stage boundaries reset loop budgets; a replacement conversation
     # calls the same launch I/O without creating a new allowance.
     task = loops.reset(task, ResetCause.STAGE_STARTED)
-    return _launch_stage(cfg, deps, target, task, launch, spec_path)
+    return _launch_stage(cfg, deps, repository, task, launch, spec_path)
 
 
-def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                   launch: Launch, spec_path: str = "",
                   message: str = "") -> TaskState:
     stage, entry = launch.stage, launch.entry
     model = entry.model_id
     ctx = dict(
         issue_number=task.issue, issue_title=task.title,
-        issue_url=_url(target, task.issue), repo=target.repo,
+        issue_url=_url(repository, task.issue), repo=repository.repo,
         branch=task.branch, base=task.base, slot=task.slot,
         backend_port=8100 + task.slot, frontend_port=5200 + task.slot,
-        verify_cmd=target.verify_cmd.format(slot=task.slot),
-        gate_cmd=target.gate_cmd.format(slot=task.slot),
+        verify_cmd=repository.verify_cmd.format(slot=task.slot),
+        gate_cmd=repository.gate_cmd.format(slot=task.slot),
         spec_path=spec_path or task.spec_path,
         tickets_dir=TICKETS_DIR, ticket_count=task.ticket_count,
         pr_number=task.pr_number,
         reason=task.attention or "feedback",
         labels=", ".join(task.labels),
-        tracks=tracks_text(_policy(cfg, target)),
+        tracks=tracks_text(_policy(cfg, repository)),
     )
     prompt = render_stage_prompt(stage, ctx)
     if message:
         prompt = f"{prompt}\n\n{message}"
-    block, drained = _drain(cfg, task.target, task.issue)
+    block, drained = _drain(cfg, task.repository, task.issue)
     if block:
         prompt = f"{prompt}\n\n{block}\n"
-    _heal_exclude(target, task)
+    _heal_exclude(repository, task)
     _heal_identity(task)
     _write_working(task.worktree, stage, entry)
-    deps.sessions.spawn_stage(task.target, task.issue, task.worktree, prompt,
+    deps.sessions.spawn_stage(task.repository, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
                               second=launch.second)
-    messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
+    messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
     # A gated task's plan session runs at the gate, so its `done` is the approval.
     kept = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and task.gated else stage
     task = replace(task, stage=kept, spec_path=spec_path or task.spec_path,
@@ -646,33 +667,33 @@ def _launch_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
                    picks={**task.picks, pick_key(stage.value): str(entry)},
                    implement_providers=_with_implement_provider(task, stage, entry))
     save(cfg.state_dir, task)
-    eventlog.append_event(cfg.state_dir, "stage-started", target=target.name,
+    eventlog.append_event(cfg.state_dir, "stage-started", repository=repository.name,
                           issue=task.issue, stage=stage.value, model=str(entry))
     return task
 
 
-def _continue_or_restart(cfg: Config, deps: Deps, target: Target,
+def _continue_or_restart(cfg: Config, deps: Deps, repository: Repository,
                          task: TaskState, launch: Launch,
                          message: str = "") -> tuple[TaskState, str]:
     """Every continuation names its recorded conversation or launches afresh."""
     stage = task.continued_stage
-    record = read_session(cfg.state_dir, task.target, task.issue)
+    record = read_session(cfg.state_dir, task.repository, task.issue)
     detail = ""
     if record is not None and record.stage == stage.value:
         _heal_identity(task)
-        block, drained = _drain(cfg, task.target, task.issue)
+        block, drained = _drain(cfg, task.repository, task.issue)
         text = "\n\n".join(filter(None, (message, block))) or "Continue."
-        deps.sessions.resume(task.target, task.issue, task.worktree, text,
+        deps.sessions.resume(task.repository, task.issue, task.worktree, text,
                              launch.model, launch.entry.effort,
                              second=launch.second, session_id=record.session_id)
-        messages.mark_delivered(cfg.state_dir, task.target, task.issue, drained)
+        messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
         task = replace(task, **NO_POKES)
     else:
         detail = (f"new conversation: session recorded for {record.stage}" if record
                   else "new conversation: no session recorded")
-        task = _launch_stage(cfg, deps, target, task, replace(launch, stage=stage),
+        task = _launch_stage(cfg, deps, repository, task, replace(launch, stage=stage),
                              message=message or "Continue.")
-    eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
+    eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           model=str(launch.entry), detail=detail)
     return task, detail
@@ -744,20 +765,20 @@ def _auth_dark_edge(cfg: Config, deps: Deps, usages: dict[str, ProviderUsage]) -
         marker.write_text(json.dumps({"since": st["since"], "alerted": True}))
 
 
-def _end_session(cfg: Config, deps: Deps, target: str, issue: int) -> None:
+def _end_session(cfg: Config, deps: Deps, repository: str, issue: int) -> None:
     """End the task's session and drop its turn-end markers (waiting and
     background): the next session must never inherit the old one's."""
-    deps.sessions.end(target, issue)
-    clear_turn_markers(cfg.state_dir, target, issue)
+    deps.sessions.end(repository, issue)
+    clear_turn_markers(cfg.state_dir, repository, issue)
 
 
-def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                     note: str, artifact: str = "",
                     is_answers: bool = False,
                     reason: str = WHY_DECISION) -> None:
-    tail = deps.sessions.capture_tail(task.target, task.issue)
+    tail = deps.sessions.capture_tail(task.repository, task.issue)
     login = relogin.classify_login(tail)
-    if login is not None and _park_for_login(cfg, deps, target, task, note,
+    if login is not None and _park_for_login(cfg, deps, repository, task, note,
                                              tail, login):
         return
     resolved = ""
@@ -784,9 +805,9 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
         note = (note + "\n\n[malformed awaiting-answers: no usable artifact path]").strip()
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
-        url=_url(target, task.issue), target=target.name,
+        url=_url(repository, task.issue), repository=repository.name,
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
-    _end_session(cfg, deps, task.target, task.issue)
+    _end_session(cfg, deps, task.repository, task.issue)
     # A wake that ends here is over: the wake that follows this park says
     # for itself whether it is an attach, and on which model.
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
@@ -797,28 +818,28 @@ def _park_for_input(cfg: Config, deps: Deps, target: Target, task: TaskState,
                                 resume_bypass_usage=False,
                                 asked=task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN)),
                                 updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+    eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
 
 
-def _park_exhausted(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _park_exhausted(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                     note: str) -> None:
     """A bounded loop hit its cap with no live session to end (a CI park, or
     a pr-open task): park for the operator. Their reply wakes it with a
     fresh budget (_wake / the reply intent zero the counters)."""
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
-        url=_url(target, task.issue), target=target.name, note=note)
+        url=_url(repository, task.issue), repository=repository.name, note=note)
     save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
                                 park_note=note, park_reason=WHY_LOOP_CAP,
                                 slot=NO_SLOT, ci_run_id=0, operator_request=None,
                                 updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+    eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="loop exhausted: " + note)
 
 
-def _apply_loop_decision(cfg: Config, deps: Deps, target: Target,
+def _apply_loop_decision(cfg: Config, deps: Deps, repository: Repository,
                          task: TaskState, decision: Decision,
                          park_exhausted) -> tuple[TaskState, bool]:
     """Shared executor for a loop policy Decision (from machine.ApplyDecision).
@@ -831,7 +852,7 @@ def _apply_loop_decision(cfg: Config, deps: Deps, target: Target,
         return task, False
     task = replace(decision.apply_to(task), updated_at=_now())
     save(cfg.state_dir, task)
-    eventlog.append_event(cfg.state_dir, "round", target=target.name,
+    eventlog.append_event(cfg.state_dir, "round", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=decision.description)
     if decision.outcome is Outcome.EXHAUSTED:
@@ -841,12 +862,12 @@ def _apply_loop_decision(cfg: Config, deps: Deps, target: Target,
         park_exhausted(task, note)
         return task, True
     if decision.outcome is Outcome.LAST_ROUND:
-        _notify(deps, target, task, "last_round",
+        _notify(deps, repository, task, "last_round",
                 f"{decision.loop.value} round {decision.round}/{decision.cap}")
     return task, False
 
 
-def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _park_for_login(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                     note: str, tail: str, login: relogin.LoginPrompt) -> bool:
     """Unlike every other park, the session is NOT ended: the reply path
     types the OAuth code into this exact pane. Only this task is parked;
@@ -864,17 +885,17 @@ def _park_for_login(cfg: Config, deps: Deps, target: Target, task: TaskState,
     liveness is what this park protects, and the marker has no part in it."""
     msg_id = deps.notifier.send(
         "needs_relogin", issue=task.issue, title=task.title,
-        url=_url(target, task.issue), target=target.name,
+        url=_url(repository, task.issue), repository=repository.name,
         login_url=login.url or "(attach to the session to see the URL)",
         note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
     if msg_id == 0:
         return False
-    clear_turn_markers(cfg.state_dir, task.target, task.issue)
+    clear_turn_markers(cfg.state_dir, task.repository, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
                                 park_note=note, operator_request=None,
                                 **NO_POKES,
                                 updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+    eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="needs re-login: " + note)
     return True
@@ -894,7 +915,7 @@ _RETRY_HINT = {
 }
 
 
-def _retry_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _retry_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                  launch: Launch, act: RetryStage) -> None:
     """Resume the spec or plan session with why its signal was rejected (a
     track that is not configured, a review the stage does not have, the
@@ -908,25 +929,25 @@ def _retry_stage(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # Before resuming: the next pass must not re-read the rejected signal,
     # re-check the still-unfixed work, and burn the retry immediately.
     _write_working(task.worktree, act.stage, entry)
-    _end_session(cfg, deps, task.target, task.issue)
+    _end_session(cfg, deps, task.repository, task.issue)
     text = (f"Your .agent/stage.json was rejected: {act.reason}. "
             f"{_RETRY_HINT[act.stage]}")
-    task, _ = _continue_or_restart(cfg, deps, target, task, launch, text)
+    task, _ = _continue_or_restart(cfg, deps, repository, task, launch, text)
     # A rejected plan is no longer on offer: the session's next ready report
     # is checked and armed again.
     save(cfg.state_dir, replace(loops.spend_retry(task, act.retry),
                                 updated_at=_now(), operator_request=None))
     if act.stage is Stage.PLAN:
-        _notify(deps, target, task, "plan_retry", act.reason)
+        _notify(deps, repository, task, "plan_retry", act.reason)
 
 
-def _park_for_ci(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _park_for_ci(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                  run_id: int) -> None:
-    _end_session(cfg, deps, task.target, task.issue)
+    _end_session(cfg, deps, task.repository, task.issue)
     save(cfg.state_dir, replace(task, park=PARK_CI, ci_run_id=run_id,
                                 slot=NO_SLOT, operator_request=None,
                                 updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+    eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=f"awaiting CI run {run_id}")
 
@@ -962,7 +983,7 @@ def _spec_note(pub: "spec_publish.PublishResult") -> str:
     return f"spec: {pub.url}"
 
 
-def _park_for_review(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _park_for_review(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                      reason: ReviewPark, dry_run: bool = False) -> None:
     """Park a task at the plan gate for a human to read whenever they wake
     up. The only park that also releases the SLOT: the plan stage never used
@@ -972,12 +993,12 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target, task: TaskState,
     unattended rounds used up may have left no plan: the operator is told
     that, not "plan ready"."""
     died = reason is ReviewPark.SESSION_DIED
-    tail = deps.sessions.capture_tail(task.target, task.issue)
+    tail = deps.sessions.capture_tail(task.repository, task.issue)
     note = tail.strip() or "(no detail)"
     if task.spec_path:
         pub = spec_publish.ensure_published(
             worktree=task.worktree, branch=task.branch,
-            repo=target.repo, issue=task.issue,
+            repo=repository.repo, issue=task.issue,
             artifact=task.spec_path, dry_run=dry_run)
         note += f"\n{_spec_note(pub)}"
     # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
@@ -986,24 +1007,24 @@ def _park_for_review(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # This matches the same reasoning in _park_for_input.
     msg_id = deps.notifier.send(
         "plan_session_stopped" if died else "plan_parked",
-        issue=task.issue, title=task.title, url=_url(target, task.issue),
-        note=note, target=target.name, rounds=task.unattended_rounds)
-    _end_session(cfg, deps, task.target, task.issue)
+        issue=task.issue, title=task.title, url=_url(repository, task.issue),
+        note=note, repository=repository.name, rounds=task.unattended_rounds)
+    _end_session(cfg, deps, task.repository, task.issue)
     save(cfg.state_dir, replace(
         task, park=PARK_REVIEW, park_msg_id=msg_id, slot=NO_SLOT, updated_at=_now(),
         park_note=("plan session stopped at the review gate" if died
                    else "plan ready for review")))
-    eventlog.append_event(cfg.state_dir, "parked", target=target.name,
+    eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=reason.value)
 
 
-def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
+def _wake_ci(cfg: Config, deps: Deps, repository: Repository) -> None:
     for task in load_all(cfg.state_dir):
-        if task.target != target.name or task.park != PARK_CI:
+        if task.repository != repository.name or task.park != PARK_CI:
             continue
         try:
-            conclusion = deps.github.run_status(target, task.ci_run_id)
+            conclusion = deps.github.run_status(repository, task.ci_run_id)
         except (subprocess.CalledProcessError, OSError) as exc:
             print(f"[warn] run_status failed for #{task.issue} run {task.ci_run_id}: {exc}",
                   file=sys.stderr)
@@ -1014,37 +1035,37 @@ def _wake_ci(cfg: Config, deps: Deps, target: Target) -> None:
             dec = loops.evaluate(task, loops.FailedRun(f"run {task.ci_run_id} {conclusion}"),
                                  cfg.loop_caps)
             task, parked = _apply_loop_decision(
-                cfg, deps, target, task, dec,
-                park_exhausted=lambda t, note: _park_exhausted(cfg, deps, target, t, note))
+                cfg, deps, repository, task, dec,
+                park_exhausted=lambda t, note: _park_exhausted(cfg, deps, repository, t, note))
             if parked:
                 continue
         reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
                  f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
-        _queue_message(cfg, task.target, task.issue, reply, "dispatcher")
+        _queue_message(cfg, task.repository, task.issue, reply, "dispatcher")
         save(cfg.state_dir, replace(task, park=PARK_WAKE, ci_run_id=0,
                                     updated_at=_now()))
 
 
-def _poll_pr(cfg: Config, deps: Deps, target: Target, task: TaskState
+def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState
              ) -> "tuple[TaskState, pr_poll.PollResult] | None":
     """One pr-open task's PR, classified; None when it has no PR yet.
     Resolves and saves the PR number on first sight."""
     if not task.pr_number:
-        n = deps.github.pr_number_for_branch(target, task.branch)
+        n = deps.github.pr_number_for_branch(repository, task.branch)
         if not n:
             print(f"[warn] #{task.issue}: no PR found for branch "
                   f"{task.branch}", file=sys.stderr)
             return None
         task = replace(task, pr_number=n, updated_at=_now())
         save(cfg.state_dir, task)
-    payload = deps.github.pr_view(target, task.pr_number)
+    payload = deps.github.pr_view(repository, task.pr_number)
     login = deps.github.viewer_login()
     res = pr_poll.classify(payload, task.feedback_cursor, login,
                            check_cursor=task.check_cursor,
                            conflict_cursor=task.conflict_cursor)
     if res.kind in ("quiet", "conflict") and not task.park and not task.feedback_pending:
         statuses = deps.github.ci_statuses(
-            target, payload.get("headRefOid") or "",
+            repository, payload.get("headRefOid") or "",
             payload.get("headRefName") or "")
         res = pr_poll.classify(payload, task.feedback_cursor, login,
                                check_cursor=task.check_cursor,
@@ -1053,16 +1074,16 @@ def _poll_pr(cfg: Config, deps: Deps, target: Target, task: TaskState
     return task, res
 
 
-def _poll_prs(cfg: Config, deps: Deps, target: Target,
+def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
               dry_run: bool = False) -> None:
     """Watch every pr-open task's PR independently of CI access and capacity.
     Reaction (address-review spawn) is gated
     separately in _spawn_feedback."""
     for task in load_all(cfg.state_dir):
-        if task.target != target.name or task.stage is not Stage.PR_OPEN:
+        if task.repository != repository.name or task.stage is not Stage.PR_OPEN:
             continue
         try:
-            polled = _poll_pr(cfg, deps, target, task)
+            polled = _poll_pr(cfg, deps, repository, task)
             if polled is None:
                 continue
             task, res = polled
@@ -1072,7 +1093,7 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
             continue
         if res.kind == "merged":
             try:
-                _finish_merged(cfg, deps, target, task, dry_run)
+                _finish_merged(cfg, deps, repository, task, dry_run)
             except (subprocess.CalledProcessError,
                     subprocess.TimeoutExpired, OSError) as exc:
                 print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
@@ -1084,15 +1105,15 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
             # isn't in IN_FLIGHT_STAGES), so its session and container
             # would otherwise hold their memory/cpu reservation until the box
             # reboots. The worktree stays for autopsy.
-            _end_session(cfg, deps, task.target, task.issue)
+            _end_session(cfg, deps, task.repository, task.issue)
             save(cfg.state_dir, replace(task, stage=Stage.FAILED,
                                         operator_request=None,
                                         updated_at=_now()))
             eventlog.append_event(cfg.state_dir, "pr-closed",
-                                  target=target.name, issue=task.issue,
+                                  repository=repository.name, issue=task.issue,
                                   stage=Stage.PR_OPEN.value,
                                   detail=f"PR #{task.pr_number} closed unmerged")
-            _notify(deps, target, task, "pr_closed",
+            _notify(deps, repository, task, "pr_closed",
                     f"PR #{task.pr_number}. Worktree preserved for autopsy.")
         elif task.park:
             continue   # parked: only merge/close still matter
@@ -1102,16 +1123,16 @@ def _poll_prs(cfg: Config, deps: Deps, target: Target,
                                         attention="feedback",
                                         updated_at=_now()))
             eventlog.append_event(cfg.state_dir, "pr-feedback",
-                                  target=target.name, issue=task.issue,
+                                  repository=repository.name, issue=task.issue,
                                   stage=Stage.PR_OPEN.value,
                                   detail=f"newest {res.latest_ts}")
-            _notify(deps, target, task, "pr_feedback",
+            _notify(deps, repository, task, "pr_feedback",
                     f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
         elif res.kind in ("check-failed", "conflict") and not task.feedback_pending:
-            _pr_attention(cfg, deps, target, task, res)
+            _pr_attention(cfg, deps, repository, task, res)
 
 
-def _pr_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _pr_attention(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                   res: "pr_poll.PollResult") -> None:
     """A red check or a conflict on the open PR: one round of the ci loop,
     address-review queued with the reason, cursor advanced so the same
@@ -1122,20 +1143,20 @@ def _pr_attention(cfg: Config, deps: Deps, target: Target, task: TaskState,
     dec = loops.evaluate(task, loops.PRAttention(f"{res.kind} on PR #{task.pr_number}"),
                          cfg.loop_caps)
     task, parked = _apply_loop_decision(
-        cfg, deps, target, task, dec,
-        park_exhausted=lambda t, note: _park_exhausted(cfg, deps, target, t, note))
+        cfg, deps, repository, task, dec,
+        park_exhausted=lambda t, note: _park_exhausted(cfg, deps, repository, t, note))
     if parked:
         return          # cursor already applied; _park_exhausted saved the cursor-advanced task
     # not exhausted: set feedback_pending + attention, emit pr-attention event, pr_attention notify
     save(cfg.state_dir, replace(task, feedback_pending=True, attention=res.kind,
                                 updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "pr-attention", target=target.name,
+    eventlog.append_event(cfg.state_dir, "pr-attention", repository=repository.name,
                           issue=task.issue, stage=Stage.PR_OPEN.value,
                           detail=res.kind)
-    _notify(deps, target, task, "pr_attention", f"{res.kind} on PR #{task.pr_number}")
+    _notify(deps, repository, task, "pr_attention", f"{res.kind} on PR #{task.pr_number}")
 
 
-def _finish_merged(cfg: Config, deps: Deps, target: Target,
+def _finish_merged(cfg: Config, deps: Deps, repository: Repository,
                    task: TaskState, dry_run: bool = False) -> None:
     """Ordered so a mid-sequence gh failure retries next pass (a merged PR
     still reads merged): board first (the raising step), then teardown
@@ -1143,52 +1164,52 @@ def _finish_merged(cfg: Config, deps: Deps, target: Target,
     The issue close comes first of all: an issue the operator closed (even as
     not planned) is left as it is, and a failed close retries before any
     teardown."""
-    if (not dry_run and deps.github.issue_state(target.repo, task.issue)
+    if (not dry_run and deps.github.issue_state(repository.repo, task.issue)
             == "OPEN"):
-        deps.github.close_issue(target.repo, task.issue)
-    if target.status_done_option_id:
-        deps.github.set_status(target, task.issue, target.status_done_option_id)
+        deps.github.close_issue(repository.repo, task.issue)
+    if repository.status_done_option_id:
+        deps.github.set_status(repository, task.issue, repository.status_done_option_id)
     else:
-        print(f"[warn] {target.name}: status_done_option_id unset — board "
+        print(f"[warn] {repository.name}: status_done_option_id unset — board "
               f"not updated for #{task.issue}", file=sys.stderr)
-    _end_session(cfg, deps, task.target, task.issue)
+    _end_session(cfg, deps, task.repository, task.issue)
     if not dry_run:
-        task_artifacts.collect(cfg.state_dir, task, target.repo)
-        task_artifacts.pin_published(cfg.state_dir, task, target.repo)
-    remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
-    deps.github.delete_branch(target, task.branch)
+        task_artifacts.collect(cfg.state_dir, task, repository.repo)
+        task_artifacts.pin_published(cfg.state_dir, task, repository.repo)
+    remove_workspace(repository, task.worktree, task.branch, dry_run=dry_run)
+    deps.github.delete_branch(repository, task.branch)
     save(cfg.state_dir, replace(task, stage=Stage.DONE, park="",
                                 feedback_pending=False, operator_request=None,
                                 done_at=_now(), updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "merged", target=target.name,
+    eventlog.append_event(cfg.state_dir, "merged", repository=repository.name,
                           issue=task.issue, stage=Stage.DONE.value,
                           detail=f"PR #{task.pr_number}")
-    _notify(deps, target, task, "task_done",
-            f"https://github.com/{target.repo}/pull/{task.pr_number}")
+    _notify(deps, repository, task, "task_done",
+            f"https://github.com/{repository.repo}/pull/{task.pr_number}")
 
 
-def _wake_blocked_path(cfg: Config, target: str, issue: int) -> Path:
+def _wake_blocked_path(cfg: Config, repository: str, issue: int) -> Path:
     return (Path(cfg.state_dir)
-            / f"{WAKE_BLOCKED_PREFIX}{task_key(target, issue)}")
+            / f"{WAKE_BLOCKED_PREFIX}{task_key(repository, issue)}")
 
 
-def _mark_wake_blocked(cfg: Config, target: Target, task: TaskState,
+def _mark_wake_blocked(cfg: Config, repository: Repository, task: TaskState,
                        reason: str) -> None:
     """Edge-triggered: the event fires the pass a wake FIRST goes hungry, not
     every pass thereafter — a resume that waits overnight must not write 144
     identical lines into events.jsonl. The marker is the edge."""
-    p = _wake_blocked_path(cfg, task.target, task.issue)
+    p = _wake_blocked_path(cfg, task.repository, task.issue)
     if p.exists():
         return
     p.parent.mkdir(parents=True, exist_ok=True)
     p.touch()
-    eventlog.append_event(cfg.state_dir, "wake-blocked", target=target.name,
+    eventlog.append_event(cfg.state_dir, "wake-blocked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=reason)
 
 
-def _clear_wake_blocked(cfg: Config, target: str, issue: int) -> None:
-    _wake_blocked_path(cfg, target, issue).unlink(missing_ok=True)
+def _clear_wake_blocked(cfg: Config, repository: str, issue: int) -> None:
+    _wake_blocked_path(cfg, repository, issue).unlink(missing_ok=True)
 
 
 def _expired(task: TaskState, cutoff_seconds: int) -> bool:
@@ -1210,49 +1231,49 @@ def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
     window: worktree and local branch go (the remote branch, PR and issue
     are the record), then the state file. A done task's teardown already
     ran at merge; remove_workspace is best-effort, so repeating it is a
-    no-op. A task whose target left the config keeps its worktree: nothing
+    no-op. A task whose repository left the config keeps its worktree: nothing
     knows its clone any more."""
-    by_name = {t.name: t for t in cfg.targets}
+    by_name = {t.name: t for t in cfg.repositories}
     for task in load_all(cfg.state_dir):
         if not _expired(task, cfg.done_retention_days * 86400):
             continue
-        target = by_name.get(task.target)
-        if target is not None and task.worktree:
-            remove_workspace(target, task.worktree, task.branch, dry_run=dry_run)
-        _clear_wake_blocked(cfg, task.target, task.issue)
-        clear_session(cfg.state_dir, task.target, task.issue)
-        delete(cfg.state_dir, task.target, task.issue)
+        repository = by_name.get(task.repository)
+        if repository is not None and task.worktree:
+            remove_workspace(repository, task.worktree, task.branch, dry_run=dry_run)
+        _clear_wake_blocked(cfg, task.repository, task.issue)
+        clear_session(cfg.state_dir, task.repository, task.issue)
+        delete(cfg.state_dir, task.repository, task.issue)
         eventlog.append_event(cfg.state_dir, "flushed",
-                              target=task.target, issue=task.issue,
+                              repository=task.repository, issue=task.issue,
                               stage=task.stage.value)
 
 
 def _oldest_first(cfg: Config):
     """Sort key for box-wide queues: oldest `updated_at` first, ties in
-    target-list order so a pass is deterministic."""
-    rank = {t.name: i for i, t in enumerate(cfg.targets)}
-    return lambda t: (t.updated_at, rank[t.target])
+    repository-list order so a pass is deterministic."""
+    rank = {t.name: i for i, t in enumerate(cfg.repositories)}
+    return lambda t: (t.updated_at, rank[t.repository])
 
 
 def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
                   dry_run: bool = False) -> None:
-    """Box-wide, oldest wake first across every target: capacity is shared,
-    so target listing order must not decide whose approved work waits."""
-    targets = {t.name: t for t in cfg.targets}
+    """Box-wide, oldest wake first across every repository: capacity is shared,
+    so repository listing order must not decide whose approved work waits."""
+    repositories = {t.name: t for t in cfg.repositories}
     woken = sorted(
         [t for t in load_all(cfg.state_dir)
-         if t.target in targets and t.park == PARK_WAKE],
+         if t.repository in repositories and t.park == PARK_WAKE],
         key=_oldest_first(cfg),
     )
     for task in woken:
-        target = targets[task.target]
-        launch, why = _wake_launch(cfg, deps, target, task, admit, order)
+        repository = repositories[task.repository]
+        launch, why = _wake_launch(cfg, deps, repository, task, admit, order)
         if why:
-            _park_stranded(cfg, deps, target, task, why)
+            _park_stranded(cfg, deps, repository, task, why)
         if launch is None:
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
-            _mark_wake_blocked(cfg, target, task, "capacity full")
+            _mark_wake_blocked(cfg, repository, task, "capacity full")
             continue
         if task.slot == NO_SLOT:
             # Parked tasks gave their slot back. Take any free one —
@@ -1262,19 +1283,19 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
             slot = allocate_slot(load_all(cfg.state_dir),
                                  max_slots(cfg.capacity))
             if slot is None:
-                _mark_wake_blocked(cfg, target, task, "no free slot")
+                _mark_wake_blocked(cfg, repository, task, "no free slot")
                 continue  # stays parked, retried next pass
             task = replace(task, slot=slot)
         try:
-            _resume_one(cfg, deps, target, task, launch)
+            _resume_one(cfg, deps, repository, task, launch)
             # The wake's launch is the next launch: a stored one-shot
             # override is used up with it, whatever model the wake ran on.
-            _consume_execution_choice(cfg, task.target, task.issue)
+            _consume_execution_choice(cfg, task.repository, task.issue)
         except Exception:
-            _fail_task_crash(cfg, deps, target, task, dry_run)
+            _fail_task_crash(cfg, deps, repository, task, dry_run)
 
 
-def _wake_launch(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _wake_launch(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                  admit: Admit, order: Order) -> tuple[Launch | None, str]:
     """The launch a woken task resumes on: its next launch
     (state.next_launch), chosen as every launch is (_choose_launch). Its
@@ -1286,7 +1307,7 @@ def _wake_launch(cfg: Config, deps: Deps, target: Target, task: TaskState,
     override = execution_overrides.pending(
         _execution_override_for(cfg, task, stage),
         task.resume_model_override, task.resume_bypass_usage)
-    launch, _, why = _choose_launch(cfg, target, task, stage, admit, order, override)
+    launch, _, why = _choose_launch(cfg, repository, task, stage, admit, order, override)
     return launch, why
 
 
@@ -1294,7 +1315,7 @@ ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
                "Wait for their input.")
 
 
-def _resume_one(cfg: Config, deps: Deps, target: Target,
+def _resume_one(cfg: Config, deps: Deps, repository: Repository,
                 task: TaskState, launch: Launch) -> None:
     """Resume a woken task on `launch`. An attach wake tells the session to
     wait for the operator: the notice is queued, so it rides with the
@@ -1305,36 +1326,36 @@ def _resume_one(cfg: Config, deps: Deps, target: Target,
     # but /attach on a PARK_LOGIN task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
     # running session (the failure _retry_stage and SpawnStage guard).
-    _end_session(cfg, deps, task.target, task.issue)
+    _end_session(cfg, deps, task.repository, task.issue)
     if not task.hold_for_attach:
-        _launch_woken(cfg, deps, target, task, launch)
+        _launch_woken(cfg, deps, repository, task, launch)
         return
-    notice = messages.append(cfg.state_dir, task.target, task.issue,
+    notice = messages.append(cfg.state_dir, task.repository, task.issue,
                              ATTACH_TEXT, "dispatcher")
     try:
-        detail = _launch_woken(cfg, deps, target, task, launch)
+        detail = _launch_woken(cfg, deps, repository, task, launch)
     except Exception:
-        messages.mark_delivered(cfg.state_dir, task.target, task.issue,
+        messages.mark_delivered(cfg.state_dir, task.repository, task.issue,
                                 [notice.id])
         raise
     deps.notifier.send("resumed_for_attach", issue=task.issue,
-                       title=task.title, url=_url(target, task.issue),
-                       target=target.name, note="new conversation" if detail else "")
+                       title=task.title, url=_url(repository, task.issue),
+                       repository=repository.name, note="new conversation" if detail else "")
 
 
-def _launch_woken(cfg: Config, deps: Deps, target: Target,
+def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
                   task: TaskState, launch: Launch) -> str:
     """Launch a woken task. Returns why a new conversation replaced the
     recorded one, else ""."""
     entry = launch.entry
-    _heal_exclude(target, task)
+    _heal_exclude(repository, task)
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
     if task.crashed_stage or (task.stage is Stage.IMPLEMENT
                               and implement_done(task)):
         # No session to continue: the stage it died in, or review after a
         # done implement session, starts afresh (state.next_launch).
-        _respawn(cfg, deps, target, task, launch)
+        _respawn(cfg, deps, repository, task, launch)
         return ""
     if task.stage is Stage.PR_OPEN:
         # No session to continue at pr-open: an operator wake on a parked
@@ -1345,9 +1366,9 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
                        attention="operator", feedback_cursor=_cursor_now(),
                        resume_model_override="", resume_bypass_usage=False,
                        operator_request=None)
-        _clear_wake_blocked(cfg, task.target, task.issue)
-        _spawn_stage(cfg, deps, target, task, launch)
-        eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
+        _clear_wake_blocked(cfg, task.repository, task.issue)
+        _spawn_stage(cfg, deps, repository, task, launch)
+        eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
                               model=str(entry))
         return ""
@@ -1355,8 +1376,8 @@ def _launch_woken(cfg: Config, deps: Deps, target: Target,
     # and re-park the freshly resumed session.
     _write_working(task.worktree, task.stage, entry)
     _log_model(task.worktree, task.stage, str(entry))
-    task, detail = _continue_or_restart(cfg, deps, target, task, launch)
-    _clear_wake_blocked(cfg, task.target, task.issue)
+    task, detail = _continue_or_restart(cfg, deps, repository, task, launch)
+    _clear_wake_blocked(cfg, task.repository, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                 park_msg_id=0, park_note="",
                                 resume_model_override="",
@@ -1381,7 +1402,7 @@ def _crash_failed(task: TaskState) -> TaskState:
                    updated_at=_now())
 
 
-def _respawn(cfg: Config, deps: Deps, target: Target,
+def _respawn(cfg: Config, deps: Deps, repository: Repository,
              task: TaskState, launch: Launch) -> None:
     """Resume of a task that has no session to continue; `launch` is its
     next launch. A crashed task: the stage it died in starts afresh in the
@@ -1390,20 +1411,20 @@ def _respawn(cfg: Config, deps: Deps, target: Target,
     started a conversation. The queued messages ride in the stage prompt,
     an attach notice among them."""
     detail = "after crash" if task.crashed_stage else "next launch"
-    deps.github.set_status(target, task.issue,
-                           target.status_in_progress_option_id)
+    deps.github.set_status(repository, task.issue,
+                           repository.status_in_progress_option_id)
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
                    park_note="", hold_for_attach=False,
                    resume_model_override="", resume_bypass_usage=False,
                    **loops.crash_resume_fields(task))
-    _clear_wake_blocked(cfg, task.target, task.issue)
-    task = _spawn_stage(cfg, deps, target, task, launch)
-    eventlog.append_event(cfg.state_dir, "resumed", target=target.name,
+    _clear_wake_blocked(cfg, task.repository, task.issue)
+    task = _spawn_stage(cfg, deps, repository, task, launch)
+    eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           model=str(launch.entry), detail=detail)
 
 
-def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
+def _fail_task_crash(cfg: Config, deps: Deps, repository: Repository,
                      task: TaskState, dry_run: bool = False) -> None:
     """One task's turn blew up. Fail THAT task; let the pass carry on.
 
@@ -1422,28 +1443,28 @@ def _fail_task_crash(cfg: Config, deps: Deps, target: Target,
     cannot be read: this function must not raise."""
     error = traceback.format_exc()
     try:
-        task = load(cfg.state_dir, task.target, task.issue) or task
+        task = load(cfg.state_dir, task.repository, task.issue) or task
     except Exception as exc:
         print(f"[warn] state of #{task.issue} unreadable after its crash: "
               f"{exc}", file=sys.stderr)
     # Best-effort teardown: the point of this function is that nothing in it
     # may raise, or we are back to killing the pass.
     try:
-        deps.github.release(target, task.issue, "task crashed mid-pass")
+        deps.github.release(repository, task.issue, "task crashed mid-pass")
     except Exception as exc:
         print(f"[warn] release failed for #{task.issue}: {exc}", file=sys.stderr)
     try:
-        log_tail = deps.sessions.capture_tail(task.target, task.issue, lines=30)
+        log_tail = deps.sessions.capture_tail(task.repository, task.issue, lines=30)
     except Exception:
         log_tail = ""
     save(cfg.state_dir, _crash_failed(task))
-    eventlog.append_event(cfg.state_dir, "failed", target=target.name,
+    eventlog.append_event(cfg.state_dir, "failed", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="task crashed mid-pass")
     # klass is not "session-crash": nothing is wrong inside the container,
-    # so this routes to infra_repo rather than the target repo.
+    # so this routes to infra_repo rather than the repository's repo.
     rep = failures.FailureReport(
-        klass="task-crash", target=target.name, issue=task.issue,
+        klass="task-crash", repository=repository.name, issue=task.issue,
         title=f"task #{task.issue} crashed mid-pass: {task.title}",
         error=error, log_tail=log_tail,
         repro=f"agent-ops-dispatcher  # with task-{task.issue} at "
@@ -1466,28 +1487,28 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
     a denied spawn just stays pr-open+pending and retries next pass, badge
     showing, unless it never launches (_choose_launch): then it parks with
     its feedback kept (_awaiting_feedback_round)."""
-    targets = {t.name: t for t in cfg.targets}
+    repositories = {t.name: t for t in cfg.repositories}
     pending = sorted(
         [t for t in load_all(cfg.state_dir)
-         if t.target in targets and _awaiting_feedback_round(t)],
+         if t.repository in repositories and _awaiting_feedback_round(t)],
         key=_oldest_first(cfg))
     for task in pending:
-        target = targets[task.target]
+        repository = repositories[task.repository]
         launch, bypass_usage, why = _choose_launch(
-            cfg, target, task, Stage.ADDRESS_REVIEW, admit, order,
+            cfg, repository, task, Stage.ADDRESS_REVIEW, admit, order,
             _execution_override_for(cfg, task, Stage.ADDRESS_REVIEW))
         if why:
-            _park_stranded(cfg, deps, target, task, why)
+            _park_stranded(cfg, deps, repository, task, why)
         if launch is None:
             continue
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
-            _mark_wake_blocked(cfg, target, task, "capacity full")
+            _mark_wake_blocked(cfg, repository, task, "capacity full")
             continue
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
-            _mark_wake_blocked(cfg, target, task, "no free slot")
+            _mark_wake_blocked(cfg, repository, task, "no free slot")
             continue
-        _clear_wake_blocked(cfg, task.target, task.issue)
+        _clear_wake_blocked(cfg, task.repository, task.issue)
         # Cursor := spawn time: everything the session can read live is
         # now "seen"; anything arriving after this moment re-triggers a
         # round (conservative — a redundant round beats a lost comment).
@@ -1499,9 +1520,9 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         # The implement session is still alive at pr-open (the pr-open
         # transition never ends it). End first so _launch doesn't type
         # the podman command into the live session's input box.
-        _end_session(cfg, deps, task.target, task.issue)
-        _spawn_stage(cfg, deps, target, task, launch)
-        _consume_execution_choice(cfg, task.target, task.issue)
+        _end_session(cfg, deps, task.repository, task.issue)
+        _spawn_stage(cfg, deps, repository, task, launch)
+        _consume_execution_choice(cfg, task.repository, task.issue)
 
 
 @dataclass
@@ -1510,7 +1531,7 @@ class _Turn:
     spec-publish line a later Notify in the same turn appends."""
     cfg: Config
     deps: Deps
-    target: Target
+    repository: Repository
     signal: object          # the stage signal read at the start of the turn
     dry_run: bool
     spec_line: str = ""
@@ -1549,17 +1570,17 @@ def _on_noop(turn: _Turn, task: TaskState, act: NoOp,
 
 def _on_apply_decision(turn: _Turn, task: TaskState, act: ApplyDecision,
                        launch: Launch | None) -> TaskState | None:
-    cfg, deps, target = turn.cfg, turn.deps, turn.target
+    cfg, deps, repository = turn.cfg, turn.deps, turn.repository
     task, parked = _apply_loop_decision(
-        cfg, deps, target, task, act.decision,
-        park_exhausted=lambda t, note: _park_for_input(cfg, deps, target, t, note,
+        cfg, deps, repository, task, act.decision,
+        park_exhausted=lambda t, note: _park_for_input(cfg, deps, repository, t, note,
                                                        reason=WHY_LOOP_CAP))
     return None if parked else task
 
 
 def _on_park_for_input(turn: _Turn, task: TaskState, act: ParkForInput,
                        launch: Launch | None) -> None:
-    _park_for_input(turn.cfg, turn.deps, turn.target, task, act.note,
+    _park_for_input(turn.cfg, turn.deps, turn.repository, task, act.note,
                     artifact=act.artifact, is_answers=act.is_answers,
                     reason=act.reason)
 
@@ -1585,18 +1606,18 @@ def _on_park_for_review(turn: _Turn, task: TaskState, act: ParkForReview,
                         launch: Launch | None) -> None:
     if act.artifact is not None:
         task = replace(task, operator_request=_plan_approval(task, act.artifact))
-    _park_for_review(turn.cfg, turn.deps, turn.target, task, act.reason,
+    _park_for_review(turn.cfg, turn.deps, turn.repository, task, act.reason,
                      dry_run=turn.dry_run)
 
 
 def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
                     launch: Launch | None) -> None:
-    _park_for_ci(turn.cfg, turn.deps, turn.target, task, act.run_id)
+    _park_for_ci(turn.cfg, turn.deps, turn.repository, task, act.run_id)
 
 
 def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
                     launch: Launch) -> None:
-    _retry_stage(turn.cfg, turn.deps, turn.target, task, launch, act)
+    _retry_stage(turn.cfg, turn.deps, turn.repository, task, launch, act)
 
 
 def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
@@ -1622,13 +1643,13 @@ def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
 def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
                        launch: Launch | None) -> TaskState:
     cfg = turn.cfg
-    clear_turn_markers(cfg.state_dir, task.target, task.issue)
+    clear_turn_markers(cfg.state_dir, task.repository, task.issue)
     task = replace(task, stage=act.stage, updated_at=_now(),
                    **_stage_extra(task, act, turn.signal))
     save(cfg.state_dir, task)
     if act.stage is Stage.PR_OPEN:
         eventlog.append_event(cfg.state_dir, "pr-opened",
-                              target=turn.target.name, issue=task.issue,
+                              repository=turn.repository.name, issue=task.issue,
                               stage=act.stage.value)
     return task
 
@@ -1637,13 +1658,13 @@ def _on_publish_spec(turn: _Turn, task: TaskState, act: PublishSpec,
                      launch: Launch | None) -> TaskState:
     pub = spec_publish.ensure_published(
         worktree=task.worktree, branch=task.branch,
-        repo=turn.target.repo, issue=task.issue,
+        repo=turn.repository.repo, issue=task.issue,
         artifact=task.spec_path, dry_run=turn.dry_run)
     turn.spec_line = _spec_note(pub)
     if act.review and not pub.error:
         try:
             turn.deps.github.comment(
-                turn.target, task.issue, f"📝 Plan ready for review: {pub.url}")
+                turn.repository, task.issue, f"📝 Plan ready for review: {pub.url}")
         except Exception as exc:
             print(f"[warn] spec link comment failed for "
                   f"#{task.issue}: {exc}", file=sys.stderr)
@@ -1653,7 +1674,7 @@ def _on_publish_spec(turn: _Turn, task: TaskState, act: PublishSpec,
 def _on_notify(turn: _Turn, task: TaskState, act: Notify,
                launch: Launch | None) -> TaskState:
     note = act.note + (f"\n{turn.spec_line}" if turn.spec_line else "")
-    _notify(turn.deps, turn.target, task, act.template, note)
+    _notify(turn.deps, turn.repository, task, act.template, note)
     return task
 
 
@@ -1663,7 +1684,7 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
     # interactive session cannot exit itself. _launch would type
     # the next stage's podman command INTO it (and the container
     # name would collide). End it first; no-op when already dead.
-    _end_session(turn.cfg, turn.deps, task.target, task.issue)
+    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
     # The spec session's `done` hands spec.md and the track over to plan; a
     # plan session respawned from the gate keeps both.
     spec_path = ""
@@ -1675,7 +1696,7 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
     try:
-        return _spawn_stage(turn.cfg, turn.deps, turn.target, task, launch, spec_path)
+        return _spawn_stage(turn.cfg, turn.deps, turn.repository, task, launch, spec_path)
     except Exception:
         # What the previous stage handed over is accepted (a checked spec, an
         # approved or gate-free plan); only this launch failed. So the task
@@ -1691,26 +1712,26 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
         except Exception as exc:
             print(f"[warn] hand-over of #{task.issue} not saved: {exc}",
                   file=sys.stderr)
-        _fail_task_crash(turn.cfg, turn.deps, turn.target, accepted,
+        _fail_task_crash(turn.cfg, turn.deps, turn.repository, accepted,
                          turn.dry_run)
         return None
 
 
 def _on_handle_crash(turn: _Turn, task: TaskState, act: HandleCrash,
                      launch: Launch | None) -> TaskState:
-    cfg, deps, target = turn.cfg, turn.deps, turn.target
-    _notify(deps, target, task, "session_crashed")
-    deps.github.release(target, task.issue, "session crashed mid-stage")
+    cfg, deps, repository = turn.cfg, turn.deps, turn.repository
+    _notify(deps, repository, task, "session_crashed")
+    deps.github.release(repository, task.issue, "session crashed mid-stage")
     save(cfg.state_dir, _crash_failed(task))
-    eventlog.append_event(cfg.state_dir, "failed", target=target.name,
+    eventlog.append_event(cfg.state_dir, "failed", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="session crashed mid-stage")
-    _report_session_crash(cfg, deps, target, task, turn.dry_run)
+    _report_session_crash(cfg, deps, repository, task, turn.dry_run)
     # End last: _report_session_crash reads the pane first. end()
     # snapshots the crash output for the console and closes the
     # dead tab — the one session-ending transition that otherwise
     # left both behind.
-    _end_session(cfg, deps, task.target, task.issue)
+    _end_session(cfg, deps, task.repository, task.issue)
     return task
 
 
@@ -1738,8 +1759,8 @@ def _poke_guard(deps: Deps, task: TaskState) -> _PokeGuard:
     """One read of herdr and one of the pane. Text plus Enter in a prompt
     can approve an action without the operator, so a read that failed is
     never taken as "no prompt"."""
-    state = deps.sessions.agent_state(task.target, task.issue)
-    tail = deps.sessions.capture_tail(task.target, task.issue)
+    state = deps.sessions.agent_state(task.repository, task.issue)
+    tail = deps.sessions.capture_tail(task.repository, task.issue)
     if state is None or not tail.strip():
         return _PokeGuard.UNKNOWN
     if state[0] == "working":
@@ -1754,13 +1775,13 @@ def _send_poke(turn: _Turn, task: TaskState, act: Poke) -> TaskState:
     refuses text every pass is then still parked at the cap. Only a
     delivered poke is counted and logged."""
     task = replace(task, poked_since=task.poked_since or time.time())
-    if not turn.deps.sessions.send_text(task.target, task.issue, act.text):
+    if not turn.deps.sessions.send_text(task.repository, task.issue, act.text):
         save(turn.cfg.state_dir, task)
         print(f"[warn] poke of #{task.issue} not delivered", file=sys.stderr)
         return task
     task = replace(task, pokes=task.pokes + 1)
     save(turn.cfg.state_dir, task)
-    eventlog.append_event(turn.cfg.state_dir, "poked", target=turn.target.name,
+    eventlog.append_event(turn.cfg.state_dir, "poked", repository=turn.repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=f"poke {task.pokes}")
     return task
@@ -1843,10 +1864,10 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
                      alive: bool) -> BackgroundView | None:
     """The task's background wait as this pass sees it; herdr is asked only
     when a live session has a background marker."""
-    wait = read_background(cfg.state_dir, task.target, task.issue) if alive else None
+    wait = read_background(cfg.state_dir, task.repository, task.issue) if alive else None
     if wait is None:
         return None
-    return BackgroundView(wait, deps.sessions.agent_state(task.target, task.issue),
+    return BackgroundView(wait, deps.sessions.agent_state(task.repository, task.issue),
                           time.time(), cfg.background_wait_seconds)
 
 
@@ -1861,25 +1882,25 @@ def _end_poke_stretch(cfg: Config, task: TaskState, idle: float | None,
     return task
 
 
-def _park_stranded(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _park_stranded(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                    why: str) -> None:
     """Park a task the config strands for `why` (models.stranded)."""
-    _park_for_input(cfg, deps, target, task,
+    _park_for_input(cfg, deps, repository, task,
                     f"{why}; restore it in the console's model settings or "
                     f"targets.yaml, or run the task with a model override",
                     reason=WHY_CONFIG)
 
 
-def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
+def _drive_task(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                 admit: Admit, order: Order, dry_run: bool = False) -> None:
     signal = read_stage_signal(task.worktree)
-    policy = policy_for(cfg, target)
+    policy = policy_for(cfg, repository)
     task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
-    alive = deps.sessions.is_alive(task.target, task.issue)
-    waiting = has_waiting(cfg.state_dir, task.target, task.issue)
+    alive = deps.sessions.is_alive(task.repository, task.issue)
+    waiting = has_waiting(cfg.state_dir, task.repository, task.issue)
     why = track_gone(policy, task.track)
     if why:
-        _park_stranded(cfg, deps, target, task, why)
+        _park_stranded(cfg, deps, repository, task, why)
         return
     # herdr's view of a background wait BEFORE the idle reading: a session
     # waking between the two reads must look still-waiting (held), never
@@ -1888,10 +1909,10 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
     # Query idle only when it can matter: detection enabled and the
     # session alive (the crash path owns dead sessions).
     stall_after = cfg.stall_after_seconds if alive else 0
-    idle = (deps.sessions.idle_seconds(task.target, task.issue)
+    idle = (deps.sessions.idle_seconds(task.repository, task.issue)
             if alive and stall_after > 0 else None)
     task = _end_poke_stretch(cfg, task, idle, dry_run)
-    turn = _Turn(cfg, deps, target, signal, dry_run)
+    turn = _Turn(cfg, deps, repository, signal, dry_run)
     for act in pass_actions(task, signal, alive, waiting, view,
                             caps=cfg.loop_caps,
                             idle_seconds=idle,
@@ -1904,12 +1925,12 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
                             now=time.time(), poke_cap=cfg.background_wait_seconds):
         task = _step_done(turn, task, act)
         stage = _action_stage(act)
-        launch, bypass_usage, why = _action_launch(cfg, target, task, stage, admit, order)
+        launch, bypass_usage, why = _action_launch(cfg, repository, task, stage, admit, order)
         if why:
-            _park_stranded(cfg, deps, target, task, why)
+            _park_stranded(cfg, deps, repository, task, why)
         if stage is not None and launch is None:
             return  # no launch: the signal persists; retried once headroom returns
-        choice_key = (task.target, task.issue)
+        choice_key = (task.repository, task.issue)
         task = _DRIVE[type(act)](turn, task, act, launch)
         if launch is not None and not turn.launch_failed:
             _consume_execution_choice(cfg, *choice_key)
@@ -1917,7 +1938,7 @@ def _drive_task(cfg: Config, deps: Deps, target: Target, task: TaskState,
             return
 
 
-def _report_session_crash(cfg: Config, deps: Deps, target: Target,
+def _report_session_crash(cfg: Config, deps: Deps, repository: Repository,
                           task: TaskState, dry_run: bool) -> None:
     # The stage's pick names its runtime. With no pick the session that
     # died is the worktree's last launch: a ticket is done and the next one
@@ -1928,38 +1949,38 @@ def _report_session_crash(cfg: Config, deps: Deps, target: Target,
     pick = (stage_pick(task.picks, task.stage.value)
             or _last_launched(task.worktree))
     runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
-    record = read_session(cfg.state_dir, task.target, task.issue)
+    record = read_session(cfg.state_dir, task.repository, task.issue)
     repro = "Restart the stage from the dispatcher: no session recorded"
     if record is not None and record.stage == task.continued_stage.value:
         repro = (f"cd {shlex.quote(task.worktree)} && "
                  f"{runtime.resume_cmd(record.session_id)}  # inside session image")
     rep = failures.FailureReport(
-        klass="session-crash", target=target.name, issue=task.issue,
+        klass="session-crash", repository=repository.name, issue=task.issue,
         title=f"session crashed during {task.stage.value}: {task.title}",
-        error=(f"session task-{task.target}-{task.issue} died during stage "
+        error=(f"session task-{task.repository}-{task.issue} died during stage "
                f"{task.stage.value}"),
-        log_tail=deps.sessions.capture_tail(task.target, task.issue, lines=30),
+        log_tail=deps.sessions.capture_tail(task.repository, task.issue, lines=30),
         repro=repro,
         worktree=task.worktree)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
     if blocker:
         try:
-            deps.github.append_blocked_by(target, task.issue, blocker)
+            deps.github.append_blocked_by(repository, task.issue, blocker)
         except Exception as exc:
             print(f"[warn] append_blocked_by failed for #{task.issue}: {exc}",
                   file=sys.stderr)
 
 
-def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
+def _report_provisioning_failure(cfg: Config, deps: Deps, repository: Repository,
                                  cand, dry_run: bool) -> None:
-    wt = str(Path(target.worktrees_path) / f"task-{cand.number}")
+    wt = str(Path(repository.worktrees_path) / f"task-{cand.number}")
     rep = failures.FailureReport(
-        klass="provisioning", target=target.name, issue=cand.number,
+        klass="provisioning", repository=repository.name, issue=cand.number,
         title=f"provisioning failed: {cand.title}",
         error=traceback.format_exc(),
         log_tail=failures.setup_log_tail(wt),
         repro=(f"podman run --rm -v {wt}:{wt} -w {wt} agent-ops-session "
-               f"{target.setup_cmd}" if target.setup_cmd
+               f"{repository.setup_cmd}" if repository.setup_cmd
                else "no setup_cmd; the worktree step failed (see error)"),
         worktree=wt)
     blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
@@ -1967,7 +1988,7 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, target: Target,
     # leaves neither, so the next pass retries both. blocker may still be 0
     # when infra_repo is unset; that record blocks until manually deleted.
     if not dry_run and failures.reported(cfg.state_dir, rep):
-        failures.write_quarantine(cfg.state_dir, target.name, cand.number,
+        failures.write_quarantine(cfg.state_dir, repository.name, cand.number,
                                   blocker_repo=cfg.infra_repo if blocker else "",
                                   blocker_issue=blocker,
                                   fp=failures.fingerprint(rep))
@@ -1989,111 +2010,111 @@ def _reopened(stale: TaskState, pass_started: str) -> bool:
             and not (pass_started and stale.updated_at >= pass_started))
 
 
-def _claimable(cfg: Config, deps: Deps, target: Target, tasks: list[TaskState],
+def _claimable(cfg: Config, deps: Deps, repository: Repository, tasks: list[TaskState],
                admit: Admit, order: Order, pass_started: str):
     """Ranked candidates this pass may claim, each with the spec launch it
     would start. Skips issues that already have a task, quarantined issues,
     and candidates whose spec model has no headroom — a denied candidate
     leaves the next one eligible, since its model may differ."""
     by_issue = {t.issue: t for t in tasks}
-    for cand in deps.github.candidates(target):
+    for cand in deps.github.candidates(repository):
         stale = by_issue.get(cand.number)
         if stale is not None:
             if not _reopened(stale, pass_started):
                 continue
-            delete(cfg.state_dir, target.name, cand.number)
+            delete(cfg.state_dir, repository.name, cand.number)
             del by_issue[cand.number]
             eventlog.append_event(cfg.state_dir, "reopened",
-                                  target=target.name, issue=cand.number,
+                                  repository=repository.name, issue=cand.number,
                                   detail="canceled task ranked again — "
                                          "reopened by operator")
-        if failures.check_quarantine(cfg.state_dir, deps.github, target.name,
+        if failures.check_quarantine(cfg.state_dir, deps.github, repository.name,
                                      cand.number):
             continue
-        launch, _bypass = _candidate_launch(cfg, target, cand, admit, order)
+        launch, _bypass = _candidate_launch(cfg, repository, cand, admit, order)
         if launch is not None:
             yield cand, launch
 
 
-def _round_counts(targets: list[Target],
+def _round_counts(repositories: list[Repository],
                   all_tasks: list[TaskState]) -> dict[str, int]:
-    """Each target's current active-task count, seeded at 0 so every target
+    """Each repository's current active-task count, seeded at 0 so every repository
     in the round has an entry even with nothing running yet."""
-    counts = {t.name: 0 for t in targets}
+    counts = {t.name: 0 for t in repositories}
     for t in active(all_tasks):
-        if t.target in counts:
-            counts[t.target] += 1
+        if t.repository in counts:
+            counts[t.repository] += 1
     return counts
 
 
-def _commit_claim(cfg: Config, deps: Deps, target: Target, cand: Candidate,
+def _commit_claim(cfg: Config, deps: Deps, repository: Repository, cand: Candidate,
                   slot: int, wt: str, launch: Launch, base: str = "main") -> TaskState:
     """Board mutation is last and irreversible: state is saved and the
     `claimed` event appended first, so a crash before the claim leaves a
     recoverable partial claim rather than a silently lost slot. A failure
     from here on releases the board claim back to Ready."""
-    task = TaskState(issue=cand.number, target=target.name,
+    task = TaskState(issue=cand.number, repository=repository.name,
                      stage=Stage.QUEUED, slot=slot, worktree=wt,
                      branch=f"agent/task-{cand.number}",
                      title=cand.title, updated_at=_now(),
                      effort=cand.effort, labels=cand.labels, base=base,
-                     track=track_from_labels(cand.labels, policy_for(cfg, target)))
+                     track=track_from_labels(cand.labels, policy_for(cfg, repository)))
     save(cfg.state_dir, task)  # state exists BEFORE the irreversible claim, so a partial claim is recoverable
-    eventlog.append_event(cfg.state_dir, "claimed", target=target.name,
+    eventlog.append_event(cfg.state_dir, "claimed", repository=repository.name,
                           issue=cand.number, stage=Stage.QUEUED.value)
     try:
-        deps.github.claim(target, cand)  # irreversible board mutation — last
-        task = _spawn_stage(cfg, deps, target, task, launch)
-        _consume_execution_choice(cfg, target.name, cand.number)
+        deps.github.claim(repository, cand)  # irreversible board mutation — last
+        task = _spawn_stage(cfg, deps, repository, task, launch)
+        _consume_execution_choice(cfg, repository.name, cand.number)
     except Exception:
-        deps.github.release(target, cand.number, "claim/spawn failed after provisioning")
+        deps.github.release(repository, cand.number, "claim/spawn failed after provisioning")
         raise
     return task
 
 
-def _wait_in_ready(cfg: Config, deps: Deps, target: Target, number: int,
+def _wait_in_ready(cfg: Config, deps: Deps, repository: Repository, number: int,
                    key: str, why: str) -> None:
     """Leave the issue in Ready; ping the operator only the first time for this key."""
-    if base_line.is_recorded(cfg.state_dir, target.name, number, key):
+    if base_line.is_recorded(cfg.state_dir, repository.name, number, key):
         return
     # The notifier returns 0 on a failed send: record only a delivered ping, so a
     # failed one is retried on the next pass.
     if deps.notifier.send("status", lines=[f"#{number} waits in Ready: {why}"]):
-        base_line.record_wait(cfg.state_dir, target.name, number, key)
+        base_line.record_wait(cfg.state_dir, repository.name, number, key)
 
 
-def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
+def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
                admit: Admit, order: Order, dry_run: bool,
                pass_started: str = "") -> None:
-    """Claim free units one at a time, each via claims.pick_target. A target leaves
+    """Claim free units one at a time, each via claims.pick_repository. A repository leaves
     the round when its candidates run out or provisioning fails for it."""
     all_tasks = load_all(cfg.state_dir)
     free = claims.claim_room(cfg.capacity, cfg.max_open, all_tasks,
                              triage_running=False)
     if free <= 0:
         return
-    counts = _round_counts(targets, all_tasks)
+    counts = _round_counts(repositories, all_tasks)
     last = claims.last_claims(cfg.state_dir)
-    caps = {t.name: t.max_active for t in targets}
-    # Generator bodies run on first next(), so a target's rank_cmd runs only
+    caps = {t.name: t.max_active for t in repositories}
+    # Generator bodies run on first next(), so a repository's rank_cmd runs only
     # when it gets a turn.
     gens = {t.name: _claimable(cfg, deps, t,
-                               [x for x in all_tasks if x.target == t.name],
+                               [x for x in all_tasks if x.repository == t.name],
                                admit, order, pass_started)
-            for t in targets}
-    in_round = {t.name: t for t in targets}  # insertion order = list order
+            for t in repositories}
+    in_round = {t.name: t for t in repositories}  # insertion order = list order
     while free > 0:
-        name = claims.pick_target(list(in_round), counts, last, caps)
+        name = claims.pick_repository(list(in_round), counts, last, caps)
         if name is None:
             return
-        target = in_round[name]
-        picked = next(gens[target.name], None)
+        repository = in_round[name]
+        picked = next(gens[repository.name], None)
         if picked is None:
             del in_round[name]
             continue
         cand, launch = picked
         try:
-            body = deps.github.issue_body(target, cand.number)
+            body = deps.github.issue_body(repository, cand.number)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
                 OSError, ValueError) as exc:  # ValueError: gh printed JSON that does not parse
             # Unclaimed and still Ready: the next pass reads it again, and
@@ -2102,46 +2123,46 @@ def _claim_new(cfg: Config, deps: Deps, targets: list[Target],
             continue
         base = base_line.parse_base(body)
         if base is None:
-            _wait_in_ready(cfg, deps, target, cand.number, "invalid", "its base line names no valid branch")
+            _wait_in_ready(cfg, deps, repository, cand.number, "invalid", "its base line names no valid branch")
             continue
         slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
         if slot is None:
             return
         try:
-            wt = create_workspace(target, cand.number, base, dry_run=dry_run)
+            wt = create_workspace(repository, cand.number, base, dry_run=dry_run)
         except MissingBaseError:
             # Not claimed, not a failure: the issue stays Ready and every pass
             # asks again; the operator hears once per issue and base.
-            _wait_in_ready(cfg, deps, target, cand.number, f"base:{base}", f"base branch {base} is not on origin")
+            _wait_in_ready(cfg, deps, repository, cand.number, f"base:{base}", f"base branch {base} is not on origin")
             continue
         except Exception:
             # Board never claimed (claim is last, still Ready) → no release
             # needed; report + quarantine, and the pass survives.
-            _report_provisioning_failure(cfg, deps, target, cand, dry_run)
-            # Cap at one provisioning failure per target per pass: a
+            _report_provisioning_failure(cfg, deps, repository, cand, dry_run)
+            # Cap at one provisioning failure per repository per pass: a
             # systemic fault (git remote down, podman down, worktrees
             # volume full) would otherwise fail EVERY remaining Ready
             # candidate, filing an issue + ping + quarantine record per
-            # candidate. The target leaves this pass's round; the next pass
-            # retries its remaining candidates, and other targets keep claiming.
+            # candidate. The repository leaves this pass's round; the next pass
+            # retries its remaining candidates, and other repositories keep claiming.
             del in_round[name]
             continue
-        base_line.clear_wait(cfg.state_dir, target.name, cand.number)
-        _commit_claim(cfg, deps, target, cand, slot, wt, launch, base)
-        counts[target.name] += 1
-        last[target.name] = _now()
+        base_line.clear_wait(cfg.state_dir, repository.name, cand.number)
+        _commit_claim(cfg, deps, repository, cand, slot, wt, launch, base)
+        counts[repository.name] += 1
+        last[repository.name] = _now()
         free -= 1  # checked before the next pull, so no candidate is vetted (or swept) that cannot be claimed
 
 
 def _task_for_intent(cfg: Config, intent: intents.Intent) -> TaskState | None:
-    """Resolve an intent to the task it targets. A target-carrying intent
+    """Resolve an intent to the task it repositories. A repository-carrying intent
     (every intent the console writes now) is an exact lookup. A legacy
-    intent (target == "", written before this keying existed) falls back to
-    matching by issue number alone — ambiguous when more than one target has
+    intent (repository == "", written before this keying existed) falls back to
+    matching by issue number alone — ambiguous when more than one repository has
     a task with that number, in which case there is no safe task to act on
     and the intent is skipped rather than guessed at."""
-    if intent.target:
-        return load(cfg.state_dir, intent.target, intent.issue)
+    if intent.repository:
+        return load(cfg.state_dir, intent.repository, intent.issue)
     hits = [t for t in load_all(cfg.state_dir) if t.issue == intent.issue]
     return hits[0] if len(hits) == 1 else None   # ambiguous legacy → skip
 
@@ -2152,15 +2173,15 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
     if task is not None and task.park == PARK_LOGIN:
         _inject_login_code(cfg, deps, task, intent.payload.get("text", ""))
         return
-    # A legacy intent (target "") names its project only through its task,
-    # or through the sole configured target; otherwise it is not guessed at.
-    target = (intent.target or (task.target if task is not None else "")
-              or (cfg.targets[0].name if len(cfg.targets) == 1 else ""))
-    if not target:
+    # A legacy intent (repository "") names its project only through its task,
+    # or through the sole configured repository; otherwise it is not guessed at.
+    repository = (intent.repository or (task.repository if task is not None else "")
+                  or (cfg.repositories[0].name if len(cfg.repositories) == 1 else ""))
+    if not repository:
         print(f"[warn] reply for #{intent.issue} dropped: legacy intent "
-              f"names no target", file=sys.stderr)
+              f"names no repository", file=sys.stderr)
         return
-    _queue_message(cfg, target, intent.issue, intent.payload.get("text", ""),
+    _queue_message(cfg, repository, intent.issue, intent.payload.get("text", ""),
                    intent.actor or "operator")
     if task is not None:
         _wake_for_queued_message(cfg, deps, task)
@@ -2175,7 +2196,7 @@ def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
         # the grace park would end the session with the message undelivered.
         # So it parks now, as the grace park would (session ended, slot
         # freed), and wakes below.
-        _end_session(cfg, deps, task.target, task.issue)
+        _end_session(cfg, deps, task.repository, task.issue)
         task = replace(task, park=PARK_REVIEW, slot=NO_SLOT)
     if task.park in (PARK_HUMAN, PARK_REVIEW):
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
@@ -2192,7 +2213,7 @@ def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
     assert task is not None
     wake = answers.record(task, intent)
     if wake:
-        _queue_message(cfg, task.target, task.issue, wake, intent.actor or "operator")
+        _queue_message(cfg, task.repository, task.issue, wake, intent.actor or "operator")
         _wake_for_queued_message(cfg, deps, task)
 
 
@@ -2200,7 +2221,7 @@ def _parkable_task(deps: Deps, task: TaskState | None, issue: int) -> bool:
     return bool(task is not None
                 and task.stage in IN_FLIGHT_STAGES
                 and not task.park
-                and deps.sessions.is_alive(task.target, issue))
+                and deps.sessions.is_alive(task.repository, issue))
 
 
 def _apply_park_intent(cfg: Config, deps: Deps, by_name: dict,
@@ -2210,21 +2231,21 @@ def _apply_park_intent(cfg: Config, deps: Deps, by_name: dict,
               f"— skipped", file=sys.stderr)
         return
     assert task is not None
-    target = by_name.get(task.target)
-    if target is None:
-        print(f"[warn] park intent for #{issue}: target "
-              f"{task.target!r} left the config — skipped", file=sys.stderr)
+    repository = by_name.get(task.repository)
+    if repository is None:
+        print(f"[warn] park intent for #{issue}: repository "
+              f"{task.repository!r} left the config — skipped", file=sys.stderr)
         return
-    _park_for_input(cfg, deps, target, task, note="parked by operator",
+    _park_for_input(cfg, deps, repository, task, note="parked by operator",
                     reason=WHY_OPERATOR)
 
 
 def _release_killed_task(cfg: Config, deps: Deps, by_name: dict,
                          task: TaskState, issue: int) -> None:
-    target = by_name.get(task.target)
-    if target is not None:
+    repository = by_name.get(task.repository)
+    if repository is not None:
         try:
-            deps.github.release(target, issue, "abandoned by operator")
+            deps.github.release(repository, issue, "abandoned by operator")
         except Exception as exc:
             print(f"[warn] release failed while killing #{issue}: {exc}",
                   file=sys.stderr)
@@ -2236,56 +2257,56 @@ def _release_killed_task(cfg: Config, deps: Deps, by_name: dict,
 def _apply_kill_intent(cfg: Config, deps: Deps, by_name: dict,
                        task: TaskState | None, intent: intents.Intent) -> None:
     issue = intent.issue
-    kill_target = intent.target or (task.target if task is not None else "")
-    if not kill_target:
+    kill_repository = intent.repository or (task.repository if task is not None else "")
+    if not kill_repository:
         print(f"[warn] kill intent for #{issue}: no unique matching task "
               f"— skipped", file=sys.stderr)
         return
-    _end_session(cfg, deps, kill_target, issue)
+    _end_session(cfg, deps, kill_repository, issue)
     if task is not None:
         _release_killed_task(cfg, deps, by_name, task, issue)
-    eventlog.append_event(cfg.state_dir, "failed", target=kill_target,
+    eventlog.append_event(cfg.state_dir, "failed", repository=kill_repository,
                           issue=issue,
                           stage=task.stage.value if task is not None else "",
                           actor=intent.actor, detail="killed by operator")
 
 
-def _cancel_board_issue(deps: Deps, by_name: dict, target_name: str,
+def _cancel_board_issue(deps: Deps, by_name: dict, repository_name: str,
                         issue: int) -> None:
-    target = by_name.get(target_name)
-    if target is None:
-        log.warning("cancel intent for %s/#%d: target left the config "
-                    "— board/issue untouched", target_name, issue)
+    repository = by_name.get(repository_name)
+    if repository is None:
+        log.warning("cancel intent for %s/#%d: repository left the config "
+                    "— board/issue untouched", repository_name, issue)
         return
     try:
-        deps.github.cancel(target, issue)
+        deps.github.cancel(repository, issue)
     except Exception:
-        log.warning("github cancel failed for %s/#%d", target_name, issue,
+        log.warning("github cancel failed for %s/#%d", repository_name, issue,
                     exc_info=True)
 
 
 def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
                          task: TaskState | None, intent: intents.Intent) -> None:
     issue = intent.issue
-    cancel_target = intent.target or (task.target if task is not None else "")
-    if not cancel_target:
+    cancel_repository = intent.repository or (task.repository if task is not None else "")
+    if not cancel_repository:
         log.warning("cancel intent for #%d: no unique matching task — skipped",
                     issue)
         return
-    _end_session(cfg, deps, cancel_target, issue)
-    _cancel_board_issue(deps, by_name, cancel_target, issue)
+    _end_session(cfg, deps, cancel_repository, issue)
+    _cancel_board_issue(deps, by_name, cancel_repository, issue)
     if task is not None:
         save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
                                     hold_for_attach=False, slot=NO_SLOT,
                                     operator_request=None, updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "canceled", target=cancel_target,
+    eventlog.append_event(cfg.state_dir, "canceled", repository=cancel_repository,
                           issue=issue, stage=task.stage.value if task else "",
                           actor=intent.actor, detail="canceled by operator")
 
 
 def _apply_retry_intent(cfg: Config, issue: int) -> None:
-    for target in cfg.targets:
-        qp = failures.quarantine_path(cfg.state_dir, target.name, issue)
+    for repository in cfg.repositories:
+        qp = failures.quarantine_path(cfg.state_dir, repository.name, issue)
         if not qp.exists():
             continue
         try:
@@ -2308,15 +2329,15 @@ class IntentDropped(Exception):
 def _require_resume_model(cfg: Config, by_name: dict,
                           task: TaskState, model: str) -> None:
     """The authoritative check of a resume intent's model (an intent file can
-    bypass the console's 422): configured for the target, and of the stage
+    bypass the console's 422): configured for the repository, and of the stage
     pick's provider. Raises IntentDropped."""
     if not model:
         return
-    target = by_name.get(task.target)
-    policy = policy_for(cfg, target)
+    repository = by_name.get(task.repository)
+    policy = policy_for(cfg, repository)
     if model not in policy.model_ids():
-        raise IntentDropped(f"model {model!r} is not configured for target "
-                            f"{task.target!r}", model)
+        raise IntentDropped(f"model {model!r} is not configured for repository "
+                            f"{task.repository!r}", model)
     refusal = override_refusal(task.picks, next_stage(task), model)
     if refusal:
         raise IntentDropped(refusal, model)
@@ -2382,34 +2403,34 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
               file=sys.stderr)
 
 
-def _intent_target(cfg: Config, intent: intents.Intent) -> str:
-    """The target an intent's event names. A legacy intent (target == "")
-    carries no target of its own; if it resolves unambiguously to one task,
-    use THAT task's target so the console's /task/{target}/{issue} link is
-    never blank. Same fallback idiom as the "kill" action's kill_target."""
+def _intent_repository(cfg: Config, intent: intents.Intent) -> str:
+    """The repository an intent's event names. A legacy intent (repository == "")
+    carries no repository of its own; if it resolves unambiguously to one task,
+    use THAT task's repository so the console's /task/{repository}/{issue} link is
+    never blank. Same fallback idiom as the "kill" action's kill_repository."""
     resolved = _task_for_intent(cfg, intent)
-    return intent.target or (resolved.target if resolved is not None else "")
+    return intent.repository or (resolved.repository if resolved is not None else "")
 
 
 def _apply_intents(cfg: Config, deps: Deps) -> None:
     """Drain operator intents (web console writes) at the top of the pass.
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
     noted to stderr, and never aborts the pass or the remaining intents."""
-    by_name = {t.name: t for t in cfg.targets}
+    by_name = {t.name: t for t in cfg.repositories}
     pending = answers.without_superseded(intents.list_intents(cfg.state_dir),
                                          lambda i: _task_for_intent(cfg, i))
     for intent in pending:
         try:
             _apply_one_intent(cfg, deps, by_name, intent)
             eventlog.append_event(cfg.state_dir, "intent-applied",
-                                  target=_intent_target(cfg, intent),
+                                  repository=_intent_repository(cfg, intent),
                                   issue=intent.issue, actor=intent.actor,
                                   detail=intent.action)
         except IntentDropped as dropped:
             print(f"[warn] intent {intent.path.name}: {dropped}",
                   file=sys.stderr)
             eventlog.append_event(cfg.state_dir, "intent-dropped",
-                                  target=_intent_target(cfg, intent),
+                                  repository=_intent_repository(cfg, intent),
                                   issue=intent.issue, model=dropped.model,
                                   actor=intent.actor, detail=str(dropped))
         except Exception as exc:
@@ -2445,8 +2466,8 @@ def _prune_snapshots(cfg: Config) -> None:
     parked. Every pass checks; ~200 KB per file makes eagerness cheap.
 
     The live set is built from state, not parsed from the stem: a
-    "task-<target>-<issue>.txt" stem can't be split back into (target,
-    issue) unambiguously (a target name may itself contain digits and
+    "task-<repository>-<issue>.txt" stem can't be split back into (repository,
+    issue) unambiguously (a repository name may itself contain digits and
     hyphens), so identity comes from load_all() same as everywhere else,
     same as _task_for_intent. The legacy "task-<issue>.txt" form is kept
     alive too, for any snapshot still sitting under its pre-rename name."""
@@ -2458,7 +2479,7 @@ def _prune_snapshots(cfg: Config) -> None:
                      if t.stage in IN_FLIGHT_STAGES]
     except Exception:
         return  # unreadable/corrupt state dir: skip, never abort the sweep
-    live = {f"task-{t.target}-{t.issue}.txt" for t in in_flight} \
+    live = {f"task-{t.repository}-{t.issue}.txt" for t in in_flight} \
          | {f"task-{t.issue}.txt" for t in in_flight}
     now = time.time()
     for p in root.glob("task-*.txt"):
@@ -2508,9 +2529,9 @@ def _starving(task: TaskState) -> bool:
 def _migrate_legacy_keys(cfg: Config) -> None:
     """Take over pre-multi-project issue-only keys. Messages: see
     messages.migrate_legacy. Wake-blocked markers are transient (re-marked
-    next pass if still true), so with several targets a legacy one is just
+    next pass if still true), so with several repositories a legacy one is just
     dropped; with one it is renamed to keep the edge-triggered event quiet."""
-    names = [t.name for t in cfg.targets]
+    names = [t.name for t in cfg.repositories]
     messages.migrate_legacy(cfg.state_dir, names)
     for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
         issue = p.name.removeprefix(WAKE_BLOCKED_PREFIX)
@@ -2542,10 +2563,10 @@ def _reconcile_slots(cfg: Config) -> None:
     slot, and a re-claim of the same issue inherited the stale badge."""
     known: set[str] = set()
     for task in load_all(cfg.state_dir):
-        known.add(_wake_blocked_path(cfg, task.target, task.issue).name)
+        known.add(_wake_blocked_path(cfg, task.repository, task.issue).name)
         if not holds_slot(task) and task.slot != NO_SLOT:
             eventlog.append_event(cfg.state_dir, "slot-reclaimed",
-                                  target=task.target, issue=task.issue,
+                                  repository=task.repository, issue=task.issue,
                                   stage=task.stage.value,
                                   detail=f"stage {task.stage.value}"
                                          + (f" park {task.park}" if task.park
@@ -2554,7 +2575,7 @@ def _reconcile_slots(cfg: Config) -> None:
             task = replace(task, slot=NO_SLOT)
             save(cfg.state_dir, task)
         if not _starving(task):
-            _clear_wake_blocked(cfg, task.target, task.issue)
+            _clear_wake_blocked(cfg, task.repository, task.issue)
     for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
         if p.name not in known:  # state file flushed/deleted under the marker
             p.unlink(missing_ok=True)
@@ -2570,13 +2591,13 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
 
 
 def _sync_artifacts(cfg: Config, *, dry_run: bool = False) -> None:
-    repos = {target.name: target.repo for target in cfg.targets}
+    repos = {repository.name: repository.repo for repository in cfg.repositories}
     for task in load_all(cfg.state_dir):
         try:
-            task_artifacts.collect(cfg.state_dir, task, repos.get(task.target, ""),
+            task_artifacts.collect(cfg.state_dir, task, repos.get(task.repository, ""),
                                    publish=not dry_run and task.stage not in TERMINAL_STAGES)
         except (OSError, ValueError):
-            log.exception("Artifact collection failed for %s/%s", task.target, task.issue)
+            log.exception("Artifact collection failed for %s/%s", task.repository, task.issue)
     task_artifacts.cleanup(cfg.state_dir)
 
 
@@ -2590,7 +2611,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         _prune_snapshots(cfg)
         triage.tick(cfg, deps, config_path)
     # Evaluate each triage signal once — triage.running() is a real herdr
-    # subprocess; calling it per target would spawn (1 + len(targets)) processes
+    # subprocess; calling it per repository would spawn (1 + len(repositories)) processes
     # each pass. The two signals are semantically distinct: eff is reduced when
     # the sweep is running (it holds a real capacity unit active() cannot see);
     # claims are paused when any request is in flight (pending = file OR running).
@@ -2608,23 +2629,23 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     default_verdict = admit(cfg.models.gate_entry().model_id)
     _budget_edge(cfg, deps, default_verdict, now)
     _auth_dark_edge(cfg, deps, usages)
-    # Phase 1: work already in progress, on every target, before any claim —
-    # so one target's new claims never starve another's approved spec.
-    for target in eff.targets:
+    # Phase 1: work already in progress, on every repository, before any claim —
+    # so one repository's new claims never starve another's approved spec.
+    for repository in eff.repositories:
         for task in [t for t in load_all(cfg.state_dir)
-                     if t.target == target.name and not t.park
+                     if t.repository == repository.name and not t.park
                      and t.stage in IN_FLIGHT_STAGES]:
             try:
-                _drive_task(eff, deps, target, task, admit, order, dry_run)
+                _drive_task(eff, deps, repository, task, admit, order, dry_run)
             except Exception:
-                _fail_task_crash(eff, deps, target, task, dry_run)
-        _wake_ci(eff, deps, target)
-        _poll_prs(eff, deps, target, dry_run)
+                _fail_task_crash(eff, deps, repository, task, dry_run)
+        _wake_ci(eff, deps, repository)
+        _poll_prs(eff, deps, repository, dry_run)
     _resume_woken(eff, deps, admit, order, dry_run)
     _spawn_feedback(eff, deps, admit, order)
     # Phase 2: new claims, with whatever capacity phase 1 left.
     if not claims_paused:
-        _claim_new(eff, deps, eff.targets, admit, order, dry_run, pass_started)
+        _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)
     _flush_finished(cfg, dry_run)
     _write_heartbeat(cfg, pass_started)
@@ -2636,7 +2657,7 @@ def guarded_pass(cfg: Config, deps: Deps, config_path: str,
         run_pass(cfg, deps, dry_run=dry_run, config_path=config_path)
     except Exception:
         rep = failures.FailureReport(
-            klass="pass-crash", target="", issue=0, title="(dispatcher)",
+            klass="pass-crash", repository="", issue=0, title="(dispatcher)",
             error=traceback.format_exc(), log_tail="",
             repro=f"agent-ops-dispatcher --config {config_path}",
             worktree="")
@@ -2675,10 +2696,10 @@ def main() -> None:
     deps = Deps(github=GitHubClient(dry_run=args.dry_run),
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
                                   cpus=cfg.session_cpus, state_dir=cfg.state_dir,
-                                  clones={t.name: t.clone_path for t in cfg.targets}),
+                                  clones={t.name: t.clone_path for t in cfg.repositories}),
                 notifier=Notifier(dry_run=args.dry_run,
                                   console_url=cfg.console_url,
-                                  multi_target=len(cfg.targets) > 1))
+                                  multi_repository=len(cfg.repositories) > 1))
     if args.digest:
         send_digest(cfg, deps)
     elif args.triage:

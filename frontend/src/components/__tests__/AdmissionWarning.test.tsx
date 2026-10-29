@@ -32,7 +32,7 @@ function renderWarning(a: Admission) {
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   )
   return render(
-    <AdmissionWarning target="widget" issue={42} admission={a} />, { wrapper })
+    <AdmissionWarning repository="widget" issue={42} admission={a} />, { wrapper })
 }
 
 it('renders eligible alternatives from the server, including another provider', async () => {

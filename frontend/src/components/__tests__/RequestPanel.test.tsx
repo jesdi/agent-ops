@@ -7,7 +7,7 @@ import { RequestPanel } from '../RequestPanel'
 
 function renderPanel() {
   return renderWithProviders(
-    <RequestPanel target="widget" issue={42} />,
+    <RequestPanel repository="widget" issue={42} />,
   )
 }
 

@@ -28,8 +28,8 @@ def answers_req(fp="r1"):   # the pending intents of these tests are at revision
     return AnswersRequest(path=".agent/questionnaire.md", fingerprint=fp)
 
 
-def pending(payload, target="alpha", issue=7, action="answers"):
-    return {"action": action, "target": target, "issue": issue,
+def pending(payload, repository="alpha", issue=7, action="answers"):
+    return {"action": action, "repository": repository, "issue": issue,
             "actor": "jesdi@github", "created_at": "2026-07-25T10:00:00+00:00",
             "id": "x.json", "text": "", "payload": payload}
 
@@ -140,10 +140,10 @@ def test_garbage_file_gives_empty_answers(tmp_path):
 
 
 @pytest.mark.parametrize("other", [
-    pending({"answers": {"limit": "z"}}, target="beta"),
+    pending({"answers": {"limit": "z"}}, repository="beta"),
     pending({"answers": {"limit": "z"}}, issue=8),
     pending({"text": "hi"}, action="reply"),
-], ids=["other-target", "other-issue", "other-action"])
+], ids=["other-repository", "other-issue", "other-action"])
 def test_other_pending_intents_do_not_leak(tmp_path, other):
     fake, client = rig(tmp_path, answers_req(), saved({"format": "b"}))
     fake.pending = [other]
@@ -169,6 +169,6 @@ def test_missing_login_header_is_401_on_both_routes(tmp_path):
 
 def test_openapi_lists_the_route_and_the_new_fields(tmp_path):
     schema = create_app(make_config(tmp_path), FakeSources()).openapi()
-    assert "post" in schema["paths"][URL.replace("alpha", "{target}").replace("7", "{issue}")]
+    assert "post" in schema["paths"][URL.replace("alpha", "{repository}").replace("7", "{issue}")]
     props = schema["components"]["schemas"]["OperatorRequest"]["properties"]
     assert "revision" in props and "answers" in props

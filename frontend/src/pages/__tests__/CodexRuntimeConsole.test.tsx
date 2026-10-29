@@ -15,7 +15,7 @@ import { TaskPage } from '../TaskPage'
 function renderTask() {
   return renderWithProviders(
     <Routes>
-      <Route path="/task/:target/:issue" element={<TaskPage />} />
+      <Route path="/task/:repository/:issue" element={<TaskPage />} />
     </Routes>,
     { route: '/task/widget/42' },
   )
@@ -33,7 +33,7 @@ it('shows the claude.ai Remote Control link-out for an anthropic pick', async ()
 
 it('hides the claude.ai Remote Control link-out for a session whose pick is not anthropic', async () => {
   server.use(
-    http.get('/api/task/:target/:issue', () =>
+    http.get('/api/task/:repository/:issue', () =>
       HttpResponse.json({
         ...taskDetail,
         card: { ...taskDetail.card, model: 'openai/gpt-5-codex' },

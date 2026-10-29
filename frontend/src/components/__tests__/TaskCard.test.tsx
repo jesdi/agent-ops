@@ -13,7 +13,7 @@ function renderCard(card: typeof parkedCard, pendingActions?: string[]) {
 
 async function renderExpanded(card: typeof parkedCard) {
   const view = renderCard(card)
-  await userEvent.click(screen.getByRole('button', { name: `Details for ${card.target}#${card.issue}` }))
+  await userEvent.click(screen.getByRole('button', { name: `Details for ${card.repository}#${card.issue}` }))
   return view
 }
 
@@ -95,7 +95,7 @@ it('the whole card is the drag source carrying the cancel payload', () => {
     dataTransfer: { setData: (type: string, value: string) => { data[type] = value } },
   })
   expect(JSON.parse(data['application/x-agent-ops-card']!)).toEqual(
-    { issue: 41, target: 'widget', title: inProgressCard.title },
+    { issue: 41, repository: 'widget', title: inProgressCard.title },
   )
 })
 
