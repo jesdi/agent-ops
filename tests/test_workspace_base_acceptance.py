@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.workspace as workspace
-from dispatcher.config import Repository
+from dispatcher.config import Board, Project, Repository
 
 
 def git(cwd, *args) -> str:
@@ -40,10 +40,13 @@ def env(tmp_path):
     clone = tmp_path / "clone"
     git(tmp_path, "clone", str(origin), str(clone))
     t = Repository(
-        name="shop", repo="jesdi/shop", clone_path=str(clone),
-        worktrees_path=str(tmp_path / "clone.worktrees"), rank_cmd="rank",
-        project_number=1, project_owner="jesdi", status_field_id="F",
-        status_ready_option_id="R", status_in_progress_option_id="I")
+        name="shop", repo="jesdi/shop", github_id=1, clone_path=str(clone),
+        worktrees_path=str(tmp_path / "clone.worktrees"),
+        project=Project(
+            name="shop", rank_cmd="rank",
+            board=Board(
+                number=1, owner="jesdi", status_field_id="F",
+                status_ready_option_id="R", status_in_progress_option_id="I")))
     return origin, clone, t
 
 

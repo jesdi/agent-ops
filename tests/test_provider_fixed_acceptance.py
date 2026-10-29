@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dispatcher import eventlog, execution_overrides, intents as intents_mod
-from dispatcher.config import Config, Repository
+from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
 from dispatcher.state import PARK_HUMAN, Stage, TaskState, save
 import dispatcher.main as main
@@ -38,11 +38,14 @@ MULTI_PROVIDER_POLICY = parse_policy({
 
 def _repository(name="alpha"):
     return Repository(
-        name=name, repo=f"jesdi/{name}", clone_path=f"/tmp/clones/{name}",
-        worktrees_path=f"/tmp/worktrees/{name}", rank_cmd="false",
-        setup_cmd="", verify_cmd="", project_number=1, project_owner="jesdi",
-        status_field_id="F", status_ready_option_id="R",
-        status_in_progress_option_id="P", boost_field_id="B")
+        name=name, repo=f"jesdi/{name}", github_id=1, clone_path=f"/tmp/clones/{name}",
+        worktrees_path=f"/tmp/worktrees/{name}", setup_cmd="", verify_cmd="",
+        project=Project(
+            name=name, rank_cmd="false",
+            board=Board(
+                number=1, owner="jesdi", status_field_id="F",
+                status_ready_option_id="R", status_in_progress_option_id="P",
+                boost_field_id="B")))
 
 
 def _config(state_dir):

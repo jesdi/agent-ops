@@ -63,7 +63,7 @@ def _parked_events(c):
 
 def _yaml(tmp_path, extra=""):
     p = tmp_path / "targets.yaml"
-    p.write_text(f"state_dir: /tmp/s\ntargets: []\n{extra}")
+    p.write_text(f"state_dir: /tmp/s\nprojects: []\n{extra}")
     return p
 
 

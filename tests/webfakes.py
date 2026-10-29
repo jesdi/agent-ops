@@ -2,6 +2,7 @@
 from dispatcher.config import Config, Repository
 from dispatcher import execution_overrides, state
 from dispatcher.models import parse_policy
+from tests.configfakes import make_project, with_board
 from tests.usagefakes import session_usage
 from dispatcher.state import Stage, TaskState
 from web.sources import Sources, ArtifactListing
@@ -10,11 +11,9 @@ HEADERS = {"Tailscale-User-Login": "jesdi@github"}
 
 
 def make_repository(name="alpha", repo="jesdi/alpha"):
-    return Repository(
-        name=name, repo=repo, clone_path="/tmp/clones/" + name,
-        worktrees_path="/tmp/worktrees/" + name, rank_cmd="false",
-        setup_cmd="", verify_cmd="", project_number=1, project_owner="jesdi",
-        status_field_id="F", status_ready_option_id="R",
+    return with_board(Repository(
+        name=name, repo=repo, github_id=1, clone_path="/tmp/clones/" + name,
+        worktrees_path="/tmp/worktrees/" + name, project=make_project(name)),
         status_in_progress_option_id="P", boost_field_id="B")
 
 

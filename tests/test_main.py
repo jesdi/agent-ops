@@ -10,7 +10,7 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import execution_overrides, failures, spec_publish
-from dispatcher.config import Config, Repository
+from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.github import Candidate
 from dispatcher.pr_poll import CIStatus
 from dispatcher.models import parse_policy
@@ -20,6 +20,7 @@ from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                TaskState, has_waiting, load,
                                load_all, mark_waiting, save, SessionRecord, write_session)
 from tests.usagefakes import session_usage
+from tests.configfakes import with_board, with_project
 
 POLICY = parse_policy({
     "triage": ["claude-sonnet-5@low"],
@@ -243,16 +244,16 @@ def cfg(tmp_path: Path) -> Config:
         state_dir=str(tmp_path / "state"), capacity=3,
         session_memory="2g", session_cpus="2",
         repositories=[Repository(
-            name="portfolio_eval", repo="jesdi/portfolio_eval",
+            name="portfolio_eval", repo="jesdi/portfolio_eval", github_id=1,
             clone_path=str(tmp_path / "repo"),
-            worktrees_path=str(tmp_path / "repo.worktrees"),
-            rank_cmd="rank", setup_cmd="setup",
+            worktrees_path=str(tmp_path / "repo.worktrees"), setup_cmd="setup",
             verify_cmd="make e2e-slot SLOT={slot}",
             gate_cmd="make gate-slot SLOT={slot}",
-            project_number=1, project_owner="jesdi",
-            status_field_id="F", status_ready_option_id="R",
-            status_in_progress_option_id="I",
-        )],
+            project=Project(
+                name="portfolio_eval", rank_cmd="rank",
+                board=Board(
+                    number=1, owner="jesdi", status_field_id="F",
+                    status_ready_option_id="R", status_in_progress_option_id="I")))],
         infra_repo="jesdi/agent-ops",
         models=POLICY,
     )
@@ -2173,7 +2174,7 @@ def test_repository_specific_policy_is_used_at_spawn(tmp_path, monkeypatch):
             "spec": ["claude-fable-5-1"], "plan": ["claude-fable-5-1"],
             "implement": ["claude-fable-5-1"], "review": ["claude-fable-5-1"]}},
     })
-    c = dc_replace(c, repositories=[dc_replace(c.repositories[0], models=repository_policy)])
+    c = dc_replace(c, repositories=[with_project(c.repositories[0], models=repository_policy)])
     gh = FakeGitHub([Candidate(42, "T", "u42", effort=1, labels=("auto",))])
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
@@ -3603,7 +3604,7 @@ def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
     base = cfg(tmp_path)
-    c = dc_replace(base, repositories=[dc_replace(
+    c = dc_replace(base, repositories=[with_board(
         base.repositories[0], status_done_option_id="D0")])
     t = pr_open_task(c)
     gh = FakeGitHub()
@@ -3713,7 +3714,7 @@ def test_finish_merged_gh_failure_leaves_task_pr_open_and_pass_survives(
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
     base = cfg(tmp_path)
-    c = dc_replace(base, repositories=[dc_replace(
+    c = dc_replace(base, repositories=[with_board(
         base.repositories[0], status_done_option_id="D0")])
     pr_open_task(c)
 
@@ -3829,7 +3830,7 @@ def test_pending_feedback_not_spawned_when_budget_low(tmp_path, monkeypatch):
 
 def merged_cfg(tmp_path):
     base = cfg(tmp_path)
-    return dc_replace(base, repositories=[dc_replace(
+    return dc_replace(base, repositories=[with_board(
         base.repositories[0], status_done_option_id="D0")])
 
 

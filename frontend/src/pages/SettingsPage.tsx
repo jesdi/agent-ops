@@ -184,10 +184,10 @@ function SourceHeader({ view }: { view: ModelSettingsView }) {
       reset it. A stage that already started keeps its model.
     </p>
     {view.error && <p role="alert" className={banner.failed}>{view.error}. The targets.yaml block is in force.</p>}
-    {view.repository_overrides.length > 0 && (
+    {view.project_overrides.length > 0 && (
       <p className={banner.waiting}>
-        These repositories have their own <code>models:</code> block in targets.yaml, which these settings
-        do not change: {view.repository_overrides.join(', ')}.
+        These projects have their own <code>models:</code> block in targets.yaml, which these settings
+        do not change: {view.project_overrides.join(', ')}.
       </p>
     )}
   </>
