@@ -37,6 +37,24 @@ def _no_ambient_claude_token(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_ambient_git_config(monkeypatch):
+    """Tests that run real git in tmp_path repos must not read the developer's
+    ~/.gitconfig or global excludes file: an ignore rule there (specs/*/design.md)
+    makes their `git add` fail, and commit.gpgsign would try to sign. A fixed
+    identity stands in for the user.name/user.email that config held."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    # git reads ~/.config/git/ignore even with no global config; only an explicit
+    # core.excludesFile overrides that default.
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.excludesFile")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "/dev/null")
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", "agent-ops tests")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "tests@agent-ops.invalid")
+
+
+@pytest.fixture(autouse=True)
 def _isolated_state_dir(tmp_path, monkeypatch):
     """Point AGENT_OPS_STATE_DIR at a per-test tmp dir so no test can ever
     read or write the box's real state (claude-home seeding in
