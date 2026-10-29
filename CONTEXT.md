@@ -394,6 +394,22 @@ its `.my-skills.json` and installed with `@jesdi/skills-cli`, the mattpocock
 ones vendored as files (`make vendor-skills`); never a plugin, never carried
 by project repositories.
 
+**Base**:
+The branch a task works against: it branches from it, is reviewed and
+rebased against it, and opens its PR into it. Read at claim from the first
+`Base: <branch>` line of the issue body, `main` without one, and never
+changed after the claim. A base that is not a branch on origin, or a line
+that names no valid branch, leaves the issue waiting in Ready with one ping
+per branch (ADR 0006).
+_Avoid_: target branch, PR base (in prose)
+
+**Integration branch**:
+A `feat/<name>` branch that collects the increments of one all-at-once
+cut-over: each increment is a task whose base it is, and one final PR merges
+it into main. Wayfinder or the operator creates, rebases and merges it; the
+dispatcher never does.
+_Avoid_: feature branch, epic branch
+
 ## Loop-policy ownership
 
 **Single owner**: `dispatcher/loops.py` owns all round accounting, cap arithmetic, and reset scopes.

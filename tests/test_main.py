@@ -74,6 +74,9 @@ class FakeGitHub:
         self.comments = []           # (issue, body)
         self.comment_raises = False
 
+    def issue_body(self, target, issue):
+        return ""
+
     def rank_rows(self, target):
         if self.boost_raises:
             raise subprocess.CalledProcessError(1, ["rank"])
@@ -121,6 +124,9 @@ class FakeGitHub:
         if self.issue_state_raises:
             raise subprocess.CalledProcessError(1, ["gh"])
         return self.issue_states.get((repo, number), "OPEN")
+
+    def close_issue(self, repo, number):
+        self.issue_states[(repo, number)] = "CLOSED"
 
     def append_blocked_by(self, target, issue, blocker):
         self.blocked_by.append((issue, blocker))
@@ -265,7 +271,7 @@ def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
 
 
 def patch_workspace(monkeypatch, tmp_path):
-    def fake_create(target, issue, dry_run=False):
+    def fake_create(target, issue, base="main", dry_run=False):
         wt = Path(target.worktrees_path) / f"task-{issue}"
         (wt / ".agent").mkdir(parents=True, exist_ok=True)
         return str(wt)
@@ -1231,7 +1237,7 @@ def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monke
     gh = FakeGitHub([Candidate(42, "Bad", "u42"), Candidate(43, "Good", "u43")])
     sess = FakeSessions()
 
-    def failing_workspace(target, issue, dry_run=False):
+    def failing_workspace(target, issue, base="main", dry_run=False):
         if issue == 42:
             raise RuntimeError("pipenv: no python 3.13")
         wt = Path(target.worktrees_path) / f"task-{issue}"
@@ -1258,7 +1264,7 @@ def test_workspace_failure_second_pass_dedupes(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     gh = FakeGitHub([Candidate(42, "Bad", "u42")])
 
-    def failing_workspace(target, issue, dry_run=False):
+    def failing_workspace(target, issue, base="main", dry_run=False):
         raise RuntimeError("pipenv: no python 3.13")
 
     monkeypatch.setattr(main, "create_workspace", failing_workspace)

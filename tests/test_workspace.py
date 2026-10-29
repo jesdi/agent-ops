@@ -38,13 +38,15 @@ def test_create_workspace(tmp_path: Path, monkeypatch):
 
     assert wt == str(tmp_path / "repo.worktrees" / "task-42")
     fetch = calls[0]
-    assert fetch[:2] == (["git", "fetch", "origin"], t.clone_path)
-    add = calls[1]
+    assert fetch[:2] == (["git", "fetch", "--prune", "origin"], t.clone_path)
+    assert calls[1][0] == ["git", "ls-remote", "--exit-code", "origin", "refs/heads/main"]
+    assert calls[2][0] == ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"]
+    add = calls[3]
     assert add[0][:3] == ["git", "worktree", "add"]
     assert "-b" in add[0], "fresh creation must use -b, not the existing-branch route"
     assert "-f" not in add[0], "fresh creation must not use -f — that's the existing-branch route"
     assert "agent/task-42" in add[0] and add[1] == t.clone_path
-    setup_args, setup_cwd, setup_timeout = calls[2]
+    setup_args, setup_cwd, setup_timeout = calls[4]
     assert setup_args[:3] == ["podman", "run", "--rm"]
     assert "task-portfolio_eval-42-setup" in setup_args
     assert f"{wt}:{wt}" in setup_args

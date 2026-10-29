@@ -174,7 +174,7 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
     monkeypatch.setattr(main, '_notify', lambda *a, **kw: None)
     deps = SimpleNamespace(
         sessions=SimpleNamespace(end=lambda *a: None),
-        github=SimpleNamespace(delete_branch=lambda *a: None),
+        github=SimpleNamespace(delete_branch=lambda *a: None, issue_state=lambda *a: 'CLOSED'),
     )
     main._finish_merged(cfg, deps, target, task)
     main._sync_artifacts(cfg)

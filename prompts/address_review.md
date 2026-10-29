@@ -35,7 +35,7 @@ ${e2e_signal}- `{"stage": "address-review", "status": "done", "note": "<one line
   and the Actions API. `gh pr checks` and `statusCheckRollup` require the
   unsupported Checks API. A permission error is not evidence of passing CI;
   if the failing CI cannot be inspected, signal blocked with the error.
-- conflict: `git fetch origin && git rebase origin/main`, resolving with the
+- conflict: `git fetch origin && git rebase origin/$base`, resolving with the
   `resolving-merge-conflicts` skill — trace both sides' intent first.
 - operator: read the operator message appended below and do what it asks.
 

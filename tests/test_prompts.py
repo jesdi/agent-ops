@@ -5,7 +5,7 @@ from dispatcher.state import Stage
 
 CTX = dict(
     issue_number=42, issue_title="Add widget", issue_url="https://github.com/x/y/issues/42",
-    repo="jesdi/portfolio_eval", branch="agent/task-42", slot=1,
+    repo="jesdi/portfolio_eval", branch="agent/task-42", base="main", slot=1,
     backend_port=8101, frontend_port=5201,
     verify_cmd="make e2e-slot SLOT=1", gate_cmd="make gate SLOT=1",
     spec_path="specs/2026-07-14-widget/spec.md",
