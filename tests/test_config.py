@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -11,21 +12,27 @@ state_dir: /home/agent/agent-ops-state
 budget_threshold: 0.8
 racing_minutes: 30
 racing_threshold: 0.95
-targets:
-  - name: portfolio_eval
-    repo: jesdi/portfolio_eval
-    clone_path: /home/agent/repos/portfolio_eval
-    worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+projects:
+  - name: portfolio-eval
     rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
-    setup_cmd: "scripts/setup-worktree.sh"
-    verify_cmd: "make e2e-slot SLOT={slot}"
-    gate_cmd: "make gate"
-    project_number: 1
-    project_owner: jesdi
-    status_field_id: PVTSSF_xxx
-    status_ready_option_id: abc123
-    status_in_progress_option_id: def456
+    board:
+      owner: jesdi
+      number: 1
+      status_field_id: PVTSSF_xxx
+      status_ready_option_id: abc123
+      status_in_progress_option_id: def456
+    repositories:
+      - name: portfolio_eval
+        repo: jesdi/portfolio_eval
+        github_id: 101
+        clone_path: /home/agent/repos/portfolio_eval
+        worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+        setup_cmd: "scripts/setup-worktree.sh"
+        verify_cmd: "make e2e-slot SLOT={slot}"
+        gate_cmd: "make gate"
 """
+# The project-level line a test appends a project key after (a models: block).
+SAMPLE_PROJECT_LINE = '    rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"\n'
 
 
 def test_load_config(tmp_path: Path):
@@ -37,13 +44,17 @@ def test_load_config(tmp_path: Path):
     t = cfg.repositories[0]
     assert t.repo == "jesdi/portfolio_eval"
     assert t.verify_cmd == "make e2e-slot SLOT={slot}"
-    assert t.status_field_id == "PVTSSF_xxx"
+    assert t.github_id == 101
+    assert t.project.name == "portfolio-eval"
+    assert t.project.board.status_field_id == "PVTSSF_xxx"
+    assert t.project.paused is False
+    assert cfg.projects == [t.project]
 
 
 def test_defaults(tmp_path: Path):
     p = tmp_path / "targets.yaml"
     p.write_text(
-        "state_dir: /tmp/s\ntargets: []\n"
+        "state_dir: /tmp/s\nprojects: []\n"
     )
     cfg = load_config(p)
     assert cfg.capacity == 3
@@ -58,7 +69,7 @@ def test_defaults(tmp_path: Path):
 def test_state_dir_env_overrides_yaml(tmp_path: Path, monkeypatch):
     """AGENT_OPS_STATE_DIR must win over whatever state_dir the YAML says."""
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /yaml/path\ntargets: []\n")
+    p.write_text("state_dir: /yaml/path\nprojects: []\n")
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/env/path")
     cfg = load_config(p)
     assert cfg.state_dir == "/env/path", (
@@ -69,7 +80,7 @@ def test_state_dir_env_overrides_yaml(tmp_path: Path, monkeypatch):
 def test_state_dir_falls_back_to_yaml_when_env_unset(tmp_path: Path, monkeypatch):
     """Without AGENT_OPS_STATE_DIR, state_dir must come from the YAML file."""
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /yaml/path\ntargets: []\n")
+    p.write_text("state_dir: /yaml/path\nprojects: []\n")
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     cfg = load_config(p)
     assert cfg.state_dir == "/yaml/path", (
@@ -80,7 +91,7 @@ def test_state_dir_falls_back_to_yaml_when_env_unset(tmp_path: Path, monkeypatch
 def test_session_caps_default(tmp_path):
     from dispatcher.config import load_config
     p = tmp_path / "t.yaml"
-    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\nprojects: []\n")
     cfg = load_config(p)
     assert cfg.session_memory == "2g" and cfg.session_cpus == "2"
 
@@ -88,7 +99,7 @@ def test_session_caps_default(tmp_path):
 def test_session_caps_overridable(tmp_path):
     from dispatcher.config import load_config
     p = tmp_path / "t.yaml"
-    p.write_text("state_dir: /tmp/s\nsession_memory: 1500m\nsession_cpus: '1'\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\nsession_memory: 1500m\nsession_cpus: '1'\nprojects: []\n")
     cfg = load_config(p)
     assert cfg.session_memory == "1500m" and cfg.session_cpus == "1"
 
@@ -117,37 +128,15 @@ def test_console_url_loaded_and_trailing_slash_stripped(tmp_path: Path):
     assert load_config(p).console_url == "https://box.tail.ts.net"
 
 
-_REPOSITORY_YAML = """
-state_dir: /tmp/state
-targets:
-  - name: t
-    repo: o/r
-    clone_path: /c
-    worktrees_path: /w
-    rank_cmd: rank
-    setup_cmd: setup
-    verify_cmd: verify
-    gate_cmd: "make gate"
-    project_number: 1
-    project_owner: o
-    status_field_id: F
-    status_ready_option_id: R
-    status_in_progress_option_id: I
-"""
-
-
 def test_repository_boost_field_id_parsed(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
-    path = tmp_path / "targets.yaml"
-    path.write_text(_REPOSITORY_YAML + "    boost_field_id: PVTF_B1\n")
-    assert load_config(path).repositories[0].boost_field_id == "PVTF_B1"
+    path = write_yaml(tmp_path, board_extra={"boost_field_id": "PVTF_B1"})
+    assert load_config(path).repositories[0].project.board.boost_field_id == "PVTF_B1"
 
 
 def test_repository_boost_field_id_defaults_empty(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
-    path = tmp_path / "targets.yaml"
-    path.write_text(_REPOSITORY_YAML)
-    assert load_config(path).repositories[0].boost_field_id == ""
+    assert load_config(write_yaml(tmp_path)).repositories[0].project.board.boost_field_id == ""
 
 
 WITH_MODELS = """\
@@ -162,20 +151,20 @@ models:
       plan: [claude-opus-5@medium]
       implement: [claude-sonnet-5@medium, openai/gpt-luna@xhigh]
       review: [openai/gpt-luna@xhigh, claude-sonnet-5@medium]
-targets:
-  - name: portfolio_eval
-    repo: jesdi/portfolio_eval
-    clone_path: /home/agent/repos/portfolio_eval
-    worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+projects:
+  - name: portfolio-eval
     rank_cmd: "rank"
-    setup_cmd: "setup"
-    verify_cmd: "make e2e-slot SLOT={slot}"
-    gate_cmd: "make gate"
-    project_number: 1
-    project_owner: jesdi
-    status_field_id: F
-    status_ready_option_id: R
-    status_in_progress_option_id: I
+    board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
+            status_in_progress_option_id: I}
+    repositories:
+      - name: portfolio_eval
+        repo: jesdi/portfolio_eval
+        github_id: 101
+        clone_path: /home/agent/repos/portfolio_eval
+        worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+        setup_cmd: "setup"
+        verify_cmd: "make e2e-slot SLOT={slot}"
+        gate_cmd: "make gate"
     models:
       triage: [claude-fable-5-1]
       untracked: only
@@ -200,7 +189,7 @@ def test_global_policy_is_parsed(tmp_path: Path):
     assert str(cfg.models.triage[0]) == "anthropic/claude-sonnet-5@medium"
 
 
-def test_repository_policy_replaces_the_global_one(tmp_path: Path):
+def test_project_policy_replaces_the_global_one(tmp_path: Path):
     p = tmp_path / "targets.yaml"
     p.write_text(WITH_MODELS)
     cfg = load_config(p)
@@ -208,7 +197,7 @@ def test_repository_policy_replaces_the_global_one(tmp_path: Path):
     assert list(policy_for(cfg, repository).tracks) == ["only"]   # replaced wholesale, not merged
 
 
-def test_repository_without_models_inherits_the_global_policy(tmp_path: Path):
+def test_project_without_models_inherits_the_global_policy(tmp_path: Path):
     p = tmp_path / "targets.yaml"
     p.write_text(SAMPLE)          # the module-level sample has no models: block
     cfg = load_config(p)
@@ -217,21 +206,21 @@ def test_repository_without_models_inherits_the_global_policy(tmp_path: Path):
 
 def test_absent_models_block_is_the_default_policy(tmp_path: Path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\nprojects: []\n")
     cfg = load_config(p)
     assert cfg.models == DEFAULT_POLICY
 
 
 def test_old_models_shape_is_rejected_at_load(tmp_path: Path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\ntargets: []\nmodels:\n  default: claude-opus-5\n  rules: []\n")
+    p.write_text("state_dir: /tmp/s\nprojects: []\nmodels:\n  default: claude-opus-5\n  rules: []\n")
     with pytest.raises(ValueError, match="tracks"):
         load_config(p)
 
 
 def test_top_level_triage_model_is_rejected_at_load(tmp_path: Path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\ntargets: []\ntriage_model: claude-sonnet-5\n")
+    p.write_text("state_dir: /tmp/s\nprojects: []\ntriage_model: claude-sonnet-5\n")
     with pytest.raises(ValueError, match="models.triage"):
         load_config(p)
 
@@ -243,7 +232,7 @@ def test_referenced_providers_come_from_every_entry(tmp_path: Path):
     assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})
 
 
-WITH_EMPTY_REPOSITORY_MODELS = """\
+WITH_EMPTY_PROJECT_MODELS = """\
 state_dir: /tmp/s
 models:
   triage: [claude-opus-5]
@@ -255,117 +244,110 @@ models:
       plan: [claude-opus-5]
       implement: [claude-opus-5]
       review: [claude-opus-5]
-targets:
-  - name: portfolio_eval
-    repo: jesdi/portfolio_eval
-    clone_path: /home/agent/repos/portfolio_eval
-    worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+projects:
+  - name: portfolio-eval
     rank_cmd: "rank"
-    setup_cmd: "setup"
-    verify_cmd: "make e2e-slot SLOT={slot}"
-    gate_cmd: "make gate"
-    project_number: 1
-    project_owner: jesdi
-    status_field_id: F
-    status_ready_option_id: R
-    status_in_progress_option_id: I
+    board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
+            status_in_progress_option_id: I}
+    repositories:
+      - name: portfolio_eval
+        repo: jesdi/portfolio_eval
+        github_id: 101
+        clone_path: /home/agent/repos/portfolio_eval
+        worktrees_path: /home/agent/repos/portfolio_eval.worktrees
+        setup_cmd: "setup"
+        verify_cmd: "make e2e-slot SLOT={slot}"
+        gate_cmd: "make gate"
     models: {}
 """
 
 
-def test_repository_with_empty_models_block_opts_out_of_global_policy(tmp_path: Path):
-    """An explicit `models: {}` on a repository means "override with nothing",
+def test_project_with_empty_models_block_opts_out_of_global_policy(tmp_path: Path):
+    """An explicit `models: {}` on a project means "override with nothing",
     not "inherit the global policy" — it's the natural way to opt one
-    repository out of global tracks (finding B)."""
+    project out of global tracks (finding B)."""
     p = tmp_path / "targets.yaml"
-    p.write_text(WITH_EMPTY_REPOSITORY_MODELS)
+    p.write_text(WITH_EMPTY_PROJECT_MODELS)
     cfg = load_config(p)
     repository = cfg.repositories[0]
     assert policy_for(cfg, repository) == DEFAULT_POLICY
-    # the global policy still has its own tracks — only the repository opted out
+    # the global policy still has its own tracks — only the project opted out
     assert list(cfg.models.tracks) == ["standard"]
 
 
 def test_stall_after_seconds_defaults_to_600(tmp_path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\nprojects: []\n")
     cfg = load_config(p)
     assert cfg.stall_after_seconds == 600
 
 
 def test_stall_after_seconds_configurable_and_zero_disables(tmp_path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\nstall_after_seconds: 0\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\nstall_after_seconds: 0\nprojects: []\n")
     assert load_config(p).stall_after_seconds == 0
 
 
 def test_spec_review_grace_minutes_defaults_to_15(tmp_path: Path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\nprojects: []\n")
     assert load_config(p).spec_review_grace_minutes == 15
 
 
 def test_spec_review_grace_minutes_is_read_from_yaml(tmp_path: Path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\nspec_review_grace_minutes: 0\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\nspec_review_grace_minutes: 0\nprojects: []\n")
     # 0 is a real value (park immediately), not "unset" — it must survive.
     assert load_config(p).spec_review_grace_minutes == 0
 
 
-def write_yaml(tmp_path: Path, repository_extra: dict | None = None, top_extra: dict | None = None) -> Path:
-    """Helper to write a minimal targets.yaml with optional repository and top-level extras.
+def repository_dict(name="t", **extra) -> dict:
+    """One repository entry of targets.yaml, its paths and github_id derived
+    from `name` so two of them never collide."""
+    return {"name": name, "repo": f"o/{name}", "github_id": sum(map(ord, name)),
+            "clone_path": f"/c/{name}", "worktrees_path": f"/w/{name}",
+            "setup_cmd": "setup", "verify_cmd": "verify", "gate_cmd": "make gate",
+            **extra}
 
-    Returns the path to the written YAML file.
-    """
-    repository_extra = repository_extra or {}
-    top_extra = top_extra or {}
 
-    # Base repository configuration
-    repository = {
-        "name": "t",
-        "repo": "o/r",
-        "clone_path": "/c",
-        "worktrees_path": "/w",
-        "rank_cmd": "rank",
-        "setup_cmd": "setup",
-        "verify_cmd": "verify",
-        "gate_cmd": "make gate",
-        "project_number": 1,
-        "project_owner": "o",
-        "status_field_id": "F",
-        "status_ready_option_id": "R",
-        "status_in_progress_option_id": "I",
-    }
-    repository.update(repository_extra)
+def project_dict(name="p", repositories=None, board_extra=None, **extra) -> dict:
+    """One project entry of targets.yaml: one repository unless given."""
+    board = {"owner": "o", "number": 1, "status_field_id": "F",
+             "status_ready_option_id": "R", "status_in_progress_option_id": "I",
+             **(board_extra or {})}
+    return {"name": name, "rank_cmd": "rank", "board": board,
+            "repositories": repositories or [repository_dict()], **extra}
 
-    # Build YAML content
-    yaml_dict = {
-        "state_dir": "/tmp/state",
-        "targets": [repository],
-    }
-    yaml_dict.update(top_extra)
 
-    # Convert dict to YAML-like text (simple approach)
+def write_yaml(tmp_path: Path, repository_extra: dict | None = None,
+               top_extra: dict | None = None, project_extra: dict | None = None,
+               board_extra: dict | None = None, projects: list | None = None) -> Path:
+    """A minimal targets.yaml: one project of one repository, each with its
+    extras, or `projects` as given."""
     import yaml
+    if projects is None:
+        projects = [project_dict(repositories=[repository_dict(**(repository_extra or {}))],
+                                 board_extra=board_extra, **(project_extra or {}))]
     p = tmp_path / "targets.yaml"
-    p.write_text(yaml.dump(yaml_dict, default_flow_style=False))
+    p.write_text(yaml.dump({"state_dir": "/tmp/state", "projects": projects,
+                            **(top_extra or {})}, default_flow_style=False))
     return p
 
 
 def test_status_done_option_id_loaded_and_defaults_empty(tmp_path):
-    cfg = load_config(write_yaml(tmp_path, repository_extra={
+    cfg = load_config(write_yaml(tmp_path, board_extra={
         "status_done_option_id": "d0ne"}))
-    assert cfg.repositories[0].status_done_option_id == "d0ne"
+    assert cfg.repositories[0].project.board.status_done_option_id == "d0ne"
     cfg = load_config(write_yaml(tmp_path))
-    assert cfg.repositories[0].status_done_option_id == ""
+    assert cfg.repositories[0].project.board.status_done_option_id == ""
 
 
 def test_status_wont_do_option_id_loaded_and_defaults_empty(tmp_path):
-    cfg = load_config(write_yaml(tmp_path, repository_extra={
+    cfg = load_config(write_yaml(tmp_path, board_extra={
         "status_wont_do_option_id": "w0nt"}))
-    assert cfg.repositories[0].status_wont_do_option_id == "w0nt"
+    assert cfg.repositories[0].project.board.status_wont_do_option_id == "w0nt"
     cfg = load_config(write_yaml(tmp_path))
-    assert cfg.repositories[0].status_wont_do_option_id == ""
+    assert cfg.repositories[0].project.board.status_wont_do_option_id == ""
 
 
 def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
@@ -376,28 +358,28 @@ def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
 
 def test_pass_interval_minutes_default_and_override(tmp_path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\nprojects: []\n")
     assert load_config(p).pass_interval_minutes == 5
-    p.write_text("state_dir: /tmp/s\npass_interval_minutes: 7\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\npass_interval_minutes: 7\nprojects: []\n")
     assert load_config(p).pass_interval_minutes == 7
 
 
 GATED_YAML = """
 state_dir: /tmp/s
-targets:
+projects:
   - name: alpha
-    repo: jesdi/alpha
-    clone_path: /tmp/c
-    worktrees_path: /tmp/w
     rank_cmd: rank
-    setup_cmd: setup
-    verify_cmd: "make e2e-slot SLOT={slot}"
-    gate_cmd: "make gate SLOT={slot}"
-    project_number: 1
-    project_owner: jesdi
-    status_field_id: F
-    status_ready_option_id: R
-    status_in_progress_option_id: P
+    board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
+            status_in_progress_option_id: P}
+    repositories:
+      - name: alpha
+        repo: jesdi/alpha
+        github_id: 1
+        clone_path: /tmp/c
+        worktrees_path: /tmp/w
+        setup_cmd: setup
+        verify_cmd: "make e2e-slot SLOT={slot}"
+        gate_cmd: "make gate SLOT={slot}"
 """
 
 
@@ -410,7 +392,7 @@ def test_gate_cmd_is_loaded(tmp_path, monkeypatch):
 def test_missing_gate_cmd_fails_at_load(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
-    p.write_text(GATED_YAML.replace('    gate_cmd: "make gate SLOT={slot}"\n', ""))
+    p.write_text(GATED_YAML.replace('        gate_cmd: "make gate SLOT={slot}"\n', ""))
     with pytest.raises(ValueError, match=r"alpha.*gate_cmd"):
         load_config(p)
 
@@ -483,18 +465,18 @@ def test_session_week_share_for_an_unreferenced_provider_fails_config_load(tmp_p
 
 REPOSITORY_NO_OPTIONAL_CMDS = """
 state_dir: /tmp/s
-targets:
+projects:
   - name: alpha
-    repo: jesdi/alpha
-    clone_path: /tmp/c
-    worktrees_path: /tmp/w
     rank_cmd: rank
-    gate_cmd: "make gate"
-    project_number: 1
-    project_owner: jesdi
-    status_field_id: F
-    status_ready_option_id: R
-    status_in_progress_option_id: P
+    board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
+            status_in_progress_option_id: P}
+    repositories:
+      - name: alpha
+        repo: jesdi/alpha
+        github_id: 1
+        clone_path: /tmp/c
+        worktrees_path: /tmp/w
+        gate_cmd: "make gate"
 """
 
 
@@ -511,11 +493,11 @@ def test_max_active_within_capacity_loads(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
     p.write_text(GATED_YAML + "    max_active: 2\n")
-    assert load_config(p).repositories[0].max_active == 2
+    assert load_config(p).repositories[0].project.max_active == 2
 
 
 @pytest.mark.parametrize("bad_value", [0, 4])  # capacity defaults to 3
-def test_max_active_out_of_bounds_fails_naming_repository_and_field(tmp_path, monkeypatch, bad_value):
+def test_max_active_out_of_bounds_fails_naming_project_and_field(tmp_path, monkeypatch, bad_value):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
     p.write_text(GATED_YAML + f"    max_active: {bad_value}\n")
@@ -525,14 +507,14 @@ def test_max_active_out_of_bounds_fails_naming_repository_and_field(tmp_path, mo
 
 def test_spec_review_grace_minutes_null_means_never(tmp_path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\nspec_review_grace_minutes: null\ntargets: []\n")
+    p.write_text("state_dir: /tmp/s\nspec_review_grace_minutes: null\nprojects: []\n")
     assert load_config(p).spec_review_grace_minutes is None
 
 
 def test_missing_gate_cmd_error_names_repository_and_field(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
-    p.write_text(GATED_YAML.replace('    gate_cmd: "make gate SLOT={slot}"\n', ""))
+    p.write_text(GATED_YAML.replace('        gate_cmd: "make gate SLOT={slot}"\n', ""))
     with pytest.raises(ValueError, match=r"alpha.*gate_cmd"):
         load_config(p)
 
@@ -559,7 +541,7 @@ def test_example_yaml_loads_cleanly_and_documents_new_fields():
 
 
 @pytest.mark.parametrize("bad_value", ["2", True, False, 2.5])
-def test_max_active_wrong_type_fails_naming_repository_and_field(tmp_path, monkeypatch, bad_value):
+def test_max_active_wrong_type_fails_naming_project_and_field(tmp_path, monkeypatch, bad_value):
     monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
     p = tmp_path / "t.yaml"
     p.write_text(GATED_YAML + f"    max_active: {bad_value!r}\n")
@@ -570,12 +552,12 @@ def test_max_active_wrong_type_fails_naming_repository_and_field(tmp_path, monke
 @pytest.mark.parametrize("bad_value", ["15", True, False, 1.5])
 def test_spec_review_grace_minutes_wrong_type_fails(tmp_path, bad_value):
     p = tmp_path / "targets.yaml"
-    p.write_text(f"state_dir: /tmp/s\nspec_review_grace_minutes: {bad_value!r}\ntargets: []\n")
+    p.write_text(f"state_dir: /tmp/s\nspec_review_grace_minutes: {bad_value!r}\nprojects: []\n")
     with pytest.raises(ValueError, match="spec_review_grace_minutes"):
         load_config(p)
 
 
-def test_referenced_providers_includes_repository_policies(tmp_path):
+def test_referenced_providers_includes_project_policies(tmp_path):
     repository_models = """\
     models:
       triage: [anthropic/m]
@@ -589,8 +571,7 @@ def test_referenced_providers_includes_repository_policies(tmp_path):
           review: [openai/m]
 """
     p = tmp_path / "targets.yaml"
-    p.write_text(SAMPLE.replace("    status_in_progress_option_id: def456\n",
-                                "    status_in_progress_option_id: def456\n" + repository_models))
+    p.write_text(SAMPLE.replace(SAMPLE_PROJECT_LINE, SAMPLE_PROJECT_LINE + repository_models))
     assert referenced_providers(load_config(p)) == frozenset({"anthropic", "openai"})
 
 
@@ -618,8 +599,7 @@ def test_referenced_providers_includes_review_second(tmp_path, where):
         text = CLAUDE_TRACKS_WITH_SECOND + SAMPLE
     else:
         text = SAMPLE.replace(
-            "    status_in_progress_option_id: def456\n",
-            "    status_in_progress_option_id: def456\n"
+            SAMPLE_PROJECT_LINE, SAMPLE_PROJECT_LINE
             + "".join("    " + line + "\n"
                       for line in CLAUDE_TRACKS_WITH_SECOND.splitlines()))
     p.write_text(text)
@@ -656,8 +636,7 @@ def test_routed_providers_are_the_global_triage_and_every_policys_stage_lists(
         text = models + SAMPLE
     else:
         text = SAMPLE.replace(
-            "    status_in_progress_option_id: def456\n",
-            "    status_in_progress_option_id: def456\n"
+            SAMPLE_PROJECT_LINE, SAMPLE_PROJECT_LINE
             + "".join("    " + line + "\n" for line in models.splitlines()))
     p = tmp_path / "targets.yaml"
     p.write_text(text)
@@ -669,3 +648,104 @@ def test_max_open_loaded_defaults_ten_and_must_cover_capacity(tmp_path):
     assert load_config(write_yaml(tmp_path, top_extra={"max_open": 12})).max_open == 12
     with pytest.raises(ValueError, match="max_open"):
         load_config(write_yaml(tmp_path, top_extra={"max_open": 1}))
+
+
+# --- projects: the targets.yaml shape and its box-wide checks ---
+
+def test_a_leftover_targets_key_is_refused(tmp_path):
+    p = tmp_path / "targets.yaml"
+    p.write_text("state_dir: /tmp/s\ntargets: []\n")
+    with pytest.raises(ValueError, match=r"targets: is retired; rewrite it as projects: "
+                                         r"\(see targets\.example\.yaml\)"):
+        load_config(p)
+
+
+def test_paused_is_parsed_and_must_be_a_boolean(tmp_path):
+    assert load_config(write_yaml(tmp_path, project_extra={"paused": True})).projects[0].paused
+    with pytest.raises(ValueError, match="project 'p': paused"):
+        load_config(write_yaml(tmp_path, project_extra={"paused": "yes"}))
+
+
+@pytest.mark.parametrize("name", ["Portfolio", "portfolio_eval", "a b", "", 7])
+def test_a_project_name_must_be_a_slug(tmp_path, name):
+    with pytest.raises(ValueError, match=r"project .*: name must be a slug"):
+        load_config(write_yaml(tmp_path, projects=[project_dict(name=name)]))
+
+
+def test_a_project_needs_a_repository(tmp_path):
+    project = {**project_dict(), "repositories": []}
+    with pytest.raises(ValueError, match="project 'p': repositories"):
+        load_config(write_yaml(tmp_path, projects=[project]))
+
+
+@pytest.mark.parametrize("github_id", [None, 0, -3, True, "123"])
+def test_github_id_must_be_a_positive_integer(tmp_path, github_id):
+    repository = repository_dict(github_id=github_id)
+    if github_id is None:
+        del repository["github_id"]
+    with pytest.raises(ValueError, match=r"repository 't' \(project 'p'\): github_id"):
+        load_config(write_yaml(tmp_path, projects=[project_dict(repositories=[repository])]))
+
+
+def test_a_missing_board_key_names_the_project(tmp_path):
+    project = project_dict()
+    del project["board"]["owner"]
+    with pytest.raises(ValueError, match="project 'p' board:.*owner"):
+        load_config(write_yaml(tmp_path, projects=[project]))
+
+
+@pytest.mark.parametrize("second, message", [
+    # one project named twice
+    (project_dict("p", [repository_dict("b")]), "project 'p': name used by two projects"),
+    # the same key, each in its own project
+    (project_dict("q", [repository_dict("a", repo="o/other")]),
+     r"repository 'a' \(project 'q'\) name 'a': already the name of repository 'a' \(project 'p'\)"),
+    (project_dict("q", [repository_dict("b", github_id=sum(map(ord, "a")))]),
+     r"repository 'b' \(project 'q'\) github_id 97: already the github_id of repository 'a'"),
+    (project_dict("q", [repository_dict("b", clone_path="/c/a/")]),
+     r"repository 'b' \(project 'q'\) clone_path '/c/a/': already the clone_path of repository 'a'"),
+    (project_dict("q", [repository_dict("b", worktrees_path="/w/a")]),
+     r"repository 'b' \(project 'q'\) worktrees_path '/w/a': already the worktrees_path of repository 'a'"),
+    # a clone can't double as another repository's worktrees
+    (project_dict("q", [repository_dict("b", worktrees_path="/c/a")]),
+     r"repository 'b' \(project 'q'\) worktrees_path '/c/a': already the clone_path of repository 'a'"),
+], ids=["project-name", "repository-name", "github_id", "clone_path", "worktrees_path", "clone-as-worktrees"])
+def test_duplicates_across_projects_are_refused_naming_both_owners(tmp_path, second, message):
+    first = project_dict("p", [repository_dict("a")])
+    with pytest.raises(ValueError, match=message):
+        load_config(write_yaml(tmp_path, projects=[first, second]))
+
+
+def test_repositories_flatten_in_config_order(tmp_path):
+    cfg = load_config(write_yaml(tmp_path, projects=[
+        project_dict("p", [repository_dict("a"), repository_dict("b")]),
+        project_dict("q", [repository_dict("c")])]))
+    assert [r.name for r in cfg.repositories] == ["a", "b", "c"]
+    assert [p.name for p in cfg.projects] == ["p", "q"]
+    assert cfg.repositories[0].project is cfg.repositories[1].project
+
+
+@pytest.mark.parametrize("root", ["/home/agent/agent-ops", "/home/agent/agent-ops-infra",
+                                  "/tmp/state"], ids=["checkout", "infra", "state_dir"])
+@pytest.mark.parametrize("relation", ["equals", "inside", "contains"])
+@pytest.mark.parametrize("field", ["clone_path", "worktrees_path"])
+def test_paths_apart_from_the_box_checkouts_and_state(tmp_path, monkeypatch, root, relation, field):
+    monkeypatch.setenv("HOME", "/home/agent")
+    monkeypatch.delenv("AGENT_OPS_STATE_DIR")       # state_dir is /tmp/state
+    path = {"equals": root + "/", "inside": root + "/x/y",
+            "contains": os.path.dirname(root)}[relation]
+    with pytest.raises(ValueError, match=rf"repository 't' \(project 'p'\): {field} .*overlaps"):
+        load_config(write_yaml(tmp_path, repository_extra={field: path}))
+
+
+def test_a_sibling_of_a_box_path_is_fine(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", "/home/agent")
+    cfg = load_config(write_yaml(tmp_path, repository_extra={
+        "clone_path": "/home/agent/agent-ops-x", "worktrees_path": "/home/agent/agent-ops.wt"}))
+    assert cfg.repositories[0].clone_path == "/home/agent/agent-ops-x"
+
+
+@pytest.mark.parametrize("field", ["clone_path", "worktrees_path"])
+def test_paths_must_be_absolute(tmp_path, field):
+    with pytest.raises(ValueError, match=rf"repository 't' \(project 'p'\): {field} must be absolute"):
+        load_config(write_yaml(tmp_path, repository_extra={field: "repos/t"}))

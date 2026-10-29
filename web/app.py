@@ -345,7 +345,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                         if (admission := _task_admission(live, t, order, usages, now))},
             candidate_admissions=_candidate_admissions(live, queue_repositories, order,
                                                        usages, now),
-            max_active={t.name: t.max_active for t in boot.repositories},
+            max_active={t.name: t.project.max_active for t in boot.repositories},
             last_claimed=sources.last_claims(),
             max_open=boot.max_open)
 

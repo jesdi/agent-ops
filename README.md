@@ -57,7 +57,7 @@ and configuration that the box pulls.
 flowchart LR
     subgraph github["GitHub — state store"]
         board["Backlog<br/>(issues + project board)"]
-        repos["Target repos<br/>(branches, PRs, CI)"]
+        repos["Project repos<br/>(branches, PRs, CI)"]
         main["agent-ops main"]
     end
 
@@ -104,7 +104,7 @@ flowchart LR
 - **Dispatcher** (`dispatcher/`) — polls the backlog, ranks it, selects the
   next task within usage headroom and capacity limits, provisions a git worktree, and
   launches a Claude Code session for it. Capacity is box-wide: work already in
-  flight runs first, then each free unit goes to the target with the fewest
+  flight runs first, then each free unit goes to the repository with the fewest
   active tasks.
 - **Staged pipeline** — each task moves through **spec → plan → implement (one session works every ticket) → review**,
   each stage a fresh session whose only input is the previous stage's committed
@@ -162,8 +162,8 @@ Python is the only GitHub write path:
   overwritten. It also repairs stale cards (a closed issue still showing an
   open status becomes Done or Wont do), without a session.
 
-Scoring needs the target clone to carry `.backlog/project-meta.json` (written
-by the backlog skill's `setup`, committed in the target repo) and the sweep to
+Scoring needs the repository's clone to carry `.backlog/project-meta.json` (written
+by the backlog skill's `setup`, committed in that repo) and the sweep to
 have `GH_PROJECT_TOKEN`. A repo without that file gets labels only, and so
 does any repo on a night the board cannot be read. An open issue that is not
 on the board cannot be scored; the report names it (enable the board's
@@ -223,7 +223,7 @@ are never forceable).
 | `telegram/`     | Outbound notifications/digests and inbound reply handling    |
 | `prompts/`      | Stage prompts (spec, plan, implement, review, address-review) and the triage prompt   |
 | `tests/`        | pytest suite                                                 |
-| `targets.example.yaml` | Template for the box-local `targets.yaml` (capacity, thresholds, model policy) |
+| `targets.example.yaml` | Template for the box-local `targets.yaml` (capacity, thresholds, model policy, projects) |
 
 ## Development
 
@@ -257,6 +257,12 @@ The session hook of skills-cli updates only global skills (`~/.my-skills`). Proj
 ## Deployment
 
 Use `targets.example.yaml` as a schema example for your own configuration.
+It lists `projects:`: each one names a board and its `repositories:` (clone,
+worktrees, commands). The old top-level `targets:` list is retired: the loader
+refuses it, so rewrite one as `projects:`. Config load also refuses a project
+name, repository name, `github_id` or path used twice on the box, and a clone
+or worktrees path that equals, holds or sits inside `~/agent-ops`,
+`~/agent-ops-infra` or `state_dir`.
 Run the dispatcher with `python -m dispatcher.main --config /path/to/targets.yaml`
 and the console with `python -m web --config /path/to/targets.yaml`.
 

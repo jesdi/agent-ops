@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from dispatcher import herdr, triage
-from dispatcher.config import Config, Repository
+from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
 from dispatcher.triage_apply import ApplyResult
 from tests.usagefakes import session_usage
@@ -110,11 +110,13 @@ def _cfg(tmp_path, repositories=(), infra=""):
 
 def _repository(name, repo):
     return Repository(
-        name=name, repo=repo, clone_path=f"/repos/{name}",
-        worktrees_path=f"/repos/{name}.wt", rank_cmd="", setup_cmd="",
-        verify_cmd="", project_number=1, project_owner="o",
-        status_field_id="f", status_ready_option_id="r",
-        status_in_progress_option_id="p")
+        name=name, repo=repo, github_id=1, clone_path=f"/repos/{name}",
+        worktrees_path=f"/repos/{name}.wt", setup_cmd="", verify_cmd="",
+        project=Project(
+            name=name, rank_cmd="",
+            board=Board(
+                number=1, owner="o", status_field_id="f", status_ready_option_id="r",
+                status_in_progress_option_id="p")))
 
 
 def test_enqueue_writes_request(tmp_path, monkeypatch):

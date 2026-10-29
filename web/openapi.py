@@ -7,19 +7,19 @@ sources are fine: no I/O happens at schema-build time.
 import json
 from unittest.mock import MagicMock
 
-from dispatcher.config import Config, Repository
+from dispatcher.config import Board, Config, Project, Repository
 from web.app import create_app
 
 
 def _minimal_config() -> Config:
+    board = Board(owner="jesdi", number=1, status_field_id="F",
+                  status_ready_option_id="R", status_in_progress_option_id="P",
+                  boost_field_id="B")
     repository = Repository(
-        name="alpha", repo="jesdi/alpha",
+        name="alpha", repo="jesdi/alpha", github_id=1,
         clone_path="/tmp/clones/alpha",
         worktrees_path="/tmp/worktrees/alpha",
-        rank_cmd="false", setup_cmd="", verify_cmd="",
-        project_number=1, project_owner="jesdi",
-        status_field_id="F", status_ready_option_id="R",
-        status_in_progress_option_id="P", boost_field_id="B",
+        project=Project(name="alpha", rank_cmd="false", board=board),
     )
     return Config(
         state_dir="/tmp/agent-ops-openapi", capacity=2,

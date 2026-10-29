@@ -60,7 +60,7 @@ def test_issue_body_none_placeholders():
     assert "## Log tail\n```\n(none)\n```" in body
 
 
-from dispatcher.config import Config, Repository
+from dispatcher.config import Board, Config, Project, Repository
 
 
 class FakeGitHub:
@@ -97,15 +97,15 @@ def cfg(tmp_path, infra_repo="jesdi/agent-ops"):
         state_dir=str(tmp_path / "state"), capacity=3,
         session_memory="2g", session_cpus="2",
         repositories=[Repository(
-            name="portfolio_eval", repo="jesdi/portfolio_eval",
+            name="portfolio_eval", repo="jesdi/portfolio_eval", github_id=1,
             clone_path=str(tmp_path / "repo"),
-            worktrees_path=str(tmp_path / "repo.worktrees"),
-            rank_cmd="rank", setup_cmd="setup",
+            worktrees_path=str(tmp_path / "repo.worktrees"), setup_cmd="setup",
             verify_cmd="make e2e-slot SLOT={slot}",
-            project_number=1, project_owner="jesdi",
-            status_field_id="F", status_ready_option_id="R",
-            status_in_progress_option_id="I",
-        )],
+            project=Project(
+                name="portfolio_eval", rank_cmd="rank",
+                board=Board(
+                    number=1, owner="jesdi", status_field_id="F",
+                    status_ready_option_id="R", status_in_progress_option_id="I")))],
         infra_repo=infra_repo,
     )
 

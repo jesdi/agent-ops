@@ -28,6 +28,7 @@ from tests.test_priority_auto import (FLIPPED, LUNA, OPUS, SOL, SONNET, WRITTEN,
                                       PACE, both, launched, run, ses, usage, wk)
 from tests.test_priority_session_bound import OPENAI_5_6, SHARE, go, pace
 from tests.test_triage import (BLOB, OLD, RESULT, FakeDeps, _sweep_cfg)
+from tests.configfakes import with_project
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)  # a Thursday
 ROUTED = {"anthropic", "openai"}
@@ -201,7 +202,7 @@ def test_mode_openai_orders_a_repositories_own_policy(tmp_path, monkeypatch):
                      "implement": [OPUS, SOL], "review": [OPUS, SOL]}}})
     c = cfg(tmp_path)
     c = dc_replace(c, pace=PACE,
-                   repositories=[dc_replace(c.repositories[0], models=own)])
+                   repositories=[with_project(c.repositories[0], models=own)])
     monkeypatch.setattr(main, "fetch_all",
                         lambda cfg, **k: anthropic_hungry())
 

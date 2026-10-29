@@ -145,7 +145,7 @@ class GitHubClient:
         """rank_cmd --json rows in rank order; `boost` normalized to an int
         (old vendored skills may not emit it yet, and the board can hand back
         a string or an empty value for an unset field)."""
-        out = _run(shlex.split(repository.rank_cmd), cwd=repository.clone_path)
+        out = _run(shlex.split(repository.project.rank_cmd), cwd=repository.clone_path)
         rows = json.loads(out)
         for row in rows:
             row["boost"] = int(row.get("boost") or 0)
@@ -160,10 +160,10 @@ class GitHubClient:
         ]
 
     def _project_node_id(self, repository: Repository) -> str:
-        key = f"{repository.project_owner}/{repository.project_number}"
+        key = f"{repository.project.board.owner}/{repository.project.board.number}"
         if key not in self._project_node_ids:
-            out = _run(["gh", "project", "view", str(repository.project_number),
-                        "--owner", repository.project_owner, "--format", "json"],
+            out = _run(["gh", "project", "view", str(repository.project.board.number),
+                        "--owner", repository.project.board.owner, "--format", "json"],
                        env=_project_env())
             self._project_node_ids[key] = json.loads(out)["id"]
         return self._project_node_ids[key]
@@ -186,7 +186,7 @@ class GitHubClient:
                    if item.number is None and item.title == title]
         if len(matches) == 1:
             return matches[0]
-        raise LookupError(f"issue #{issue} not on project {repository.project_number}"
+        raise LookupError(f"issue #{issue} not on project {repository.project.board.number}"
                           f" (title join: {len(matches)} items match {title!r})")
 
     def issue_view(self, repo: str, number: int) -> dict:
@@ -222,7 +222,7 @@ class GitHubClient:
         _run(["gh", "project", "item-edit",
               "--id", self._item_id(repository, issue),
               "--project-id", self._project_node_id(repository),
-              "--field-id", repository.status_field_id,
+              "--field-id", repository.project.board.status_field_id,
               "--single-select-option-id", option_id], env=_project_env())
 
     def set_boost(self, repository: Repository, issue: int, value: int) -> None:
@@ -232,7 +232,7 @@ class GitHubClient:
         _run(["gh", "project", "item-edit",
               "--id", self._item_id(repository, issue),
               "--project-id", self._project_node_id(repository),
-              "--field-id", repository.boost_field_id,
+              "--field-id", repository.project.board.boost_field_id,
               "--number", str(value)], env=_project_env())
 
     def add_label(self, repository: Repository, issue: int, label: str) -> None:
@@ -260,7 +260,7 @@ class GitHubClient:
         if self.dry_run:
             print(f"[dry-run] claim #{cand.number} ({cand.title})")
             return
-        self.set_status(repository, cand.number, repository.status_in_progress_option_id)
+        self.set_status(repository, cand.number, repository.project.board.status_in_progress_option_id)
         self.comment(repository, cand.number, "🤖 picked up by agent-ops")
 
     def release(self, repository: Repository, issue: int, reason: str) -> None:
@@ -270,7 +270,7 @@ class GitHubClient:
         self.comment(repository, issue,
                      f"🤖 agent-ops released this task: {reason}. "
                      f"Worktree preserved for autopsy.")
-        self.set_status(repository, issue, repository.status_ready_option_id)
+        self.set_status(repository, issue, repository.project.board.status_ready_option_id)
 
     def cancel(self, repository: Repository, issue: int) -> None:
         """Operator won't-do: unlike release(), the card leaves the claim
@@ -281,8 +281,8 @@ class GitHubClient:
             return
         self.comment(repository, issue,
                      "🤖 canceled by operator — moved to Wont do.")
-        if repository.status_wont_do_option_id:
-            self.set_status(repository, issue, repository.status_wont_do_option_id)
+        if repository.project.board.status_wont_do_option_id:
+            self.set_status(repository, issue, repository.project.board.status_wont_do_option_id)
         else:
             log.warning("%s: status_wont_do_option_id unset — board not "
                         "updated for canceled #%d", repository.name, issue)

@@ -13,6 +13,7 @@ from dispatcher.github import Candidate
 from dispatcher.state import (IN_FLIGHT_STAGES, PARK_LOGIN, PARK_WAKE, Stage,
                               TaskState, active, load, load_all, save)
 
+from tests.configfakes import with_board
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps,
                              patch_usage, patch_workspace)
 
@@ -21,11 +22,11 @@ def two_repository_cfg(tmp_path):
     """portfolio_eval (the default repository from cfg()) plus factorial, a
     second repository with its own repo/worktree root."""
     c = cfg(tmp_path)
-    factorial = dc_replace(
-        c.repositories[0], name="factorial", repo="jesdi/factorial",
+    factorial = with_board(dc_replace(
+        c.repositories[0], name="factorial", repo="jesdi/factorial", github_id=2,
         clone_path=str(tmp_path / "factorial_repo"),
         worktrees_path=str(tmp_path / "factorial_repo.worktrees"),
-        project_number=2)
+        project=dc_replace(c.repositories[0].project, name="factorial")), number=2)
     return dc_replace(c, repositories=[c.repositories[0], factorial])
 
 

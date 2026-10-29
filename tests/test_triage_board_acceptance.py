@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from dispatcher import triage
-from dispatcher.config import Config, Repository
+from dispatcher.config import Board, Config, Project, Repository
 from tests.test_board import SCHEMA, _issue, _node, _page
 from tests.usagefakes import session_usage
 
@@ -82,10 +82,13 @@ def cfg(tmp_path):
     (clone / ".backlog" / "project-meta.json").write_text(json.dumps(SCHEMA))
     state = tmp_path / "state"
     repository = Repository(
-        name="a", repo="o/a", clone_path=str(clone), worktrees_path="/w",
-        rank_cmd="r", project_number=1, project_owner="o",
-        status_field_id="F_STATUS", status_ready_option_id="o_ready",
-        status_in_progress_option_id="o_prog", gate_cmd="make gate")
+        name="a", repo="o/a", github_id=1, clone_path=str(clone), worktrees_path="/w",
+        gate_cmd="make gate",
+        project=Project(
+            name="a", rank_cmd="r",
+            board=Board(
+                number=1, owner="o", status_field_id="F_STATUS",
+                status_ready_option_id="o_ready", status_in_progress_option_id="o_prog")))
     cfg = Config(state_dir=str(state), capacity=2, session_memory="1500m",
                  session_cpus="2", repositories=[repository])
     triage.save_cursors(state, {"o/a": OLD})

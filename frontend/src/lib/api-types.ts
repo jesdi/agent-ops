@@ -740,8 +740,8 @@ export interface components {
                 [key: string]: string[];
             };
             models: components["schemas"]["ModelsSetting"];
-            /** Repository Overrides */
-            repository_overrides: string[];
+            /** Project Overrides */
+            project_overrides: string[];
             /** Revision */
             revision: string;
             /** Set At */

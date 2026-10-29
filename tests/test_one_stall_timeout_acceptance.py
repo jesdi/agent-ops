@@ -23,20 +23,20 @@ BASE = """\
 state_dir: {state}
 stall_after_seconds: 600
 {extra}
-targets:
-  - name: portfolio_eval
-    repo: jesdi/portfolio_eval
-    clone_path: /tmp/c
-    worktrees_path: /tmp/w
+projects:
+  - name: portfolio-eval
     rank_cmd: rank
-    setup_cmd: setup
-    verify_cmd: "make e2e-slot SLOT={{slot}}"
-    gate_cmd: "make gate-slot SLOT={{slot}}"
-    project_number: 1
-    project_owner: jesdi
-    status_field_id: F
-    status_ready_option_id: R
-    status_in_progress_option_id: I
+    board: {{owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
+            status_in_progress_option_id: I}}
+    repositories:
+      - name: portfolio_eval
+        repo: jesdi/portfolio_eval
+        github_id: 1
+        clone_path: /tmp/c
+        worktrees_path: /tmp/w
+        setup_cmd: setup
+        verify_cmd: "make e2e-slot SLOT={{slot}}"
+        gate_cmd: "make gate-slot SLOT={{slot}}"
 """
 
 

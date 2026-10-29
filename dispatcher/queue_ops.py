@@ -80,6 +80,6 @@ def apply_plan(github, repository, issue: int, plan: QueuePlan) -> None:
     if plan.set_boost is not None:
         github.set_boost(repository, issue, plan.set_boost)
     if plan.set_ready:
-        github.set_status(repository, issue, repository.status_ready_option_id)
+        github.set_status(repository, issue, repository.project.board.status_ready_option_id)
     if plan.add_auto:
         github.add_label(repository, issue, "auto")

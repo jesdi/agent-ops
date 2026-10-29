@@ -1,4 +1,4 @@
-capacity: 2   # box-wide: shared by every target, in-flight work first, then claims fewest-active-first
+capacity: 2   # box-wide: shared by every repository, in-flight work first, then claims fewest-active-first
 state_dir: /home/agent/agent-ops-state
 # pass_interval_minutes: 5   # must match OnUnitActiveSec in the systemd timer
 # Optional: repo where provisioning/pass-crash failure issues are filed.
@@ -86,9 +86,9 @@ loop_caps:
 # task waits.
 # Review moves the provider that ran implement to the back of its list.
 # A bare model id is anthropic/. Effort: low|medium|high|xhigh|max.
-# A target may carry its own `models:` block, which REPLACES this one.
+# A project may carry its own `models:` block, which REPLACES this one.
 # The console's Settings page can store a block that REPLACES this one
-# (<state_dir>/model-settings.json) until you reset it there; a target's
+# (<state_dir>/model-settings.json) until you reset it there; a project's
 # own block still wins.
 models:
   triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted
@@ -134,38 +134,50 @@ models:
   # Listed first to the sessions that choose a track, in this order.
   pinned: [security, architecture, frontend]
 
-targets:
+projects:
+  # A project is one GitHub Projects board and the repositories whose issues
+  # it holds. Its name is a slug (a-z, 0-9, -), unique on the box.
   - name: example-app
-    repo: example/example-app
-    clone_path: /home/agent/repos/example-app
-    worktrees_path: /home/agent/repos/example-app.worktrees
+    # Optional: parsed and stored, not acted on yet. Default false.
+    # paused: false
     rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
-    # Runs INSIDE a one-shot session-image container (podman run --rm),
-    # cwd = the freshly created worktree, before the first session spawns.
-    # Must be idempotent; only the worktree, main clone, and persistent
-    # npm/xdg cache volumes are mounted. Optional: empty/omitted skips provisioning.
-    setup_cmd: "scripts/provision-worktree.sh"
-    # Optional. Empty or omitted means no pre-PR e2e run; the review and
-    # address-review sessions skip their e2e step and rely on PR checks instead.
-    verify_cmd: "make e2e-remote"
-    # Run by the session after every ticket and again in the review stage.
-    # The repo decides what "green" means (tests, lint, the CRAP gate).
-    # Required — a target with no gate_cmd fails config load.
-    # The implement session keeps its ticket worktrees under .agent/worktrees/
-    # in the task worktree: a check tool that scans dot-directories (ESLint 9,
-    # for one) must exclude that path, or it checks every ticket checkout too.
-    # The dispatcher writes only into real directories (fail closed): a
-    # target whose worktrees have `.agent` or `.claude` as a symlink, or whose
-    # clone has no real `.git` directory, fails its launches or its claims.
-    gate_cmd: "make gate"
-    project_number: 1
-    project_owner: example
-    status_field_id: REPLACE_WITH_PROJECT_ID
-    status_ready_option_id: abc123
-    status_in_progress_option_id: def456
-    status_done_option_id: ghi789   # single-select option id of the board's Done status
-    boost_field_id: REPLACE_WITH_PROJECT_ID
-    # Optional per-target cap on active tasks, even when box capacity is
+    # Optional per-project cap on active tasks, even when box capacity is
     # free. It limits new claims only; woken work and PR feedback still run.
-    # Must be between 1 and capacity; omit for no target-specific cap.
+    # Must be between 1 and capacity; omit for no project-specific cap.
     # max_active: 1
+    board:
+      owner: example
+      number: 1
+      status_field_id: REPLACE_WITH_PROJECT_ID
+      status_ready_option_id: abc123
+      status_in_progress_option_id: def456
+      status_done_option_id: ghi789   # single-select option id of the board's Done status
+      boost_field_id: REPLACE_WITH_PROJECT_ID
+    repositories:
+      # Each name is unique on the box (task keys are <repository>-<issue>),
+      # and so are github_id (the numeric GitHub repository id), clone_path
+      # and worktrees_path. Both paths are absolute and may not equal, hold or
+      # sit inside ~/agent-ops, ~/agent-ops-infra or state_dir.
+      - name: example-app
+        repo: example/example-app
+        github_id: 123456789
+        clone_path: /home/agent/repos/example-app
+        worktrees_path: /home/agent/repos/example-app.worktrees
+        # Runs INSIDE a one-shot session-image container (podman run --rm),
+        # cwd = the freshly created worktree, before the first session spawns.
+        # Must be idempotent; only the worktree, main clone, and persistent
+        # npm/xdg cache volumes are mounted. Optional: empty/omitted skips provisioning.
+        setup_cmd: "scripts/provision-worktree.sh"
+        # Optional. Empty or omitted means no pre-PR e2e run; the review and
+        # address-review sessions skip their e2e step and rely on PR checks instead.
+        verify_cmd: "make e2e-remote"
+        # Run by the session after every ticket and again in the review stage.
+        # The repo decides what "green" means (tests, lint, the CRAP gate).
+        # Required — a repository with no gate_cmd fails config load.
+        # The implement session keeps its ticket worktrees under .agent/worktrees/
+        # in the task worktree: a check tool that scans dot-directories (ESLint 9,
+        # for one) must exclude that path, or it checks every ticket checkout too.
+        # The dispatcher writes only into real directories (fail closed): a
+        # repository whose worktrees have `.agent` or `.claude` as a symlink, or whose
+        # clone has no real `.git` directory, fails its launches or its claims.
+        gate_cmd: "make gate"

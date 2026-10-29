@@ -4,18 +4,19 @@ import subprocess
 from dataclasses import replace as dc_replace
 
 import dispatcher.github as github
-from dispatcher.config import Repository
+from dispatcher.config import Board, Project, Repository
+from tests.configfakes import with_board
 
 REPOSITORY = Repository(
-    name="portfolio_eval", repo="jesdi/portfolio_eval",
+    name="portfolio_eval", repo="jesdi/portfolio_eval", github_id=1,
     clone_path="/home/agent/repos/portfolio_eval",
     worktrees_path="/home/agent/repos/portfolio_eval.worktrees",
-    rank_cmd="python rank.py --json", setup_cmd="scripts/setup-worktree.sh",
-    verify_cmd="make e2e-slot SLOT={slot}",
-    project_number=1, project_owner="jesdi",
-    status_field_id="F1", status_ready_option_id="READY",
-    status_in_progress_option_id="INPROG",
-)
+    setup_cmd="scripts/setup-worktree.sh", verify_cmd="make e2e-slot SLOT={slot}",
+    project=Project(
+        name="portfolio_eval", rank_cmd="python rank.py --json",
+        board=Board(
+            number=1, owner="jesdi", status_field_id="F1",
+            status_ready_option_id="READY", status_in_progress_option_id="INPROG")))
 
 
 def _board(*items):
@@ -126,7 +127,7 @@ def test_cancel_comments_moves_board_and_closes_issue(monkeypatch):
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    t = dc_replace(REPOSITORY, status_wont_do_option_id="WONTDO")
+    t = with_board(REPOSITORY, status_wont_do_option_id="WONTDO")
     github.GitHubClient().cancel(t, 7)
     edit = next(a for a in calls if "item-edit" in a)
     assert "WONTDO" in edit and "ITEM7" in edit
@@ -300,7 +301,7 @@ def test_issue_state_parses_json(monkeypatch):
     assert github.GitHubClient().issue_state("jesdi/agent-ops", 501) == "CLOSED"
 
 
-BOOST_REPOSITORY = dc_replace(REPOSITORY, boost_field_id="FB")
+BOOST_REPOSITORY = with_board(REPOSITORY, boost_field_id="FB")
 
 
 def test_rank_rows_normalizes_missing_boost(monkeypatch):

@@ -26,6 +26,7 @@ from tests.test_main import (FakeSessions, cfg, deps, make_task, valid_spec,
                              write_tickets)
 from tests.test_priority_auto import both, usage, wk
 from tests.test_triage import BLOB, OLD, RESULT, FakeDeps, _sweep_cfg
+from tests.configfakes import with_project
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 PACE = PaceConfig(weekend_weight=1.0, pace_margin=1.0)
@@ -330,7 +331,7 @@ def test_a_repositories_own_pinned_list_applies_and_the_global_one_does_not(
     own["tracks"]["standard"]["implement"] = [f"{SOL}@medium", f"{SONNET}@medium"]
     base = cfg(tmp_path)
     c = make_cfg(tmp_path, monkeypatch, ahead(), models=policy())
-    c = dc_replace(c, repositories=[dc_replace(
+    c = dc_replace(c, repositories=[with_project(
         base.repositories[0], models=parse_policy(own))])
     enter(c, 42, "standard", Stage.PLAN)
     enter(c, 43, "architecture", Stage.PLAN)

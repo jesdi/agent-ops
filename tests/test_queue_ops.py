@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from dispatcher import queue_ops
 from dispatcher.queue_ops import NEXT_BOOST, QueuePlan
 
@@ -28,7 +30,7 @@ class FakeGitHub:
 
 
 class FakeRepository:
-    status_ready_option_id = "R"
+    project = SimpleNamespace(board=SimpleNamespace(status_ready_option_id="R"))
 
 
 # -- plan_boost ---------------------------------------------------------

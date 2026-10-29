@@ -1167,8 +1167,8 @@ def _finish_merged(cfg: Config, deps: Deps, repository: Repository,
     if (not dry_run and deps.github.issue_state(repository.repo, task.issue)
             == "OPEN"):
         deps.github.close_issue(repository.repo, task.issue)
-    if repository.status_done_option_id:
-        deps.github.set_status(repository, task.issue, repository.status_done_option_id)
+    if repository.project.board.status_done_option_id:
+        deps.github.set_status(repository, task.issue, repository.project.board.status_done_option_id)
     else:
         print(f"[warn] {repository.name}: status_done_option_id unset — board "
               f"not updated for #{task.issue}", file=sys.stderr)
@@ -1412,7 +1412,7 @@ def _respawn(cfg: Config, deps: Deps, repository: Repository,
     an attach notice among them."""
     detail = "after crash" if task.crashed_stage else "next launch"
     deps.github.set_status(repository, task.issue,
-                           repository.status_in_progress_option_id)
+                           repository.project.board.status_in_progress_option_id)
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
                    park_note="", hold_for_attach=False,
                    resume_model_override="", resume_bypass_usage=False,
@@ -2095,8 +2095,8 @@ def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
         return
     counts = _round_counts(repositories, all_tasks)
     last = claims.last_claims(cfg.state_dir)
-    caps = {t.name: t.max_active for t in repositories}
-    # Generator bodies run on first next(), so a repository's rank_cmd runs only
+    caps = {t.name: t.project.max_active for t in repositories}
+    # Generator bodies run on first next(), so rank_cmd runs for a repository only
     # when it gets a turn.
     gens = {t.name: _claimable(cfg, deps, t,
                                [x for x in all_tasks if x.repository == t.name],

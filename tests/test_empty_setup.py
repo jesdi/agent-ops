@@ -10,7 +10,7 @@ from pathlib import Path
 
 import dispatcher.workspace as workspace
 from dispatcher import failures
-from dispatcher.config import Config, Repository
+from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.github import Candidate
 from dispatcher.state import Stage, load
 
@@ -22,16 +22,15 @@ def cfg_no_setup(tmp_path: Path) -> Config:
         state_dir=str(tmp_path / "state"), capacity=3,
         session_memory="2g", session_cpus="2",
         repositories=[Repository(
-            name="factorial", repo="jesdi/factorial",
+            name="factorial", repo="jesdi/factorial", github_id=1,
             clone_path=str(tmp_path / "repo"),
-            worktrees_path=str(tmp_path / "repo.worktrees"),
-            rank_cmd="rank", setup_cmd="",
-            verify_cmd="make e2e-slot SLOT={slot}",
-            gate_cmd="make gate",
-            project_number=1, project_owner="jesdi",
-            status_field_id="F", status_ready_option_id="R",
-            status_in_progress_option_id="I",
-        )],
+            worktrees_path=str(tmp_path / "repo.worktrees"), setup_cmd="",
+            verify_cmd="make e2e-slot SLOT={slot}", gate_cmd="make gate",
+            project=Project(
+                name="factorial", rank_cmd="rank",
+                board=Board(
+                    number=1, owner="jesdi", status_field_id="F",
+                    status_ready_option_id="R", status_in_progress_option_id="I")))],
         infra_repo="jesdi/agent-ops",
     )
 

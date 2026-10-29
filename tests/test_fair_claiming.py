@@ -14,6 +14,7 @@ from dispatcher.github import Candidate
 
 from tests.test_main import FakeSessions, deps, patch_usage, patch_workspace
 from tests.test_multi_project_capacity import mk_task, two_repository_cfg
+from tests.configfakes import with_project
 
 
 def append_claimed(c, repository, issue, ts):
@@ -91,7 +92,7 @@ def test_max_active_boundary(tmp_path, monkeypatch):
     # 1 active, max_active=2 -> exactly one more claim, even with free box
     # capacity and 3 candidates.
     c = two_repository_cfg(tmp_path)
-    c = dc_replace(c, repositories=[dc_replace(c.repositories[0], max_active=2), c.repositories[1]])
+    c = dc_replace(c, repositories=[with_project(c.repositories[0], max_active=2), c.repositories[1]])
     mk_task(c, "portfolio_eval", 1, slot=0)
     gh = FakeGitHub(cands_by_repository={
         "portfolio_eval": [Candidate(n, f"PE {n}", f"u{n}") for n in (101, 102, 103)],
@@ -104,7 +105,7 @@ def test_max_active_boundary(tmp_path, monkeypatch):
     # box capacity and candidates.
     c2 = two_repository_cfg(tmp_path)
     c2 = dc_replace(c2, state_dir=str(tmp_path / "state2"),
-                    repositories=[dc_replace(c2.repositories[0], max_active=2), c2.repositories[1]])
+                    repositories=[with_project(c2.repositories[0], max_active=2), c2.repositories[1]])
     mk_task(c2, "portfolio_eval", 1, slot=0)
     mk_task(c2, "portfolio_eval", 2, slot=1)
     gh2 = FakeGitHub(cands_by_repository={
