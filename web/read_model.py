@@ -15,7 +15,7 @@ from dispatcher import messages as msgq
 from dispatcher import priority
 from dispatcher.claims import (claim_room, pick_project, project_counts,
                                project_last_claims)
-from dispatcher.config import Project
+from dispatcher.config import Project, Repository
 from dispatcher.models import Entry
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
@@ -157,6 +157,8 @@ class TaskAdmissionView(BaseModel):
 class TaskCard(BaseModel):
     issue: int
     repository: str
+    # From the config, not the task: "" once the repository left the config.
+    project: str
     title: str
     stage: str
     park: str
@@ -197,6 +199,7 @@ class GhostCard(BaseModel):
     consume next, rendered in the Queued column ahead of being claimed."""
     number: int
     repository: str
+    project: str  # the project whose queue ranked it
     title: str
     url: str
     score: float | None
@@ -241,9 +244,10 @@ def task_card(t: TaskState, *, model: str,
               undelivered_messages: int = 0,
               wake_blocked: bool = False,
               admission: TaskAdmissionView | None = None,
-              pinned_track: str = "") -> TaskCard:
+              pinned_track: str = "",
+              project: str = "") -> TaskCard:
     return TaskCard(
-        issue=t.issue, repository=t.repository, title=t.title,
+        issue=t.issue, repository=t.repository, project=project, title=t.title,
         stage=shown_stage(t), park=t.park,
         park_note=t.park_note,
         park_reason=_park_reason(t),
@@ -263,6 +267,12 @@ def task_card(t: TaskState, *, model: str,
         wake_blocked=wake_blocked, admission=admission)
 
 
+def project_name(projects: Mapping[str, Project], repository: str) -> str:
+    """`repository`'s project name; "" when it is no longer in the config."""
+    project = projects.get(repository)
+    return project.name if project else ""
+
+
 def _score_index(queues: list[tuple[str, list[dict]]]
                  ) -> dict[tuple[str, int], float | None]:
     return {(row["repository"], row["number"]): row.get("score")
@@ -276,7 +286,8 @@ def _task_cards(tasks: list[TaskState], *,
                 mail: dict[tuple[str, int], int],
                 blocked: set[tuple[str, int]],
                 admissions: dict[tuple[str, int], TaskAdmissionView],
-                pinned: dict[tuple[str, int], str]
+                pinned: dict[tuple[str, int], str],
+                projects: Mapping[str, Project]
                 ) -> list[TaskCard]:
     cards = []
     for task in tasks:
@@ -287,7 +298,8 @@ def _task_cards(tasks: list[TaskState], *,
             cycle_seconds=cycle_seconds(at, task.done_at),
             score=scores.get(key), undelivered_messages=mail.get(key, 0),
             wake_blocked=key in blocked, admission=admissions.get(key),
-            pinned_track=pinned.get(key, "")))
+            pinned_track=pinned.get(key, ""),
+            project=project_name(projects, task.repository)))
     return cards
 
 
@@ -314,7 +326,8 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                          wake_blocked: set[tuple[str, int]] | None = None,
                          admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
                          ghosts: list[GhostCard] | None = None,
-                         pinned_tracks: dict[tuple[str, int], str] | None = None
+                         pinned_tracks: dict[tuple[str, int], str] | None = None,
+                         projects: Mapping[str, Project] | None = None
                          ) -> BoardSnapshot:
     """Cards and capacity without any live-service dependencies; `ghosts`
     join the Queued column."""
@@ -325,7 +338,8 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
     cards = _task_cards(tasks, models=models, claimed=claimed,
                         scores=_score_index(queues), mail=mail,
                         blocked=blocked, admissions=task_admissions,
-                        pinned=pinned_tracks or {})
+                        pinned=pinned_tracks or {},
+                        projects=projects or {})
     by_column = _cards_by_column(cards)
     in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
     # Which numbers, not just how many: the console colours a card by its
@@ -371,15 +385,16 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     known = {(t.repository, t.issue) for t in tasks}
     ghost_admissions = candidate_admissions or {}
     ghosts = [GhostCard(number=r["number"], repository=r["repository"],
-                        title=r.get("title", ""), url=r.get("url", ""),
+                        project=project, title=r.get("title", ""), url=r.get("url", ""),
                         score=r.get("score"), boost=int(r.get("boost") or 0),
                         admission=ghost_admissions.get((r["repository"], r["number"])))
-              for _project, rows in queues for r in rows
+              for project, rows in queues for r in rows
               if _is_candidate(r) and (r["repository"], r["number"]) not in known]
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
         undelivered=undelivered, wake_blocked=wake_blocked,
-        admissions=admissions, ghosts=ghosts, pinned_tracks=pinned_tracks)
+        admissions=admissions, ghosts=ghosts, pinned_tracks=pinned_tracks,
+        projects=projects)
     return BoardView(
         columns=snapshot.columns, capacity=snapshot.capacity,
         median_cycle_seconds=snapshot.median_cycle_seconds,
@@ -432,11 +447,13 @@ def task_detail(t: TaskState, *, model: str,
                 wake_blocked: bool = False,
                 admission: TaskAdmissionView | None = None,
                 track_when: str = "",
-                pinned_track: str = "") -> TaskDetail:
+                pinned_track: str = "",
+                project: str = "") -> TaskDetail:
     at = claimed_at(claimed_at_index(events), t.repository, t.issue)
     msgs = messages or []
     return TaskDetail(
         card=task_card(t, model=model, pinned_track=pinned_track,
+                       project=project,
                        claimed_at=at,
                        cycle_seconds=cycle_seconds(at, t.done_at),
                        undelivered_messages=len(
@@ -450,6 +467,24 @@ def task_detail(t: TaskState, *, model: str,
         timeline=stage_timeline(events, t.repository, t.issue, now=now),
         track_when=track_when,
         implement_progress=_implement_progress(t, signal))
+
+
+class ProjectView(BaseModel):
+    name: str
+    paused: bool
+    repositories: list[str]  # repository names, in config order
+
+
+class ProjectsView(BaseModel):
+    projects: list[ProjectView]  # every project in config order
+
+
+def projects_view(members: Mapping[str, list[Repository]]) -> ProjectsView:
+    """`members` is dispatcher.config.by_project's grouping."""
+    return ProjectsView(projects=[
+        ProjectView(name=name, paused=repos[0].project.paused,
+                    repositories=[r.name for r in repos])
+        for name, repos in members.items()])
 
 
 class IssueDescription(BaseModel):
