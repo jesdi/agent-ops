@@ -63,6 +63,13 @@ def _isolated_state_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
 
 
+@pytest.fixture(autouse=True)
+def _no_cached_board_status(monkeypatch):
+    """The live Status field is cached per process: start every test cold."""
+    from dispatcher import board
+    monkeypatch.setattr(board, "_status_fields", {})
+
+
 class _EveryRepository(dict):
     """A clones mapping that answers every repository with one path."""
 

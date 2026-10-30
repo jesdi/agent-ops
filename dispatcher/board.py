@@ -122,14 +122,13 @@ def join(items: list[Item], issues: list[dict]) -> dict[int, Item]:
 @dataclass(frozen=True)
 class Schema:
     """Field and option ids from the repository clone's committed
-    `.backlog/project-meta.json` (written by the backlog skill's `setup`)."""
+    `.backlog/project-meta.json` (written by the backlog skill's `setup`).
+    Status is not among them: see `status_field`."""
     project_id: str
-    status_field: str
     impact_field: str
     effort_field: str
     score_field: str
     area_field: str
-    statuses: dict[str, str]
     areas: dict[str, str]
 
 
@@ -141,15 +140,36 @@ def load_schema(clone_path: str) -> Schema | None:
         fields = meta["fields"]
         return Schema(
             project_id=meta["projectId"],
-            status_field=fields["Status"]["id"],
             impact_field=fields["Impact"]["id"],
             effort_field=fields["Effort"]["id"],
             score_field=fields["Score"]["id"],
             area_field=fields["Area"]["id"],
-            statuses=dict(fields["Status"]["options"]),
             areas=dict(fields["Area"]["options"]))
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return None
+
+
+_STATUS_QUERY = """
+query($project: ID!) {
+  node(id: $project) { ... on ProjectV2 { field(name: "Status") {
+    ... on ProjectV2SingleSelectField { id options { id name } } } } }
+}
+"""
+_status_fields: dict[str, tuple[str, dict[str, str]]] = {}
+
+
+def status_field(project_id: str, gh: Callable[[list[str]], str]
+                 ) -> tuple[str, dict[str, str]]:
+    """The live Status field id and its option ids by name. GitHub gives the
+    options new ids whenever they are edited, so a copy committed to a repo
+    goes stale (#237). One query per project per process."""
+    if project_id not in _status_fields:
+        out = gh(["api", "graphql", "-f", f"query={_STATUS_QUERY}",
+                  "-f", f"project={project_id}"])
+        field = json.loads(out)["data"]["node"]["field"]
+        _status_fields[project_id] = (
+            field["id"], {o["name"]: o["id"] for o in field["options"]})
+    return _status_fields[project_id]
 
 
 def _gh(run, args: list[str], env: dict[str, str] | None = None) -> str:
@@ -169,6 +189,8 @@ def _set(field: str, value: str) -> str:
 @dataclass(frozen=True)
 class Board:
     schema: Schema
+    status_field: str
+    statuses: dict[str, str]  # Status option name -> id, read from the board
     items: dict[int, Item]   # issue number -> item
     issues: dict[int, dict]  # every issue: number, title, state, stateReason
     run: Callable = subprocess.run
@@ -222,8 +244,8 @@ class Board:
             "score": (s.score_field, f"number:{round(impact / effort, 1)}"),
             "area": (s.area_field,
                      f'singleSelectOptionId:"{s.areas[area]}"'),
-            "status": (s.status_field,
-                       f'singleSelectOptionId:"{s.statuses["Ready"]}"')})
+            "status": (self.status_field,
+                       f'singleSelectOptionId:"{self.statuses["Ready"]}"')})
 
     def repair(self) -> list[str]:
         """Closed issues whose card still shows an open status: the board's
@@ -236,12 +258,12 @@ class Board:
                 continue
             status = ("Wont do" if row.get("stateReason") == "NOT_PLANNED"
                       else "Done")
-            option = self.schema.statuses.get(status)
+            option = self.statuses.get(status)
             if not option:
                 continue
             try:
                 self._mutate(item, {"status": (
-                    self.schema.status_field,
+                    self.status_field,
                     f'singleSelectOptionId:"{option}"')})
                 lines.append(f"#{number} closed: board status -> {status}")
             except (BoardError, subprocess.SubprocessError) as e:
@@ -254,9 +276,12 @@ def read(repo: str, clone_path: str, run=subprocess.run) -> Board | None:
     if schema is None:
         return None
     env = project_env()
+    status_id, statuses = status_field(schema.project_id,
+                                       lambda args: _gh(run, args, env))
     items = fetch_items(schema.project_id, lambda args: _gh(run, args, env))
     rows = json.loads(_gh(run, [
         "issue", "list", "--repo", repo, "--state", "all", "--limit", "1000",
         "--json", "number,title,state,stateReason"]))
-    return Board(schema=schema, items=join(items, rows),
+    return Board(schema=schema, status_field=status_id, statuses=statuses,
+                 items=join(items, rows),
                  issues={r["number"]: r for r in rows}, run=run)
