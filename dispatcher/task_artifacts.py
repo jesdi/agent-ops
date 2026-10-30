@@ -81,6 +81,8 @@ class ArtifactIndex:
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text())
+        if "target" in raw:   # files written before the rename
+            raw["repository"] = raw.pop("target")
         raw["items"] = [StoredArtifact.from_dict(item) for item in raw["items"]]
         return cls(**raw)
 
