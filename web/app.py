@@ -19,7 +19,7 @@ from pydantic import (BaseModel, Field, TypeAdapter, ValidationError,
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
 from dispatcher import execution_overrides, model_settings, priority, queue_ops
-from dispatcher.config import (Config, apply_stored_models, policy_for,
+from dispatcher.config import (Config, apply_stored_models, by_project, policy_for,
                                referenced_providers, routed_providers,
                                stranded, with_models)
 from dispatcher.convergence import pass_lock
@@ -154,6 +154,12 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return {"ok": True, "operator": op.login}
 
     repositories_by_name = {t.name: t for t in boot.repositories}
+    project_members = by_project(boot.repositories)
+
+    def _repository_rows(repository) -> tuple[list[dict], str, bool]:
+        """`repository`'s rows of its project's ranking, as of, stale."""
+        rows, as_of, stale = sources.rank_rows(project_members[repository.project.name])
+        return [r for r in rows if r["repository"] == repository.name], as_of, stale
 
     def _cfg() -> Config:
         """The config in force now: `boot` with the stored model settings
@@ -258,10 +264,12 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return _candidate_choices(live, repository, row, order)[0]
 
     def _candidate_admissions(live: Config, queues, order, usages, now):
+        candidates = [(repositories_by_name[row["repository"]], row)
+                      for _project, rows in queues for row in rows
+                      if read_model._is_candidate(row)]
         return {(repository.name, row["number"]): admission
-                for repository, rows in queues for row in rows
-                if read_model._is_candidate(row)
-                and sources.execution_override(repository.name, row["number"]) is None
+                for repository, row in candidates
+                if sources.execution_override(repository.name, row["number"]) is None
                 and (admission := _admission_for_model(
                     _candidate_model(live, repository, row, order),
                     _candidate_choices(live, repository, row, order),
@@ -318,12 +326,11 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         order = _order(mode, usages, now)
         usage = _usage_view(live, usages, now, mode)
         claims_paused, triage_running = sources.triage_state()
-        queues, queue_repositories, stale_any = [], [], False
-        for repository in boot.repositories:
-            rows, _as_of, stale = sources.rank_rows(repository)
+        queues, stale_any = [], False
+        for name, members in project_members.items():
+            rows, _as_of, stale = sources.rank_rows(members)
             stale_any = stale_any or stale
-            queues.append((repository.name, rows))
-            queue_repositories.append((repository, rows))
+            queues.append((name, rows))
         mail = sources.undelivered_counts()
         return read_model.build_board(
             tasks, capacity=boot.capacity,
@@ -343,9 +350,9 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             admissions={(t.repository, t.issue): admission
                         for t in tasks
                         if (admission := _task_admission(live, t, order, usages, now))},
-            candidate_admissions=_candidate_admissions(live, queue_repositories, order,
+            candidate_admissions=_candidate_admissions(live, queues, order,
                                                        usages, now),
-            max_active={t.name: t.project.max_active for t in boot.repositories},
+            projects={t.name: t.project for t in boot.repositories},
             last_claimed=sources.last_claims(),
             max_open=boot.max_open)
 
@@ -391,7 +398,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         # repo comes straight from this repository's config, never scanned for
         # across boot.repositories. But the issue must still be real on this
         # repository: either a claimed task (state) or a ghost still on this
-        # repository's own queue (rank_rows) — anything else is a true 404, the
+        # repository's own queue (its project's rank rows) — anything else is a true 404, the
         # same "never a blank, always an explicit state" contract the
         # sibling routes hold to.
         tgt = repositories_by_name.get(repository)
@@ -399,7 +406,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             raise HTTPException(404, f"unknown repository {repository!r}")
         is_task = sources.task(repository, issue) is not None
         is_ghost = any(r["number"] == issue
-                       for r in sources.rank_rows(tgt)[0])
+                       for r in _repository_rows(tgt)[0])
         if not (is_task or is_ghost):
             raise HTTPException(404, f"issue {repository}/{issue} is neither a "
                                      "task nor on this repository's queue")
@@ -608,11 +615,11 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         """
         hits = []
         stale_as_of = None
-        for repository in boot.repositories:
-            rows, as_of, stale = sources.rank_rows(repository)
+        for members in project_members.values():
+            rows, as_of, stale = sources.rank_rows(members)
             if stale and stale_as_of is None:
                 stale_as_of = as_of
-            hits += [(repository, row, stale, as_of)
+            hits += [(repositories_by_name[row["repository"]], row, stale, as_of)
                      for row in rows if row["number"] == issue]
         if not hits:
             if stale_as_of is not None:
@@ -660,10 +667,11 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     @app.get("/api/queue", response_model=read_model.QueueView)
     def queue_view(op: Operator = Depends(current_operator)):
-        in_flight = {t.issue for t in sources.tasks()}
+        tasks = sources.tasks()
         return read_model.QueueView(repositories=[
-            read_model.repository_queue(repository.name, *sources.rank_rows(repository),
-                                    in_flight=in_flight)
+            read_model.repository_queue(
+                repository.name, *_repository_rows(repository),
+                in_flight={t.issue for t in tasks if t.repository == repository.name})
             for repository in boot.repositories])
 
     def _require_task(repository: str, issue: int) -> None:
@@ -747,7 +755,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return _accepted("resume", repository, issue, payload, op)
 
     def _queue_candidate(configured_repository, repository: str, issue: int):
-        rows, _as_of, stale = sources.rank_rows(configured_repository)
+        rows, _as_of, stale = _repository_rows(configured_repository)
         row = next((candidate for candidate in rows
                     if candidate.get("number") == issue
                     and read_model._is_candidate(candidate)), None)

@@ -78,10 +78,10 @@ class FakeGitHub:
     def issue_body(self, repository, issue):
         return ""
 
-    def rank_rows(self, repository):
+    def rank_rows(self, repositories):
         if self.boost_raises:
             raise subprocess.CalledProcessError(1, ["rank"])
-        return self.rows
+        return [{"repository": repositories[0].name, **r} for r in self.rows]
 
     def set_boost(self, repository, issue, value):
         if self.lookup_raises:
@@ -94,8 +94,13 @@ class FakeGitHub:
     def set_status(self, repository, issue, option_id):
         self.statused.append((issue, option_id))
 
-    def candidates(self, repository):
-        return self.cands_by_repository.get(repository.name, self.cands)
+    def candidates(self, repositories):
+        """Real candidates() ranks once per project: this reads the list of
+        the project's first repository, a Candidate naming no repository
+        tagged with that one."""
+        first = repositories[0].name
+        return [c if c.repository else dc_replace(c, repository=first)
+                for c in self.cands_by_repository.get(first, self.cands)]
 
     def claim(self, repository, cand):
         self.claimed.append(cand.number)
@@ -1821,9 +1826,10 @@ def test_next_blocked_never_forced(tmp_path, monkeypatch):
 def test_boost_ambiguous_across_repositories_asks_to_disambiguate(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    c = dc_replace(c, repositories=[c.repositories[0],
-                                    dc_replace(c.repositories[0], name="other")])
-    gh = FakeGitHub(rows=[row(7)])   # rank_rows returns #7 for BOTH repositories
+    other = dc_replace(c.repositories[0], name="other",
+                       project=dc_replace(c.repositories[0].project, name="other"))
+    c = dc_replace(c, repositories=[c.repositories[0], other])
+    gh = FakeGitHub(rows=[row(7)])   # rank_rows returns #7 for BOTH projects
     d = deps(gh)
     patch_events(monkeypatch, [Command(name="boost", issue=7, amount=1)])
     main.run_pass(c, d)
@@ -1868,7 +1874,7 @@ def test_command_lookup_error_next_reports_and_pass_survives(tmp_path, monkeypat
 def test_command_value_error_queue_reports_and_pass_survives(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
 
-    def bad_rank_rows(repository):
+    def bad_rank_rows(repositories):
         raise ValueError("malformed JSON from rank output")
 
     gh = FakeGitHub(rows=[row(7)])
@@ -1932,11 +1938,11 @@ def test_queue_shows_demote_marker_and_truncates(tmp_path, monkeypatch):
     assert "… 3 more" in lines
 
 
-def test_queue_labels_each_repository_and_reports_empty(tmp_path, monkeypatch):
+def test_queue_labels_each_project_and_reports_empty(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    c = dc_replace(c, repositories=[c.repositories[0],
-                                    dc_replace(c.repositories[0], name="other")])
+    c = dc_replace(c, repositories=[c.repositories[0], with_project(
+        dc_replace(c.repositories[0], name="other"), name="other")])
     d = deps(FakeGitHub(rows=[]))
     patch_events(monkeypatch, [Command(name="queue")])
     main.run_pass(c, d)

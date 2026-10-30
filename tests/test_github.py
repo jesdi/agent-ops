@@ -17,6 +17,7 @@ REPOSITORY = Repository(
         board=Board(
             number=1, owner="jesdi", status_field_id="F1",
             status_ready_option_id="READY", status_in_progress_option_id="INPROG")))
+ISSUES = "https://github.com/jesdi/portfolio_eval/issues"
 
 
 def _board(*items):
@@ -30,22 +31,22 @@ def _board(*items):
 
 
 RANKED = json.dumps([
-    {"number": 7, "title": "A", "url": "u7", "labels": ["auto"], "status": "Ready",
+    {"number": 7, "title": "A", "url": f"{ISSUES}/7", "labels": ["auto"], "status": "Ready",
      "blocked": False, "effort": 1},
-    {"number": 8, "title": "B", "url": "u8", "labels": [], "status": "Ready",
+    {"number": 8, "title": "B", "url": f"{ISSUES}/8", "labels": [], "status": "Ready",
      "blocked": False, "effort": 2},
-    {"number": 9, "title": "C", "url": "u9", "labels": ["auto"], "status": "Backlog",
+    {"number": 9, "title": "C", "url": f"{ISSUES}/9", "labels": ["auto"], "status": "Backlog",
      "blocked": False, "effort": 1},
-    {"number": 10, "title": "D", "url": "u10", "labels": ["auto"], "status": "Ready",
+    {"number": 10, "title": "D", "url": f"{ISSUES}/10", "labels": ["auto"], "status": "Ready",
      "blocked": True, "effort": 1},
-    {"number": 11, "title": "E", "url": "u11", "labels": ["auto", "frontend"],
+    {"number": 11, "title": "E", "url": f"{ISSUES}/11", "labels": ["auto", "frontend"],
      "status": "Ready", "blocked": False, "effort": 3},
 ])
 
 
 def test_candidates_carry_effort_and_labels(monkeypatch):
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
-    got = {c.number: c for c in github.GitHubClient().candidates(REPOSITORY)}
+    got = {c.number: c for c in github.GitHubClient().candidates([REPOSITORY])}
     assert got[7].effort == 1
     assert got[7].labels == ("auto",)
     assert got[11].effort == 3
@@ -53,10 +54,10 @@ def test_candidates_carry_effort_and_labels(monkeypatch):
 
 
 def test_candidates_tolerate_missing_effort(monkeypatch):
-    unscored = json.dumps([{"number": 12, "title": "F", "url": "u12",
+    unscored = json.dumps([{"number": 12, "title": "F", "url": f"{ISSUES}/12",
                             "labels": ["auto"], "status": "Ready", "blocked": False}])
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: unscored)
-    got = github.GitHubClient().candidates(REPOSITORY)
+    got = github.GitHubClient().candidates([REPOSITORY])
     assert got[0].effort is None
 
 
@@ -68,7 +69,7 @@ def test_candidates_filters_and_keeps_rank_order(monkeypatch):
         return RANKED
 
     monkeypatch.setattr(github, "_run", fake_run)
-    got = github.GitHubClient().candidates(REPOSITORY)
+    got = github.GitHubClient().candidates([REPOSITORY])
     assert [c.number for c in got] == [7, 11]
     assert calls[0][1] == REPOSITORY.clone_path
 
@@ -306,17 +307,17 @@ BOOST_REPOSITORY = with_board(REPOSITORY, boost_field_id="FB")
 
 def test_rank_rows_normalizes_missing_boost(monkeypatch):
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
-    rows = github.GitHubClient().rank_rows(REPOSITORY)
+    rows = github.GitHubClient().rank_rows([REPOSITORY])
     assert [r["number"] for r in rows] == [7, 8, 9, 10, 11]
     assert all(r["boost"] == 0 for r in rows)
 
 
 def test_rank_rows_keeps_boost_when_present(monkeypatch):
-    ranked = json.dumps([{"number": 7, "title": "A", "url": "u7",
+    ranked = json.dumps([{"number": 7, "title": "A", "url": f"{ISSUES}/7",
                           "labels": ["auto"], "status": "Ready",
                           "blocked": False, "score": 2.0, "boost": 99}])
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: ranked)
-    assert github.GitHubClient().rank_rows(REPOSITORY)[0]["boost"] == 99
+    assert github.GitHubClient().rank_rows([REPOSITORY])[0]["boost"] == 99
 
 
 def test_set_boost_edits_number_field_with_project_token(monkeypatch):
@@ -438,15 +439,15 @@ def test_append_blocked_by_dry_run(monkeypatch, capsys):
 
 def test_rank_rows_casts_string_boost_to_int(monkeypatch):
     ranked = json.dumps([
-        {"number": 7, "title": "A", "url": "u7", "labels": ["auto"],
+        {"number": 7, "title": "A", "url": f"{ISSUES}/7", "labels": ["auto"],
          "status": "Ready", "blocked": False, "score": 2.0, "boost": "5"},
-        {"number": 8, "title": "B", "url": "u8", "labels": ["auto"],
+        {"number": 8, "title": "B", "url": f"{ISSUES}/8", "labels": ["auto"],
          "status": "Ready", "blocked": False, "score": 1.0, "boost": ""},
-        {"number": 9, "title": "C", "url": "u9", "labels": ["auto"],
+        {"number": 9, "title": "C", "url": f"{ISSUES}/9", "labels": ["auto"],
          "status": "Ready", "blocked": False, "score": 1.0, "boost": None},
     ])
     monkeypatch.setattr(github, "_run", lambda args, cwd=None: ranked)
-    rows = github.GitHubClient().rank_rows(REPOSITORY)
+    rows = github.GitHubClient().rank_rows([REPOSITORY])
     assert [r["boost"] for r in rows] == [5, 0, 0]
     assert all(isinstance(r["boost"], int) for r in rows)
 
@@ -702,3 +703,35 @@ def test_close_issue_closes_as_completed_and_dry_run_is_a_noop(monkeypatch):
     calls.clear()
     github.GitHubClient(dry_run=True).close_issue("o/r", 42)
     assert calls == []
+
+
+def test_rank_rows_ranks_a_project_once_and_maps_rows_to_members_by_url(monkeypatch):
+    """One rank_cmd run in the first member's clone; each row goes to the
+    member its url names (any case), the same number in both members stays
+    two rows, and a non-member or url-less row is dropped."""
+    factorial = dc_replace(REPOSITORY, name="factorial", repo="jesdi/Factorial",
+                           github_id=2, clone_path="/home/agent/repos/factorial")
+    ranked = json.dumps([
+        {"number": 7, "url": "https://github.com/jesdi/factorial/issues/7"},
+        {"number": 5, "url": "https://github.com/jesdi/elsewhere/issues/5"},
+        {"number": 7, "url": f"{ISSUES}/7"},
+        {"number": 6, "url": ""},
+        {"number": 4},
+    ])
+    calls = []
+
+    def fake_run(args, cwd=None):
+        calls.append(cwd)
+        return ranked
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    rows = github.GitHubClient().rank_rows([REPOSITORY, factorial])
+    assert calls == [REPOSITORY.clone_path]
+    assert [(r["repository"], r["number"]) for r in rows] == [
+        ("factorial", 7), ("portfolio_eval", 7)]
+
+
+def test_candidates_name_their_repository(monkeypatch):
+    monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
+    got = github.GitHubClient().candidates([REPOSITORY])
+    assert {c.repository for c in got} == {"portfolio_eval"}

@@ -94,9 +94,13 @@ class FakeSources:
     def artifact_content(self, repository, issue, artifact_id):
         return Sources.artifact_content(self, repository, issue, artifact_id)
 
-    def rank_rows(self, repository):
-        return self.rank.get(repository.name,
-                             ([], "2026-07-25T00:00:00+00:00", False))
+    def rank_rows(self, repositories):
+        """One project's ranking: each member's rows from `rank`, tagged with
+        it; as_of the first's, stale when any is."""
+        found = [(r.name, self.rank.get(r.name, ([], "2026-07-25T00:00:00+00:00", False)))
+                 for r in repositories]
+        rows = [{"repository": name, **row} for name, (rs, _, _) in found for row in rs]
+        return rows, found[0][1][1], any(stale for _, (_, _, stale) in found)
 
     def usage(self, routed=()):
         return self.usages

@@ -157,9 +157,9 @@ def test_candidates_not_called_for_repository_that_never_gets_a_turn(tmp_path, m
             super().__init__(*a, **kw)
             self.candidates_calls = []
 
-        def candidates(self, repository):
-            self.candidates_calls.append(repository.name)
-            return super().candidates(repository)
+        def candidates(self, repositories):
+            self.candidates_calls.append(repositories[0].name)
+            return super().candidates(repositories)
 
     c = two_repository_cfg(tmp_path)
     mk_task(c, "portfolio_eval", 1, slot=0)

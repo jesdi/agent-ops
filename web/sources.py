@@ -111,18 +111,21 @@ class Sources:
         except FileNotFoundError:
             return None
 
-    def rank_rows(self, repository: Repository) -> tuple[list[dict], str, bool]:
+    def rank_rows(self, repositories: list[Repository]) -> tuple[list[dict], str, bool]:
+        """One project's rank rows (github rank_rows: `repositories` are its
+        members), cached per project."""
         now = self._clock()
-        cached = self._rank_cache.get(repository.name)
+        key = repositories[0].project.name
+        cached = self._rank_cache.get(key)
         if cached and now - cached["fetched_at"] < RANK_TTL_SECONDS:
             return cached["rows"], cached["as_of"], False
         try:
-            rows = self._github.rank_rows(repository)
+            rows = self._github.rank_rows(repositories)
         except Exception:
             if cached:  # never a blank queue if a cache ever existed
                 return cached["rows"], cached["as_of"], True
             return [], _iso(now), True
-        self._rank_cache[repository.name] = {
+        self._rank_cache[key] = {
             "rows": rows, "fetched_at": now, "as_of": _iso(now)}
         return rows, _iso(now), False
 

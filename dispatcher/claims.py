@@ -1,4 +1,4 @@
-"""Which repository the next free capacity unit goes to. Shared by the
+"""Which project the next free capacity unit goes to. Shared by the
 dispatcher's claim round and the console's next-claim forecast, so the two
 can never disagree about the order."""
 from __future__ import annotations
@@ -35,16 +35,41 @@ def claim_room(capacity: int, max_open: int, tasks: list[TaskState],
                max_open - len(open_tasks(tasks)))
 
 
-def pick_repository(names: list[str], active_counts: Mapping[str, int],
-                    last_claimed: Mapping[str, str],
-                    max_active: Mapping[str, int | None]) -> str | None:
-    """Fewest active among repositories under their `max_active`, ties to the
+def pick_project(names: list[str], active_counts: Mapping[str, int],
+                 last_claimed: Mapping[str, str],
+                 max_active: Mapping[str, int | None]) -> str | None:
+    """Fewest active among projects under their `max_active`, ties to the
     least recent claim ("" = never claimed = oldest), then list order (min is
-    stable). None when every repository is capped."""
+    stable). None when every project is capped."""
     open_ = [n for n in names
              if max_active.get(n) is None or active_counts[n] < max_active[n]]
     return min(open_, key=lambda n: (active_counts[n], last_claimed.get(n, "")),
                default=None)
+
+
+def project_counts(names: list[str], tasks: list[TaskState],
+                   project_of: Mapping[str, str]) -> dict[str, int]:
+    """Each of `names`' active tasks over all its repositories, seeded at 0.
+    `project_of` maps repository -> project; a task of an unmapped repository
+    (one removed from targets.yaml) counts for none."""
+    counts = dict.fromkeys(names, 0)
+    for t in active(tasks):
+        project = project_of.get(t.repository)
+        if project in counts:
+            counts[project] += 1
+    return counts
+
+
+def project_last_claims(last: Mapping[str, str],
+                        project_of: Mapping[str, str]) -> dict[str, str]:
+    """Each project's latest claim: the latest of its repositories' (`last`
+    as last_claims gives it)."""
+    out: dict[str, str] = {}
+    for repository, ts in last.items():
+        if repository in project_of:
+            project = project_of[repository]
+            out[project] = max(out.get(project, ""), ts)
+    return out
 
 
 def last_claims(state_dir: str | Path) -> dict[str, str]:

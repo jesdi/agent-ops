@@ -32,9 +32,9 @@ class Board:
 @dataclass(frozen=True)
 class Project:
     name: str  # slug [a-z0-9-], unique on the box
-    rank_cmd: str  # runs in each of its repositories' clones
+    rank_cmd: str  # runs once per project, in its first listed repository's clone
     board: Board
-    paused: bool = False  # parsed and stored; nothing acts on it yet
+    paused: bool = False  # True = no new claims; work already claimed carries on
     max_active: int | None = None  # None = uncapped; else 1 <= n <= capacity, validated at load
     models: ModelPolicy | None = None  # None = inherit the global policy
 
@@ -96,6 +96,15 @@ class Config:
         """Every project, in config order: the ones `repositories` belong to
         (load_config refuses a project with none)."""
         return list({r.project.name: r.project for r in self.repositories}.values())
+
+
+def by_project(repositories: list[Repository]) -> dict[str, list[Repository]]:
+    """Project name -> its repositories among `repositories`, both in config
+    order."""
+    out: dict[str, list[Repository]] = {}
+    for r in repositories:
+        out.setdefault(r.project.name, []).append(r)
+    return out
 
 
 def _loop_caps(raw: object) -> LoopCaps:

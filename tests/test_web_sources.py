@@ -18,11 +18,11 @@ class FakeGitHub:
         self.state_calls = []   # (repo, number) per issue_state call
         self.boosts = []
 
-    def rank_rows(self, repository):
+    def rank_rows(self, repositories):
         self.calls += 1
         if self.fail:
             raise RuntimeError("gh exploded")
-        return self.rows.get(repository.name, [])
+        return self.rows.get(repositories[0].name, [])
 
     def issue_state(self, repo, number):
         self.state_calls.append((repo, number))
@@ -101,13 +101,13 @@ def test_rank_rows_cached_within_ttl(tmp_path):
     clock = FakeClock()
     _, src = make_sources(tmp_path, github=gh, clock=clock)
     repository = make_repository()
-    rows1, as_of1, stale1 = src.rank_rows(repository)
-    rows2, as_of2, stale2 = src.rank_rows(repository)
+    rows1, as_of1, stale1 = src.rank_rows([repository])
+    rows2, as_of2, stale2 = src.rank_rows([repository])
     assert gh.calls == 1
     assert rows1 == rows2 and as_of1 == as_of2
     assert stale1 is False and stale2 is False
     clock.t += RANK_TTL_SECONDS + 1
-    src.rank_rows(repository)
+    src.rank_rows([repository])
     assert gh.calls == 2
 
 
@@ -117,10 +117,10 @@ def test_rank_failure_serves_stale_cache(tmp_path):
     clock = FakeClock()
     _, src = make_sources(tmp_path, github=gh, clock=clock)
     repository = make_repository()
-    rows, as_of, _ = src.rank_rows(repository)
+    rows, as_of, _ = src.rank_rows([repository])
     clock.t += RANK_TTL_SECONDS + 1
     gh.fail = True
-    rows2, as_of2, stale = src.rank_rows(repository)
+    rows2, as_of2, stale = src.rank_rows([repository])
     assert rows2 == rows and as_of2 == as_of and stale is True
 
 
@@ -128,7 +128,7 @@ def test_rank_failure_without_cache_is_empty_stale(tmp_path):
     gh = FakeGitHub()
     gh.fail = True
     _, src = make_sources(tmp_path, github=gh)
-    rows, as_of, stale = src.rank_rows(make_repository())
+    rows, as_of, stale = src.rank_rows([make_repository()])
     assert rows == [] and stale is True and as_of
 
 
@@ -618,3 +618,4 @@ def test_state_fingerprint_board_and_usage_follow_the_priority_mode(tmp_path):
     f2 = json.loads(src.state_fingerprint())
     assert f2["board"] != f1["board"]
     assert f2["usage"] != f1["usage"]
+

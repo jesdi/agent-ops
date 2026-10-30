@@ -18,9 +18,9 @@ def test_rank_runs_only_for_repositories_that_get_a_turn(tmp_path, monkeypatch):
             super().__init__(*a, **kw)
             self.candidates_calls = []
 
-        def candidates(self, repository):
-            self.candidates_calls.append(repository.name)
-            return super().candidates(repository)
+        def candidates(self, repositories):
+            self.candidates_calls.append(repositories[0].name)
+            return super().candidates(repositories)
 
     c = two_repository_cfg(tmp_path)
     mk_task(c, "factorial", 1, slot=0)
