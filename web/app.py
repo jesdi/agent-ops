@@ -155,6 +155,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     repositories_by_name = {t.name: t for t in boot.repositories}
     project_members = by_project(boot.repositories)
+    repository_projects = {r.name: r.project for r in boot.repositories}
 
     def _repository_rows(repository) -> tuple[list[dict], str, bool]:
         """`repository`'s rows of its project's ranking, as of, stale."""
@@ -305,6 +306,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             models={(t.repository, t.issue): _model_for(live, t, order) for t in tasks},
             pinned_tracks={(t.repository, t.issue): _pinned_track(live, t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT), queues=[],
+            projects=repository_projects,
             undelivered={(t.repository, t.issue): mail.get((t.repository, t.issue), 0)
                          for t in tasks},
             wake_blocked=sources.wake_blocked_issues())
@@ -352,7 +354,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                         if (admission := _task_admission(live, t, order, usages, now))},
             candidate_admissions=_candidate_admissions(live, queues, order,
                                                        usages, now),
-            projects={t.name: t.project for t in boot.repositories},
+            projects=repository_projects,
             last_claimed=sources.last_claims(),
             max_open=boot.max_open)
 
@@ -387,7 +389,12 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             wake_blocked=(repository, issue) in sources.wake_blocked_issues(),
             admission=_task_admission(live, t, order, usages, now),
             track_when=(policy.tracks[t.track].when
-                       if t.track in policy.tracks else ""))
+                       if t.track in policy.tracks else ""),
+            project=read_model.project_name(repository_projects, t.repository))
+
+    @app.get("/api/projects", response_model=read_model.ProjectsView)
+    def projects(op: Operator = Depends(current_operator)):
+        return read_model.projects_view(by_project(_cfg().repositories))
 
     @app.get("/api/task/{repository}/{issue}/description",
              response_model=read_model.IssueDescription)
