@@ -1,6 +1,7 @@
 """Board rank order. Ported from the backlog skill's test_rank.py (0.1.8),
 whose rank.py the dispatcher used to run as rank_cmd."""
 import json
+from dataclasses import replace as dc_replace
 from pathlib import Path
 
 from dispatcher import ranking
@@ -71,6 +72,17 @@ def test_a_redacted_item_joins_its_issue_by_title():
 def test_a_redacted_item_without_a_matching_title_is_skipped():
     assert ranking.rank([_redacted("board-only note")],
                         [_issue(1, title="Other")]) == []
+
+
+def test_a_draft_or_pull_request_never_joins_an_issue_by_title():
+    """Only an issue the token cannot see joins by title: a draft card or a
+    pull request that happens to share an issue's title is not that issue."""
+    hidden = [Item(id=f"I-{kind}", number=None, title="Ship it", status="Ready",
+                   impact=None, effort=None, area=None, kind=kind)
+              for kind in ("DRAFT_ISSUE", "PULL_REQUEST")]
+    assert ranking.rank(hidden, [_issue(1, title="Ship it")]) == []
+    redacted = dc_replace(hidden[0], kind="REDACTED")
+    assert _order(ranking.rank([redacted], [_issue(1, title="Ship it")])) == [(1, False)]
 
 
 def test_the_title_join_skips_a_title_two_issues_share():
@@ -201,5 +213,5 @@ def test_the_order_matches_what_rank_py_printed_for_the_same_board():
     golden = json.loads(GOLDEN.read_text())
     nodes = golden["board_nodes"]
     assert ranking.rank([_item(n) for n in nodes], golden["issues"]) == golden["rows"]
-    hidden = [_item({**n, "content": None}) for n in nodes]
+    hidden = [_item({**n, "content": None, "type": "REDACTED"}) for n in nodes]
     assert ranking.rank(hidden, golden["issues"]) == golden["rows"]

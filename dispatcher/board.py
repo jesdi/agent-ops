@@ -31,6 +31,7 @@ query($project: ID!, $cursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       id
+      type
       content { ... on Issue { number title url repository { nameWithOwner } } }
       title: fieldValueByName(name: "Title") { ... on ProjectV2ItemFieldTextValue { text } }
       status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
@@ -68,6 +69,7 @@ class Item:
     boost: float | None = None
     url: str = ""  # "" when the token cannot see the linked issue
     repository: str = ""  # "owner/name", "" likewise
+    kind: str | None = None  # ISSUE, REDACTED, DRAFT_ISSUE or PULL_REQUEST
 
 
 def _value(node: dict, alias: str):
@@ -86,7 +88,8 @@ def _item(node: dict) -> Item:
         area=_value(node, "area"),
         boost=_value(node, "boost"),
         url=content.get("url") or "",
-        repository=(content.get("repository") or {}).get("nameWithOwner") or "")
+        repository=(content.get("repository") or {}).get("nameWithOwner") or "",
+        kind=node.get("type"))
 
 
 def fetch_items(project_id: str, gh: Callable[[list[str]], str]) -> list[Item]:

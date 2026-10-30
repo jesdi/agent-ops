@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from operator import itemgetter
 
-from dispatcher.board import Item
+from dispatcher.board import Item, _unique
 
 _BLOCKED_LINE = re.compile(r"^\s*Blocked by:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _ISSUE_REF = re.compile(r"#(\d+)")
@@ -29,21 +29,19 @@ def _whole(value: float | None) -> int | None:
     return None if value is None else int(value)
 
 
-def _by_title(issues: list[dict]) -> dict[str, dict]:
-    """title -> issue, for the titles exactly one issue carries."""
-    seen: dict[str, list[dict]] = {}
-    for issue in issues:
-        seen.setdefault(issue["title"], []).append(issue)
-    return {title: rows[0] for title, rows in seen.items() if len(rows) == 1}
+_NOT_ISSUES = {"DRAFT_ISSUE", "PULL_REQUEST"}
 
 
 def _join(item: Item, titled: dict[str, dict]) -> tuple | None:
     """((repository, number), title, url) of the issue `item` links to. An
     item whose issue the board token cannot see joins by title (GitHub syncs
     linked-item titles to issue titles); a title no issue or two issues
-    carry, or a draft, joins nothing."""
+    carry, a draft or a pull request joins nothing. (rank.py title-joined
+    drafts too, so a draft sharing an issue's title ranked that issue.)"""
     if item.number is not None:
         return (item.repository.lower(), item.number), item.title, item.url
+    if item.kind in _NOT_ISSUES:
+        return None
     issue = titled.get(item.title)
     if issue is None:
         return None
@@ -63,7 +61,7 @@ def _record(item: Item, key: tuple, title: str, url: str, issue: dict) -> dict:
 def _merge(items: list[Item], issues: list[dict]) -> list[dict]:
     """One record per item that joins an issue."""
     keyed = {(i["repository"].lower(), i["number"]): i for i in issues}
-    titled = _by_title(issues)
+    titled = _unique((i["title"], i) for i in issues)
     merged = []
     for item in items:
         joined = _join(item, titled)
