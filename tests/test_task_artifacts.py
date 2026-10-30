@@ -271,3 +271,20 @@ def test_local_markdown_attachment_and_removal_during_open(tmp_path):
     assert response.headers['content-disposition'].startswith('attachment;')
     fake.artifact_content = lambda *args: None
     assert client.get(base + 'spec', headers=HEADERS).status_code == 410
+
+
+def test_index_written_before_the_rename_reads_target_as_repository(tmp_path):
+    # Shape of the box's index.json files from before PR #227 (issue #240).
+    state, task = setup(tmp_path)
+    path = artifacts.state.archive_root(state, task.repository, task.issue) / 'index.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        'expired': False, 'expires_at': '', 'issue': task.issue, 'target': task.repository,
+        'items': [{'id': 'spec', 'name': 'Specification', 'path': 'spec.md',
+                   'media_type': 'text/markdown', 'digest': 'abc', 'stage': 'spec',
+                   'updated_at': NOW.isoformat(), 'github_url': '', 'published_commit': ''}],
+    }))
+    assert artifacts.read(state, task.repository, task.issue).repository == task.repository
+    artifacts.collect(state, task, 'owner/repo', publish=False, now=NOW)
+    saved = json.loads(path.read_text())
+    assert 'target' not in saved and saved['repository'] == task.repository
