@@ -1,12 +1,6 @@
 import { useEffect, useRef, type KeyboardEvent } from 'react'
 import type { ColumnView } from './BoardColumn'
-
-const STEP: Partial<Record<string, (index: number, last: number) => number>> = {
-  ArrowRight: (i, last) => (i === last ? 0 : i + 1),
-  ArrowLeft: (i, last) => (i === 0 ? last : i - 1),
-  Home: () => 0,
-  End: (_, last) => last,
-}
+import { TAB_STEP as STEP } from './tabKeys'
 
 /** The phone board's column picker: one tab per occupied column, in the order
  *  received, each naming its count. Hidden from md up, where every column

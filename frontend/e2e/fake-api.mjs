@@ -14,7 +14,7 @@ const DIST = fileURLToPath(new URL('../dist/', import.meta.url))
 const PORT = 8481
 
 const parkedCard = {
-  issue: 42, repository: 'widget', title: 'Fix login redirect',
+  issue: 42, repository: 'widget', project: 'widget', title: 'Fix login redirect',
   stage: 'implement', park: 'parked', park_reason: 'decision', column: 'parked', slot: -1,
   branch: 'fix/login-redirect', model: 'sonnet', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?',
@@ -51,9 +51,9 @@ const pinnedCards = () => [
 ]
 
 const seedGhosts = () => [
-  { number: 73, repository: 'widget', title: 'Ship dark mode',
+  { number: 73, repository: 'widget', project: 'widget', title: 'Ship dark mode',
     url: 'https://github.com/jesdi/widget/issues/73', score: 8.5, boost: 0 },
-  { number: 74, repository: 'widget', title: 'Fix flaky test',
+  { number: 74, repository: 'widget', project: 'widget', title: 'Fix flaky test',
     url: 'https://github.com/jesdi/widget/issues/74', score: 3.5, boost: 0 },
 ]
 
@@ -202,6 +202,11 @@ const server = createServer(async (req, res) => {
     })
   }
   if (url.pathname === '/api/board') return json(200, state.board)
+  // A second, paused project with no work: the board shows it as a tab.
+  if (url.pathname === '/api/projects') return json(200, { projects: [
+    { name: 'widget', paused: false, repositories: ['widget'] },
+    { name: 'gadgets', paused: true, repositories: ['gadget', 'gizmo'] },
+  ] })
   if (url.pathname === '/api/queue') return json(200, state.queue)
   if (url.pathname === '/api/usage') return json(200, state.usage)
   if (url.pathname === '/api/failures') return json(200, state.failures)

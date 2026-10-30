@@ -140,6 +140,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Projects */
+        get: operations["projects_api_projects_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/queue": {
         parameters: {
             query?: never;
@@ -667,6 +684,8 @@ export interface components {
             boost: number;
             /** Number */
             number: number;
+            /** Project */
+            project: string;
             /** Repository */
             repository: string;
             /** Score */
@@ -858,6 +877,20 @@ export interface components {
              */
             pinned: string[];
         };
+        /** ProjectView */
+        ProjectView: {
+            /** Name */
+            name: string;
+            /** Paused */
+            paused: boolean;
+            /** Repositories */
+            repositories: string[];
+        };
+        /** ProjectsView */
+        ProjectsView: {
+            /** Projects */
+            projects: components["schemas"]["ProjectView"][];
+        };
         /** ProviderUsageView */
         ProviderUsageView: {
             /** Provider */
@@ -1025,6 +1058,8 @@ export interface components {
              * @default
              */
             pinned_track: string;
+            /** Project */
+            project: string;
             /** Repository */
             repository: string;
             /** Score */
@@ -1358,6 +1393,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    projects_api_projects_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectsView"];
                 };
             };
         };
