@@ -13,6 +13,7 @@ targets.yaml
 # jesdi/general-skills store + agent symlinks (installed by scripts/install-skills.sh;
 # only .my-skills.json is committed). Add both lines here for every skill in .my-skills.json.
 .my-skills/
+.claude/skills/babysit-pr
 .claude/skills/backlog
 .claude/skills/branch-audit
 .claude/skills/ceo-review
@@ -27,6 +28,7 @@ targets.yaml
 .claude/skills/to-openspec
 .claude/skills/to-spec
 .claude/skills/to-tickets
+.agents/skills/babysit-pr
 .agents/skills/backlog
 .agents/skills/branch-audit
 .agents/skills/ceo-review

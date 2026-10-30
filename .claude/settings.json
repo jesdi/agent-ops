@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$(git rev-parse --show-toplevel 2>/dev/null)/.my-skills/babysit-pr/hooks/post-pr-create.sh\"; [ -f \"$f\" ] && exec sh \"$f\"; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$(git rev-parse --show-toplevel 2>/dev/null)/.my-skills/babysit-pr/hooks/stop-babysit-pending.sh\"; [ -f \"$f\" ] && exec sh \"$f\"; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

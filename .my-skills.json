@@ -56,6 +56,14 @@
     "pr-visual-diff": {
       "version": "0.1.1",
       "package": "0.0.30"
+    },
+    "babysit-pr": {
+      "version": "0.1.3",
+      "package": "0.0.77",
+      "ownedHooks": [
+        "claude\u0000PostToolUse\u0000Bash\u0000f=\"$(git rev-parse --show-toplevel 2>/dev/null)/.my-skills/babysit-pr/hooks/post-pr-create.sh\"; [ -f \"$f\" ] && exec sh \"$f\"; exit 0",
+        "claude\u0000Stop\u0000\u0000f=\"$(git rev-parse --show-toplevel 2>/dev/null)/.my-skills/babysit-pr/hooks/stop-babysit-pending.sh\"; [ -f \"$f\" ] && exec sh \"$f\"; exit 0"
+      ]
     }
   },
   "agents": [
