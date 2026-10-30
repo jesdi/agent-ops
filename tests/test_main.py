@@ -49,8 +49,8 @@ class FakeGitHub:
                  issue_states=None, issue_state_raises=False, rows=(),
                  cands_by_repository=None):
         self.cands = list(cands)
-        # Per-repository override: real candidates() is repository-scoped (rank_cmd
-        # differs per repository). Tests with one repository never set this and
+        # Per-repository override: real candidates() is project-scoped (each
+        # project ranks its own board). Tests with one repository never set this and
         # candidates() falls back to self.cands as before.
         self.cands_by_repository = dict(cands_by_repository or {})
         self.claimed, self.released, self.canceled = [], [], []
@@ -255,7 +255,7 @@ def cfg(tmp_path: Path) -> Config:
             verify_cmd="make e2e-slot SLOT={slot}",
             gate_cmd="make gate-slot SLOT={slot}",
             project=Project(
-                name="portfolio_eval", rank_cmd="rank",
+                name="portfolio_eval",
                 board=Board(
                     number=1, owner="jesdi", status_field_id="F",
                     status_ready_option_id="R", status_in_progress_option_id="I")))],

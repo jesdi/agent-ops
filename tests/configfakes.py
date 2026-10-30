@@ -5,10 +5,10 @@ from dataclasses import replace
 from dispatcher.config import Board, Project, Repository
 
 
-def make_project(name="alpha", rank_cmd="false", **kw) -> Project:
+def make_project(name="alpha", **kw) -> Project:
     board = Board(owner="jesdi", number=1, status_field_id="F",
                   status_ready_option_id="R", status_in_progress_option_id="I")
-    return Project(name=name, rank_cmd=rank_cmd, board=board, **kw)
+    return Project(name=name, board=board, **kw)
 
 
 def with_project(repository: Repository, **kw) -> Repository:

@@ -25,7 +25,6 @@ stall_after_seconds: 600
 {extra}
 projects:
   - name: portfolio-eval
-    rank_cmd: rank
     board: {{owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
             status_in_progress_option_id: I}}
     repositories:

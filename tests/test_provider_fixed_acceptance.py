@@ -41,7 +41,7 @@ def _repository(name="alpha"):
         name=name, repo=f"jesdi/{name}", github_id=1, clone_path=f"/tmp/clones/{name}",
         worktrees_path=f"/tmp/worktrees/{name}", setup_cmd="", verify_cmd="",
         project=Project(
-            name=name, rank_cmd="false",
+            name=name,
             board=Board(
                 number=1, owner="jesdi", status_field_id="F",
                 status_ready_option_id="R", status_in_progress_option_id="P",

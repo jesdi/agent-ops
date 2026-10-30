@@ -31,12 +31,14 @@ query($project: ID!, $cursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       id
-      content { ... on Issue { number } }
+      type
+      content { ... on Issue { number title url repository { nameWithOwner } } }
       title: fieldValueByName(name: "Title") { ... on ProjectV2ItemFieldTextValue { text } }
       status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
       area: fieldValueByName(name: "Area") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
       impact: fieldValueByName(name: "Impact") { ... on ProjectV2ItemFieldNumberValue { number } }
       effort: fieldValueByName(name: "Effort") { ... on ProjectV2ItemFieldNumberValue { number } }
+      boost: fieldValueByName(name: "Boost") { ... on ProjectV2ItemFieldNumberValue { number } }
     }
   } } }
 }
@@ -59,15 +61,35 @@ def project_env() -> dict[str, str] | None:
 class Item:
     id: str
     number: int | None  # None: the token cannot see the linked issue
-    title: str
+    title: str  # the issue's own title, else the board's Title field
     status: str | None
     impact: float | None
     effort: float | None
     area: str | None
+    boost: float | None = None
+    url: str = ""  # "" when the token cannot see the linked issue
+    repository: str = ""  # "owner/name", "" likewise
+    kind: str | None = None  # ISSUE, REDACTED, DRAFT_ISSUE or PULL_REQUEST
 
 
 def _value(node: dict, alias: str):
     return next(iter((node.get(alias) or {}).values()), None)
+
+
+def _item(node: dict) -> Item:
+    content = node.get("content") or {}
+    return Item(
+        id=node["id"],
+        number=content.get("number"),
+        title=content.get("title") or _value(node, "title") or "",
+        status=_value(node, "status"),
+        impact=_value(node, "impact"),
+        effort=_value(node, "effort"),
+        area=_value(node, "area"),
+        boost=_value(node, "boost"),
+        url=content.get("url") or "",
+        repository=(content.get("repository") or {}).get("nameWithOwner") or "",
+        kind=node.get("type"))
 
 
 def fetch_items(project_id: str, gh: Callable[[list[str]], str]) -> list[Item]:
@@ -81,15 +103,7 @@ def fetch_items(project_id: str, gh: Callable[[list[str]], str]) -> list[Item]:
         if cursor:
             args += ["-f", f"cursor={cursor}"]
         page = json.loads(gh(args))["data"]["node"]["items"]
-        for node in page["nodes"]:
-            items.append(Item(
-                id=node["id"],
-                number=(node.get("content") or {}).get("number"),
-                title=_value(node, "title") or "",
-                status=_value(node, "status"),
-                impact=_value(node, "impact"),
-                effort=_value(node, "effort"),
-                area=_value(node, "area")))
+        items += [_item(node) for node in page["nodes"]]
         if not page["pageInfo"]["hasNextPage"]:
             return items
         cursor = page["pageInfo"]["endCursor"]

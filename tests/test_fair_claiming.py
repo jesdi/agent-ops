@@ -142,12 +142,12 @@ def test_provisioning_failure_scoped_to_repository_other_repository_still_claims
     assert gh.claimed == [10], "portfolio_eval still claims in the same pass"
 
 
-# --- checkbox (extra, from ticket text): a repository's rank command runs only
+# --- checkbox (extra, from ticket text): a repository's ranking runs only
 # when it gets a turn --------------------------------------------------
 
 def test_candidates_not_called_for_repository_that_never_gets_a_turn(tmp_path, monkeypatch):
     """With capacity reached before factorial's turn, factorial.candidates()
-    is never called (its rank_cmd is never run)."""
+    is never called (its board is never read)."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     from tests.test_main import FakeGitHub
@@ -173,4 +173,4 @@ def test_candidates_not_called_for_repository_that_never_gets_a_turn(tmp_path, m
     assert gh.claimed == []
     assert "factorial" not in gh.candidates_calls, (
         "factorial never gets a turn when the box is already full, so its "
-        "rank_cmd (candidates()) should never run")
+        "ranking (candidates()) should never run")
