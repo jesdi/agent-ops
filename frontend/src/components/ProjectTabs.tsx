@@ -1,9 +1,9 @@
-import { useRef, type KeyboardEvent } from 'react'
+import { useRef, type KeyboardEvent, type ReactNode } from 'react'
 import { banner, chip } from '../lib/tone'
 import { TAB_STEP } from './tabKeys'
 import type { ProjectTab } from './useProjectTab'
 
-export const PROJECT_PANEL_ID = 'project-panel'
+const PROJECT_PANEL_ID = 'project-panel'
 
 /** The board's project picker, on every width: one pill per project. The row
  *  scrolls sideways on its own when the names outgrow it, never the page.
@@ -57,10 +57,26 @@ export function ProjectTabs({ tabs, active, onSelect }: {
   )
 }
 
-export function PausedNotice({ project }: { project: string }) {
+/** The selected project's board, opening with a notice when it is paused.
+ *  With no tab selected (no project list) it is a plain wrapper. */
+export function ProjectPanel({ tabs, active, children }: {
+  tabs: ProjectTab[]
+  active: ProjectTab | undefined
+  children: ReactNode
+}) {
   return (
-    <p role="status" className={banner.waiting}>
-      {project} is paused: new issues are not claimed, and work already claimed carries on.
-    </p>
+    <div
+      role={active ? 'tabpanel' : undefined}
+      id={PROJECT_PANEL_ID}
+      aria-labelledby={active ? `project-tab-${tabs.indexOf(active)}` : undefined}
+      className="flex flex-col gap-4 md:min-h-0 md:grow md:basis-0"
+    >
+      {active?.paused && (
+        <p role="status" className={banner.waiting}>
+          {active.label} is paused: new issues are not claimed, and work already claimed carries on.
+        </p>
+      )}
+      {children}
+    </div>
   )
 }

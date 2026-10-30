@@ -128,3 +128,25 @@ it('no Other tab while every card has a project', async () => {
   await screen.findByText('Add CSV export')
   expect(screen.queryByRole('tab', { name: 'Other' })).not.toBeInTheDocument()
 })
+
+it('arrow keys move the project selection and focus, wrapping at the ends', async () => {
+  serve(boardWith({}))
+  renderWithProviders(<BoardPage />)
+  await screen.findByText('Add CSV export')
+  projectTabs()[0]!.focus()
+  await userEvent.keyboard('{ArrowLeft}')
+  expect(screen.getByRole('tab', { name: 'spare' })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.getByRole('tab', { name: 'spare' })).toHaveFocus()
+  await userEvent.keyboard('{Home}')
+  expect(projectTabs()[0]).toHaveFocus()
+})
+
+it('without the project list the board shows every card, unfiltered', async () => {
+  serve(boardWith({ cards: { 'in-progress': [sideCard] } }))
+  server.use(http.get('/api/projects', () => HttpResponse.json({ detail: 'boom' }, { status: 500 })))
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByText('Side work')).toBeInTheDocument()
+  expect(screen.getByText('Add CSV export')).toBeInTheDocument()
+  expect(screen.queryByRole('tablist', { name: 'Projects' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('tabpanel')).not.toBeInTheDocument()
+})
