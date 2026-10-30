@@ -102,7 +102,7 @@ def cfg(tmp_path, infra_repo="jesdi/agent-ops"):
             worktrees_path=str(tmp_path / "repo.worktrees"), setup_cmd="setup",
             verify_cmd="make e2e-slot SLOT={slot}",
             project=Project(
-                name="portfolio_eval", rank_cmd="rank",
+                name="portfolio_eval",
                 board=Board(
                     number=1, owner="jesdi", status_field_id="F",
                     status_ready_option_id="R", status_in_progress_option_id="I")))],

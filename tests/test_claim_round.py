@@ -8,7 +8,7 @@ from tests.test_multi_project_capacity import mk_task, two_repository_cfg
 
 def test_rank_runs_only_for_repositories_that_get_a_turn(tmp_path, monkeypatch):
     """capacity 3, factorial at 2 active, portfolio_eval at 0: the one free
-    unit goes to portfolio_eval, and factorial's candidates() (its rank_cmd)
+    unit goes to portfolio_eval, and factorial's candidates() (its board read)
     never runs — eagerly ranking every repository would call it."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)

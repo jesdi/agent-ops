@@ -19,7 +19,7 @@ def _minimal_config() -> Config:
         name="alpha", repo="jesdi/alpha", github_id=1,
         clone_path="/tmp/clones/alpha",
         worktrees_path="/tmp/worktrees/alpha",
-        project=Project(name="alpha", rank_cmd="false", board=board),
+        project=Project(name="alpha", board=board),
     )
     return Config(
         state_dir="/tmp/agent-ops-openapi", capacity=2,

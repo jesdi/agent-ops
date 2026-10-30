@@ -102,6 +102,19 @@ def test_fetch_items_follows_pagination_and_never_uses_item_list():
     assert "cursor=c1" in calls[1] and "cursor=c1" not in calls[0]
 
 
+def test_fetch_items_reads_what_ranking_needs():
+    """Boost, and the linked issue's own title, url and repository; a
+    redacted item keeps the board's Title field and has no url or repository."""
+    visible = {**_node("I1", 7, title="Field title"), "boost": {"number": 2}}
+    visible["content"] = {"number": 7, "title": "Issue title", "url": "u/7",
+                          "repository": {"nameWithOwner": "jesdi/Alpha"}}
+    items = board.fetch_items("PVT_1", lambda args: _page(
+        [visible, _node("I2", None, title="Private task")]))
+    assert [(i.title, i.boost, i.url, i.repository) for i in items] == [
+        ("Issue title", 2, "u/7", "jesdi/Alpha"),
+        ("Private task", None, "", "")]
+
+
 def test_join_uses_the_title_when_the_token_cannot_see_the_issue():
     items = [board.Item("I1", None, "Private task", "Ready", 3, 1, "infra")]
     joined = board.join(items, [_issue(9, "Private task"), _issue(10, "Other")])

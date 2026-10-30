@@ -141,14 +141,13 @@ projects:
     # Optional: true stops new claims; tasks already claimed carry on
     # (resume, PR feedback) and triage still runs. Default false.
     # paused: false
-    # Runs once per pass, in the first repository's clone. Each row goes to
-    # the repository its issue url names; rows of other repositories drop.
-    rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
     # Optional cap on the project's active tasks over all its repositories,
     # even when box capacity is free. It limits new claims only; woken work
     # and PR feedback still run. Must be between 1 and capacity; omit for no
     # project-specific cap.
     # max_active: 1
+    # The dispatcher ranks the board itself, from the fields named Status,
+    # Impact, Effort and Boost and each issue's `Blocked by: #n` lines.
     board:
       owner: example
       number: 1

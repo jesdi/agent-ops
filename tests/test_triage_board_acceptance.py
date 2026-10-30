@@ -87,7 +87,7 @@ def cfg(tmp_path):
         name="a", repo="o/a", github_id=1, clone_path=str(clone), worktrees_path="/w",
         gate_cmd="make gate",
         project=Project(
-            name="a", rank_cmd="r",
+            name="a",
             board=Board(
                 number=1, owner="o", status_field_id="F_STATUS",
                 status_ready_option_id="o_ready", status_in_progress_option_id="o_prog")))

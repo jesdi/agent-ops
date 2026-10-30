@@ -32,7 +32,6 @@ class Board:
 @dataclass(frozen=True)
 class Project:
     name: str  # slug [a-z0-9-], unique on the box
-    rank_cmd: str  # runs once per project, in its first listed repository's clone
     board: Board
     paused: bool = False  # True = no new claims; work already claimed carries on
     max_active: int | None = None  # None = uncapped; else 1 <= n <= capacity, validated at load
@@ -190,6 +189,10 @@ def _project(raw: dict, capacity: int) -> list[Repository]:
     if not isinstance(name, str) or not _SLUG.fullmatch(name):
         raise ValueError(f"project {name!r}: name must be a slug of a-z, 0-9 and -")
     owner = f"project {name!r}"
+    if "rank_cmd" in fields:
+        del fields["rank_cmd"]
+        print(f"[warn] {owner}: rank_cmd is ignored (the dispatcher ranks the "
+              "board itself); remove it", file=sys.stderr)
     repositories = fields.pop("repositories", None)
     if not repositories:
         raise ValueError(f"{owner}: repositories must list at least one repository")

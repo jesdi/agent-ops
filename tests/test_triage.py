@@ -113,7 +113,7 @@ def _repository(name, repo):
         name=name, repo=repo, github_id=1, clone_path=f"/repos/{name}",
         worktrees_path=f"/repos/{name}.wt", setup_cmd="", verify_cmd="",
         project=Project(
-            name=name, rank_cmd="",
+            name=name,
             board=Board(
                 number=1, owner="o", status_field_id="f", status_ready_option_id="r",
                 status_in_progress_option_id="p")))

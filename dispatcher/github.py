@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 import re
 import logging
-import shlex
 import subprocess
 from dataclasses import dataclass
 
-from dispatcher import board
+from dispatcher import board, ranking
 from dispatcher.config import Repository
 from dispatcher.pr_poll import CIStatus
 
@@ -36,6 +35,15 @@ class Candidate:
     labels: tuple[str, ...] = ()
     repository: str = ""  # the member repository the issue lives in
 
+
+_ISSUES_QUERY = """
+query($owner: String!, $name: String!, $endCursor: String) {
+  repository(owner: $owner, name: $name) { issues(first: 100, after: $endCursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes { number title url body state labels(first: 100) { nodes { name } } }
+  } }
+}
+"""
 
 _ISSUE_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/issues/\d+/?")
 
@@ -152,25 +160,34 @@ class GitHubClient:
         return (d.get("conclusion") or "") if d.get("status") == "completed" else ""
 
     def rank_rows(self, repositories: list[Repository]) -> list[dict]:
-        """One project's rank_cmd --json rows in rank order, `repositories`
-        being its members in config order: rank_cmd runs once, in the first
-        one's clone. Each row is tagged `repository` with the member its issue
-        `url` names; a row of any other repository, or with no parseable url,
-        is dropped. `boost` normalized to an int (old vendored skills may not
-        emit it yet, and the board can hand back a string or an empty value
-        for an unset field)."""
-        first = repositories[0]
-        out = _run(shlex.split(first.project.rank_cmd), cwd=first.clone_path)
+        """One project's rows in board rank order (see ranking.rank),
+        `repositories` being its members in config order: one board read with
+        the project token and one issue read per member with the stored auth.
+        Each row is tagged `repository` with the member its issue `url` names;
+        a row of any other repository is dropped."""
+        items = board.fetch_items(
+            self._project_node_id(repositories[0]),
+            lambda args: _run(["gh"] + args, env=_project_env()))
+        issues = [issue for r in repositories for issue in self._issues(r)]
         members = {r.repo.lower(): r.name for r in repositories}
         rows = []
-        for row in json.loads(out):
-            name = members.get(_repo_of(row.get("url")))
-            if name is None:
-                continue
-            row["repository"] = name
-            row["boost"] = int(row.get("boost") or 0)
-            rows.append(row)
+        for row in ranking.rank(items, issues):
+            name = members.get(_repo_of(row["url"]))
+            if name is not None:
+                rows.append({**row, "repository": name})
         return rows
+
+    def _issues(self, repository: Repository) -> list[dict]:
+        """Every issue of `repository`, open and closed, as ranking.rank
+        reads them. GraphQL pages, so no count cap."""
+        owner, name = repository.repo.split("/", 1)
+        pages = json.loads(_run([
+            "gh", "api", "graphql", "--paginate", "--slurp",
+            "-f", f"query={_ISSUES_QUERY}", "-f", f"owner={owner}", "-f", f"name={name}"]))
+        return [{**node, "repository": repository.repo,
+                 "labels": [label["name"] for label in node["labels"]["nodes"]]}
+                for page in pages
+                for node in page["data"]["repository"]["issues"]["nodes"]]
 
     def candidates(self, repositories: list[Repository]) -> list[Candidate]:
         """One project's claimable rows (see rank_rows), in rank order across

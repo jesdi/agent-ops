@@ -2102,8 +2102,8 @@ def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
     counts = claims.project_counts(list(in_round), all_tasks, project_of)
     last = claims.project_last_claims(claims.last_claims(cfg.state_dir), project_of)
     caps = {name: members[0].project.max_active for name, members in in_round.items()}
-    # Generator bodies run on first next(), so rank_cmd runs for a project only
-    # when it gets a turn.
+    # Generator bodies run on first next(), so a project's board is read and
+    # ranked only when it gets a turn.
     gens = {name: _claimable(cfg, deps, members, all_tasks, admit, order, pass_started)
             for name, members in in_round.items()}
     while free > 0:

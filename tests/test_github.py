@@ -13,7 +13,7 @@ REPOSITORY = Repository(
     worktrees_path="/home/agent/repos/portfolio_eval.worktrees",
     setup_cmd="scripts/setup-worktree.sh", verify_cmd="make e2e-slot SLOT={slot}",
     project=Project(
-        name="portfolio_eval", rank_cmd="python rank.py --json",
+        name="portfolio_eval",
         board=Board(
             number=1, owner="jesdi", status_field_id="F1",
             status_ready_option_id="READY", status_in_progress_option_id="INPROG")))
@@ -30,48 +30,110 @@ def _board(*items):
                   for i in items]}}}})
 
 
-RANKED = json.dumps([
-    {"number": 7, "title": "A", "url": f"{ISSUES}/7", "labels": ["auto"], "status": "Ready",
-     "blocked": False, "effort": 1},
-    {"number": 8, "title": "B", "url": f"{ISSUES}/8", "labels": [], "status": "Ready",
-     "blocked": False, "effort": 2},
-    {"number": 9, "title": "C", "url": f"{ISSUES}/9", "labels": ["auto"], "status": "Backlog",
-     "blocked": False, "effort": 1},
-    {"number": 10, "title": "D", "url": f"{ISSUES}/10", "labels": ["auto"], "status": "Ready",
-     "blocked": True, "effort": 1},
-    {"number": 11, "title": "E", "url": f"{ISSUES}/11", "labels": ["auto", "frontend"],
-     "status": "Ready", "blocked": False, "effort": 3},
-])
+def _rank_node(number, repo="jesdi/portfolio_eval", status="Ready", impact=None,
+               effort=None, boost=None):
+    """A board item as the board query returns it, its issue visible."""
+    return {"id": f"ITEM{number}",
+            "content": {"number": number, "title": f"T{number}",
+                        "url": f"https://github.com/{repo}/issues/{number}",
+                        "repository": {"nameWithOwner": repo}},
+            "title": {"text": f"T{number}"},
+            "status": {"name": status} if status else None,
+            "impact": {"number": impact} if impact is not None else None,
+            "effort": {"number": effort} if effort is not None else None,
+            "boost": {"number": boost} if boost is not None else None}
 
 
-def test_candidates_carry_effort_and_labels(monkeypatch):
-    monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
-    got = {c.number: c for c in github.GitHubClient().candidates([REPOSITORY])}
-    assert got[7].effort == 1
-    assert got[7].labels == ("auto",)
-    assert got[11].effort == 3
-    assert got[11].labels == ("auto", "frontend")
+def _issue_node(number, labels=(), body="", state="OPEN"):
+    return {"number": number, "title": f"T{number}", "url": f"u/{number}",
+            "body": body, "state": state,
+            "labels": {"nodes": [{"name": name} for name in labels]}}
 
 
-def test_candidates_tolerate_missing_effort(monkeypatch):
-    unscored = json.dumps([{"number": 12, "title": "F", "url": f"{ISSUES}/12",
-                            "labels": ["auto"], "status": "Ready", "blocked": False}])
-    monkeypatch.setattr(github, "_run", lambda args, cwd=None: unscored)
+def _ranking_gh(nodes, issues, calls=None):
+    """_run stand-in for rank_rows: the project node id, one board page, and
+    `issues["owner/name"]` as that repository's one issue page."""
+    def fake_run(args, cwd=None, env=None):
+        if calls is not None:
+            calls.append((args, env))
+        if args[1:3] == ["project", "view"]:
+            return json.dumps({"id": "PROJ_NODE"})
+        fields = dict(a.split("=", 1) for a in args if "=" in a and not a.startswith("query="))
+        if "project" in fields:
+            return json.dumps({"data": {"node": {"items": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}})
+        return json.dumps([{"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": issues[f"{fields['owner']}/{fields['name']}"]}}}}])
+    return fake_run
+
+
+BOARD = [_rank_node(7, impact=4, effort=1), _rank_node(8, impact=3, effort=1),
+         _rank_node(9, status="Inbox", impact=2, effort=1),
+         _rank_node(10, impact=5, effort=1), _rank_node(11, impact=1, effort=1)]
+BOARD_ISSUES = {"jesdi/portfolio_eval": [
+    _issue_node(7, ["auto"]), _issue_node(8), _issue_node(9, ["auto"]),
+    _issue_node(10, ["auto"], body="Blocked by: #8"),
+    _issue_node(11, ["auto", "frontend"])]}
+
+
+def test_candidates_are_ready_unblocked_auto_rows_in_rank_order(monkeypatch):
+    monkeypatch.setattr(github, "_run", _ranking_gh(BOARD, BOARD_ISSUES))
     got = github.GitHubClient().candidates([REPOSITORY])
-    assert got[0].effort is None
+    assert [(c.number, c.labels, c.repository) for c in got] == [
+        (7, ("auto",), "portfolio_eval"), (11, ("auto", "frontend"), "portfolio_eval")]
+    assert all(c.effort is None for c in got)  # rows carry no effort, as before
 
 
-def test_candidates_filters_and_keeps_rank_order(monkeypatch):
+def test_rank_rows_reads_the_board_with_the_project_token_and_issues_without(
+        monkeypatch):
+    """One board read per call, one issue read per member with the stored
+    auth (the project token cannot see a private repository's issues), and
+    the project node id looked up once per process."""
+    monkeypatch.setenv("GH_PROJECT_TOKEN", "classic-tok")
     calls = []
+    monkeypatch.setattr(github, "_run", _ranking_gh(BOARD, BOARD_ISSUES, calls))
+    client = github.GitHubClient()
+    rows = client.rank_rows([REPOSITORY])
+    client.rank_rows([REPOSITORY])
+    assert [(r["number"], r["blocked"]) for r in rows] == [
+        (7, False), (8, False), (9, False), (11, False), (10, True)]
+    assert rows[0] == {"number": 7, "title": "T7", "url": f"{ISSUES}/7",
+                       "status": "Ready", "labels": ["auto"], "blocked": False,
+                       "score": 4.0, "boost": 0, "repository": "portfolio_eval"}
+    kinds = [("view" if a[1] == "project" else "board" if "project=PROJ_NODE" in a
+              else "issues", env and env.get("GH_TOKEN")) for a, env in calls]
+    assert kinds == [("view", "classic-tok"), ("board", "classic-tok"), ("issues", None),
+                     ("board", "classic-tok"), ("issues", None)]
+    issues_call = calls[2][0]
+    assert "--paginate" in issues_call and "owner=jesdi" in issues_call
+    assert "name=portfolio_eval" in issues_call
 
-    def fake_run(args, cwd=None):
-        calls.append((args, cwd))
-        return RANKED
 
-    monkeypatch.setattr(github, "_run", fake_run)
-    got = github.GitHubClient().candidates([REPOSITORY])
-    assert [c.number for c in got] == [7, 11]
-    assert calls[0][1] == REPOSITORY.clone_path
+def test_rank_rows_maps_rows_to_members_by_url(monkeypatch):
+    """Each row goes to the member its url names (any case); the same number
+    in both members stays two rows, each with its own labels, and an item of a
+    repository outside the project is dropped."""
+    factorial = dc_replace(REPOSITORY, name="factorial", repo="jesdi/Factorial",
+                           github_id=2, clone_path="/home/agent/repos/factorial")
+    nodes = [_rank_node(7, repo="jesdi/factorial", impact=2, effort=1),
+             _rank_node(5, repo="jesdi/elsewhere", impact=5, effort=1),
+             _rank_node(7, impact=1, effort=1)]
+    issues = {"jesdi/portfolio_eval": [_issue_node(7, ["pe"])],
+              "jesdi/Factorial": [_issue_node(7, ["f"])]}
+    monkeypatch.setattr(github, "_run", _ranking_gh(nodes, issues))
+    rows = github.GitHubClient().rank_rows([REPOSITORY, factorial])
+    assert [(r["repository"], r["number"], r["labels"]) for r in rows] == [
+        ("factorial", 7, ["f"]), ("portfolio_eval", 7, ["pe"])]
+
+
+def test_rank_rows_boost_is_an_int(monkeypatch):
+    nodes = [_rank_node(7, boost=5.0), _rank_node(8)]
+    issues = {"jesdi/portfolio_eval": [_issue_node(7), _issue_node(8)]}
+    monkeypatch.setattr(github, "_run", _ranking_gh(nodes, issues))
+    rows = github.GitHubClient().rank_rows([REPOSITORY])
+    assert [(r["number"], r["boost"]) for r in rows] == [(7, 5), (8, 0)]
+    assert all(type(r["boost"]) is int for r in rows)
 
 
 def test_claim_sets_status_and_comments(monkeypatch):
@@ -305,21 +367,6 @@ def test_issue_state_parses_json(monkeypatch):
 BOOST_REPOSITORY = with_board(REPOSITORY, boost_field_id="FB")
 
 
-def test_rank_rows_normalizes_missing_boost(monkeypatch):
-    monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
-    rows = github.GitHubClient().rank_rows([REPOSITORY])
-    assert [r["number"] for r in rows] == [7, 8, 9, 10, 11]
-    assert all(r["boost"] == 0 for r in rows)
-
-
-def test_rank_rows_keeps_boost_when_present(monkeypatch):
-    ranked = json.dumps([{"number": 7, "title": "A", "url": f"{ISSUES}/7",
-                          "labels": ["auto"], "status": "Ready",
-                          "blocked": False, "score": 2.0, "boost": 99}])
-    monkeypatch.setattr(github, "_run", lambda args, cwd=None: ranked)
-    assert github.GitHubClient().rank_rows([REPOSITORY])[0]["boost"] == 99
-
-
 def test_set_boost_edits_number_field_with_project_token(monkeypatch):
     monkeypatch.setenv("GH_PROJECT_TOKEN", "classic-tok")
     calls = []
@@ -435,21 +482,6 @@ def test_append_blocked_by_dry_run(monkeypatch, capsys):
         lambda a, cwd=None, env=None: (_ for _ in ()).throw(AssertionError))
     github.GitHubClient(dry_run=True).append_blocked_by(REPOSITORY, 42, 77)
     assert "[dry-run]" in capsys.readouterr().out
-
-
-def test_rank_rows_casts_string_boost_to_int(monkeypatch):
-    ranked = json.dumps([
-        {"number": 7, "title": "A", "url": f"{ISSUES}/7", "labels": ["auto"],
-         "status": "Ready", "blocked": False, "score": 2.0, "boost": "5"},
-        {"number": 8, "title": "B", "url": f"{ISSUES}/8", "labels": ["auto"],
-         "status": "Ready", "blocked": False, "score": 1.0, "boost": ""},
-        {"number": 9, "title": "C", "url": f"{ISSUES}/9", "labels": ["auto"],
-         "status": "Ready", "blocked": False, "score": 1.0, "boost": None},
-    ])
-    monkeypatch.setattr(github, "_run", lambda args, cwd=None: ranked)
-    rows = github.GitHubClient().rank_rows([REPOSITORY])
-    assert [r["boost"] for r in rows] == [5, 0, 0]
-    assert all(isinstance(r["boost"], int) for r in rows)
 
 
 def test_viewer_login_fetched_once_and_cached(monkeypatch):
@@ -703,35 +735,3 @@ def test_close_issue_closes_as_completed_and_dry_run_is_a_noop(monkeypatch):
     calls.clear()
     github.GitHubClient(dry_run=True).close_issue("o/r", 42)
     assert calls == []
-
-
-def test_rank_rows_ranks_a_project_once_and_maps_rows_to_members_by_url(monkeypatch):
-    """One rank_cmd run in the first member's clone; each row goes to the
-    member its url names (any case), the same number in both members stays
-    two rows, and a non-member or url-less row is dropped."""
-    factorial = dc_replace(REPOSITORY, name="factorial", repo="jesdi/Factorial",
-                           github_id=2, clone_path="/home/agent/repos/factorial")
-    ranked = json.dumps([
-        {"number": 7, "url": "https://github.com/jesdi/factorial/issues/7"},
-        {"number": 5, "url": "https://github.com/jesdi/elsewhere/issues/5"},
-        {"number": 7, "url": f"{ISSUES}/7"},
-        {"number": 6, "url": ""},
-        {"number": 4},
-    ])
-    calls = []
-
-    def fake_run(args, cwd=None):
-        calls.append(cwd)
-        return ranked
-
-    monkeypatch.setattr(github, "_run", fake_run)
-    rows = github.GitHubClient().rank_rows([REPOSITORY, factorial])
-    assert calls == [REPOSITORY.clone_path]
-    assert [(r["repository"], r["number"]) for r in rows] == [
-        ("factorial", 7), ("portfolio_eval", 7)]
-
-
-def test_candidates_name_their_repository(monkeypatch):
-    monkeypatch.setattr(github, "_run", lambda args, cwd=None: RANKED)
-    got = github.GitHubClient().candidates([REPOSITORY])
-    assert {c.repository for c in got} == {"portfolio_eval"}

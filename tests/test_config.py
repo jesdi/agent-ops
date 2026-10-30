@@ -14,7 +14,6 @@ racing_minutes: 30
 racing_threshold: 0.95
 projects:
   - name: portfolio-eval
-    rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"
     board:
       owner: jesdi
       number: 1
@@ -32,7 +31,7 @@ projects:
         gate_cmd: "make gate"
 """
 # The project-level line a test appends a project key after (a models: block).
-SAMPLE_PROJECT_LINE = '    rank_cmd: "pipenv run python .claude/skills/backlog/rank.py --json"\n'
+SAMPLE_PROJECT_LINE = '  - name: portfolio-eval\n'
 
 
 def test_load_config(tmp_path: Path):
@@ -153,7 +152,6 @@ models:
       review: [openai/gpt-luna@xhigh, claude-sonnet-5@medium]
 projects:
   - name: portfolio-eval
-    rank_cmd: "rank"
     board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
             status_in_progress_option_id: I}
     repositories:
@@ -246,7 +244,6 @@ models:
       review: [claude-opus-5]
 projects:
   - name: portfolio-eval
-    rank_cmd: "rank"
     board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
             status_in_progress_option_id: I}
     repositories:
@@ -315,7 +312,7 @@ def project_dict(name="p", repositories=None, board_extra=None, **extra) -> dict
     board = {"owner": "o", "number": 1, "status_field_id": "F",
              "status_ready_option_id": "R", "status_in_progress_option_id": "I",
              **(board_extra or {})}
-    return {"name": name, "rank_cmd": "rank", "board": board,
+    return {"name": name, "board": board,
             "repositories": repositories or [repository_dict()], **extra}
 
 
@@ -332,6 +329,19 @@ def write_yaml(tmp_path: Path, repository_extra: dict | None = None,
     p.write_text(yaml.dump({"state_dir": "/tmp/state", "projects": projects,
                             **(top_extra or {})}, default_flow_style=False))
     return p
+
+
+def test_a_leftover_rank_cmd_is_ignored_with_a_warning(tmp_path, capsys):
+    """The dispatcher ranks the board itself; a config written for the old
+    code still loads, so the infra repo can drop the key after this ships."""
+    cfg = load_config(write_yaml(tmp_path, project_extra={
+        "rank_cmd": "python3 .claude/skills/backlog/rank.py --json"}))
+    assert cfg.repositories[0].project.name == "p"
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "project 'p': rank_cmd is ignored" in err and "remove it" in err
+    load_config(write_yaml(tmp_path))
+    assert capsys.readouterr().err == ""
 
 
 def test_status_done_option_id_loaded_and_defaults_empty(tmp_path):
@@ -368,7 +378,6 @@ GATED_YAML = """
 state_dir: /tmp/s
 projects:
   - name: alpha
-    rank_cmd: rank
     board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
             status_in_progress_option_id: P}
     repositories:
@@ -467,7 +476,6 @@ REPOSITORY_NO_OPTIONAL_CMDS = """
 state_dir: /tmp/s
 projects:
   - name: alpha
-    rank_cmd: rank
     board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
             status_in_progress_option_id: P}
     repositories:
