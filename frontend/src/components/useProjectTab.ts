@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import { useSearchParams } from 'react-router'
+import { useProjects } from '../hooks/useResources'
 import type { Column, ProjectView } from '../lib/api'
 
 /** The project of a card whose repository left the config. */
@@ -35,4 +36,18 @@ export function useProjectTab(tabs: ProjectTab[]) {
     setParams((p) => { p.set('project', key); return p }, { replace: true })
   }, [setParams])
   return { active, select }
+}
+
+/** The board's project tabs and `columns` cut down to the selected one.
+ *  Without the project list (still loading or failed) nothing is filtered. */
+export function useProjectBoard(columns: Column[]) {
+  const query = useProjects()
+  const tabs = projectTabs(query.data?.projects ?? [], columns)
+  const { active, select } = useProjectTab(tabs)
+  return {
+    pending: query.isPending,
+    tabs, active, select,
+    columns: active ? projectColumns(columns, active.key) : columns,
+    paused: active?.paused ?? false,
+  }
 }
