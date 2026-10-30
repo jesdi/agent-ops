@@ -22,6 +22,8 @@ export type EventEntry = components['schemas']['EventEntry']
 export type PaneHistory = components['schemas']['PaneHistory']
 export type NextClaimView = components['schemas']['NextClaimView']
 export type GhostCard = components['schemas']['GhostCard']
+export type ProjectsView = components['schemas']['ProjectsView']
+export type ProjectView = components['schemas']['ProjectView']
 export type TimelineEntry = components['schemas']['TimelineEntry']
 export type IssueDescription = components['schemas']['IssueDescription']
 export type MessageView = components['schemas']['MessageView']
@@ -105,6 +107,7 @@ const put = <T>(path: string, body: unknown) =>
 export const api = {
   boardSnapshot: () => request<components['schemas']['BoardSnapshot']>('/board/snapshot'),
   board: () => request<BoardView>('/board'),
+  projects: () => request<ProjectsView>('/projects'),
   taskDetail: (repository: string, issue: number) =>
     request<TaskDetail>(`/task/${repository}/${issue}`),
   taskHistory: (repository: string, issue: number, lines = 2000) =>

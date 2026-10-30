@@ -12,6 +12,12 @@ export function useTasks() {
   return useQuery({ queryKey: queryKeys.board, queryFn: api.board, refetchInterval })
 }
 
+/** Projects come from targets.yaml, which the console reads once at start:
+ *  no live event names them and nothing to poll. */
+export function useProjects() {
+  return useQuery({ queryKey: queryKeys.projects, queryFn: api.projects })
+}
+
 /** Fast first paint; full board data takes over once live checks finish. */
 export function useBoardSnapshot(enabled: boolean) {
   const refetchInterval = useFallbackInterval()

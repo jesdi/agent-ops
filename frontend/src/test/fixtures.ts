@@ -1,10 +1,10 @@
 import type {
-  BoardView, FailuresView, HistoryView, PendingIntentsView,
+  BoardView, FailuresView, HistoryView, PendingIntentsView, ProjectsView,
   TaskCard, TaskDetail, UsageView, WindowView,
 } from '../lib/api'
 
 export const parkedCard: TaskCard = {
-  issue: 42, repository: 'widget', title: 'Fix login redirect',
+  issue: 42, repository: 'widget', project: 'widget', title: 'Fix login redirect',
   stage: 'implement', park: 'parked', park_reason: 'decision', column: 'parked', slot: 1,
   branch: 'fix/login-redirect', model: 'sonnet', track: 'standard', park_note_pending: true,
   park_note: 'Should I use the staging redirect URL or prod?', feedback_pending: false,
@@ -14,7 +14,7 @@ export const parkedCard: TaskCard = {
 }
 
 export const reviewCard: TaskCard = {
-  issue: 44, repository: 'widget', title: 'Add search feature',
+  issue: 44, repository: 'widget', project: 'widget', title: 'Add search feature',
   stage: 'awaiting-plan-review', park: 'awaiting-review', park_reason: '', column: 'needs-review',
   slot: -1,
   branch: 'feat/search', model: 'opus', track: 'standard', park_note_pending: false,
@@ -25,7 +25,7 @@ export const reviewCard: TaskCard = {
 }
 
 export const inProgressCard: TaskCard = {
-  issue: 41, repository: 'widget', title: 'Add CSV export',
+  issue: 41, repository: 'widget', project: 'widget', title: 'Add CSV export',
   stage: 'implement', park: '', park_reason: '', column: 'in-progress', slot: 2,
   branch: 'feat/csv-export', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
@@ -36,7 +36,7 @@ export const inProgressCard: TaskCard = {
 
 // The motivating pair: both sit in the Parked column, only one holds a unit.
 export const loginParkedCard: TaskCard = {
-  issue: 45, repository: 'widget', title: 'Rate-limit webhooks',
+  issue: 45, repository: 'widget', project: 'widget', title: 'Rate-limit webhooks',
   stage: 'spec', park: 'parked-login', park_reason: 'login', column: 'parked', slot: 0,
   branch: 'feat/rate-limit', model: 'opus', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
@@ -46,13 +46,17 @@ export const loginParkedCard: TaskCard = {
 }
 
 export const ciParkedCard: TaskCard = {
-  issue: 46, repository: 'widget', title: 'Fix nightly digest',
+  issue: 46, repository: 'widget', project: 'widget', title: 'Fix nightly digest',
   stage: 'implement', park: 'awaiting-ci', park_reason: '', column: 'awaiting-ci', slot: 1,
   branch: 'fix/nightly-digest', model: 'sonnet', track: 'standard', park_note_pending: false,
   park_note: '', feedback_pending: false,
   updated_at: '2026-07-25T10:30:00Z', consuming_capacity: false,
   claimed_at: '2026-07-25T09:00:00Z', cycle_seconds: null, score: null,
   undelivered_messages: 0, wake_blocked: false, pinned_track: '',
+}
+
+export const projects: ProjectsView = {
+  projects: [{ name: 'widget', paused: false, repositories: ['widget'] }],
 }
 
 export const board: BoardView = {

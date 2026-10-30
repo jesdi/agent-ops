@@ -8,9 +8,11 @@ const ACTION = 'rounded border px-2 text-xs text-ink hover:bg-ink/5 disabled:opa
 /** A ranked, not-yet-claimed candidate: a forecast, not work in flight.
  *  Ranking data and actions sit behind expand. Actions reuse /api/queue/*
  *  unchanged. */
-export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }: {
+export function GhostCardView({ ghost, isNext, paused = false, busy, onBoost, onNext, onReady }: {
   ghost: GhostCard
   isNext: boolean
+  /** Its project is paused: the dispatcher will not claim it for now. */
+  paused?: boolean
   busy: boolean
   onBoost: (issue: number, amount: number) => void
   onNext: (issue: number) => void
@@ -22,7 +24,11 @@ export function GhostCardView({ ghost, isNext, busy, onBoost, onNext, onReady }:
       drag={{ issue: ghost.number, repository: ghost.repository, title: ghost.title }}
       to={`/task/${ghost.repository}/${ghost.number}`}
       variant="ghost"
-      badges={isNext && <span className={chip.running}>next</span>}
+      accent={paused ? 'opacity-60' : ''}
+      badges={<>
+        {isNext && <span className={chip.running}>next</span>}
+        {paused && <span className={chip.neutral} title="Its project is paused: not claimed until it is enabled">paused</span>}
+      </>}
       detail={<>
         {(ghost.score != null || ghost.boost !== 0) && (
           <div className="flex flex-wrap items-center gap-2">

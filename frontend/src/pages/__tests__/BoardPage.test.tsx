@@ -286,8 +286,8 @@ test('queued column renders ghost cards in rank order with count and stale hint'
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: withGhosts([
-      { number: 73, repository: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
-      { number: 74, repository: 'widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
+      { number: 73, repository: 'widget', project: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 74, repository: 'widget', project: 'widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
     ]),
     queue_stale: true,
     next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_repository: 'widget' },
@@ -308,8 +308,8 @@ test('same issue number on two repositories renders two distinct ghosts', async 
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: withGhosts([
-      { number: 73, repository: 'alpha', title: 'Alpha work', url: 'u', score: 8.5, boost: 0 },
-      { number: 73, repository: 'beta', title: 'Beta work', url: 'u', score: 3.5, boost: 0 },
+      { number: 73, repository: 'alpha', title: 'Alpha work', project: 'widget', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, repository: 'beta', title: 'Beta work', project: 'widget', url: 'u', score: 3.5, boost: 0 },
     ]),
     next_claim: { ...fx_board.next_claim, verdict: 'will-claim', next_issue: 73, next_repository: 'beta' },
   })))
@@ -326,7 +326,7 @@ test('a failed queue action shows its error marker in the Queued header', async 
     http.get('/api/board', () => HttpResponse.json({
       ...fx_board,
       columns: withGhosts([
-        { number: 73, repository: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+        { number: 73, repository: 'widget', project: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
       ]),
       queue_stale: true,
       next_claim: { ...fx_board.next_claim, verdict: 'no-candidates' },
@@ -349,7 +349,7 @@ test('a Queued column holding only ghosts stays in the row', async () => {
   server.use(http.get('/api/board', () => HttpResponse.json({
     ...fx_board,
     columns: withGhosts([
-      { number: 73, repository: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, repository: 'widget', project: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
     ]),
   })))
   renderWithProviders(<BoardPage />)
@@ -471,7 +471,8 @@ test('desktop: the URL stays clean and columns are not tab panels', async () => 
   renderWithProviders(<><BoardPage /><Search /></>)
   await screen.findByTestId('column-parked')
   expect(screen.getByTestId('search')).toHaveTextContent(/^$/)
-  expect(screen.queryAllByRole('tabpanel')).toEqual([])
+  // The one tab panel is the selected project's, never a column.
+  expect(screen.queryAllByRole('tabpanel').map((p) => p.id)).toEqual(['project-panel'])
 })
 
 describe('phone tabs', () => {
@@ -482,8 +483,9 @@ describe('phone tabs', () => {
     await waitFor(() => expect(screen.getByTestId('search')).toHaveTextContent('?column=parked'))
   })
 
-  const tabNames = () => screen.getAllByRole('tab').map((t) => t.textContent)
-  const selected = () => screen.getByRole('tab', { selected: true }).textContent
+  const columnTabs = () => within(screen.getByRole('tablist', { name: 'Columns' }))
+  const tabNames = () => columnTabs().getAllByRole('tab').map((t) => t.textContent)
+  const selected = () => columnTabs().getByRole('tab', { selected: true }).textContent
 
   it('one tab per occupied column, in the order received, with counts', async () => {
     renderWithProviders(<BoardPage />)
@@ -497,23 +499,23 @@ describe('phone tabs', () => {
 
   it('with no parameter the first occupied column is active', async () => {
     renderWithProviders(<BoardPage />)
-    await screen.findByRole('tablist')
+    await screen.findByRole('tablist', { name: 'Columns' })
     expect(selected()).toBe('Parked 2')
   })
 
   it('the column parameter picks the tab; an empty or unknown key falls back', async () => {
     const { unmount } = renderWithProviders(<BoardPage />, { route: '/?column=awaiting-ci' })
-    await screen.findByRole('tablist')
+    await screen.findByRole('tablist', { name: 'Columns' })
     expect(selected()).toBe('Awaiting CI 1')
     unmount()
     renderWithProviders(<BoardPage />, { route: '/?column=failed' })
-    await screen.findByRole('tablist')
+    await screen.findByRole('tablist', { name: 'Columns' })
     expect(selected()).toBe('Parked 2')
   })
 
   it('selecting a tab selects it; arrow keys move along the row', async () => {
     renderWithProviders(<BoardPage />)
-    await screen.findByRole('tablist')
+    await screen.findByRole('tablist', { name: 'Columns' })
     await userEvent.click(screen.getByRole('tab', { name: 'In progress 1' }))
     expect(selected()).toBe('In progress 1')
     expect(screen.getByRole('tab', { name: 'In progress 1' })).toHaveAttribute('tabindex', '0')
@@ -540,12 +542,12 @@ describe('phone tabs', () => {
         await boardHeld
         return HttpResponse.json({
           ...fx_board,
-          columns: withGhosts([{ number: 73, repository: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }], columns),
+          columns: withGhosts([{ number: 73, repository: 'widget', project: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }], columns),
         })
       }),
     )
     renderWithProviders(<BoardPage />)
-    await screen.findByRole('tablist')
+    await screen.findByRole('tablist', { name: 'Columns' })
     expect(selected()).toBe('In progress 1')
     release()
     expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()
@@ -562,7 +564,7 @@ describe('phone tabs', () => {
       http.get('/api/board', () => HttpResponse.json({ ...fx_board, columns: current })),
     )
     const { queryClient } = renderWithProviders(<BoardPage />, { route: '/?column=awaiting-ci' })
-    await screen.findByRole('tablist')
+    await screen.findByRole('tablist', { name: 'Columns' })
     expect(selected()).toBe('Parked 2')
     current = fx_board.columns
     await queryClient.invalidateQueries()
@@ -577,11 +579,11 @@ describe('phone tabs', () => {
       await boardHeld
       return HttpResponse.json({
         ...fx_board,
-        columns: withGhosts([{ number: 73, repository: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
+        columns: withGhosts([{ number: 73, repository: 'widget', project: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
       })
     }))
     renderWithProviders(<BoardPage />, { route: '/?column=queued' })
-    await screen.findByRole('tablist')
+    await screen.findByRole('tablist', { name: 'Columns' })
     expect(selected()).toBe('Parked 2')
     release()
     await waitFor(() => expect(selected()).toBe('Queued 1'))
@@ -590,7 +592,7 @@ describe('phone tabs', () => {
   it('Queued counts its ghosts', async () => {
     server.use(http.get('/api/board', () => HttpResponse.json({
       ...fx_board,
-      columns: withGhosts([{ number: 73, repository: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
+      columns: withGhosts([{ number: 73, repository: 'widget', project: 'widget', title: 'Ship dark mode', url: '', score: 1, boost: 0 }]),
     })))
     renderWithProviders(<BoardPage />)
     expect(await screen.findByRole('tab', { name: 'Queued 1' })).toBeInTheDocument()
