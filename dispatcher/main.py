@@ -390,49 +390,58 @@ def _queue_lines(cfg: Config, deps: Deps) -> list[str]:
     for name, members in projects.items():
         if len(projects) > 1:
             lines.append(f"[{name}]")
-        lines += _rank_lines(deps.github.rank_rows(members))
+        lines += _rank_lines(deps.github.rank_rows(members), len(members) > 1)
     return lines
 
 
-def _rank_lines(rows: list[dict]) -> list[str]:
+def _rank_lines(rows: list[dict], multi_repository: bool) -> list[str]:
+    """One project's /queue lines; rows are named `repository#n` when the
+    project has several repositories."""
     available = [r for r in rows
                  if not r["blocked"] and r.get("status") != "In progress"]
-    return _available_lines(available) + _summary_lines(rows)
+    return (_available_lines(available, multi_repository)
+            + _summary_lines(rows, multi_repository))
 
 
-def _available_lines(available: list[dict]) -> list[str]:
+def _row_ref(row: dict, multi_repository: bool) -> str:
+    return task_ref(row["repository"], row["number"], multi_repository)
+
+
+def _available_lines(available: list[dict], multi_repository: bool) -> list[str]:
     """The top ten workable rows, numbered, plus a count of the rest."""
-    lines = [_rank_line(idx, r)
+    lines = [_rank_line(idx, r, multi_repository)
              for idx, r in enumerate(available[:10], start=1)]
     if len(available) > 10:
         lines.append(f"… {len(available) - 10} more")
     return lines
 
 
-def _rank_line(idx: int, row: dict) -> str:
+def _rank_line(idx: int, row: dict, multi_repository: bool) -> str:
     boost = row.get("boost", 0)
     marker = f" ↑{boost}" if boost > 0 else (f" ↓{-boost}" if boost < 0 else "")
     value = row.get("score")
     score = f"{value:.2f}" if value is not None else "—"
-    return f"{idx}.{marker} [{score}] #{row['number']} {row['title']}"
+    return f"{idx}.{marker} [{score}] {_row_ref(row, multi_repository)} {row['title']}"
 
 
-def _summary_lines(rows: list[dict]) -> list[str]:
+def _summary_lines(rows: list[dict], multi_repository: bool) -> list[str]:
     """The in-progress and blocked issue lists, or a note that the queue is
     empty."""
     lines = _issue_list("In progress", [r for r in rows
-                                        if r.get("status") == "In progress"])
-    lines += _issue_list("Blocked", [r for r in rows if r["blocked"]])
+                                        if r.get("status") == "In progress"],
+                        multi_repository)
+    lines += _issue_list("Blocked", [r for r in rows if r["blocked"]],
+                         multi_repository)
     if not rows:
         lines.append("(queue empty)")
     return lines
 
 
-def _issue_list(label: str, rows: list[dict]) -> list[str]:
+def _issue_list(label: str, rows: list[dict], multi_repository: bool) -> list[str]:
     """One "<label>: #1, #2" line, or none when there are no rows."""
     if not rows:
         return []
-    return [f"{label}: " + ", ".join(f"#{r['number']}" for r in rows)]
+    return [f"{label}: " + ", ".join(_row_ref(r, multi_repository) for r in rows)]
 
 
 def _locate(cfg: Config, deps: Deps, issue: int):
