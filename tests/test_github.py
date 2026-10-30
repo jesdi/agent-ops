@@ -52,7 +52,8 @@ def _issue_node(number, labels=(), body="", state="OPEN"):
 
 def _ranking_gh(nodes, issues, calls=None):
     """_run stand-in for rank_rows: the project node id, one board page, and
-    `issues["owner/name"]` as that repository's one issue page."""
+    `issues["owner/name"]` as that repository's issue pages (--slurp's list),
+    a list of lists being several pages."""
     def fake_run(args, cwd=None, env=None):
         if calls is not None:
             calls.append((args, env))
@@ -62,9 +63,12 @@ def _ranking_gh(nodes, issues, calls=None):
         if "project" in fields:
             return json.dumps({"data": {"node": {"items": {
                 "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}})
+        pages = issues[f"{fields['owner']}/{fields['name']}"]
+        if not pages or not isinstance(pages[0], list):
+            pages = [pages]
         return json.dumps([{"data": {"repository": {"issues": {
-            "pageInfo": {"hasNextPage": False, "endCursor": None},
-            "nodes": issues[f"{fields['owner']}/{fields['name']}"]}}}}])
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": page}}}}
+            for page in pages])
     return fake_run
 
 
@@ -121,10 +125,22 @@ def test_rank_rows_maps_rows_to_members_by_url(monkeypatch):
              _rank_node(7, impact=1, effort=1)]
     issues = {"jesdi/portfolio_eval": [_issue_node(7, ["pe"])],
               "jesdi/Factorial": [_issue_node(7, ["f"])]}
-    monkeypatch.setattr(github, "_run", _ranking_gh(nodes, issues))
+    calls = []
+    monkeypatch.setattr(github, "_run", _ranking_gh(nodes, issues, calls))
     rows = github.GitHubClient().rank_rows([REPOSITORY, factorial])
     assert [(r["repository"], r["number"], r["labels"]) for r in rows] == [
         ("factorial", 7, ["f"]), ("portfolio_eval", 7, ["pe"])]
+    reads = [next(a for a in args if a.startswith(("project=", "name=")))
+             for args, _env in calls if args[1] == "api"]
+    assert reads == ["project=PROJ_NODE", "name=portfolio_eval", "name=Factorial"]
+
+
+def test_rank_rows_reads_every_issue_page(monkeypatch):
+    nodes = [_rank_node(7, impact=1, effort=1), _rank_node(8, impact=2, effort=1)]
+    issues = {"jesdi/portfolio_eval": [[_issue_node(7, ["a"])], [_issue_node(8, ["b"])]]}
+    monkeypatch.setattr(github, "_run", _ranking_gh(nodes, issues))
+    rows = github.GitHubClient().rank_rows([REPOSITORY])
+    assert [(r["number"], r["labels"]) for r in rows] == [(8, ["b"]), (7, ["a"])]
 
 
 def test_rank_rows_boost_is_an_int(monkeypatch):
@@ -455,6 +471,13 @@ def test_append_blocked_by_appends_parseable_line(monkeypatch):
 
 def test_append_blocked_by_idempotent(monkeypatch):
     calls = _blocked_by_rig(monkeypatch, "Body.\n\nBlocked by: #77\n")
+    github.GitHubClient().append_blocked_by(REPOSITORY, 42, 77)
+    assert not any("edit" in a for a in calls)
+
+
+def test_append_blocked_by_idempotent_whatever_the_line_case(monkeypatch):
+    # ranking reads `blocked by:` case-insensitively, so the edge is there.
+    calls = _blocked_by_rig(monkeypatch, "Body.\n\nblocked BY: #5, #77\n")
     github.GitHubClient().append_blocked_by(REPOSITORY, 42, 77)
     assert not any("edit" in a for a in calls)
 

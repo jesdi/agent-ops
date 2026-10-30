@@ -165,9 +165,7 @@ class GitHubClient:
         the project token and one issue read per member with the stored auth.
         Each row is tagged `repository` with the member its issue `url` names;
         a row of any other repository is dropped."""
-        items = board.fetch_items(
-            self._project_node_id(repositories[0]),
-            lambda args: _run(["gh"] + args, env=_project_env()))
+        items = self._board_items(repositories[0])
         issues = [issue for r in repositories for issue in self._issues(r)]
         members = {r.repo.lower(): r.name for r in repositories}
         rows = []
@@ -200,6 +198,11 @@ class GitHubClient:
             if r["status"] == "Ready" and not r["blocked"] and "auto" in r["labels"]
         ]
 
+    def _board_items(self, repository: Repository) -> list[board.Item]:
+        """Every item on `repository`'s project board, read with the project token."""
+        return board.fetch_items(self._project_node_id(repository),
+                                 lambda args: _run(["gh"] + args, env=_project_env()))
+
     def _project_node_id(self, repository: Repository) -> str:
         key = f"{repository.project.board.owner}/{repository.project.board.number}"
         if key not in self._project_node_ids:
@@ -210,9 +213,7 @@ class GitHubClient:
         return self._project_node_ids[key]
 
     def _item_id(self, repository: Repository, issue: int) -> str:
-        items = board.fetch_items(
-            self._project_node_id(repository),
-            lambda args: _run(["gh"] + args, env=_project_env()))
+        items = self._board_items(repository)
         for item in items:
             if item.number == issue:
                 return item.id
@@ -350,9 +351,9 @@ class GitHubClient:
         body = json.loads(_run(["gh", "issue", "view", str(issue),
                                 "--repo", repository.repo,
                                 "--json", "body"]))["body"] or ""
-        # Idempotent: skip if a Blocked-by line already references this
-        # blocker. \b keeps #7 from matching inside #77.
-        if re.search(rf"^\s*Blocked by:.*#{blocker}\b", body, re.MULTILINE):
+        # Idempotent: skip if a Blocked-by line, as ranking reads them,
+        # already references this blocker.
+        if blocker in ranking.blocked_by(body):
             return
         line = f"Blocked by: #{blocker}"
         new_body = f"{body.rstrip()}\n\n{line}\n" if body.strip() else f"{line}\n"
