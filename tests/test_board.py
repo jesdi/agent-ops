@@ -9,14 +9,23 @@ from dispatcher import board
 SCHEMA = {
     "projectId": "PVT_1",
     "fields": {
+        # Stale on purpose: the board's Status options were since recreated,
+        # so the ids written must come from the live board (LIVE_STATUS).
         "Status": {"id": "F_STATUS", "options": {
-            "Inbox": "o_inbox", "Ready": "o_ready", "In progress": "o_prog",
-            "Done": "o_done", "Wont do": "o_wont"}},
+            "Inbox": "stale_inbox", "Ready": "stale_ready",
+            "In progress": "stale_prog", "Done": "stale_done"}},
         "Impact": {"id": "F_IMPACT"}, "Effort": {"id": "F_EFFORT"},
         "Score": {"id": "F_SCORE"},
         "Area": {"id": "F_AREA", "options": {"frontend": "o_fe", "infra": "o_in"}},
     },
 }
+
+
+LIVE_STATUS = json.dumps({"data": {"node": {"field": {
+    "id": "F_STATUS", "options": [
+        {"id": i, "name": n} for n, i in (
+            ("Inbox", "o_inbox"), ("Ready", "o_ready"), ("In progress", "o_prog"),
+            ("Done", "o_done"), ("Wont do", "o_wont"))]}}}})
 
 
 def _node(item_id, number, title="", status=None, impact=None, effort=None,
@@ -53,6 +62,8 @@ class FakeGh:
         if "mutation" in query:
             self.mutations.append(args)
             rc = 1 if self.fail_mutations else 0
+        elif 'field(name: "Status")' in query:
+            out = LIVE_STATUS
         elif args[1:3] == ["api", "graphql"]:
             out = self.pages.pop(0)
         elif args[1:3] == ["issue", "list"]:
@@ -133,8 +144,18 @@ def test_score_sets_the_five_fields_in_one_request_with_the_board_token(
                      'fieldId:"F_AREA",value:{singleSelectOptionId:"o_fe"}',
                      'fieldId:"F_STATUS",value:{singleSelectOptionId:"o_ready"}'):
         assert expected in query
+    assert "stale_" not in query  # the clone's committed ids are never written
     env = gh.calls[-1][1]
     assert env["GH_TOKEN"] == "classic-tok"
+
+
+def test_the_live_status_options_are_read_once_per_project(clone):
+    gh = FakeGh([_page([]), _page([])], [])
+    board.read("o/a", clone, run=gh)
+    board.read("o/b", clone, run=gh)  # a second repository of the same project
+    status_reads = [a for a, _ in gh.calls
+                    if any('field(name: "Status")' in x for x in a)]
+    assert len(status_reads) == 1 and "project=PVT_1" in status_reads[0]
 
 
 def test_score_never_overwrites_values_a_person_set(clone):

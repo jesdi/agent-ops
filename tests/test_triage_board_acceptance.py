@@ -8,7 +8,7 @@ import pytest
 
 from dispatcher import triage
 from dispatcher.config import Board, Config, Project, Repository
-from tests.test_board import SCHEMA, _issue, _node, _page
+from tests.test_board import LIVE_STATUS, SCHEMA, _issue, _node, _page
 from tests.usagefakes import session_usage
 
 OLD = "2026-07-29T00:00:00Z"
@@ -32,6 +32,8 @@ class Gh:
         if "mutation" in query:
             self.mutations.append(" ".join(args))
             return ok()
+        if 'field(name: "Status")' in query:
+            return ok(LIVE_STATUS)
         if args[1:3] == ["api", "graphql"]:
             return subprocess.CompletedProcess(
                 args, self.board_rc, _page(self.nodes), "API rate limit exceeded")
