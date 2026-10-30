@@ -74,3 +74,8 @@ test.each([
   render(<NextClaimLine nextClaim={nc as NextClaimView} />)
   expect(screen.getByTestId('next-claim').textContent).toMatch(pattern)
 })
+
+test('projects-paused explains that only paused projects have candidates', () => {
+  render(<NextClaimLine nextClaim={{ ...withEta(300), verdict: 'projects-paused', next_issue: 0 }} />)
+  expect(screen.getByTestId('next-claim').textContent).toMatch(/every project with candidates is paused/)
+})

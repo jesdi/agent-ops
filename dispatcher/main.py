@@ -26,7 +26,7 @@ from typing import Callable
 
 from dispatcher.convergence import pass_lock
 from dispatcher.config import (Config, Repository, apply_stored_models,
-                               load_config, policy_for,
+                               by_project, load_config, policy_for,
                                referenced_providers, routed_providers, stranded)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
@@ -377,18 +377,20 @@ def _ref(cfg: Config, task: TaskState) -> str:
 
 
 def _find_rows(cfg: Config, deps: Deps, issue: int) -> list[tuple]:
-    return [(repository, row)
-            for repository in cfg.repositories
-            for row in deps.github.rank_rows(repository)
+    by_name = {r.name: r for r in cfg.repositories}
+    return [(by_name[row["repository"]], row)
+            for members in by_project(cfg.repositories).values()
+            for row in deps.github.rank_rows(members)
             if row["number"] == issue]
 
 
 def _queue_lines(cfg: Config, deps: Deps) -> list[str]:
     lines: list[str] = []
-    for repository in cfg.repositories:
-        if len(cfg.repositories) > 1:
-            lines.append(f"[{repository.name}]")
-        lines += _rank_lines(deps.github.rank_rows(repository))
+    projects = by_project(cfg.repositories)
+    for name, members in projects.items():
+        if len(projects) > 1:
+            lines.append(f"[{name}]")
+        lines += _rank_lines(deps.github.rank_rows(members))
     return lines
 
 
@@ -2010,20 +2012,23 @@ def _reopened(stale: TaskState, pass_started: str) -> bool:
             and not (pass_started and stale.updated_at >= pass_started))
 
 
-def _claimable(cfg: Config, deps: Deps, repository: Repository, tasks: list[TaskState],
+def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[TaskState],
                admit: Admit, order: Order, pass_started: str):
-    """Ranked candidates this pass may claim, each with the spec launch it
+    """One project's ranked candidates this pass may claim, across its member
+    repositories in rank order, each with its repository and the spec launch it
     would start. Skips issues that already have a task, quarantined issues,
     and candidates whose spec model has no headroom — a denied candidate
     leaves the next one eligible, since its model may differ."""
-    by_issue = {t.issue: t for t in tasks}
-    for cand in deps.github.candidates(repository):
-        stale = by_issue.get(cand.number)
+    by_name = {r.name: r for r in members}
+    by_issue = {(t.repository, t.issue): t for t in tasks}
+    for cand in deps.github.candidates(members):
+        repository = by_name[cand.repository]
+        stale = by_issue.get((repository.name, cand.number))
         if stale is not None:
             if not _reopened(stale, pass_started):
                 continue
             delete(cfg.state_dir, repository.name, cand.number)
-            del by_issue[cand.number]
+            del by_issue[(repository.name, cand.number)]
             eventlog.append_event(cfg.state_dir, "reopened",
                                   repository=repository.name, issue=cand.number,
                                   detail="canceled task ranked again — "
@@ -2033,18 +2038,7 @@ def _claimable(cfg: Config, deps: Deps, repository: Repository, tasks: list[Task
             continue
         launch, _bypass = _candidate_launch(cfg, repository, cand, admit, order)
         if launch is not None:
-            yield cand, launch
-
-
-def _round_counts(repositories: list[Repository],
-                  all_tasks: list[TaskState]) -> dict[str, int]:
-    """Each repository's current active-task count, seeded at 0 so every repository
-    in the round has an entry even with nothing running yet."""
-    counts = {t.name: 0 for t in repositories}
-    for t in active(all_tasks):
-        if t.repository in counts:
-            counts[t.repository] += 1
-    return counts
+            yield repository, cand, launch
 
 
 def _commit_claim(cfg: Config, deps: Deps, repository: Repository, cand: Candidate,
@@ -2086,33 +2080,32 @@ def _wait_in_ready(cfg: Config, deps: Deps, repository: Repository, number: int,
 def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
                admit: Admit, order: Order, dry_run: bool,
                pass_started: str = "") -> None:
-    """Claim free units one at a time, each via claims.pick_repository. A repository leaves
-    the round when its candidates run out or provisioning fails for it."""
+    """Claim free units one at a time, each via claims.pick_project. A paused
+    project claims nothing; a project leaves the round when its candidates run
+    out or provisioning fails for it."""
     all_tasks = load_all(cfg.state_dir)
     free = claims.claim_room(cfg.capacity, cfg.max_open, all_tasks,
                              triage_running=False)
     if free <= 0:
         return
-    counts = _round_counts(repositories, all_tasks)
-    last = claims.last_claims(cfg.state_dir)
-    caps = {t.name: t.project.max_active for t in repositories}
-    # Generator bodies run on first next(), so rank_cmd runs for a repository only
+    in_round = by_project([r for r in repositories if not r.project.paused])
+    project_of = {r.name: r.project.name for r in repositories}
+    counts = claims.project_counts(list(in_round), all_tasks, project_of)
+    last = claims.project_last_claims(claims.last_claims(cfg.state_dir), project_of)
+    caps = {name: members[0].project.max_active for name, members in in_round.items()}
+    # Generator bodies run on first next(), so rank_cmd runs for a project only
     # when it gets a turn.
-    gens = {t.name: _claimable(cfg, deps, t,
-                               [x for x in all_tasks if x.repository == t.name],
-                               admit, order, pass_started)
-            for t in repositories}
-    in_round = {t.name: t for t in repositories}  # insertion order = list order
+    gens = {name: _claimable(cfg, deps, members, all_tasks, admit, order, pass_started)
+            for name, members in in_round.items()}
     while free > 0:
-        name = claims.pick_repository(list(in_round), counts, last, caps)
+        name = claims.pick_project(list(in_round), counts, last, caps)
         if name is None:
             return
-        repository = in_round[name]
-        picked = next(gens[repository.name], None)
+        picked = next(gens[name], None)
         if picked is None:
             del in_round[name]
             continue
-        cand, launch = picked
+        repository, cand, launch = picked
         try:
             body = deps.github.issue_body(repository, cand.number)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
@@ -2139,18 +2132,18 @@ def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
             # Board never claimed (claim is last, still Ready) → no release
             # needed; report + quarantine, and the pass survives.
             _report_provisioning_failure(cfg, deps, repository, cand, dry_run)
-            # Cap at one provisioning failure per repository per pass: a
+            # Cap at one provisioning failure per project per pass: a
             # systemic fault (git remote down, podman down, worktrees
             # volume full) would otherwise fail EVERY remaining Ready
             # candidate, filing an issue + ping + quarantine record per
-            # candidate. The repository leaves this pass's round; the next pass
-            # retries its remaining candidates, and other repositories keep claiming.
+            # candidate. The project leaves this pass's round; the next pass
+            # retries its remaining candidates, and other projects keep claiming.
             del in_round[name]
             continue
         base_line.clear_wait(cfg.state_dir, repository.name, cand.number)
         _commit_claim(cfg, deps, repository, cand, slot, wt, launch, base)
-        counts[repository.name] += 1
-        last[repository.name] = _now()
+        counts[name] += 1
+        last[name] = _now()
         free -= 1  # checked before the next pull, so no candidate is vetted (or swept) that cannot be claimed
 
 

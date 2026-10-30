@@ -13,7 +13,9 @@ from pydantic import BaseModel, Field, StrictBool, StrictStr
 
 from dispatcher import messages as msgq
 from dispatcher import priority
-from dispatcher.claims import claim_room, pick_repository
+from dispatcher.claims import (claim_room, pick_project, project_counts,
+                               project_last_claims)
+from dispatcher.config import Project
 from dispatcher.models import Entry
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
@@ -263,8 +265,8 @@ def task_card(t: TaskState, *, model: str,
 
 def _score_index(queues: list[tuple[str, list[dict]]]
                  ) -> dict[tuple[str, int], float | None]:
-    return {(name, row["number"]): row.get("score")
-            for name, rows in queues for row in rows}
+    return {(row["repository"], row["number"]): row.get("score")
+            for _project, rows in queues for row in rows}
 
 
 def _task_cards(tasks: list[TaskState], *,
@@ -358,7 +360,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 wake_blocked: set[tuple[str, int]] | None = None,
                 admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
                 candidate_admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
-                max_active: Mapping[str, int | None],
+                projects: Mapping[str, Project],
                 last_claimed: Mapping[str, str],
                 max_open: int = sys.maxsize,
                 pinned_tracks: dict[tuple[str, int], str] | None = None,
@@ -368,12 +370,12 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     # (cf. dispatcher/main.py:223 which acknowledges number collisions).
     known = {(t.repository, t.issue) for t in tasks}
     ghost_admissions = candidate_admissions or {}
-    ghosts = [GhostCard(number=r["number"], repository=name,
+    ghosts = [GhostCard(number=r["number"], repository=r["repository"],
                         title=r.get("title", ""), url=r.get("url", ""),
                         score=r.get("score"), boost=int(r.get("boost") or 0),
-                        admission=ghost_admissions.get((name, r["number"])))
-              for name, rows in queues for r in rows
-              if _is_candidate(r) and (name, r["number"]) not in known]
+                        admission=ghost_admissions.get((r["repository"], r["number"])))
+              for _project, rows in queues for r in rows
+              if _is_candidate(r) and (r["repository"], r["number"]) not in known]
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
         undelivered=undelivered, wake_blocked=wake_blocked,
@@ -387,7 +389,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                               queues=queues,
                               claims_paused=claims_paused,
                               triage_running=triage_running,
-                              max_active=max_active,
+                              projects=projects,
                               last_claimed=last_claimed,
                               max_open=max_open))
 
@@ -745,7 +747,7 @@ _TIMELINE_EVENTS = {"claimed", "stage-started", "parked", "resumed", "merged"}
 
 
 class NextClaimView(BaseModel):
-    verdict: str          # will-claim|no-candidates|capacity-full|budget-blocked|claims-paused|unknown
+    verdict: str          # will-claim|no-candidates|projects-paused|capacity-full|budget-blocked|claims-paused|unknown
     next_pass_eta: str    # ISO; "" when verdict == "unknown"
     next_issue: int = 0
     next_repository: str = ""
@@ -777,19 +779,30 @@ def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
 
 
 def _queue_heads(queues: list[tuple[str, list[dict]]],
-                 tasks: list[TaskState]) -> dict[str, int]:
-    """repository -> its front-of-queue candidate issue, over rows not already
-    known as tasks. Key on (repository, issue) — same rationale as build_board:
-    issue numbers are per-repo so alpha#73 must not shadow beta#73 in the
-    claim forecast."""
+                 tasks: list[TaskState]) -> dict[str, tuple[str, int]]:
+    """project -> its front-of-queue candidate (repository, issue), over rows
+    not already known as tasks. Key on (repository, issue) — same rationale as
+    build_board: issue numbers are per-repo so alpha#73 must not shadow
+    beta#73 in the claim forecast."""
     known = {(t.repository, t.issue) for t in tasks}
     heads = {}
     for name, rows in queues:
-        mine = [r["number"] for r in rows
-                if _is_candidate(r) and (name, r["number"]) not in known]
+        mine = [(r["repository"], r["number"]) for r in rows
+                if _is_candidate(r) and (r["repository"], r["number"]) not in known]
         if mine:
             heads[name] = mine[0]
     return heads
+
+
+def _pick(names: list[str], tasks: list[TaskState],
+          projects: Mapping[str, Project],
+          last_claimed: Mapping[str, str]) -> str | None:
+    """claims.pick_project over `names`, fed as the claim round feeds it:
+    active tasks and last claims summed per project, its max_active."""
+    project_of = {r: p.name for r, p in projects.items()}
+    caps = {p.name: p.max_active for p in projects.values()}
+    return pick_project(names, project_counts(names, tasks, project_of),
+                        project_last_claims(last_claimed, project_of), caps)
 
 
 def next_claim(heartbeat: dict | None, *, now: datetime,
@@ -798,15 +811,17 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                queues: list[tuple[str, list[dict]]],
                claims_paused: bool = False,
                triage_running: bool = False,
-               max_active: Mapping[str, int | None],
+               projects: Mapping[str, Project],
                last_claimed: Mapping[str, str],
                max_open: int = sys.maxsize) -> NextClaimView:
     """A forecast of what the claim round (dispatcher main._claim_new)
-    consumes next, from data already on the board request. The repository comes
-    from the same claims.pick_repository the dispatcher uses, over box-wide free
+    consumes next, from data already on the board request. `queues` are each
+    project's rank rows, `projects` maps repository -> its project, and
+    `last_claimed` is claims.last_claims (per repository). The project comes
+    from the same claims.pick_project the dispatcher uses, over box-wide free
     capacity. It is a PARTIAL mirror, deliberately: the gates it models are
     the ones readable from local state (heartbeat, usage, capacity,
-    max_active, the triage pause, the cached rank rows).
+    max_active, paused projects, the triage pause, the cached rank rows).
 
     The usage gate here is the policy default model's verdict, while the
     dispatcher gates each candidate on its own spec model: a candidate a rule
@@ -837,15 +852,18 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     heads = _queue_heads(queues, tasks)
     if not heads:
         return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
-    running = active(tasks)
-    counts = {n: sum(t.repository == n for t in running) for n in heads}
-    name = (pick_repository(list(heads), counts, last_claimed, max_active)
+    paused = {p.name for p in projects.values() if p.paused}
+    names = [n for n in heads if n not in paused]
+    if not names:
+        return NextClaimView(verdict="projects-paused", next_pass_eta=eta)
+    name = (_pick(names, tasks, projects, last_claimed)
             if claim_room(capacity, max_open, tasks, triage_running) > 0
             else None)
     if name is None:
         return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
+    repository, issue = heads[name]
     return NextClaimView(verdict="will-claim", next_pass_eta=eta,
-                         next_issue=heads[name], next_repository=name)
+                         next_issue=issue, next_repository=repository)
 
 
 def _on_timeline(e: dict, repository: str, issue: int) -> bool:

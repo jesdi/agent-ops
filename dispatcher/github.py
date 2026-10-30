@@ -34,6 +34,16 @@ class Candidate:
     url: str
     effort: int | None = None
     labels: tuple[str, ...] = ()
+    repository: str = ""  # the member repository the issue lives in
+
+
+_ISSUE_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/issues/\d+/?")
+
+
+def _repo_of(url: object) -> str | None:
+    """The lowercased "owner/name" of a GitHub issue url, or None."""
+    m = _ISSUE_URL.fullmatch(url) if isinstance(url, str) else None
+    return m.group(1).lower() if m else None
 
 
 class GitHubClient:
@@ -141,21 +151,35 @@ class GitHubClient:
         d = json.loads(out)
         return (d.get("conclusion") or "") if d.get("status") == "completed" else ""
 
-    def rank_rows(self, repository: Repository) -> list[dict]:
-        """rank_cmd --json rows in rank order; `boost` normalized to an int
-        (old vendored skills may not emit it yet, and the board can hand back
-        a string or an empty value for an unset field)."""
-        out = _run(shlex.split(repository.project.rank_cmd), cwd=repository.clone_path)
-        rows = json.loads(out)
-        for row in rows:
+    def rank_rows(self, repositories: list[Repository]) -> list[dict]:
+        """One project's rank_cmd --json rows in rank order, `repositories`
+        being its members in config order: rank_cmd runs once, in the first
+        one's clone. Each row is tagged `repository` with the member its issue
+        `url` names; a row of any other repository, or with no parseable url,
+        is dropped. `boost` normalized to an int (old vendored skills may not
+        emit it yet, and the board can hand back a string or an empty value
+        for an unset field)."""
+        first = repositories[0]
+        out = _run(shlex.split(first.project.rank_cmd), cwd=first.clone_path)
+        members = {r.repo.lower(): r.name for r in repositories}
+        rows = []
+        for row in json.loads(out):
+            name = members.get(_repo_of(row.get("url")))
+            if name is None:
+                continue
+            row["repository"] = name
             row["boost"] = int(row.get("boost") or 0)
+            rows.append(row)
         return rows
 
-    def candidates(self, repository: Repository) -> list[Candidate]:
+    def candidates(self, repositories: list[Repository]) -> list[Candidate]:
+        """One project's claimable rows (see rank_rows), in rank order across
+        its members."""
         return [
             Candidate(number=r["number"], title=r["title"], url=r["url"],
-                      effort=r.get("effort"), labels=tuple(r.get("labels") or ()))
-            for r in self.rank_rows(repository)
+                      effort=r.get("effort"), labels=tuple(r.get("labels") or ()),
+                      repository=r["repository"])
+            for r in self.rank_rows(repositories)
             if r["status"] == "Ready" and not r["blocked"] and "auto" in r["labels"]
         ]
 
