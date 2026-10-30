@@ -1951,6 +1951,20 @@ def test_queue_labels_each_project_and_reports_empty(tmp_path, monkeypatch):
                      "[other]", "(queue empty)"]
 
 
+def test_queue_names_the_repository_in_a_project_of_several(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    first = c.repositories[0]
+    c = dc_replace(c, repositories=[first, dc_replace(first, name="other")])
+    d = deps(FakeGitHub(rows=[row(2, title="B", score=5.0),
+                              {**row(3, title="C", score=1.0), "repository": "other"},
+                              {**row(4, blocked=True), "repository": "other"}]))
+    patch_events(monkeypatch, [Command(name="queue")])
+    main.run_pass(c, d)
+    assert d.notifier.contexts[0][1]["lines"] == [
+        "1. [5.00] portfolio_eval#2 B", "2. [1.00] other#3 C", "Blocked: other#4"]
+
+
 def valid_spec(wt: Path) -> Path:
     """A spec draft that satisfies check_spec (title + 2 H2s + >=1500B)."""
     p = wt / "spec.md"
