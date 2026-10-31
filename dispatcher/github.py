@@ -6,7 +6,9 @@ import json
 import re
 import logging
 import subprocess
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Iterator
 
 from dispatcher import board, ranking
 from dispatcher.config import Repository
@@ -195,9 +197,9 @@ class GitHubClient:
         """One project's claimable rows (see rank_rows), in rank order across
         its members. A BoardError, before anything is claimed, when the board
         lacks a status a claim writes: In progress, or Ready to release it."""
-        fields = self._fields(repositories[0])
-        for status in ("In progress", "Ready"):
-            fields.option("Status", status)
+        with self._live_fields(repositories[0]) as fields:
+            for status in ("In progress", "Ready"):
+                fields.option("Status", status)
         return [
             Candidate(number=r["number"], title=r["title"], url=r["url"],
                       effort=r.get("effort"), labels=tuple(r.get("labels") or ()),
@@ -215,6 +217,18 @@ class GitHubClient:
         live once per process (board.fields)."""
         return board.fields(repository.project.board.owner,
                             repository.project.board.number, _board_gh)
+
+    @contextmanager
+    def _live_fields(self, repository: Repository) -> Iterator[board.Fields]:
+        """`repository`'s board fields for one write. A failure drops them
+        from the cache, so the next attempt reads the live board again: the
+        web process lives for days, and an edited option gets a new id."""
+        try:
+            yield self._fields(repository)
+        except Exception:
+            board.forget(repository.project.board.owner,
+                         repository.project.board.number)
+            raise
 
     def _item_id(self, repository: Repository, issue: int) -> str:
         items = self._board_items(repository)
@@ -266,25 +280,25 @@ class GitHubClient:
         if self.dry_run:
             print(f"[dry-run] set_status #{issue} -> {status}")
             return
-        fields = self._fields(repository)
-        option = fields.option("Status", status)
-        _run(["gh", "project", "item-edit",
-              "--id", self._item_id(repository, issue),
-              "--project-id", fields.id,
-              "--field-id", fields.field("Status"),
-              "--single-select-option-id", option], env=_project_env())
+        with self._live_fields(repository) as fields:
+            option = fields.option("Status", status)
+            _run(["gh", "project", "item-edit",
+                  "--id", self._item_id(repository, issue),
+                  "--project-id", fields.id,
+                  "--field-id", fields.field("Status"),
+                  "--single-select-option-id", option], env=_project_env())
 
     def set_boost(self, repository: Repository, issue: int, value: int) -> None:
         if self.dry_run:
             print(f"[dry-run] set_boost #{issue} -> {value}")
             return
-        fields = self._fields(repository)
-        boost = fields.field("Boost")
-        _run(["gh", "project", "item-edit",
-              "--id", self._item_id(repository, issue),
-              "--project-id", fields.id,
-              "--field-id", boost,
-              "--number", str(value)], env=_project_env())
+        with self._live_fields(repository) as fields:
+            boost = fields.field("Boost")
+            _run(["gh", "project", "item-edit",
+                  "--id", self._item_id(repository, issue),
+                  "--project-id", fields.id,
+                  "--field-id", boost,
+                  "--number", str(value)], env=_project_env())
 
     def add_label(self, repository: Repository, issue: int, label: str) -> None:
         if self.dry_run:
@@ -326,16 +340,20 @@ class GitHubClient:
     def cancel(self, repository: Repository, issue: int) -> None:
         """Operator won't-do: unlike release(), the card leaves the claim
         pool for good (Wont do, not Ready) and the issue closes as not
-        planned. The board moves first: a board without Wont do raises
-        before the issue is touched."""
+        planned. The issue closes first: a board without Wont do only skips
+        the board move, with a warning."""
         if self.dry_run:
             print(f"[dry-run] cancel #{issue}")
             return
-        self.set_status(repository, issue, "Wont do")
         self.comment(repository, issue,
                      "🤖 canceled by operator — moved to Wont do.")
         _run(["gh", "issue", "close", str(issue), "--repo", repository.repo,
               "--reason", "not planned"])
+        try:
+            self.set_status(repository, issue, "Wont do")
+        except board.BoardError as e:
+            log.warning("%s: board not updated for canceled #%d — %s",
+                        repository.name, issue, e)
 
     def delete_branch(self, repository: Repository, branch: str) -> None:
         """Best-effort: repos with delete-branch-on-merge already removed

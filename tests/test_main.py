@@ -3655,8 +3655,10 @@ def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
     assert "task_done" in notif.sent
 
 
-def test_merged_on_a_board_without_done_is_retried_and_the_pass_survives(
+def test_merged_on_a_board_without_done_finishes_the_task_with_a_warning(
         tmp_path, monkeypatch, capsys):
+    """No Done option is the old empty-id opt-out: the board is skipped,
+    loudly, and the merged task still finishes (a retry could never pass)."""
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
     c = cfg(tmp_path)
@@ -3670,8 +3672,8 @@ def test_merged_on_a_board_without_done_is_retried_and_the_pass_survives(
     gh.pr_payloads[12] = payload(state="MERGED",
                                  merged_at="2026-07-30T10:00:00Z")
     main.run_pass(c, deps(gh))  # must not raise
-    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PR_OPEN
-    assert removed == []
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.DONE
+    assert len(removed) == 1
     assert "has no option 'Done'" in capsys.readouterr().err
 
 
