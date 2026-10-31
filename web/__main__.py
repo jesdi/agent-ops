@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import shutil
+import grp
 import socket
+import stat
 from pathlib import Path
 
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
@@ -47,19 +48,90 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _bind_usage_socket(path: str, group: str) -> socket.socket:
-    """The usage socket, mode 0660 and owned by `group` (default: ours)."""
+    """The usage socket: directory 0750, socket 0660, both in `group` (default: ours).
+
+    File-system permissions are the only boundary, so nothing is created or
+    deleted until the group and the path have been checked."""
     sock_path = Path(path)
-    sock_path.parent.mkdir(parents=True, exist_ok=True)
-    sock_path.unlink(missing_ok=True)
+    gid = os.getgid()
+    if group:
+        try:
+            gid = grp.getgrnam(group).gr_gid
+        except KeyError:
+            raise SystemExit(f"usage_socket_group {group!r} does not exist") from None
+    def leftover():
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISSOCK(st.st_mode):
+            raise SystemExit(
+                f"refusing to replace {path}: it is not a socket (a leftover "
+                "usage socket is the only thing start-up removes)")
+        return True
+
+    leftover()
+    parent = sock_path.parent
+    old = os.umask(0o022)  # missing ancestors 0755, never writable by others
+    try:
+        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    finally:
+        os.umask(old)
+    _refuse_replaceable_ancestors(parent)
+    pst = os.lstat(parent)  # never chown/chmod a symlink or someone else's directory
+    if not stat.S_ISDIR(pst.st_mode) or pst.st_uid != os.getuid():
+        raise SystemExit(f"refusing to use {parent}: not a directory owned by this user")
+    os.chown(parent, -1, gid)
+    os.chmod(parent, 0o750)
+    # Checked again now the directory is ours alone: before, another user
+    # could have swapped the entry between the check and the unlink.
+    if leftover():
+        sock_path.unlink()
     sock = socket.socket(socket.AF_UNIX)
-    old = os.umask(0o117)
+    old = os.umask(0o117)  # created 0660 from the first moment
     try:
         sock.bind(path)
     finally:
         os.umask(old)
-    if group:
-        shutil.chown(path, group=group)
+    os.chown(path, -1, gid)
     return sock
+
+
+def _crossed_dirs(path: str):
+    """Every directory the kernel crosses resolving `path`, following each
+    symlink hop the way it does, so no hop's directory goes unchecked."""
+    todo, cur, hops = list(Path(os.path.abspath(path)).parts), Path("/"), 0
+    yield cur
+    while todo:
+        part = todo.pop(0)
+        if part == "/":
+            cur = Path("/")
+        elif part == "..":
+            cur = cur.parent
+        elif part != ".":
+            nxt = cur / part
+            if stat.S_ISLNK(os.lstat(nxt).st_mode):
+                hops += 1
+                if hops > 40:
+                    raise SystemExit(f"refusing to use {path}: too many symlinks")
+                todo[:0] = Path(os.readlink(nxt)).parts
+                continue
+            cur = nxt
+            yield cur
+
+
+def _refuse_replaceable_ancestors(parent: Path) -> None:
+    """Whoever can write an ancestor of the socket directory can swap the
+    directory itself after it is secured, so each directory crossed on the
+    way must be owned by root or us and writable by no one else, unless
+    sticky (like /tmp)."""
+    for a in _crossed_dirs(str(parent.parent)):
+        st = os.lstat(a)
+        if st.st_uid not in (0, os.getuid()) or (
+                st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX):
+            raise SystemExit(
+                f"refusing to use {parent}: its ancestor {a} can be "
+                "written by another user")
 
 
 def serve(app, cfg, host: str, port: int) -> None:
