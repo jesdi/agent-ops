@@ -74,6 +74,10 @@ class Config:
     # worktree and local branch before the flush removes them. The durable
     # record (PR, remote branch, issue, board item, event log) outlives it.
     done_retention_days: int = 7
+    # Unix socket the console also serves GET /usage on (and the group that may
+    # read it); "" = no socket.
+    usage_socket: str = ""
+    usage_socket_group: str = ""
     # Minutes between dispatcher passes. Paired with OnUnitActiveSec in
     # agent-ops-infra/provision/agent-ops-dispatcher.timer — change both together; the web
     # console's next-pass countdown is computed from this value.
@@ -330,6 +334,8 @@ def load_config(path: str | Path) -> Config:
         background_wait_seconds=_background_wait_seconds(raw),
         spec_review_grace_minutes=_grace_minutes(raw),
         done_retention_days=int(raw.get("done_retention_days", 7)),
+        usage_socket=str(raw.get("usage_socket") or ""),
+        usage_socket_group=str(raw.get("usage_socket_group") or ""),
         pass_interval_minutes=int(raw.get("pass_interval_minutes", 5)),
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),

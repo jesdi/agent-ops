@@ -268,6 +268,11 @@ or worktrees path that equals, holds or sits inside `~/agent-ops`,
 Run the dispatcher with `python -m dispatcher.main --config /path/to/targets.yaml`
 and the console with `python -m web --config /path/to/targets.yaml`.
 
+Optional: set `usage_socket: /path/to/usage.sock` (and `usage_socket_group: <group>`,
+default the console user's group) in `targets.yaml` and the console also listens on that
+Unix socket (mode 0660), answering `GET /usage` with the `GET /api/usage` body. Nothing else
+is served there and no Tailscale header is needed: the socket's group is the access boundary.
+
 The maintained VPS deployment has moved to the private
 [`jesdi/agent-ops-infra`](https://github.com/jesdi/agent-ops-infra) repository.
 It owns the host configuration, bootstrap/updater, systemd units, session image,
