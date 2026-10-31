@@ -231,17 +231,16 @@ def _summary(repo: str, result: triage_apply.ApplyResult) -> list[str]:
 
 def _board(cfg: Config, repo: str, lines: list[str], run):
     """The repo's board, with stale cards repaired and what the sweep cannot
-    reach reported. None for a repo without a board, and when the board cannot
-    be read: labels are still worth triaging without it."""
+    reach reported. None for a repo outside the config, and when the board
+    cannot be read: labels are still worth triaging without it."""
     repository = next((t for t in cfg.repositories if t.repo == repo), None)
     if repository is None:
         return None
     try:
-        brd = board.read(repo, repository.clone_path, run=run)
+        brd = board.read(repo, repository.project.board.owner,
+                         repository.project.board.number, run=run)
     except Exception as e:  # noqa: BLE001 — degrade to label-only triage
         lines.append(f"{repo}: board unavailable, labels only — {e}")
-        return None
-    if brd is None:
         return None
     lines.extend(f"{repo}: {line}" for line in brd.repair())
     missing = brd.off_board()

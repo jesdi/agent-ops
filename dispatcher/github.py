@@ -26,6 +26,11 @@ def _run(args: list[str], cwd: str | None = None,
 _project_env = board.project_env
 
 
+def _board_gh(args: list[str]) -> str:
+    """One gh call with the project token: every board read and write."""
+    return _run(["gh"] + args, env=_project_env())
+
+
 @dataclass(frozen=True)
 class Candidate:
     number: int
@@ -57,7 +62,6 @@ def _repo_of(url: object) -> str | None:
 class GitHubClient:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
-        self._project_node_ids: dict[str, str] = {}
         self._viewer_login: str | None = None
 
     # -- read side ---------------------------------------------------------
@@ -189,7 +193,11 @@ class GitHubClient:
 
     def candidates(self, repositories: list[Repository]) -> list[Candidate]:
         """One project's claimable rows (see rank_rows), in rank order across
-        its members."""
+        its members. A BoardError, before anything is claimed, when the board
+        lacks a status a claim writes: In progress, or Ready to release it."""
+        fields = self._fields(repositories[0])
+        for status in ("In progress", "Ready"):
+            fields.option("Status", status)
         return [
             Candidate(number=r["number"], title=r["title"], url=r["url"],
                       effort=r.get("effort"), labels=tuple(r.get("labels") or ()),
@@ -200,17 +208,13 @@ class GitHubClient:
 
     def _board_items(self, repository: Repository) -> list[board.Item]:
         """Every item on `repository`'s project board, read with the project token."""
-        return board.fetch_items(self._project_node_id(repository),
-                                 lambda args: _run(["gh"] + args, env=_project_env()))
+        return board.fetch_items(self._fields(repository).id, _board_gh)
 
-    def _project_node_id(self, repository: Repository) -> str:
-        key = f"{repository.project.board.owner}/{repository.project.board.number}"
-        if key not in self._project_node_ids:
-            out = _run(["gh", "project", "view", str(repository.project.board.number),
-                        "--owner", repository.project.board.owner, "--format", "json"],
-                       env=_project_env())
-            self._project_node_ids[key] = json.loads(out)["id"]
-        return self._project_node_ids[key]
+    def _fields(self, repository: Repository) -> board.Fields:
+        """`repository`'s board: node id, field and option ids by name, read
+        live once per process (board.fields)."""
+        return board.fields(repository.project.board.owner,
+                            repository.project.board.number, _board_gh)
 
     def _item_id(self, repository: Repository, issue: int) -> str:
         items = self._board_items(repository)
@@ -257,24 +261,29 @@ class GitHubClient:
                     "--title", title, "--body", body])
         return int(out.strip().rstrip("/").rsplit("/", 1)[-1])
 
-    def set_status(self, repository: Repository, issue: int, option_id: str) -> None:
+    def set_status(self, repository: Repository, issue: int, status: str) -> None:
+        """Status `status` (an option name, e.g. "Ready") on the issue's card."""
         if self.dry_run:
-            print(f"[dry-run] set_status #{issue} -> {option_id}")
+            print(f"[dry-run] set_status #{issue} -> {status}")
             return
+        fields = self._fields(repository)
+        option = fields.option("Status", status)
         _run(["gh", "project", "item-edit",
               "--id", self._item_id(repository, issue),
-              "--project-id", self._project_node_id(repository),
-              "--field-id", repository.project.board.status_field_id,
-              "--single-select-option-id", option_id], env=_project_env())
+              "--project-id", fields.id,
+              "--field-id", fields.field("Status"),
+              "--single-select-option-id", option], env=_project_env())
 
     def set_boost(self, repository: Repository, issue: int, value: int) -> None:
         if self.dry_run:
             print(f"[dry-run] set_boost #{issue} -> {value}")
             return
+        fields = self._fields(repository)
+        boost = fields.field("Boost")
         _run(["gh", "project", "item-edit",
               "--id", self._item_id(repository, issue),
-              "--project-id", self._project_node_id(repository),
-              "--field-id", repository.project.board.boost_field_id,
+              "--project-id", fields.id,
+              "--field-id", boost,
               "--number", str(value)], env=_project_env())
 
     def add_label(self, repository: Repository, issue: int, label: str) -> None:
@@ -302,7 +311,7 @@ class GitHubClient:
         if self.dry_run:
             print(f"[dry-run] claim #{cand.number} ({cand.title})")
             return
-        self.set_status(repository, cand.number, repository.project.board.status_in_progress_option_id)
+        self.set_status(repository, cand.number, "In progress")
         self.comment(repository, cand.number, "🤖 picked up by agent-ops")
 
     def release(self, repository: Repository, issue: int, reason: str) -> None:
@@ -312,22 +321,19 @@ class GitHubClient:
         self.comment(repository, issue,
                      f"🤖 agent-ops released this task: {reason}. "
                      f"Worktree preserved for autopsy.")
-        self.set_status(repository, issue, repository.project.board.status_ready_option_id)
+        self.set_status(repository, issue, "Ready")
 
     def cancel(self, repository: Repository, issue: int) -> None:
         """Operator won't-do: unlike release(), the card leaves the claim
         pool for good (Wont do, not Ready) and the issue closes as not
-        planned."""
+        planned. The board moves first: a board without Wont do raises
+        before the issue is touched."""
         if self.dry_run:
             print(f"[dry-run] cancel #{issue}")
             return
+        self.set_status(repository, issue, "Wont do")
         self.comment(repository, issue,
                      "🤖 canceled by operator — moved to Wont do.")
-        if repository.project.board.status_wont_do_option_id:
-            self.set_status(repository, issue, repository.project.board.status_wont_do_option_id)
-        else:
-            log.warning("%s: status_wont_do_option_id unset — board not "
-                        "updated for canceled #%d", repository.name, issue)
         _run(["gh", "issue", "close", str(issue), "--repo", repository.repo,
               "--reason", "not planned"])
 

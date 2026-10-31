@@ -3,9 +3,12 @@ import re
 import subprocess
 from dataclasses import replace as dc_replace
 
+import pytest
+
 import dispatcher.github as github
+from dispatcher.board import BoardError
 from dispatcher.config import Board, Project, Repository
-from tests.configfakes import with_board
+from tests.test_board import FIELDS, fields_reply
 
 REPOSITORY = Repository(
     name="portfolio_eval", repo="jesdi/portfolio_eval", github_id=1,
@@ -14,10 +17,9 @@ REPOSITORY = Repository(
     setup_cmd="scripts/setup-worktree.sh", verify_cmd="make e2e-slot SLOT={slot}",
     project=Project(
         name="portfolio_eval",
-        board=Board(
-            number=1, owner="jesdi", status_field_id="F1",
-            status_ready_option_id="READY", status_in_progress_option_id="INPROG")))
+        board=Board(number=1, owner="jesdi")))
 ISSUES = "https://github.com/jesdi/portfolio_eval/issues"
+LIVE = fields_reply(project_id="PROJ_NODE")  # the live board's fields
 
 
 def _board(*items):
@@ -57,8 +59,8 @@ def _ranking_gh(nodes, issues, calls=None):
     def fake_run(args, cwd=None, env=None):
         if calls is not None:
             calls.append((args, env))
-        if args[1:3] == ["project", "view"]:
-            return json.dumps({"id": "PROJ_NODE"})
+        if any("projectV2(number" in a for a in args):
+            return LIVE
         fields = dict(a.split("=", 1) for a in args if "=" in a and not a.startswith("query="))
         if "project" in fields:
             return json.dumps({"data": {"node": {"items": {
@@ -93,7 +95,7 @@ def test_rank_rows_reads_the_board_with_the_project_token_and_issues_without(
         monkeypatch):
     """One board read per call, one issue read per member with the stored
     auth (the project token cannot see a private repository's issues), and
-    the project node id looked up once per process."""
+    the board's fields (and node id) looked up once per process."""
     monkeypatch.setenv("GH_PROJECT_TOKEN", "classic-tok")
     calls = []
     monkeypatch.setattr(github, "_run", _ranking_gh(BOARD, BOARD_ISSUES, calls))
@@ -105,9 +107,10 @@ def test_rank_rows_reads_the_board_with_the_project_token_and_issues_without(
     assert rows[0] == {"number": 7, "title": "T7", "url": f"{ISSUES}/7",
                        "status": "Ready", "labels": ["auto"], "blocked": False,
                        "score": 4.0, "boost": 0, "repository": "portfolio_eval"}
-    kinds = [("view" if a[1] == "project" else "board" if "project=PROJ_NODE" in a
+    kinds = [("fields" if any("projectV2(number" in x for x in a)
+              else "board" if "project=PROJ_NODE" in a
               else "issues", env and env.get("GH_TOKEN")) for a, env in calls]
-    assert kinds == [("view", "classic-tok"), ("board", "classic-tok"), ("issues", None),
+    assert kinds == [("fields", "classic-tok"), ("board", "classic-tok"), ("issues", None),
                      ("board", "classic-tok"), ("issues", None)]
     issues_call = calls[2][0]
     assert "--paginate" in issues_call and "owner=jesdi" in issues_call
@@ -130,9 +133,10 @@ def test_rank_rows_maps_rows_to_members_by_url(monkeypatch):
     rows = github.GitHubClient().rank_rows([REPOSITORY, factorial])
     assert [(r["repository"], r["number"], r["labels"]) for r in rows] == [
         ("factorial", 7, ["f"]), ("portfolio_eval", 7, ["pe"])]
-    reads = [next(a for a in args if a.startswith(("project=", "name=")))
+    reads = [next(a for a in args if a.startswith(("number=", "project=", "name=")))
              for args, _env in calls if args[1] == "api"]
-    assert reads == ["project=PROJ_NODE", "name=portfolio_eval", "name=Factorial"]
+    assert reads == ["number=1", "project=PROJ_NODE", "name=portfolio_eval",
+                     "name=Factorial"]
 
 
 def test_rank_rows_reads_every_issue_page(monkeypatch):
@@ -158,8 +162,8 @@ def test_claim_sets_status_and_comments(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         calls.append(args)
         joined = " ".join(args)
-        if "project view" in joined:
-            return json.dumps({"id": "PROJ_NODE"})
+        if "projectV2(number" in joined:
+            return LIVE
         if "api graphql" in joined:
             return _board(("ITEM7", 7), ("ITEM8", 8))
         return ""
@@ -168,7 +172,7 @@ def test_claim_sets_status_and_comments(monkeypatch):
     c = github.Candidate(number=7, title="A", url="u7")
     github.GitHubClient().claim(REPOSITORY, c)
     edit = next(a for a in calls if "item-edit" in a)
-    assert "ITEM7" in edit and "INPROG" in edit and "F1" in edit
+    assert "ITEM7" in edit and "o_In progress" in edit and "F_STATUS" in edit
     comment = next(a for a in calls if "comment" in a)
     assert "🤖 picked up by agent-ops" in " ".join(comment)
 
@@ -179,8 +183,8 @@ def test_release_comments_and_resets_board(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         calls.append(args)
         joined = " ".join(args)
-        if "project view" in joined:
-            return json.dumps({"id": "PROJ_NODE"})
+        if "projectV2(number" in joined:
+            return LIVE
         if "api graphql" in joined:
             return _board(("ITEM7", 7))
         return ""
@@ -188,7 +192,7 @@ def test_release_comments_and_resets_board(monkeypatch):
     monkeypatch.setattr(github, "_run", fake_run)
     github.GitHubClient().release(REPOSITORY, 7, "session crashed")
     edit = next(a for a in calls if "item-edit" in a)
-    assert "READY" in edit
+    assert "o_Ready" in edit
     comment = next(a for a in calls if "comment" in a)
     assert "session crashed" in " ".join(comment)
 
@@ -199,38 +203,81 @@ def test_cancel_comments_moves_board_and_closes_issue(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         calls.append(args)
         joined = " ".join(args)
-        if "project view" in joined:
-            return json.dumps({"id": "PROJ_NODE"})
+        if "projectV2(number" in joined:
+            return LIVE
         if "api graphql" in joined:
             return _board(("ITEM7", 7))
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    t = with_board(REPOSITORY, status_wont_do_option_id="WONTDO")
-    github.GitHubClient().cancel(t, 7)
+    github.GitHubClient().cancel(REPOSITORY, 7)
     edit = next(a for a in calls if "item-edit" in a)
-    assert "WONTDO" in edit and "ITEM7" in edit
+    assert "o_Wont do" in edit and "ITEM7" in edit
     close = next(a for a in calls if "close" in a)
     assert "--reason" in close and "not planned" in close
     comment = next(a for a in calls if "comment" in a)
     assert "canceled by operator" in " ".join(comment)
 
 
-def test_cancel_without_board_option_still_closes_issue(monkeypatch, caplog):
+def _without_option(field, option):
+    """The live fields reply, `option` gone from `field`."""
+    fid, options = FIELDS[field]
+    return fields_reply({**FIELDS, field: (fid, tuple(
+        o for o in options if o != option))}, project_id="PROJ_NODE")
+
+
+def test_cancel_without_a_wont_do_option_fails_loudly_and_writes_nothing(
+        monkeypatch):
     calls = []
 
     def fake_run(args, cwd=None, env=None):
         calls.append(args)
+        if "projectV2(number" in " ".join(args):
+            return _without_option("Status", "Wont do")
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    with caplog.at_level("WARNING", logger="dispatcher.github"):
-        github.GitHubClient().cancel(REPOSITORY, 7)  # status_wont_do_option_id == ""
-    assert not any("item-edit" in a for a in calls)
-    assert any("close" in a for a in calls)
-    # the skipped board write is a logging event, not a bare print
-    assert any("status_wont_do_option_id unset" in r.message
-               for r in caplog.records)
+    with pytest.raises(BoardError, match=(
+            "project jesdi/1: field 'Status' has no option 'Wont do'")):
+        github.GitHubClient().cancel(REPOSITORY, 7)
+    assert not any("item-edit" in a or "comment" in a or "close" in a
+                   for a in calls)
+
+
+def test_candidates_need_the_statuses_a_claim_writes(monkeypatch):
+    """A board without In progress can never record a claim: the project has
+    no candidates, loudly, before anything is provisioned."""
+    run = _ranking_gh(BOARD, BOARD_ISSUES)
+
+    def fake_run(args, cwd=None, env=None):
+        if "projectV2(number" in " ".join(args):
+            return _without_option("Status", "In progress")
+        return run(args, cwd, env)
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    with pytest.raises(BoardError, match="no option 'In progress'"):
+        github.GitHubClient().candidates([REPOSITORY])
+
+
+def test_every_board_write_shares_one_fields_query(monkeypatch):
+    calls = []
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        joined = " ".join(args)
+        if "projectV2(number" in joined:
+            return LIVE
+        if "api graphql" in joined:
+            return _board(("ITEM7", 7))
+        return ""
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    client = github.GitHubClient()
+    client.claim(REPOSITORY, github.Candidate(7, "A", "u7"))
+    client.release(REPOSITORY, 7, "x")
+    client.set_boost(REPOSITORY, 7, 1)
+    github.GitHubClient().cancel(REPOSITORY, 7)  # a second client, same process
+    assert sum("projectV2(number" in " ".join(a) for a in calls) == 1
 
 
 def test_item_id_title_join_when_content_redacted(monkeypatch):
@@ -242,8 +289,8 @@ def test_item_id_title_join_when_content_redacted(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         calls.append((args, env))
         joined = " ".join(args)
-        if "project view" in joined:
-            return json.dumps({"id": "PROJ_NODE"})
+        if "projectV2(number" in joined:
+            return LIVE
         if "api graphql" in joined:
             return _board(("ITEM7", None, "A"), ("ITEM8", None, "B"))
         if "issue view" in joined:
@@ -260,8 +307,8 @@ def test_item_id_title_join_when_content_redacted(monkeypatch):
 def test_item_id_title_join_ambiguous_duplicate_titles_raises(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         joined = " ".join(args)
-        if "project view" in joined:
-            return json.dumps({"id": "PROJ_NODE"})
+        if "projectV2(number" in joined:
+            return LIVE
         if "api graphql" in joined:
             return _board(("ITEM7", None, "Dup"), ("ITEM9", None, "Dup"))
         if "issue view" in joined:
@@ -296,7 +343,7 @@ def test_dry_run_mutates_nothing(monkeypatch, capsys):
     cli = github.GitHubClient(dry_run=True)
     cli.claim(REPOSITORY, github.Candidate(7, "A", "u7"))
     cli.comment(REPOSITORY, 7, "hi")
-    cli.set_status(REPOSITORY, 7, "READY")
+    cli.set_status(REPOSITORY, 7, "Ready")
     out = capsys.readouterr().out
     assert "[dry-run]" in out
 
@@ -308,8 +355,8 @@ def test_project_commands_use_project_token(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         calls.append((args, env))
         joined = " ".join(args)
-        if "project view" in joined:
-            return json.dumps({"id": "PROJ_NODE"})
+        if "projectV2(number" in joined:
+            return LIVE
         if "api graphql" in joined:
             return _board(("ITEM7", 7))
         return ""
@@ -330,14 +377,14 @@ def test_project_commands_without_token_inherit_ambient_auth(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         calls.append((args, env))
         joined = " ".join(args)
-        if "project view" in joined:
-            return json.dumps({"id": "PROJ_NODE"})
+        if "projectV2(number" in joined:
+            return LIVE
         if "api graphql" in joined:
             return _board(("ITEM7", 7))
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.GitHubClient().set_status(REPOSITORY, 7, "READY")
+    github.GitHubClient().set_status(REPOSITORY, 7, "Ready")
     assert calls and all(env is None for _, env in calls)
 
 
@@ -380,9 +427,6 @@ def test_issue_state_parses_json(monkeypatch):
     assert github.GitHubClient().issue_state("jesdi/agent-ops", 501) == "CLOSED"
 
 
-BOOST_REPOSITORY = with_board(REPOSITORY, boost_field_id="FB")
-
-
 def test_set_boost_edits_number_field_with_project_token(monkeypatch):
     monkeypatch.setenv("GH_PROJECT_TOKEN", "classic-tok")
     calls = []
@@ -390,16 +434,16 @@ def test_set_boost_edits_number_field_with_project_token(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         calls.append((args, env))
         joined = " ".join(args)
-        if "project view" in joined:
-            return json.dumps({"id": "PROJ_NODE"})
+        if "projectV2(number" in joined:
+            return LIVE
         if "api graphql" in joined:
             return _board(("ITEM7", 7))
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    github.GitHubClient().set_boost(BOOST_REPOSITORY, 7, -2)
+    github.GitHubClient().set_boost(REPOSITORY, 7, -2)
     edit, env = next((a, e) for a, e in calls if "item-edit" in a)
-    assert "ITEM7" in edit and "FB" in edit
+    assert "ITEM7" in edit and "F_BOOST" in edit
     assert edit[edit.index("--number") + 1] == "-2"
     assert env["GH_TOKEN"] == "classic-tok"
 
@@ -425,7 +469,7 @@ def test_boost_dry_run_mutates_nothing(monkeypatch, capsys):
 
     monkeypatch.setattr(github, "_run", fake_run)
     cli = github.GitHubClient(dry_run=True)
-    cli.set_boost(BOOST_REPOSITORY, 7, 99)
+    cli.set_boost(REPOSITORY, 7, 99)
     cli.add_label(REPOSITORY, 7, "auto")
     assert "[dry-run]" in capsys.readouterr().out
 
@@ -733,8 +777,8 @@ def test_item_lookup_never_lists_the_whole_board_with_item_list(monkeypatch):
     def fake_run(args, cwd=None, env=None):
         calls.append(args)
         joined = " ".join(args)
-        if "project view" in joined:
-            return json.dumps({"id": "PROJ_NODE"})
+        if "projectV2(number" in joined:
+            return LIVE
         if "api graphql" in joined:
             return _board(("ITEM7", 7))
         return ""
@@ -742,7 +786,8 @@ def test_item_lookup_never_lists_the_whole_board_with_item_list(monkeypatch):
     monkeypatch.setattr(github, "_run", fake_run)
     assert github.GitHubClient()._item_id(REPOSITORY, 7) == "ITEM7"
     assert not any("item-list" in a for a in calls)
-    query = next(a for a in calls if a[:3] == ["gh", "api", "graphql"])
+    query = next(a for a in calls if a[:3] == ["gh", "api", "graphql"]
+                 and not any("projectV2(number" in x for x in a))
     assert "project=PROJ_NODE" in query
 
 

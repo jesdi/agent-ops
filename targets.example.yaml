@@ -147,15 +147,13 @@ projects:
     # project-specific cap.
     # max_active: 1
     # The dispatcher ranks the board itself, from the fields named Status,
-    # Impact, Effort and Boost and each issue's `Blocked by: #n` lines.
+    # Impact, Effort and Boost and each issue's `Blocked by: #n` lines. Every
+    # field and option it writes is looked up by name on the live board:
+    # Status (Ready, In progress, Done, Wont do), Boost, and for triage
+    # Impact, Effort, Score and Area. A name the board lacks fails loudly.
     board:
       owner: example
       number: 1
-      status_field_id: REPLACE_WITH_PROJECT_ID
-      status_ready_option_id: abc123
-      status_in_progress_option_id: def456
-      status_done_option_id: ghi789   # single-select option id of the board's Done status
-      boost_field_id: REPLACE_WITH_PROJECT_ID
     repositories:
       # Each name is unique on the box (task keys are <repository>-<issue>),
       # and so are github_id (the numeric GitHub repository id), clone_path

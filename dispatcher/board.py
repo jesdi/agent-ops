@@ -17,11 +17,9 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 GH_TIMEOUT = 120
-META_PATH = Path(".backlog") / "project-meta.json"
 UNTRIAGED_STATUSES = frozenset({None, "Inbox"})
 OPEN_STATUSES = frozenset({None, "Inbox", "Ready", "In progress"})
 
@@ -130,60 +128,70 @@ def join(items: list[Item], issues: list[dict]) -> dict[int, Item]:
     return joined
 
 
-# -- the triage sweep's view --------------------------------------------------
+# -- the live board's fields ---------------------------------------------------
+
+
+_FIELDS_QUERY = """
+query($owner: String!, $number: Int!) {
+  repositoryOwner(login: $owner) { ... on ProjectV2Owner { projectV2(number: $number) {
+    id
+    fields(first: 100) { nodes {
+      ... on ProjectV2FieldCommon { id name }
+      ... on ProjectV2SingleSelectField { options { id name } } } }
+  } } }
+}
+"""
 
 
 @dataclass(frozen=True)
-class Schema:
-    """Field and option ids from the repository clone's committed
-    `.backlog/project-meta.json` (written by the backlog skill's `setup`).
-    Status is not among them: see `status_field`."""
-    project_id: str
-    impact_field: str
-    effort_field: str
-    score_field: str
-    area_field: str
-    areas: dict[str, str]
+class Fields:
+    """A board's node id and its field and option ids by name, read from the
+    live board. GitHub gives options new ids whenever they are edited, so a
+    copy kept in a file goes stale (#237, #242). A name the board lacks is a
+    BoardError naming the project, the field and the option."""
+    project: str  # "owner/number"
+    id: str  # the ProjectV2 node id
+    by_name: dict[str, tuple[str, dict[str, str]]]  # field -> (id, options)
+
+    def field(self, name: str) -> str:
+        if name not in self.by_name:
+            raise BoardError(f"project {self.project}: no field {name!r}")
+        return self.by_name[name][0]
+
+    def options(self, field: str) -> dict[str, str]:
+        self.field(field)
+        return self.by_name[field][1]
+
+    def option(self, field: str, name: str) -> str:
+        options = self.options(field)
+        if name not in options:
+            raise BoardError(f"project {self.project}: field {field!r} has "
+                             f"no option {name!r}")
+        return options[name]
 
 
-def load_schema(clone_path: str) -> Schema | None:
-    """None when the clone has no board pointer, or one without the scoring
-    fields: such a repo gets labels only, exactly as before."""
-    try:
-        meta = json.loads((Path(clone_path) / META_PATH).read_text())
-        fields = meta["fields"]
-        return Schema(
-            project_id=meta["projectId"],
-            impact_field=fields["Impact"]["id"],
-            effort_field=fields["Effort"]["id"],
-            score_field=fields["Score"]["id"],
-            area_field=fields["Area"]["id"],
-            areas=dict(fields["Area"]["options"]))
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
-        return None
+_fields: dict[tuple[str, int], Fields] = {}
 
 
-_STATUS_QUERY = """
-query($project: ID!) {
-  node(id: $project) { ... on ProjectV2 { field(name: "Status") {
-    ... on ProjectV2SingleSelectField { id options { id name } } } } }
-}
-"""
-_status_fields: dict[str, tuple[str, dict[str, str]]] = {}
+def fields(owner: str, number: int, gh: Callable[[list[str]], str]) -> Fields:
+    """Project `number` of `owner`, read once per process: every board write
+    resolves its ids here. `gh` as for fetch_items."""
+    if (owner, number) not in _fields:
+        out = gh(["api", "graphql", "-f", f"query={_FIELDS_QUERY}",
+                  "-f", f"owner={owner}", "-F", f"number={number}"])
+        project = (json.loads(out)["data"].get("repositoryOwner")
+                   or {}).get("projectV2")
+        if not project:
+            raise BoardError(f"project {owner}/{number}: not found")
+        _fields[(owner, number)] = Fields(
+            f"{owner}/{number}", project["id"],
+            {n["name"]: (n["id"], {o["name"]: o["id"]
+                                   for o in n.get("options") or []})
+             for n in project["fields"]["nodes"] if n.get("name")})
+    return _fields[(owner, number)]
 
 
-def status_field(project_id: str, gh: Callable[[list[str]], str]
-                 ) -> tuple[str, dict[str, str]]:
-    """The live Status field id and its option ids by name. GitHub gives the
-    options new ids whenever they are edited, so a copy committed to a repo
-    goes stale (#237). One query per project per process."""
-    if project_id not in _status_fields:
-        out = gh(["api", "graphql", "-f", f"query={_STATUS_QUERY}",
-                  "-f", f"project={project_id}"])
-        field = json.loads(out)["data"]["node"]["field"]
-        _status_fields[project_id] = (
-            field["id"], {o["name"]: o["id"] for o in field["options"]})
-    return _status_fields[project_id]
+# -- the triage sweep's view --------------------------------------------------
 
 
 def _gh(run, args: list[str], env: dict[str, str] | None = None) -> str:
@@ -202,9 +210,7 @@ def _set(field: str, value: str) -> str:
 
 @dataclass(frozen=True)
 class Board:
-    schema: Schema
-    status_field: str
-    statuses: dict[str, str]  # Status option name -> id, read from the board
+    fields: Fields
     items: dict[int, Item]   # issue number -> item
     issues: dict[int, dict]  # every issue: number, title, state, stateReason
     run: Callable = subprocess.run
@@ -232,7 +238,7 @@ class Board:
     def _mutate(self, item: Item, sets: dict[str, str]) -> None:
         body = " ".join(f"{alias}:{_set(field, value)}"
                         for alias, (field, value) in sets.items())
-        _gh(self.run, ["api", "graphql", "-f", f"p={self.schema.project_id}",
+        _gh(self.run, ["api", "graphql", "-f", f"p={self.fields.id}",
                        "-f", f"i={item.id}", "-f",
                        f"query=mutation($p:ID!,$i:ID!){{{body}}}"],
             env=project_env())
@@ -248,18 +254,18 @@ class Board:
                     or not 1 <= value <= 5:
                 raise ValueError(f"#{number}: {name} must be an integer "
                                  f"1..5, got {value!r}")
-        if area not in self.schema.areas:
+        f = self.fields
+        areas = f.options("Area")
+        if area not in areas:
             raise ValueError(f"#{number}: unknown area {area!r}; expected one "
-                             f"of {sorted(self.schema.areas)}")
-        s = self.schema
+                             f"of {sorted(areas)}")
         self._mutate(self.items[number], {
-            "impact": (s.impact_field, f"number:{impact}"),
-            "effort": (s.effort_field, f"number:{effort}"),
-            "score": (s.score_field, f"number:{round(impact / effort, 1)}"),
-            "area": (s.area_field,
-                     f'singleSelectOptionId:"{s.areas[area]}"'),
-            "status": (self.status_field,
-                       f'singleSelectOptionId:"{self.statuses["Ready"]}"')})
+            "impact": (f.field("Impact"), f"number:{impact}"),
+            "effort": (f.field("Effort"), f"number:{effort}"),
+            "score": (f.field("Score"), f"number:{round(impact / effort, 1)}"),
+            "area": (f.field("Area"), f'singleSelectOptionId:"{areas[area]}"'),
+            "status": (f.field("Status"), 'singleSelectOptionId:'
+                       f'"{f.option("Status", "Ready")}"')})
 
     def repair(self) -> list[str]:
         """Closed issues whose card still shows an open status: the board's
@@ -272,30 +278,24 @@ class Board:
                 continue
             status = ("Wont do" if row.get("stateReason") == "NOT_PLANNED"
                       else "Done")
-            option = self.statuses.get(status)
-            if not option:
-                continue
             try:
                 self._mutate(item, {"status": (
-                    self.status_field,
-                    f'singleSelectOptionId:"{option}"')})
+                    self.fields.field("Status"), 'singleSelectOptionId:'
+                    f'"{self.fields.option("Status", status)}"')})
                 lines.append(f"#{number} closed: board status -> {status}")
             except (BoardError, subprocess.SubprocessError) as e:
                 lines.append(f"#{number} closed: board status NOT repaired ({e})")
         return lines
 
 
-def read(repo: str, clone_path: str, run=subprocess.run) -> Board | None:
-    schema = load_schema(clone_path)
-    if schema is None:
-        return None
+def read(repo: str, owner: str, number: int, run=subprocess.run) -> Board:
+    """`repo`'s issues and the items of its project, board `number` of
+    `owner`."""
     env = project_env()
-    status_id, statuses = status_field(schema.project_id,
-                                       lambda args: _gh(run, args, env))
-    items = fetch_items(schema.project_id, lambda args: _gh(run, args, env))
+    f = fields(owner, number, lambda args: _gh(run, args, env))
+    items = fetch_items(f.id, lambda args: _gh(run, args, env))
     rows = json.loads(_gh(run, [
         "issue", "list", "--repo", repo, "--state", "all", "--limit", "1000",
         "--json", "number,title,state,stateReason"]))
-    return Board(schema=schema, status_field=status_id, statuses=statuses,
-                 items=join(items, rows),
+    return Board(fields=f, items=join(items, rows),
                  issues={r["number"]: r for r in rows}, run=run)

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import dispatcher.main as main
 from dispatcher import eventlog
+from dispatcher.board import BoardError
 from dispatcher.github import Candidate
 from dispatcher.state import (IN_FLIGHT_STAGES, PARK_LOGIN, PARK_WAKE, Stage,
                               TaskState, active, load, load_all, save)
@@ -152,3 +153,29 @@ def test_triage_sweep_holds_one_unit_box_wide(tmp_path, monkeypatch):
     monkeypatch.setattr(main.triage, "running", lambda: True)
     main.run_pass(c, deps(gh, FakeSessions(alive={1, 2})))
     assert gh.claimed == []
+
+
+# --- a board missing a name the claim writes skips that project only -------
+
+def test_a_board_missing_a_claim_status_skips_only_its_project(
+        tmp_path, monkeypatch, capsys):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = two_repository_cfg(tmp_path)
+
+    class NoInProgressOnPortfolio(FakeGitHub):
+        def candidates(self, repositories):
+            if repositories[0].name == "portfolio_eval":
+                raise BoardError("project jesdi/1: field 'Status' has no "
+                                 "option 'In progress'")
+            return super().candidates(repositories)
+
+    gh = NoInProgressOnPortfolio(cands_by_repository={
+        "portfolio_eval": [Candidate(10, "PE candidate", "u10")],
+        "factorial": [Candidate(20, "F candidate", "u20")],
+    })
+    main.run_pass(c, deps(gh, FakeSessions()))  # must not raise
+    assert gh.claimed == [20]
+    err = capsys.readouterr().err
+    assert ("portfolio_eval: no claims this pass — project jesdi/1: field "
+            "'Status' has no option 'In progress'") in err

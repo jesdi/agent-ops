@@ -18,15 +18,11 @@ from dispatcher.usage import PaceConfig
 
 @dataclass(frozen=True)
 class Board:
-    """A project's GitHub Projects board: where its claims and status writes go."""
+    """A project's GitHub Projects board: where its claims and status writes
+    go. Field and option ids are read from the live board by name
+    (board.fields), never from config."""
     owner: str
     number: int
-    status_field_id: str
-    status_ready_option_id: str
-    status_in_progress_option_id: str
-    status_done_option_id: str = ""  # "" = never write Done to the board
-    status_wont_do_option_id: str = ""  # "" = cancel never touches the board
-    boost_field_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -201,9 +197,26 @@ def _project(raw: dict, capacity: int) -> list[Repository]:
     _check_max_active(owner, fields.get("max_active"), capacity)
     if "models" in fields:
         fields["models"] = parse_policy(fields["models"])
-    fields["board"] = _build(Board, f"{owner} board", dict(fields.get("board") or {}))
+    fields["board"] = _board(owner, dict(fields.get("board") or {}))
     project = _build(Project, owner, fields)
     return [_repository(r, project) for r in repositories]
+
+
+# Ids the board block held before they were read from the live board (#242).
+_RETIRED_BOARD_KEYS = frozenset({
+    "status_field_id", "status_ready_option_id", "status_in_progress_option_id",
+    "status_done_option_id", "status_wont_do_option_id", "boost_field_id"})
+
+
+def _board(owner: str, raw: dict) -> Board:
+    """The board block; ids left over from the old shape are dropped with one
+    warning, so a config written for the old code still loads."""
+    retired = sorted(_RETIRED_BOARD_KEYS & set(raw))
+    if retired:
+        print(f"[warn] {owner}: board {', '.join(retired)} ignored (ids are "
+              "read from the live board); remove them", file=sys.stderr)
+    return _build(Board, f"{owner} board",
+                  {k: v for k, v in raw.items() if k not in _RETIRED_BOARD_KEYS})
 
 
 def _check_max_active(owner: str, max_active: object, capacity: int) -> None:

@@ -42,10 +42,7 @@ def _repository(name="alpha"):
         worktrees_path=f"/tmp/worktrees/{name}", setup_cmd="", verify_cmd="",
         project=Project(
             name=name,
-            board=Board(
-                number=1, owner="jesdi", status_field_id="F",
-                status_ready_option_id="R", status_in_progress_option_id="P",
-                boost_field_id="B")))
+            board=Board(number=1, owner="jesdi")))
 
 
 def _config(state_dir):

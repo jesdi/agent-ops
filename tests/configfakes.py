@@ -6,8 +6,7 @@ from dispatcher.config import Board, Project, Repository
 
 
 def make_project(name="alpha", **kw) -> Project:
-    board = Board(owner="jesdi", number=1, status_field_id="F",
-                  status_ready_option_id="R", status_in_progress_option_id="I")
+    board = Board(owner="jesdi", number=1)
     return Project(name=name, board=board, **kw)
 
 

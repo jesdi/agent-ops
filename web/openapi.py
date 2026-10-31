@@ -12,9 +12,7 @@ from web.app import create_app
 
 
 def _minimal_config() -> Config:
-    board = Board(owner="jesdi", number=1, status_field_id="F",
-                  status_ready_option_id="R", status_in_progress_option_id="P",
-                  boost_field_id="B")
+    board = Board(owner="jesdi", number=1)
     repository = Repository(
         name="alpha", repo="jesdi/alpha", github_id=1,
         clone_path="/tmp/clones/alpha",

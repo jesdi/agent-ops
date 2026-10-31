@@ -5,11 +5,9 @@ records issue state and close calls. The fake's `close_issue` is the
 interface the box must call to close an issue (any positional/keyword shape).
 """
 import subprocess
-from dataclasses import replace as dc_replace
 
 import dispatcher.main as main
 from dispatcher.state import Stage, load
-from tests.configfakes import with_board
 from tests.test_main import (FakeGitHub, deps, cfg, patch_teardown,
                              patch_usage, payload, pr_open_task)
 
@@ -36,9 +34,7 @@ class ClosingGitHub(FakeGitHub):
 def _setup(tmp_path, monkeypatch, issue, pr, states):
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
-    base = cfg(tmp_path)
-    c = dc_replace(base, repositories=[with_board(
-        base.repositories[0], status_done_option_id="D0")])
+    c = cfg(tmp_path)
     t = pr_open_task(c, issue=issue, pr_number=pr)
     gh = ClosingGitHub(issue_states=states)
     gh.pr_payloads[pr] = payload(**MERGED)

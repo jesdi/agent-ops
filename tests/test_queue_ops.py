@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from dispatcher import queue_ops
 from dispatcher.queue_ops import NEXT_BOOST, QueuePlan
 
@@ -20,8 +18,8 @@ class FakeGitHub:
         self.boosts.append((issue, value))
         self.calls.append("set_boost")
 
-    def set_status(self, repository, issue, option_id):
-        self.statused.append((issue, option_id))
+    def set_status(self, repository, issue, status):
+        self.statused.append((issue, status))
         self.calls.append("set_status")
 
     def add_label(self, repository, issue, label):
@@ -30,7 +28,7 @@ class FakeGitHub:
 
 
 class FakeRepository:
-    project = SimpleNamespace(board=SimpleNamespace(status_ready_option_id="R"))
+    pass
 
 
 # -- plan_boost ---------------------------------------------------------
@@ -136,7 +134,7 @@ def test_apply_plan_executes_boost_then_ready_then_label():
     queue_ops.apply_plan(gh, FakeRepository(), 7, plan)
     assert gh.calls == ["set_boost", "set_status", "add_label"]
     assert gh.boosts == [(7, 99)]
-    assert gh.statused == [(7, "R")]
+    assert gh.statused == [(7, "Ready")]
     assert gh.labeled == [(7, "auto")]
 
 
