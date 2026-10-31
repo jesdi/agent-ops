@@ -44,9 +44,7 @@ def env(tmp_path):
         worktrees_path=str(tmp_path / "clone.worktrees"),
         project=Project(
             name="shop",
-            board=Board(
-                number=1, owner="jesdi", status_field_id="F",
-                status_ready_option_id="R", status_in_progress_option_id="I")))
+            board=Board(number=1, owner="jesdi")))
     return origin, clone, t
 
 

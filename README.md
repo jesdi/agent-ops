@@ -162,10 +162,12 @@ Python is the only GitHub write path:
   overwritten. It also repairs stale cards (a closed issue still showing an
   open status becomes Done or Wont do), without a session.
 
-Scoring needs the repository's clone to carry `.backlog/project-meta.json` (written
-by the backlog skill's `setup`, committed in that repo) and the sweep to
-have `GH_PROJECT_TOKEN`. A repo without that file gets labels only, and so
-does any repo on a night the board cannot be read. An open issue that is not
+Scoring needs the project's board to have the fields Impact, Effort, Score
+and Area, and Status with a Ready option, and the sweep to have
+`GH_PROJECT_TOKEN`. Field and option ids are read by name from the live board,
+once per project per process; a name the board lacks fails that repo's write
+with an error naming the project, field and option. A repo gets labels only
+on a night the board cannot be read. An open issue that is not
 on the board cannot be scored; the report names it (enable the board's
 "Auto-add to project" workflow).
 

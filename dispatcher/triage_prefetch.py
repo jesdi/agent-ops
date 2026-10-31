@@ -259,4 +259,4 @@ def add_board(blob: dict, brd, run=subprocess.run) -> None:
     for i in blob["issues"]:
         i["board"] = brd.view(i["number"])
         i["needs_score"] = i["number"] in untriaged
-    blob["areas"] = sorted(brd.schema.areas)
+    blob["areas"] = sorted(brd.fields.options("Area"))

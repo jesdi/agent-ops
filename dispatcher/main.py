@@ -33,6 +33,7 @@ from dispatcher.usage_providers import ADAPTERS, fetch_all
 from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, loops,
                         messages, pr_poll, priority, queue_ops, relogin, tmux_migration,
                         triage)
+from dispatcher.board import BoardError
 from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
@@ -482,7 +483,7 @@ def _handle_next(cfg: Config, deps: Deps, issue: int, force: bool) -> None:
 
 # A failing gh or rank call answers in chat instead of crashing the pass.
 _COMMAND_ERRORS = (subprocess.CalledProcessError, OSError, LookupError,
-                   ValueError)
+                   ValueError, BoardError)
 
 
 def _reply_parked(tasks: list[TaskState]) -> list[TaskState]:
@@ -1106,7 +1107,7 @@ def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
             try:
                 _finish_merged(cfg, deps, repository, task, dry_run)
             except (subprocess.CalledProcessError,
-                    subprocess.TimeoutExpired, OSError) as exc:
+                    subprocess.TimeoutExpired, OSError, BoardError) as exc:
                 print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
                       file=sys.stderr)
                 continue
@@ -1178,11 +1179,7 @@ def _finish_merged(cfg: Config, deps: Deps, repository: Repository,
     if (not dry_run and deps.github.issue_state(repository.repo, task.issue)
             == "OPEN"):
         deps.github.close_issue(repository.repo, task.issue)
-    if repository.project.board.status_done_option_id:
-        deps.github.set_status(repository, task.issue, repository.project.board.status_done_option_id)
-    else:
-        print(f"[warn] {repository.name}: status_done_option_id unset — board "
-              f"not updated for #{task.issue}", file=sys.stderr)
+    deps.github.set_status(repository, task.issue, "Done")
     _end_session(cfg, deps, task.repository, task.issue)
     if not dry_run:
         task_artifacts.collect(cfg.state_dir, task, repository.repo)
@@ -1422,8 +1419,7 @@ def _respawn(cfg: Config, deps: Deps, repository: Repository,
     started a conversation. The queued messages ride in the stage prompt,
     an attach notice among them."""
     detail = "after crash" if task.crashed_stage else "next launch"
-    deps.github.set_status(repository, task.issue,
-                           repository.project.board.status_in_progress_option_id)
+    deps.github.set_status(repository, task.issue, "In progress")
     task = replace(task, crashed_stage="", park="", park_msg_id=0,
                    park_note="", hold_for_attach=False,
                    resume_model_override="", resume_bypass_usage=False,
@@ -2030,7 +2026,13 @@ def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[T
     leaves the next one eligible, since its model may differ."""
     by_name = {r.name: r for r in members}
     by_issue = {(t.repository, t.issue): t for t in tasks}
-    for cand in deps.github.candidates(members):
+    try:
+        cands = deps.github.candidates(members)
+    except BoardError as exc:  # this project only: the round goes on
+        print(f"[warn] {members[0].project.name}: no claims this pass — {exc}",
+              file=sys.stderr)
+        return
+    for cand in cands:
         repository = by_name[cand.repository]
         stale = by_issue.get((repository.name, cand.number))
         if stale is not None:

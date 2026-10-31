@@ -10,6 +10,7 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import execution_overrides, failures, spec_publish
+from dispatcher.board import BoardError
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.github import Candidate
 from dispatcher.pr_poll import CIStatus
@@ -20,7 +21,7 @@ from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                TaskState, has_waiting, load,
                                load_all, mark_waiting, save, SessionRecord, write_session)
 from tests.usagefakes import session_usage
-from tests.configfakes import with_board, with_project
+from tests.configfakes import with_project
 
 POLICY = parse_policy({
     "triage": ["claude-sonnet-5@low"],
@@ -91,8 +92,8 @@ class FakeGitHub:
     def add_label(self, repository, issue, label):
         self.labeled.append((issue, label))
 
-    def set_status(self, repository, issue, option_id):
-        self.statused.append((issue, option_id))
+    def set_status(self, repository, issue, status):
+        self.statused.append((issue, status))
 
     def candidates(self, repositories):
         """Real candidates() ranks once per project: this reads the list of
@@ -256,9 +257,7 @@ def cfg(tmp_path: Path) -> Config:
             gate_cmd="make gate-slot SLOT={slot}",
             project=Project(
                 name="portfolio_eval",
-                board=Board(
-                    number=1, owner="jesdi", status_field_id="F",
-                    status_ready_option_id="R", status_in_progress_option_id="I")))],
+                board=Board(number=1, owner="jesdi")))],
         infra_repo="jesdi/agent-ops",
         models=POLICY,
     )
@@ -1807,7 +1806,7 @@ def test_next_force_flips_status_and_label_then_boosts(tmp_path, monkeypatch):
     d = deps(gh)
     patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
     main.run_pass(cfg(tmp_path), d)
-    assert gh.statused == [(7, "R")]   # status_ready_option_id in cfg() is "R"
+    assert gh.statused == [(7, "Ready")]
     assert gh.labeled == [(7, "auto")]
     assert gh.boosts == [(7, 99)]
 
@@ -1868,6 +1867,22 @@ def test_command_lookup_error_next_reports_and_pass_survives(tmp_path, monkeypat
     patch_events(monkeypatch, [Command(name="next", issue=7)])
     main.run_pass(cfg(tmp_path), d)   # must not raise
     assert any("next failed" in l
+               for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
+
+
+def test_command_on_a_board_missing_a_name_reports_it(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+
+    class NoReady(FakeGitHub):
+        def set_status(self, repository, issue, status):
+            raise BoardError("project jesdi/1: field 'Status' has no option 'Ready'")
+
+    gh = NoReady(rows=[row(7, status="Backlog")])
+    d = deps(gh)
+    patch_events(monkeypatch, [Command(name="next", issue=7, force=True)])
+    main.run_pass(cfg(tmp_path), d)   # must not raise
+    assert any("#7 next failed: project jesdi/1: field 'Status' has no option "
+               "'Ready'" in l
                for _, ctx in d.notifier.contexts for l in ctx.get("lines", []))
 
 
@@ -3623,9 +3638,7 @@ def pr_open_task(c, issue=42, pr_number=12, **kw):
 def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
-    base = cfg(tmp_path)
-    c = dc_replace(base, repositories=[with_board(
-        base.repositories[0], status_done_option_id="D0")])
+    c = cfg(tmp_path)
     t = pr_open_task(c)
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(state="MERGED",
@@ -3635,24 +3648,31 @@ def test_merged_pr_moves_task_to_done(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess=sess, notifier=notif))
     got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.DONE and got.done_at
-    assert (42, "D0") in gh.statused
+    assert (42, "Done") in gh.statused
     assert 42 in sess.ended
     assert removed == [(t.worktree, t.branch, False)]
     assert (c.repositories[0].repo, t.branch) in gh.deleted_branches
     assert "task_done" in notif.sent
 
 
-def test_merged_without_done_option_id_still_completes(tmp_path, monkeypatch):
+def test_merged_on_a_board_without_done_is_retried_and_the_pass_survives(
+        tmp_path, monkeypatch, capsys):
     patch_usage(monkeypatch)
-    patch_teardown(monkeypatch)
-    c = cfg(tmp_path)  # status_done_option_id == ""
+    removed = patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
     pr_open_task(c)
-    gh = FakeGitHub()
+
+    class NoDone(FakeGitHub):
+        def set_status(self, repository, issue, status):
+            raise BoardError("project jesdi/1: field 'Status' has no option 'Done'")
+
+    gh = NoDone()
     gh.pr_payloads[12] = payload(state="MERGED",
                                  merged_at="2026-07-30T10:00:00Z")
-    main.run_pass(c, deps(gh))
-    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.DONE
-    assert gh.statused == []
+    main.run_pass(c, deps(gh))  # must not raise
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.PR_OPEN
+    assert removed == []
+    assert "has no option 'Done'" in capsys.readouterr().err
 
 
 def test_closed_unmerged_pr_fails_task_preserving_worktree(tmp_path, monkeypatch):
@@ -3733,13 +3753,11 @@ def test_finish_merged_gh_failure_leaves_task_pr_open_and_pass_survives(
     the raising step so it too was never reached)."""
     patch_usage(monkeypatch)
     removed = patch_teardown(monkeypatch)
-    base = cfg(tmp_path)
-    c = dc_replace(base, repositories=[with_board(
-        base.repositories[0], status_done_option_id="D0")])
+    c = cfg(tmp_path)
     pr_open_task(c)
 
     class SetStatusFails(FakeGitHub):
-        def set_status(self, repository, issue, option_id):
+        def set_status(self, repository, issue, status):
             raise subprocess.CalledProcessError(1, ["gh"])
 
     gh = SetStatusFails()
@@ -3849,9 +3867,7 @@ def test_pending_feedback_not_spawned_when_budget_low(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def merged_cfg(tmp_path):
-    base = cfg(tmp_path)
-    return dc_replace(base, repositories=[with_board(
-        base.repositories[0], status_done_option_id="D0")])
+    return cfg(tmp_path)
 
 
 def test_dry_run_pass_does_not_tear_down_a_merged_task(tmp_path, monkeypatch):
@@ -5504,7 +5520,7 @@ def test_resume_respawns_the_crashed_stage_fresh(tmp_path, monkeypatch):
     assert (t.stage, t.park, t.crashed_stage, t.ticket_count) == (
         Stage.IMPLEMENT, "", "", 2)
     assert t.slot != NO_SLOT
-    assert (42, "I") in [(i, o) for (i, o) in gh.statused]
+    assert (42, "In progress") in gh.statused
     from dispatcher import messages
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 

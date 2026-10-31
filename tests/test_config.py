@@ -17,9 +17,6 @@ projects:
     board:
       owner: jesdi
       number: 1
-      status_field_id: PVTSSF_xxx
-      status_ready_option_id: abc123
-      status_in_progress_option_id: def456
     repositories:
       - name: portfolio_eval
         repo: jesdi/portfolio_eval
@@ -45,7 +42,7 @@ def test_load_config(tmp_path: Path):
     assert t.verify_cmd == "make e2e-slot SLOT={slot}"
     assert t.github_id == 101
     assert t.project.name == "portfolio-eval"
-    assert t.project.board.status_field_id == "PVTSSF_xxx"
+    assert (t.project.board.owner, t.project.board.number) == ("jesdi", 1)
     assert t.project.paused is False
     assert cfg.projects == [t.project]
 
@@ -127,17 +124,6 @@ def test_console_url_loaded_and_trailing_slash_stripped(tmp_path: Path):
     assert load_config(p).console_url == "https://box.tail.ts.net"
 
 
-def test_repository_boost_field_id_parsed(tmp_path, monkeypatch):
-    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
-    path = write_yaml(tmp_path, board_extra={"boost_field_id": "PVTF_B1"})
-    assert load_config(path).repositories[0].project.board.boost_field_id == "PVTF_B1"
-
-
-def test_repository_boost_field_id_defaults_empty(tmp_path, monkeypatch):
-    monkeypatch.delenv("AGENT_OPS_STATE_DIR", raising=False)
-    assert load_config(write_yaml(tmp_path)).repositories[0].project.board.boost_field_id == ""
-
-
 WITH_MODELS = """\
 state_dir: /tmp/s
 models:
@@ -152,8 +138,7 @@ models:
       review: [openai/gpt-luna@xhigh, claude-sonnet-5@medium]
 projects:
   - name: portfolio-eval
-    board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
-            status_in_progress_option_id: I}
+    board: {owner: jesdi, number: 1}
     repositories:
       - name: portfolio_eval
         repo: jesdi/portfolio_eval
@@ -244,8 +229,7 @@ models:
       review: [claude-opus-5]
 projects:
   - name: portfolio-eval
-    board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
-            status_in_progress_option_id: I}
+    board: {owner: jesdi, number: 1}
     repositories:
       - name: portfolio_eval
         repo: jesdi/portfolio_eval
@@ -309,9 +293,7 @@ def repository_dict(name="t", **extra) -> dict:
 
 def project_dict(name="p", repositories=None, board_extra=None, **extra) -> dict:
     """One project entry of targets.yaml: one repository unless given."""
-    board = {"owner": "o", "number": 1, "status_field_id": "F",
-             "status_ready_option_id": "R", "status_in_progress_option_id": "I",
-             **(board_extra or {})}
+    board = {"owner": "o", "number": 1, **(board_extra or {})}
     return {"name": name, "board": board,
             "repositories": repositories or [repository_dict()], **extra}
 
@@ -344,20 +326,27 @@ def test_a_leftover_rank_cmd_is_ignored_with_a_warning(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_status_done_option_id_loaded_and_defaults_empty(tmp_path):
-    cfg = load_config(write_yaml(tmp_path, board_extra={
-        "status_done_option_id": "d0ne"}))
-    assert cfg.repositories[0].project.board.status_done_option_id == "d0ne"
-    cfg = load_config(write_yaml(tmp_path))
-    assert cfg.repositories[0].project.board.status_done_option_id == ""
+def test_leftover_board_ids_are_ignored_with_one_warning(tmp_path, capsys):
+    """Board ids are read from the live board; a config written for the old
+    code still loads, so the infra repo can drop the keys after this ships."""
+    retired = {"status_field_id": "F", "status_ready_option_id": "R",
+               "status_in_progress_option_id": "I",
+               "status_done_option_id": "D", "status_wont_do_option_id": "W",
+               "boost_field_id": "B"}
+    cfg = load_config(write_yaml(tmp_path, board_extra=retired))
+    board = cfg.repositories[0].project.board
+    assert (board.owner, board.number) == ("o", 1)
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1
+    assert "project 'p': board " in err and "remove them" in err
+    assert all(key in err for key in retired)
+    load_config(write_yaml(tmp_path))
+    assert capsys.readouterr().err == ""
 
 
-def test_status_wont_do_option_id_loaded_and_defaults_empty(tmp_path):
-    cfg = load_config(write_yaml(tmp_path, board_extra={
-        "status_wont_do_option_id": "w0nt"}))
-    assert cfg.repositories[0].project.board.status_wont_do_option_id == "w0nt"
-    cfg = load_config(write_yaml(tmp_path))
-    assert cfg.repositories[0].project.board.status_wont_do_option_id == ""
+def test_an_unknown_board_key_is_still_refused(tmp_path):
+    with pytest.raises(ValueError, match="project 'p' board"):
+        load_config(write_yaml(tmp_path, board_extra={"status_field": "F"}))
 
 
 def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
@@ -378,8 +367,7 @@ GATED_YAML = """
 state_dir: /tmp/s
 projects:
   - name: alpha
-    board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
-            status_in_progress_option_id: P}
+    board: {owner: jesdi, number: 1}
     repositories:
       - name: alpha
         repo: jesdi/alpha
@@ -476,8 +464,7 @@ REPOSITORY_NO_OPTIONAL_CMDS = """
 state_dir: /tmp/s
 projects:
   - name: alpha
-    board: {owner: jesdi, number: 1, status_field_id: F, status_ready_option_id: R,
-            status_in_progress_option_id: P}
+    board: {owner: jesdi, number: 1}
     repositories:
       - name: alpha
         repo: jesdi/alpha

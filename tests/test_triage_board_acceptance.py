@@ -8,7 +8,7 @@ import pytest
 
 from dispatcher import triage
 from dispatcher.config import Board, Config, Project, Repository
-from tests.test_board import LIVE_STATUS, SCHEMA, _issue, _node, _page
+from tests.test_board import LIVE_FIELDS, _issue, _node, _page
 from tests.usagefakes import session_usage
 
 OLD = "2026-07-29T00:00:00Z"
@@ -32,8 +32,8 @@ class Gh:
         if "mutation" in query:
             self.mutations.append(" ".join(args))
             return ok()
-        if 'field(name: "Status")' in query:
-            return ok(LIVE_STATUS)
+        if "projectV2(number" in query:
+            return ok(LIVE_FIELDS)
         if args[1:3] == ["api", "graphql"]:
             return subprocess.CompletedProcess(
                 args, self.board_rc, _page(self.nodes), "API rate limit exceeded")
@@ -79,18 +79,14 @@ class Deps:
 
 @pytest.fixture
 def cfg(tmp_path):
-    clone = tmp_path / "clone"
-    (clone / ".backlog").mkdir(parents=True)
-    (clone / ".backlog" / "project-meta.json").write_text(json.dumps(SCHEMA))
+    clone = tmp_path / "clone"  # no .backlog/project-meta.json: the box needs none
     state = tmp_path / "state"
     repository = Repository(
         name="a", repo="o/a", github_id=1, clone_path=str(clone), worktrees_path="/w",
         gate_cmd="make gate",
         project=Project(
             name="a",
-            board=Board(
-                number=1, owner="o", status_field_id="F_STATUS",
-                status_ready_option_id="o_ready", status_in_progress_option_id="o_prog")))
+            board=Board(number=1, owner="o")))
     cfg = Config(state_dir=str(state), capacity=2, session_memory="1500m",
                  session_cpus="2", repositories=[repository])
     triage.save_cursors(state, {"o/a": OLD})
@@ -125,7 +121,7 @@ def test_an_issue_untouched_since_the_cursor_is_still_scored_and_made_ready(cfg)
     (mutation,) = gh.mutations
     assert "i=I1" in mutation
     assert 'fieldId:"F_SCORE",value:{number:2.0}' in mutation
-    assert 'singleSelectOptionId:"o_ready"' in mutation
+    assert 'singleSelectOptionId:"o_Ready"' in mutation
     assert "o/a: 1 labeled, 1 scored" in lines[0]
     assert triage.load_cursors(cfg.state_dir)["o/a"] != OLD
 
@@ -149,7 +145,7 @@ def test_a_closed_issue_with_an_open_card_is_repaired_without_a_session(cfg):
             [_issue(8, "issue 8", state="CLOSED", reason="NOT_PLANNED")])
     lines, seen = _sweep(cfg, gh, {"issues": []})
     assert seen == {}  # nothing to triage: no session ran
-    assert len(gh.mutations) == 1 and "o_wont" in gh.mutations[0]
+    assert len(gh.mutations) == 1 and "o_Wont do" in gh.mutations[0]
     assert lines == ["o/a: #8 closed: board status -> Wont do",
                      "o/a: nothing new"]
 

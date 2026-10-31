@@ -64,10 +64,10 @@ def _isolated_state_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_cached_board_status(monkeypatch):
-    """The live Status field is cached per process: start every test cold."""
+def _no_cached_board_fields(monkeypatch):
+    """The live board's fields are cached per process: start every test cold."""
     from dispatcher import board
-    monkeypatch.setattr(board, "_status_fields", {})
+    monkeypatch.setattr(board, "_fields", {})
 
 
 class _EveryRepository(dict):
