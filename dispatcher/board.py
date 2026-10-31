@@ -191,6 +191,12 @@ def fields(owner: str, number: int, gh: Callable[[list[str]], str]) -> Fields:
     return _fields[(owner, number)]
 
 
+def forget(owner: str, number: int) -> None:
+    """Drop the cached fields of project `number` of `owner`: the next
+    fields() call reads the live board again."""
+    _fields.pop((owner, number), None)
+
+
 # -- the triage sweep's view --------------------------------------------------
 
 

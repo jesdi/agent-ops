@@ -226,8 +226,10 @@ def _without_option(field, option):
         o for o in options if o != option))}, project_id="PROJ_NODE")
 
 
-def test_cancel_without_a_wont_do_option_fails_loudly_and_writes_nothing(
-        monkeypatch):
+def test_cancel_without_a_wont_do_option_still_closes_the_issue(
+        monkeypatch, caplog):
+    """The operator asked for the cancel: a board without Wont do skips only
+    the board move, loudly, as the old empty-id opt-out did."""
     calls = []
 
     def fake_run(args, cwd=None, env=None):
@@ -237,11 +239,61 @@ def test_cancel_without_a_wont_do_option_fails_loudly_and_writes_nothing(
         return ""
 
     monkeypatch.setattr(github, "_run", fake_run)
-    with pytest.raises(BoardError, match=(
-            "project jesdi/1: field 'Status' has no option 'Wont do'")):
-        github.GitHubClient().cancel(REPOSITORY, 7)
-    assert not any("item-edit" in a or "comment" in a or "close" in a
-                   for a in calls)
+    github.GitHubClient().cancel(REPOSITORY, 7)
+    assert any("comment" in a for a in calls)
+    close = next(a for a in calls if "close" in a)
+    assert "not planned" in close
+    assert not any("item-edit" in a for a in calls)
+    assert "field 'Status' has no option 'Wont do'" in caplog.text
+
+
+def _edited_board_gh(calls, replies):
+    """_run for a board whose Status options were edited after the first
+    fields read: each fields read takes the next of `replies`, and an
+    item-edit naming the old Ready id fails as GitHub would."""
+    replies = list(replies)
+
+    def fake_run(args, cwd=None, env=None):
+        calls.append(args)
+        joined = " ".join(args)
+        if "projectV2(number" in joined:
+            return replies.pop(0)
+        if "api graphql" in joined:
+            return _board(("ITEM7", 7))
+        if "item-edit" in args and "o_Ready" in args:
+            raise subprocess.CalledProcessError(1, args)
+        return ""
+    return fake_run
+
+
+def test_a_failed_board_write_rereads_the_fields_next_time(monkeypatch):
+    """The web process lives for days: a write that fails on ids gone stale
+    drops the project's cached fields, so the next attempt reads them anew."""
+    edited = LIVE.replace('"o_Ready"', '"o_Ready2"')  # Ready got a new id
+    calls = []
+    monkeypatch.setattr(github, "_run", _edited_board_gh(calls, [LIVE, edited]))
+    client = github.GitHubClient()
+    with pytest.raises(subprocess.CalledProcessError):
+        client.set_status(REPOSITORY, 7, "Ready")
+    client.set_status(REPOSITORY, 7, "Ready")
+    assert "o_Ready2" in next(a for a in reversed(calls) if "item-edit" in a)
+
+
+def test_a_board_missing_a_status_is_reread_on_the_next_pass(monkeypatch):
+    """Someone adds the missing option: the next pass sees it, no restart."""
+    run = _ranking_gh(BOARD, BOARD_ISSUES)
+    replies = [_without_option("Status", "In progress"), LIVE]
+
+    def fake_run(args, cwd=None, env=None):
+        if "projectV2(number" in " ".join(args):
+            return replies.pop(0)
+        return run(args, cwd, env)
+
+    monkeypatch.setattr(github, "_run", fake_run)
+    client = github.GitHubClient()
+    with pytest.raises(BoardError):
+        client.candidates([REPOSITORY])
+    assert client.candidates([REPOSITORY])
 
 
 def test_candidates_need_the_statuses_a_claim_writes(monkeypatch):

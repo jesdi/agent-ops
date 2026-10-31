@@ -203,6 +203,7 @@ def _project(raw: dict, capacity: int) -> list[Repository]:
 
 
 # Ids the board block held before they were read from the live board (#242).
+# Delete this and _board's filter once infra's targets.yaml no longer has them.
 _RETIRED_BOARD_KEYS = frozenset({
     "status_field_id", "status_ready_option_id", "status_in_progress_option_id",
     "status_done_option_id", "status_wont_do_option_id", "boost_field_id"})
