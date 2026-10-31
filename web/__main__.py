@@ -3,7 +3,10 @@ tailscale serve is the access boundary; loopback is bypass prevention."""
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
+import shutil
+import socket
 from pathlib import Path
 
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
@@ -26,8 +29,6 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     ensure_loopback(args.host)
 
-    import uvicorn
-
     from dispatcher.config import load_config
     from dispatcher.github import GitHubClient
     from dispatcher.sessions import Sessions
@@ -41,9 +42,48 @@ def main(argv: list[str] | None = None) -> None:
     # Unbounded graceful shutdown waits on them forever, so SIGTERM would
     # burn systemd's full stop timeout and end in SIGKILL — a ~90 s 502
     # window on every deploy.  Bound the drain instead.
-    uvicorn.run(create_app(cfg, sources), host=args.host,
-                port=int(os.environ.get("AGENT_OPS_WEB_PORT", "8481")),
-                log_level="warning", timeout_graceful_shutdown=5)
+    app = create_app(cfg, sources)
+    serve(app, cfg, args.host, int(os.environ.get("AGENT_OPS_WEB_PORT", "8481")))
+
+
+def _bind_usage_socket(path: str, group: str) -> socket.socket:
+    """The usage socket, mode 0660 and owned by `group` (default: ours)."""
+    sock_path = Path(path)
+    sock_path.parent.mkdir(parents=True, exist_ok=True)
+    sock_path.unlink(missing_ok=True)
+    sock = socket.socket(socket.AF_UNIX)
+    old = os.umask(0o117)
+    try:
+        sock.bind(path)
+    finally:
+        os.umask(old)
+    if group:
+        shutil.chown(path, group=group)
+    return sock
+
+
+def serve(app, cfg, host: str, port: int) -> None:
+    import uvicorn
+
+    opts = dict(log_level="warning", timeout_graceful_shutdown=5)
+    if not cfg.usage_socket:
+        uvicorn.run(app, host=host, port=port, **opts)
+        return
+    sock = _bind_usage_socket(cfg.usage_socket, cfg.usage_socket_group)
+
+    async def both():
+        tcp = uvicorn.Server(uvicorn.Config(app, host=host, port=port, **opts))
+        uds = uvicorn.Server(uvicorn.Config(app.state.usage_app, **opts))
+        # Only the TCP server owns signals; the socket one stops with it.
+        uds.install_signal_handlers = lambda: None
+        task = asyncio.create_task(uds.serve(sockets=[sock]))
+        try:
+            await tcp.serve()
+        finally:
+            uds.should_exit = True
+            await task
+
+    asyncio.run(both())
 
 
 if __name__ == "__main__":

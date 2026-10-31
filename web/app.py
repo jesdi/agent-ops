@@ -500,10 +500,20 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return read_model.PaneHistory(
             text=sources.pane_history(repository, issue, clamped))
 
-    @app.get("/api/usage", response_model=read_model.UsageView)
-    def usage_route(op: Operator = Depends(current_operator)):
+    def _current_usage() -> read_model.UsageView:
         live = _cfg()
         return _usage_view(live, _usages(live), datetime.now(timezone.utc), _mode(live))
+
+    @app.get("/api/usage", response_model=read_model.UsageView)
+    def usage_route(op: Operator = Depends(current_operator)):
+        return _current_usage()
+
+    # The usage view alone, for the Unix socket listener: no auth middleware
+    # (the socket's file permissions are the boundary) and no other route.
+    usage_app = FastAPI(title="agent-ops usage socket", openapi_url=None,
+                        docs_url=None, redoc_url=None)
+    usage_app.get("/usage", response_model=read_model.UsageView)(_current_usage)
+    app.state.usage_app = usage_app
 
     @app.post("/api/priority")
     def set_priority(req: PriorityReq,
