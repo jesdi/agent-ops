@@ -59,3 +59,32 @@ def test_symlinked_safe_chain_is_accepted(w):
     (w / "link").symlink_to("real")
     _bind_usage_socket(str(w / "link" / ".." / "link" / "run" / "u.sock"), "").close()
     assert (w / "real" / "run" / "u.sock").is_socket()
+
+
+def test_dotdot_after_a_symlink_checks_where_the_kernel_lands(w):
+    # safe/link/../run resolves to open/run, not safe/run.
+    (w / "safe").mkdir()
+    (w / "open" / "sub").mkdir(parents=True)
+    os.chmod(w / "open", 0o777)
+    (w / "safe" / "link").symlink_to(w / "open" / "sub")
+    with pytest.raises(SystemExit, match="open"):
+        _bind_usage_socket(str(w / "safe" / "link" / ".." / "run" / "u.sock"), "")
+    assert not (w / "open" / "run" / "u.sock").exists()
+
+
+def test_symlink_owned_by_another_user_is_refused(w, monkeypatch):
+    # In a sticky directory (/tmp) the link's owner can still replace it.
+    (w / "real").mkdir()
+    (w / "hop").symlink_to(w / "real")
+    hop, real_lstat = w.resolve() / "hop", os.lstat
+
+    def lstat(p, **kw):
+        st = real_lstat(p, **kw)
+        if isinstance(p, (str, Path)) and Path(p) == hop:
+            st = os.stat_result((*st[:4], os.getuid() + 1, *st[5:]))
+        return st
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    with pytest.raises(SystemExit, match="hop"):
+        _bind_usage_socket(str(w / "hop" / "run" / "u.sock"), "")
+    assert not (w / "real" / "run" / "u.sock").exists()
