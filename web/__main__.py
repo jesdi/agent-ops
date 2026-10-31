@@ -97,10 +97,11 @@ def _bind_usage_socket(path: str, group: str) -> socket.socket:
     return sock
 
 
-def _crossed_dirs(path: str):
-    """Every directory the kernel crosses resolving `path`, following each
-    symlink hop the way it does, so no hop's directory goes unchecked."""
-    todo, cur, hops = list(Path(os.path.abspath(path)).parts), Path("/"), 0
+def _crossed_entries(path: str):
+    """Every directory and symlink the kernel crosses resolving `path`,
+    following each hop the way it does, so no hop goes unchecked. `..` is
+    kept until the symlinks before it are followed, as the kernel does."""
+    todo, cur, hops = list(Path(os.getcwd(), path).parts), Path("/"), 0
     yield cur
     while todo:
         part = todo.pop(0)
@@ -114,6 +115,7 @@ def _crossed_dirs(path: str):
                 hops += 1
                 if hops > 40:
                     raise SystemExit(f"refusing to use {path}: too many symlinks")
+                yield nxt
                 todo[:0] = Path(os.readlink(nxt)).parts
                 continue
             cur = nxt
@@ -121,17 +123,19 @@ def _crossed_dirs(path: str):
 
 
 def _refuse_replaceable_ancestors(parent: Path) -> None:
-    """Whoever can write an ancestor of the socket directory can swap the
-    directory itself after it is secured, so each directory crossed on the
-    way must be owned by root or us and writable by no one else, unless
-    sticky (like /tmp)."""
-    for a in _crossed_dirs(str(parent.parent)):
+    """Whoever can write an ancestor of the socket directory, or owns a
+    symlink on the way, can swap the directory after it is secured, so each
+    entry crossed must be owned by root or us, and each directory writable by
+    no one else unless sticky (like /tmp, where only an entry's owner can
+    replace it)."""
+    for a in _crossed_entries(str(parent.parent)):
         st = os.lstat(a)
         if st.st_uid not in (0, os.getuid()) or (
-                st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX):
+                stat.S_ISDIR(st.st_mode) and st.st_mode & 0o022
+                and not st.st_mode & stat.S_ISVTX):
             raise SystemExit(
                 f"refusing to use {parent}: its ancestor {a} can be "
-                "written by another user")
+                "replaced by another user")
 
 
 def serve(app, cfg, host: str, port: int) -> None:
