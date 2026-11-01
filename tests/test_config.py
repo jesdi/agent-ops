@@ -313,40 +313,9 @@ def write_yaml(tmp_path: Path, repository_extra: dict | None = None,
     return p
 
 
-def test_a_leftover_rank_cmd_is_ignored_with_a_warning(tmp_path, capsys):
-    """The dispatcher ranks the board itself; a config written for the old
-    code still loads, so the infra repo can drop the key after this ships."""
-    cfg = load_config(write_yaml(tmp_path, project_extra={
-        "rank_cmd": "python3 .claude/skills/backlog/rank.py --json"}))
-    assert cfg.repositories[0].project.name == "p"
-    err = capsys.readouterr().err
-    assert err.count("\n") == 1
-    assert "project 'p': rank_cmd is ignored" in err and "remove it" in err
-    load_config(write_yaml(tmp_path))
-    assert capsys.readouterr().err == ""
-
-
-def test_leftover_board_ids_are_ignored_with_one_warning(tmp_path, capsys):
-    """Board ids are read from the live board; a config written for the old
-    code still loads, so the infra repo can drop the keys after this ships."""
-    retired = {"status_field_id": "F", "status_ready_option_id": "R",
-               "status_in_progress_option_id": "I",
-               "status_done_option_id": "D", "status_wont_do_option_id": "W",
-               "boost_field_id": "B"}
-    cfg = load_config(write_yaml(tmp_path, board_extra=retired))
-    board = cfg.repositories[0].project.board
-    assert (board.owner, board.number) == ("o", 1)
-    err = capsys.readouterr().err
-    assert err.count("\n") == 1
-    assert "project 'p': board " in err and "remove them" in err
-    assert all(key in err for key in retired)
-    load_config(write_yaml(tmp_path))
-    assert capsys.readouterr().err == ""
-
-
-def test_an_unknown_board_key_is_still_refused(tmp_path):
+def test_an_unknown_board_key_is_refused(tmp_path):
     with pytest.raises(ValueError, match="project 'p' board"):
-        load_config(write_yaml(tmp_path, board_extra={"status_field": "F"}))
+        load_config(write_yaml(tmp_path, board_extra={"status_field_id": "F"}))
 
 
 def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
