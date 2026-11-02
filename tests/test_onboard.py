@@ -651,6 +651,20 @@ def test_config_pr_keeps_an_open_pr_that_matches_the_record(tmp_path, box, infra
     assert sh.ran(" push ") == []
 
 
+def test_config_pr_rebuilds_an_open_pr_on_a_main_that_moved(tmp_path, box, infra_token):
+    rec = confirmed(tmp_path, box)
+    step(rec, "config-pr")["state"] = "failed"
+    onboard.write_json_atomic(state(tmp_path) / "onboarding" / "analytics.json", rec)
+    sh = FakeSh(infra_routes(open_prs=json.dumps(
+        [{"number": 7, "url": PR_URL, "headRefOid": "head1"}])))
+    sh.route("rev-parse origin/main", "base2\n")
+    sh.route("for-each-ref", "head1\n")
+    run(box, sh)
+    rec = record(tmp_path)
+    assert step(rec, "config-pr")["state"] == "verified"
+    assert rec["infra_pr"]["base"] == "base2" and len(sh.ran(" push ")) == 1
+
+
 def test_config_pr_blocks_when_infra_config_refuses_the_project(tmp_path, box, infra_token):
     taken = LIVE.replace("github_id: 101", "github_id: 202")
     s = step(confirmed(tmp_path, box, FakeSh(infra_routes(main=taken))), "config-pr")

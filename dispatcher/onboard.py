@@ -137,6 +137,10 @@ class Record:
     deployed_at: str = ""
     awaiting: str = ""                   # "confirm" while the operator must confirm
 
+    @property
+    def pr_url(self) -> str:
+        return self.infra_pr.url if self.infra_pr else ""
+
     def step(self, name: str) -> Step:
         return next(s for s in self.steps if s.name == name)
 
@@ -533,12 +537,23 @@ def _config_pr(r: Run, rec: Record) -> Outcome:
         return NO_INFRA_TOKEN
     main = _infra_main(r, env)
     if _on_main(main, rec.project):
-        return Outcome(StepState.VERIFIED, "already on infra main",
-                       rec.infra_pr.url if rec.infra_pr else "")
-    pr, ip = _open_pr(r, rec.project, env), rec.infra_pr
-    if pr and ip and pr.head == ip.head and ip.revision == rec.revision:
-        return Outcome(StepState.VERIFIED, link=ip.url)
-    pushed = _push(r, rec, main, env, pr.url if pr else ip.url if ip else "")
+        return Outcome(StepState.VERIFIED, "already on infra main", rec.pr_url)
+    pr = _open_pr(r, rec.project, env)
+    if pr and _pr_current(r, rec, pr, env):
+        return Outcome(StepState.VERIFIED, link=rec.pr_url)
+    return _push_pr(r, rec, main, pr, env)
+
+
+def _pr_current(r: Run, rec: Record, pr: OpenPr, env: dict) -> bool:
+    """The open PR is the record's push of its revision onto today's main."""
+    ip = rec.infra_pr
+    return ip is not None and (pr.head, ip.revision, ip.base) == (
+        ip.head, rec.revision, _git(r, env, "rev-parse", "origin/main").strip())
+
+
+def _push_pr(r: Run, rec: Record, main: str, pr: OpenPr | None, env: dict) -> Outcome:
+    """Push the branch, then open its PR unless one is open."""
+    pushed = _push(r, rec, main, env, pr.url if pr else rec.pr_url)
     if isinstance(pushed, Outcome):
         return pushed
     number, url = (pr.number, pr.url) if pr else _create_pr(r, rec, env)
@@ -614,7 +629,7 @@ def _config_merge(r: Run, rec: Record) -> Outcome:
 
 def _merged(rec: Record, sha: str, at: str) -> Outcome:
     rec.merge_sha, rec.merged_at = sha, datetime.fromisoformat(at).isoformat()
-    return Outcome(StepState.VERIFIED, link=rec.infra_pr.url if rec.infra_pr else "")
+    return Outcome(StepState.VERIFIED, link=rec.pr_url)
 
 
 def _added_on_main(r: Run, rec: Record, env: dict) -> Outcome:
