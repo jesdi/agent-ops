@@ -23,7 +23,7 @@ import subprocess
 import sys
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -456,9 +456,71 @@ def _create_pr(r: Run, rec: dict, env: dict) -> dict:
     return {"number": int(url.rsplit("/", 1)[1]), "url": url}
 
 
-STEPS = ("resolve", "clone", "confirm", "config-pr")
+# -- config-merge -------------------------------------------------------------
+
+CI_LIMIT = timedelta(minutes=30)
+GREEN = frozenset({"success", "skipped", "neutral"})
+
+
+def _config_merge(r: Run, rec: dict) -> tuple[str, str, str]:
+    """Squash-merge the infra PR once its ci run and every check on its head
+    are green (#225): GitHub enforces nothing on agent-ops-infra."""
+    env, ip = _infra_env(), rec["infra_pr"]
+    pr = json.loads(r.sh(["gh", "pr", "view", str(ip["number"]), "--repo", INFRA_REPO,
+                          "--json", "state,mergeCommit,mergedAt"], env=env))
+    if pr["state"] == "MERGED":
+        ip.update(merge_sha=pr["mergeCommit"]["oid"],
+                  merged_at=datetime.fromisoformat(pr["mergedAt"]).isoformat())
+        return "verified", "", ip["url"]
+    if pr["state"] != "OPEN":
+        raise Blocked("the infra PR was closed: reopen it, or delete the record "
+                      "to start over", ip["url"])
+    main = _infra_main(r, env)
+    if _git(r, env, "rev-parse", "origin/main").strip() != ip["base"]:
+        _build_pr(r, rec, main, {"number": ip["number"], "url": ip["url"]}, env)
+        return "waiting", "infra main moved: the PR was rebuilt on it", ip["url"]
+    return _merge_when_green(r, ip, env)
+
+
+def _merge_when_green(r: Run, ip: dict, env: dict) -> tuple[str, str, str]:
+    waiting_on = _ci_waiting_on(r, ip["head"], env)
+    if not waiting_on:
+        return _squash(r, ip, env)
+    if r.now - datetime.fromisoformat(ip["pushed_at"]) > CI_LIMIT:
+        raise Blocked(f"{waiting_on}, 30 minutes after the push", ip["url"])
+    return "waiting", waiting_on, ip["url"]
+
+
+def _ci_waiting_on(r: Run, head: str, env: dict) -> str:
+    """What the checks on `head` still wait for; "" once its ci run exists
+    and every check is green. A red check blocks, with its link."""
+    runs = json.loads(r.sh(["gh", "api", f"repos/{INFRA_REPO}/actions/runs?head_sha="
+                            f"{head}&per_page=100"], env=env))["workflow_runs"]
+    checks = json.loads(r.sh(["gh", "api", f"repos/{INFRA_REPO}/commits/{head}/"
+                              "check-runs?per_page=100"], env=env))["check_runs"]
+    for c in checks:
+        if c["status"] == "completed" and c["conclusion"] not in GREEN:
+            raise Blocked(f"infra check {c['name']} is {c['conclusion']}", c["html_url"])
+    pending = [c["name"] for c in checks if c["status"] != "completed"]
+    if pending:
+        return f"checks pending: {', '.join(pending)}"
+    return "" if any(x["name"] == "ci" for x in runs) else "no ci run on the head yet"
+
+
+def _squash(r: Run, ip: dict, env: dict) -> tuple[str, str, str]:
+    try:
+        out = r.sh(["gh", "api", "-X", "PUT", f"repos/{INFRA_REPO}/pulls/{ip['number']}/merge",
+                    "-f", "merge_method=squash", "-f", f"sha={ip['head']}"], env=env)
+    except subprocess.CalledProcessError as e:
+        raise Blocked(f"GitHub refused the merge: {(e.stderr or '').strip()}",
+                      ip["url"]) from None
+    ip.update(merge_sha=json.loads(out)["sha"], merged_at=r.now.isoformat())
+    return "verified", "", ip["url"]
+
+
+STEPS = ("resolve", "clone", "confirm", "config-pr", "config-merge")
 _STEPS = {"resolve": _resolve, "clone": _clone, "confirm": _confirm_step,
-          "config-pr": _config_pr}
+          "config-pr": _config_pr, "config-merge": _config_merge}
 
 
 def main(argv: list[str] | None = None) -> None:

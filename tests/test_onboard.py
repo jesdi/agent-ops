@@ -3,7 +3,7 @@ intents and moves every open record as far as it goes. Every subprocess goes
 through the fake `sh`, every HTTP request through the fake `get`."""
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -63,7 +63,7 @@ class FakeSh:
         self.calls = []
 
     def route(self, key, answer):
-        self.routes = {key: answer, **self.routes}
+        self.routes = {key: answer, **{k: v for k, v in self.routes.items() if k != key}}
 
     def __call__(self, argv, cwd=None, env=None):
         self.calls.append((argv, cwd, env))
@@ -435,9 +435,26 @@ def infra_cloned(argv, cwd, env):
     return ""
 
 
-def infra_routes(main=LIVE, open_prs="[]"):
-    """agent-ops-infra as the scratch clone and gh see it."""
-    return {"clone https://github.com/jesdi/agent-ops-infra.git": infra_cloned,
+def checks(*rows):
+    return json.dumps({"check_runs": [
+        {"name": name, "status": status, "conclusion": conclusion,
+         "html_url": f"https://github.com/jesdi/agent-ops-infra/runs/{name}"}
+        for name, status, conclusion in rows]})
+
+
+CI_RUN = json.dumps({"workflow_runs": [{"name": "ci"}]})
+GREEN = checks(("test", "completed", "success"), ("lint", "completed", "skipped"))
+
+
+def infra_routes(main=LIVE, open_prs="[]", **merge):
+    """agent-ops-infra as the scratch clone and gh see it: by default the PR
+    is open, its ci run green and the merge goes through."""
+    return {**{"gh pr view 7": json.dumps({"state": "OPEN"}),
+               "actions/runs?head_sha=head1": CI_RUN,
+               "commits/head1/check-runs": GREEN,
+               "pulls/7/merge": json.dumps({"sha": "merge1", "merged": True})},
+            **merge,
+            "clone https://github.com/jesdi/agent-ops-infra.git": infra_cloned,
             "fetch origin": "",
             "show origin/main:config/targets.yaml": main,
             "gh pr list --repo jesdi/agent-ops-infra": open_prs,
@@ -466,8 +483,11 @@ def scratch(tmp_path) -> Path:
     return state(tmp_path) / "onboarding" / "infra"
 
 
+NO_CI_RUN = {"actions/runs?head_sha=head1": json.dumps({"workflow_runs": []})}
+
+
 def test_config_pr_pushes_the_project_and_opens_the_pr(tmp_path, box, infra_token):
-    sh = FakeSh(infra_routes())
+    sh = FakeSh(infra_routes(**NO_CI_RUN))
     rec = confirmed(tmp_path, box, sh)
     s = step(rec, "config-pr")
     assert (s["state"], s["link"]) == ("verified", PR_URL)
@@ -528,3 +548,89 @@ def test_config_pr_blocks_when_infra_config_refuses_the_project(tmp_path, box, i
     taken = LIVE.replace("github_id: 101", "github_id: 202")
     s = step(confirmed(tmp_path, box, FakeSh(infra_routes(main=taken))), "config-pr")
     assert s["state"] == "blocked" and "github_id" in s["detail"]
+
+
+# -- config-merge -------------------------------------------------------------
+
+
+def test_config_merge_squashes_the_head_once_ci_is_green(tmp_path, box, infra_token):
+    sh = FakeSh(infra_routes())
+    rec = confirmed(tmp_path, box, sh)
+    s = step(rec, "config-merge")
+    assert (s["state"], s["link"]) == ("verified", PR_URL)
+    assert (rec["infra_pr"]["merge_sha"], rec["infra_pr"]["merged_at"]) == ("merge1", NOW.isoformat())
+    [(argv, _, env)] = sh.ran("pulls/7/merge")
+    assert argv == ["gh", "api", "-X", "PUT", "repos/jesdi/agent-ops-infra/pulls/7/merge",
+                    "-f", "merge_method=squash", "-f", "sha=head1"]
+    assert env["GH_TOKEN"] == "infra-tok"
+
+
+def test_config_merge_waits_for_a_ci_run_then_blocks_after_30_minutes(
+        tmp_path, box, infra_token):
+    no_run = NO_CI_RUN
+    s = step(confirmed(tmp_path, box, FakeSh(infra_routes(**no_run))), "config-merge")
+    assert s["state"] == "waiting" and "no ci run" in s["detail"]
+    run(box, FakeSh(infra_routes(**no_run)), now=NOW + timedelta(minutes=29))
+    assert step(record(tmp_path), "config-merge")["state"] == "waiting"
+    run(box, FakeSh(infra_routes(**no_run)), now=NOW + timedelta(minutes=31))
+    s = step(record(tmp_path), "config-merge")
+    assert s["state"] == "blocked" and "no ci run" in s["detail"] and s["link"] == PR_URL
+
+
+def test_config_merge_names_the_checks_still_pending(tmp_path, box, infra_token):
+    pending = {"commits/head1/check-runs": checks(("test", "in_progress", None),
+                                                  ("lint", "completed", "success"))}
+    s = step(confirmed(tmp_path, box, FakeSh(infra_routes(**pending))), "config-merge")
+    assert s["state"] == "waiting" and "test" in s["detail"] and "lint" not in s["detail"]
+    sh = FakeSh(infra_routes(**pending))
+    run(box, sh, now=NOW + timedelta(minutes=31))
+    s = step(record(tmp_path), "config-merge")
+    assert s["state"] == "blocked" and "test" in s["detail"]
+    assert sh.ran("pulls/7/merge") == []
+
+
+def test_config_merge_blocks_on_a_red_check_with_its_link(tmp_path, box, infra_token):
+    red = {"commits/head1/check-runs": checks(("test", "completed", "failure"),
+                                              ("lint", "in_progress", None))}
+    sh = FakeSh(infra_routes(**red))
+    s = step(confirmed(tmp_path, box, sh), "config-merge")
+    assert s["state"] == "blocked" and "test" in s["detail"] and "failure" in s["detail"]
+    assert s["link"] == "https://github.com/jesdi/agent-ops-infra/runs/test"
+    assert sh.ran("pulls/7/merge") == []
+
+
+def test_config_merge_rebuilds_the_pr_when_main_moved(tmp_path, box, infra_token):
+    no_run = NO_CI_RUN
+    confirmed(tmp_path, box, FakeSh(infra_routes(**no_run)))
+    sh = FakeSh(infra_routes(**no_run))
+    sh.route("rev-parse origin/main", "base2\n")
+    sh.route("rev-parse HEAD", "head2\n")
+    run(box, sh, now=NOW + timedelta(minutes=40))
+    rec = record(tmp_path)
+    s = step(rec, "config-merge")
+    assert s["state"] == "waiting" and "main moved" in s["detail"]
+    assert (rec["infra_pr"]["head"], rec["infra_pr"]["base"]) == ("head2", "base2")
+    assert rec["infra_pr"]["pushed_at"] == (NOW + timedelta(minutes=40)).isoformat()
+    assert len(sh.ran("push --force")) == 1 and sh.ran("gh pr create") == []
+
+
+def test_config_merge_blocks_with_githubs_refusal(tmp_path, box, infra_token):
+    refused = {"pulls/7/merge": failure("gh: Pull Request is not mergeable (HTTP 405)")}
+    s = step(confirmed(tmp_path, box, FakeSh(infra_routes(**refused))), "config-merge")
+    assert s["state"] == "blocked" and "not mergeable" in s["detail"] and s["link"] == PR_URL
+
+
+def test_config_merge_records_a_merge_it_missed(tmp_path, box, infra_token):
+    """Merged, but the run died before saving: the PR says so."""
+    merged = {"gh pr view 7": json.dumps({"state": "MERGED", "mergeCommit": {"oid": "m9"},
+                                          "mergedAt": "2026-11-02T11:59:00Z"})}
+    rec = confirmed(tmp_path, box, FakeSh(infra_routes(**merged)))
+    assert step(rec, "config-merge")["state"] == "verified"
+    assert (rec["infra_pr"]["merge_sha"], rec["infra_pr"]["merged_at"]) == (
+        "m9", "2026-11-02T11:59:00+00:00")
+
+
+def test_config_merge_blocks_on_a_closed_pr(tmp_path, box, infra_token):
+    closed = {"gh pr view 7": json.dumps({"state": "CLOSED"})}
+    s = step(confirmed(tmp_path, box, FakeSh(infra_routes(**closed))), "config-merge")
+    assert s["state"] == "blocked" and "closed" in s["detail"]
