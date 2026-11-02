@@ -442,6 +442,10 @@ def checks(*rows):
         for name, status, conclusion in rows]})
 
 
+def updater(result, ended):
+    return f"Result={result}\nExecMainExitTimestamp=@{int(ended.timestamp())}\n"
+
+
 CI_RUN = json.dumps({"workflow_runs": [{"name": "ci"}]})
 GREEN = checks(("test", "completed", "success"), ("lint", "completed", "skipped"))
 
@@ -452,7 +456,9 @@ def infra_routes(main=LIVE, open_prs="[]", **merge):
     return {**{"gh pr view 7": json.dumps({"state": "OPEN"}),
                "actions/runs?head_sha=head1": CI_RUN,
                "commits/head1/check-runs": GREEN,
-               "pulls/7/merge": json.dumps({"sha": "merge1", "merged": True})},
+               "pulls/7/merge": json.dumps({"sha": "merge1", "merged": True}),
+               "merge-base --is-ancestor merge1 HEAD": failure(""),
+               "systemctl --user show agent-ops-update.service": updater("success", NOW)},
             **merge,
             "clone https://github.com/jesdi/agent-ops-infra.git": infra_cloned,
             "fetch origin": "",
@@ -634,3 +640,81 @@ def test_config_merge_blocks_on_a_closed_pr(tmp_path, box, infra_token):
     closed = {"gh pr view 7": json.dumps({"state": "CLOSED"})}
     s = step(confirmed(tmp_path, box, FakeSh(infra_routes(**closed))), "config-merge")
     assert s["state"] == "blocked" and "closed" in s["detail"]
+
+
+# -- deploy -------------------------------------------------------------------
+
+DEPLOYED = LIVE + """\
+  - name: analytics
+    paused: true
+    board: {owner: jesdi, number: 4}
+    repositories:
+      - name: analytics
+        repo: jesdi/analytics
+        github_id: 202
+        clone_path: /home/agent/repos/analytics/analytics
+        worktrees_path: /home/agent/repos/analytics/analytics.worktrees
+        gate_cmd: make gate
+"""
+
+
+def merged(tmp_path, box):
+    rec = confirmed(tmp_path, box)
+    assert step(rec, "config-merge")["state"] == "verified"
+    return rec
+
+
+def test_deploy_waits_until_the_box_has_the_merge(tmp_path, box, infra_token):
+    s = step(merged(tmp_path, box), "deploy")
+    assert s["state"] == "waiting"
+
+
+def test_deploy_is_verified_once_infra_has_the_merge_and_the_live_config_the_project(
+        tmp_path, box, infra_token):
+    merged(tmp_path, box)
+    box.write_text(DEPLOYED)
+    sh = FakeSh(infra_routes(**{"merge-base --is-ancestor merge1 HEAD": ""}))
+    run(box, sh, now=NOW + timedelta(minutes=2))
+    assert step(record(tmp_path), "deploy")["state"] == "verified"
+    [(argv, _, _)] = sh.ran("merge-base")
+    assert argv[:3] == ["git", "-C", str(Path.home() / "agent-ops-infra")]
+
+
+@pytest.mark.parametrize("live", [LIVE, DEPLOYED.replace("paused: true", "paused: false")])
+def test_deploy_waits_while_the_live_config_lacks_the_paused_project(
+        tmp_path, box, infra_token, live):
+    merged(tmp_path, box)
+    box.write_text(live)
+    run(box, FakeSh(infra_routes(**{"merge-base --is-ancestor merge1 HEAD": ""})),
+        now=NOW + timedelta(minutes=2))
+    assert step(record(tmp_path), "deploy")["state"] == "waiting"
+
+
+def test_deploy_blocks_with_the_journal_when_the_updater_failed_after_the_merge(
+        tmp_path, box, infra_token):
+    merged(tmp_path, box)
+    sh = FakeSh(infra_routes(**{
+        "systemctl --user show agent-ops-update.service":
+            updater("exit-code", NOW + timedelta(minutes=1)),
+        "journalctl --user -u agent-ops-update.service": "configure.py: bad config\n"}))
+    run(box, sh, now=NOW + timedelta(minutes=2))
+    s = step(record(tmp_path), "deploy")
+    assert s["state"] == "blocked" and "configure.py: bad config" in s["detail"]
+    [(argv, _, _)] = sh.ran("journalctl")
+    assert argv == ["journalctl", "--user", "-u", "agent-ops-update.service",
+                    "-n", "15", "--no-pager", "-o", "cat"]
+
+
+def test_deploy_ignores_an_updater_failure_from_before_the_merge(tmp_path, box, infra_token):
+    merged(tmp_path, box)
+    run(box, FakeSh(infra_routes(**{"systemctl --user show agent-ops-update.service":
+                                    updater("exit-code", NOW - timedelta(minutes=1))})),
+        now=NOW + timedelta(minutes=2))
+    assert step(record(tmp_path), "deploy")["state"] == "waiting"
+
+
+def test_deploy_blocks_naming_the_timer_after_15_minutes(tmp_path, box, infra_token):
+    merged(tmp_path, box)
+    run(box, FakeSh(infra_routes()), now=NOW + timedelta(minutes=16))
+    s = step(record(tmp_path), "deploy")
+    assert s["state"] == "blocked" and "agent-ops-update.timer" in s["detail"]

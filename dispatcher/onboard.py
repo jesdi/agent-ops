@@ -518,9 +518,62 @@ def _squash(r: Run, ip: dict, env: dict) -> tuple[str, str, str]:
     return "verified", "", ip["url"]
 
 
-STEPS = ("resolve", "clone", "confirm", "config-pr", "config-merge")
+# -- deploy -------------------------------------------------------------------
+
+DEPLOY_LIMIT = timedelta(minutes=15)
+UPDATER = "agent-ops-update.service"
+
+
+def _deploy(r: Run, rec: dict) -> tuple[str, str, str]:
+    """agent-ops-update deploys the merge (#225): verified once the box's
+    infra checkout holds it and the live config loads with the project
+    paused."""
+    ip = rec["infra_pr"]
+    if _box_has(r, ip["merge_sha"]) and _live_paused(r, rec["project"]):
+        return "verified", "", ""
+    merged_at = datetime.fromisoformat(ip["merged_at"])
+    if journal := _updater_failure(r, merged_at):
+        raise Blocked(f"{UPDATER} failed after the merge:\n{journal}")
+    if r.now - merged_at > DEPLOY_LIMIT:
+        raise Blocked("nothing deployed 15 minutes after the merge: is "
+                      "agent-ops-update.timer running? "
+                      "(systemctl --user status agent-ops-update.timer)")
+    return "waiting", f"waiting for {UPDATER} to deploy the merge", ""
+
+
+def _box_has(r: Run, sha: str) -> bool:
+    try:
+        r.sh(["git", "-C", str(Path.home() / "agent-ops-infra"), "merge-base",
+              "--is-ancestor", sha, "HEAD"])
+    except subprocess.CalledProcessError:
+        return False
+    return True
+
+
+def _live_paused(r: Run, project: str) -> bool:
+    """Read now, not at the run's start: the updater may have just
+    installed it. One the loader refuses fails the step."""
+    return any(p.name == project and p.paused
+               for p in config.load_config(r.config_path).projects)
+
+
+def _updater_failure(r: Run, since: datetime) -> str:
+    """The updater's last journal lines when its last run failed after
+    `since`; "" otherwise."""
+    out = r.sh(["systemctl", "--user", "show", UPDATER, "-p", "Result",
+                "-p", "ExecMainExitTimestamp", "--timestamp=unix"])
+    props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    ended = props.get("ExecMainExitTimestamp", "").lstrip("@")
+    if props.get("Result") == "success" or not ended.isdigit() or (
+            datetime.fromtimestamp(int(ended), timezone.utc) <= since):
+        return ""
+    return r.sh(["journalctl", "--user", "-u", UPDATER, "-n", "15",
+                 "--no-pager", "-o", "cat"]).strip()
+
+
+STEPS = ("resolve", "clone", "confirm", "config-pr", "config-merge", "deploy")
 _STEPS = {"resolve": _resolve, "clone": _clone, "confirm": _confirm_step,
-          "config-pr": _config_pr, "config-merge": _config_merge}
+          "config-pr": _config_pr, "config-merge": _config_merge, "deploy": _deploy}
 
 
 def main(argv: list[str] | None = None) -> None:
