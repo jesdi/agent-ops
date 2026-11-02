@@ -27,6 +27,15 @@ class PollResult:
 
 
 _RED = {"FAILURE", "ERROR", "TIMED_OUT"}
+_GREEN = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+
+
+def ci_verdict(conclusion: str) -> str:
+    """"red", "green" or "pending" for the conclusion of a check run or
+    workflow run, or the state of a commit status; "" (unfinished),
+    "pending" and the rest (cancelled, action_required, …) are pending."""
+    c = conclusion.upper()
+    return "red" if c in _RED else "green" if c in _GREEN else "pending"
 
 
 def _ts(raw: str) -> datetime | None:
@@ -55,30 +64,46 @@ def classify(payload: dict, cursor: str, self_login: str,
         return PollResult("merged")
     if payload.get("state") == "CLOSED":
         return PollResult("closed")
+    if fresh := _newest_feedback(payload, cursor, self_login):
+        return PollResult("feedback", latest_ts=fresh)
+    if red := _newest_red(ci_statuses, check_cursor):
+        return PollResult("check-failed", latest_ts=red)
+    head = str(payload.get("headRefOid") or "")
+    if payload.get("mergeable") == "CONFLICTING" and head and head != conflict_cursor:
+        return PollResult("conflict", latest_ts=head)
+    return PollResult("quiet")
+
+
+def _newest_feedback(payload: dict, cursor: str, self_login: str) -> str:
+    """The raw timestamp of the newest human review or comment after
+    `cursor`; "" when there is none."""
     since = _ts(cursor)
     fresh: list[tuple[datetime, str]] = []
-    events = ([(r.get("submittedAt") or "", r.get("author"))
-               for r in payload.get("reviews") or []]
-              + [(c.get("createdAt") or "", c.get("author"))
-                 for c in payload.get("comments") or []])
-    for raw, author in events:
+    for raw, author in _events(payload):
         dt = _ts(raw)
         if dt is None or not _is_human(author, self_login):
             continue
         if since is None or dt > since:
             fresh.append((dt, raw))
-    if fresh:
-        return PollResult("feedback", latest_ts=max(fresh)[1])
+    return max(fresh)[1] if fresh else ""
+
+
+def _events(payload: dict) -> list[tuple[str, dict | None]]:
+    """(timestamp, author) of every review and comment."""
+    return ([(r.get("submittedAt") or "", r.get("author"))
+             for r in payload.get("reviews") or []]
+            + [(c.get("createdAt") or "", c.get("author"))
+               for c in payload.get("comments") or []])
+
+
+def _newest_red(ci_statuses: Sequence[CIStatus], check_cursor: str) -> str:
+    """The raw completion time of the newest red check after
+    `check_cursor`; "" when there is none."""
     red: list[tuple[datetime, str]] = []
     seen = _ts(check_cursor)
     for check in ci_statuses:
-        raw = check.completed_at if check.conclusion.upper() in _RED else ""
+        raw = check.completed_at if ci_verdict(check.conclusion) == "red" else ""
         dt = _ts(raw)
         if dt is not None and (seen is None or dt > seen):
             red.append((dt, raw))
-    if red:
-        return PollResult("check-failed", latest_ts=max(red)[1])
-    head = str(payload.get("headRefOid") or "")
-    if payload.get("mergeable") == "CONFLICTING" and head and head != conflict_cursor:
-        return PollResult("conflict", latest_ts=head)
-    return PollResult("quiet")
+    return max(red)[1] if red else ""

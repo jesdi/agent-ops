@@ -34,6 +34,7 @@ import yaml
 
 from dispatcher import board, config, intents
 from dispatcher.infra_config import add_project_text
+from dispatcher.pr_poll import ci_verdict
 from dispatcher.state import state_lock, write_json_atomic
 
 RECORDS_DIR = "onboarding"
@@ -554,12 +555,6 @@ def _create_pr(r: Run, rec: Record, env: dict) -> tuple[int, str]:
 CI_LIMIT = timedelta(minutes=30)
 
 
-def _verdict(conclusion: str) -> str:
-    c = conclusion.upper()
-    return ("red" if c in {"FAILURE", "ERROR", "TIMED_OUT"} else
-            "green" if c in {"SUCCESS", "SKIPPED", "NEUTRAL"} else "pending")
-
-
 def _config_merge(r: Run, rec: Record) -> Outcome:
     """Squash-merge the infra PR once its ci run and every check on its head
     are green (#225): GitHub enforces nothing on agent-ops-infra."""
@@ -610,9 +605,9 @@ def _ci_waiting_on(r: Run, head: str, env: dict) -> str | Outcome:
     if ci is None:
         return "no ci run on the head yet"
     checks = [ci, *_check_runs(r, head, env), *_statuses(r, head, env)]
-    if red := next((c for c in checks if _verdict(c.conclusion) == "red"), None):
+    if red := next((c for c in checks if ci_verdict(c.conclusion) == "red"), None):
         return blocked(f"infra check {red.name} is {red.conclusion}", red.link)
-    pending = [c.name for c in checks if _verdict(c.conclusion) != "green"]
+    pending = [c.name for c in checks if ci_verdict(c.conclusion) != "green"]
     return f"checks pending: {', '.join(pending)}" if pending else ""
 
 
@@ -629,7 +624,7 @@ def _ci_run(r: Run, head: str, env: dict) -> Check | None:
     x = max(runs, key=lambda x: x["id"])
     done = x["conclusion"] if x["status"] == "completed" else ""
     # skipped and neutral are green for a check, not for the ci run
-    return Check("ci", done if done == "success" or _verdict(done) != "green" else "",
+    return Check("ci", done if done == "success" or ci_verdict(done) != "green" else "",
                  x["html_url"])
 
 
