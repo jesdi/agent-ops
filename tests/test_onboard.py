@@ -314,13 +314,29 @@ def test_clone_blocks_when_another_repository_is_at_the_path(tmp_path, box):
     assert str(clone_path()) in s["detail"] and "jesdi/other" in s["detail"]
 
 
-def test_clone_removes_a_stale_partial_clone_first(tmp_path, box):
+@pytest.mark.parametrize("leftover", ["", ".git"])
+def test_clone_removes_an_empty_or_partial_clone_first(tmp_path, box, leftover):
     partial = Path(f"{clone_path()}.partial")
-    (partial / "half").mkdir(parents=True)
+    (partial / leftover).mkdir(parents=True)
     add(tmp_path)
     run(box, FakeSh())
     assert step(record(tmp_path), "clone")["state"] == "verified"
-    assert not (clone_path() / "half").exists()
+    assert not partial.exists()
+
+
+@pytest.mark.parametrize("leftover,origin", [
+    ("notes", ORIGIN), (".git", "https://github.com/jesdi/other\n"),
+    (".git", failure("error: No such remote 'origin'"))])
+def test_clone_blocks_on_a_partial_path_holding_something_else(
+        tmp_path, box, leftover, origin):
+    partial = Path(f"{clone_path()}.partial")
+    (partial / leftover).mkdir(parents=True)
+    add(tmp_path)
+    sh = FakeSh({"remote get-url origin": origin})
+    run(box, sh)
+    s = step(record(tmp_path), "clone")
+    assert s["state"] == "blocked" and str(partial) in s["detail"]
+    assert (partial / leftover).exists() and sh.ran("gh repo clone") == []
 
 
 def test_a_failed_clone_is_retried_on_the_next_run(tmp_path, box):

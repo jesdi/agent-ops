@@ -423,14 +423,42 @@ def _clone_one(r: Run, path: Path, repo: str) -> Outcome | None:
     clone. The repository at the path must be `repo`."""
     if not path.exists():
         partial = path.with_name(f"{path.name}.partial")
-        shutil.rmtree(partial, ignore_errors=True)
+        if out := _clear_partial(r, partial, repo):
+            return out
         partial.parent.mkdir(parents=True, exist_ok=True)
         r.sh(["gh", "repo", "clone", repo, str(partial)])
         partial.rename(path)
-    origin = slug(r.sh(["git", "-C", str(path), "remote", "get-url", "origin"]))
-    if (origin or "").lower() != repo.lower():
+    origin = _origin(r, path)
+    if origin != repo.lower():
         return blocked(f"{path} holds {origin}, not {repo}: move it away, then resume")
     return None
+
+
+def _clear_partial(r: Run, partial: Path, repo: str) -> Outcome | None:
+    """Remove a stale <path>.partial when it is empty or a clone of `repo`
+    a crash interrupted; anything else there blocks."""
+    if not partial.exists():
+        return None
+    if any(partial.iterdir()) and not _partial_clone_of(r, partial, repo):
+        return blocked(f"{partial} holds something other than a partial clone of "
+                       f"{repo}: move it away, then resume")
+    shutil.rmtree(partial)
+    return None
+
+
+def _partial_clone_of(r: Run, partial: Path, repo: str) -> bool:
+    if not (partial / ".git").exists():
+        return False
+    try:
+        return _origin(r, partial) == repo.lower()
+    except subprocess.CalledProcessError:
+        return False
+
+
+def _origin(r: Run, path: Path) -> str:
+    """The lowercased owner/name of the clone at `path`'s origin."""
+    url = r.sh(["git", "-C", str(path), "remote", "get-url", "origin"])
+    return (slug(url) or url.strip()).lower()
 
 
 def _resource(rec: Record, kind: str, ref: str) -> None:
