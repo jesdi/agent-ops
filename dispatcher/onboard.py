@@ -25,17 +25,15 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 import yaml
 
-from dispatcher import board, config
+from dispatcher import board, config, intents
 from dispatcher.infra_config import add_project_text
 from dispatcher.state import state_lock, write_json_atomic
 
-INTENTS_DIR = "onboarding-intents"
 RECORDS_DIR = "onboarding"
-ACTIONS = ("start", "edit", "confirm", "resume")
 INFRA_REPO = "jesdi/agent-ops-infra"
 INFRA_TARGETS = "config/targets.yaml"
 # git authenticates as gh does, so GH_TOKEN in the env picks the token.
@@ -76,45 +74,49 @@ class Run:
 
 # -- intents ------------------------------------------------------------------
 
+QUEUE = intents.Queue("onboarding-intents", ("start", "edit", "confirm", "resume"),
+                      ("project",))
+
+
+class Intent(NamedTuple):
+    action: str
+    project: str
+    payload: dict    # validated: a request, a revision or nothing
+    actor: str
+    path: Path
+
 
 def write_intent(state_dir: str | Path, action: str, project: str, payload: dict,
                  actor: str, epoch_ms: int) -> Path:
-    if action not in ACTIONS:
-        raise ValueError(f"unknown onboarding action: {action!r}")
-    p = Path(state_dir) / INTENTS_DIR / f"{epoch_ms}-{project}-{action}.json"
-    write_json_atomic(p, {"action": action, "project": project, "actor": actor,
-                          "created_at": datetime.now(timezone.utc).isoformat(),
-                          "payload": payload})
-    return p
+    return QUEUE.write(state_dir, action, (project,), payload, actor, epoch_ms)
+
+
+def _intent(rec: dict, path: Path) -> Intent:
+    action, project, payload = rec["action"], rec["project"], rec["payload"]
+    if action not in QUEUE.actions or not config._SLUG.fullmatch(project):
+        raise ValueError(f"action {action!r} for project {project!r}")
+    if action in ("start", "edit"):
+        payload = _request(payload)
+    elif action == "confirm":
+        payload = {"revision": str(payload["revision"])}
+    return Intent(action, project, payload, str(rec.get("actor", "")), path)
 
 
 def _drain(r: Run) -> None:
     """Apply then delete every intent, in lexical order: at most once."""
-    d = Path(r.cfg.state_dir) / INTENTS_DIR
-    for p in sorted(d.glob("*.json")):
-        try:
-            _apply(r, json.loads(p.read_text()))
-        except (ValueError, KeyError, TypeError, AttributeError) as e:
-            print(f"[warn] malformed onboarding intent {p.name} deleted: {e!r}",
-                  file=sys.stderr)
-        p.unlink(missing_ok=True)
+    for it in QUEUE.read(r.cfg.state_dir, _intent):
+        _APPLY[it.action](r, it)
+        it.path.unlink(missing_ok=True)
 
 
-def _apply(r: Run, intent: dict) -> None:
-    action, project = intent["action"], intent["project"]
-    if action not in ACTIONS or not config._SLUG.fullmatch(project):
-        raise ValueError(f"action {action!r} for project {project!r}")
-    _APPLY[action](r, project, intent)
-
-
-def _start(r: Run, project: str, intent: dict) -> None:
+def _start(r: Run, it: Intent) -> None:
+    project = it.project
     if load_record(r.cfg.state_dir, project) is not None:
         print(f"[warn] onboarding {project}: already started; start ignored",
               file=sys.stderr)
         return
     _save(r, {"project": project, "status": "open",
-              "started_by": str(intent.get("actor", "")),
-              "request": _request(intent["payload"]), "proposal": {},
+              "started_by": it.actor, "request": it.payload, "proposal": {},
               "revision": "", "confirmed_revision": "", "notice": "",
               "steps": _pending(), "infra_pr": {}, "resources": []})
 
@@ -133,24 +135,24 @@ def _open_record(r: Run, project: str, action: str) -> dict | None:
     return rec
 
 
-def _edit(r: Run, project: str, intent: dict) -> None:
+def _edit(r: Run, it: Intent) -> None:
     """Before confirm: a new request, resolved again from the first step."""
-    if not (rec := _open_record(r, project, "edit")):
+    if not (rec := _open_record(r, it.project, "edit")):
         return
     if rec["confirmed_revision"]:
         rec["notice"] = "edit refused: the repositories can't change after confirm"
     else:
-        rec.update(request=_request(intent["payload"]), proposal={}, revision="",
+        rec.update(request=it.payload, proposal={}, revision="",
                    notice="", steps=_pending())
     _save(r, rec)
 
 
-def _confirm(r: Run, project: str, intent: dict) -> None:
+def _confirm(r: Run, it: Intent) -> None:
     """Confirm names the revision it saw; a stale one is refused, as the
     console refuses stale model settings."""
-    if not (rec := _open_record(r, project, "confirm")):
+    if not (rec := _open_record(r, it.project, "confirm")):
         return
-    seen = str(intent["payload"]["revision"])
+    seen = it.payload["revision"]
     if seen == rec["revision"]:
         rec.update(confirmed_revision=seen, notice="")
     else:
@@ -159,9 +161,9 @@ def _confirm(r: Run, project: str, intent: dict) -> None:
     _save(r, rec)
 
 
-def _resume(r: Run, project: str, intent: dict) -> None:
+def _resume(r: Run, it: Intent) -> None:
     """Every run retries blocked and failed steps: a resume only kicks one."""
-    _open_record(r, project, "resume")
+    _open_record(r, it.project, "resume")
 
 
 def _request(payload: dict) -> dict:
@@ -171,7 +173,7 @@ def _request(payload: dict) -> dict:
         raise ValueError("repos must be non-empty, with one commands entry each")
     return {"repos": [str(x) for x in repos],
             "board": {"owner": str(b["owner"]), "number": int(b["number"])},
-            "commands": [{k: str(c.get(k) or "") for k in
+            "commands": [{k: str(dict(c).get(k) or "") for k in
                           ("setup_cmd", "gate_cmd", "verify_cmd")} for c in commands]}
 
 

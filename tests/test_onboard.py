@@ -160,7 +160,7 @@ def test_a_malformed_intent_is_deleted_with_a_warning(tmp_path, box, body, capsy
     run(box, FakeSh())
     assert list(d.iterdir()) == []
     assert record(tmp_path) is None
-    assert "malformed onboarding intent" in capsys.readouterr().err
+    assert "malformed intent" in capsys.readouterr().err
 
 
 def test_a_second_start_leaves_the_record_alone(tmp_path, box):
@@ -410,9 +410,12 @@ def test_an_edit_after_confirm_is_refused(tmp_path, box):
     assert "after confirm" in rec["notice"]
 
 
-@pytest.mark.parametrize("action", ["edit", "confirm", "resume"])
-def test_an_intent_for_no_open_record_is_dropped(tmp_path, box, action, capsys):
-    intent(tmp_path, action, {"revision": "x"})
+@pytest.mark.parametrize("action,payload", [
+    ("edit", {"repos": ["jesdi/analytics"], "board": {"owner": "jesdi", "number": 4},
+              "commands": [{"gate_cmd": "make gate"}]}),
+    ("confirm", {"revision": "x"}), ("resume", {})])
+def test_an_intent_for_no_open_record_is_dropped(tmp_path, box, action, payload, capsys):
+    intent(tmp_path, action, payload)
     run(box, FakeSh())
     assert record(tmp_path) is None
     assert "no open onboarding" in capsys.readouterr().err
