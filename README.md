@@ -283,6 +283,36 @@ prepares credentials and then executes its arguments. Without it, sessions call
 Podman directly. Use `AGENT_OPS_SESSION_IMAGE` to select your session image.
 Never put credentials in a targets file; supply them through your secret manager.
 
+### Onboarding a project
+
+On the box, as `agent`, run:
+
+```bash
+agent-ops project add analytics jesdi/analytics --board jesdi/4
+```
+
+It asks for each repository's `setup_cmd`, `gate_cmd` and `verify_cmd` (piped
+stdin works too), then starts the `agent-ops-onboard` unit
+(`python -m dispatcher.onboard --config …`) and prints the onboarding record.
+The unit resolves the repositories, clones them under `~/repos/<project>/`,
+and stops at **confirm**: the command shows the proposal (the project's
+`targets.yaml` block, paused) and asks you to confirm its revision. After that
+the unit opens a PR on `onboard/<project>` in agent-ops-infra, squash-merges
+it once its checks are green, waits for `agent-ops-update` to deploy it and
+for the console to list the project. The record then reads `complete` and the
+project is visible and paused; set `paused: false` in infra to start claiming.
+
+A timer reruns the unit every minute for the long waits. Rerun the same
+command to see where it stands or to retry a blocked step. Before confirm,
+rerunning it with other repositories edits the proposal; after confirm they
+are fixed. Records live in `state_dir/onboarding/<project>.json`; to abandon
+one, delete its record and close its infra PR by hand.
+
+The unit's environment needs `GH_INFRA_TOKEN`, a fine-grained token with
+contents and pull-requests write on agent-ops-infra only, used for every
+agent-ops-infra call. Resolve and clone use the box's repository token; the
+board check uses `GH_PROJECT_TOKEN`.
+
 ### GitHub permissions and PR polling
 
 The repository PAT needs **Actions: read** to monitor GitHub Actions runs and

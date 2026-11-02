@@ -160,3 +160,15 @@ def test_a_rerun_of_a_complete_onboarding_says_so(tmp_path, box, capsys):
     assert sh.calls == []
     out = capsys.readouterr().out
     assert "analytics is already onboarded" in out and "visible" in out
+
+
+def test_agent_ops_is_the_console_script_of_project_add():
+    import tomllib
+    from pathlib import Path
+    pyproject = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text())
+    assert pyproject["project"]["scripts"]["agent-ops"] == "dispatcher.onboard_cli:main"
+
+
+def test_the_unit_runs_the_engine_once_from_its_module(tmp_path, box):
+    onboard.main(["--config", str(box)])
+    assert (state(tmp_path) / "onboarding.lock").exists()
