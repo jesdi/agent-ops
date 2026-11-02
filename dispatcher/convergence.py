@@ -14,20 +14,22 @@ from pathlib import Path
 
 
 @contextmanager
-def pass_lock(state_dir: str, timeout: float | None = None):
+def pass_lock(state_dir: str, timeout: float | None = None,
+              name: str = "convergence.lock"):
     """Hold the lock. `timeout` None waits as long as it takes; else raise
-    TimeoutError when the lock is still held after `timeout` seconds."""
-    path = Path(state_dir) / "convergence.lock"
+    TimeoutError when the lock is still held after `timeout` seconds. The
+    onboarding unit takes its own lock by `name` (onboarding.lock)."""
+    path = Path(state_dir) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as fh:
-        _acquire(fh.fileno(), timeout)
+        _acquire(fh.fileno(), timeout, name)
         try:
             yield
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
-def _acquire(fd: int, timeout: float | None) -> None:
+def _acquire(fd: int, timeout: float | None, name: str) -> None:
     if timeout is None:
         fcntl.flock(fd, fcntl.LOCK_EX)
         return
@@ -38,5 +40,5 @@ def _acquire(fd: int, timeout: float | None) -> None:
             return
         except BlockingIOError:
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"convergence.lock still held after {timeout}s") from None
+                raise TimeoutError(f"{name} still held after {timeout}s") from None
             time.sleep(0.1)

@@ -713,3 +713,15 @@ def test_a_sibling_of_a_box_path_is_fine(tmp_path, monkeypatch):
 def test_paths_must_be_absolute(tmp_path, field):
     with pytest.raises(ValueError, match=rf"repository 't' \(project 'p'\): {field} must be absolute"):
         load_config(write_yaml(tmp_path, repository_extra={field: "repos/t"}))
+
+
+def test_parse_config_validates_a_raw_mapping_as_load_config_does(tmp_path):
+    """The onboarding validates a proposal against the live config by
+    adding it to the raw mapping: one loader, the same checks."""
+    import yaml
+    from dispatcher.config import parse_config
+    raw = yaml.safe_load(SAMPLE)
+    assert parse_config(raw).repositories[0].github_id == 101
+    raw["projects"].append({**raw["projects"][0], "name": "other"})
+    with pytest.raises(ValueError, match="already the name of"):
+        parse_config(raw)

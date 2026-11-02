@@ -39,3 +39,9 @@ def test_pass_lock_with_a_timeout_gives_up_while_another_holds_it(tmp_path):
                 pass
     with pass_lock(str(tmp_path), timeout=0.2):
         pass  # free again: taken at once
+
+
+def test_pass_lock_takes_the_named_lock_file(tmp_path):
+    with pass_lock(str(tmp_path), name="onboarding.lock"):
+        assert (tmp_path / "onboarding.lock").exists()
+        _try_flock(tmp_path / "convergence.lock")  # the other lock stays free

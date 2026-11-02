@@ -289,7 +289,13 @@ def _max_open(raw: dict, capacity: int) -> int:
 
 
 def load_config(path: str | Path) -> Config:
-    raw = yaml.safe_load(Path(path).read_text())
+    return parse_config(yaml.safe_load(Path(path).read_text()))
+
+
+def parse_config(raw: dict) -> Config:
+    """The config a targets.yaml mapping describes, every check of
+    load_config applied: the onboarding validates a proposal by adding it to
+    the live mapping."""
     if "triage_model" in raw:
         raise ValueError("triage_model: is gone; write models.triage: (a list of "
                          "entries, see targets.example.yaml)")
