@@ -1,0 +1,116 @@
+"""`agent-ops project add <name> <repo>... --board owner/number`: the
+terminal front end of the onboarding engine (dispatcher.onboard). Run on the
+box as `agent`: it asks for each repository's commands (piped stdin works
+too), writes an `add` intent carrying the request, starts agent-ops-onboard
+(the call returns when the oneshot run ends) and prints the record. The
+engine alone decides what a rerun does; when it awaits confirm, this asks
+and writes a `confirm` intent naming the revision shown."""
+from __future__ import annotations
+
+import argparse
+import getpass
+import sys
+import time
+
+import yaml
+
+from dispatcher import config, onboard
+
+USER = "agent"
+KICK = ["systemctl", "--user", "start", "agent-ops-onboard.service"]
+
+
+def _slug(value: str) -> str:
+    if not config._SLUG.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"{value!r}: a project name is a slug of a-z, 0-9 and -")
+    return value
+
+
+def _board(value: str) -> dict:
+    owner, _, number = value.partition("/")
+    if not owner or not number.isdigit():
+        raise argparse.ArgumentTypeError(f"{value!r}: expected owner/number, e.g. jesdi/4")
+    return {"owner": owner, "number": int(number)}
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="agent-ops")
+    add = parser.add_subparsers(dest="noun", required=True).add_parser(
+        "project").add_subparsers(dest="verb", required=True).add_parser(
+        "add", help="onboard a project: it ends merged, deployed, visible and paused")
+    add.add_argument("name", type=_slug)
+    add.add_argument("repos", nargs="+", metavar="repo")
+    add.add_argument("--board", type=_board, required=True, help="owner/number")
+    add.add_argument("--config", default=config.default_config_path())
+    return parser
+
+
+def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
+    args = _parser().parse_args(argv)
+    if getpass.getuser() != USER:
+        print(f"run agent-ops as {USER} (sudo -iu {USER})", file=sys.stderr)
+        return 2
+    state_dir = config.load_config(args.config).state_dir
+    _write(state_dir, "add", args.name,
+           _request(args, onboard.load_record(state_dir, args.name)))
+    rec = _kick(sh, state_dir, args.name)
+    if rec.awaiting == "confirm" and _yes(rec):
+        _write(state_dir, "confirm", args.name, {"revision": rec.revision})
+        _kick(sh, state_dir, args.name)
+    return 0
+
+
+def _yes(rec: onboard.Record) -> bool:
+    print(yaml.safe_dump(rec.proposal, sort_keys=False))
+    try:
+        return input(f"confirm {rec.revision[:12]}? [y/N] ").strip().lower() == "y"
+    except EOFError:
+        return False
+
+
+def _request(args: argparse.Namespace, rec: onboard.Record | None) -> dict:
+    """The request of this run. A repository already in the record offers
+    its commands as the answers Enter keeps."""
+    current = dict(zip(map(onboard.repo_key, rec.request["repos"]),
+                       rec.request["commands"])) if rec else {}
+    return {"repos": args.repos, "board": args.board,
+            "commands": [_commands(repo, current.get(onboard.repo_key(repo), {}))
+                         for repo in args.repos]}
+
+
+def _commands(repo: str, current: dict) -> dict:
+    def ask(key: str, hint: str) -> str:
+        return _ask(f"{repo} {key}", current.get(key, ""), hint)
+    out = {"setup_cmd": ask("setup_cmd", "empty skips")}
+    while not (gate := ask("gate_cmd", "required")):
+        pass
+    return {**out, "gate_cmd": gate, "verify_cmd": ask("verify_cmd", "empty skips")}
+
+
+def _ask(name: str, default: str, hint: str) -> str:
+    try:
+        answer = input(f"{name} [{default}]: " if default else f"{name} ({hint}): ")
+    except EOFError:
+        raise SystemExit("\nstdin ended before every command was given") from None
+    return answer.strip() or default
+
+
+def _write(state_dir: str, action: str, project: str, payload: dict) -> None:
+    onboard.write_intent(state_dir, action, project, payload,
+                         actor=getpass.getuser(), epoch_ms=time.time_ns() // 1_000_000)
+
+
+def _kick(sh: onboard.Sh, state_dir: str, project: str) -> onboard.Record:
+    """Start one engine run, wait for it, print the record and return it."""
+    sh(KICK)
+    rec = onboard.load_record(state_dir, project)
+    _show(rec)
+    return rec
+
+
+def _show(rec: onboard.Record) -> None:
+    print(f"\n{rec.project}: {rec.status}")
+    for s in rec.steps:
+        print(f"  {s.name:<13} {s.state:<9} {s.detail} {s.link}".rstrip())
+    if rec.notice:
+        print(f"notice: {rec.notice}")

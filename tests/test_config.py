@@ -713,3 +713,32 @@ def test_a_sibling_of_a_box_path_is_fine(tmp_path, monkeypatch):
 def test_paths_must_be_absolute(tmp_path, field):
     with pytest.raises(ValueError, match=rf"repository 't' \(project 'p'\): {field} must be absolute"):
         load_config(write_yaml(tmp_path, repository_extra={field: "repos/t"}))
+
+
+def test_parse_config_validates_a_raw_mapping_as_load_config_does(tmp_path):
+    """The onboarding validates a proposal against the live config by
+    adding it to the raw mapping: one loader, the same checks."""
+    import yaml
+    from dispatcher.config import parse_config
+    raw = yaml.safe_load(SAMPLE)
+    assert parse_config(raw).repositories[0].github_id == 101
+    raw["projects"].append({**raw["projects"][0], "name": "other"})
+    with pytest.raises(ValueError, match="already the name of"):
+        parse_config(raw)
+
+
+def test_the_box_defaults_are_named_once(monkeypatch, tmp_path):
+    """The units, the console and the CLI share these, never a copy."""
+    from dispatcher import config
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("AGENT_OPS_CONFIG", raising=False)
+    monkeypatch.delenv("AGENT_OPS_WEB_PORT", raising=False)
+    assert config.default_config_path() == str(tmp_path / "agent-ops-state" / "targets.yaml")
+    assert config.web_port() == 8481
+    monkeypatch.setenv("AGENT_OPS_CONFIG", "/etc/t.yaml")
+    monkeypatch.setenv("AGENT_OPS_WEB_PORT", "9000")
+    assert (config.default_config_path(), config.web_port()) == ("/etc/t.yaml", 9000)
+    assert config.INFRA_CHECKOUT in config._BOX_PATHS
+    assert config.REPOS_ROOT == "~/repos"
+    from web import auth
+    assert auth.HEADER == config.LOGIN_HEADER == "Tailscale-User-Login"

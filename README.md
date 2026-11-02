@@ -283,6 +283,42 @@ prepares credentials and then executes its arguments. Without it, sessions call
 Podman directly. Use `AGENT_OPS_SESSION_IMAGE` to select your session image.
 Never put credentials in a targets file; supply them through your secret manager.
 
+### Onboarding a project
+
+On the box, as `agent`, run:
+
+```bash
+agent-ops project add analytics jesdi/analytics --board jesdi/4
+```
+
+It asks for each repository's `setup_cmd`, `gate_cmd` and `verify_cmd` (piped
+stdin works too), then starts the `agent-ops-onboard` unit
+(`python -m dispatcher.onboard --config …`) and prints the onboarding record.
+The unit resolves the repositories, clones them under `~/repos/<project>/`,
+and stops at **confirm**: the command shows the proposal (the project's
+`targets.yaml` block, paused) and asks you to confirm its revision. After that
+the unit opens a PR on `onboard/<project>` in agent-ops-infra, squash-merges
+it once its checks are green, waits for `agent-ops-update` to deploy it and
+for the console to list the project. The record then reads `complete` and the
+project is visible and paused; set `paused: false` in infra to start claiming.
+
+A timer reruns the unit every minute for the long waits. Rerun the same
+command to see where it stands or to retry a blocked step; Enter keeps each
+command it asks for. Before the infra PR merges, a rerun with another board
+or other commands makes a new proposal and goes back to confirm; the
+repositories can change only before confirm. After the merge, edit
+targets.yaml by hand for now.
+
+The records in `state_dir/onboarding/` are the unit's private state: read
+them through `agent-ops project add`. There is no `abandon` yet. Until it
+ships, and only until then, abandon an onboarding by hand: delete
+`state_dir/onboarding/<project>.json` and close its infra PR.
+
+The unit's environment needs `GH_INFRA_TOKEN`, a fine-grained token with
+contents and pull-requests write on agent-ops-infra only, used for every
+agent-ops-infra call. Resolve and clone use the box's repository token; the
+board check uses `GH_PROJECT_TOKEN`.
+
 ### GitHub permissions and PR polling
 
 The repository PAT needs **Actions: read** to monitor GitHub Actions runs and

@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from fastapi import HTTPException, Request
 from starlette.responses import JSONResponse
 
-HEADER = "Tailscale-User-Login"
+from dispatcher.config import LOGIN_HEADER as HEADER
+
 HEADER_KEY = HEADER.lower().encode()
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 

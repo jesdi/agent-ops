@@ -1,3 +1,5 @@
+import pytest
+
 from dispatcher.pr_poll import CIStatus, PollResult, classify
 
 SELF = "agent-bot"
@@ -113,3 +115,14 @@ def test_feedback_outranks_red_check_and_conflict():
 def test_merged_outranks_red_check():
     p = payload(state="MERGED", merged_at="2026-09-07T12:00:00Z")
     assert classify(p, "", SELF, ci_statuses=[check("failure")]) == PollResult("merged")
+
+
+@pytest.mark.parametrize("conclusion,verdict", [
+    ("FAILURE", "red"), ("error", "red"), ("timed_out", "red"),
+    ("success", "green"), ("SKIPPED", "green"), ("neutral", "green"),
+    ("", "pending"), ("pending", "pending"), ("cancelled", "pending"),
+    ("action_required", "pending")])
+def test_ci_verdict_is_the_one_definition_of_red_and_green(conclusion, verdict):
+    """The dispatcher's red and onboarding's green read the same mapping."""
+    from dispatcher.pr_poll import ci_verdict
+    assert ci_verdict(conclusion) == verdict

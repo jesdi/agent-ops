@@ -158,9 +158,25 @@ def _pace(raw: dict) -> PaceConfig:
 
 
 _SLUG = re.compile(r"[a-z0-9-]+")
+# The box's infra checkout, which agent-ops-update keeps at infra main.
+INFRA_CHECKOUT = "~/agent-ops-infra"
 # Box-owned paths no clone or worktree may equal, contain or sit inside: the
 # deployment checkout and the infra repo (state_dir is added per config).
-_BOX_PATHS = ("~/agent-ops", "~/agent-ops-infra")
+_BOX_PATHS = ("~/agent-ops", INFRA_CHECKOUT)
+# Where onboarding clones a project's repositories: <REPOS_ROOT>/<project>/.
+REPOS_ROOT = "~/repos"
+# The header tailscale serve puts the caller's login in, on every console request.
+LOGIN_HEADER = "Tailscale-User-Login"
+
+
+def default_config_path() -> str:
+    return os.environ.get("AGENT_OPS_CONFIG",
+                          os.path.expanduser("~/agent-ops-state/targets.yaml"))
+
+
+def web_port() -> int:
+    """The console's loopback port: AGENT_OPS_WEB_PORT, 8481 by default."""
+    return int(os.environ.get("AGENT_OPS_WEB_PORT", "8481"))
 
 
 def _build(cls, owner: str, fields: dict):
@@ -289,7 +305,13 @@ def _max_open(raw: dict, capacity: int) -> int:
 
 
 def load_config(path: str | Path) -> Config:
-    raw = yaml.safe_load(Path(path).read_text())
+    return parse_config(yaml.safe_load(Path(path).read_text()))
+
+
+def parse_config(raw: dict) -> Config:
+    """The config a targets.yaml mapping describes, every check of
+    load_config applied: the onboarding validates a proposal by adding it to
+    the live mapping."""
     if "triage_model" in raw:
         raise ValueError("triage_model: is gone; write models.triage: (a list of "
                          "entries, see targets.example.yaml)")

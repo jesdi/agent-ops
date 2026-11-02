@@ -2,12 +2,14 @@
 stage.json signal sessions write into their worktree."""
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import stat
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -354,6 +356,36 @@ def _retire_legacy(state_dir: str | Path, repository: str, issue: int) -> None:
     legacy = _read(_legacy_path(state_dir, issue))
     if legacy is not None and legacy.repository == repository:
         _legacy_path(state_dir, issue).unlink(missing_ok=True)
+
+
+@contextmanager
+def state_lock(state_dir: str | Path, name: str, timeout: float | None = None):
+    """Hold an exclusive flock on state_dir/<name>. `timeout` None waits as
+    long as it takes; else raise TimeoutError when the lock is still held
+    after `timeout` seconds."""
+    path = Path(state_dir) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as fh:
+        _acquire(fh.fileno(), timeout, name)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _acquire(fd: int, timeout: float | None, name: str) -> None:
+    if timeout is None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"{name} still held after {timeout}s") from None
+            time.sleep(0.1)
 
 
 def write_json_atomic(path: Path, doc: dict) -> None:
