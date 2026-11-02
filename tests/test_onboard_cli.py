@@ -27,10 +27,14 @@ class Box:
 
     def __init__(self, config, engine=None):
         self.config, self.engine, self.calls = config, engine or FakeSh(), []
+        self.kicked_with = []  # the intent actions waiting at each kick
 
     def __call__(self, argv, cwd=None, env=None):
         self.calls.append(argv)
         assert " ".join(argv) == KICK
+        self.kicked_with.append([p.stem.rsplit("-", 1)[1] for p in sorted(
+            (onboard.Path(onboard.config.load_config(self.config).state_dir)
+             / "onboarding-intents").glob("*.json"))])
         onboard.run(self.config, sh=self.engine, get=no_get, now=NOW)
         return ""
 
@@ -91,3 +95,56 @@ def test_add_stops_when_stdin_ends_early(tmp_path, box, monkeypatch):
     with pytest.raises(SystemExit, match="stdin ended"):
         add(box, Box(box), "analytics", "jesdi/analytics", "--board", "jesdi/4")
     assert record(tmp_path) is None
+
+
+ADD = ("analytics", "jesdi/analytics", "--board", "jesdi/4")
+
+
+def test_add_shows_the_proposal_and_confirms_its_revision(tmp_path, box, monkeypatch, capsys):
+    stdin(monkeypatch, "\nmake gate\n\ny\n")
+    sh = Box(box)
+    add(box, sh, *ADD)
+    rec = record(tmp_path)
+    assert sh.kicked_with == [["start"], ["confirm"]]
+    assert rec["confirmed_revision"] == rec["revision"]
+    out = capsys.readouterr().out
+    assert "repo: jesdi/analytics" in out
+    assert f"confirm {rec['revision'][:12]}? [y/N]" in out
+
+
+def test_add_without_a_yes_leaves_it_unconfirmed(tmp_path, box, monkeypatch):
+    stdin(monkeypatch, "\nmake gate\n\n\n")
+    sh = Box(box)
+    add(box, sh, *ADD)
+    assert sh.kicked_with == [["start"]]
+    assert record(tmp_path)["confirmed_revision"] == ""
+
+
+def test_a_rerun_with_the_same_repositories_resumes(tmp_path, box, monkeypatch):
+    stdin(monkeypatch, "\nmake gate\n\nn\n")
+    add(box, Box(box), *ADD)
+    stdin(monkeypatch, "y\n")
+    sh = Box(box)
+    add(box, sh, "analytics", "https://github.com/jesdi/Analytics", "--board", "jesdi/4")
+    assert sh.kicked_with == [["resume"], ["confirm"]]
+
+
+def test_a_rerun_with_other_repositories_before_confirm_edits(tmp_path, box, monkeypatch):
+    stdin(monkeypatch, "\nmake gate\n\nn\n")
+    add(box, Box(box), *ADD)
+    stdin(monkeypatch, "\nmake gate\n\n\nnpm test\n\nn\n")
+    sh = Box(box, FakeSh({"gh api repos/jesdi/web": json.dumps(
+        {"id": 303, "full_name": "jesdi/web", "name": "web"})}))
+    add(box, sh, "analytics", "jesdi/analytics", "jesdi/web", "--board", "jesdi/4")
+    assert sh.kicked_with == [["edit"]]
+    assert record(tmp_path)["request"]["repos"] == ["jesdi/analytics", "jesdi/web"]
+
+
+def test_a_rerun_with_other_repositories_after_confirm_is_rejected(
+        tmp_path, box, monkeypatch, capsys):
+    stdin(monkeypatch, "\nmake gate\n\ny\n")
+    add(box, Box(box), *ADD)
+    sh = Box(box)
+    assert add(box, sh, "analytics", "jesdi/web", "--board", "jesdi/4") == 1
+    assert sh.calls == []
+    assert "after confirm" in capsys.readouterr().err

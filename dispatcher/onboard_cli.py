@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 from dispatcher import config, onboard
 
 USER = "agent"
@@ -50,10 +52,46 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
         print(f"run agent-ops as {USER} (sudo -iu {USER})", file=sys.stderr)
         return 2
     state_dir = config.load_config(args.config).state_dir
-    _write(state_dir, "start", args.name, _request(args))
-    _kick(sh)
-    _show(onboard.load_record(state_dir, args.name))
+    rec = onboard.load_record(state_dir, args.name)
+    action = _action(rec, args)
+    if not action:
+        print("the repositories can't change after confirm; delete "
+              f"{state_dir}/onboarding/{args.name}.json and close its infra PR "
+              "to start over", file=sys.stderr)
+        return 1
+    _write(state_dir, action, args.name, {} if action == "resume" else _request(args))
+    rec = _kick(sh, state_dir, args.name)
+    if _at_confirm(rec) and _yes(rec):
+        _write(state_dir, "confirm", args.name, {"revision": rec["revision"]})
+        _kick(sh, state_dir, args.name)
     return 0
+
+
+def _action(rec: dict | None, args: argparse.Namespace) -> str:
+    """The intent a run of `project add` writes; "" when it is refused."""
+    if rec is None:
+        return "start"
+    if _same(rec["request"]["repos"], args.repos):
+        return "resume"
+    return "" if rec["confirmed_revision"] else "edit"
+
+
+def _same(a: list[str], b: list[str]) -> bool:
+    def norm(repos):
+        return [(onboard.slug(x) or x).lower() for x in repos]
+    return norm(a) == norm(b)
+
+
+def _at_confirm(rec: dict) -> bool:
+    return any(s["name"] == "confirm" and s["state"] == "blocked" for s in rec["steps"])
+
+
+def _yes(rec: dict) -> bool:
+    print(yaml.safe_dump(rec["proposal"], sort_keys=False))
+    try:
+        return input(f"confirm {rec['revision'][:12]}? [y/N] ").strip().lower() == "y"
+    except EOFError:
+        return False
 
 
 def _request(args: argparse.Namespace) -> dict:
@@ -80,8 +118,12 @@ def _write(state_dir: str, action: str, project: str, payload: dict) -> None:
                          actor=getpass.getuser(), epoch_ms=time.time_ns() // 1_000_000)
 
 
-def _kick(sh: onboard.Sh) -> None:
+def _kick(sh: onboard.Sh, state_dir: str, project: str) -> dict:
+    """Start one engine run, wait for it, print the record and return it."""
     sh(KICK)
+    rec = onboard.load_record(state_dir, project)
+    _show(rec)
+    return rec
 
 
 def _show(rec: dict) -> None:

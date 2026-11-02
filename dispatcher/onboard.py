@@ -35,7 +35,7 @@ from dispatcher.state import write_json_atomic
 
 INTENTS_DIR = "onboarding-intents"
 RECORDS_DIR = "onboarding"
-ACTIONS = ("start",)
+ACTIONS = ("start", "edit", "confirm", "resume")
 
 Sh = Callable[..., str]
 Get = Callable[[str, dict], bytes]
@@ -111,9 +111,52 @@ def _start(r: Run, project: str, intent: dict) -> None:
               "started_by": str(intent.get("actor", "")),
               "request": _request(intent["payload"]), "proposal": {},
               "revision": "", "confirmed_revision": "", "notice": "",
-              "steps": [{"name": n, "state": "pending", "detail": "", "link": "",
-                         "since": ""} for n in STEPS],
-              "infra_pr": {}, "resources": []})
+              "steps": _pending(), "infra_pr": {}, "resources": []})
+
+
+def _pending() -> list[dict]:
+    return [{"name": n, "state": "pending", "detail": "", "link": "", "since": ""}
+            for n in STEPS]
+
+
+def _open_record(r: Run, project: str, action: str) -> dict | None:
+    rec = load_record(r.cfg.state_dir, project)
+    if rec is None or rec["status"] != "open":
+        print(f"[warn] {action} for {project}: no open onboarding; dropped",
+              file=sys.stderr)
+        return None
+    return rec
+
+
+def _edit(r: Run, project: str, intent: dict) -> None:
+    """Before confirm: a new request, resolved again from the first step."""
+    if not (rec := _open_record(r, project, "edit")):
+        return
+    if rec["confirmed_revision"]:
+        rec["notice"] = "edit refused: the repositories can't change after confirm"
+    else:
+        rec.update(request=_request(intent["payload"]), proposal={}, revision="",
+                   notice="", steps=_pending())
+    _save(r, rec)
+
+
+def _confirm(r: Run, project: str, intent: dict) -> None:
+    """Confirm names the revision it saw; a stale one is refused, as the
+    console refuses stale model settings."""
+    if not (rec := _open_record(r, project, "confirm")):
+        return
+    seen = str(intent["payload"]["revision"])
+    if seen == rec["revision"]:
+        rec.update(confirmed_revision=seen, notice="")
+    else:
+        rec["notice"] = (f"confirm of revision {seen[:12]} refused: the proposal is "
+                         f"now revision {rec['revision'][:12]}; review it and confirm again")
+    _save(r, rec)
+
+
+def _resume(r: Run, project: str, intent: dict) -> None:
+    """Every run retries blocked and failed steps: a resume only kicks one."""
+    _open_record(r, project, "resume")
 
 
 def _request(payload: dict) -> dict:
@@ -127,7 +170,7 @@ def _request(payload: dict) -> dict:
                           ("setup_cmd", "gate_cmd", "verify_cmd")} for c in commands]}
 
 
-_APPLY = {"start": _start}
+_APPLY = {"start": _start, "edit": _edit, "confirm": _confirm, "resume": _resume}
 
 
 # -- records ------------------------------------------------------------------
@@ -304,8 +347,20 @@ def _resource(rec: dict, kind: str, ref: str) -> None:
         rec["resources"].append(entry)
 
 
-STEPS = ("resolve", "clone")
-_STEPS = {"resolve": _resolve, "clone": _clone}
+# -- confirm ------------------------------------------------------------------
+
+
+def _confirm_step(r: Run, rec: dict) -> tuple[str, str, str]:
+    if rec["revision"] and rec["confirmed_revision"] == rec["revision"]:
+        return "verified", "", ""
+    req = rec["request"]
+    raise Blocked(f"review the proposal, then confirm revision {rec['revision'][:12]}: "
+                  f"agent-ops project add {rec['project']} {' '.join(req['repos'])} "
+                  f"--board {req['board']['owner']}/{req['board']['number']}")
+
+
+STEPS = ("resolve", "clone", "confirm")
+_STEPS = {"resolve": _resolve, "clone": _clone, "confirm": _confirm_step}
 
 
 def main(argv: list[str] | None = None) -> None:

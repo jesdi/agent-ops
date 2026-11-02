@@ -337,3 +337,88 @@ def test_a_failed_clone_is_retried_on_the_next_run(tmp_path, box):
     run(box, sh)
     assert step(record(tmp_path), "clone")["state"] == "verified"
     assert sh.ran("gh api repos/") == []  # resolve stays verified
+
+
+# -- confirm ------------------------------------------------------------------
+
+
+def intent(tmp_path, action, payload=None, project="analytics", epoch_ms=5000):
+    return onboard.write_intent(state(tmp_path), action, project, payload or {},
+                                actor="agent", epoch_ms=epoch_ms)
+
+
+def resolved(tmp_path, box, **kw):
+    start(tmp_path, **kw)
+    run(box, FakeSh())
+    return record(tmp_path)
+
+
+def test_confirm_blocks_with_the_command_to_run(tmp_path, box):
+    rec = resolved(tmp_path, box)
+    s = step(rec, "confirm")
+    assert s["state"] == "blocked"
+    assert rec["revision"][:12] in s["detail"]
+    assert "agent-ops project add analytics jesdi/analytics --board jesdi/4" in s["detail"]
+
+
+def test_confirm_of_the_current_revision_verifies_the_step(tmp_path, box):
+    rec = resolved(tmp_path, box)
+    intent(tmp_path, "confirm", {"revision": rec["revision"]})
+    run(box, FakeSh())
+    rec = record(tmp_path)
+    assert rec["confirmed_revision"] == rec["revision"]
+    assert step(rec, "confirm")["state"] == "verified"
+
+
+def test_a_stale_confirm_is_refused_into_the_notice(tmp_path, box):
+    rec = resolved(tmp_path, box)
+    intent(tmp_path, "confirm", {"revision": "0" * 64})
+    run(box, FakeSh())
+    rec = record(tmp_path)
+    assert rec["confirmed_revision"] == ""
+    assert "000000000000" in rec["notice"] and rec["revision"][:12] in rec["notice"]
+    assert step(rec, "confirm")["state"] == "blocked"
+
+
+def test_an_edit_before_confirm_resolves_the_new_request(tmp_path, box):
+    first = resolved(tmp_path, box)
+    payload = {"repos": ["jesdi/analytics"], "board": {"owner": "jesdi", "number": 4},
+               "commands": [{"gate_cmd": "make check"}]}
+    intent(tmp_path, "edit", payload)
+    run(box, FakeSh())
+    rec = record(tmp_path)
+    assert rec["proposal"]["repositories"][0]["gate_cmd"] == "make check"
+    assert rec["revision"] != first["revision"]
+    assert step(rec, "confirm")["state"] == "blocked"
+    # the revision is the proposal's digest: the same proposal, the same one
+    intent(tmp_path, "edit", {**payload, "commands": [{"gate_cmd": "make gate"}]},
+           epoch_ms=6000)
+    run(box, FakeSh())
+    assert record(tmp_path)["revision"] == first["revision"]
+
+
+def test_an_edit_after_confirm_is_refused(tmp_path, box):
+    rec = resolved(tmp_path, box)
+    intent(tmp_path, "confirm", {"revision": rec["revision"]})
+    intent(tmp_path, "edit", {"repos": ["jesdi/web"], "board": {"owner": "jesdi", "number": 4},
+                              "commands": [{"gate_cmd": "x"}]}, epoch_ms=6000)
+    run(box, FakeSh())
+    rec = record(tmp_path)
+    assert rec["request"]["repos"] == ["jesdi/analytics"]
+    assert "after confirm" in rec["notice"]
+
+
+@pytest.mark.parametrize("action", ["edit", "confirm", "resume"])
+def test_an_intent_for_no_open_record_is_dropped(tmp_path, box, action, capsys):
+    intent(tmp_path, action, {"revision": "x"})
+    run(box, FakeSh())
+    assert record(tmp_path) is None
+    assert "no open onboarding" in capsys.readouterr().err
+
+
+def test_resume_retries_the_current_step(tmp_path, box):
+    start(tmp_path)
+    run(box, FakeSh({"gh repo clone": failure("boom")}))
+    intent(tmp_path, "resume")
+    run(box, FakeSh())
+    assert step(record(tmp_path), "clone")["state"] == "verified"
