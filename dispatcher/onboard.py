@@ -557,14 +557,40 @@ def _pr_current(r: Run, rec: Record, pr: OpenPr, env: dict) -> bool:
 
 
 def _push_pr(r: Run, rec: Record, main: str, pr: OpenPr | None, env: dict) -> Outcome:
-    """Push the branch, then open its PR unless one is open."""
-    pushed = _push(r, rec, main, env, pr.url if pr else rec.pr_url)
+    """Push the branch (or adopt this revision's push a crash left
+    unrecorded), then open its PR unless one is open."""
+    pushed = _adopted(r, rec, env) or _push(r, rec, main, env, pr.url if pr else rec.pr_url)
     if isinstance(pushed, Outcome):
         return pushed
     number, url = (pr.number, pr.url) if pr else _create_pr(r, rec, env)
     rec.infra_pr = InfraPr(number, url, *pushed, rec.revision, r.now.isoformat())
     _resource(rec, "infra-pr", url)
     return Outcome(StepState.VERIFIED, link=url)
+
+
+AUTHOR = "agent-ops-onboard"
+TRAILER = "Onboard-Revision"
+
+
+def _remote_head(r: Run, env: dict, branch: str) -> str:
+    """onboard/<project>'s head on infra as last fetched; "" when absent."""
+    return _git(r, env, "for-each-ref", "--format=%(objectname)",
+                f"refs/remotes/origin/{branch}").strip()
+
+
+def _adopted(r: Run, rec: Record, env: dict) -> tuple[str, str] | None:
+    """The branch's head and base when the head is the unit's own push of
+    this revision onto today's main that the record never saved (#210: a
+    crash between create and record still finds the resource)."""
+    head = _remote_head(r, env, f"onboard/{rec.project}")
+    if not head or head == (rec.infra_pr.head if rec.infra_pr else ""):
+        return None
+    author, parents, trailer = (_git(r, env, "show", "-s", "--format=%an%n%P%n"
+                                     f"%(trailers:key={TRAILER},valueonly)", head)
+                                + "\n\n").splitlines()[:3]
+    base = _git(r, env, "rev-parse", "origin/main").strip()
+    return (head, base) if (author, parents, trailer.strip()) == (
+        AUTHOR, base, rec.revision) else None
 
 
 def _push(r: Run, rec: Record, main: str, env: dict,
@@ -582,13 +608,12 @@ def _push(r: Run, rec: Record, main: str, env: dict,
     _git(r, env, "checkout", "-B", branch, "origin/main")
     (_scratch(r) / INFRA_TARGETS).write_text(text)
     _git(r, env, "add", INFRA_TARGETS)
-    _git(r, env, "-c", "user.name=agent-ops-onboard", "-c",
-         "user.email=agent-ops-onboard@users.noreply.github.com",
-         "commit", "-m", f"feat(config): onboard {project}")
+    _git(r, env, "-c", f"user.name={AUTHOR}", "-c",
+         f"user.email={AUTHOR}@users.noreply.github.com", "commit",
+         "-m", f"feat(config): onboard {project}", "-m", f"{TRAILER}: {rec.revision}")
     head, base = (_git(r, env, "rev-parse", ref).strip() for ref in ("HEAD", "origin/main"))
     ours = rec.infra_pr.head if rec.infra_pr else ""
-    theirs = _git(r, env, "for-each-ref", "--format=%(objectname)",
-                  f"refs/remotes/origin/{branch}").strip()
+    theirs = _remote_head(r, env, branch)
     if theirs != ours:
         return blocked(f"{branch} on {INFRA_REPO} is at {theirs}, which this onboarding "
                        f"didn't push (it pushed {ours or 'nothing yet'}): review it, then "

@@ -536,6 +536,7 @@ def infra_routes(main=LIVE, open_prs="[]", **merge):
             "add config/targets.yaml": "", "commit -m": "",
             "rev-parse HEAD": "head1\n", "rev-parse origin/main": "base1\n",
             "for-each-ref": "",  # no onboard/analytics on infra yet
+            "show -s --format": "jesdi\nbase1\n\n",  # a head someone else pushed
             " push ": "",
             "gh pr create": PR_URL + "\n"}
 
@@ -636,8 +637,8 @@ def test_config_pr_blocks_on_a_branch_head_it_did_not_push(tmp_path, box, infra_
     assert s["state"] == "blocked" and "theirs1" in s["detail"] and s["link"] == PR_URL
     assert "until `agent-ops project abandon` ships" in s["detail"]
     assert sh.ran(" push ") == [] and sh.ran("gh pr create") == []
-    [(argv, _, _)] = sh.ran("for-each-ref")
-    assert argv[-1] == "refs/remotes/origin/onboard/analytics"
+    assert {argv[-1] for argv, _, _ in sh.ran("for-each-ref")} == {
+        "refs/remotes/origin/onboard/analytics"}
     assert all("--prune" in argv for argv, _, _ in sh.ran("fetch"))
 
 
@@ -769,6 +770,52 @@ def test_config_merge_rebuilds_the_pr_when_main_moved(tmp_path, box, infra_token
     assert argv[-4:] == ["push", "--force-with-lease=onboard/analytics:head1", "origin",
                          "HEAD:refs/heads/onboard/analytics"]
     assert sh.ran("gh pr create") == []
+
+
+def our_commit(author="agent-ops-onboard", parent="base1", revision=""):
+    return f"{author}\n{parent}\n{revision}\n"
+
+
+def pushed_then_crashed(tmp_path, box, head_commit):
+    """Confirmed; then a run whose branch already holds `mine1`, pushed
+    before a crash lost the record's save, with its PR open."""
+    rec = resolved(tmp_path, box)
+    intent(tmp_path, "confirm", {"revision": rec["revision"]})
+    sh = FakeSh(infra_routes(open_prs=json.dumps(
+        [{"number": 7, "url": PR_URL, "headRefOid": "mine1"}]), **NO_CI_RUN))
+    sh.route("for-each-ref", "mine1\n")
+    sh.route("show -s --format=%an%n%P%n%(trailers:key=Onboard-Revision,valueonly) mine1",
+             head_commit(rec["revision"]))
+    run(box, sh)
+    return sh, record(tmp_path)
+
+
+def test_config_pr_adopts_its_own_push_after_a_crash(tmp_path, box, infra_token):
+    sh, rec = pushed_then_crashed(tmp_path, box, lambda rev: our_commit(revision=rev))
+    assert step(rec, "config-pr")["state"] == "verified"
+    assert (rec["infra_pr"]["number"], rec["infra_pr"]["head"], rec["infra_pr"]["base"]) == (
+        7, "mine1", "base1")
+    assert rec["infra_pr"]["revision"] == rec["revision"]
+    assert sh.ran(" push ") == [] and sh.ran("gh pr create") == []
+
+
+@pytest.mark.parametrize("head_commit", [
+    lambda rev: our_commit(author="jesdi", revision=rev),
+    lambda rev: our_commit(parent="base0", revision=rev),
+    lambda rev: our_commit(revision="0" * 64)])
+def test_config_pr_blocks_on_a_head_that_is_not_its_push_of_this_revision(
+        tmp_path, box, infra_token, head_commit):
+    sh, rec = pushed_then_crashed(tmp_path, box, head_commit)
+    s = step(rec, "config-pr")
+    assert s["state"] == "blocked" and "mine1" in s["detail"]
+    assert sh.ran(" push ") == []
+
+
+def test_every_infra_commit_carries_its_revision(tmp_path, box, infra_token):
+    sh = FakeSh(infra_routes())
+    rec = confirmed(tmp_path, box, sh)
+    [(argv, _, _)] = sh.ran("commit -m")
+    assert argv[-2:] == ["-m", f"Onboard-Revision: {rec['revision']}"]
 
 
 def test_a_rebuild_blocks_when_someone_else_moved_the_branch(tmp_path, box, infra_token):
