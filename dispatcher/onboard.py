@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.request
@@ -273,8 +274,38 @@ def _check_fits(r: Run, proposal: dict) -> None:
         raise Blocked(f"the live config refuses the proposal: {e}") from None
 
 
-STEPS = ("resolve",)
-_STEPS = {"resolve": _resolve}
+# -- clone --------------------------------------------------------------------
+
+
+def _clone(r: Run, rec: dict) -> tuple[str, str, str]:
+    for x in rec["proposal"]["repositories"]:
+        _clone_one(r, Path(x["clone_path"]), x["repo"])
+        _resource(rec, "clone", x["clone_path"])
+    return "verified", "", ""
+
+
+def _clone_one(r: Run, path: Path, repo: str) -> None:
+    """Clone into <path>.partial, then rename: a path that exists is a whole
+    clone. The repository at the path must be `repo`."""
+    if not path.exists():
+        partial = path.with_name(f"{path.name}.partial")
+        shutil.rmtree(partial, ignore_errors=True)
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        r.sh(["gh", "repo", "clone", repo, str(partial)])
+        partial.rename(path)
+    origin = slug(r.sh(["git", "-C", str(path), "remote", "get-url", "origin"]))
+    if (origin or "").lower() != repo.lower():
+        raise Blocked(f"{path} holds {origin}, not {repo}: move it away, then resume")
+
+
+def _resource(rec: dict, kind: str, ref: str) -> None:
+    entry = {"kind": kind, "ref": ref, "state": "in use"}
+    if entry not in rec["resources"]:
+        rec["resources"].append(entry)
+
+
+STEPS = ("resolve", "clone")
+_STEPS = {"resolve": _resolve, "clone": _clone}
 
 
 def main(argv: list[str] | None = None) -> None:

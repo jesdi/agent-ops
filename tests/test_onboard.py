@@ -40,6 +40,16 @@ def failure(stderr):
     return subprocess.CalledProcessError(1, ["x"], output="", stderr=stderr)
 
 
+def cloned(argv, cwd, env):
+    """`gh repo clone <repo> <path>`: the clone appears at <path>."""
+    Path(argv[-1]).mkdir(parents=True)
+    (Path(argv[-1]) / ".git").mkdir()
+    return ""
+
+
+ORIGIN = "https://github.com/jesdi/analytics.git\n"
+
+
 class FakeSh:
     """Answers each call from the first route whose key is a substring of
     the joined argv: a string, an exception to raise, or a callable taking
@@ -47,7 +57,9 @@ class FakeSh:
 
     def __init__(self, routes=None):
         self.routes = {"gh api repos/jesdi/analytics": gh_repo(202, "jesdi/analytics"),
-                       "gh api graphql": BOARD, **(routes or {})}
+                       "gh api graphql": BOARD,
+                       "gh repo clone": cloned,
+                       "remote get-url origin": ORIGIN, **(routes or {})}
         self.calls = []
 
     def route(self, key, answer):
@@ -265,3 +277,63 @@ def test_a_step_keeps_its_since_while_its_state_holds(tmp_path, box):
 
 def test_a_run_with_nothing_open_calls_nothing(tmp_path, box):
     run(box, FakeSh({"": AssertionError("no call expected")}))
+
+
+# -- clone --------------------------------------------------------------------
+
+
+def clone_path(project="analytics", name="analytics") -> Path:
+    return Path.home() / "repos" / project / name
+
+
+def test_clone_clones_into_a_partial_path_then_renames_it(tmp_path, box):
+    start(tmp_path)
+    sh = FakeSh()
+    run(box, sh)
+    rec = record(tmp_path)
+    assert step(rec, "clone")["state"] == "verified"
+    [(argv, _, _)] = sh.ran("gh repo clone")
+    assert argv == ["gh", "repo", "clone", "jesdi/analytics", f"{clone_path()}.partial"]
+    assert (clone_path() / ".git").is_dir()
+    assert not Path(f"{clone_path()}.partial").exists()
+    assert rec["resources"] == [{"kind": "clone", "ref": str(clone_path()),
+                                 "state": "in use"}]
+
+
+def test_clone_keeps_a_clone_already_at_the_path(tmp_path, box):
+    clone_path().mkdir(parents=True)
+    start(tmp_path)
+    sh = FakeSh({"remote get-url origin": "git@github.com:JESDI/analytics.git\n"})
+    run(box, sh)
+    assert step(record(tmp_path), "clone")["state"] == "verified"
+    assert sh.ran("gh repo clone") == []
+
+
+def test_clone_blocks_when_another_repository_is_at_the_path(tmp_path, box):
+    clone_path().mkdir(parents=True)
+    start(tmp_path)
+    run(box, FakeSh({"remote get-url origin": "https://github.com/jesdi/other\n"}))
+    s = step(record(tmp_path), "clone")
+    assert s["state"] == "blocked"
+    assert str(clone_path()) in s["detail"] and "jesdi/other" in s["detail"]
+
+
+def test_clone_removes_a_stale_partial_clone_first(tmp_path, box):
+    partial = Path(f"{clone_path()}.partial")
+    (partial / "half").mkdir(parents=True)
+    start(tmp_path)
+    run(box, FakeSh())
+    assert step(record(tmp_path), "clone")["state"] == "verified"
+    assert not (clone_path() / "half").exists()
+
+
+def test_a_failed_clone_is_retried_on_the_next_run(tmp_path, box):
+    start(tmp_path)
+    run(box, FakeSh({"gh repo clone": failure("fatal: early EOF")}))
+    s = step(record(tmp_path), "clone")
+    assert s["state"] == "failed" and "early EOF" in s["detail"]
+    assert not clone_path().exists()
+    sh = FakeSh()
+    run(box, sh)
+    assert step(record(tmp_path), "clone")["state"] == "verified"
+    assert sh.ran("gh api repos/") == []  # resolve stays verified
