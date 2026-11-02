@@ -485,6 +485,11 @@ def _confirm_step(r: Run, rec: Record) -> Outcome:
 
 # -- config-pr ----------------------------------------------------------------
 
+# Temporary: the record's layout is private to this module, but abandoning
+# an onboarding takes deleting it by hand until `abandon` ships.
+ABANDON = ("abandon the onboarding: delete its record in state_dir/onboarding/ and "
+           "close its infra PR by hand, for now, until `agent-ops project abandon` ships")
+
 NO_INFRA_TOKEN = blocked("GH_INFRA_TOKEN is unset: agent-ops-onboard loads it from "
                          "its op.env entry; run project add through that unit")
 
@@ -587,7 +592,7 @@ def _push(r: Run, rec: Record, main: str, env: dict,
     if theirs != ours:
         return blocked(f"{branch} on {INFRA_REPO} is at {theirs}, which this onboarding "
                        f"didn't push (it pushed {ours or 'nothing yet'}): review it, then "
-                       "delete the branch, or the record to start over", link)
+                       f"delete the branch, or {ABANDON}", link)
     _git(r, env, "push", *([f"--force-with-lease={branch}:{ours}"] if ours else []),
          "origin", f"HEAD:refs/heads/{branch}")
     return head, base
@@ -622,8 +627,7 @@ def _config_merge(r: Run, rec: Record) -> Outcome:
     if pr["state"] == "MERGED":
         return _merged(rec, pr["mergeCommit"]["oid"], pr["mergedAt"])
     if pr["state"] != "OPEN":
-        return blocked("the infra PR was closed: reopen it, or delete the record "
-                       "to start over", ip.url)
+        return blocked(f"the infra PR was closed: reopen it, or {ABANDON}", ip.url)
     return _rebuild_or_merge(r, rec, env)
 
 

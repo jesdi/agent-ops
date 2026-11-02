@@ -307,8 +307,12 @@ command to see where it stands or to retry a blocked step; Enter keeps each
 command it asks for. Before the infra PR merges, a rerun with another board
 or other commands makes a new proposal and goes back to confirm; the
 repositories can change only before confirm. After the merge, edit
-targets.yaml by hand for now. Records live in `state_dir/onboarding/<project>.json`; to abandon
-one, delete its record and close its infra PR by hand.
+targets.yaml by hand for now.
+
+The records in `state_dir/onboarding/` are the unit's private state: read
+them through `agent-ops project add`. There is no `abandon` yet. Until it
+ships, and only until then, abandon an onboarding by hand: delete
+`state_dir/onboarding/<project>.json` and close its infra PR.
 
 The unit's environment needs `GH_INFRA_TOKEN`, a fine-grained token with
 contents and pull-requests write on agent-ops-infra only, used for every

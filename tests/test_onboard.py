@@ -634,6 +634,7 @@ def test_config_pr_blocks_on_a_branch_head_it_did_not_push(tmp_path, box, infra_
     rec = confirmed(tmp_path, box, sh)
     s = step(rec, "config-pr")
     assert s["state"] == "blocked" and "theirs1" in s["detail"] and s["link"] == PR_URL
+    assert "until `agent-ops project abandon` ships" in s["detail"]
     assert sh.ran(" push ") == [] and sh.ran("gh pr create") == []
     [(argv, _, _)] = sh.ran("for-each-ref")
     assert argv[-1] == "refs/remotes/origin/onboard/analytics"
@@ -801,6 +802,7 @@ def test_config_merge_blocks_on_a_closed_pr(tmp_path, box, infra_token):
     closed = {"gh pr view 7": json.dumps({"state": "CLOSED"})}
     s = step(confirmed(tmp_path, box, FakeSh(infra_routes(**closed))), "config-merge")
     assert s["state"] == "blocked" and "closed" in s["detail"]
+    assert "for now, until `agent-ops project abandon` ships" in s["detail"]
 
 
 # -- deploy -------------------------------------------------------------------
