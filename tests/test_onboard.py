@@ -718,3 +718,68 @@ def test_deploy_blocks_naming_the_timer_after_15_minutes(tmp_path, box, infra_to
     run(box, FakeSh(infra_routes()), now=NOW + timedelta(minutes=16))
     s = step(record(tmp_path), "deploy")
     assert s["state"] == "blocked" and "agent-ops-update.timer" in s["detail"]
+
+
+# -- visible ------------------------------------------------------------------
+
+LANDED = {"merge-base --is-ancestor merge1 HEAD": ""}
+
+
+class FakeGet:
+    def __init__(self, *answers):
+        self.answers, self.calls = list(answers), []
+
+    def __call__(self, url, headers):
+        self.calls.append((url, headers))
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return json.dumps({"projects": answer}).encode()
+
+
+LISTED = [{"name": "portfolio-eval", "paused": False, "repositories": ["portfolio_eval"]},
+          {"name": "analytics", "paused": True, "repositories": ["analytics"]}]
+
+
+def deployed(tmp_path, box, get, now=NOW + timedelta(minutes=2)):
+    """Merged, then a run at `now` that sees the deploy and asks `get`."""
+    merged(tmp_path, box)
+    box.write_text(DEPLOYED)
+    run(box, FakeSh(infra_routes(**LANDED)), get=get, now=now)
+    return record(tmp_path)
+
+
+def test_visible_completes_once_the_console_lists_the_project_paused(
+        tmp_path, box, infra_token, monkeypatch):
+    monkeypatch.setenv("AGENT_OPS_WEB_PORT", "9123")
+    get = FakeGet(LISTED)
+    rec = deployed(tmp_path, box, get)
+    assert step(rec, "visible")["state"] == "verified"
+    assert rec["status"] == "complete"
+    assert get.calls == [("http://127.0.0.1:9123/api/projects",
+                          {"Tailscale-User-Login": "agent-ops-onboard"})]
+
+
+@pytest.mark.parametrize("answer", [
+    ConnectionRefusedError(61, "refused"), LISTED[:1],
+    [{**LISTED[1], "paused": False}]])
+def test_visible_waits_while_the_console_is_down_or_lacks_the_project(
+        tmp_path, box, infra_token, answer):
+    rec = deployed(tmp_path, box, FakeGet(answer))
+    assert step(rec, "visible")["state"] == "waiting"
+    assert rec["status"] == "open"
+
+
+def test_visible_blocks_naming_the_web_unit_after_15_minutes(tmp_path, box, infra_token):
+    deployed(tmp_path, box, FakeGet(LISTED[:1]))
+    run(box, FakeSh(), get=FakeGet(LISTED[:1]), now=NOW + timedelta(minutes=16))
+    assert step(record(tmp_path), "visible")["state"] == "waiting"  # 14 since the deploy
+    run(box, FakeSh(), get=FakeGet(LISTED[:1]), now=NOW + timedelta(minutes=18))
+    s = step(record(tmp_path), "visible")
+    assert s["state"] == "blocked" and "agent-ops-web.service" in s["detail"]
+
+
+def test_a_complete_record_is_left_alone(tmp_path, box, infra_token):
+    deployed(tmp_path, box, FakeGet(LISTED))
+    run(box, FakeSh({"": AssertionError("no call expected")}), get=no_get)
+    assert record(tmp_path)["status"] == "complete"

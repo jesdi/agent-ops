@@ -53,6 +53,10 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
         return 2
     state_dir = config.load_config(args.config).state_dir
     rec = onboard.load_record(state_dir, args.name)
+    if rec and rec["status"] == "complete":
+        print(f"{args.name} is already onboarded")
+        _show(rec)
+        return 0
     action = _action(rec, args)
     if not action:
         print("the repositories can't change after confirm; delete "

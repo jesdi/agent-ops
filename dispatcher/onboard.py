@@ -231,6 +231,8 @@ def _advance(r: Run, rec: dict) -> None:
         _save(r, rec)
         if state != "verified":
             return
+    rec["status"] = "complete"
+    _save(r, rec)
 
 
 def _work(r: Run, rec: dict, name: str) -> tuple[str, str, str]:
@@ -571,9 +573,39 @@ def _updater_failure(r: Run, since: datetime) -> str:
                  "--no-pager", "-o", "cat"]).strip()
 
 
-STEPS = ("resolve", "clone", "confirm", "config-pr", "config-merge", "deploy")
+# -- visible ------------------------------------------------------------------
+
+VISIBLE_LIMIT = timedelta(minutes=15)
+# The web console reads targets.yaml only at startup, so ask the running one.
+LOGIN = "agent-ops-onboard"
+
+
+def _visible(r: Run, rec: dict) -> tuple[str, str, str]:
+    if _listed_paused(r, rec["project"]):
+        return "verified", "", ""
+    deployed = next(s["since"] for s in rec["steps"] if s["name"] == "deploy")
+    if r.now - datetime.fromisoformat(deployed) > VISIBLE_LIMIT:
+        raise Blocked("the console doesn't list the project 15 minutes after the "
+                      "deploy: check agent-ops-web.service "
+                      "(systemctl --user status agent-ops-web.service)")
+    return "waiting", "waiting for the console to list the project", ""
+
+
+def _listed_paused(r: Run, project: str) -> bool:
+    port = os.environ.get("AGENT_OPS_WEB_PORT", "8481")
+    try:
+        body = r.get(f"http://127.0.0.1:{port}/api/projects",
+                     {"Tailscale-User-Login": LOGIN})
+    except OSError:  # refused while the updater restarts it
+        return False
+    return any(p["name"] == project and p["paused"]
+               for p in json.loads(body)["projects"])
+
+
+STEPS = ("resolve", "clone", "confirm", "config-pr", "config-merge", "deploy", "visible")
 _STEPS = {"resolve": _resolve, "clone": _clone, "confirm": _confirm_step,
-          "config-pr": _config_pr, "config-merge": _config_merge, "deploy": _deploy}
+          "config-pr": _config_pr, "config-merge": _config_merge, "deploy": _deploy,
+          "visible": _visible}
 
 
 def main(argv: list[str] | None = None) -> None:

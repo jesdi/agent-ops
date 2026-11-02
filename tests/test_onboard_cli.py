@@ -148,3 +148,15 @@ def test_a_rerun_with_other_repositories_after_confirm_is_rejected(
     assert add(box, sh, "analytics", "jesdi/web", "--board", "jesdi/4") == 1
     assert sh.calls == []
     assert "after confirm" in capsys.readouterr().err
+
+
+def test_a_rerun_of_a_complete_onboarding_says_so(tmp_path, box, capsys):
+    rec = {"project": "analytics", "status": "complete", "notice": "",
+           "request": {"repos": ["jesdi/analytics"]}, "confirmed_revision": "r",
+           "steps": [{"name": "visible", "state": "verified", "detail": "", "link": ""}]}
+    onboard.write_json_atomic(state(tmp_path) / "onboarding" / "analytics.json", rec)
+    sh = Box(box)
+    assert add(box, sh, *ADD) == 0
+    assert sh.calls == []
+    out = capsys.readouterr().out
+    assert "analytics is already onboarded" in out and "visible" in out
