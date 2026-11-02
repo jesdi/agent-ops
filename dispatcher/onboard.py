@@ -557,9 +557,8 @@ def _pr_current(r: Run, rec: Record, pr: OpenPr, env: dict) -> bool:
 
 
 def _push_pr(r: Run, rec: Record, main: str, pr: OpenPr | None, env: dict) -> Outcome:
-    """Push the branch (or adopt this revision's push a crash left
-    unrecorded), then open its PR unless one is open."""
-    pushed = _adopted(r, rec, env) or _push(r, rec, main, env, pr.url if pr else rec.pr_url)
+    """Push the branch, then open its PR unless one is open."""
+    pushed = _push(r, rec, main, env, pr.url if pr else rec.pr_url)
     if isinstance(pushed, Outcome):
         return pushed
     number, url = (pr.number, pr.url) if pr else _create_pr(r, rec, env)
@@ -569,58 +568,53 @@ def _push_pr(r: Run, rec: Record, main: str, pr: OpenPr | None, env: dict) -> Ou
 
 
 AUTHOR = "agent-ops-onboard"
-TRAILER = "Onboard-Revision"
-
-
-def _remote_head(r: Run, env: dict, branch: str) -> str:
-    """onboard/<project>'s head on infra as last fetched; "" when absent."""
-    return _git(r, env, "for-each-ref", "--format=%(objectname)",
-                f"refs/remotes/origin/{branch}").strip()
-
-
-def _adopted(r: Run, rec: Record, env: dict) -> tuple[str, str] | None:
-    """The branch's head and base when the head is the unit's own push of
-    this revision onto today's main that the record never saved (#210: a
-    crash between create and record still finds the resource)."""
-    head = _remote_head(r, env, f"onboard/{rec.project}")
-    if not head or head == (rec.infra_pr.head if rec.infra_pr else ""):
-        return None
-    author, parents, trailer = (_git(r, env, "show", "-s", "--format=%an%n%P%n"
-                                     f"%(trailers:key={TRAILER},valueonly)", head)
-                                + "\n\n").splitlines()[:3]
-    base = _git(r, env, "rev-parse", "origin/main").strip()
-    return (head, base) if (author, parents, trailer.strip()) == (
-        AUTHOR, base, rec.revision) else None
 
 
 def _push(r: Run, rec: Record, main: str, env: dict,
           link: str) -> tuple[str, str] | Outcome:
-    """onboard/<project> rebuilt on infra main: the project added, checked
-    with the loader, committed and pushed over the head the record names
-    (a lease), never over anyone else's. Its head and base; blocked, with
-    `link`, when the branch holds a head the record doesn't name."""
-    project, branch = rec.project, f"onboard/{rec.project}"
-    text = add_project_text(main, yaml.safe_dump([rec.proposal], sort_keys=False))
-    try:
-        config.parse_config(yaml.safe_load(text))
-    except ValueError as e:
-        return blocked(f"infra's targets.yaml refuses the project: {e}")
-    _git(r, env, "checkout", "-B", branch, "origin/main")
-    (_scratch(r) / INFRA_TARGETS).write_text(text)
-    _git(r, env, "add", INFRA_TARGETS)
-    _git(r, env, "-c", f"user.name={AUTHOR}", "-c",
-         f"user.email={AUTHOR}@users.noreply.github.com", "commit",
-         "-m", f"feat(config): onboard {project}", "-m", f"{TRAILER}: {rec.revision}")
-    head, base = (_git(r, env, "rev-parse", ref).strip() for ref in ("HEAD", "origin/main"))
+    """onboard/<project> rebuilt on infra main and pushed over the head the
+    record names (a lease), never over anyone else's. Its head and base.
+    A head the record doesn't name is adopted when it is this very commit,
+    pushed before a crash lost the record's save (#210: a crash between
+    create and record still finds the resource); otherwise it blocks, with
+    `link`."""
+    branch = f"onboard/{rec.project}"
+    built = _commit(r, rec, main, env)
+    if isinstance(built, Outcome):
+        return built
+    head, base, tree = built
     ours = rec.infra_pr.head if rec.infra_pr else ""
-    theirs = _remote_head(r, env, branch)
+    theirs = _git(r, env, "for-each-ref", "--format=%(objectname)",
+                  f"refs/remotes/origin/{branch}").strip()
     if theirs != ours:
+        if _git(r, env, "show", "-s", "--format=%P %T", theirs).split() == [base, tree]:
+            return theirs, base
         return blocked(f"{branch} on {INFRA_REPO} is at {theirs}, which this onboarding "
                        f"didn't push (it pushed {ours or 'nothing yet'}): review it, then "
                        f"delete the branch, or {ABANDON}", link)
     _git(r, env, "push", *([f"--force-with-lease={branch}:{ours}"] if ours else []),
          "origin", f"HEAD:refs/heads/{branch}")
     return head, base
+
+
+def _commit(r: Run, rec: Record, main: str, env: dict) -> tuple[str, str, str] | Outcome:
+    """The project added to infra main's targets.yaml, checked with the
+    loader and committed on onboard/<project> in the scratch clone: its
+    sha, parent and tree."""
+    text = add_project_text(main, yaml.safe_dump([rec.proposal], sort_keys=False))
+    try:
+        config.parse_config(yaml.safe_load(text))
+    except ValueError as e:
+        return blocked(f"infra's targets.yaml refuses the project: {e}")
+    _git(r, env, "checkout", "-B", f"onboard/{rec.project}", "origin/main")
+    (_scratch(r) / INFRA_TARGETS).write_text(text)
+    _git(r, env, "add", INFRA_TARGETS)
+    _git(r, env, "-c", f"user.name={AUTHOR}", "-c",
+         f"user.email={AUTHOR}@users.noreply.github.com",
+         "commit", "-m", f"feat(config): onboard {rec.project}")
+    return (_git(r, env, "rev-parse", "HEAD").strip(),
+            _git(r, env, "rev-parse", "origin/main").strip(),
+            _git(r, env, "show", "-s", "--format=%T", "HEAD").strip())
 
 
 def _create_pr(r: Run, rec: Record, env: dict) -> tuple[int, str]:
