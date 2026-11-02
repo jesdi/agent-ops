@@ -7,8 +7,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from dispatcher import onboard
+from dispatcher.infra_config import add_project_text
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
 
@@ -594,22 +596,60 @@ def test_config_pr_blocks_without_the_infra_token(tmp_path, box, monkeypatch):
     assert s["state"] == "blocked" and "GH_INFRA_TOKEN" in s["detail"]
 
 
-def test_config_pr_is_verified_when_infra_main_has_the_project(tmp_path, box, infra_token):
-    on_main = LIVE + """\
-  - name: analytics
-    board: {owner: jesdi, number: 4}
-"""
-    sh = FakeSh(infra_routes(main=on_main))
+def main_holding(tmp_path, *changes):
+    """infra main's targets.yaml holding the record's proposal: as it is,
+    or with the n-th call's `changes[n]` applied to its gate_cmd."""
+    calls = []
+
+    def show(argv, cwd, env):
+        proposal = record(tmp_path)["proposal"]
+        if len(calls) < len(changes) and changes[len(calls)]:
+            proposal["repositories"][0]["gate_cmd"] = changes[len(calls)]
+        calls.append(argv)
+        return add_project_text(LIVE, yaml.safe_dump([proposal]))
+    return show
+
+
+def test_config_pr_is_verified_when_infra_main_has_the_proposal(tmp_path, box, infra_token):
+    sh = FakeSh(infra_routes(main=main_holding(tmp_path)))
     s = step(confirmed(tmp_path, box, sh), "config-pr")
     assert s["state"] == "verified"
     assert sh.ran(" push ") == []
+
+
+def test_config_pr_blocks_on_another_entry_of_the_project_on_infra_main(
+        tmp_path, box, infra_token):
+    sh = FakeSh(infra_routes(main=main_holding(tmp_path, "rm -rf /")))
+    rec = confirmed(tmp_path, box, sh)
+    s = step(rec, "config-pr")
+    assert s["state"] == "blocked" and "infra main has a different analytics entry" in s["detail"]
+    assert sh.ran(" push ") == [] and rec["merge_sha"] == ""
+
+
+def test_config_merge_blocks_when_the_main_entry_changed_since_config_pr(
+        tmp_path, box, infra_token):
+    sh = FakeSh(infra_routes(main=main_holding(tmp_path, "", "rm -rf /"), **{
+        "log -1 --format": "add1 2026-11-02T11:58:00Z\n"}))
+    rec = confirmed(tmp_path, box, sh)
+    s = step(rec, "config-merge")
+    assert s["state"] == "blocked" and "infra main has a different analytics entry" in s["detail"]
+    assert rec["merge_sha"] == ""
+
+
+def test_config_merge_blocks_when_the_entry_left_main_since_config_pr(
+        tmp_path, box, infra_token):
+    holding = main_holding(tmp_path)
+    answers = iter([holding, lambda *_: LIVE])
+    sh = FakeSh(infra_routes(main=lambda *a: next(answers)(*a)))
+    s = step(confirmed(tmp_path, box, sh), "config-merge")
+    assert s["state"] == "blocked" and "no longer lists analytics" in s["detail"]
 
 
 def test_a_project_already_on_infra_main_runs_through_config_merge_to_deploy(
         tmp_path, box, infra_token):
     """No PR to merge: the infra main commit that added the project is the
     merge, and deploy waits for the box to hold it."""
-    sh = FakeSh(infra_routes(main=DEPLOYED, **{
+    sh = FakeSh(infra_routes(main=main_holding(tmp_path), **{
         "log -1 --format=%H %cI -S - name: analytics origin/main -- config/targets.yaml":
             "add1 2026-11-02T11:58:00Z\n",
         "merge-base --is-ancestor add1 HEAD": failure("")}))
@@ -625,7 +665,7 @@ def test_a_project_already_on_infra_main_runs_through_config_merge_to_deploy(
 
 
 def test_config_merge_blocks_when_no_main_commit_adds_the_entry(tmp_path, box, infra_token):
-    sh = FakeSh(infra_routes(main=DEPLOYED, **{"log -1 --format": ""}))
+    sh = FakeSh(infra_routes(main=main_holding(tmp_path), **{"log -1 --format": ""}))
     s = step(confirmed(tmp_path, box, sh), "config-merge")
     assert s["state"] == "blocked" and "no commit there adds" in s["detail"]
 

@@ -519,9 +519,23 @@ def _infra_main(r: Run, env: dict) -> str:
     return _git(r, env, "show", f"origin/main:{INFRA_TARGETS}")
 
 
-def _on_main(text: str, project: str) -> bool:
-    return any(p.get("name") == project
-               for p in yaml.safe_load(text).get("projects") or [])
+def _main_entry(rec: Record, text: str) -> Outcome | None:
+    """None when infra main's targets.yaml has no entry for the project;
+    verified when its entry is the confirmed proposal; blocked otherwise.
+    Empty commands may be left out of an entry."""
+    entry = next((p for p in yaml.safe_load(text).get("projects") or []
+                  if p.get("name") == rec.project), None)
+    if entry is None:
+        return None
+    if _comparable(entry) != _comparable(rec.proposal):
+        return blocked(f"infra main has a different {rec.project} entry than the "
+                       f"confirmed proposal: reconcile {INFRA_TARGETS} on infra main")
+    return Outcome(StepState.VERIFIED, "already on infra main", rec.pr_url)
+
+
+def _comparable(entry: dict) -> dict:
+    return {**entry, "repositories": [{k: v for k, v in x.items() if v != ""}
+                                      for x in entry.get("repositories") or []]}
 
 
 class OpenPr(NamedTuple):
@@ -541,8 +555,8 @@ def _config_pr(r: Run, rec: Record) -> Outcome:
     if not (env := _infra_env()):
         return NO_INFRA_TOKEN
     main = _infra_main(r, env)
-    if _on_main(main, rec.project):
-        return Outcome(StepState.VERIFIED, "already on infra main", rec.pr_url)
+    if on_main := _main_entry(rec, main):
+        return on_main
     pr = _open_pr(r, rec.project, env)
     if pr and _pr_current(r, rec, pr, env):
         return Outcome(StepState.VERIFIED, link=rec.pr_url)
@@ -658,7 +672,12 @@ def _merged(rec: Record, sha: str, at: str) -> Outcome:
 def _added_on_main(r: Run, rec: Record, env: dict) -> Outcome:
     """config-pr found the project on infra main, so there is no PR: the
     merge is the latest main commit that added or removed its entry, in
-    the scratch clone config-pr fetched."""
+    the scratch clone config-pr fetched. The entry there must still be the
+    confirmed proposal."""
+    on_main = _main_entry(rec, _git(r, env, "show", f"origin/main:{INFRA_TARGETS}"))
+    if on_main is None or on_main.state is StepState.BLOCKED:
+        return on_main or blocked(f"infra main no longer lists {rec.project}, and "
+                                  f"there is no infra PR: {ABANDON}")
     found = _git(r, env, "log", "-1", "--format=%H %cI", "-S", f"- name: {rec.project}",
                  "origin/main", "--", INFRA_TARGETS).split()
     if not found:
