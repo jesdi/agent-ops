@@ -105,7 +105,7 @@ def test_add_shows_the_proposal_and_confirms_its_revision(tmp_path, box, monkeyp
     sh = Box(box)
     add(box, sh, *ADD)
     rec = record(tmp_path)
-    assert sh.kicked_with == [["start"], ["confirm"]]
+    assert sh.kicked_with == [["add"], ["confirm"]]
     assert rec["confirmed_revision"] == rec["revision"]
     out = capsys.readouterr().out
     assert "repo: jesdi/analytics" in out
@@ -116,50 +116,57 @@ def test_add_without_a_yes_leaves_it_unconfirmed(tmp_path, box, monkeypatch):
     stdin(monkeypatch, "\nmake gate\n\n\n")
     sh = Box(box)
     add(box, sh, *ADD)
-    assert sh.kicked_with == [["start"]]
+    assert sh.kicked_with == [["add"]]
     assert record(tmp_path)["confirmed_revision"] == ""
 
 
-def test_a_rerun_with_the_same_repositories_resumes(tmp_path, box, monkeypatch):
-    stdin(monkeypatch, "\nmake gate\n\nn\n")
+def test_a_rerun_offers_the_current_commands(tmp_path, box, monkeypatch, capsys):
+    """Enter keeps each command, so the same request resumes."""
+    stdin(monkeypatch, "make setup\nmake gate\n\nn\n")
     add(box, Box(box), *ADD)
-    stdin(monkeypatch, "y\n")
+    stdin(monkeypatch, "\n\n\ny\n")
     sh = Box(box)
     add(box, sh, "analytics", "https://github.com/jesdi/Analytics", "--board", "jesdi/4")
-    assert sh.kicked_with == [["resume"], ["confirm"]]
+    assert sh.kicked_with == [["add"], ["confirm"]]
+    assert "jesdi/Analytics gate_cmd [make gate]: " in capsys.readouterr().out
+    rec = record(tmp_path)
+    assert rec["request"]["commands"][0]["setup_cmd"] == "make setup"
+    assert rec["confirmed_revision"] == rec["revision"]
 
 
 def test_a_rerun_with_other_repositories_before_confirm_edits(tmp_path, box, monkeypatch):
     stdin(monkeypatch, "\nmake gate\n\nn\n")
     add(box, Box(box), *ADD)
-    stdin(monkeypatch, "\nmake gate\n\n\nnpm test\n\nn\n")
+    stdin(monkeypatch, "\n\n\n\nnpm test\n\nn\n")
     sh = Box(box, FakeSh({"gh api repos/jesdi/web": json.dumps(
         {"id": 303, "full_name": "jesdi/web", "name": "web"})}))
     add(box, sh, "analytics", "jesdi/analytics", "jesdi/web", "--board", "jesdi/4")
-    assert sh.kicked_with == [["edit"]]
+    assert sh.kicked_with == [["add"]]
     assert record(tmp_path)["request"]["repos"] == ["jesdi/analytics", "jesdi/web"]
 
 
-def test_a_rerun_with_other_repositories_after_confirm_is_rejected(
-        tmp_path, box, monkeypatch, capsys):
+def test_a_refused_rerun_shows_the_engines_reason(tmp_path, box, monkeypatch, capsys):
     stdin(monkeypatch, "\nmake gate\n\ny\n")
     add(box, Box(box), *ADD)
+    stdin(monkeypatch, "\nnpm test\n\n")
     sh = Box(box)
-    assert add(box, sh, "analytics", "jesdi/web", "--board", "jesdi/4") == 1
-    assert sh.calls == []
-    assert "after confirm" in capsys.readouterr().err
+    assert add(box, sh, "analytics", "jesdi/web", "--board", "jesdi/4") == 0
+    assert sh.kicked_with == [["add"]]
+    assert "notice: request refused" in capsys.readouterr().out
+    assert record(tmp_path)["request"]["repos"] == ["jesdi/analytics"]
 
 
-def test_a_rerun_of_a_complete_onboarding_says_so(tmp_path, box, capsys):
-    rec = {"project": "analytics", "status": "complete", "notice": "",
-           "request": {"repos": ["jesdi/analytics"]}, "confirmed_revision": "r",
-           "steps": [{"name": "visible", "state": "verified", "detail": "", "link": ""}]}
-    onboard.write_json_atomic(state(tmp_path) / "onboarding" / "analytics.json", rec)
-    sh = Box(box)
-    assert add(box, sh, *ADD) == 0
-    assert sh.calls == []
+def test_a_rerun_of_a_complete_onboarding_says_so(tmp_path, box, monkeypatch, capsys):
+    done = onboard.Record("analytics", status="complete", request={
+        "repos": ["jesdi/analytics"], "board": {"owner": "jesdi", "number": 4},
+        "commands": [{"setup_cmd": "", "gate_cmd": "make gate", "verify_cmd": ""}]},
+        steps=[onboard.Step(n, onboard.StepState.VERIFIED) for n in onboard.STEPS])
+    onboard.write_json_atomic(state(tmp_path) / "onboarding" / "analytics.json",
+                              onboard.asdict(done))
+    stdin(monkeypatch, "\n\n\n")
+    assert add(box, Box(box), *ADD) == 0
     out = capsys.readouterr().out
-    assert "analytics is already onboarded" in out and "visible" in out
+    assert "notice: already onboarded" in out and "visible" in out
 
 
 def test_agent_ops_is_the_console_script_of_project_add():

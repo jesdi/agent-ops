@@ -1,8 +1,10 @@
 """`agent-ops project add <name> <repo>... --board owner/number`: the
 terminal front end of the onboarding engine (dispatcher.onboard). Run on the
 box as `agent`: it asks for each repository's commands (piped stdin works
-too), writes an onboarding intent, starts agent-ops-onboard (the call returns
-when the oneshot run ends) and prints the record."""
+too), writes an `add` intent carrying the request, starts agent-ops-onboard
+(the call returns when the oneshot run ends) and prints the record. The
+engine alone decides what a rerun does; when it awaits confirm, this asks
+and writes a `confirm` intent naming the revision shown."""
 from __future__ import annotations
 
 import argparse
@@ -49,42 +51,13 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
         print(f"run agent-ops as {USER} (sudo -iu {USER})", file=sys.stderr)
         return 2
     state_dir = config.load_config(args.config).state_dir
-    rec = onboard.load_record(state_dir, args.name)
-    if rec and rec.status == "complete":
-        print(f"{args.name} is already onboarded")
-        _show(rec)
-        return 0
-    action = _action(rec, args)
-    if not action:
-        print("the repositories can't change after confirm; delete "
-              f"{state_dir}/onboarding/{args.name}.json and close its infra PR "
-              "to start over", file=sys.stderr)
-        return 1
-    _write(state_dir, action, args.name, {} if action == "resume" else _request(args))
+    _write(state_dir, "add", args.name,
+           _request(args, onboard.load_record(state_dir, args.name)))
     rec = _kick(sh, state_dir, args.name)
-    if _at_confirm(rec) and _yes(rec):
+    if rec.awaiting == "confirm" and _yes(rec):
         _write(state_dir, "confirm", args.name, {"revision": rec.revision})
         _kick(sh, state_dir, args.name)
     return 0
-
-
-def _action(rec: onboard.Record | None, args: argparse.Namespace) -> str:
-    """The intent a run of `project add` writes; "" when it is refused."""
-    if rec is None:
-        return "start"
-    if _same(rec.request["repos"], args.repos):
-        return "resume"
-    return "" if rec.confirmed_revision else "edit"
-
-
-def _same(a: list[str], b: list[str]) -> bool:
-    def norm(repos):
-        return [(onboard.slug(x) or x).lower() for x in repos]
-    return norm(a) == norm(b)
-
-
-def _at_confirm(rec: onboard.Record) -> bool:
-    return rec.step("confirm").state is onboard.StepState.BLOCKED
 
 
 def _yes(rec: onboard.Record) -> bool:
@@ -95,23 +68,31 @@ def _yes(rec: onboard.Record) -> bool:
         return False
 
 
-def _request(args: argparse.Namespace) -> dict:
+def _request(args: argparse.Namespace, rec: onboard.Record | None) -> dict:
+    """The request of this run. A repository already in the record offers
+    its commands as the answers Enter keeps."""
+    current = dict(zip(map(onboard.repo_key, rec.request["repos"]),
+                       rec.request["commands"])) if rec else {}
     return {"repos": args.repos, "board": args.board,
-            "commands": [_commands(repo) for repo in args.repos]}
+            "commands": [_commands(repo, current.get(onboard.repo_key(repo), {}))
+                         for repo in args.repos]}
 
 
-def _commands(repo: str) -> dict:
-    out = {"setup_cmd": _ask(f"{repo} setup_cmd (empty skips): ")}
-    while not (gate := _ask(f"{repo} gate_cmd (required): ")):
+def _commands(repo: str, current: dict) -> dict:
+    def ask(key: str, hint: str) -> str:
+        return _ask(f"{repo} {key}", current.get(key, ""), hint)
+    out = {"setup_cmd": ask("setup_cmd", "empty skips")}
+    while not (gate := ask("gate_cmd", "required")):
         pass
-    return {**out, "gate_cmd": gate, "verify_cmd": _ask(f"{repo} verify_cmd (empty skips): ")}
+    return {**out, "gate_cmd": gate, "verify_cmd": ask("verify_cmd", "empty skips")}
 
 
-def _ask(prompt: str) -> str:
+def _ask(name: str, default: str, hint: str) -> str:
     try:
-        return input(prompt).strip()
+        answer = input(f"{name} [{default}]: " if default else f"{name} ({hint}): ")
     except EOFError:
         raise SystemExit("\nstdin ended before every command was given") from None
+    return answer.strip() or default
 
 
 def _write(state_dir: str, action: str, project: str, payload: dict) -> None:

@@ -303,9 +303,11 @@ for the console to list the project. The record then reads `complete` and the
 project is visible and paused; set `paused: false` in infra to start claiming.
 
 A timer reruns the unit every minute for the long waits. Rerun the same
-command to see where it stands or to retry a blocked step. Before confirm,
-rerunning it with other repositories edits the proposal; after confirm they
-are fixed. Records live in `state_dir/onboarding/<project>.json`; to abandon
+command to see where it stands or to retry a blocked step; Enter keeps each
+command it asks for. Before the infra PR merges, a rerun with another board
+or other commands makes a new proposal and goes back to confirm; the
+repositories can change only before confirm. After the merge, edit
+targets.yaml by hand for now. Records live in `state_dir/onboarding/<project>.json`; to abandon
 one, delete its record and close its infra PR by hand.
 
 The unit's environment needs `GH_INFRA_TOKEN`, a fine-grained token with

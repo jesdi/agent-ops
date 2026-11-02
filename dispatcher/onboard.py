@@ -134,6 +134,7 @@ class Record:
     infra_pr: InfraPr | None = None
     resources: list[dict] = field(default_factory=list)
     deployed_at: str = ""
+    awaiting: str = ""                   # "confirm" while the operator must confirm
 
     def step(self, name: str) -> Step:
         return next(s for s in self.steps if s.name == name)
@@ -162,6 +163,7 @@ def _records(state_dir: str | Path) -> list[Record]:
 
 def _save(r: Run, rec: Record) -> None:
     rec.updated_at = r.now.isoformat()
+    rec.awaiting = "confirm" if rec.step("confirm").state is StepState.BLOCKED else ""
     write_json_atomic(_record_path(r.cfg.state_dir, rec.project), asdict(rec))
 
 
@@ -171,8 +173,7 @@ def revision(proposal: dict) -> str:
 
 # -- intents ------------------------------------------------------------------
 
-QUEUE = intents.Queue("onboarding-intents", ("start", "edit", "confirm", "resume"),
-                      ("project",))
+QUEUE = intents.Queue("onboarding-intents", ("add", "confirm"), ("project",))
 
 
 class Intent(NamedTuple):
@@ -192,15 +193,13 @@ def _intent(rec: dict, path: Path) -> Intent:
     action, project, payload = rec["action"], rec["project"], rec["payload"]
     if action not in QUEUE.actions or not config._SLUG.fullmatch(project):
         raise ValueError(f"action {action!r} for project {project!r}")
-    if action in ("start", "edit"):
-        payload = _request(payload)
-    elif action == "confirm":
-        payload = {"revision": str(payload["revision"])}
+    payload = (_request(payload) if action == "add"
+               else {"revision": str(payload["revision"])})
     return Intent(action, project, payload, str(rec.get("actor", "")), path)
 
 
 def _request(payload: dict) -> dict:
-    """The validated repos, board and per-repository commands of a start."""
+    """The validated repos, board and per-repository commands of an add."""
     repos, b, commands = payload["repos"], payload["board"], payload["commands"]
     if not repos or len(commands) != len(repos):
         raise ValueError("repos must be non-empty, with one commands entry each")
@@ -217,39 +216,53 @@ def _drain(r: Run) -> None:
         it.path.unlink(missing_ok=True)
 
 
-def _start(r: Run, it: Intent) -> None:
-    if load_record(r.cfg.state_dir, it.project) is not None:
-        print(f"[warn] onboarding {it.project}: already started; start ignored",
-              file=sys.stderr)
-        return
-    _save(r, Record(it.project, started_by=it.actor, request=it.payload))
-
-
-def _open_record(r: Run, project: str, action: str) -> Record | None:
-    rec = load_record(r.cfg.state_dir, project)
-    if rec is None or rec.status != "open":
-        print(f"[warn] {action} for {project}: no open onboarding; dropped",
-              file=sys.stderr)
-        return None
-    return rec
-
-
-def _edit(r: Run, it: Intent) -> None:
-    """Before confirm: a new request, resolved again from the first step."""
-    if not (rec := _open_record(r, it.project, "edit")):
-        return
-    if rec.confirmed_revision:
-        rec.notice = "edit refused: the repositories can't change after confirm"
+def _add(r: Run, it: Intent) -> None:
+    """A request opens a record, or reruns one under the rules of #210."""
+    rec = load_record(r.cfg.state_dir, it.project)
+    if rec is None:
+        rec = Record(it.project, started_by=it.actor, request=it.payload)
     else:
-        rec.request, rec.proposal, rec.revision, rec.notice = it.payload, {}, "", ""
-        rec.steps = [Step(n) for n in STEPS]
+        rec.notice = _rerun(rec, it.payload)
     _save(r, rec)
+
+
+def _rerun(rec: Record, request: dict) -> str:
+    """Apply a request to an existing record; the notice it leaves. The same
+    request resumes. Before the merge, another one is resolved again from
+    the first step and so goes back to confirm, but after confirm its
+    repositories can't change."""
+    if _same(rec.request, request):
+        return "already onboarded" if rec.status == "complete" else ""
+    if rec.step("config-merge").state is StepState.VERIFIED:
+        return ("request refused: the project is merged into infra; edit "
+                "targets.yaml by hand for now")
+    if rec.confirmed_revision and _repo_keys(rec.request) != _repo_keys(request):
+        return "request refused: the repositories can't change after confirm"
+    rec.request, rec.steps = request, [Step(n) for n in STEPS]
+    return ""
+
+
+def repo_key(spelling: str) -> str:
+    """One key for every spelling of a repository."""
+    return (slug(spelling) or spelling).lower()
+
+
+def _repo_keys(request: dict) -> list[str]:
+    return [repo_key(x) for x in request["repos"]]
+
+
+def _same(a: dict, b: dict) -> bool:
+    return _repo_keys(a) == _repo_keys(b) and (a["board"], a["commands"]) == (
+        b["board"], b["commands"])
 
 
 def _confirm(r: Run, it: Intent) -> None:
     """Confirm names the revision it saw; a stale one is refused, as the
     console refuses stale model settings."""
-    if not (rec := _open_record(r, it.project, "confirm")):
+    rec = load_record(r.cfg.state_dir, it.project)
+    if rec is None or rec.status != "open":
+        print(f"[warn] confirm for {it.project}: no open onboarding; dropped",
+              file=sys.stderr)
         return
     seen = it.payload["revision"]
     if seen == rec.revision:
@@ -260,12 +273,7 @@ def _confirm(r: Run, it: Intent) -> None:
     _save(r, rec)
 
 
-def _resume(r: Run, it: Intent) -> None:
-    """Every run retries blocked and failed steps: a resume only kicks one."""
-    _open_record(r, it.project, "resume")
-
-
-_APPLY = {"start": _start, "edit": _edit, "confirm": _confirm, "resume": _resume}
+_APPLY = {"add": _add, "confirm": _confirm}
 
 
 # -- the run ------------------------------------------------------------------

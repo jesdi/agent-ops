@@ -99,9 +99,9 @@ def state(tmp_path) -> Path:
     return tmp_path / "state"
 
 
-def start(tmp_path, project="analytics", repos=("jesdi/analytics",),
+def add(tmp_path, project="analytics", repos=("jesdi/analytics",),
           board=None, commands=None, epoch_ms=1000):
-    return onboard.write_intent(state(tmp_path), "start", project, {
+    return onboard.write_intent(state(tmp_path), "add", project, {
         "repos": list(repos), "board": board or {"owner": "jesdi", "number": 4},
         "commands": commands or [{"setup_cmd": "", "gate_cmd": "make gate",
                                   "verify_cmd": ""} for _ in repos]},
@@ -125,10 +125,10 @@ def step(rec, name):
 # -- intents ------------------------------------------------------------------
 
 
-def test_start_intent_opens_a_record_and_is_deleted(tmp_path, box):
-    p = start(tmp_path)
+def test_add_intent_opens_a_record_and_is_deleted(tmp_path, box):
+    p = add(tmp_path)
     assert p.parent == state(tmp_path) / "onboarding-intents"
-    assert p.name == "1000-analytics-start.json"
+    assert p.name == "1000-analytics-add.json"
     run(box, FakeSh())
     rec = record(tmp_path)
     assert (rec["project"], rec["started_by"]) == ("analytics", "agent")
@@ -149,35 +149,27 @@ def test_write_intent_rejects_an_unknown_action(tmp_path):
 
 @pytest.mark.parametrize("body", [
     "{not json",
-    json.dumps({"action": "start", "project": "../escape", "payload": {}}),
-    json.dumps({"action": "start", "project": "analytics", "payload": {"repos": []}}),
-    json.dumps({"action": "start", "project": "analytics",
+    json.dumps({"action": "add", "project": "../escape", "payload": {}}),
+    json.dumps({"action": "add", "project": "analytics", "payload": {"repos": []}}),
+    json.dumps({"action": "add", "project": "analytics",
                 "payload": {"repos": ["jesdi/analytics"], "board": {"owner": "jesdi"},
                             "commands": [{}]}}),
 ])
 def test_a_malformed_intent_is_deleted_with_a_warning(tmp_path, box, body, capsys):
     d = state(tmp_path) / "onboarding-intents"
     d.mkdir(parents=True)
-    (d / "1-analytics-start.json").write_text(body)
+    (d / "1-analytics-add.json").write_text(body)
     run(box, FakeSh())
     assert list(d.iterdir()) == []
     assert record(tmp_path) is None
     assert "malformed intent" in capsys.readouterr().err
 
 
-def test_a_second_start_leaves_the_record_alone(tmp_path, box):
-    start(tmp_path)
-    run(box, FakeSh())
-    start(tmp_path, repos=["jesdi/other"], epoch_ms=2000)
-    run(box, FakeSh())
-    assert record(tmp_path)["request"]["repos"] == ["jesdi/analytics"]
-
-
 # -- resolve ------------------------------------------------------------------
 
 
 def test_resolve_builds_the_proposal_from_github(tmp_path, box):
-    start(tmp_path, repos=["https://github.com/JESDI/Analytics.git"],
+    add(tmp_path, repos=["https://github.com/JESDI/Analytics.git"],
           commands=[{"setup_cmd": "make setup", "gate_cmd": "make gate",
                      "verify_cmd": "make e2e SLOT={slot}"}])
     sh = FakeSh({"gh api repos/JESDI/Analytics": gh_repo(202, "jesdi/analytics")})
@@ -201,14 +193,14 @@ def test_resolve_builds_the_proposal_from_github(tmp_path, box):
     "git@github.com:jesdi/analytics.git", "ssh://git@github.com/jesdi/analytics",
     "jesdi/analytics/", "https://github.com/jesdi/analytics"])
 def test_resolve_accepts_every_spelling_of_a_repository(tmp_path, box, spelling):
-    start(tmp_path, repos=[spelling])
+    add(tmp_path, repos=[spelling])
     run(box, FakeSh())
     assert step(record(tmp_path), "resolve")["state"] == "verified"
 
 
 def test_resolve_checks_the_board_with_the_project_token(tmp_path, box, monkeypatch):
     monkeypatch.setenv("GH_PROJECT_TOKEN", "project-tok")
-    start(tmp_path)
+    add(tmp_path)
     sh = FakeSh()
     run(box, sh)
     [(_, _, env)] = sh.ran("graphql")
@@ -216,21 +208,21 @@ def test_resolve_checks_the_board_with_the_project_token(tmp_path, box, monkeypa
 
 
 def test_resolve_blocks_on_a_bad_slug(tmp_path, box):
-    start(tmp_path, repos=["not a repo"])
+    add(tmp_path, repos=["not a repo"])
     run(box, FakeSh())
     s = step(record(tmp_path), "resolve")
     assert s["state"] == "blocked" and "'not a repo'" in s["detail"]
 
 
 def test_resolve_blocks_on_a_missing_repository(tmp_path, box):
-    start(tmp_path)
+    add(tmp_path)
     run(box, FakeSh({"gh api repos/jesdi/analytics": failure("HTTP 404: Not Found")}))
     s = step(record(tmp_path), "resolve")
     assert s["state"] == "blocked" and "jesdi/analytics" in s["detail"]
 
 
 def test_resolve_fails_on_another_github_error_and_retries(tmp_path, box):
-    start(tmp_path)
+    add(tmp_path)
     run(box, FakeSh({"gh api repos/jesdi/analytics": failure("HTTP 502: Bad Gateway")}))
     s = step(record(tmp_path), "resolve")
     assert s["state"] == "failed" and "502" in s["detail"]
@@ -239,7 +231,7 @@ def test_resolve_fails_on_another_github_error_and_retries(tmp_path, box):
 
 
 def test_resolve_blocks_on_a_missing_board(tmp_path, box):
-    start(tmp_path)
+    add(tmp_path)
     run(box, FakeSh({"gh api graphql": NO_BOARD}))
     s = step(record(tmp_path), "resolve")
     assert s["state"] == "blocked" and "jesdi/4" in s["detail"]
@@ -247,30 +239,30 @@ def test_resolve_blocks_on_a_missing_board(tmp_path, box):
 
 def test_resolve_blocks_a_repository_a_config_project_holds(tmp_path, box):
     """R1: the id decides, whatever the name GitHub gives now."""
-    start(tmp_path, repos=["jesdi/renamed"])
+    add(tmp_path, repos=["jesdi/renamed"])
     run(box, FakeSh({"gh api repos/jesdi/renamed": gh_repo(101, "jesdi/renamed")}))
     s = step(record(tmp_path), "resolve")
     assert s["state"] == "blocked" and "'portfolio-eval'" in s["detail"]
 
 
 def test_resolve_blocks_a_repository_another_open_record_holds(tmp_path, box):
-    start(tmp_path, project="first")
+    add(tmp_path, project="first")
     run(box, FakeSh())
-    start(tmp_path, project="second", epoch_ms=2000)
+    add(tmp_path, project="second", epoch_ms=2000)
     run(box, FakeSh())
     s = step(record(tmp_path, "second"), "resolve")
     assert s["state"] == "blocked" and "'first'" in s["detail"]
 
 
 def test_resolve_blocks_a_proposal_the_live_config_refuses(tmp_path, box):
-    start(tmp_path, project="portfolio-eval")
+    add(tmp_path, project="portfolio-eval")
     run(box, FakeSh())
     s = step(record(tmp_path, "portfolio-eval"), "resolve")
     assert s["state"] == "blocked" and "used by two projects" in s["detail"]
 
 
 def test_a_step_keeps_its_since_while_its_state_holds(tmp_path, box):
-    start(tmp_path, repos=["bad slug"])
+    add(tmp_path, repos=["bad slug"])
     run(box, FakeSh())
     later = NOW.replace(hour=13)
     run(box, FakeSh(), now=later)
@@ -291,7 +283,7 @@ def clone_path(project="analytics", name="analytics") -> Path:
 
 
 def test_clone_clones_into_a_partial_path_then_renames_it(tmp_path, box):
-    start(tmp_path)
+    add(tmp_path)
     sh = FakeSh()
     run(box, sh)
     rec = record(tmp_path)
@@ -306,7 +298,7 @@ def test_clone_clones_into_a_partial_path_then_renames_it(tmp_path, box):
 
 def test_clone_keeps_a_clone_already_at_the_path(tmp_path, box):
     clone_path().mkdir(parents=True)
-    start(tmp_path)
+    add(tmp_path)
     sh = FakeSh({"remote get-url origin": "git@github.com:JESDI/analytics.git\n"})
     run(box, sh)
     assert step(record(tmp_path), "clone")["state"] == "verified"
@@ -315,7 +307,7 @@ def test_clone_keeps_a_clone_already_at_the_path(tmp_path, box):
 
 def test_clone_blocks_when_another_repository_is_at_the_path(tmp_path, box):
     clone_path().mkdir(parents=True)
-    start(tmp_path)
+    add(tmp_path)
     run(box, FakeSh({"remote get-url origin": "https://github.com/jesdi/other\n"}))
     s = step(record(tmp_path), "clone")
     assert s["state"] == "blocked"
@@ -325,14 +317,14 @@ def test_clone_blocks_when_another_repository_is_at_the_path(tmp_path, box):
 def test_clone_removes_a_stale_partial_clone_first(tmp_path, box):
     partial = Path(f"{clone_path()}.partial")
     (partial / "half").mkdir(parents=True)
-    start(tmp_path)
+    add(tmp_path)
     run(box, FakeSh())
     assert step(record(tmp_path), "clone")["state"] == "verified"
     assert not (clone_path() / "half").exists()
 
 
 def test_a_failed_clone_is_retried_on_the_next_run(tmp_path, box):
-    start(tmp_path)
+    add(tmp_path)
     run(box, FakeSh({"gh repo clone": failure("fatal: early EOF")}))
     s = step(record(tmp_path), "clone")
     assert s["state"] == "failed" and "early EOF" in s["detail"]
@@ -352,7 +344,7 @@ def intent(tmp_path, action, payload=None, project="analytics", epoch_ms=5000):
 
 
 def resolved(tmp_path, box, **kw):
-    start(tmp_path, **kw)
+    add(tmp_path, **kw)
     run(box, FakeSh())
     return record(tmp_path)
 
@@ -363,6 +355,7 @@ def test_confirm_blocks_with_the_command_to_run(tmp_path, box):
     assert s["state"] == "blocked"
     assert rec["revision"][:12] in s["detail"]
     assert "agent-ops project add analytics jesdi/analytics --board jesdi/4" in s["detail"]
+    assert rec["awaiting"] == "confirm"
 
 
 def test_confirm_of_the_current_revision_verifies_the_step(tmp_path, box):
@@ -372,6 +365,7 @@ def test_confirm_of_the_current_revision_verifies_the_step(tmp_path, box):
     rec = record(tmp_path)
     assert rec["confirmed_revision"] == rec["revision"]
     assert step(rec, "confirm")["state"] == "verified"
+    assert rec["awaiting"] == ""
 
 
 def test_a_stale_confirm_is_refused_into_the_notice(tmp_path, box):
@@ -384,51 +378,88 @@ def test_a_stale_confirm_is_refused_into_the_notice(tmp_path, box):
     assert step(rec, "confirm")["state"] == "blocked"
 
 
-def test_an_edit_before_confirm_resolves_the_new_request(tmp_path, box):
-    first = resolved(tmp_path, box)
-    payload = {"repos": ["jesdi/analytics"], "board": {"owner": "jesdi", "number": 4},
-               "commands": [{"gate_cmd": "make check"}]}
-    intent(tmp_path, "edit", payload)
+def test_the_same_request_again_resumes(tmp_path, box):
+    """Any spelling of the same repositories is the same request; every run
+    retries the current step."""
+    add(tmp_path)
+    run(box, FakeSh({"gh repo clone": failure("boom")}))
+    add(tmp_path, repos=["https://github.com/JESDI/analytics.git"], epoch_ms=2000)
     run(box, FakeSh())
     rec = record(tmp_path)
-    assert rec["proposal"]["repositories"][0]["gate_cmd"] == "make check"
+    assert rec["request"]["repos"] == ["jesdi/analytics"] and rec["notice"] == ""
+    assert step(rec, "clone")["state"] == "verified"
+
+
+def test_another_request_before_confirm_is_resolved_again(tmp_path, box):
+    first = resolved(tmp_path, box)
+    sh = FakeSh({"gh api repos/jesdi/web": gh_repo(303, "jesdi/web")})
+    add(tmp_path, repos=["jesdi/analytics", "jesdi/web"], epoch_ms=2000)
+    run(box, sh)
+    rec = record(tmp_path)
+    assert [x["repo"] for x in rec["proposal"]["repositories"]] == [
+        "jesdi/analytics", "jesdi/web"]
     assert rec["revision"] != first["revision"]
-    assert step(rec, "confirm")["state"] == "blocked"
     # the revision is the proposal's digest: the same proposal, the same one
-    intent(tmp_path, "edit", {**payload, "commands": [{"gate_cmd": "make gate"}]},
-           epoch_ms=6000)
+    add(tmp_path, epoch_ms=3000)
     run(box, FakeSh())
     assert record(tmp_path)["revision"] == first["revision"]
 
 
-def test_an_edit_after_confirm_is_refused(tmp_path, box):
+def test_other_repositories_after_confirm_are_refused(tmp_path, box):
     rec = resolved(tmp_path, box)
     intent(tmp_path, "confirm", {"revision": rec["revision"]})
-    intent(tmp_path, "edit", {"repos": ["jesdi/web"], "board": {"owner": "jesdi", "number": 4},
-                              "commands": [{"gate_cmd": "x"}]}, epoch_ms=6000)
+    add(tmp_path, repos=["jesdi/web"], epoch_ms=6000)
     run(box, FakeSh())
     rec = record(tmp_path)
     assert rec["request"]["repos"] == ["jesdi/analytics"]
-    assert "after confirm" in rec["notice"]
+    assert "refused" in rec["notice"] and "after confirm" in rec["notice"]
+    assert step(rec, "confirm")["state"] == "verified"
 
 
-@pytest.mark.parametrize("action,payload", [
-    ("edit", {"repos": ["jesdi/analytics"], "board": {"owner": "jesdi", "number": 4},
-              "commands": [{"gate_cmd": "make gate"}]}),
-    ("confirm", {"revision": "x"}), ("resume", {})])
-def test_an_intent_for_no_open_record_is_dropped(tmp_path, box, action, payload, capsys):
-    intent(tmp_path, action, payload)
+def test_new_commands_after_confirm_go_back_to_confirm_and_update_the_pr(
+        tmp_path, box, infra_token):
+    """Before the merge, a changed board or command is a new revision: the
+    record goes back to confirm, then config-pr pushes it onto the open PR."""
+    first = confirmed(tmp_path, box, FakeSh(infra_routes(**NO_CI_RUN)))
+    assert step(first, "config-merge")["state"] == "waiting"
+    add(tmp_path, commands=[{"gate_cmd": "make check"}], epoch_ms=6000)
+    run(box, FakeSh())
+    rec = record(tmp_path)
+    assert rec["notice"] == "" and rec["awaiting"] == "confirm"
+    assert rec["revision"] != first["revision"]
+    assert [s["state"] for s in rec["steps"]][2:] == ["blocked"] + ["pending"] * 4
+    intent(tmp_path, "confirm", {"revision": rec["revision"]}, epoch_ms=7000)
+    sh = FakeSh(infra_routes(open_prs=json.dumps(
+        [{"number": 7, "url": PR_URL, "headRefOid": "head1"}]), **NO_CI_RUN))
+    sh.route("rev-parse HEAD", "head2\n")
+    run(box, sh)
+    rec = record(tmp_path)
+    assert (rec["infra_pr"]["head"], rec["infra_pr"]["revision"]) == ("head2", rec["revision"])
+    assert len(sh.ran(" push ")) == 1 and sh.ran("gh pr create") == []
+
+
+def test_a_changed_request_after_the_merge_is_refused(tmp_path, box, infra_token):
+    merged(tmp_path, box)
+    add(tmp_path, commands=[{"gate_cmd": "make check"}], epoch_ms=6000)
+    run(box, FakeSh(infra_routes()))
+    rec = record(tmp_path)
+    assert "edit targets.yaml by hand for now" in rec["notice"]
+    assert rec["request"]["commands"][0]["gate_cmd"] == "make gate"
+
+
+def test_the_same_request_for_a_complete_onboarding_says_so(tmp_path, box, infra_token):
+    deployed(tmp_path, box, FakeGet(LISTED))
+    add(tmp_path, epoch_ms=9000)
+    run(box, FakeSh({"": AssertionError("no call expected")}))
+    rec = record(tmp_path)
+    assert rec["status"] == "complete" and rec["notice"] == "already onboarded"
+
+
+def test_a_confirm_for_no_open_record_is_dropped(tmp_path, box, capsys):
+    intent(tmp_path, "confirm", {"revision": "x"})
     run(box, FakeSh())
     assert record(tmp_path) is None
     assert "no open onboarding" in capsys.readouterr().err
-
-
-def test_resume_retries_the_current_step(tmp_path, box):
-    start(tmp_path)
-    run(box, FakeSh({"gh repo clone": failure("boom")}))
-    intent(tmp_path, "resume")
-    run(box, FakeSh())
-    assert step(record(tmp_path), "clone")["state"] == "verified"
 
 
 # -- config-pr ----------------------------------------------------------------
