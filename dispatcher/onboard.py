@@ -636,8 +636,8 @@ def _create_pr(r: Run, rec: Record, env: dict) -> tuple[int, str]:
                 "--head", f"onboard/{rec.project}",
                 "--title", f"feat(config): onboard {rec.project}",
                 "--body", f"Adds project {rec.project}, paused, at proposal "
-                          f"revision {rec.revision[:12]}. Opened by agent-ops-onboard, "
-                          "which squash-merges it once its checks are green."],
+                          f"revision {rec.revision[:12]}. Opened by agent-ops-onboard: merge it "
+                          "once its checks are green, and onboarding deploys it."],
                env=env).strip()
     return int(url.rsplit("/", 1)[1]), url
 
@@ -648,20 +648,28 @@ CI_LIMIT = timedelta(minutes=30)
 
 
 def _config_merge(r: Run, rec: Record) -> Outcome:
-    """Squash-merge the infra PR once its ci run and every check on its head
-    are green (#225): GitHub enforces nothing on agent-ops-infra."""
+    """Verified once the operator merged the infra PR into main, by any merge
+    method. Onboarding never merges it: a timer with merge rights on infra
+    main, the box's deploy source, is too much authority. Until the merge
+    the PR is rebuilt when main moves, and its checks are watched (#225:
+    GitHub enforces nothing on agent-ops-infra); green blocks on the merge."""
     if not (env := _infra_env()):
         return NO_INFRA_TOKEN
     ip = rec.infra_pr
     if ip is None:
         return _added_on_main(r, rec, env)
     pr = json.loads(r.sh(["gh", "pr", "view", str(ip.number), "--repo", INFRA_REPO,
-                          "--json", "state,mergeCommit,mergedAt"], env=env))
-    if pr["state"] == "MERGED":
-        return _merged(rec, pr["mergeCommit"]["oid"], pr["mergedAt"])
-    if pr["state"] != "OPEN":
+                          "--json", "state,baseRefName,mergeCommit,mergedAt"], env=env))
+    if pr["state"] not in ("OPEN", "MERGED"):
         return blocked(f"the infra PR was closed: reopen it, or {ABANDON}", ip.url)
-    return _rebuild_or_merge(r, rec, env)
+    merged = pr["state"] == "MERGED"
+    if (base := pr["baseRefName"]) != "main":
+        fix = f"nothing deploys a merge there; {ABANDON}" if merged else (
+            "set its base back to main")
+        return blocked(f"the infra PR's base is {base!r}, not main: {fix}", ip.url)
+    if merged:
+        return _merged(rec, pr["mergeCommit"]["oid"], pr["mergedAt"])
+    return _rebuild_or_check(r, rec, env)
 
 
 def _merged(rec: Record, sha: str, at: str) -> Outcome:
@@ -686,8 +694,8 @@ def _added_on_main(r: Run, rec: Record, env: dict) -> Outcome:
     return _merged(rec, *found)
 
 
-def _rebuild_or_merge(r: Run, rec: Record, env: dict) -> Outcome:
-    """Rebuild the PR when infra main moved, else merge it once green."""
+def _rebuild_or_check(r: Run, rec: Record, env: dict) -> Outcome:
+    """Rebuild the PR when infra main moved, else check it."""
     ip = rec.infra_pr
     main = _infra_main(r, env)
     if _git(r, env, "rev-parse", "origin/main").strip() != ip.base:
@@ -696,16 +704,18 @@ def _rebuild_or_merge(r: Run, rec: Record, env: dict) -> Outcome:
             return pushed
         rec.infra_pr = InfraPr(ip.number, ip.url, *pushed, rec.revision, r.now.isoformat())
         return waiting("infra main moved: the PR was rebuilt on it", ip.url)
-    return _merge_when_green(r, rec, env)
+    return _checked(r, rec, env)
 
 
-def _merge_when_green(r: Run, rec: Record, env: dict) -> Outcome:
+def _checked(r: Run, rec: Record, env: dict) -> Outcome:
+    """Green blocks on the operator's merge; pending waits, for 30 minutes."""
     ip = rec.infra_pr
     waiting_on = _ci_waiting_on(r, ip.head, env)
     if isinstance(waiting_on, Outcome):
         return waiting_on
     if not waiting_on:
-        return _squash(r, rec, env)
+        return blocked("infra PR is green: merge it, then rerun `agent-ops project "
+                       "add` or let the timer carry on to deploy", ip.url)
     if r.now - datetime.fromisoformat(ip.pushed_at) > CI_LIMIT:
         return blocked(f"{waiting_on}, 30 minutes after the push", ip.url)
     return waiting(waiting_on, ip.url)
@@ -758,23 +768,6 @@ def _statuses(r: Run, head: str, env: dict) -> list[Check]:
     return [Check(s["context"], "" if s["state"] == "pending" else s["state"],
                   s["target_url"] or "")
             for s in _api(r, env, f"commits/{head}/status")["statuses"]]
-
-
-def _squash(r: Run, rec: Record, env: dict) -> Outcome:
-    """Squash-merge the head into main. The PR's base is read just before:
-    one retargeted elsewhere blocks."""
-    ip = rec.infra_pr
-    base = json.loads(r.sh(["gh", "pr", "view", str(ip.number), "--repo", INFRA_REPO,
-                            "--json", "baseRefName"], env=env))["baseRefName"]
-    if base != "main":
-        return blocked(f"the infra PR now targets {base!r}, not main: set its base "
-                       "back to main", ip.url)
-    try:
-        out = r.sh(["gh", "api", "-X", "PUT", f"repos/{INFRA_REPO}/pulls/{ip.number}/merge",
-                    "-f", "merge_method=squash", "-f", f"sha={ip.head}"], env=env)
-    except subprocess.CalledProcessError as e:
-        return blocked(f"GitHub refused the merge: {(e.stderr or '').strip()}", ip.url)
-    return _merged(rec, json.loads(out)["sha"], r.now.isoformat())
 
 
 # -- deploy -------------------------------------------------------------------
