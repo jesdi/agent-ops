@@ -484,7 +484,19 @@ def updater(result, ended):
     return f"Result={result}\nExecMainExitTimestamp=@{int(ended.timestamp())}\n"
 
 
-CI_RUN = json.dumps({"workflow_runs": [{"name": "ci"}]})
+def ci_run(status="completed", conclusion="success"):
+    return json.dumps({"workflow_runs": [{
+        "id": 1, "name": "ci", "status": status, "conclusion": conclusion,
+        "html_url": "https://github.com/jesdi/agent-ops-infra/actions/runs/1"}]})
+
+
+def statuses(*rows):
+    return json.dumps({"statuses": [
+        {"context": context, "state": st, "target_url": f"https://ci.example/{context}"}
+        for context, st in rows]})
+
+
+CI_RUN = ci_run()
 GREEN = checks(("test", "completed", "success"), ("lint", "completed", "skipped"))
 
 
@@ -494,6 +506,7 @@ def infra_routes(main=LIVE, open_prs="[]", **merge):
     return {**{"gh pr view 7": json.dumps({"state": "OPEN"}),
                "actions/runs?head_sha=head1": CI_RUN,
                "commits/head1/check-runs": GREEN,
+               "commits/head1/status": statuses(),
                "pulls/7/merge": json.dumps({"sha": "merge1", "merged": True}),
                "merge-base --is-ancestor merge1 HEAD": failure(""),
                "systemctl --user show agent-ops-update.service": updater("success", NOW)},
@@ -619,6 +632,37 @@ def test_config_merge_waits_for_a_ci_run_then_blocks_after_30_minutes(
     run(box, FakeSh(infra_routes(**no_run)), now=NOW + timedelta(minutes=31))
     s = step(record(tmp_path), "config-merge")
     assert s["state"] == "blocked" and "no ci run" in s["detail"] and s["link"] == PR_URL
+
+
+def test_config_merge_waits_while_the_ci_run_is_queued_without_checks(
+        tmp_path, box, infra_token):
+    queued = {"actions/runs?head_sha=head1": ci_run("queued", None),
+              "commits/head1/check-runs": checks()}
+    sh = FakeSh(infra_routes(**queued))
+    s = step(confirmed(tmp_path, box, sh), "config-merge")
+    assert s["state"] == "waiting" and "ci" in s["detail"]
+    assert sh.ran("pulls/7/merge") == []
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "neutral", "cancelled"])
+def test_config_merge_wants_the_ci_run_to_succeed(tmp_path, box, infra_token, conclusion):
+    sh = FakeSh(infra_routes(**{"actions/runs?head_sha=head1": ci_run(conclusion=conclusion)}))
+    assert step(confirmed(tmp_path, box, sh), "config-merge")["state"] == "waiting"
+    assert sh.ran("pulls/7/merge") == []
+
+
+def test_config_merge_waits_on_a_pending_commit_status_and_blocks_on_a_red_one(
+        tmp_path, box, infra_token):
+    pending = {"commits/head1/status": statuses(("deploy-preview", "pending"))}
+    sh = FakeSh(infra_routes(**pending))
+    s = step(confirmed(tmp_path, box, sh), "config-merge")
+    assert s["state"] == "waiting" and "deploy-preview" in s["detail"]
+    sh = FakeSh(infra_routes(**{"commits/head1/status": statuses(("deploy-preview", "error"))}))
+    run(box, sh)
+    s = step(record(tmp_path), "config-merge")
+    assert s["state"] == "blocked" and "deploy-preview is error" in s["detail"]
+    assert s["link"] == "https://ci.example/deploy-preview"
+    assert sh.ran("pulls/7/merge") == []
 
 
 def test_config_merge_names_the_checks_still_pending(tmp_path, box, infra_token):

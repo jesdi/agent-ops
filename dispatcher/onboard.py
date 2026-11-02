@@ -552,7 +552,12 @@ def _create_pr(r: Run, rec: Record, env: dict) -> tuple[int, str]:
 # -- config-merge -------------------------------------------------------------
 
 CI_LIMIT = timedelta(minutes=30)
-GREEN = frozenset({"success", "skipped", "neutral"})
+
+
+def _verdict(conclusion: str) -> str:
+    c = conclusion.upper()
+    return ("red" if c in {"FAILURE", "ERROR", "TIMED_OUT"} else
+            "green" if c in {"SUCCESS", "SKIPPED", "NEUTRAL"} else "pending")
 
 
 def _config_merge(r: Run, rec: Record) -> Outcome:
@@ -591,20 +596,53 @@ def _merge_when_green(r: Run, ip: InfraPr, env: dict) -> Outcome:
     return waiting(waiting_on, ip.url)
 
 
+class Check(NamedTuple):
+    name: str
+    conclusion: str    # "" until it finishes
+    link: str
+
+
 def _ci_waiting_on(r: Run, head: str, env: dict) -> str | Outcome:
-    """What the checks on `head` still wait for; "" once its ci run exists
-    and every check is green. A red check blocks, with its link."""
-    runs = json.loads(r.sh(["gh", "api", f"repos/{INFRA_REPO}/actions/runs?head_sha="
-                            f"{head}&per_page=100"], env=env))["workflow_runs"]
-    checks = json.loads(r.sh(["gh", "api", f"repos/{INFRA_REPO}/commits/{head}/"
-                              "check-runs?per_page=100"], env=env))["check_runs"]
-    for c in checks:
-        if c["status"] == "completed" and c["conclusion"] not in GREEN:
-            return blocked(f"infra check {c['name']} is {c['conclusion']}", c["html_url"])
-    pending = [c["name"] for c in checks if c["status"] != "completed"]
-    if pending:
-        return f"checks pending: {', '.join(pending)}"
-    return "" if any(x["name"] == "ci" for x in runs) else "no ci run on the head yet"
+    """What `head` still waits for; "" once its ci run succeeded and every
+    check run and commit status finished green. A red one blocks, with its
+    link."""
+    ci = _ci_run(r, head, env)
+    if ci is None:
+        return "no ci run on the head yet"
+    checks = [ci, *_check_runs(r, head, env), *_statuses(r, head, env)]
+    if red := next((c for c in checks if _verdict(c.conclusion) == "red"), None):
+        return blocked(f"infra check {red.name} is {red.conclusion}", red.link)
+    pending = [c.name for c in checks if _verdict(c.conclusion) != "green"]
+    return f"checks pending: {', '.join(pending)}" if pending else ""
+
+
+def _api(r: Run, env: dict, path: str) -> dict:
+    return json.loads(r.sh(["gh", "api", f"repos/{INFRA_REPO}/{path}"], env=env))
+
+
+def _ci_run(r: Run, head: str, env: dict) -> Check | None:
+    """The latest ci workflow run on `head`; only a success is green."""
+    runs = [x for x in _api(r, env, f"actions/runs?head_sha={head}&per_page=100")[
+        "workflow_runs"] if x["name"] == "ci"]
+    if not runs:
+        return None
+    x = max(runs, key=lambda x: x["id"])
+    done = x["conclusion"] if x["status"] == "completed" else ""
+    # skipped and neutral are green for a check, not for the ci run
+    return Check("ci", done if done == "success" or _verdict(done) != "green" else "",
+                 x["html_url"])
+
+
+def _check_runs(r: Run, head: str, env: dict) -> list[Check]:
+    return [Check(c["name"], c["conclusion"] if c["status"] == "completed" else "",
+                  c["html_url"])
+            for c in _api(r, env, f"commits/{head}/check-runs?per_page=100")["check_runs"]]
+
+
+def _statuses(r: Run, head: str, env: dict) -> list[Check]:
+    return [Check(s["context"], "" if s["state"] == "pending" else s["state"],
+                  s["target_url"] or "")
+            for s in _api(r, env, f"commits/{head}/status")["statuses"]]
 
 
 def _squash(r: Run, ip: InfraPr, env: dict) -> Outcome:
