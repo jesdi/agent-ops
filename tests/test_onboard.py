@@ -86,8 +86,10 @@ def no_get(url, headers):
 
 
 @pytest.fixture
-def box(tmp_path):
-    """The live config and the state dir the conftest points the loader at."""
+def box(tmp_path, monkeypatch):
+    """The live config and the state dir the conftest points the loader at.
+    ~ expands to the conftest's home."""
+    monkeypatch.setenv("HOME", str(Path.home()))
     p = tmp_path / "targets.yaml"
     p.write_text(LIVE)
     return p

@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import os
 import sys
 import time
-from pathlib import Path
 
 import yaml
 
@@ -41,8 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     add.add_argument("name", type=_slug)
     add.add_argument("repos", nargs="+", metavar="repo")
     add.add_argument("--board", type=_board, required=True, help="owner/number")
-    add.add_argument("--config", default=os.environ.get(
-        "AGENT_OPS_CONFIG", str(Path.home() / "agent-ops-state" / "targets.yaml")))
+    add.add_argument("--config", default=config.default_config_path())
     return parser
 
 

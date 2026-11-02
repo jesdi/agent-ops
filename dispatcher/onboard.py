@@ -299,7 +299,7 @@ def _holders(r: Run, project: str) -> dict:
 
 def _proposal(rec: dict, found: list[dict]) -> dict:
     """The targets.yaml block: paused, paths derived (#226)."""
-    root = Path.home() / "repos" / rec["project"]
+    root = Path(config.REPOS_ROOT).expanduser() / rec["project"]
     return {"name": rec["project"], "paused": True, "board": rec["request"]["board"],
             "repositories": [{**x, "clone_path": str(root / x["name"]),
                               "worktrees_path": str(root / f"{x['name']}.worktrees"),
@@ -544,7 +544,7 @@ def _deploy(r: Run, rec: dict) -> tuple[str, str, str]:
 
 def _box_has(r: Run, sha: str) -> bool:
     try:
-        r.sh(["git", "-C", str(Path.home() / "agent-ops-infra"), "merge-base",
+        r.sh(["git", "-C", os.path.expanduser(config.INFRA_CHECKOUT), "merge-base",
               "--is-ancestor", sha, "HEAD"])
     except subprocess.CalledProcessError:
         return False
@@ -591,10 +591,9 @@ def _visible(r: Run, rec: dict) -> tuple[str, str, str]:
 
 
 def _listed_paused(r: Run, project: str) -> bool:
-    port = os.environ.get("AGENT_OPS_WEB_PORT", "8481")
     try:
-        body = r.get(f"http://127.0.0.1:{port}/api/projects",
-                     {"Tailscale-User-Login": LOGIN})
+        body = r.get(f"http://127.0.0.1:{config.web_port()}/api/projects",
+                     {config.LOGIN_HEADER: LOGIN})
     except OSError:  # refused while the updater restarts it
         return False
     return any(p["name"] == project and p["paused"]
@@ -609,8 +608,7 @@ _STEPS = {"resolve": _resolve, "clone": _clone, "confirm": _confirm_step,
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m dispatcher.onboard")
-    parser.add_argument("--config", default=os.environ.get(
-        "AGENT_OPS_CONFIG", str(Path.home() / "agent-ops-state" / "targets.yaml")))
+    parser.add_argument("--config", default=config.default_config_path())
     run(parser.parse_args(argv).config)
 
 
