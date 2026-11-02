@@ -742,7 +742,14 @@ def _statuses(r: Run, head: str, env: dict) -> list[Check]:
 
 
 def _squash(r: Run, rec: Record, env: dict) -> Outcome:
+    """Squash-merge the head into main. The PR's base is read just before:
+    one retargeted elsewhere blocks."""
     ip = rec.infra_pr
+    base = json.loads(r.sh(["gh", "pr", "view", str(ip.number), "--repo", INFRA_REPO,
+                            "--json", "baseRefName"], env=env))["baseRefName"]
+    if base != "main":
+        return blocked(f"the infra PR now targets {base!r}, not main: set its base "
+                       "back to main", ip.url)
     try:
         out = r.sh(["gh", "api", "-X", "PUT", f"repos/{INFRA_REPO}/pulls/{ip.number}/merge",
                     "-f", "merge_method=squash", "-f", f"sha={ip.head}"], env=env)

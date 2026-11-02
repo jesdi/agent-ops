@@ -520,7 +520,9 @@ GREEN = checks(("test", "completed", "success"), ("lint", "completed", "skipped"
 def infra_routes(main=LIVE, open_prs="[]", **merge):
     """agent-ops-infra as the scratch clone and gh see it: by default the PR
     is open, its ci run green and the merge goes through."""
-    return {**{"gh pr view 7": json.dumps({"state": "OPEN"}),
+    return {**{"gh pr view 7 --repo jesdi/agent-ops-infra --json baseRefName":
+                   json.dumps({"baseRefName": "main"}),
+               "gh pr view 7": json.dumps({"state": "OPEN"}),
                "actions/runs?head_sha=head1": CI_RUN,
                "commits/head1/check-runs": GREEN,
                "commits/head1/status": statuses(),
@@ -818,6 +820,15 @@ def test_a_rebuild_blocks_when_someone_else_moved_the_branch(tmp_path, box, infr
     s = step(record(tmp_path), "config-merge")
     assert s["state"] == "blocked" and "theirs2" in s["detail"] and s["link"] == PR_URL
     assert sh.ran(" push ") == []
+
+
+def test_config_merge_blocks_a_pr_retargeted_off_main(tmp_path, box, infra_token):
+    sh = FakeSh(infra_routes(**{
+        "gh pr view 7 --repo jesdi/agent-ops-infra --json baseRefName":
+            json.dumps({"baseRefName": "release"})}))
+    s = step(confirmed(tmp_path, box, sh), "config-merge")
+    assert s["state"] == "blocked" and "'release'" in s["detail"] and s["link"] == PR_URL
+    assert sh.ran("pulls/7/merge") == []
 
 
 def test_config_merge_blocks_with_githubs_refusal(tmp_path, box, infra_token):
