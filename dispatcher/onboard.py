@@ -116,8 +116,6 @@ class InfraPr:
     base: str
     revision: str
     pushed_at: str
-    merge_sha: str = ""
-    merged_at: str = ""
 
 
 @dataclass
@@ -133,6 +131,8 @@ class Record:
     notice: str = ""
     steps: list[Step] = field(default_factory=lambda: [Step(n) for n in STEPS])
     infra_pr: InfraPr | None = None
+    merge_sha: str = ""                  # the infra main commit that holds the project
+    merged_at: str = ""
     resources: list[dict] = field(default_factory=list)
     deployed_at: str = ""
     awaiting: str = ""                   # "confirm" while the operator must confirm
@@ -600,15 +600,38 @@ def _config_merge(r: Run, rec: Record) -> Outcome:
     if not (env := _infra_env()):
         return NO_INFRA_TOKEN
     ip = rec.infra_pr
+    if ip is None:
+        return _added_on_main(r, rec, env)
     pr = json.loads(r.sh(["gh", "pr", "view", str(ip.number), "--repo", INFRA_REPO,
                           "--json", "state,mergeCommit,mergedAt"], env=env))
     if pr["state"] == "MERGED":
-        ip.merge_sha = pr["mergeCommit"]["oid"]
-        ip.merged_at = datetime.fromisoformat(pr["mergedAt"]).isoformat()
-        return Outcome(StepState.VERIFIED, link=ip.url)
+        return _merged(rec, pr["mergeCommit"]["oid"], pr["mergedAt"])
     if pr["state"] != "OPEN":
         return blocked("the infra PR was closed: reopen it, or delete the record "
                        "to start over", ip.url)
+    return _rebuild_or_merge(r, rec, env)
+
+
+def _merged(rec: Record, sha: str, at: str) -> Outcome:
+    rec.merge_sha, rec.merged_at = sha, datetime.fromisoformat(at).isoformat()
+    return Outcome(StepState.VERIFIED, link=rec.infra_pr.url if rec.infra_pr else "")
+
+
+def _added_on_main(r: Run, rec: Record, env: dict) -> Outcome:
+    """config-pr found the project on infra main, so there is no PR: the
+    merge is the latest main commit that added or removed its entry, in
+    the scratch clone config-pr fetched."""
+    found = _git(r, env, "log", "-1", "--format=%H %cI", "-S", f"- name: {rec.project}",
+                 "origin/main", "--", INFRA_TARGETS).split()
+    if not found:
+        return blocked(f"infra main lists {rec.project}, but no commit there adds "
+                       f"'- name: {rec.project}' to {INFRA_TARGETS}")
+    return _merged(rec, *found)
+
+
+def _rebuild_or_merge(r: Run, rec: Record, env: dict) -> Outcome:
+    """Rebuild the PR when infra main moved, else merge it once green."""
+    ip = rec.infra_pr
     main = _infra_main(r, env)
     if _git(r, env, "rev-parse", "origin/main").strip() != ip.base:
         pushed = _push(r, rec, main, env, ip.url)
@@ -616,15 +639,16 @@ def _config_merge(r: Run, rec: Record) -> Outcome:
             return pushed
         rec.infra_pr = InfraPr(ip.number, ip.url, *pushed, rec.revision, r.now.isoformat())
         return waiting("infra main moved: the PR was rebuilt on it", ip.url)
-    return _merge_when_green(r, ip, env)
+    return _merge_when_green(r, rec, env)
 
 
-def _merge_when_green(r: Run, ip: InfraPr, env: dict) -> Outcome:
+def _merge_when_green(r: Run, rec: Record, env: dict) -> Outcome:
+    ip = rec.infra_pr
     waiting_on = _ci_waiting_on(r, ip.head, env)
     if isinstance(waiting_on, Outcome):
         return waiting_on
     if not waiting_on:
-        return _squash(r, ip, env)
+        return _squash(r, rec, env)
     if r.now - datetime.fromisoformat(ip.pushed_at) > CI_LIMIT:
         return blocked(f"{waiting_on}, 30 minutes after the push", ip.url)
     return waiting(waiting_on, ip.url)
@@ -679,14 +703,14 @@ def _statuses(r: Run, head: str, env: dict) -> list[Check]:
             for s in _api(r, env, f"commits/{head}/status")["statuses"]]
 
 
-def _squash(r: Run, ip: InfraPr, env: dict) -> Outcome:
+def _squash(r: Run, rec: Record, env: dict) -> Outcome:
+    ip = rec.infra_pr
     try:
         out = r.sh(["gh", "api", "-X", "PUT", f"repos/{INFRA_REPO}/pulls/{ip.number}/merge",
                     "-f", "merge_method=squash", "-f", f"sha={ip.head}"], env=env)
     except subprocess.CalledProcessError as e:
         return blocked(f"GitHub refused the merge: {(e.stderr or '').strip()}", ip.url)
-    ip.merge_sha, ip.merged_at = json.loads(out)["sha"], r.now.isoformat()
-    return Outcome(StepState.VERIFIED, link=ip.url)
+    return _merged(rec, json.loads(out)["sha"], r.now.isoformat())
 
 
 # -- deploy -------------------------------------------------------------------
@@ -699,11 +723,10 @@ def _deploy(r: Run, rec: Record) -> Outcome:
     """agent-ops-update deploys the merge (#225): verified once the box's
     infra checkout holds it and the live config loads with the project
     paused."""
-    ip = rec.infra_pr
-    if _box_has(r, ip.merge_sha) and _live_paused(r, rec.project):
+    if _box_has(r, rec.merge_sha) and _live_paused(r, rec.project):
         rec.deployed_at = r.now.isoformat()
         return VERIFIED
-    merged_at = datetime.fromisoformat(ip.merged_at)
+    merged_at = datetime.fromisoformat(rec.merged_at)
     if journal := _updater_failure(r, merged_at):
         return blocked(f"{UPDATER} failed after the merge:\n{journal}")
     if r.now - merged_at > DEPLOY_LIMIT:

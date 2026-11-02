@@ -569,7 +569,8 @@ def test_config_pr_pushes_the_project_and_opens_the_pr(tmp_path, box, infra_toke
     assert rec["infra_pr"] == {
         "number": 7, "url": PR_URL, "head": "head1", "base": "base1",
         "revision": rec["revision"], "pushed_at": NOW.isoformat(),
-        "merge_sha": "", "merged_at": ""}
+        }
+    assert (rec["merge_sha"], rec["merged_at"]) == ("", "")
     assert {"kind": "infra-pr", "ref": PR_URL, "state": "in use"} in rec["resources"]
     written = (scratch(tmp_path) / "config" / "targets.yaml").read_text()
     assert written.startswith(LIVE) and "  - name: analytics\n" in written
@@ -597,6 +598,31 @@ def test_config_pr_is_verified_when_infra_main_has_the_project(tmp_path, box, in
     s = step(confirmed(tmp_path, box, sh), "config-pr")
     assert s["state"] == "verified"
     assert sh.ran(" push ") == []
+
+
+def test_a_project_already_on_infra_main_runs_through_config_merge_to_deploy(
+        tmp_path, box, infra_token):
+    """No PR to merge: the infra main commit that added the project is the
+    merge, and deploy waits for the box to hold it."""
+    sh = FakeSh(infra_routes(main=DEPLOYED, **{
+        "log -1 --format=%H %cI -S - name: analytics origin/main -- config/targets.yaml":
+            "add1 2026-11-02T11:58:00Z\n",
+        "merge-base --is-ancestor add1 HEAD": failure("")}))
+    rec = confirmed(tmp_path, box, sh)
+    assert [step(rec, n)["state"] for n in ("config-pr", "config-merge", "deploy")] == [
+        "verified", "verified", "waiting"]
+    assert rec["infra_pr"] is None
+    assert (rec["merge_sha"], rec["merged_at"]) == ("add1", "2026-11-02T11:58:00+00:00")
+    assert sh.ran("gh pr") == [] and sh.ran(" push ") == []
+    box.write_text(DEPLOYED)
+    run(box, FakeSh(infra_routes(**{"merge-base --is-ancestor add1 HEAD": ""})))
+    assert step(record(tmp_path), "deploy")["state"] == "verified"
+
+
+def test_config_merge_blocks_when_no_main_commit_adds_the_entry(tmp_path, box, infra_token):
+    sh = FakeSh(infra_routes(main=DEPLOYED, **{"log -1 --format": ""}))
+    s = step(confirmed(tmp_path, box, sh), "config-merge")
+    assert s["state"] == "blocked" and "no commit there adds" in s["detail"]
 
 
 def test_config_pr_blocks_on_a_branch_head_it_did_not_push(tmp_path, box, infra_token):
@@ -639,7 +665,7 @@ def test_config_merge_squashes_the_head_once_ci_is_green(tmp_path, box, infra_to
     rec = confirmed(tmp_path, box, sh)
     s = step(rec, "config-merge")
     assert (s["state"], s["link"]) == ("verified", PR_URL)
-    assert (rec["infra_pr"]["merge_sha"], rec["infra_pr"]["merged_at"]) == ("merge1", NOW.isoformat())
+    assert (rec["merge_sha"], rec["merged_at"]) == ("merge1", NOW.isoformat())
     [(argv, _, env)] = sh.ran("pulls/7/merge")
     assert argv == ["gh", "api", "-X", "PUT", "repos/jesdi/agent-ops-infra/pulls/7/merge",
                     "-f", "merge_method=squash", "-f", "sha=head1"]
@@ -753,7 +779,7 @@ def test_config_merge_records_a_merge_it_missed(tmp_path, box, infra_token):
                                           "mergedAt": "2026-11-02T11:59:00Z"})}
     rec = confirmed(tmp_path, box, FakeSh(infra_routes(**merged)))
     assert step(rec, "config-merge")["state"] == "verified"
-    assert (rec["infra_pr"]["merge_sha"], rec["infra_pr"]["merged_at"]) == (
+    assert (rec["merge_sha"], rec["merged_at"]) == (
         "m9", "2026-11-02T11:59:00+00:00")
 
 
@@ -910,5 +936,5 @@ def test_load_record_gives_the_typed_record_the_file_holds(tmp_path, box, infra_
     merged(tmp_path, box)
     rec = onboard.load_record(state(tmp_path), "analytics")
     assert rec.step("config-merge").state is onboard.StepState.VERIFIED
-    assert isinstance(rec.infra_pr, onboard.InfraPr) and rec.infra_pr.merge_sha == "merge1"
+    assert isinstance(rec.infra_pr, onboard.InfraPr) and rec.merge_sha == "merge1"
     assert onboard.asdict(rec) == record(tmp_path)
