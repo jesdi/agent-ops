@@ -8,7 +8,8 @@ import sys
 import pytest
 
 from dispatcher import onboard, onboard_cli
-from tests.test_onboard import NOW, FakeSh, box, no_get, record, state  # noqa: F401
+from tests.test_onboard import (  # noqa: F401
+    MERGED, NOW, PR_URL, FakeSh, box, infra_routes, infra_token, no_get, record, state)
 
 KICK = "systemctl --user start agent-ops-onboard.service"
 
@@ -143,6 +144,19 @@ def test_a_rerun_with_other_repositories_before_confirm_edits(tmp_path, box, mon
     add(box, sh, "analytics", "jesdi/analytics", "jesdi/web", "--board", "jesdi/4")
     assert sh.kicked_with == [["add"]]
     assert record(tmp_path)["request"]["repos"] == ["jesdi/analytics", "jesdi/web"]
+
+
+def test_a_green_infra_pr_asks_you_to_merge_it_then_a_rerun_carries_on(
+        tmp_path, box, infra_token, monkeypatch, capsys):
+    stdin(monkeypatch, "\nmake gate\n\ny\n")
+    add(box, Box(box, FakeSh(infra_routes())), *ADD)
+    out = capsys.readouterr().out
+    *_, line = (x for x in out.splitlines() if x.lstrip().startswith("config-merge"))
+    assert "blocked" in line and "merge it" in line and PR_URL in line
+    stdin(monkeypatch, "\n\n\n")
+    add(box, Box(box, FakeSh(infra_routes(**MERGED))), *ADD)
+    rec = record(tmp_path)
+    assert [s["state"] for s in rec["steps"]][4:6] == ["verified", "waiting"]
 
 
 def test_a_refused_rerun_shows_the_engines_reason(tmp_path, box, monkeypatch, capsys):
