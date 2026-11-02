@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
         return 2
     state_dir = config.load_config(args.config).state_dir
     rec = onboard.load_record(state_dir, args.name)
-    if rec and rec["status"] == "complete":
+    if rec and rec.status == "complete":
         print(f"{args.name} is already onboarded")
         _show(rec)
         return 0
@@ -63,18 +63,18 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
     _write(state_dir, action, args.name, {} if action == "resume" else _request(args))
     rec = _kick(sh, state_dir, args.name)
     if _at_confirm(rec) and _yes(rec):
-        _write(state_dir, "confirm", args.name, {"revision": rec["revision"]})
+        _write(state_dir, "confirm", args.name, {"revision": rec.revision})
         _kick(sh, state_dir, args.name)
     return 0
 
 
-def _action(rec: dict | None, args: argparse.Namespace) -> str:
+def _action(rec: onboard.Record | None, args: argparse.Namespace) -> str:
     """The intent a run of `project add` writes; "" when it is refused."""
     if rec is None:
         return "start"
-    if _same(rec["request"]["repos"], args.repos):
+    if _same(rec.request["repos"], args.repos):
         return "resume"
-    return "" if rec["confirmed_revision"] else "edit"
+    return "" if rec.confirmed_revision else "edit"
 
 
 def _same(a: list[str], b: list[str]) -> bool:
@@ -83,14 +83,14 @@ def _same(a: list[str], b: list[str]) -> bool:
     return norm(a) == norm(b)
 
 
-def _at_confirm(rec: dict) -> bool:
-    return any(s["name"] == "confirm" and s["state"] == "blocked" for s in rec["steps"])
+def _at_confirm(rec: onboard.Record) -> bool:
+    return rec.step("confirm").state is onboard.StepState.BLOCKED
 
 
-def _yes(rec: dict) -> bool:
-    print(yaml.safe_dump(rec["proposal"], sort_keys=False))
+def _yes(rec: onboard.Record) -> bool:
+    print(yaml.safe_dump(rec.proposal, sort_keys=False))
     try:
-        return input(f"confirm {rec['revision'][:12]}? [y/N] ").strip().lower() == "y"
+        return input(f"confirm {rec.revision[:12]}? [y/N] ").strip().lower() == "y"
     except EOFError:
         return False
 
@@ -119,7 +119,7 @@ def _write(state_dir: str, action: str, project: str, payload: dict) -> None:
                          actor=getpass.getuser(), epoch_ms=time.time_ns() // 1_000_000)
 
 
-def _kick(sh: onboard.Sh, state_dir: str, project: str) -> dict:
+def _kick(sh: onboard.Sh, state_dir: str, project: str) -> onboard.Record:
     """Start one engine run, wait for it, print the record and return it."""
     sh(KICK)
     rec = onboard.load_record(state_dir, project)
@@ -127,9 +127,9 @@ def _kick(sh: onboard.Sh, state_dir: str, project: str) -> dict:
     return rec
 
 
-def _show(rec: dict) -> None:
-    print(f"\n{rec['project']}: {rec['status']}")
-    for s in rec["steps"]:
-        print(f"  {s['name']:<13} {s['state']:<9} {s['detail']} {s['link']}".rstrip())
-    if rec["notice"]:
-        print(f"notice: {rec['notice']}")
+def _show(rec: onboard.Record) -> None:
+    print(f"\n{rec.project}: {rec.status}")
+    for s in rec.steps:
+        print(f"  {s.name:<13} {s.state:<9} {s.detail} {s.link}".rstrip())
+    if rec.notice:
+        print(f"notice: {rec.notice}")

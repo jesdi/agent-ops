@@ -113,7 +113,9 @@ def run(box, sh, get=no_get, now=NOW):
 
 
 def record(tmp_path, project="analytics"):
-    return onboard.load_record(state(tmp_path), project)
+    """The record file, as JSON: its layout is the engine's own."""
+    p = state(tmp_path) / "onboarding" / f"{project}.json"
+    return json.loads(p.read_text()) if p.exists() else None
 
 
 def step(rec, name):
@@ -788,3 +790,11 @@ def test_a_complete_record_is_left_alone(tmp_path, box, infra_token):
     deployed(tmp_path, box, FakeGet(LISTED))
     run(box, FakeSh({"": AssertionError("no call expected")}), get=no_get)
     assert record(tmp_path)["status"] == "complete"
+
+
+def test_load_record_gives_the_typed_record_the_file_holds(tmp_path, box, infra_token):
+    merged(tmp_path, box)
+    rec = onboard.load_record(state(tmp_path), "analytics")
+    assert rec.step("config-merge").state is onboard.StepState.VERIFIED
+    assert isinstance(rec.infra_pr, onboard.InfraPr) and rec.infra_pr.merge_sha == "merge1"
+    assert onboard.asdict(rec) == record(tmp_path)
