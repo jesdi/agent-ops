@@ -30,12 +30,18 @@ from typing import Callable
 import yaml
 
 from dispatcher import board, config
+from dispatcher.infra_config import add_project_text
 from dispatcher.convergence import pass_lock
 from dispatcher.state import write_json_atomic
 
 INTENTS_DIR = "onboarding-intents"
 RECORDS_DIR = "onboarding"
 ACTIONS = ("start", "edit", "confirm", "resume")
+INFRA_REPO = "jesdi/agent-ops-infra"
+INFRA_TARGETS = "config/targets.yaml"
+# git authenticates as gh does, so GH_TOKEN in the env picks the token.
+GIT_AS_GH = ["git", "-c", "credential.helper=", "-c",
+             "credential.helper=!gh auth git-credential"]
 
 Sh = Callable[..., str]
 Get = Callable[[str, dict], bytes]
@@ -359,8 +365,100 @@ def _confirm_step(r: Run, rec: dict) -> tuple[str, str, str]:
                   f"--board {req['board']['owner']}/{req['board']['number']}")
 
 
-STEPS = ("resolve", "clone", "confirm")
-_STEPS = {"resolve": _resolve, "clone": _clone, "confirm": _confirm_step}
+# -- config-pr ----------------------------------------------------------------
+
+
+def _infra_env() -> dict:
+    """The env of every agent-ops-infra call: GH_TOKEN is the infra token,
+    which only the onboarding unit loads."""
+    token = os.environ.get("GH_INFRA_TOKEN")
+    if not token:
+        raise Blocked("GH_INFRA_TOKEN is unset: agent-ops-onboard loads it from "
+                      "its op.env entry; run project add through that unit")
+    return {**os.environ, "GH_TOKEN": token}
+
+
+def _scratch(r: Run) -> Path:
+    return Path(r.cfg.state_dir) / RECORDS_DIR / "infra"
+
+
+def _git(r: Run, env: dict, *args: str) -> str:
+    return r.sh([*GIT_AS_GH, "-C", str(_scratch(r)), *args], env=env)
+
+
+def _infra_main(r: Run, env: dict) -> str:
+    """infra main's targets.yaml, fetched into the scratch clone."""
+    if not (_scratch(r) / ".git").exists():
+        shutil.rmtree(_scratch(r), ignore_errors=True)
+        r.sh([*GIT_AS_GH, "clone", f"https://github.com/{INFRA_REPO}.git",
+              str(_scratch(r))], env=env)
+    _git(r, env, "fetch", "origin")
+    return _git(r, env, "show", f"origin/main:{INFRA_TARGETS}")
+
+
+def _on_main(text: str, project: str) -> bool:
+    return any(p.get("name") == project
+               for p in yaml.safe_load(text).get("projects") or [])
+
+
+def _open_pr(r: Run, project: str, env: dict) -> dict | None:
+    rows = json.loads(r.sh(["gh", "pr", "list", "--repo", INFRA_REPO, "--head",
+                            f"onboard/{project}", "--state", "open",
+                            "--json", "number,url,headRefOid"], env=env))
+    return rows[0] if rows else None
+
+
+def _config_pr(r: Run, rec: dict) -> tuple[str, str, str]:
+    env = _infra_env()
+    main = _infra_main(r, env)
+    if _on_main(main, rec["project"]):
+        return "verified", "already on infra main", rec["infra_pr"].get("url", "")
+    pr, ip = _open_pr(r, rec["project"], env), rec["infra_pr"]
+    if not (pr and pr["headRefOid"] == ip.get("head")
+            and ip.get("revision") == rec["revision"]):
+        _build_pr(r, rec, main, pr, env)
+    return "verified", "", rec["infra_pr"]["url"]
+
+
+def _build_pr(r: Run, rec: dict, main: str, pr: dict | None, env: dict) -> None:
+    """onboard/<project> rebuilt on infra main: the project added, checked
+    with the loader, committed and force-pushed. The PR is opened only when
+    none is open on the branch."""
+    project, branch = rec["project"], f"onboard/{rec['project']}"
+    text = add_project_text(main, yaml.safe_dump([rec["proposal"]], sort_keys=False))
+    try:
+        config.parse_config(yaml.safe_load(text))
+    except ValueError as e:
+        raise Blocked(f"infra's targets.yaml refuses the project: {e}") from None
+    _git(r, env, "checkout", "-B", branch, "origin/main")
+    (_scratch(r) / INFRA_TARGETS).write_text(text)
+    _git(r, env, "add", INFRA_TARGETS)
+    _git(r, env, "-c", "user.name=agent-ops-onboard", "-c",
+         "user.email=agent-ops-onboard@users.noreply.github.com",
+         "commit", "-m", f"feat(config): onboard {project}")
+    head, base = (_git(r, env, "rev-parse", ref).strip() for ref in ("HEAD", "origin/main"))
+    _git(r, env, "push", "--force", "origin", f"HEAD:refs/heads/{branch}")
+    pr = pr or _create_pr(r, rec, env)
+    rec["infra_pr"] = {"number": pr["number"], "url": pr["url"], "head": head, "base": base,
+                       "revision": rec["revision"], "pushed_at": r.now.isoformat(),
+                       "merge_sha": "", "merged_at": ""}
+    _resource(rec, "infra-pr", pr["url"])
+
+
+def _create_pr(r: Run, rec: dict, env: dict) -> dict:
+    url = r.sh(["gh", "pr", "create", "--repo", INFRA_REPO, "--base", "main",
+                "--head", f"onboard/{rec['project']}",
+                "--title", f"feat(config): onboard {rec['project']}",
+                "--body", f"Adds project {rec['project']}, paused, at proposal "
+                          f"revision {rec['revision'][:12]}. Opened by agent-ops-onboard, "
+                          "which squash-merges it once its checks are green."],
+               env=env).strip()
+    return {"number": int(url.rsplit("/", 1)[1]), "url": url}
+
+
+STEPS = ("resolve", "clone", "confirm", "config-pr")
+_STEPS = {"resolve": _resolve, "clone": _clone, "confirm": _confirm_step,
+          "config-pr": _config_pr}
 
 
 def main(argv: list[str] | None = None) -> None:

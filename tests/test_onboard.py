@@ -422,3 +422,109 @@ def test_resume_retries_the_current_step(tmp_path, box):
     intent(tmp_path, "resume")
     run(box, FakeSh())
     assert step(record(tmp_path), "clone")["state"] == "verified"
+
+
+# -- config-pr ----------------------------------------------------------------
+
+PR_URL = "https://github.com/jesdi/agent-ops-infra/pull/7"
+
+
+def infra_cloned(argv, cwd, env):
+    cloned(argv, cwd, env)
+    (Path(argv[-1]) / "config").mkdir()
+    return ""
+
+
+def infra_routes(main=LIVE, open_prs="[]"):
+    """agent-ops-infra as the scratch clone and gh see it."""
+    return {"clone https://github.com/jesdi/agent-ops-infra.git": infra_cloned,
+            "fetch origin": "",
+            "show origin/main:config/targets.yaml": main,
+            "gh pr list --repo jesdi/agent-ops-infra": open_prs,
+            "checkout -B onboard/analytics origin/main": "",
+            "add config/targets.yaml": "", "commit -m": "",
+            "rev-parse HEAD": "head1\n", "rev-parse origin/main": "base1\n",
+            "push --force origin HEAD:refs/heads/onboard/analytics": "",
+            "gh pr create": PR_URL + "\n"}
+
+
+@pytest.fixture
+def infra_token(monkeypatch):
+    monkeypatch.setenv("GH_INFRA_TOKEN", "infra-tok")
+
+
+def confirmed(tmp_path, box, sh=None):
+    """A record confirmed, then one run with `sh`."""
+    rec = resolved(tmp_path, box)
+    intent(tmp_path, "confirm", {"revision": rec["revision"]})
+    sh = sh or FakeSh(infra_routes())
+    run(box, sh)
+    return record(tmp_path)
+
+
+def scratch(tmp_path) -> Path:
+    return state(tmp_path) / "onboarding" / "infra"
+
+
+def test_config_pr_pushes_the_project_and_opens_the_pr(tmp_path, box, infra_token):
+    sh = FakeSh(infra_routes())
+    rec = confirmed(tmp_path, box, sh)
+    s = step(rec, "config-pr")
+    assert (s["state"], s["link"]) == ("verified", PR_URL)
+    assert rec["infra_pr"] == {
+        "number": 7, "url": PR_URL, "head": "head1", "base": "base1",
+        "revision": rec["revision"], "pushed_at": NOW.isoformat(),
+        "merge_sha": "", "merged_at": ""}
+    assert {"kind": "infra-pr", "ref": PR_URL, "state": "in use"} in rec["resources"]
+    written = (scratch(tmp_path) / "config" / "targets.yaml").read_text()
+    assert written.startswith(LIVE) and "  - name: analytics\n" in written
+    [(argv, _, env)] = sh.ran("push --force")
+    assert "credential.helper=!gh auth git-credential" in argv
+    assert env["GH_TOKEN"] == "infra-tok"
+    for key in ("clone https://github.com/jesdi/agent-ops-infra", "fetch", "gh pr list",
+                "gh pr create"):
+        assert all(env["GH_TOKEN"] == "infra-tok" for _, _, env in sh.ran(key)), key
+
+
+def test_config_pr_blocks_without_the_infra_token(tmp_path, box, monkeypatch):
+    monkeypatch.delenv("GH_INFRA_TOKEN", raising=False)
+    s = step(confirmed(tmp_path, box), "config-pr")
+    assert s["state"] == "blocked" and "GH_INFRA_TOKEN" in s["detail"]
+
+
+def test_config_pr_is_verified_when_infra_main_has_the_project(tmp_path, box, infra_token):
+    on_main = LIVE + """\
+  - name: analytics
+    board: {owner: jesdi, number: 4}
+"""
+    sh = FakeSh(infra_routes(main=on_main))
+    s = step(confirmed(tmp_path, box, sh), "config-pr")
+    assert s["state"] == "verified"
+    assert sh.ran("push") == []
+
+
+def test_config_pr_finds_its_pr_by_branch_after_a_crash(tmp_path, box, infra_token):
+    """The PR was opened but the record never saved it: rebuild, no second PR."""
+    sh = FakeSh(infra_routes(open_prs=json.dumps(
+        [{"number": 7, "url": PR_URL, "headRefOid": "lost"}])))
+    rec = confirmed(tmp_path, box, sh)
+    assert step(rec, "config-pr")["state"] == "verified"
+    assert rec["infra_pr"]["number"] == 7 and rec["infra_pr"]["head"] == "head1"
+    assert sh.ran("gh pr create") == []
+
+
+def test_config_pr_keeps_an_open_pr_that_matches_the_record(tmp_path, box, infra_token):
+    rec = confirmed(tmp_path, box)
+    step(rec, "config-pr")["state"] = "failed"  # a crash after the push
+    onboard.write_json_atomic(state(tmp_path) / "onboarding" / "analytics.json", rec)
+    sh = FakeSh(infra_routes(open_prs=json.dumps(
+        [{"number": 7, "url": PR_URL, "headRefOid": "head1"}])))
+    run(box, sh)
+    assert step(record(tmp_path), "config-pr")["state"] == "verified"
+    assert sh.ran("push") == []
+
+
+def test_config_pr_blocks_when_infra_config_refuses_the_project(tmp_path, box, infra_token):
+    taken = LIVE.replace("github_id: 101", "github_id: 202")
+    s = step(confirmed(tmp_path, box, FakeSh(infra_routes(main=taken))), "config-pr")
+    assert s["state"] == "blocked" and "github_id" in s["detail"]
