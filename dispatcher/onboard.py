@@ -31,8 +31,7 @@ import yaml
 
 from dispatcher import board, config
 from dispatcher.infra_config import add_project_text
-from dispatcher.convergence import pass_lock
-from dispatcher.state import write_json_atomic
+from dispatcher.state import state_lock, write_json_atomic
 
 INTENTS_DIR = "onboarding-intents"
 RECORDS_DIR = "onboarding"
@@ -212,7 +211,7 @@ def run(config_path: str | Path, sh: Sh = sh, get: Get = get,
         now: datetime | None = None) -> None:
     cfg = config.load_config(config_path)
     r = Run(Path(config_path), cfg, sh, get, now or datetime.now(timezone.utc))
-    with pass_lock(cfg.state_dir, name="onboarding.lock"):
+    with state_lock(cfg.state_dir, "onboarding.lock"):
         _drain(r)
         for rec in _records(cfg.state_dir):
             if rec["status"] == "open":

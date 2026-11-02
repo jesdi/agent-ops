@@ -800,3 +800,17 @@ def test_old_shape_without_an_implement_pick_records_nothing(tmp_path: Path):
 def test_empty_recorded_providers_with_an_implement_pick_count_the_pick(tmp_path: Path):
     save(tmp_path, make(stage=Stage.IMPLEMENT, picks={"implement": "openai/gpt-sol@medium"}))
     assert load(tmp_path, "portfolio_eval", 101).implement_providers == ["openai"]
+
+
+def test_state_lock_flocks_the_named_file_under_state_dir(tmp_path):
+    import fcntl
+    from dispatcher.state import state_lock
+    with state_lock(tmp_path / "s", "onboarding.lock"):
+        with open(tmp_path / "s" / "onboarding.lock", "w") as fh, \
+                pytest.raises(BlockingIOError):
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(TimeoutError, match="onboarding.lock still held"):
+            with state_lock(tmp_path / "s", "onboarding.lock", timeout=0.2):
+                pass
+    with state_lock(tmp_path / "s", "onboarding.lock", timeout=0.2):
+        pass

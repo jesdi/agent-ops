@@ -7,38 +7,10 @@ console takes it too, with a time limit, to store model settings between
 passes."""
 from __future__ import annotations
 
-import fcntl
-import time
-from contextlib import contextmanager
-from pathlib import Path
+from dispatcher.state import state_lock
 
 
-@contextmanager
-def pass_lock(state_dir: str, timeout: float | None = None,
-              name: str = "convergence.lock"):
+def pass_lock(state_dir: str, timeout: float | None = None):
     """Hold the lock. `timeout` None waits as long as it takes; else raise
-    TimeoutError when the lock is still held after `timeout` seconds. The
-    onboarding unit takes its own lock by `name` (onboarding.lock)."""
-    path = Path(state_dir) / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as fh:
-        _acquire(fh.fileno(), timeout, name)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-
-
-def _acquire(fd: int, timeout: float | None, name: str) -> None:
-    if timeout is None:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"{name} still held after {timeout}s") from None
-            time.sleep(0.1)
+    TimeoutError when the lock is still held after `timeout` seconds."""
+    return state_lock(state_dir, "convergence.lock", timeout)
