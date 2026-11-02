@@ -432,6 +432,7 @@ def test_new_commands_after_confirm_go_back_to_confirm_and_update_the_pr(
     sh = FakeSh(infra_routes(open_prs=json.dumps(
         [{"number": 7, "url": PR_URL, "headRefOid": "head1"}]), **NO_CI_RUN))
     sh.route("rev-parse HEAD", "head2\n")
+    sh.route("for-each-ref", "head1\n")
     run(box, sh)
     rec = record(tmp_path)
     assert (rec["infra_pr"]["head"], rec["infra_pr"]["revision"]) == ("head2", rec["revision"])
@@ -518,7 +519,8 @@ def infra_routes(main=LIVE, open_prs="[]", **merge):
             "checkout -B onboard/analytics origin/main": "",
             "add config/targets.yaml": "", "commit -m": "",
             "rev-parse HEAD": "head1\n", "rev-parse origin/main": "base1\n",
-            "push --force origin HEAD:refs/heads/onboard/analytics": "",
+            "for-each-ref": "",  # no onboard/analytics on infra yet
+            " push ": "",
             "gh pr create": PR_URL + "\n"}
 
 
@@ -555,7 +557,8 @@ def test_config_pr_pushes_the_project_and_opens_the_pr(tmp_path, box, infra_toke
     assert {"kind": "infra-pr", "ref": PR_URL, "state": "in use"} in rec["resources"]
     written = (scratch(tmp_path) / "config" / "targets.yaml").read_text()
     assert written.startswith(LIVE) and "  - name: analytics\n" in written
-    [(argv, _, env)] = sh.ran("push --force")
+    [(argv, _, env)] = sh.ran(" push ")
+    assert argv[-3:] == ["push", "origin", "HEAD:refs/heads/onboard/analytics"]
     assert "credential.helper=!gh auth git-credential" in argv
     assert env["GH_TOKEN"] == "infra-tok"
     for key in ("clone https://github.com/jesdi/agent-ops-infra", "fetch", "gh pr list",
@@ -577,17 +580,22 @@ def test_config_pr_is_verified_when_infra_main_has_the_project(tmp_path, box, in
     sh = FakeSh(infra_routes(main=on_main))
     s = step(confirmed(tmp_path, box, sh), "config-pr")
     assert s["state"] == "verified"
-    assert sh.ran("push") == []
+    assert sh.ran(" push ") == []
 
 
-def test_config_pr_finds_its_pr_by_branch_after_a_crash(tmp_path, box, infra_token):
-    """The PR was opened but the record never saved it: rebuild, no second PR."""
+def test_config_pr_blocks_on_a_branch_head_it_did_not_push(tmp_path, box, infra_token):
+    """onboard/<p> holds a commit the record doesn't name: someone else's
+    work, so no force-push over it."""
     sh = FakeSh(infra_routes(open_prs=json.dumps(
-        [{"number": 7, "url": PR_URL, "headRefOid": "lost"}])))
+        [{"number": 7, "url": PR_URL, "headRefOid": "theirs1"}])))
+    sh.route("for-each-ref", "theirs1\n")
     rec = confirmed(tmp_path, box, sh)
-    assert step(rec, "config-pr")["state"] == "verified"
-    assert rec["infra_pr"]["number"] == 7 and rec["infra_pr"]["head"] == "head1"
-    assert sh.ran("gh pr create") == []
+    s = step(rec, "config-pr")
+    assert s["state"] == "blocked" and "theirs1" in s["detail"] and s["link"] == PR_URL
+    assert sh.ran(" push ") == [] and sh.ran("gh pr create") == []
+    [(argv, _, _)] = sh.ran("for-each-ref")
+    assert argv[-1] == "refs/remotes/origin/onboard/analytics"
+    assert all("--prune" in argv for argv, _, _ in sh.ran("fetch"))
 
 
 def test_config_pr_keeps_an_open_pr_that_matches_the_record(tmp_path, box, infra_token):
@@ -598,7 +606,7 @@ def test_config_pr_keeps_an_open_pr_that_matches_the_record(tmp_path, box, infra
         [{"number": 7, "url": PR_URL, "headRefOid": "head1"}])))
     run(box, sh)
     assert step(record(tmp_path), "config-pr")["state"] == "verified"
-    assert sh.ran("push") == []
+    assert sh.ran(" push ") == []
 
 
 def test_config_pr_blocks_when_infra_config_refuses_the_project(tmp_path, box, infra_token):
@@ -693,13 +701,28 @@ def test_config_merge_rebuilds_the_pr_when_main_moved(tmp_path, box, infra_token
     sh = FakeSh(infra_routes(**no_run))
     sh.route("rev-parse origin/main", "base2\n")
     sh.route("rev-parse HEAD", "head2\n")
+    sh.route("for-each-ref", "head1\n")
     run(box, sh, now=NOW + timedelta(minutes=40))
     rec = record(tmp_path)
     s = step(rec, "config-merge")
     assert s["state"] == "waiting" and "main moved" in s["detail"]
     assert (rec["infra_pr"]["head"], rec["infra_pr"]["base"]) == ("head2", "base2")
     assert rec["infra_pr"]["pushed_at"] == (NOW + timedelta(minutes=40)).isoformat()
-    assert len(sh.ran("push --force")) == 1 and sh.ran("gh pr create") == []
+    [(argv, _, _)] = sh.ran(" push ")
+    assert argv[-4:] == ["push", "--force-with-lease=onboard/analytics:head1", "origin",
+                         "HEAD:refs/heads/onboard/analytics"]
+    assert sh.ran("gh pr create") == []
+
+
+def test_a_rebuild_blocks_when_someone_else_moved_the_branch(tmp_path, box, infra_token):
+    confirmed(tmp_path, box, FakeSh(infra_routes(**NO_CI_RUN)))
+    sh = FakeSh(infra_routes(**NO_CI_RUN))
+    sh.route("rev-parse origin/main", "base2\n")
+    sh.route("for-each-ref", "theirs2\n")
+    run(box, sh)
+    s = step(record(tmp_path), "config-merge")
+    assert s["state"] == "blocked" and "theirs2" in s["detail"] and s["link"] == PR_URL
+    assert sh.ran(" push ") == []
 
 
 def test_config_merge_blocks_with_githubs_refusal(tmp_path, box, infra_token):

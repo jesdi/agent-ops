@@ -478,7 +478,7 @@ def _infra_main(r: Run, env: dict) -> str:
         shutil.rmtree(_scratch(r), ignore_errors=True)
         r.sh([*GIT_AS_GH, "clone", f"https://github.com/{INFRA_REPO}.git",
               str(_scratch(r))], env=env)
-    _git(r, env, "fetch", "origin")
+    _git(r, env, "fetch", "origin", "--prune")
     return _git(r, env, "show", f"origin/main:{INFRA_TARGETS}")
 
 
@@ -510,7 +510,7 @@ def _config_pr(r: Run, rec: Record) -> Outcome:
     pr, ip = _open_pr(r, rec.project, env), rec.infra_pr
     if pr and ip and pr.head == ip.head and ip.revision == rec.revision:
         return Outcome(StepState.VERIFIED, link=ip.url)
-    pushed = _push(r, rec, main, env)
+    pushed = _push(r, rec, main, env, pr.url if pr else ip.url if ip else "")
     if isinstance(pushed, Outcome):
         return pushed
     number, url = (pr.number, pr.url) if pr else _create_pr(r, rec, env)
@@ -519,9 +519,12 @@ def _config_pr(r: Run, rec: Record) -> Outcome:
     return Outcome(StepState.VERIFIED, link=url)
 
 
-def _push(r: Run, rec: Record, main: str, env: dict) -> tuple[str, str] | Outcome:
+def _push(r: Run, rec: Record, main: str, env: dict,
+          link: str) -> tuple[str, str] | Outcome:
     """onboard/<project> rebuilt on infra main: the project added, checked
-    with the loader, committed and force-pushed. Its head and base."""
+    with the loader, committed and pushed over the head the record names
+    (a lease), never over anyone else's. Its head and base; blocked, with
+    `link`, when the branch holds a head the record doesn't name."""
     project, branch = rec.project, f"onboard/{rec.project}"
     text = add_project_text(main, yaml.safe_dump([rec.proposal], sort_keys=False))
     try:
@@ -535,7 +538,15 @@ def _push(r: Run, rec: Record, main: str, env: dict) -> tuple[str, str] | Outcom
          "user.email=agent-ops-onboard@users.noreply.github.com",
          "commit", "-m", f"feat(config): onboard {project}")
     head, base = (_git(r, env, "rev-parse", ref).strip() for ref in ("HEAD", "origin/main"))
-    _git(r, env, "push", "--force", "origin", f"HEAD:refs/heads/{branch}")
+    ours = rec.infra_pr.head if rec.infra_pr else ""
+    theirs = _git(r, env, "for-each-ref", "--format=%(objectname)",
+                  f"refs/remotes/origin/{branch}").strip()
+    if theirs != ours:
+        return blocked(f"{branch} on {INFRA_REPO} is at {theirs}, which this onboarding "
+                       f"didn't push (it pushed {ours or 'nothing yet'}): review it, then "
+                       "delete the branch, or the record to start over", link)
+    _git(r, env, "push", *([f"--force-with-lease={branch}:{ours}"] if ours else []),
+         "origin", f"HEAD:refs/heads/{branch}")
     return head, base
 
 
@@ -572,7 +583,7 @@ def _config_merge(r: Run, rec: Record) -> Outcome:
                        "to start over", ip.url)
     main = _infra_main(r, env)
     if _git(r, env, "rev-parse", "origin/main").strip() != ip.base:
-        pushed = _push(r, rec, main, env)
+        pushed = _push(r, rec, main, env, ip.url)
         if isinstance(pushed, Outcome):
             return pushed
         rec.infra_pr = InfraPr(ip.number, ip.url, *pushed, rec.revision, r.now.isoformat())
