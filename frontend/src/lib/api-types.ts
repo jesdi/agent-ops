@@ -910,6 +910,8 @@ export interface components {
         OnboardingAccepted: {
             /** Intent */
             intent: string;
+            /** Request Revision */
+            request_revision?: string | null;
             /**
              * Status
              * @default pending
@@ -1006,6 +1008,8 @@ export interface components {
             board: components["schemas"]["OnboardingBoard"];
             /** Commands */
             commands: components["schemas"]["OnboardingCommands"][];
+            /** Expected Request Revision */
+            expected_request_revision?: string | null;
             /** Repos */
             repos: string[];
         };
@@ -1027,6 +1031,11 @@ export interface components {
             awaiting: string;
             /** Confirmed Revision */
             confirmed_revision: string;
+            /**
+             * Edit Mode
+             * @enum {string}
+             */
+            edit_mode: "none" | "details" | "repositories";
             /** Notice */
             notice: string;
             /** Pending */
@@ -1037,6 +1046,8 @@ export interface components {
             project: string;
             proposal: components["schemas"]["OnboardingProposal"] | null;
             request: components["schemas"]["OnboardingRequest"];
+            /** Request Revision */
+            request_revision: string;
             /** Revision */
             revision: string;
             /**

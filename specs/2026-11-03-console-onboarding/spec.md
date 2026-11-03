@@ -8,6 +8,8 @@ Observable behavior:
 - Console lists and displays onboardings started by CLI as well as web, including completed ones.
 - Detail shows actual engine steps, states, details, links and notice; waiting, failed and blocked clearly distinguished.
 - Confirmation shows actual resolved proposal including repositories, commands and board. Confirm explicitly binds the revision shown; polling cannot silently substitute a newly changed revision beneath the review action.
+- Edits name the request revision they started from. The engine refuses stale edits when consuming intents, preserves the newer request, and the console retains the draft until the outcome is known. Edit permissions come from the engine.
+- Concurrent submissions for the same subject retain distinct ordered intents through the shared queue writer.
 - Resume submits a payload-free intent so it never replays stale request data. Engine is sole record writer and sole owner of transition policy.
 - Complete ends paused; link back to board. Infrastructure PR merge is manual; no merge button or credential in web. Abandon, inspection, board creation/import, app auth, secrets and verification expansion deferred.
 - CLI remains on box unchanged. Work on issues 252 and 253 belongs to other sessions.

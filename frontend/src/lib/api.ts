@@ -1,5 +1,7 @@
 import type { components } from './api-types'
 
+export type OnboardingStartRequest = components['schemas']['OnboardingStartRequest']
+export type OnboardingAccepted = components['schemas']['OnboardingAccepted']
 export type OnboardingRequest = components['schemas']['OnboardingRequest']
 export type OnboardingView = components['schemas']['OnboardingView']
 export type OnboardingProposal = components['schemas']['OnboardingProposal']
@@ -112,8 +114,8 @@ const put = <T>(path: string, body: unknown) =>
 export const api = {
   onboardings: () => request<OnboardingsView>('/onboarding'),
   onboarding: (project: string) => request<OnboardingView>(`/onboarding/${encodeURIComponent(project)}`),
-  startOnboarding: (project: string, body: OnboardingRequest) =>
-    post<IntentAccepted>(`/onboarding/${encodeURIComponent(project)}`, body),
+  startOnboarding: (project: string, body: OnboardingStartRequest) =>
+    post<OnboardingAccepted>(`/onboarding/${encodeURIComponent(project)}`, body),
   confirmOnboarding: (project: string, revision: string) =>
     post<IntentAccepted>(`/onboarding/${encodeURIComponent(project)}/confirm`, { revision }),
   resumeOnboarding: (project: string) =>

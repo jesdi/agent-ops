@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import Callable, Literal, NamedTuple
 
 import yaml
 
@@ -191,29 +191,19 @@ class Intent(NamedTuple):
 
 def write_intent(state_dir: str | Path, action: str, project: str, payload: dict,
                  actor: str, epoch_ms: int) -> Path:
-    # Separate from the long-running engine lock: concurrent CLI/web writes
-    # must neither overwrite one another nor block behind clones and CI.
-    with state_lock(state_dir, "onboarding-intents.lock"):
-        stamps = [int(p.name.partition("-")[0]) for p in
-                  (Path(state_dir) / QUEUE.dir).glob("*.json")
-                  if p.name.partition("-")[0].isdigit()]
-        stamp = max(epoch_ms, max(stamps, default=epoch_ms - 1) + 1)
-        return QUEUE.write(state_dir, action, (project,), payload, actor, stamp)
+    return QUEUE.write(state_dir, action, (project,), payload, actor, epoch_ms)
 
 
 def pending_intents(state_dir: str | Path) -> list[dict]:
     """Read valid queue entries without consuming or repairing them."""
-    out = []
-    for path in sorted((Path(state_dir) / QUEUE.dir).glob("*.json")):
-        try:
-            raw = json.loads(path.read_text())
-            it = _intent(raw, path)
-            out.append({"id": path.name, "action": it.action, "project": it.project,
-                        "payload": it.payload, "actor": it.actor,
-                        "created_at": str(raw.get("created_at", ""))})
-        except (KeyError, TypeError, ValueError, OSError):
-            continue
-    return out
+    return QUEUE.inspect(state_dir, _pending_intent)
+
+
+def _pending_intent(raw: dict, path: Path) -> dict:
+    it = _intent(raw, path)
+    return {"id": path.name, "action": it.action, "project": it.project,
+            "payload": it.payload, "actor": it.actor,
+            "created_at": str(raw.get("created_at", ""))}
 
 
 def _intent(rec: dict, path: Path) -> Intent:
@@ -226,7 +216,10 @@ def _intent(rec: dict, path: Path) -> Intent:
 
 def _intent_payload(action: str, payload: dict) -> dict:
     if action == "add":
-        return _request(payload)
+        request = _request(payload)
+        if "expected_request_revision" in payload:
+            request["expected_request_revision"] = str(payload["expected_request_revision"])
+        return request
     if action == "confirm":
         return {"revision": str(payload["revision"])}
     return {}
@@ -250,14 +243,55 @@ def _drain(r: Run) -> None:
         it.path.unlink(missing_ok=True)
 
 
-def _add(r: Run, it: Intent) -> None:
-    """A request opens a record, or reruns one under the rules of #210."""
-    rec = load_record(r.cfg.state_dir, it.project)
+def request_revision(request: dict) -> str:
+    """Version of the operator's request, independent of resolved proposal facts."""
+    return revision({**_request(request), "repos": _repo_keys(request)})
+
+
+def request_conflict(rec: Record | None, request: dict, expected: str | None) -> str:
+    """Absent precondition is the legacy CLI; empty means web create-only."""
+    if expected is None:
+        return ""
     if rec is None:
-        rec = Record(it.project, started_by=it.actor, request=it.payload)
+        return "request refused: onboarding no longer exists" if expected else ""
+    if _same(rec.request, request):
+        return ""
+    if expected != request_revision(rec.request):
+        return "request refused: details changed; review the latest details before saving again"
+    return ""
+
+
+def _add(r: Run, it: Intent) -> None:
+    """Apply the request's precondition and transition policy under the engine lock."""
+    rec = load_record(r.cfg.state_dir, it.project)
+    request = _request(it.payload)
+    conflict = request_conflict(rec, request, it.payload.get("expected_request_revision"))
+    if conflict:
+        _refuse_request(r, rec, conflict)
+        return
+    if rec is None:
+        rec = Record(it.project, started_by=it.actor, request=request)
     else:
-        rec.notice = _rerun(rec, it.payload)
+        rec.notice = _rerun(rec, request)
     _save(r, rec)
+
+
+def _refuse_request(r: Run, rec: Record | None, reason: str) -> None:
+    if rec is None:
+        print(f"[warn] {reason}; dropped", file=sys.stderr)
+        return
+    rec.notice = reason
+    _save(r, rec)
+
+
+EditMode = Literal["none", "details", "repositories"]
+
+
+def edit_mode(rec: Record) -> EditMode:
+    """The engine's editing policy, also shown by the console."""
+    if rec.status != "open" or rec.step("config-merge").state is StepState.VERIFIED:
+        return "none"
+    return "details" if rec.confirmed_revision else "repositories"
 
 
 def _rerun(rec: Record, request: dict) -> str:
@@ -267,10 +301,11 @@ def _rerun(rec: Record, request: dict) -> str:
     repositories can't change."""
     if _same(rec.request, request):
         return "already onboarded" if rec.status == "complete" else ""
-    if rec.step("config-merge").state is StepState.VERIFIED:
+    mode = edit_mode(rec)
+    if mode == "none":
         return ("request refused: the project is merged into infra; edit "
                 "targets.yaml by hand for now")
-    if rec.confirmed_revision and _repo_keys(rec.request) != _repo_keys(request):
+    if mode == "details" and _repo_keys(rec.request) != _repo_keys(request):
         return "request refused: the repositories can't change after confirm"
     rec.request, rec.steps = request, [Step(n) for n in STEPS]
     return ""

@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, TypeVar
 
+from dispatcher.state import state_lock
+
 T = TypeVar("T")
 
 
@@ -29,9 +31,15 @@ class Queue:
               actor: str, epoch_ms: int) -> Path:
         if action not in self.actions:
             raise ValueError(f"unknown intent action: {action!r}")
-        d = Path(state_dir) / self.dir
-        d.mkdir(parents=True, exist_ok=True)
-        p = d / f"{'-'.join(map(str, (epoch_ms, *key, action)))}.json"
+        with state_lock(state_dir, f"{self.dir}.lock"):
+            return self._write(Path(state_dir) / self.dir, action, key, payload, actor, epoch_ms)
+
+    def _write(self, directory: Path, action: str, key: tuple, payload: dict,
+               actor: str, epoch_ms: int) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        subject = "-".join(map(str, key))
+        stamp = _next_stamp(directory, subject, epoch_ms)
+        p = directory / f"{stamp}-{subject}-{action}.json"
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps({
             "action": action,
@@ -46,19 +54,35 @@ class Queue:
     def read(self, state_dir: str | Path, parse: Callable[[dict, Path], T]) -> list[T]:
         """Every intent, `parse`d from its JSON and path, in lexical order.
         `parse` raises KeyError, TypeError or ValueError on a malformed one."""
-        d = Path(state_dir) / self.dir
-        if not d.exists():
-            return []
+        return self._read(state_dir, parse, discard_invalid=True)
+
+    def inspect(self, state_dir: str | Path, parse: Callable[[dict, Path], T]) -> list[T]:
+        """The same valid entries as read(), without repairing malformed files."""
+        return self._read(state_dir, parse, discard_invalid=False)
+
+    def _read(self, state_dir: str | Path, parse: Callable[[dict, Path], T],
+              *, discard_invalid: bool) -> list[T]:
         out: list[T] = []
-        for p in sorted(d.glob("*.json")):
+        for p in sorted((Path(state_dir) / self.dir).glob("*.json")):
             try:
                 out.append(parse(json.loads(p.read_text()), p))
             except (json.JSONDecodeError, KeyError, TypeError, ValueError,
                     OSError) as exc:
-                print(f"[warn] malformed intent {p.name} deleted: {exc}",
-                      file=sys.stderr)
-                p.unlink(missing_ok=True)
+                if discard_invalid:
+                    print(f"[warn] malformed intent {p.name} deleted: {exc}",
+                          file=sys.stderr)
+                    p.unlink(missing_ok=True)
         return out
+
+
+def _next_stamp(directory: Path, subject: str, requested: int) -> int:
+    """Keep each subject's submissions ordered, even on a repeated clock tick."""
+    latest = requested - 1
+    for path in directory.glob("*.json"):
+        stamp, _, remainder = path.stem.partition("-")
+        if stamp.isdigit() and remainder.rpartition("-")[0] == subject:
+            latest = max(latest, int(stamp))
+    return max(requested, latest + 1)
 
 
 ACTIONS = ("reply", "park", "kill", "retry", "resume", "cancel", "answers")

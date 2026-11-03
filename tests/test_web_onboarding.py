@@ -108,7 +108,9 @@ def test_resume_cannot_replay_an_old_request_over_a_concurrent_edit(console, tmp
     run_unit(tmp_path, monkeypatch)
     assert client.post("/api/onboarding/analytics/resume", headers=HEADERS).status_code == 202
     changed = {**REQUEST, "commands": [{"setup_cmd": "", "gate_cmd": "make new-gate", "verify_cmd": ""}]}
-    client.post("/api/onboarding/analytics", headers=HEADERS, json=changed)
+    current = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    client.post("/api/onboarding/analytics", headers=HEADERS, json={
+        **changed, "expected_request_revision": current["request_revision"]})
     run_unit(tmp_path, monkeypatch)
     view = client.get("/api/onboarding/analytics", headers=HEADERS).json()
     assert view["request"] == changed
@@ -122,7 +124,8 @@ def test_confirm_is_rechecked_when_the_unit_consumes_it(console, tmp_path, monke
     run_unit(tmp_path, monkeypatch)
     old = client.get("/api/onboarding/analytics", headers=HEADERS).json()
     client.post("/api/onboarding/analytics", headers=HEADERS, json={
-        **REQUEST, "commands": [{"gate_cmd": "make changed"}]})
+        **REQUEST, "commands": [{"gate_cmd": "make changed"}],
+        "expected_request_revision": old["request_revision"]})
     assert client.post("/api/onboarding/analytics/confirm", headers=HEADERS,
                        json={"revision": old["revision"]}).status_code == 202
     run_unit(tmp_path, monkeypatch)
@@ -182,6 +185,7 @@ def test_completed_record_stays_visible_but_cannot_confirm_or_resume(console, tm
     deployed(tmp_path, config, FakeGet(LISTED))
     view = client.get("/api/onboarding/analytics", headers=HEADERS).json()
     assert view["status"] == "complete"
+    assert view["edit_mode"] == "none"
     assert view["proposal"]["paused"] is True
     assert view["pr_url"]
     assert client.get("/api/onboarding", headers=HEADERS).json()["onboardings"] == [view]
@@ -196,3 +200,125 @@ def test_missing_onboarding_cannot_be_resumed_or_confirmed(console):
     assert client.post("/api/onboarding/missing/resume", headers=HEADERS).status_code == 404
     assert client.post("/api/onboarding/missing/confirm", headers=HEADERS,
                        json={"revision": "unknown"}).status_code == 404
+
+
+def test_cli_project_name_remains_addressable_in_console(console, tmp_path):
+    from dispatcher import onboard
+    client, _ = console
+    project = "a" * 101
+    onboard.write_intent(tmp_path / "state", "add", project, REQUEST, "agent", 1)
+    listing = client.get("/api/onboarding", headers=HEADERS).json()["onboardings"]
+    assert listing[0]["project"] == project
+    detail = client.get(f"/api/onboarding/{project}", headers=HEADERS)
+    assert detail.status_code == 200
+    assert detail.json() == listing[0]
+
+
+def test_edit_rejects_a_stale_snapshot_without_losing_the_newer_request(console, tmp_path, monkeypatch):
+    client, _ = console
+    client.post("/api/onboarding/analytics", headers=HEADERS, json=REQUEST)
+    run_unit(tmp_path, monkeypatch)
+    before = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    changed = {**REQUEST, "commands": [{"gate_cmd": "make newer", "setup_cmd": "", "verify_cmd": ""}]}
+    saved = client.post("/api/onboarding/analytics", headers=HEADERS, json={
+        **changed, "expected_request_revision": before["request_revision"]})
+    assert saved.status_code == 202
+    run_unit(tmp_path, monkeypatch)
+    stale = client.post("/api/onboarding/analytics", headers=HEADERS, json={
+        **REQUEST, "board": {"owner": "jesdi", "number": 5},
+        "expected_request_revision": before["request_revision"]})
+    assert stale.status_code == 409
+    view = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    assert view["request"] == changed
+    assert view["request_revision"] == saved.json()["request_revision"]
+
+
+def test_queued_edits_recheck_the_request_revision_in_the_engine(console, tmp_path, monkeypatch):
+    client, _ = console
+    client.post("/api/onboarding/analytics", headers=HEADERS, json=REQUEST)
+    run_unit(tmp_path, monkeypatch)
+    before = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    first = {**REQUEST, "commands": [{"gate_cmd": "make newer", "setup_cmd": "", "verify_cmd": ""}]}
+    second = {**REQUEST, "board": {"owner": "jesdi", "number": 5}}
+    for request in (first, second):
+        response = client.post("/api/onboarding/analytics", headers=HEADERS, json={
+            **request, "expected_request_revision": before["request_revision"]})
+        assert response.status_code == 202
+    run_unit(tmp_path, monkeypatch)
+    view = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    assert view["request"] == first
+    assert "changed" in view["notice"]
+    assert view["pending"] == []
+
+
+def test_web_start_never_replaces_an_existing_different_request(console, tmp_path, monkeypatch):
+    client, _ = console
+    client.post("/api/onboarding/analytics", headers=HEADERS, json=REQUEST)
+    run_unit(tmp_path, monkeypatch)
+    assert client.post("/api/onboarding/analytics", headers=HEADERS, json={
+        **REQUEST, "board": {"owner": "jesdi", "number": 5}}).status_code == 409
+    assert client.post("/api/onboarding/analytics", headers=HEADERS, json=REQUEST).status_code == 202
+
+
+def test_engine_exposes_and_enforces_edit_permissions(console, tmp_path, monkeypatch):
+    client, _ = console
+    client.post("/api/onboarding/analytics", headers=HEADERS, json=REQUEST)
+    assert client.get("/api/onboarding/analytics", headers=HEADERS).json()["edit_mode"] == "none"
+    run_unit(tmp_path, monkeypatch)
+    before = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    assert before["edit_mode"] == "repositories"
+    client.post("/api/onboarding/analytics/confirm", headers=HEADERS, json={"revision": before["revision"]})
+    run_unit(tmp_path, monkeypatch)
+    confirmed = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    assert confirmed["edit_mode"] == "details"
+    changed = {**REQUEST, "repos": ["jesdi/another"],
+               "expected_request_revision": confirmed["request_revision"]}
+    assert client.post("/api/onboarding/analytics", headers=HEADERS, json=changed).status_code == 202
+    run_unit(tmp_path, monkeypatch)
+    refused = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    assert refused["request"] == REQUEST
+    assert "repositories can't change" in refused["notice"]
+
+
+def test_two_queued_web_starts_keep_the_first_request(console, tmp_path, monkeypatch):
+    client, _ = console
+    first = client.post("/api/onboarding/analytics", headers=HEADERS, json=REQUEST)
+    second = client.post("/api/onboarding/analytics", headers=HEADERS, json={
+        **REQUEST, "board": {"owner": "jesdi", "number": 5}})
+    assert first.status_code == second.status_code == 202
+    run_unit(tmp_path, monkeypatch)
+    view = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    assert view["request"] == REQUEST
+    assert view["request_revision"] == first.json()["request_revision"]
+    assert view["request_revision"] != second.json()["request_revision"]
+    assert "changed" in view["notice"]
+
+
+def test_edit_of_a_missing_record_is_refused_without_creating_it(console):
+    client, _ = console
+    response = client.post("/api/onboarding/analytics", headers=HEADERS, json={
+        **REQUEST, "expected_request_revision": "a-removed-record"})
+    assert response.status_code == 409
+    assert client.get("/api/onboarding", headers=HEADERS).json() == {"onboardings": []}
+
+
+def test_merged_onboarding_exposes_no_edits_and_refuses_a_queued_change(console, tmp_path, monkeypatch):
+    from pathlib import Path
+    from tests.test_onboard import LIVE, merged
+    client, _ = console
+    monkeypatch.setenv("HOME", str(Path.home()))
+    monkeypatch.setenv("GH_INFRA_TOKEN", "synthetic-test-token")
+    config = tmp_path / "targets.yaml"
+    config.write_text(LIVE)
+    merged(tmp_path, config)
+    view = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    assert view["status"] == "open"
+    assert view["edit_mode"] == "none"
+    response = client.post("/api/onboarding/analytics", headers=HEADERS, json={
+        **REQUEST, "board": {"owner": "jesdi", "number": 5},
+        "expected_request_revision": view["request_revision"]})
+    assert response.status_code == 202
+    run_unit(tmp_path, monkeypatch)
+    refused = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    assert refused["request"] == view["request"]
+    assert "merged into infra" in refused["notice"]

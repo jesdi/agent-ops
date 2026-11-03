@@ -250,3 +250,39 @@ def test_resume_of_an_unresumable_terminal_task_is_refused(tmp_path):
     r = client.post("/api/task/alpha/7/resume", headers=HEADERS, json={})
     assert r.status_code == 409
     assert fake.intents == []
+
+
+def test_same_millisecond_replies_remain_distinct_and_keep_both_messages(tmp_path):
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    sources = Sources(cfg.state_dir, None, None, clock=lambda: 1000.0,
+                      systemctl=("true",))
+    client = TestClient(create_app(cfg, sources))
+
+    first = client.post("/api/task/alpha/7/reply", headers=HEADERS,
+                        json={"text": "First instruction"})
+    second = client.post("/api/task/alpha/7/reply", headers=HEADERS,
+                         json={"text": "Second instruction"})
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["intent"] != second.json()["intent"]
+    pending = client.get("/api/pending-intents", headers=HEADERS).json()["intents"]
+    assert [item["payload"]["text"] for item in pending] == [
+        "First instruction", "Second instruction"]
+
+
+def test_same_millisecond_actions_for_a_task_keep_submission_order(tmp_path):
+    from dispatcher import state
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    state.save(tmp_path, make_task(issue=7))
+    sources = Sources(cfg.state_dir, None, None, clock=lambda: 1000.0,
+                      systemctl=("true",))
+    client = TestClient(create_app(cfg, sources))
+
+    assert client.post("/api/task/alpha/7/reply", headers=HEADERS,
+                       json={"text": "Wait for my next message"}).status_code == 202
+    assert client.post("/api/task/alpha/7/park", headers=HEADERS).status_code == 202
+
+    pending = client.get("/api/pending-intents", headers=HEADERS).json()["intents"]
+    assert [item["action"] for item in pending] == ["reply", "park"]

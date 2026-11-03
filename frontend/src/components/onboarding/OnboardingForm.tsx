@@ -1,6 +1,6 @@
 import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { api, type OnboardingRequest } from '../../lib/api'
+import { api, type OnboardingAccepted, type OnboardingStartRequest, type OnboardingRequest } from '../../lib/api'
 import { banner, chip } from '../../lib/tone'
 
 export const panel = 'rounded-lg border border-border bg-surface-raised p-5 md:p-6'
@@ -63,25 +63,30 @@ function Summary({ name, board, count }: { name: string; board: string; count: n
     </dl><PausedNote /></aside>
 }
 
-export function OnboardingForm({ project = '', request, repositoriesLocked = false, onSaved, cancel }: {
-  project?: string; request?: OnboardingRequest; repositoriesLocked?: boolean
-  onSaved: (project: string) => void; cancel?: ReactNode
+function SubmitButton({ pending, editing }: { pending: boolean; editing: boolean }) {
+  return <button type="submit" className={primary}>{pending ? 'Submitting…' : editing ? 'Save details' : 'Start onboarding'}</button>
+}
+
+export function OnboardingForm({ project = '', request, requestRevision, repositoriesLocked = false, onSaved, disabled = false, feedback }: {
+  project?: string; request?: OnboardingRequest; requestRevision?: string; repositoriesLocked?: boolean
+  onSaved: (project: string, accepted: OnboardingAccepted) => void | Promise<void>
+  disabled?: boolean; feedback?: ReactNode
 }) {
   const [name, setName] = useState(project)
   const [board, setBoard] = useState(request ? `${request.board.owner}/${request.board.number}` : '')
   const [repos, setRepos] = useState(() => initialDraft(request))
-  const mutation = useMutation({ mutationFn: (body: OnboardingRequest) => api.startOnboarding(name, body), onSuccess: () => onSaved(name) })
+  const mutation = useMutation({ mutationFn: (body: OnboardingStartRequest) => api.startOnboarding(name, body), onSuccess: accepted => onSaved(name, accepted) })
   const update = (id: number, change: Partial<RepositoryDraft>) => setRepos(rows => rows.map(r => r.id === id ? { ...r, ...change } : r))
   const remove = (id: number) => setRepos(rows => rows.filter(r => r.id !== id))
   const add = () => setRepos(rows => [...rows, { ...emptyCommands, repo: '', id: Math.max(...rows.map(r => r.id)) + 1 }])
   const submit = (event: FormEvent) => {
     event.preventDefault()
     const [owner, number] = board.split('/')
-    mutation.mutate({ repos: repos.map(r => r.repo.trim()), board: { owner: owner!, number: Number(number) },
+    mutation.mutate({ expected_request_revision: requestRevision, repos: repos.map(r => r.repo.trim()), board: { owner: owner!, number: Number(number) },
       commands: repos.map(({ setup_cmd, gate_cmd, verify_cmd }) => ({ setup_cmd, gate_cmd, verify_cmd })) })
   }
   return <form onSubmit={submit} className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
-    <fieldset disabled={mutation.isPending} className="min-w-0 space-y-5">
+    <fieldset disabled={mutation.isPending || disabled} className="min-w-0 space-y-5">
       <section className={panel}><h2 className="text-xl font-semibold">Project</h2><div className="mt-5 grid gap-5 md:grid-cols-2">
         <Field label="Project name" hint="Lowercase letters, numbers and hyphens. Cannot change later." required pattern="[a-z0-9-]+" value={name} disabled={Boolean(project)} onChange={e => setName(e.target.value)} />
         <Field label="GitHub board" hint="Existing board, in owner/number format." required pattern="[^/\s]+/[1-9][0-9]*" value={board} onChange={e => setBoard(e.target.value)} />
@@ -90,8 +95,9 @@ export function OnboardingForm({ project = '', request, repositoriesLocked = fal
         {repos.map((draft, index) => <RepositoryFields key={draft.id} draft={draft} number={index + 1} locked={repositoriesLocked}
           update={change => update(draft.id, change)} remove={repos.length > 1 && !repositoriesLocked ? () => remove(draft.id) : undefined} />)}
         {!repositoriesLocked && <button type="button" onClick={add} className={button}>Add repository</button>}
+        {feedback}
         {mutation.error && <p role="alert" className={banner.failed}>{mutation.error.message}</p>}
-        <div className="flex flex-wrap justify-end gap-3">{cancel}<button type="submit" className={primary}>{mutation.isPending ? 'Submitting…' : request ? 'Save details' : 'Start onboarding'}</button></div>
+        <div className="flex flex-wrap justify-end gap-3"><SubmitButton pending={mutation.isPending} editing={Boolean(request)} /></div>
       </section>
     </fieldset><Summary name={name} board={board} count={repos.length} />
   </form>

@@ -45,6 +45,6 @@ export function OnboardingPage() {
     <h1 className="mb-7 mt-4 text-3xl font-semibold tracking-tight">{project}</h1>
     {query.isPending && <p role="status">Loading onboarding…</p>}
     {query.error && <p role="alert" className={banner.failed}>{query.error.message}</p>}
-    {query.data && (query.data.status === 'queued' ? <PendingOnboarding view={query.data} /> : <OnboardingDetail key={project} view={query.data} />)}
+    {query.data && (query.data.status === 'queued' ? <PendingOnboarding view={query.data} /> : <OnboardingDetail key={project} view={query.data} updatedAt={query.dataUpdatedAt} />)}
   </main>
 }

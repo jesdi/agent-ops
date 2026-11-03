@@ -12,7 +12,7 @@ from dispatcher import config, onboard
 from web.auth import Operator, current_operator
 
 
-ProjectName = Annotated[str, Path(pattern=rf"^{config._SLUG.pattern}$", max_length=100)]
+ProjectName = Annotated[str, Path(pattern=rf"^{config._SLUG.pattern}$")]
 
 
 class OnboardingBoard(BaseModel):
@@ -33,6 +33,7 @@ class OnboardingRequest(BaseModel):
 
 
 class OnboardingStartRequest(OnboardingRequest):
+    expected_request_revision: str | None = None
     repos: list[str] = Field(min_length=1)
 
     @field_validator("repos")
@@ -100,6 +101,8 @@ class OnboardingView(BaseModel):
     project: str
     status: Literal["queued", "open", "complete"]
     request: OnboardingRequest
+    request_revision: str
+    edit_mode: onboard.EditMode
     proposal: OnboardingProposal | None
     revision: str
     confirmed_revision: str
@@ -120,6 +123,7 @@ class OnboardingConfirm(BaseModel):
 
 
 class OnboardingAccepted(BaseModel):
+    request_revision: str | None = None
     status: Literal["pending"] = "pending"
     intent: str
 
@@ -127,11 +131,14 @@ class OnboardingAccepted(BaseModel):
 def _view(project: str, record, pending: list[dict]) -> OnboardingView:
     if record is not None:
         return OnboardingView(**{**asdict(record), "proposal": record.proposal or None,
-                                 "pr_url": record.pr_url, "pending": pending})
+                                 "pr_url": record.pr_url, "pending": pending,
+                                 "request_revision": onboard.request_revision(record.request),
+                                 "edit_mode": onboard.edit_mode(record)})
     request = next((p["payload"] for p in pending if p["action"] == "add"), None)
     if request is None:
         raise HTTPException(404, "onboarding not found")
     return OnboardingView(project=project, status="queued", request=request,
+                          request_revision=onboard.request_revision(request), edit_mode="none",
                           proposal=None, revision="", confirmed_revision="", awaiting="",
                           notice="", steps=[], pr_url="", updated_at="", pending=pending)
 
@@ -155,8 +162,15 @@ def router(sources) -> APIRouter:
 
     @routes.post("/{project}", status_code=202, response_model=OnboardingAccepted)
     def start(project: ProjectName, request: OnboardingStartRequest, op: Operator = Depends(current_operator)):
-        return OnboardingAccepted(intent=sources.submit_onboarding(
-            "add", project, request.model_dump(), op.login))
+        payload = request.model_dump(exclude={"expected_request_revision"})
+        expected = request.expected_request_revision or ""
+        conflict = onboard.request_conflict(sources.onboarding_record(project), payload, expected)
+        if conflict:
+            raise HTTPException(409, conflict)
+        return OnboardingAccepted(
+            request_revision=onboard.request_revision(payload),
+            intent=sources.submit_onboarding(
+                "add", project, {**payload, "expected_request_revision": expected}, op.login))
 
     @routes.post("/{project}/confirm", status_code=202, response_model=OnboardingAccepted)
     def confirm(project: ProjectName, request: OnboardingConfirm,

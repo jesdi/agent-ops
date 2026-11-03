@@ -10,10 +10,10 @@ test(`operator starts project ${project} from the worksheet and sees its queued 
   await page.route(`**/api/onboarding/${project}`, async route => {
     if (route.request().method() === 'POST') {
       submitted = route.request().postDataJSON()
-      await route.fulfill({ status: 202, json: { status: 'pending', intent: 'start-analytics' } })
+      await route.fulfill({ status: 202, json: { status: 'pending', intent: 'start-analytics', request_revision: 'request-start' } })
     } else {
       await route.fulfill({ json: {
-        project, status: 'queued', request, proposal: null,
+        project, status: 'queued', request, proposal: null, request_revision: 'request-start', edit_mode: 'none',
         revision: '', confirmed_revision: '', awaiting: '', notice: '', steps: [],
         pr_url: '', updated_at: '',
         pending: [{ action: 'add', actor: 'jesdi', created_at: '', id: 'start-analytics' }],
@@ -44,7 +44,7 @@ test('operator reviews a CLI proposal, confirms it and resumes after an infrastr
       clone_path: '/home/agent/repos/analytics/analytics', worktrees_path: '/home/agent/repos/analytics/analytics.worktrees',
       setup_cmd: 'uv sync --locked', gate_cmd: 'uv run pytest -q', verify_cmd: '' }] }
   await page.route('**/api/onboarding/analytics', route => route.fulfill({ json: {
-    project: 'analytics', status: 'open',
+    project: 'analytics', status: 'open', request_revision: 'request-reviewed', edit_mode: 'details',
     request: { repos: ['jesdi/analytics'], board: proposal.board,
       commands: [{ setup_cmd: 'uv sync --locked', gate_cmd: 'uv run pytest -q', verify_cmd: '' }] },
     proposal, revision: 'revision-reviewed', confirmed_revision: phase === 'review' ? '' : 'revision-reviewed',
@@ -80,4 +80,32 @@ test('operator reviews a CLI proposal, confirms it and resumes after an infrastr
   await expect(page.getByText('Waiting for infrastructure checks', { exact: true })).toBeVisible()
   expect(resumed).toBe(true)
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width)
+})
+
+test('an edit keeps its original version and draft when another operator saves first', async ({ page }) => {
+  let submitted: Record<string, unknown> | undefined
+  const view = {
+    project: 'analytics', status: 'open',
+    request: { repos: ['jesdi/analytics'], board: { owner: 'jesdi', number: 4 },
+      commands: [{ setup_cmd: '', gate_cmd: 'make gate-original', verify_cmd: '' }] },
+    proposal: null, revision: '', confirmed_revision: '', awaiting: '', notice: '',
+    steps: [], pending: [], pr_url: '', updated_at: '',
+    request_revision: 'request-original', edit_mode: 'repositories',
+  }
+  await page.route('**/api/onboarding/analytics', async route => {
+    if (route.request().method() === 'POST') {
+      submitted = route.request().postDataJSON()
+      await route.fulfill({ status: 409, json: { detail: 'Details changed; review the current request before saving.' } })
+    } else await route.fulfill({ json: view })
+  })
+  await page.goto('/onboarding/projects/analytics')
+  await page.getByRole('button', { name: 'Edit details' }).click()
+  await page.getByLabel('GitHub board', { exact: true }).fill('jesdi/5')
+  view.request.commands[0]!.gate_cmd = 'make gate-from-other-operator'
+  view.request_revision = 'request-other-operator'
+  await page.waitForResponse(response => response.url().endsWith('/api/onboarding/analytics') && response.request().method() === 'GET')
+  await page.getByRole('button', { name: 'Save details' }).click()
+  await expect(page.getByRole('alert')).toContainText('Details changed')
+  await expect(page.getByLabel('GitHub board', { exact: true })).toHaveValue('jesdi/5')
+  expect(submitted?.expected_request_revision).toBe('request-original')
 })
