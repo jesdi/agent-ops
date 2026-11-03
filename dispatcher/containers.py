@@ -211,7 +211,7 @@ def inspection_cmd(name: str, clone: str, request_dir: str, state_dir: str,
     clone is never the working directory and no repository program is run.
     """
     runtime = runtime_for(model)
-    auth = '.credentials.json' if runtime.cli == 'claude' else 'auth.json'
+    auth = runtime.auth_file
     return [*_wrapper(), 'podman', 'run', '--rm', '-i', '--name', name,
             '--memory', memory, '--cpus', cpus,
             '--security-opt', 'no-new-privileges', '--cap-drop', 'ALL',
