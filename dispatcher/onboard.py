@@ -430,7 +430,9 @@ def _clone_one(r: Run, path: Path, repo: str) -> Outcome | None:
         if out := _clear_partial(r, partial, repo):
             return out
         partial.parent.mkdir(parents=True, exist_ok=True)
-        r.sh(["gh", "repo", "clone", repo, str(partial)])
+        # An explicit https URL: gh's git_protocol may be ssh on the box, which
+        # has no GitHub ssh key; git's gh credential helper authenticates https.
+        r.sh(["git", "clone", f"https://github.com/{repo}.git", str(partial)])
         partial.rename(path)
     origin = _origin(r, path)
     if origin != repo.lower():

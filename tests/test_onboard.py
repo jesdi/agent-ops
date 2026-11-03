@@ -43,7 +43,7 @@ def failure(stderr):
 
 
 def cloned(argv, cwd, env):
-    """`gh repo clone <repo> <path>`: the clone appears at <path>."""
+    """`git clone <https url> <path>`: the clone appears at <path>."""
     Path(argv[-1]).mkdir(parents=True)
     (Path(argv[-1]) / ".git").mkdir()
     return ""
@@ -60,7 +60,7 @@ class FakeSh:
     def __init__(self, routes=None):
         self.routes = {"gh api repos/jesdi/analytics": gh_repo(202, "jesdi/analytics"),
                        "gh api graphql": BOARD,
-                       "gh repo clone": cloned,
+                       "git clone": cloned,
                        "remote get-url origin": ORIGIN, **(routes or {})}
         self.calls = []
 
@@ -290,8 +290,9 @@ def test_clone_clones_into_a_partial_path_then_renames_it(tmp_path, box):
     run(box, sh)
     rec = record(tmp_path)
     assert step(rec, "clone")["state"] == "verified"
-    [(argv, _, _)] = sh.ran("gh repo clone")
-    assert argv == ["gh", "repo", "clone", "jesdi/analytics", f"{clone_path()}.partial"]
+    [(argv, _, _)] = sh.ran("git clone")
+    assert argv == ["git", "clone", "https://github.com/jesdi/analytics.git",
+                    f"{clone_path()}.partial"]
     assert (clone_path() / ".git").is_dir()
     assert not Path(f"{clone_path()}.partial").exists()
     assert rec["resources"] == [{"kind": "clone", "ref": str(clone_path()),
@@ -304,7 +305,7 @@ def test_clone_keeps_a_clone_already_at_the_path(tmp_path, box):
     sh = FakeSh({"remote get-url origin": "git@github.com:JESDI/analytics.git\n"})
     run(box, sh)
     assert step(record(tmp_path), "clone")["state"] == "verified"
-    assert sh.ran("gh repo clone") == []
+    assert sh.ran("git clone") == []
 
 
 def test_clone_blocks_when_another_repository_is_at_the_path(tmp_path, box):
@@ -338,12 +339,12 @@ def test_clone_blocks_on_a_partial_path_holding_something_else(
     run(box, sh)
     s = step(record(tmp_path), "clone")
     assert s["state"] == "blocked" and str(partial) in s["detail"]
-    assert (partial / leftover).exists() and sh.ran("gh repo clone") == []
+    assert (partial / leftover).exists() and sh.ran("git clone") == []
 
 
 def test_a_failed_clone_is_retried_on_the_next_run(tmp_path, box):
     add(tmp_path)
-    run(box, FakeSh({"gh repo clone": failure("fatal: early EOF")}))
+    run(box, FakeSh({"git clone": failure("fatal: early EOF")}))
     s = step(record(tmp_path), "clone")
     assert s["state"] == "failed" and "early EOF" in s["detail"]
     assert not clone_path().exists()
@@ -400,7 +401,7 @@ def test_the_same_request_again_resumes(tmp_path, box):
     """Any spelling of the same repositories is the same request; every run
     retries the current step."""
     add(tmp_path)
-    run(box, FakeSh({"gh repo clone": failure("boom")}))
+    run(box, FakeSh({"git clone": failure("boom")}))
     add(tmp_path, repos=["https://github.com/JESDI/analytics.git"], epoch_ms=2000)
     run(box, FakeSh())
     rec = record(tmp_path)
