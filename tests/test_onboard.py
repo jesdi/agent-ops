@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from dispatcher import onboard
-from dispatcher.infra_config import add_project_text
+from dispatcher.infra_config import add_project_text, project_block
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
 
@@ -494,10 +494,14 @@ def infra_cloned(argv, cwd, env):
 
 
 def checks(*rows):
-    return json.dumps({"check_runs": [
-        {"name": name, "status": status, "conclusion": conclusion,
-         "html_url": f"https://github.com/jesdi/agent-ops-infra/runs/{name}"}
-        for name, status, conclusion in rows]})
+    """The workflow runs on the head: ci green, plus each (name, status,
+    conclusion) as another workflow's run."""
+    return json.dumps({"workflow_runs": [
+        {"id": 1, "name": "ci", "status": "completed", "conclusion": "success",
+         "html_url": "https://github.com/jesdi/agent-ops-infra/actions/runs/1"},
+        *({"id": i, "name": name, "status": status, "conclusion": conclusion,
+           "html_url": f"https://github.com/jesdi/agent-ops-infra/runs/{name}"}
+          for i, (name, status, conclusion) in enumerate(rows, start=2))]})
 
 
 def updater(result, ended):
@@ -517,7 +521,6 @@ def statuses(*rows):
 
 
 CI_RUN = ci_run()
-GREEN = checks(("test", "completed", "success"), ("lint", "completed", "skipped"))
 
 
 def pr_view(state, base="main", oid="merge1", at="2026-11-02T12:00:00Z"):
@@ -535,7 +538,6 @@ def infra_routes(main=LIVE, open_prs="[]", **merge):
     is open on main and its ci run green."""
     return {**{"gh pr view 7": pr_view("OPEN"),
                "actions/runs?head_sha=head1": CI_RUN,
-               "commits/head1/check-runs": GREEN,
                "commits/head1/status": statuses(),
                "merge-base --is-ancestor merge1 HEAD": failure(""),
                "systemctl --user show agent-ops-update.service": updater("success", NOW)},
@@ -614,7 +616,7 @@ def main_holding(tmp_path, *changes):
         if len(calls) < len(changes) and changes[len(calls)]:
             proposal["repositories"][0]["gate_cmd"] = changes[len(calls)]
         calls.append(argv)
-        return add_project_text(LIVE, yaml.safe_dump([proposal]))
+        return add_project_text(LIVE, project_block(proposal))
     return show
 
 
@@ -768,10 +770,24 @@ def test_config_merge_waits_for_a_ci_run_then_blocks_after_30_minutes(
     assert s["state"] == "blocked" and "no ci run" in s["detail"] and s["link"] == PR_URL
 
 
+def test_the_infra_commit_uses_the_box_git_identity(tmp_path, box, infra_token):
+    """The box signs with a key registered to its git identity; a made-up
+    author has no GitHub user, so the signature shows Unverified."""
+    sh = FakeSh(infra_routes())
+    confirmed(tmp_path, box, sh)
+    [(argv, _, _)] = sh.ran("commit -m")
+    assert not any(a.startswith(("user.name", "user.email")) for a in argv)
+
+
+def test_a_skipped_workflow_besides_ci_does_not_hold_the_merge(tmp_path, box, infra_token):
+    skipped = {"actions/runs?head_sha=head1": checks(("docs", "completed", "skipped"))}
+    s = step(confirmed(tmp_path, box, FakeSh(infra_routes(**skipped))), "config-merge")
+    assert s["state"] == "blocked" and "green" in s["detail"]
+
+
 def test_config_merge_waits_while_the_ci_run_is_queued_without_checks(
         tmp_path, box, infra_token):
-    queued = {"actions/runs?head_sha=head1": ci_run("queued", None),
-              "commits/head1/check-runs": checks()}
+    queued = {"actions/runs?head_sha=head1": ci_run("queued", None)}
     sh = FakeSh(infra_routes(**queued))
     s = step(confirmed(tmp_path, box, sh), "config-merge")
     assert s["state"] == "waiting" and "ci" in s["detail"]
@@ -800,7 +816,7 @@ def test_config_merge_waits_on_a_pending_commit_status_and_blocks_on_a_red_one(
 
 
 def test_config_merge_names_the_checks_still_pending(tmp_path, box, infra_token):
-    pending = {"commits/head1/check-runs": checks(("test", "in_progress", None),
+    pending = {"actions/runs?head_sha=head1": checks(("test", "in_progress", None),
                                                   ("lint", "completed", "success"))}
     s = step(confirmed(tmp_path, box, FakeSh(infra_routes(**pending))), "config-merge")
     assert s["state"] == "waiting" and "test" in s["detail"] and "lint" not in s["detail"]
@@ -812,7 +828,7 @@ def test_config_merge_names_the_checks_still_pending(tmp_path, box, infra_token)
 
 
 def test_config_merge_blocks_on_a_red_check_with_its_link(tmp_path, box, infra_token):
-    red = {"commits/head1/check-runs": checks(("test", "completed", "failure"),
+    red = {"actions/runs?head_sha=head1": checks(("test", "completed", "failure"),
                                               ("lint", "in_progress", None))}
     sh = FakeSh(infra_routes(**red))
     s = step(confirmed(tmp_path, box, sh), "config-merge")

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from dispatcher.infra_config import add_project_text
+from dispatcher.infra_config import add_project_text, project_block
 
 EXAMPLE = (Path(__file__).parent.parent / "targets.example.yaml").read_text()
 
@@ -117,3 +117,10 @@ def test_a_hand_kept_targets_yaml_keeps_every_byte():
     assert [p.name for p in cfg.projects] == ["portfolio-eval", "web", "analytics"]
     assert cfg.repositories[-1].gate_cmd == "make gate # all: of it"
     assert cfg.max_open == 10
+
+
+def test_project_block_keeps_a_long_command_on_one_line():
+    cmd = "uv run --locked python -m pytest -q && cd frontend && pnpm build && pnpm test"
+    block = project_block({"name": "p", "repositories": [{"name": "r", "gate_cmd": cmd}]})
+    assert f"gate_cmd: {cmd}\n" in block
+    assert yaml.safe_load(block) == [{"name": "p", "repositories": [{"name": "r", "gate_cmd": cmd}]}]

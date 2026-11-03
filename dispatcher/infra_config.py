@@ -5,7 +5,15 @@ from __future__ import annotations
 
 import re
 
+import yaml
+
 _PROJECTS = re.compile(r"projects:\s*(#.*)?")
+
+
+def project_block(proposal: dict) -> str:
+    """`proposal` as one YAML list item at column 0, keys in proposal order
+    and no line folded, as hand-written entries are."""
+    return yaml.safe_dump([proposal], sort_keys=False, width=float("inf"))
 
 
 def add_project_text(text: str, block: str) -> str:
