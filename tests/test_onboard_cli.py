@@ -8,6 +8,7 @@ import pytest
 from dispatcher import onboard
 from tests.test_onboard import (  # noqa: F401
     MERGED, NOW, PR_URL, FakeSh, box, infra_routes, infra_token, no_get, record, state)
+from tests import test_onboard_cli_rerun as rerun
 from tests.test_onboard_cli_rerun import Kick, as_agent, stdin  # noqa: F401
 from tests.test_onboard_cli_rerun import run as add
 
@@ -15,22 +16,25 @@ KICK = "systemctl --user start agent-ops-onboard.service"
 
 
 class Box(Kick):
-    """Kick that checks the command, records the intent actions waiting at each
-    kick and runs the engine with `engine` as its sh."""
+    """Kick that checks the command and records the intent actions waiting at
+    each kick. The `engine` fixture routes the engine's sh."""
 
-    def __init__(self, config, engine=None):
+    def __init__(self, config):
         super().__init__(config)
-        self.engine = engine or FakeSh()
         self.kicked_with = []
 
     def __call__(self, argv, cwd=None, env=None):
-        self.calls.append(argv)
         assert " ".join(argv) == KICK
         self.kicked_with.append([p.stem.rsplit("-", 1)[1] for p in sorted(
             (onboard.Path(onboard.config.load_config(self.config).state_dir)
              / "onboarding-intents").glob("*.json"))])
-        onboard.run(self.config, sh=self.engine, get=no_get, now=NOW)
-        return ""
+        return super().__call__(argv, cwd, env)
+
+
+@pytest.fixture
+def engine(monkeypatch):
+    """Sets the routes of the engine's sh for the kicks that follow."""
+    return lambda routes: monkeypatch.setattr(rerun, "FakeSh", lambda: FakeSh(routes))
 
 
 def intents(tmp_path):
@@ -38,10 +42,11 @@ def intents(tmp_path):
 
 
 def test_add_prompts_for_each_repositorys_commands_starts_and_kicks(
-        tmp_path, box, monkeypatch, capsys):
+        tmp_path, box, engine, monkeypatch, capsys):
     stdin(monkeypatch, "make setup\nmake gate\nmake e2e\n\nnpm test\n\n")
-    sh = Box(box, FakeSh({"gh api repos/jesdi/web": json.dumps(
-        {"id": 303, "full_name": "jesdi/web", "name": "web"})}))
+    engine({"gh api repos/jesdi/web": json.dumps(
+        {"id": 303, "full_name": "jesdi/web", "name": "web"})})
+    sh = Box(box)
     assert add(box, sh, "analytics", "jesdi/analytics", "jesdi/web",
                "--board", "jesdi/4") == 0
     assert sh.calls == [KICK.split()]
@@ -124,26 +129,30 @@ def test_a_rerun_offers_the_current_commands(tmp_path, box, monkeypatch, capsys)
     assert rec["confirmed_revision"] == rec["revision"]
 
 
-def test_a_rerun_with_other_repositories_before_confirm_edits(tmp_path, box, monkeypatch):
+def test_a_rerun_with_other_repositories_before_confirm_edits(
+        tmp_path, box, engine, monkeypatch):
     stdin(monkeypatch, "\nmake gate\n\nn\n")
     add(box, Box(box), *ADD)
     stdin(monkeypatch, "\n\n\n\nnpm test\n\nn\n")
-    sh = Box(box, FakeSh({"gh api repos/jesdi/web": json.dumps(
-        {"id": 303, "full_name": "jesdi/web", "name": "web"})}))
+    engine({"gh api repos/jesdi/web": json.dumps(
+        {"id": 303, "full_name": "jesdi/web", "name": "web"})})
+    sh = Box(box)
     add(box, sh, "analytics", "jesdi/analytics", "jesdi/web", "--board", "jesdi/4")
     assert sh.kicked_with == [["add"]]
     assert record(tmp_path)["request"]["repos"] == ["jesdi/analytics", "jesdi/web"]
 
 
 def test_a_green_infra_pr_asks_you_to_merge_it_then_a_rerun_carries_on(
-        tmp_path, box, infra_token, monkeypatch, capsys):
+        tmp_path, box, engine, infra_token, monkeypatch, capsys):
     stdin(monkeypatch, "\nmake gate\n\ny\n")
-    add(box, Box(box, FakeSh(infra_routes())), *ADD)
+    engine(infra_routes())
+    add(box, Box(box), *ADD)
     out = capsys.readouterr().out
     *_, line = (x for x in out.splitlines() if x.lstrip().startswith("config-merge"))
     assert "blocked" in line and "merge it" in line and PR_URL in line
     stdin(monkeypatch, "\n\n\n")
-    add(box, Box(box, FakeSh(infra_routes(**MERGED))), *ADD)
+    engine(infra_routes(**MERGED))
+    add(box, Box(box), *ADD)
     rec = record(tmp_path)
     assert [s["state"] for s in rec["steps"]][4:6] == ["verified", "waiting"]
 
