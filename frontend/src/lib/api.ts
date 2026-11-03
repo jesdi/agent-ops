@@ -1,5 +1,12 @@
 import type { components } from './api-types'
 
+export type OnboardingStartRequest = components['schemas']['OnboardingStartRequest']
+export type OnboardingAccepted = components['schemas']['OnboardingAccepted']
+export type OnboardingRequest = components['schemas']['OnboardingRequest']
+export type OnboardingView = components['schemas']['OnboardingView']
+export type OnboardingProposal = components['schemas']['OnboardingProposal']
+export type OnboardingsView = components['schemas']['OnboardingsView']
+
 export type ArtifactsView = components['schemas']['ArtifactsView']
 export type BoardView = components['schemas']['BoardView']
 export type BoardSnapshot = components['schemas']['BoardSnapshot']
@@ -105,6 +112,14 @@ const put = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 
 export const api = {
+  onboardings: () => request<OnboardingsView>('/onboarding'),
+  onboarding: (project: string) => request<OnboardingView>(`/onboarding/${encodeURIComponent(project)}`),
+  startOnboarding: (project: string, body: OnboardingStartRequest) =>
+    post<OnboardingAccepted>(`/onboarding/${encodeURIComponent(project)}`, body),
+  confirmOnboarding: (project: string, revision: string) =>
+    post<IntentAccepted>(`/onboarding/${encodeURIComponent(project)}/confirm`, { revision }),
+  resumeOnboarding: (project: string) =>
+    request<IntentAccepted>(`/onboarding/${encodeURIComponent(project)}/resume`, { method: 'POST' }),
   boardSnapshot: () => request<components['schemas']['BoardSnapshot']>('/board/snapshot'),
   board: () => request<BoardView>('/board'),
   projects: () => request<ProjectsView>('/projects'),

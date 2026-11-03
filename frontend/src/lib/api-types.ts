@@ -106,6 +106,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Onboardings */
+        get: operations["list_onboardings_api_onboarding_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/onboarding/{project}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Detail */
+        get: operations["detail_api_onboarding__project__get"];
+        put?: never;
+        /** Start */
+        post: operations["start_api_onboarding__project__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/onboarding/{project}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm */
+        post: operations["confirm_api_onboarding__project__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/onboarding/{project}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume */
+        post: operations["resume_api_onboarding__project__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/pending-intents": {
         parameters: {
             query?: never;
@@ -837,6 +906,165 @@ export interface components {
             /** Issue */
             issue: number;
         };
+        /** OnboardingAccepted */
+        OnboardingAccepted: {
+            /** Intent */
+            intent: string;
+            /** Request Revision */
+            request_revision?: string | null;
+            /**
+             * Status
+             * @default pending
+             * @constant
+             */
+            status: "pending";
+        };
+        /** OnboardingBoard */
+        OnboardingBoard: {
+            /** Number */
+            number: number;
+            /** Owner */
+            owner: string;
+        };
+        /** OnboardingCommands */
+        OnboardingCommands: {
+            /** Gate Cmd */
+            gate_cmd: string;
+            /**
+             * Setup Cmd
+             * @default
+             */
+            setup_cmd: string;
+            /**
+             * Verify Cmd
+             * @default
+             */
+            verify_cmd: string;
+        };
+        /** OnboardingConfirm */
+        OnboardingConfirm: {
+            /** Revision */
+            revision: string;
+        };
+        /** OnboardingPending */
+        OnboardingPending: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "add" | "confirm" | "resume";
+            /** Actor */
+            actor: string;
+            /** Created At */
+            created_at: string;
+            /** Id */
+            id: string;
+        };
+        /** OnboardingProposal */
+        OnboardingProposal: {
+            board: components["schemas"]["OnboardingBoard"];
+            /** Name */
+            name: string;
+            /** Paused */
+            paused: boolean;
+            /** Repositories */
+            repositories: components["schemas"]["OnboardingRepository"][];
+        };
+        /** OnboardingRepository */
+        OnboardingRepository: {
+            /** Clone Path */
+            clone_path: string;
+            /** Gate Cmd */
+            gate_cmd: string;
+            /** Github Id */
+            github_id: number;
+            /** Name */
+            name: string;
+            /** Repo */
+            repo: string;
+            /**
+             * Setup Cmd
+             * @default
+             */
+            setup_cmd: string;
+            /**
+             * Verify Cmd
+             * @default
+             */
+            verify_cmd: string;
+            /** Worktrees Path */
+            worktrees_path: string;
+        };
+        /** OnboardingRequest */
+        OnboardingRequest: {
+            board: components["schemas"]["OnboardingBoard"];
+            /** Commands */
+            commands: components["schemas"]["OnboardingCommands"][];
+            /** Repos */
+            repos: string[];
+        };
+        /** OnboardingStartRequest */
+        OnboardingStartRequest: {
+            board: components["schemas"]["OnboardingBoard"];
+            /** Commands */
+            commands: components["schemas"]["OnboardingCommands"][];
+            /** Expected Request Revision */
+            expected_request_revision?: string | null;
+            /** Repos */
+            repos: string[];
+        };
+        /** OnboardingStep */
+        OnboardingStep: {
+            /** Detail */
+            detail: string;
+            /** Link */
+            link: string;
+            /** Name */
+            name: string;
+            /** Since */
+            since: string;
+            state: components["schemas"]["StepState"];
+        };
+        /** OnboardingView */
+        OnboardingView: {
+            /** Awaiting */
+            awaiting: string;
+            /** Confirmed Revision */
+            confirmed_revision: string;
+            /**
+             * Edit Mode
+             * @enum {string}
+             */
+            edit_mode: "none" | "details" | "repositories";
+            /** Notice */
+            notice: string;
+            /** Pending */
+            pending: components["schemas"]["OnboardingPending"][];
+            /** Pr Url */
+            pr_url: string;
+            /** Project */
+            project: string;
+            proposal: components["schemas"]["OnboardingProposal"] | null;
+            request: components["schemas"]["OnboardingRequest"];
+            /** Request Revision */
+            request_revision: string;
+            /** Revision */
+            revision: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "open" | "complete";
+            /** Steps */
+            steps: components["schemas"]["OnboardingStep"][];
+            /** Updated At */
+            updated_at: string;
+        };
+        /** OnboardingsView */
+        OnboardingsView: {
+            /** Onboardings */
+            onboardings: components["schemas"]["OnboardingView"][];
+        };
         /** OperatorRequest */
         OperatorRequest: {
             /** Answers */
@@ -1012,6 +1240,11 @@ export interface components {
              */
             model: string;
         };
+        /**
+         * StepState
+         * @enum {string}
+         */
+        StepState: "pending" | "waiting" | "blocked" | "failed" | "verified";
         /**
          * TaskAdmissionView
          * @description Requested model and server-filtered, eligible alternatives.
@@ -1331,6 +1564,158 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HistoryView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_onboardings_api_onboarding_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingsView"];
+                };
+            };
+        };
+    };
+    detail_api_onboarding__project__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_api_onboarding__project__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OnboardingStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_api_onboarding__project__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OnboardingConfirm"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_api_onboarding__project__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingAccepted"];
                 };
             };
             /** @description Validation Error */

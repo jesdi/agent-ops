@@ -6,3 +6,7 @@ export const HistoryPage = lazy(() => import('./HistoryPage').then((m) => ({ def
 export const TaskPage = lazy(() => import('./TaskPage').then((m) => ({ default: m.TaskPage })))
 export const ReviewPage = lazy(() => import('./ReviewPage').then((m) => ({ default: m.ReviewPage })))
 export const SettingsPage = lazy(() => import('./SettingsPage').then((m) => ({ default: m.SettingsPage })))
+
+export const NewOnboardingPage = lazy(() => import('./OnboardingPage').then((m) => ({ default: m.NewOnboardingPage })))
+export const OnboardingsPage = lazy(() => import('./OnboardingPage').then((m) => ({ default: m.OnboardingsPage })))
+export const OnboardingPage = lazy(() => import('./OnboardingPage').then((m) => ({ default: m.OnboardingPage })))

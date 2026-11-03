@@ -1,3 +1,4 @@
+import { Link } from 'react-router'
 import { BoardColumn, type ColumnView } from '../components/BoardColumn'
 import type { DraggedCard } from '../components/cardDrag'
 import { BoardHeader } from '../components/BoardHeader'
@@ -210,7 +211,10 @@ export function BoardPage() {
     <div className="flex flex-col gap-4 p-4 md:min-h-0 md:grow md:basis-0 md:pb-0">
       {/* Capacity and the next claim are the box's, shared by every project. */}
       <BoardHeader board={board} />
-      <ProjectTabs tabs={project.tabs} active={project.active} onSelect={project.select} />
+      <div className="flex min-w-0 items-center gap-5">
+        <div className="min-w-0 flex-1"><ProjectTabs tabs={project.tabs} active={project.active} onSelect={project.select} /></div>
+        <Link to="/onboarding/new" className="shrink-0 rounded-md border border-border px-3 py-2 text-sm font-medium">Add project</Link>
+      </div>
       <ProjectPanel tabs={project.tabs} active={project.active}>
         <ColumnTabs tabs={inRow} active={tabs.active} onSelect={tabs.select} />
         <CountStrip columns={views.filter((v) => v.count === 0)} />

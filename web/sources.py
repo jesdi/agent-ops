@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Collection, Literal
 
 from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
-                        priority, queue_ops, state, task_artifacts, triage)
+                        onboard, priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
 from dispatcher.config import Repository
@@ -67,6 +67,25 @@ class Sources:
         return Path(self._state_dir)
 
     # -- reads -----------------------------------------------------------
+
+    def onboarding_records(self) -> list[onboard.Record]:
+        return onboard.list_records(self.state_dir)
+
+    def onboarding_record(self, project: str) -> onboard.Record | None:
+        return onboard.load_record(self.state_dir, project)
+
+    def onboarding_pending(self) -> list[dict]:
+        return onboard.pending_intents(self.state_dir)
+
+    def submit_onboarding(self, action: str, project: str, payload: dict, actor: str) -> str:
+        path = onboard.write_intent(self.state_dir, action, project, payload, actor,
+                                    int(self._clock() * 1000))
+        try:
+            subprocess.run(("systemctl", "--user", "start", "--no-block",
+                            "agent-ops-onboard.service"), capture_output=True, timeout=5, check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"onboarding kick failed (timer will retry): {exc}")
+        return path.name
 
     def tasks(self) -> list[TaskState]:
         return state.load_all(self._state_dir)

@@ -34,6 +34,7 @@ from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, TaskState,
 from web import model_settings_view as msv
 from web import read_model
 from web.artifacts import router as artifacts_router
+from web.onboarding import router as onboarding_router
 from web.auth import (Operator, TailscaleAuthMiddleware,
                       current_operator)
 
@@ -311,6 +312,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                          for t in tasks},
             wake_blocked=sources.wake_blocked_issues())
     app.include_router(artifacts_router(sources, _find_task))
+    app.include_router(onboarding_router(sources))
 
     def _usage_view(live: Config, usages, now, mode) -> read_model.UsageView:
         return read_model.usage_view(
