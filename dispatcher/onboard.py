@@ -141,7 +141,8 @@ class Record:
     started_by: str = ""
     updated_at: str = ""
     request: dict = field(default_factory=dict)
-    inspection: dict = field(default_factory=lambda: {"repositories": []})
+    inspection: inspection.Inspection = field(default_factory=inspection.Inspection)
+    confirm_ready: bool = False
     proposal: dict = field(default_factory=dict)    # the targets.yaml block
     revision: str = ""
     confirmed_revision: str = ""
@@ -166,7 +167,8 @@ class Record:
         ip = d.get("infra_pr")
         return cls(**{**d, "steps": [Step(**{**s, "state": StepState(s["state"])})
                                      for s in d["steps"]],
-                      "infra_pr": InfraPr(**ip) if ip else None})
+                      "infra_pr": InfraPr(**ip) if ip else None,
+                      "inspection": inspection.Inspection.from_json(d.get("inspection", {}))})
 
 
 def _record_path(state_dir: str | Path, project: str) -> Path:
@@ -339,18 +341,20 @@ def _rerun(r: Run, rec: Record, request: dict) -> str:
     if mode == "details" and _repo_keys(rec.request) != _repo_keys(request):
         return "request refused: the repositories can't change after confirm"
     _retain_inspection(r, rec, request)
+    rec.confirm_ready = False
     rec.request, rec.steps = request, [Step(n) for n in STEPS]
     return ""
 
 
 def _retain_inspection(r: Run, rec: Record, request: dict) -> None:
     from dispatcher import onboarding_sessions
-    keys = {repo_key(x) for x in request["repos"]} if request.get("inspect") else set()
-    reports = rec.inspection["repositories"]
+    keys = {repo_key(x) for x in request["repos"]} if "inspect" in request else set()
+    reports = rec.inspection.repositories
     for report in reports:
-        if repo_key(report["repo"]) not in keys and report.get("request_id"):
-            onboarding_sessions.withdraw(r.cfg.state_dir, report["request_id"])
-    rec.inspection["repositories"] = [x for x in reports if repo_key(x["repo"]) in keys]
+        if repo_key(report.repo) not in keys and report.request_id:
+            onboarding_sessions.withdraw(r.cfg.state_dir, report.request_id)
+    rec.inspection.repositories = [x for x in reports if repo_key(x.repo) in keys]
+
 
 
 def repo_key(spelling: str) -> str:
@@ -392,19 +396,17 @@ def _resume(r: Run, it: Intent) -> None:
 
 
 def _skip_inspection(r: Run, it: Intent) -> None:
-    from dispatcher import onboarding_sessions
     rec = load_record(r.cfg.state_dir, it.project)
     if rec is None or rec.status != "open":
         return
     if rec.revision != it.payload["revision"]:
         rec.notice = "proposal changed; review it before filling in by hand"
     else:
-        rec.inspection["manual"] = True
-        for report in rec.inspection["repositories"]:
-            if report["state"] == "waiting":
-                onboarding_sessions.withdraw(r.cfg.state_dir, report["request_id"])
-                report["state"] = "skipped"
-                report["detail"] = "fill in by hand"
+        rec.confirm_ready = False
+        rec.inspection.manual = True
+        for report in rec.inspection.repositories:
+            if report.state == "waiting":
+                _skip_report(r.cfg.state_dir, report)
         rec.notice = ""
     _save(r, rec)
 
@@ -474,7 +476,7 @@ def _resolve(r: Run, rec: Record) -> Outcome:
     proposal = _proposal(rec, found)
     if out := _held(r, rec.project, found):
         return out
-    if not rec.request.get("inspect"):
+    if "inspect" not in rec.request:
         if out := (_check_board(r, proposal["board"]) or _check_fits(r, proposal)):
             return out
     rec.proposal, rec.revision = proposal, revision(proposal)
@@ -612,85 +614,79 @@ def _resource(rec: Record, kind: str, ref: str) -> None:
 
 
 def _inspect(r: Run, rec: Record) -> Outcome:
-    if not rec.request.get("inspect"):
+    if "inspect" not in rec.request:
         return VERIFIED
     for repository in rec.proposal["repositories"]:
         report = _inspection_report(r, rec, repository)
-        if report["state"] == "waiting":
-            _inspection_progress(r, report, repository)
-        _apply_inspection(rec, repository, report)
-    _inspection_board(rec)
+        if report.state == "waiting":
+            _inspection_progress(r, report, repository, rec.request["inspect"])
+    _apply_inspection(rec)
     rec.revision = revision(rec.proposal)
-    return _inspection_outcome(rec.inspection["repositories"])
+    return _inspection_outcome(rec.inspection.repositories)
 
 
-def _inspection_outcome(reports: list[dict]) -> Outcome:
-    pending = [x for x in reports if x["state"] == "waiting"]
+def _inspection_outcome(reports: list[inspection.RepositoryInspection]) -> Outcome:
+    pending = [x for x in reports if x.state == "waiting"]
     if pending:
-        return waiting(pending[0]["detail"] or "waiting for repository inspection")
-    warnings = [x["detail"] for x in reports if x["detail"].startswith("draft unavailable:")]
-    return Outcome(StepState.VERIFIED, "; ".join(warnings))
+        return waiting(pending[0].detail or "waiting for repository inspection")
+    return Outcome(StepState.VERIFIED, "; ".join(x.warning for x in reports if x.error))
 
 
-def _inspection_board(rec: Record) -> None:
+def _inspection_board(rec: Record) -> dict | None:
     if rec.request["board"]:
-        rec.proposal["board"] = rec.request["board"]
-        return
-    choices = {json.dumps(x["board"]["value"], sort_keys=True): x["board"]["value"]
-               for x in rec.inspection["repositories"] if x["board"]["value"]}
-    rec.proposal["board"] = next(iter(choices.values())) if len(choices) == 1 else None
+        return rec.request["board"]
+    choices = {json.dumps(x.facts.board, sort_keys=True): x.facts.board
+               for x in rec.inspection.repositories if x.facts.board}
+    return next(iter(choices.values())) if len(choices) == 1 else None
 
 
-def _inspection_report(r: Run, rec: Record, repository: dict) -> dict:
+def _inspection_report(r: Run, rec: Record, repository: dict) -> inspection.RepositoryInspection:
     from dispatcher import onboarding_sessions
-    for report in rec.inspection["repositories"]:
-        if report["repo"] == repository["repo"]:
+    for report in rec.inspection.repositories:
+        if report.repo == repository["repo"]:
             return report
-    report = inspection.facts(repository["clone_path"], repository["repo"])
-    report["detected_board"] = report["board"]
-    if rec.inspection.get("manual"):
-        report["state"] = "skipped"
-        rec.inspection["repositories"].append(report)
-        return report
-    report["request_id"] = onboarding_sessions.ensure_request(
-        r.cfg.state_dir, rec.project, repository["repo"], request_revision(rec.request),
-        repository["clone_path"], report)
-    rec.inspection["repositories"].append(report)
+    report = inspection.RepositoryInspection(repository["repo"], inspection.facts(repository["clone_path"]))
+    if rec.inspection.manual or not rec.request["inspect"]:
+        report.skip()
+    else:
+        report.request_id = onboarding_sessions.ensure_request(
+            r.cfg.state_dir, rec.project, repository["repo"], request_revision(rec.request),
+            repository["clone_path"], asdict(report.facts))
+    rec.inspection.repositories.append(report)
     return report
 
 
-def _inspection_progress(r: Run, report: dict, repository: dict) -> None:
+def _inspection_progress(r: Run, report: inspection.RepositoryInspection, repository: dict, automatic: bool) -> None:
     from dispatcher import onboarding_sessions
-    current = onboarding_sessions.status(r.cfg.state_dir, report["request_id"])
-    report["detail"] = current["detail"]
+    if not automatic:
+        _skip_report(r.cfg.state_dir, report)
+        return
+    current = onboarding_sessions.status(r.cfg.state_dir, report.request_id)
+    report.detail = current["detail"]
     if current["state"] in ("complete", "failed", "withdrawn"):
-        report["fields"] = {key: inspection.value("") for key in inspection.COMMANDS}
-        valid = inspection.apply_draft(report, current.get("result"), repository["clone_path"])
-        report["draft_fields"] = dict(report["fields"])
-        report["draft_services"] = report.get("selected_services", [])
-        report["state"] = "complete"
-        if not valid:
-            report["detail"] = f"draft unavailable: {current['detail'] or 'no valid result'}"
+        report.complete(current.get("result"), repository["clone_path"], current["detail"])
 
 
-def _apply_inspection(rec: Record, repository: dict, report: dict) -> None:
-    index = next(i for i, item in enumerate(rec.proposal["repositories"]) if item is repository)
-    supplied = rec.request["commands"][index]
-    _apply_inspection_commands(repository, report, supplied)
-    selected = supplied.get("services")
-    report["selected_services"] = ([inspection.value(x, "you") for x in selected]
-                                   if selected is not None else report.get("draft_services", []))
-    repository["services"] = [x["value"] for x in report.get("selected_services", [])]
-    report["board"] = (inspection.value(rec.request["board"], "you") if rec.request["board"]
-                       else report.get("detected_board", inspection.value(None)))
+def _skip_report(state_dir: str, report: inspection.RepositoryInspection) -> None:
+    from dispatcher import onboarding_sessions
+    onboarding_sessions.withdraw(state_dir, report.request_id)
+    report.skip()
 
 
-def _apply_inspection_commands(repository: dict, report: dict, supplied: dict) -> None:
-    for key in inspection.COMMANDS:
-        item = report.get("draft_fields", {}).get(key, inspection.value(""))
-        repository[key] = supplied.get(key) if supplied.get(key) is not None else item["value"]
-        report["fields"][key] = (inspection.value(supplied[key], "you")
-                                 if supplied.get(key) is not None else item)
+def inspection_view(rec: Record) -> dict:
+    """The operator's effective values; canonical inspection state stays internal."""
+    commands = dict(zip(_repo_keys(rec.request), rec.request["commands"]))
+    return {"repositories": [report.view(commands.get(repo_key(report.repo), {}), rec.request["board"])
+                             for report in rec.inspection.repositories]}
+
+
+def _apply_inspection(rec: Record) -> None:
+    views = {report["repo"]: report for report in inspection_view(rec)["repositories"]}
+    for repository in rec.proposal["repositories"]:
+        view = views[repository["repo"]]
+        repository.update({key: item["value"] for key, item in view["fields"].items()})
+        repository["services"] = [x["value"] for x in view["selected_services"]]
+    rec.proposal["board"] = _inspection_board(rec)
 
 
 # -- confirm ------------------------------------------------------------------
@@ -701,25 +697,23 @@ def _requirements_met(rec: Record) -> bool:
         return False
     if any(not x.get("gate_cmd", "").strip() for x in rec.proposal.get("repositories", [])):
         return False
-    if rec.request.get("inspect"):
-        if len(rec.inspection["repositories"]) != len(rec.proposal["repositories"]):
+    if "inspect" in rec.request:
+        if len(rec.inspection.repositories) != len(rec.proposal["repositories"]):
             return False
-    return not _invalid_services(rec) and all(x["state"] != "waiting" for x in rec.inspection["repositories"])
+    return not _invalid_services(rec) and all(x.state != "waiting" for x in rec.inspection.repositories)
 
 
 def can_confirm(rec: Record) -> bool:
-    step = rec.step("confirm")
-    return (_requirements_met(rec) and
-            (step.state is StepState.VERIFIED or step.detail.startswith("review the proposal,")))
+    return rec.confirm_ready and _requirements_met(rec)
 
 
 def _invalid_services(rec: Record) -> str:
-    reports = {x["repo"]: x for x in rec.inspection["repositories"]}
+    reports = {x.repo: x for x in rec.inspection.repositories}
     for repository in rec.proposal.get("repositories", []):
         report = reports.get(repository["repo"])
         if report is None:
             continue
-        found = {x["value"] for x in report["services"]}
+        found = {x.value for x in report.facts.services}
         invalid = set(repository.get("services", [])) - found
         if invalid:
             return f"{repository['repo']}: services not found in Compose files: {', '.join(sorted(invalid))}"
@@ -727,12 +721,14 @@ def _invalid_services(rec: Record) -> str:
 
 
 def _confirm_step(r: Run, rec: Record) -> Outcome:
+    rec.confirm_ready = False
     if problem := _invalid_services(rec):
         return blocked(problem)
     if not _requirements_met(rec):
         return blocked("choose a board and fill in a gate command for each repository")
     if out := (_check_board(r, rec.proposal["board"]) or _check_fits(r, rec.proposal)):
         return out
+    rec.confirm_ready = True
     if rec.revision and rec.confirmed_revision == rec.revision:
         return VERIFIED
     board_value = rec.proposal["board"]

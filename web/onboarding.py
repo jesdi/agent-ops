@@ -172,7 +172,8 @@ def _view(project: str, record, pending: list[dict]) -> OnboardingView:
                                  "pr_url": record.pr_url, "pending": pending,
                                  "request_revision": onboard.request_revision(record.request),
                                  "edit_mode": onboard.edit_mode(record),
-                                 "can_confirm": onboard.can_confirm(record)})
+                                 "can_confirm": onboard.can_confirm(record),
+                                 "inspection": onboard.inspection_view(record)})
     request = next((p["payload"] for p in pending if p["action"] == "add"), None)
     if request is None:
         raise HTTPException(404, "onboarding not found")

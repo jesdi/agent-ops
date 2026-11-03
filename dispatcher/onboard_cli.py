@@ -84,8 +84,7 @@ def _request(args: argparse.Namespace, rec: onboard.Record | None) -> dict:
     result = {"repos": args.repos, "board": board_value,
               "commands": [_commands(repo, current.get(onboard.repo_key(repo), {}))
                            for repo in args.repos]}
-    if rec and rec.request.get("inspect"):
-        result["inspect"] = True
+    result["inspect"] = not args.manual
     return result
 
 
@@ -99,8 +98,16 @@ def _inspection_request(args, rec):
 def _current_commands(rec):
     if rec is None:
         return {}
-    return {onboard.repo_key(item["repo"]): item
+    requested = dict(zip(map(onboard.repo_key, rec.request["repos"]), rec.request["commands"]))
+    return {onboard.repo_key(item["repo"]): _command_defaults(item, requested.get(onboard.repo_key(item["repo"]), {}))
             for item in rec.proposal.get("repositories", [])}
+
+
+def _command_defaults(proposed: dict, requested: dict) -> dict:
+    result = dict(proposed)
+    if not result.get("services") and requested.get("services") is None:
+        result.pop("services", None)
+    return result
 
 
 def _commands(repo: str, current: dict) -> dict:

@@ -52,7 +52,7 @@ def test_add_prompts_for_each_repositorys_commands_starts_and_kicks(
     assert sh.calls == [KICK.split()]
     rec = record(tmp_path)
     assert rec["request"] == {
-        "repos": ["jesdi/analytics", "jesdi/web"], "board": {"owner": "jesdi", "number": 4},
+        "inspect": False, "repos": ["jesdi/analytics", "jesdi/web"], "board": {"owner": "jesdi", "number": 4},
         "commands": [{"setup_cmd": "make setup", "gate_cmd": "make gate",
                       "verify_cmd": "make e2e"},
                      {"setup_cmd": "", "gate_cmd": "npm test", "verify_cmd": ""}]}
