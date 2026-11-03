@@ -161,7 +161,7 @@ def load_record(state_dir: str | Path, project: str) -> Record | None:
     return Record.from_json(json.loads(p.read_text())) if p.exists() else None
 
 
-def _records(state_dir: str | Path) -> list[Record]:
+def list_records(state_dir: str | Path) -> list[Record]:
     return [Record.from_json(json.loads(p.read_text()))
             for p in sorted((Path(state_dir) / RECORDS_DIR).glob("*.json"))]
 
@@ -178,7 +178,7 @@ def revision(proposal: dict) -> str:
 
 # -- intents ------------------------------------------------------------------
 
-QUEUE = intents.Queue("onboarding-intents", ("add", "confirm"), ("project",))
+QUEUE = intents.Queue("onboarding-intents", ("add", "confirm", "resume"), ("project",))
 
 
 class Intent(NamedTuple):
@@ -191,16 +191,45 @@ class Intent(NamedTuple):
 
 def write_intent(state_dir: str | Path, action: str, project: str, payload: dict,
                  actor: str, epoch_ms: int) -> Path:
-    return QUEUE.write(state_dir, action, (project,), payload, actor, epoch_ms)
+    # Separate from the long-running engine lock: concurrent CLI/web writes
+    # must neither overwrite one another nor block behind clones and CI.
+    with state_lock(state_dir, "onboarding-intents.lock"):
+        stamps = [int(p.name.partition("-")[0]) for p in
+                  (Path(state_dir) / QUEUE.dir).glob("*.json")
+                  if p.name.partition("-")[0].isdigit()]
+        stamp = max(epoch_ms, max(stamps, default=epoch_ms - 1) + 1)
+        return QUEUE.write(state_dir, action, (project,), payload, actor, stamp)
+
+
+def pending_intents(state_dir: str | Path) -> list[dict]:
+    """Read valid queue entries without consuming or repairing them."""
+    out = []
+    for path in sorted((Path(state_dir) / QUEUE.dir).glob("*.json")):
+        try:
+            raw = json.loads(path.read_text())
+            it = _intent(raw, path)
+            out.append({"id": path.name, "action": it.action, "project": it.project,
+                        "payload": it.payload, "actor": it.actor,
+                        "created_at": str(raw.get("created_at", ""))})
+        except (KeyError, TypeError, ValueError, OSError):
+            continue
+    return out
 
 
 def _intent(rec: dict, path: Path) -> Intent:
     action, project, payload = rec["action"], rec["project"], rec["payload"]
     if action not in QUEUE.actions or not config._SLUG.fullmatch(project):
         raise ValueError(f"action {action!r} for project {project!r}")
-    payload = (_request(payload) if action == "add"
-               else {"revision": str(payload["revision"])})
+    payload = _intent_payload(action, payload)
     return Intent(action, project, payload, str(rec.get("actor", "")), path)
+
+
+def _intent_payload(action: str, payload: dict) -> dict:
+    if action == "add":
+        return _request(payload)
+    if action == "confirm":
+        return {"revision": str(payload["revision"])}
+    return {}
 
 
 def _request(payload: dict) -> dict:
@@ -278,7 +307,15 @@ def _confirm(r: Run, it: Intent) -> None:
     _save(r, rec)
 
 
-_APPLY = {"add": _add, "confirm": _confirm}
+def _resume(r: Run, it: Intent) -> None:
+    """Retry the latest record, never a frontend's snapshot of its request."""
+    rec = load_record(r.cfg.state_dir, it.project)
+    if rec is not None and rec.status == "open":
+        rec.notice = ""
+        _save(r, rec)
+
+
+_APPLY = {"add": _add, "confirm": _confirm, "resume": _resume}
 
 
 # -- the run ------------------------------------------------------------------
@@ -290,7 +327,7 @@ def run(config_path: str | Path, sh: Sh = sh, get: Get = get,
     r = Run(Path(config_path), cfg, sh, get, now or datetime.now(timezone.utc))
     with state_lock(cfg.state_dir, "onboarding.lock"):
         _drain(r)
-        for rec in _records(cfg.state_dir):
+        for rec in list_records(cfg.state_dir):
             if rec.status == "open":
                 _advance(r, rec)
 
@@ -375,7 +412,7 @@ def _holders(r: Run, project: str) -> dict:
     held = {}
     for x in r.cfg.repositories:
         held[x.github_id] = held[x.repo.lower()] = x.project.name
-    for other in _records(r.cfg.state_dir):
+    for other in list_records(r.cfg.state_dir):
         if other.status == "open" and other.project != project:
             for x in other.proposal.get("repositories", []):
                 held[x["github_id"]] = held[x["repo"].lower()] = other.project

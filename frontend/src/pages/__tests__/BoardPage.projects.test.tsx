@@ -150,3 +150,9 @@ it('without the project list the board shows every card, unfiltered', async () =
   expect(screen.queryByRole('tablist', { name: 'Projects' })).not.toBeInTheDocument()
   expect(screen.queryByRole('tabpanel')).not.toBeInTheDocument()
 })
+
+it('offers Add project beside the existing project tabs', async () => {
+  serve(boardWith({}))
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByRole('link', { name: 'Add project' })).toHaveAttribute('href', '/onboarding/new')
+})
