@@ -7,7 +7,7 @@ import { banner, chip } from '../../lib/tone'
 export const panel = 'rounded-lg border border-border bg-surface-raised p-5 md:p-6'
 export const button = 'min-h-11 rounded-md border border-border px-4 py-2 text-sm font-medium disabled:opacity-50'
 export const primary = `${button} border-ink bg-ink text-surface-raised`
-const inputClass = 'mt-1.5 w-full min-w-0 rounded-md border border-border bg-surface-raised px-3 py-2.5 text-ink'
+const inputClass = 'mt-1.5 w-full min-w-0 rounded-md border border-border bg-surface-raised px-3 py-2.5 text-ink disabled:cursor-not-allowed disabled:bg-surface disabled:text-ink-muted'
 
 type Commands = NonNullable<OnboardingRequest['commands']>[number]
 type Detection = { original: string; proposal: RepositoryProposal; inspection?: RepositoryInspection }
@@ -59,8 +59,15 @@ function CommandField({ label, hint, name, draft, proposal, inspection, update }
     <Source source={source} inspected={inspection?.state === 'complete'} skipped={inspection?.state === 'skipped'} /></div>
 }
 
-function boardText(board: OnboardingRequest['board']) {
-  return board ? `${board.owner}/${board.number}` : ''
+type AnyBoard = OnboardingRequest['board'] | OnboardingProposal['board']
+
+function boardText(board: AnyBoard) {
+  return board && 'number' in board ? `${board.owner}/${board.number}` : ''
+}
+
+/** owner/number, or the title a new board gets; '' when there is none. */
+export function boardLabel(board: AnyBoard, project: string) {
+  return board && 'new' in board ? `New board: ${project || '<project>'} Backlog` : boardText(board)
 }
 
 function repositoryKey(spelling: string) {
@@ -107,7 +114,9 @@ export function OnboardingForm({ project = '', request, requestRevision, reposit
 }) {
   const [name, setName] = useState(project)
   const [board, setBoard] = useState<string | null>(() => request?.board ? boardText(request.board) : null)
-  const shownBoard = board ?? boardText(proposal?.board)
+  const [newBoard, setNewBoard] = useState(() => Boolean(
+    (request?.board && 'new' in request.board) || (!request?.board && proposal?.board && 'new' in proposal.board)))
+  const shownBoard = newBoard ? '' : board ?? boardText(proposal?.board)
   const [repos, setRepos] = useState(() => initialDraft(request, proposal, inspection))
   const mutation = useMutation({ mutationFn: (body: OnboardingStartRequest) => api.startOnboarding(name, body), onSuccess: accepted => onSaved(name, accepted) })
   const update = (id: number, change: Partial<RepositoryDraft>) => setRepos(rows => rows.map(r => r.id === id ? { ...r, ...change } : r))
@@ -116,15 +125,17 @@ export function OnboardingForm({ project = '', request, requestRevision, reposit
   const submit = (event: FormEvent) => {
     event.preventDefault()
     const [owner, number] = (board ?? '').split('/')
-    mutation.mutate({ inspect: request?.inspect ?? true, expected_request_revision: requestRevision, repos: repos.map(r => r.repo.trim()), board: board ? { owner: owner!, number: Number(number) } : null,
+    mutation.mutate({ inspect: request?.inspect ?? true, expected_request_revision: requestRevision, repos: repos.map(r => r.repo.trim()), board: newBoard ? { new: true } : board ? { owner: owner!, number: Number(number) } : null,
       commands: repos.map(({ setup_cmd, gate_cmd, verify_cmd, services }) => ({ setup_cmd, gate_cmd, verify_cmd, services })) })
   }
   return <form onSubmit={submit} className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
     <fieldset disabled={mutation.isPending || disabled} className="min-w-0 space-y-5">
       <section className={panel}><h2 className="text-xl font-semibold">Project</h2><div className="mt-5 grid gap-5 md:grid-cols-2">
         <Field label="Project name" hint="Lowercase letters, numbers and hyphens. Cannot change later." required pattern="[a-z0-9-]+" value={name} disabled={Boolean(project)} onChange={e => setName(e.target.value)} />
-        <div><Field label="GitHub board" hint="owner/number. Leave blank to detect committed board details." pattern="[^/\s]+/[1-9][0-9]*" value={shownBoard} onChange={e => setBoard(e.target.value)} />
-        <Source source={board === null ? inspection?.repositories?.find(item => item.board.source)?.board.source : 'you'} inspected={Boolean(inspection?.repositories?.length)} /></div>
+        <div><Field label="GitHub board" hint={newBoard ? 'Onboarding creates the board after you confirm.' : 'owner/number. Leave blank to detect committed board details.'} pattern="[^/\s]+/[1-9][0-9]*" value={shownBoard} disabled={newBoard} onChange={e => setBoard(e.target.value)} />
+        <label className="mt-2 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" className="size-4" checked={newBoard} onChange={e => setNewBoard(e.target.checked)} />Create a new board</label>
+        {newBoard ? <p className="text-xs text-ink-muted">{boardLabel({ new: true }, name)}, owned by the first repository’s owner.</p>
+          : <Source source={board === null ? inspection?.repositories?.find(item => item.board.source)?.board.source : 'you'} inspected={Boolean(inspection?.repositories?.length)} />}</div>
       </div></section>
       <section className={`${panel} space-y-5`}><div><h2 className="text-xl font-semibold">Repositories &amp; commands</h2><p className="mt-1 text-sm text-ink-muted">The box inspects each repository and suggests commands. You can enter known values now.</p></div>
         {repos.map((draft, index) => <RepositoryFields key={draft.id} draft={draft} number={index + 1} locked={repositoriesLocked}
@@ -135,6 +146,6 @@ export function OnboardingForm({ project = '', request, requestRevision, reposit
         {mutation.error && <p role="alert" className={banner.failed}>{mutation.error.message}</p>}
         <div className="flex flex-wrap justify-end gap-3"><SubmitButton pending={mutation.isPending} editing={Boolean(request)} /></div>
       </section>
-    </fieldset><Summary name={name} board={shownBoard} count={repos.length} />
+    </fieldset><Summary name={name} board={newBoard ? boardLabel({ new: true }, name) : shownBoard} count={repos.length} />
   </form>
 }

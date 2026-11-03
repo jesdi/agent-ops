@@ -25,9 +25,11 @@ def _slug(value: str) -> str:
 
 
 def _board(value: str) -> dict:
+    if value == "new":
+        return {"new": True}
     owner, _, number = value.partition("/")
     if not owner or not number.isdigit():
-        raise argparse.ArgumentTypeError(f"{value!r}: expected owner/number, e.g. jesdi/4")
+        raise argparse.ArgumentTypeError(f"{value!r}: expected owner/number, e.g. jesdi/4, or new")
     return {"owner": owner, "number": int(number)}
 
 
@@ -38,7 +40,8 @@ def _parser() -> argparse.ArgumentParser:
         "add", help="onboard a project: it ends merged, deployed, visible and paused")
     add.add_argument("name", type=_slug)
     add.add_argument("repos", nargs="+", metavar="repo")
-    add.add_argument("--board", type=_board, help="owner/number")
+    add.add_argument("--board", type=_board,
+                     help="owner/number, or new for a '<name> Backlog' board")
     add.add_argument("--manual", action="store_true", help="fill commands by hand without waiting for a draft")
     add.add_argument("--config", default=config.default_config_path())
     return parser
@@ -80,7 +83,7 @@ def _request(args: argparse.Namespace, rec: onboard.Record | None) -> dict:
     current = _current_commands(rec)
     board_value = args.board or (rec.proposal.get("board") if rec else None)
     if not board_value:
-        board_value = _board(_ask("GitHub board", "", "owner/number"))
+        board_value = _board(_ask("GitHub board", "", "owner/number or new"))
     result = {"repos": args.repos, "board": board_value,
               "commands": [_commands(repo, current.get(onboard.repo_key(repo), {}))
                            for repo in args.repos]}
@@ -153,5 +156,7 @@ def _show(rec: onboard.Record, notice: str | None = None) -> None:
     print(f"\n{rec.project}: {rec.status}")
     for s in rec.steps:
         print(f"  {s.name:<13} {s.state:<9} {s.detail} {s.link}".rstrip())
+    for line in rec.board_review:
+        print(f"board: {line}")
     if notice := rec.notice if notice is None else notice:
         print(f"notice: {notice}")
