@@ -50,8 +50,11 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
         print(f"run agent-ops as {USER} (sudo -iu {USER})", file=sys.stderr)
         return 2
     state_dir = config.load_config(args.config).state_dir
-    _write(state_dir, "add", args.name,
-           _request(args, onboard.load_record(state_dir, args.name)))
+    existing = onboard.load_record(state_dir, args.name)
+    if existing and existing.status == "complete":
+        _show(existing, "already onboarded")  # informational: no prompts, no writes
+        return 0
+    _write(state_dir, "add", args.name, _request(args, existing))
     rec = _kick(sh, state_dir, args.name)
     if rec.awaiting == "confirm" and _yes(rec):
         _write(state_dir, "confirm", args.name, {"revision": rec.revision})
@@ -107,9 +110,9 @@ def _kick(sh: onboard.Sh, state_dir: str, project: str) -> onboard.Record:
     return rec
 
 
-def _show(rec: onboard.Record) -> None:
+def _show(rec: onboard.Record, notice: str | None = None) -> None:
     print(f"\n{rec.project}: {rec.status}")
     for s in rec.steps:
         print(f"  {s.name:<13} {s.state:<9} {s.detail} {s.link}".rstrip())
-    if rec.notice:
-        print(f"notice: {rec.notice}")
+    if notice := rec.notice if notice is None else notice:
+        print(f"notice: {notice}")
