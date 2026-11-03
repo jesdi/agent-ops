@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { api, type OnboardingView, type OnboardingProposal } from '../../lib/api'
-import { onboardingKeys } from '../../hooks/useOnboarding'
+import { useOnboardingReceipt } from '../../hooks/useOnboarding'
 import { banner, chip, type Tone } from '../../lib/tone'
 import { OnboardingEdit } from './OnboardingEdit'
 import { button, panel, primary, PausedNote } from './OnboardingForm'
@@ -59,21 +59,30 @@ export function PendingOnboarding({ view }: { view: OnboardingView }) {
   </section>
 }
 
-function OnboardingActions({ view, edit }: { view: OnboardingView; edit: () => void }) {
-  const client = useQueryClient()
+function ActionButtons({ view, edit, busy, review, resume }: {
+  view: OnboardingView; edit: () => void; busy: boolean; review: () => void; resume: () => void
+}) {
+  return (
+    <div className="flex flex-wrap gap-3">
+      {view.edit_mode !== 'none' && <button type="button" className={button} onClick={edit} disabled={busy}>Edit details</button>}
+      {view.status === 'open' && <button type="button" className={button} onClick={resume} disabled={busy}>Resume onboarding</button>}
+      {view.awaiting === 'confirm' && view.proposal && <button type="button" className={primary} onClick={review} disabled={busy}>Review proposal</button>}
+    </div>
+  )
+}
+
+function OnboardingActions({ view, updatedAt, edit }: { view: OnboardingView; updatedAt: number; edit: () => void }) {
+  const receipt = useOnboardingReceipt(view, updatedAt)
   const [review, setReview] = useState<OnboardingView | null>(null)
   const submitAction = (action: { kind: 'confirm'; revision: string } | { kind: 'resume' }) =>
     action.kind === 'confirm' ? api.confirmOnboarding(view.project, action.revision) : api.resumeOnboarding(view.project)
   const mutation = useMutation({ mutationFn: submitAction,
-    onSuccess: async () => { setReview(null); await client.invalidateQueries({ queryKey: onboardingKeys.all }) } })
-  const busy = mutation.isPending || view.pending.length > 0
+    onSuccess: accepted => { setReview(null); return receipt.remember(accepted, view.project) } })
+  const busy = mutation.isPending || receipt.pending || view.pending.length > 0
   return <>
+    {receipt.pending && view.pending.length === 0 && <PendingOnboarding view={view} />}
     {mutation.error && <p role="alert" className={banner.failed}>{mutation.error.message}</p>}
-    <div className="flex flex-wrap gap-3">
-      {view.edit_mode !== 'none' && <button type="button" className={button} onClick={edit} disabled={busy}>Edit details</button>}
-      {view.status === 'open' && <button type="button" className={button} onClick={() => mutation.mutate({ kind: 'resume' })} disabled={busy}>Resume onboarding</button>}
-      {view.awaiting === 'confirm' && view.proposal && <button type="button" className={primary} onClick={() => setReview(view)} disabled={busy}>Review proposal</button>}
-    </div>
+    <ActionButtons view={view} edit={edit} busy={busy} review={() => setReview(view)} resume={() => mutation.mutate({ kind: 'resume' })} />
     {review && <ProposalReview snapshot={review} current={view} busy={busy} close={() => setReview(null)} refresh={() => setReview(view)} confirm={() => mutation.mutate({ kind: 'confirm', revision: review.revision })} />}
   </>
 }
@@ -86,7 +95,7 @@ export function OnboardingDetail({ view, updatedAt }: { view: OnboardingView; up
     {view.notice && <p role="status" className={banner.waiting}>{view.notice}</p>}
     <Steps steps={view.steps} />
     {view.pr_url && <a href={view.pr_url} className="inline-block text-sm underline">Open infrastructure PR</a>}
-    <OnboardingActions view={view} edit={() => setEditing(true)} />
+    <OnboardingActions view={view} updatedAt={updatedAt} edit={() => setEditing(true)} />
     {view.status === 'complete' && <p className={banner.running}>Onboarding complete. The project starts paused. <Link className="underline" to={`/?project=${encodeURIComponent(view.project)}`}>View project</Link></p>}
   </div>
 }

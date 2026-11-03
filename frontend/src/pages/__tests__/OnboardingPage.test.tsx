@@ -26,8 +26,9 @@ describe('onboarding worksheet', () => {
     let submitted: unknown
     server.use(http.post('/api/onboarding/analytics', async ({ request }) => {
       submitted = await request.json()
-      return HttpResponse.json({ status: 'pending', intent: '100-add' }, { status: 202 })
+      return HttpResponse.json({ status: 'pending', intent: '100-add', request_revision: 'request-one' }, { status: 202 })
     }))
+    server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json({ ...ready, pending: [] })))
     renderNew()
     await enterProject()
     await userEvent.type(screen.getByLabelText('Setup command'), 'uv sync --locked')
@@ -181,7 +182,8 @@ it('shows completion and the paused project link without offering edits or resum
 })
 
 it('opens a project named new as a detail page rather than the new-project form', async () => {
-  server.use(http.post('/api/onboarding/new', () => HttpResponse.json({ status: 'pending', intent: '500-add' }, { status: 202 })))
+  server.use(http.post('/api/onboarding/new', () => HttpResponse.json({ status: 'pending', intent: '500-add', request_revision: 'request-one' }, { status: 202 })),
+    http.get('/api/onboarding/new', () => HttpResponse.json({ ...ready, project: 'new', pending: [] })))
   renderWithProviders(<Routes>
     <Route path="/onboarding/new" element={<NewOnboardingPage />} />
     <Route path="/onboarding/projects/:project" element={<h1>New project received</h1>} />
@@ -277,4 +279,73 @@ it('retains an open draft when the engine closes editing and still lets the oper
   await userEvent.click(screen.getByRole('button', { name: 'Cancel editing' }))
   expect(await screen.findByRole('heading', { name: 'Onboarding progress' })).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Edit details' })).not.toBeInTheDocument()
+})
+
+it.each(['resume', 'confirm'] as const)('keeps accepted %s pending through a failed refresh and prevents duplicates', async action => {
+  let failRead = false
+  let posts = 0
+  let current = { ...ready, pending: [] as typeof onboarding.pending }
+  server.use(http.get('/api/onboarding/analytics', () => failRead
+    ? HttpResponse.json({ detail: 'Refresh unavailable' }, { status: 503 }) : HttpResponse.json(current)),
+    http.post(`/api/onboarding/analytics/${action}`, () => {
+      posts += 1
+      failRead = true
+      return HttpResponse.json({ status: 'pending', intent: 'accepted-action', request_revision: null }, { status: 202 })
+    }))
+  const { queryClient } = renderDetail()
+  if (action === 'confirm') {
+    await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm proposal' }))
+  } else await userEvent.click(await screen.findByRole('button', { name: 'Resume onboarding' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Refresh unavailable')
+  expect(screen.getByText('Waiting for the box')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Resume onboarding' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Review proposal' })).toBeDisabled()
+  await userEvent.click(screen.getByRole('button', { name: 'Resume onboarding' }))
+  expect(posts).toBe(1)
+  failRead = false
+  current = { ...ready, pending: [{ id: 'accepted-action', action, actor: 'operator', created_at: '' }] }
+  await queryClient.invalidateQueries({ queryKey: ['onboarding'] })
+  expect(screen.getByText('Waiting for the box')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Resume onboarding' })).toBeDisabled()
+  current = { ...ready, pending: [], awaiting: '' }
+  await queryClient.invalidateQueries({ queryKey: ['onboarding'] })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Resume onboarding' })).toBeEnabled())
+  expect(screen.queryByText('Waiting for the box')).not.toBeInTheDocument()
+})
+
+
+it('keeps a new-project draft until the engine accepts it, including when another start wins', async () => {
+  let current = { ...onboarding, pending: [{ id: 'my-start', action: 'add', actor: 'operator', created_at: '' }] }
+  server.use(http.post('/api/onboarding/analytics', () => HttpResponse.json({ status: 'pending', intent: 'my-start', request_revision: 'my-version' }, { status: 202 })),
+    http.get('/api/onboarding/analytics', () => HttpResponse.json(current)))
+  const { queryClient } = renderNew()
+  await enterProject()
+  await userEvent.click(screen.getByRole('button', { name: 'Start onboarding' }))
+  expect(await screen.findByText('Waiting for the box')).toBeInTheDocument()
+  expect(screen.getByLabelText('Gate command')).toHaveValue('uv run pytest -q')
+  expect(screen.getByLabelText('Gate command')).toBeDisabled()
+  current = { ...current, status: 'open', request_revision: 'other-version', pending: [] }
+  await queryClient.invalidateQueries({ queryKey: ['onboarding'] })
+  expect(await screen.findByRole('alert')).toHaveTextContent('Your draft is kept')
+  expect(screen.getByLabelText('Gate command')).toHaveValue('uv run pytest -q')
+  expect(screen.getByLabelText('Project name')).toBeEnabled()
+  expect(screen.getByRole('link', { name: 'Open existing onboarding' })).toHaveAttribute('href', '/onboarding/projects/analytics')
+})
+
+it('retains a submitted new-project draft through a failed first read until the engine accepts it', async () => {
+  let failRead = true
+  server.use(http.post('/api/onboarding/analytics', () => HttpResponse.json({ status: 'pending', intent: 'my-start', request_revision: 'request-one' }, { status: 202 })),
+    http.get('/api/onboarding/analytics', () => failRead
+      ? HttpResponse.json({ detail: 'Refresh unavailable' }, { status: 503 }) : HttpResponse.json(ready)))
+  const { queryClient } = renderNew()
+  await enterProject()
+  await userEvent.click(screen.getByRole('button', { name: 'Start onboarding' }))
+  expect(await screen.findByText(/Could not refresh onboarding/)).toHaveTextContent('Refresh unavailable')
+  expect(screen.getByLabelText('Gate command')).toHaveValue('uv run pytest -q')
+  expect(screen.getByLabelText('Gate command')).toBeDisabled()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  failRead = false
+  await queryClient.invalidateQueries({ queryKey: ['onboarding'] })
+  expect(await screen.findByRole('heading', { name: 'Onboarding received' })).toBeInTheDocument()
 })

@@ -4,7 +4,7 @@ Approved layout: A (worksheet) in local frontend/src/pages/onboarding.prototype.
 
 Observable behavior:
 - Operator opens Add project from console, enters immutable project slug, existing board owner/number, one or more GitHub repositories and setup/gate/verify commands. Gate required; setup/verify optional.
-- Submitting durably queues start and displays pending state until engine creates record. Never report record missing merely because timer has not run.
+- Submitting durably queues start and displays pending state until engine creates record. Keep the creation draft until its request revision is applied; a rejected competing start keeps the draft. Never report record missing merely because timer has not run.
 - Console lists and displays onboardings started by CLI as well as web, including completed ones.
 - Detail shows actual engine steps, states, details, links and notice; waiting, failed and blocked clearly distinguished.
 - Confirmation shows actual resolved proposal including repositories, commands and board. Confirm explicitly binds the revision shown; polling cannot silently substitute a newly changed revision beneath the review action.

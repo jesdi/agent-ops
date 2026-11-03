@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test'
 for (const project of ['analytics', 'new']) {
 test(`operator starts project ${project} from the worksheet and sees its queued onboarding`, async ({ page }) => {
   let submitted: unknown
+  let processed = false
   const request = {
     repos: ['jesdi/analytics'], board: { owner: 'jesdi', number: 4 },
     commands: [{ setup_cmd: 'uv sync --locked', gate_cmd: 'uv run pytest -q', verify_cmd: '' }],
@@ -13,10 +14,10 @@ test(`operator starts project ${project} from the worksheet and sees its queued 
       await route.fulfill({ status: 202, json: { status: 'pending', intent: 'start-analytics', request_revision: 'request-start' } })
     } else {
       await route.fulfill({ json: {
-        project, status: 'queued', request, proposal: null, request_revision: 'request-start', edit_mode: 'none',
+        project, status: processed ? 'open' : 'queued', request, proposal: null, request_revision: 'request-start', edit_mode: processed ? 'repositories' : 'none',
         revision: '', confirmed_revision: '', awaiting: '', notice: '', steps: [],
         pr_url: '', updated_at: '',
-        pending: [{ action: 'add', actor: 'jesdi', created_at: '', id: 'start-analytics' }],
+        pending: processed ? [] : [{ action: 'add', actor: 'jesdi', created_at: '', id: 'start-analytics' }],
       } })
     }
   })
@@ -27,9 +28,12 @@ test(`operator starts project ${project} from the worksheet and sees its queued 
   await page.getByLabel('Setup command', { exact: true }).fill('uv sync --locked')
   await page.getByLabel('Gate command', { exact: true }).fill('uv run pytest -q')
   await page.getByRole('button', { name: 'Start onboarding', exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/onboarding/projects/${project}$`))
   expect(submitted).toEqual(request)
   await expect(page.getByText(/queued|waiting for the box/i).first()).toBeVisible()
+  await expect(page).toHaveURL(/\/onboarding\/new$/)
+  await expect(page.getByLabel('Gate command', { exact: true })).toHaveValue('uv run pytest -q')
+  processed = true
+  await expect(page).toHaveURL(new RegExp(`/onboarding/projects/${project}$`), { timeout: 10000 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width)
 })
 

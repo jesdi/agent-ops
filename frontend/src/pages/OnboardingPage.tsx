@@ -1,19 +1,41 @@
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { OnboardingForm, panel, primary } from '../components/onboarding/OnboardingForm'
 
-import { useOnboarding, useOnboardings } from '../hooks/useOnboarding'
+import { useOnboarding, useOnboardings, useOnboardingReceipt } from '../hooks/useOnboarding'
 import { banner, chip } from '../lib/tone'
 import { OnboardingDetail, PendingOnboarding } from '../components/onboarding/OnboardingDetail'
-import type { OnboardingView } from '../lib/api'
+import type { OnboardingAccepted, OnboardingView } from '../lib/api'
 
 export function NewOnboardingPage() {
   const navigate = useNavigate()
+  const [project, setProject] = useState('')
+  const query = useOnboarding(project)
+  const receipt = useOnboardingReceipt(query.data, query.dataUpdatedAt)
+  useEffect(() => {
+    if (receipt.applied) void navigate(`/onboarding/projects/${encodeURIComponent(project)}`)
+  }, [receipt.applied, navigate, project])
+  const queued = async (name: string, accepted: OnboardingAccepted) => {
+    setProject(name)
+    await receipt.remember(accepted, name)
+  }
   return <main className="mx-auto w-full max-w-6xl px-4 py-7 md:px-7">
     <Link to="/onboarding" className="text-sm text-ink-muted underline">Onboarding</Link>
     <h1 className="mt-4 text-3xl font-semibold tracking-tight">Add project</h1>
     <p className="mb-7 mt-2 text-ink-muted">Connect a board and its repositories to the box.</p>
-    <OnboardingForm onSaved={project => navigate(`/onboarding/projects/${encodeURIComponent(project)}`)} />
+    <OnboardingForm onSaved={queued} disabled={receipt.pending}
+      feedback={<StartFeedback project={project} pending={receipt.pending} accepted={receipt.accepted !== null && !receipt.applied} error={query.error} />} />
   </main>
+}
+
+function StartFeedback({ project, pending, accepted, error }: {
+  project: string; pending: boolean; accepted: boolean; error: Error | null
+}) {
+  if (!accepted) return null
+  if (pending) return <div role="status" className={banner.waiting}><p className="font-semibold">Waiting for the box</p>
+    <p>Your request is saved. Keep this page open while the box applies it.</p>
+    {error && <p className="mt-2">Could not refresh onboarding: {error.message}. Checking again automatically.</p>}</div>
+  return <div role="alert" className={banner.failed}>This project has different stored details. Your draft is kept. Choose another project name or <Link className="underline" to={`/onboarding/projects/${encodeURIComponent(project)}`}>Open existing onboarding</Link>.</div>
 }
 
 export function OnboardingsPage() {
