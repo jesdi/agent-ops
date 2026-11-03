@@ -51,6 +51,10 @@ def cloned(argv, cwd, env):
 
 ORIGIN = "https://github.com/jesdi/analytics.git\n"
 
+# The checkout the engine executes from: the only place its own revision is read.
+CHECKOUT = Path(onboard.__file__).resolve().parents[1]
+BUILDER = "builder-b\n"
+
 
 class FakeSh:
     """Answers each call from the first route whose key is a substring of
@@ -63,6 +67,7 @@ class FakeSh:
                        "git clone": cloned,
                        "remote get-url origin": ORIGIN, **(routes or {})}
         self.calls = []
+        self.builder = BUILDER  # the executing checkout's HEAD: text, or an exception
 
     def route(self, key, answer):
         self.routes = {key: answer, **{k: v for k, v in self.routes.items() if k != key}}
@@ -70,6 +75,10 @@ class FakeSh:
     def __call__(self, argv, cwd=None, env=None):
         self.calls.append((argv, cwd, env))
         line = " ".join(argv)
+        if "rev-parse" in argv and (str(CHECKOUT) in line or cwd and str(cwd) == str(CHECKOUT)):
+            if isinstance(self.builder, Exception):
+                raise self.builder
+            return self.builder
         for key, answer in self.routes.items():
             if key in line:
                 if callable(answer):
@@ -585,7 +594,7 @@ def test_config_pr_pushes_the_project_and_opens_the_pr(tmp_path, box, infra_toke
     assert (s["state"], s["link"]) == ("verified", PR_URL)
     assert rec["infra_pr"] == {
         "number": 7, "url": PR_URL, "head": "head1", "base": "base1",
-        "revision": rec["revision"], "pushed_at": NOW.isoformat(),
+        "revision": rec["revision"], "builder": "builder-b", "pushed_at": NOW.isoformat(),
         }
     assert (rec["merge_sha"], rec["merged_at"]) == ("", "")
     assert {"kind": "infra-pr", "ref": PR_URL, "state": "in use"} in rec["resources"]
