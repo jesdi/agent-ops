@@ -12,9 +12,8 @@ import getpass
 import sys
 import time
 
-import yaml
-
 from dispatcher import config, onboard
+from dispatcher.infra_config import project_block
 
 USER = "agent"
 KICK = ["systemctl", "--user", "start", "agent-ops-onboard.service"]
@@ -61,7 +60,7 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
 
 
 def _yes(rec: onboard.Record) -> bool:
-    print(yaml.safe_dump(rec.proposal, sort_keys=False))
+    print(project_block(rec.proposal))
     try:
         return input(f"confirm {rec.revision[:12]}? [y/N] ").strip().lower() == "y"
     except EOFError:

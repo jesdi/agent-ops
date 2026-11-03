@@ -33,7 +33,7 @@ from typing import Callable, NamedTuple
 import yaml
 
 from dispatcher import board, config, intents
-from dispatcher.infra_config import add_project_text
+from dispatcher.infra_config import add_project_text, project_block
 from dispatcher.pr_poll import ci_verdict
 from dispatcher.state import state_lock, write_json_atomic
 
@@ -583,9 +583,6 @@ def _push_pr(r: Run, rec: Record, main: str, pr: OpenPr | None, env: dict) -> Ou
     return Outcome(StepState.VERIFIED, link=url)
 
 
-AUTHOR = "agent-ops-onboard"
-
-
 def _push(r: Run, rec: Record, main: str, env: dict,
           link: str) -> tuple[str, str] | Outcome:
     """onboard/<project> rebuilt on infra main and pushed over the head the
@@ -617,7 +614,7 @@ def _commit(r: Run, rec: Record, main: str, env: dict) -> tuple[str, str, str] |
     """The project added to infra main's targets.yaml, checked with the
     loader and committed on onboard/<project> in the scratch clone: its
     sha, parent and tree."""
-    text = add_project_text(main, yaml.safe_dump([rec.proposal], sort_keys=False))
+    text = add_project_text(main, project_block(rec.proposal))
     try:
         config.parse_config(yaml.safe_load(text))
     except ValueError as e:
@@ -625,9 +622,9 @@ def _commit(r: Run, rec: Record, main: str, env: dict) -> tuple[str, str, str] |
     _git(r, env, "checkout", "-B", f"onboard/{rec.project}", "origin/main")
     (_scratch(r) / INFRA_TARGETS).write_text(text)
     _git(r, env, "add", INFRA_TARGETS)
-    _git(r, env, "-c", f"user.name={AUTHOR}", "-c",
-         f"user.email={AUTHOR}@users.noreply.github.com",
-         "commit", "-m", f"feat(config): onboard {rec.project}")
+    # The box's own git identity: its signing key is registered to it, so
+    # GitHub shows the commit Verified.
+    _git(r, env, "commit", "-m", f"feat(config): onboard {rec.project}")
     return (_git(r, env, "rev-parse", "HEAD").strip(),
             _git(r, env, "rev-parse", "origin/main").strip(),
             _git(r, env, "show", "-s", "--format=%T", "HEAD").strip())
@@ -731,12 +728,12 @@ class Check(NamedTuple):
 
 def _ci_waiting_on(r: Run, head: str, env: dict) -> str | Outcome:
     """What `head` still waits for; "" once its ci run succeeded and every
-    check run and commit status finished green. A red one blocks, with its
-    link."""
-    ci = _ci_run(r, head, env)
-    if ci is None:
+    other workflow run and commit status finished green. A red one blocks,
+    with its link."""
+    runs = _workflow_runs(r, head, env)
+    if not any(c.name == "ci" for c in runs):
         return "no ci run on the head yet"
-    checks = [ci, *_check_runs(r, head, env), *_statuses(r, head, env)]
+    checks = [*runs, *_statuses(r, head, env)]
     if red := next((c for c in checks if ci_verdict(c.conclusion) == "red"), None):
         return blocked(f"infra check {red.name} is {red.conclusion}", red.link)
     pending = [c.name for c in checks if ci_verdict(c.conclusion) != "green"]
@@ -747,23 +744,23 @@ def _api(r: Run, env: dict, path: str) -> dict:
     return json.loads(r.sh(["gh", "api", f"repos/{INFRA_REPO}/{path}"], env=env))
 
 
-def _ci_run(r: Run, head: str, env: dict) -> Check | None:
-    """The latest ci workflow run on `head`; only a success is green."""
-    runs = [x for x in _api(r, env, f"actions/runs?head_sha={head}&per_page=100")[
-        "workflow_runs"] if x["name"] == "ci"]
-    if not runs:
-        return None
-    x = max(runs, key=lambda x: x["id"])
+def _workflow_runs(r: Run, head: str, env: dict) -> list[Check]:
+    """The latest run of each workflow on `head`. A fine-grained token cannot
+    read check runs, and every infra check is an Actions job, so a run's
+    conclusion stands for its jobs."""
+    latest: dict[str, dict] = {}
+    for x in sorted(_api(r, env, f"actions/runs?head_sha={head}&per_page=100")[
+            "workflow_runs"], key=lambda x: x["id"]):
+        latest[x["name"]] = x
+    return [_run_check(x) for x in latest.values()]
+
+
+def _run_check(x: dict) -> Check:
+    """A finished run's conclusion; skipped and neutral are green for any
+    workflow but ci, which must succeed."""
     done = x["conclusion"] if x["status"] == "completed" else ""
-    # skipped and neutral are green for a check, not for the ci run
-    return Check("ci", done if done == "success" or ci_verdict(done) != "green" else "",
-                 x["html_url"])
-
-
-def _check_runs(r: Run, head: str, env: dict) -> list[Check]:
-    return [Check(c["name"], c["conclusion"] if c["status"] == "completed" else "",
-                  c["html_url"])
-            for c in _api(r, env, f"commits/{head}/check-runs?per_page=100")["check_runs"]]
+    strict = x["name"] == "ci" and done != "success" and ci_verdict(done) == "green"
+    return Check(x["name"], "" if strict else done, x["html_url"])
 
 
 def _statuses(r: Run, head: str, env: dict) -> list[Check]:
