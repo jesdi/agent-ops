@@ -37,6 +37,8 @@ from dispatcher.infra_config import add_project_text, project_block
 from dispatcher.pr_poll import ci_verdict
 from dispatcher.state import state_lock, write_json_atomic
 
+CHECKOUT = Path(__file__).resolve().parents[1]   # the executing agent-ops checkout
+
 RECORDS_DIR = "onboarding"
 INFRA_REPO = "jesdi/agent-ops-infra"
 INFRA_TARGETS = "config/targets.yaml"
@@ -66,6 +68,18 @@ class Run:
     sh: Sh
     get: Get
     now: datetime
+    _builder: list = field(default_factory=list)   # the run's builder, once read
+
+
+def _builder(r: Run) -> str:
+    """The executing agent-ops checkout's revision, read once per run whatever
+    the cwd; an unreadable or empty one fails the step (retried next run)."""
+    if not r._builder:
+        r._builder.append(r.sh(["git", "-C", str(CHECKOUT), "rev-parse", "HEAD"]).strip())
+    if not r._builder[0]:
+        r._builder.clear()
+        raise RuntimeError("the running agent-ops revision is unknown")
+    return r._builder[0]
 
 
 # -- the record ---------------------------------------------------------------
@@ -116,6 +130,7 @@ class InfraPr:
     base: str
     revision: str
     pushed_at: str
+    builder: str = ""      # the agent-ops revision that pushed it; "" is unknown
 
 
 @dataclass
@@ -640,8 +655,9 @@ def _config_pr(r: Run, rec: Record) -> Outcome:
 def _pr_current(r: Run, rec: Record, pr: OpenPr, env: dict) -> bool:
     """The open PR is the record's push of its revision onto today's main."""
     ip = rec.infra_pr
-    return ip is not None and (pr.head, ip.revision, ip.base) == (
-        ip.head, rec.revision, _git(r, env, "rev-parse", "origin/main").strip())
+    return ip is not None and (pr.head, ip.revision, ip.base, ip.builder) == (
+        ip.head, rec.revision, _git(r, env, "rev-parse", "origin/main").strip(),
+        _builder(r))
 
 
 def _push_pr(r: Run, rec: Record, main: str, pr: OpenPr | None, env: dict) -> Outcome:
@@ -650,15 +666,16 @@ def _push_pr(r: Run, rec: Record, main: str, pr: OpenPr | None, env: dict) -> Ou
     if isinstance(pushed, Outcome):
         return pushed
     number, url = (pr.number, pr.url) if pr else _create_pr(r, rec, env)
-    rec.infra_pr = InfraPr(number, url, *pushed, rec.revision, r.now.isoformat())
+    rec.infra_pr = InfraPr(number, url, pushed[0], pushed[1], rec.revision,
+                           r.now.isoformat(), pushed[2])
     _resource(rec, "infra-pr", url)
     return Outcome(StepState.VERIFIED, link=url)
 
 
 def _push(r: Run, rec: Record, main: str, env: dict,
-          link: str) -> tuple[str, str] | Outcome:
+          link: str) -> tuple[str, str, str] | Outcome:
     """onboard/<project> rebuilt on infra main and pushed over the head the
-    record names (a lease), never over anyone else's. Its head and base.
+    record names (a lease), never over anyone else's. Its head, base and builder.
     A head the record doesn't name is adopted when it is this very commit,
     pushed before a crash lost the record's save (#210: a crash between
     create and record still finds the resource); otherwise it blocks, with
@@ -668,18 +685,19 @@ def _push(r: Run, rec: Record, main: str, env: dict,
     if isinstance(built, Outcome):
         return built
     head, base, tree = built
+    builder = _builder(r)   # unknown identity fails before anything is pushed or adopted
     ours = rec.infra_pr.head if rec.infra_pr else ""
     theirs = _git(r, env, "for-each-ref", "--format=%(objectname)",
                   f"refs/remotes/origin/{branch}").strip()
     if theirs != ours:
         if _git(r, env, "show", "-s", "--format=%P %T", theirs).split() == [base, tree]:
-            return theirs, base
+            return theirs, base, ""   # built by an unknown revision
         return blocked(f"{branch} on {INFRA_REPO} is at {theirs}, which this onboarding "
                        f"didn't push (it pushed {ours or 'nothing yet'}): review it, then "
                        f"delete the branch, or {ABANDON}", link)
     _git(r, env, "push", *([f"--force-with-lease={branch}:{ours}"] if ours else []),
          "origin", f"HEAD:refs/heads/{branch}")
-    return head, base
+    return head, base, builder
 
 
 def _commit(r: Run, rec: Record, main: str, env: dict) -> tuple[str, str, str] | Outcome:
@@ -769,11 +787,17 @@ def _rebuild_or_check(r: Run, rec: Record, env: dict) -> Outcome:
     """Rebuild the PR when infra main moved, else check it."""
     ip = rec.infra_pr
     main = _infra_main(r, env)
-    if _git(r, env, "rev-parse", "origin/main").strip() != ip.base:
+    builder = _builder(r)
+    moved = _git(r, env, "rev-parse", "origin/main").strip() != ip.base
+    # an adoption this run has no builder, and waits for the next run's rebuild
+    if moved or ip.builder != builder and ip.pushed_at != r.now.isoformat():
         pushed = _push(r, rec, main, env, ip.url)
         if isinstance(pushed, Outcome):
             return pushed
-        rec.infra_pr = InfraPr(ip.number, ip.url, *pushed, rec.revision, r.now.isoformat())
+        rec.infra_pr = InfraPr(ip.number, ip.url, pushed[0], pushed[1], rec.revision,
+                               r.now.isoformat(), pushed[2])
+        if not moved:
+            return _checked(r, rec, env)
         return waiting("infra main moved: the PR was rebuilt on it", ip.url)
     return _checked(r, rec, env)
 
