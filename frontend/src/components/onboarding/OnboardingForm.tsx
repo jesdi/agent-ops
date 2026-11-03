@@ -10,7 +10,8 @@ export const primary = `${button} border-ink bg-ink text-surface-raised`
 const inputClass = 'mt-1.5 w-full min-w-0 rounded-md border border-border bg-surface-raised px-3 py-2.5 text-ink'
 
 type Commands = NonNullable<OnboardingRequest['commands']>[number]
-type RepositoryDraft = Commands & { repo: string; id: number }
+type Detection = { original: string; proposal: RepositoryProposal; inspection?: RepositoryInspection }
+type RepositoryDraft = Commands & { repo: string; id: number; detection?: Detection }
 const emptyCommands = { setup_cmd: null, gate_cmd: null, verify_cmd: null, services: null }
 
 function Field({ label, hint, command, ...props }: {
@@ -66,13 +67,23 @@ function repositoryKey(spelling: string) {
   return spelling.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\/$/, '').replace(/\.git$/, '').toLowerCase()
 }
 
-function forRepository<T extends { repo: string }>(items: T[] | undefined, spelling: string): T | undefined {
-  return items?.find(item => repositoryKey(item.repo) === repositoryKey(spelling))
+function detectionFor(draft: RepositoryDraft): Detection | undefined {
+  if (!draft.detection) return undefined
+  const { original, proposal } = draft.detection
+  const aliases = [repositoryKey(original), repositoryKey(proposal.repo)]
+  return aliases.includes(repositoryKey(draft.repo)) ? draft.detection : undefined
 }
 
-function initialDraft(request?: OnboardingRequest): RepositoryDraft[] {
+// After resolution, proposal rows follow request order even when GitHub renamed a repository.
+// Keep that association on each draft row so removing or adding rows cannot reassign it.
+function initialDraft(request?: OnboardingRequest, proposal?: OnboardingProposal | null, inspection?: OnboardingView['inspection']): RepositoryDraft[] {
   if (!request) return [{ ...emptyCommands, repo: '', id: 0 }]
-  return request.repos.map((repo, id) => ({ ...emptyCommands, ...request.commands?.[id], repo, id }))
+  return request.repos.map((repo, id) => {
+    const resolved = proposal?.repositories[id]
+    const detection = resolved ? { original: repo, proposal: resolved,
+      inspection: inspection?.repositories?.find(item => item.repo === resolved.repo) } : undefined
+    return { ...emptyCommands, ...request.commands?.[id], repo, id, detection }
+  })
 }
 
 function Summary({ name, board, count }: { name: string; board: string; count: number }) {
@@ -97,7 +108,7 @@ export function OnboardingForm({ project = '', request, requestRevision, reposit
   const [name, setName] = useState(project)
   const [board, setBoard] = useState<string | null>(() => request?.board ? boardText(request.board) : null)
   const shownBoard = board ?? boardText(proposal?.board)
-  const [repos, setRepos] = useState(() => initialDraft(request))
+  const [repos, setRepos] = useState(() => initialDraft(request, proposal, inspection))
   const mutation = useMutation({ mutationFn: (body: OnboardingStartRequest) => api.startOnboarding(name, body), onSuccess: accepted => onSaved(name, accepted) })
   const update = (id: number, change: Partial<RepositoryDraft>) => setRepos(rows => rows.map(r => r.id === id ? { ...r, ...change } : r))
   const remove = (id: number) => setRepos(rows => rows.filter(r => r.id !== id))
@@ -117,7 +128,7 @@ export function OnboardingForm({ project = '', request, requestRevision, reposit
       </div></section>
       <section className={`${panel} space-y-5`}><div><h2 className="text-xl font-semibold">Repositories &amp; commands</h2><p className="mt-1 text-sm text-ink-muted">The box inspects each repository and suggests commands. You can enter known values now.</p></div>
         {repos.map((draft, index) => <RepositoryFields key={draft.id} draft={draft} number={index + 1} locked={repositoriesLocked}
-          proposal={forRepository(proposal?.repositories, draft.repo)} inspection={forRepository(inspection?.repositories, draft.repo)}
+          proposal={detectionFor(draft)?.proposal} inspection={detectionFor(draft)?.inspection}
           update={change => update(draft.id, change)} remove={repos.length > 1 && !repositoriesLocked ? () => remove(draft.id) : undefined} />)}
         {!repositoriesLocked && <button type="button" onClick={add} className={button}>Add repository</button>}
         {feedback}

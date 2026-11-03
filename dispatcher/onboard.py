@@ -340,21 +340,22 @@ def _rerun(r: Run, rec: Record, request: dict) -> str:
                 "targets.yaml by hand for now")
     if mode == "details" and _repo_keys(rec.request) != _repo_keys(request):
         return "request refused: the repositories can't change after confirm"
-    _retain_inspection(r, rec, request)
     rec.confirm_ready = False
     rec.request, rec.steps = request, [Step(n) for n in STEPS]
     return ""
 
 
-def _retain_inspection(r: Run, rec: Record, request: dict) -> None:
+def _retain_inspection(r: Run, rec: Record, resolved: list[dict]) -> None:
+    """Reconcile only after GitHub resolves spellings to stable repository IDs."""
     from dispatcher import onboarding_sessions
-    keys = {repo_key(x) for x in request["repos"]} if "inspect" in request else set()
+    repositories = {x["github_id"]: x for x in resolved}
     reports = rec.inspection.repositories
     for report in reports:
-        if repo_key(report.repo) not in keys and report.request_id:
+        if report.github_id in repositories:
+            report.repo = repositories[report.github_id]["repo"]
+        elif report.request_id:
             onboarding_sessions.withdraw(r.cfg.state_dir, report.request_id)
-    rec.inspection.repositories = [x for x in reports if repo_key(x.repo) in keys]
-
+    rec.inspection.repositories = [x for x in reports if x.github_id in repositories]
 
 
 def repo_key(spelling: str) -> str:
@@ -479,6 +480,7 @@ def _resolve(r: Run, rec: Record) -> Outcome:
     if "inspect" not in rec.request:
         if out := (_check_board(r, proposal["board"]) or _check_fits(r, proposal)):
             return out
+    _retain_inspection(r, rec, found if "inspect" in rec.request else [])
     rec.proposal, rec.revision = proposal, revision(proposal)
     return VERIFIED
 
@@ -643,9 +645,10 @@ def _inspection_board(rec: Record) -> dict | None:
 def _inspection_report(r: Run, rec: Record, repository: dict) -> inspection.RepositoryInspection:
     from dispatcher import onboarding_sessions
     for report in rec.inspection.repositories:
-        if report.repo == repository["repo"]:
+        if report.github_id == repository["github_id"]:
             return report
-    report = inspection.RepositoryInspection(repository["repo"], inspection.facts(repository["clone_path"]))
+    report = inspection.RepositoryInspection(repository["repo"], inspection.facts(repository["clone_path"]),
+                                             github_id=repository["github_id"])
     if rec.inspection.manual or not rec.request["inspect"]:
         report.skip()
     else:
@@ -674,10 +677,17 @@ def _skip_report(state_dir: str, report: inspection.RepositoryInspection) -> Non
 
 
 def inspection_view(rec: Record) -> dict:
-    """The operator's effective values; canonical inspection state stays internal."""
-    commands = dict(zip(_repo_keys(rec.request), rec.request["commands"]))
-    return {"repositories": [report.view(commands.get(repo_key(report.repo), {}), rec.request["board"])
+    """Join overrides to resolved repository IDs, independent of submitted aliases."""
+    commands = _resolved_commands(rec)
+    return {"repositories": [report.view(commands.get(report.github_id, {}), rec.request["board"])
                              for report in rec.inspection.repositories]}
+
+
+def _resolved_commands(rec: Record) -> dict[int, dict]:
+    if rec.step("resolve").state is not StepState.VERIFIED:
+        return {}
+    return {repository["github_id"]: command for repository, command in
+            zip(rec.proposal.get("repositories", []), rec.request["commands"])}
 
 
 def _apply_inspection(rec: Record) -> None:

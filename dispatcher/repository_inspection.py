@@ -81,6 +81,7 @@ class Draft:
 class RepositoryInspection:
     repo: str
     facts: Facts
+    github_id: int = 0
     draft: Draft = field(default_factory=Draft)
     state: Literal["waiting", "complete", "skipped"] = "waiting"
     request_id: str = ""
@@ -216,16 +217,32 @@ def _command(raw: object, root: Path) -> Finding | None:
 
 
 def _references(command: str, evidence: str, root: Path) -> bool:
-    """Validate manifests before checking exact repository-relative path tokens."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
+    """Accept one supported invocation whose target is the supplied evidence."""
+    tokens = _command_words(command)
+    if not tokens:
         return False
     if Path(evidence).name == 'Makefile':
         return _make_command(tokens, read(root, evidence), evidence)
     if Path(evidence).name == 'package.json':
-        return evidence == 'package.json' and _package_command(command, _document(root, evidence, json.loads))
-    return evidence in [token.removeprefix('./') for token in tokens]
+        return evidence == 'package.json' and _package_command(tokens, _document(root, evidence, json.loads))
+    return _file_command(tokens, evidence)
+
+
+def _command_words(command: str) -> list[str]:
+    # Shell composition and expansion are outside this deliberately small
+    # grammar, including quoted metacharacters. The operator can enter them.
+    if re.search(r'[;&|<>$`(){}\[\]*?~#\x00\n\r]', command):
+        return []
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+
+def _file_command(tokens: list[str], evidence: str) -> bool:
+    if tokens[0] in ('python', 'python3', 'node', 'bash', 'sh', 'ruby', 'perl'):
+        return len(tokens) > 1 and tokens[1].removeprefix('./') == evidence
+    return '/' in tokens[0] and tokens[0].removeprefix('./') == evidence
 
 
 def _make_command(tokens: list[str], contents: str, evidence: str) -> bool:
@@ -242,14 +259,27 @@ def _make_command(tokens: list[str], contents: str, evidence: str) -> bool:
                for target in args)
 
 
-def _package_command(command: str, manifest: dict) -> bool:
-    match = re.search(r'(?:^|\s)(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?([A-Za-z0-9_.:-]+)', command)
-    if not match:
+_PACKAGE_BUILTINS = {
+    'npm': {'install', 'ci'}, 'pnpm': {'install'},
+    'yarn': {'install'}, 'bun': {'install'},
+}
+
+
+def _package_command(tokens: list[str], manifest: dict) -> bool:
+    if len(tokens) < 2 or tokens[0] not in _PACKAGE_BUILTINS:
         return False
-    if match[1] in ('install', 'ci'):
+    manager, action = tokens[:2]
+    if action == 'run':
+        return len(tokens) > 2 and _declared_script(tokens[2], manifest)
+    if action in _PACKAGE_BUILTINS[manager]:
         return True
+    return (manager == 'npm' and action in ('test', 'start', 'stop', 'restart')
+            and _declared_script(action, manifest))
+
+
+def _declared_script(name: str, manifest: dict) -> bool:
     scripts = manifest.get('scripts', {})
-    return isinstance(scripts, dict) and match[1] in scripts
+    return isinstance(scripts, dict) and name in scripts
 
 
 def _draft_names(raw: object, allowed: set | None, exclude: set | None = None) -> list[Finding]:

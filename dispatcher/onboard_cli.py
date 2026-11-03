@@ -99,8 +99,14 @@ def _current_commands(rec):
     if rec is None:
         return {}
     requested = dict(zip(map(onboard.repo_key, rec.request["repos"]), rec.request["commands"]))
-    return {onboard.repo_key(item["repo"]): _command_defaults(item, requested.get(onboard.repo_key(item["repo"]), {}))
-            for item in rec.proposal.get("repositories", [])}
+    if rec.step("resolve").state is not onboard.StepState.VERIFIED:
+        return requested
+    result = {}
+    for spelling, proposed in zip(rec.request["repos"], rec.proposal.get("repositories", [])):
+        key = onboard.repo_key(spelling)
+        defaults = _command_defaults(proposed, requested[key])
+        result[key] = result[onboard.repo_key(proposed["repo"])] = defaults
+    return result
 
 
 def _command_defaults(proposed: dict, requested: dict) -> dict:

@@ -500,3 +500,66 @@ it('uses detected provenance when a selected service has no draft reason', async
   expect(review.getByText('postgres — selected')).toBeInTheDocument()
   expect(review.getByText('rule: compose.yaml')).toBeInTheDocument()
 })
+
+it('keeps renamed repository suggestions attached after another row is removed and preserves manual overrides', async () => {
+  let saved: unknown
+  const renamed = { ...inspected, request: { ...inspected.request, repos: ['jesdi/unused', 'jesdi/old-analytics'],
+    commands: [{ setup_cmd: null, gate_cmd: null, verify_cmd: null, services: null }, inspected.request.commands[0]] },
+    proposal: { ...inspected.proposal, repositories: [{ ...inspected.proposal.repositories[0]!, repo: 'jesdi/unused', github_id: 999, gate_cmd: 'make other' }, inspected.proposal.repositories[0]!] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(renamed)),
+    http.post('/api/onboarding/analytics', async ({ request }) => {
+      saved = await request.json()
+      return HttpResponse.json({ status: 'pending', intent: 'alias-edited' }, { status: 202 })
+    }))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Remove repository 1' }))
+  expect(screen.getByLabelText('GitHub repository')).toHaveValue('jesdi/old-analytics')
+  expect(screen.getByLabelText('Gate command')).toHaveValue('make gate')
+  expect(screen.getByText('draft: Makefile target gate')).toBeInTheDocument()
+  expect(screen.getByRole('checkbox', { name: 'postgres' })).toBeChecked()
+  await userEvent.clear(screen.getByLabelText('Gate command'))
+  await userEvent.type(screen.getByLabelText('Gate command'), 'make my-gate')
+  await userEvent.click(screen.getByRole('button', { name: 'Save details' }))
+  await waitFor(() => expect(saved).toMatchObject({ repos: ['jesdi/old-analytics'],
+    commands: [{ setup_cmd: null, gate_cmd: 'make my-gate', verify_cmd: null, services: null }] }))
+})
+
+it('does not borrow a renamed repository suggestion when its row is changed to a different repository', async () => {
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json({ ...inspected,
+    request: { ...inspected.request, repos: ['jesdi/old-analytics'] } })))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  expect(screen.getByLabelText('Gate command')).toHaveValue('make gate')
+  await userEvent.clear(screen.getByLabelText('GitHub repository'))
+  await userEvent.type(screen.getByLabelText('GitHub repository'), 'jesdi/unrelated')
+  expect(screen.getByLabelText('Gate command')).toHaveValue('')
+  expect(screen.queryByText('draft: Makefile target gate')).not.toBeInTheDocument()
+  expect(screen.queryByRole('checkbox', { name: 'postgres' })).not.toBeInTheDocument()
+})
+
+it('does not reuse a removed row association for a newly added repository', async () => {
+  const two = { ...inspected, request: { ...inspected.request, repos: ['jesdi/unused', 'jesdi/old-analytics'],
+    commands: [{ setup_cmd: null, gate_cmd: null, verify_cmd: null, services: null }, inspected.request.commands[0]] },
+    proposal: { ...inspected.proposal, repositories: [{ ...inspected.proposal.repositories[0]!, repo: 'jesdi/unused', github_id: 999, gate_cmd: 'make other' }, inspected.proposal.repositories[0]!] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(two)))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Remove repository 2' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Add repository' }))
+  const added = within(screen.getByRole('group', { name: 'Repository 2' }))
+  await userEvent.type(added.getByLabelText('GitHub repository'), 'jesdi/old-analytics')
+  expect(added.getByLabelText('Gate command')).toHaveValue('')
+  expect(added.queryByRole('checkbox', { name: 'postgres' })).not.toBeInTheDocument()
+})
+
+it('does not associate a new request with a stale proposal after repository resolution fails', async () => {
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json({ ...inspected,
+    request: { ...inspected.request, repos: ['jesdi/missing'] },
+    steps: [{ name: 'resolve', state: 'blocked', detail: 'Repository could not be found', link: '', since: '' }] })))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  expect(screen.getByLabelText('Gate command')).toHaveValue('')
+  expect(screen.queryByText('draft: Makefile target gate')).not.toBeInTheDocument()
+  expect(screen.queryByRole('checkbox', { name: 'postgres' })).not.toBeInTheDocument()
+})

@@ -38,7 +38,7 @@ test('inspection fills the worksheet and preserves an operator override through 
         fields: { ...report.fields, gate_cmd: edited ? { value: 'make gate-ci', source: 'you' } : report.fields.gate_cmd } }] },
       can_confirm: inspected, revision: edited ? 'proposal-edited' : 'proposal-start', confirmed_revision: '',
       awaiting: inspected ? 'confirm' : '', notice: '', pending: [], pr_url: '', updated_at: '',
-      steps: [{ name: 'inspect', state: inspected ? 'verified' : 'waiting',
+      steps: [{ name: 'resolve', state: 'verified', detail: '', link: '', since: '' }, { name: 'inspect', state: inspected ? 'verified' : 'waiting',
         detail: inspected ? 'Repository inspected' : 'waiting for a free execution unit (box full: 2/2)', link: '', since: '' }],
     } })
   })
@@ -70,4 +70,29 @@ test('inspection fills the worksheet and preserves an operator override through 
   await review.getByRole('button', { name: 'Confirm proposal', exact: true }).click()
   expect(confirmed).toEqual({ revision: 'proposal-edited' })
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(page.viewportSize()!.width)
+})
+
+test('a renamed repository keeps its detected worksheet values under the requested old spelling', async ({ page }) => {
+  const commands = { setup_cmd: null, gate_cmd: null, verify_cmd: null, services: null }
+  await page.route('**/api/onboarding/analytics', route => route.fulfill({ json: {
+    project: 'analytics', status: 'open', request_revision: 'request-alias', edit_mode: 'repositories',
+    request: { repos: ['example/old-name'], board: null, commands: [commands], inspect: true },
+    proposal: { name: 'analytics', paused: true, board: { owner: 'example', number: 4 }, repositories: [{
+      name: 'new-name', repo: 'example/new-name', github_id: 202, clone_path: '/repos/new-name', worktrees_path: '/worktrees/new-name',
+      setup_cmd: '', gate_cmd: 'make gate', verify_cmd: '', services: ['postgres'],
+    }] },
+    inspection: { repositories: [{ repo: 'example/new-name', state: 'complete', detail: '', request_id: 'alias-inspection',
+      fields: { setup_cmd: { value: '', source: '' }, gate_cmd: { value: 'make gate', source: 'draft: Makefile target gate' }, verify_cmd: { value: '', source: '' } },
+      board: { value: { owner: 'example', number: 4 }, source: 'rule: .backlog/project-meta.json' },
+      services: [{ value: 'postgres', source: 'rule: compose.yaml' }], selected_services: [], secrets: [], skills: [],
+    }] },
+    can_confirm: true, revision: 'proposal-alias', confirmed_revision: '', awaiting: 'confirm', notice: '', pending: [], pr_url: '', updated_at: '',
+    steps: [{ name: 'resolve', state: 'verified', detail: '', link: '', since: '' }],
+  } }))
+  await page.goto('/onboarding/projects/analytics')
+  await page.getByRole('button', { name: 'Edit details' }).click()
+  await expect(page.getByLabel('GitHub repository', { exact: true })).toHaveValue('example/old-name')
+  await expect(page.getByLabel('Gate command', { exact: true })).toHaveValue('make gate')
+  await expect(page.getByText('draft: Makefile target gate')).toBeVisible()
+  await expect(page.getByRole('checkbox', { name: 'postgres' })).toBeChecked()
 })
