@@ -30,7 +30,7 @@ from dispatcher.config import (Config, Repository, apply_stored_models,
                                referenced_providers, routed_providers, stranded)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
-from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, loops,
+from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, labels, loops,
                         messages, pr_poll, priority, queue_ops, relogin, tmux_migration,
                         triage, onboarding_sessions)
 from dispatcher.board import BoardError
@@ -2022,6 +2022,21 @@ def _reopened(stale: TaskState, pass_started: str) -> bool:
             and not (pass_started and stale.updated_at >= pass_started))
 
 
+def _reconcile_boards(cfg: Config, deps: Deps) -> None:
+    """Every project's board, paused ones too, gets a card for each new open
+    issue and its repositories the label set (#230 D8). A failure skips
+    that project until the next pass."""
+    tracks = labels.tracks(cfg)
+    for name, members in by_project(cfg.repositories).items():
+        try:
+            lines = deps.github.reconcile_board(members, tracks)
+        except Exception as exc:  # this project only: the pass goes on
+            print(f"[warn] {name}: board reconcile failed — {exc}", file=sys.stderr)
+            continue
+        for line in lines:
+            print(f"[board] {name}: {line}")
+
+
 def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[TaskState],
                admit: Admit, order: Order, pass_started: str):
     """One project's ranked candidates this pass may claim, across its member
@@ -2660,6 +2675,8 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
             cfg, deps, admit, order, config_path,
             free=_box_free(eff, load_all(cfg.state_dir)))
         eff = replace(eff, capacity=max(0, eff.capacity - launched))
+    if not dry_run:
+        _reconcile_boards(cfg, deps)
     # Phase 2: new claims, with whatever capacity phase 1 and inspection left.
     if not claims_paused:
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
