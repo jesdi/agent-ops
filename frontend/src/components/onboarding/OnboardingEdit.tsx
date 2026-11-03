@@ -27,7 +27,7 @@ export function OnboardingEdit({ view, updatedAt, close }: { view: OnboardingVie
     receipt.clear()
     setGeneration(value => value + 1)
   }
-  return <div className="space-y-4"><OnboardingForm key={generation} project={view.project} request={base.request} requestRevision={base.request_revision}
+  return <div className="space-y-4"><OnboardingForm key={generation} project={view.project} request={base.request} requestRevision={base.request_revision} proposal={base.proposal} inspection={base.inspection}
     repositoriesLocked={view.edit_mode !== 'repositories'} disabled={receipt.pending || view.edit_mode === 'none'} onSaved={(_project, accepted) => receipt.remember(accepted, view.project)}
     feedback={<EditFeedback receipt={receipt.accepted} pending={receipt.pending} view={view} />} />
     <div className="flex flex-wrap justify-end gap-3"><span className="w-full text-right text-xs text-ink-muted">Reloading replaces your draft with the latest stored details.</span>

@@ -154,7 +154,7 @@ def test_a_green_infra_pr_asks_you_to_merge_it_then_a_rerun_carries_on(
     engine(infra_routes(**MERGED))
     add(box, Box(box), *ADD)
     rec = record(tmp_path)
-    assert [s["state"] for s in rec["steps"]][4:6] == ["verified", "waiting"]
+    assert [s["state"] for s in rec["steps"] if s["name"] in ("config-merge", "deploy")] == ["verified", "waiting"]
 
 
 def test_a_refused_rerun_shows_the_engines_reason(tmp_path, box, monkeypatch, capsys):

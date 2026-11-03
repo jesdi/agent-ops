@@ -118,6 +118,8 @@ export const api = {
     post<OnboardingAccepted>(`/onboarding/${encodeURIComponent(project)}`, body),
   confirmOnboarding: (project: string, revision: string) =>
     post<IntentAccepted>(`/onboarding/${encodeURIComponent(project)}/confirm`, { revision }),
+  skipOnboardingInspection: (project: string, revision: string) =>
+    post<OnboardingAccepted>(`/onboarding/${encodeURIComponent(project)}/skip-inspection`, { revision }),
   resumeOnboarding: (project: string) =>
     request<IntentAccepted>(`/onboarding/${encodeURIComponent(project)}/resume`, { method: 'POST' }),
   boardSnapshot: () => request<components['schemas']['BoardSnapshot']>('/board/snapshot'),

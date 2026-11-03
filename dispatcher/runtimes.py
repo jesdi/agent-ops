@@ -47,6 +47,22 @@ class Runtime:
         """One-shot shell line; model and effort are shell-quoted here."""
         return f"{self.cli} {self.headless_args(prompt, shlex.quote(model), shlex.quote(effort) if effort else '')}"
 
+    def inspection(self, model: str, effort: str) -> list[str]:
+        """A text-only turn in a clean home; no repository tools or customizations."""
+        if self.cli == 'claude':
+            return ['claude', '-p', '--model', model, '--tools', '',
+                    '--safe-mode', '--restricted', '--strict-mcp-config',
+                    '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
+                    '--no-session-persistence', '--output-format', 'text',
+                    *(['--effort', effort] if effort else [])]
+        disabled = ('shell_tool', 'unified_exec', 'code_mode', 'code_mode_host',
+                    'apps', 'plugins', 'hooks', 'multi_agent', 'multi_agent_v2')
+        return ['codex', 'exec', '--model', model, '--sandbox', 'read-only',
+                '--ephemeral', '--skip-git-repo-check',
+                '-c', 'notify=[]', '-c', 'web_search="disabled"',
+                *[arg for feature in disabled for arg in ('--disable', feature)],
+                *(['-c', f'model_reasoning_effort="{effort}"'] if effort else []), '-']
+
     def resume(self, session_id: str, message: str) -> str:
         """The args a launch takes to continue with the (quoted) message."""
         return " ".join(filter(None, (self.resume_args(session_id), message)))

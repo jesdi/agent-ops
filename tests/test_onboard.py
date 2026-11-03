@@ -455,7 +455,7 @@ def test_new_commands_after_confirm_go_back_to_confirm_and_update_the_pr(
     rec = record(tmp_path)
     assert rec["notice"] == "" and rec["awaiting"] == "confirm"
     assert rec["revision"] != first["revision"]
-    assert [s["state"] for s in rec["steps"]][2:] == ["blocked"] + ["pending"] * 4
+    assert [s["state"] for s in rec["steps"] if s["name"] not in ("resolve", "clone", "inspect")] == ["blocked"] + ["pending"] * 4
     intent(tmp_path, "confirm", {"revision": rec["revision"]}, epoch_ms=7000)
     sh = FakeSh(infra_routes(open_prs=json.dumps(
         [{"number": 7, "url": PR_URL, "headRefOid": "head1"}]), **NO_CI_RUN))

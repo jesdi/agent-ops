@@ -1,0 +1,214 @@
+"""Repository inspection through the onboarding unit's durable intent interface."""
+import json
+from pathlib import Path
+
+from dispatcher import onboard
+from tests.test_onboard import FakeSh, box, run, state
+
+
+def start(tmp_path, **changes):
+    request = {"repos": ["jesdi/analytics"], "board": None,
+               "commands": [{"gate_cmd": None}], "inspect": True, **changes}
+    onboard.write_intent(state(tmp_path), "add", "analytics", request, "agent", 1000)
+
+
+def test_start_without_board_or_commands_reads_repository_facts(tmp_path, box):
+    def clone(argv, cwd, env):
+        root = Path(argv[-1])
+        (root / '.git').mkdir(parents=True)
+        (root / '.backlog').mkdir()
+        (root / '.backlog/project-meta.json').write_text(json.dumps({"owner": "jesdi", "projectNumber": 4}))
+        (root / 'compose.yaml').write_text('services:\n  postgres:\n    image: postgres\n')
+        (root / '.env.example').write_text('API_TOKEN=do-not-copy-this-value\n')
+        (root / 'Makefile').write_text('gate:\n\tpytest\n')
+        return ''
+    start(tmp_path)
+    run(box, FakeSh({'git clone': clone}))
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert rec.step('inspect').state == onboard.StepState.WAITING
+    assert rec.proposal['board'] == {'owner': 'jesdi', 'number': 4}
+    report = rec.inspection['repositories'][0]
+    assert report['services'] == [{'value': 'postgres', 'source': 'rule: compose.yaml'}]
+    assert report['secrets'] == [{'value': 'API_TOKEN', 'source': 'rule: .env.example'}]
+    assert 'do-not-copy-this-value' not in json.dumps(rec.inspection)
+    assert not onboard.can_confirm(rec)
+
+
+def test_skip_then_supply_gate_and_board_reaches_confirm(tmp_path, box):
+    start(tmp_path)
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    onboard.write_intent(state(tmp_path), 'skip-inspection', 'analytics',
+                         {'revision': rec.revision}, 'agent', 1001)
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert rec.step('inspect').state == onboard.StepState.VERIFIED
+    assert not onboard.can_confirm(rec)
+    start(tmp_path, board={'owner': 'jesdi', 'number': 4}, commands=[{'gate_cmd': 'make gate'}])
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert onboard.can_confirm(rec)
+    assert rec.awaiting == 'confirm'
+    assert rec.inspection['repositories'][0]['fields']['gate_cmd'] == {'value': 'make gate', 'source': 'you'}
+
+
+def finish(tmp_path, box, rec, monkeypatch, result=None, error=''):
+    from dispatcher import config, onboarding_sessions
+    class Tab:
+        def run(self, command):
+            return True
+    monkeypatch.setattr(onboarding_sessions.herdr.Tab, 'ensure', lambda *args: Tab())
+    onboarding_sessions.tick(config.load_config(box), None, lambda _: True,
+                             lambda xs: xs, str(box), free=1)
+    request_id = rec.inspection['repositories'][0]['request_id']
+    onboarding_sessions.finish(state(tmp_path), request_id, result=result, error=error)
+
+
+def test_inspection_reports_declared_skill_names(tmp_path, box):
+    def clone(argv, cwd, env):
+        root = Path(argv[-1])
+        (root / '.git').mkdir(parents=True)
+        (root / '.my-skills.json').write_text(json.dumps({'schemaVersion': 1, 'skills': {'tdd': {'version': '1'}}}))
+        return ''
+    start(tmp_path)
+    run(box, FakeSh({'git clone': clone}))
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert rec.inspection['repositories'][0]['skills'] == ['tdd']
+
+
+def test_cli_can_start_inspection_without_board_or_command_prompts(tmp_path, box, monkeypatch):
+    from dispatcher import onboard_cli
+    monkeypatch.setattr('getpass.getuser', lambda: 'agent')
+    monkeypatch.setattr('builtins.input', lambda *_: (_ for _ in ()).throw(AssertionError('unexpected prompt')))
+    def kick(*args, **kwargs):
+        run(box, FakeSh())
+    assert onboard_cli.main(['project', 'add', 'analytics', 'jesdi/analytics', '--config', str(box)], sh=kick) == 0
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert rec.step('inspect').state == onboard.StepState.WAITING
+
+
+def test_draft_commands_and_services_reach_confirm_and_config(tmp_path, box, monkeypatch):
+    def clone(argv, cwd, env):
+        root = Path(argv[-1])
+        (root / '.git').mkdir(parents=True)
+        (root / 'Makefile').write_text('gate:\n\tpytest\n')
+        (root / 'compose.yaml').write_text('services:\n  postgres: {}\n')
+        return ''
+    start(tmp_path, board={'owner': 'jesdi', 'number': 4})
+    run(box, FakeSh({'git clone': clone}))
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    finish(tmp_path, box, rec, monkeypatch, {
+        'gate_cmd': {'value': 'make gate', 'reason': 'Makefile target gate', 'evidence': 'Makefile'},
+        'services': [{'value': 'postgres', 'reason': 'tests use postgres'}]})
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert rec.awaiting == 'confirm' and onboard.can_confirm(rec)
+    assert rec.proposal['repositories'][0]['gate_cmd'] == 'make gate'
+    assert rec.proposal['repositories'][0]['services'] == ['postgres']
+    from dispatcher.infra_config import project_block
+    assert 'postgres' in project_block(rec.proposal)
+    assert rec.inspection['repositories'][0]['fields']['gate_cmd']['source'] == 'draft: Makefile target gate'
+
+
+def test_invalid_draft_warns_and_does_not_guess_a_gate(tmp_path, box, monkeypatch):
+    start(tmp_path, board={'owner': 'jesdi', 'number': 4})
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    finish(tmp_path, box, rec, monkeypatch, {'gate_cmd': {'value': 'make imaginary', 'reason': 'guess', 'evidence': 'Makefile'}})
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert rec.step('inspect').state == onboard.StepState.VERIFIED
+    assert 'draft unavailable:' in rec.step('inspect').detail
+    assert not onboard.can_confirm(rec)
+
+
+def test_conflicting_repository_boards_require_operator_choice(tmp_path, box):
+    def clone(argv, cwd, env):
+        root = Path(argv[-1])
+        (root / '.git').mkdir(parents=True)
+        (root / '.backlog').mkdir()
+        number = 4 if root.name.startswith('analytics') else 5
+        (root / '.backlog/project-meta.json').write_text(json.dumps({'owner': 'jesdi', 'projectNumber': number}))
+        return ''
+    start(tmp_path, repos=['jesdi/analytics', 'jesdi/web'], commands=[{}, {}])
+    from tests.test_onboard import gh_repo
+    run(box, FakeSh({'git clone': clone, 'gh api repos/jesdi/web': gh_repo(203, 'jesdi/web'), 'remote get-url origin': lambda argv, cwd, env: 'https://github.com/jesdi/' + Path(argv[2]).name.removesuffix('.partial') + '.git'}))
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert len(rec.inspection['repositories']) == 2, rec.steps
+    assert rec.proposal['board'] is None
+
+
+def test_late_draft_keeps_operator_commands_including_explicit_empty(tmp_path, box, monkeypatch):
+    def clone(argv, cwd, env):
+        root = Path(argv[-1])
+        (root / '.git').mkdir(parents=True)
+        (root / 'Makefile').write_text('gate:\n\tpytest\nsetup:\n\tpip install .\n')
+        return ''
+    start(tmp_path, board={'owner': 'jesdi', 'number': 4})
+    run(box, FakeSh({'git clone': clone}))
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    start(tmp_path, board={'owner': 'jesdi', 'number': 4}, commands=[{'gate_cmd': 'custom gate', 'setup_cmd': ''}])
+    run(box, FakeSh())
+    finish(tmp_path, box, rec, monkeypatch, {
+        'gate_cmd': {'value': 'make gate', 'reason': 'gate target', 'evidence': 'Makefile'},
+        'setup_cmd': {'value': 'make setup', 'reason': 'setup target', 'evidence': 'Makefile'}})
+    run(box, FakeSh())
+    current = onboard.load_record(state(tmp_path), 'analytics')
+    assert current.proposal['repositories'][0]['gate_cmd'] == 'custom gate'
+    assert current.proposal['repositories'][0]['setup_cmd'] == ''
+    assert current.inspection['repositories'][0]['fields']['setup_cmd']['source'] == 'you'
+
+
+def test_failed_draft_is_a_warning_and_manual_input_remains(tmp_path, box, monkeypatch):
+    start(tmp_path, board={'owner': 'jesdi', 'number': 4}, commands=[{'gate_cmd': 'make gate'}])
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    finish(tmp_path, box, rec, monkeypatch, error='model unavailable')
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert rec.step('inspect').state == onboard.StepState.VERIFIED
+    assert rec.step('inspect').detail == 'draft unavailable: model unavailable'
+    assert onboard.can_confirm(rec)
+
+
+def test_operator_cannot_confirm_a_service_not_found_in_compose(tmp_path, box):
+    start(tmp_path, board={'owner': 'jesdi', 'number': 4},
+          commands=[{'gate_cmd': 'make gate', 'services': ['invented']}])
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    onboard.write_intent(state(tmp_path), 'skip-inspection', 'analytics', {'revision': rec.revision}, 'agent', 1001)
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert not onboard.can_confirm(rec)
+    assert 'services not found in Compose files: invented' in rec.step('confirm').detail
+
+
+def test_removed_repository_request_is_withdrawn(tmp_path, box):
+    from dispatcher import onboarding_sessions
+    from tests.test_onboard import gh_repo
+    start(tmp_path)
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    old = rec.inspection['repositories'][0]['request_id']
+    start(tmp_path, repos=['jesdi/web'])
+    run(box, FakeSh({'gh api repos/jesdi/web': gh_repo(203, 'jesdi/web'),
+                     'remote get-url origin': 'https://github.com/jesdi/web.git'}))
+    assert onboarding_sessions.status(state(tmp_path), old)['state'] == 'withdrawn'
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert [x['repo'] for x in rec.inspection['repositories']] == ['jesdi/web']
+
+
+def test_nonexistent_target_is_rejected_even_when_makefile_exists(tmp_path, box, monkeypatch):
+    def clone(argv, cwd, env):
+        root = Path(argv[-1])
+        (root / '.git').mkdir(parents=True)
+        (root / 'Makefile').write_text('real:\n\tpytest\n')
+        return ''
+    start(tmp_path)
+    run(box, FakeSh({'git clone': clone}))
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    finish(tmp_path, box, rec, monkeypatch, {'gate_cmd': {'value': 'make imaginary', 'reason': 'guess', 'evidence': 'Makefile'}})
+    run(box, FakeSh())
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    assert rec.proposal['repositories'][0]['gate_cmd'] == ''
+    assert rec.step('inspect').detail.startswith('draft unavailable:')

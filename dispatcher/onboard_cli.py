@@ -1,10 +1,9 @@
-"""`agent-ops project add <name> <repo>... --board owner/number`: the
-terminal front end of the onboarding engine (dispatcher.onboard). Run on the
-box as `agent`: it asks for each repository's commands (piped stdin works
-too), writes an `add` intent carrying the request, starts agent-ops-onboard
-(the call returns when the oneshot run ends) and prints the record. The
-engine alone decides what a rerun does; when it awaits confirm, this asks
-and writes a `confirm` intent naming the revision shown."""
+"""Terminal onboarding: inspect first, then review or fill commands by hand.
+
+Run on the box as `agent`. The unit owns progress; this client writes durable
+intents and displays its record. `--manual` prompts immediately and skips a
+pending draft. A later invocation offers detected commands as editable defaults.
+"""
 from __future__ import annotations
 
 import argparse
@@ -39,7 +38,8 @@ def _parser() -> argparse.ArgumentParser:
         "add", help="onboard a project: it ends merged, deployed, visible and paused")
     add.add_argument("name", type=_slug)
     add.add_argument("repos", nargs="+", metavar="repo")
-    add.add_argument("--board", type=_board, required=True, help="owner/number")
+    add.add_argument("--board", type=_board, help="owner/number")
+    add.add_argument("--manual", action="store_true", help="fill commands by hand without waiting for a draft")
     add.add_argument("--config", default=config.default_config_path())
     return parser
 
@@ -54,9 +54,11 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
     if existing and existing.status == "complete":
         _show(existing, "already onboarded")  # informational: no prompts, no writes
         return 0
+    if args.manual and existing and existing.request.get("inspect"):
+        _write(state_dir, "skip-inspection", args.name, {"revision": existing.revision})
     _write(state_dir, "add", args.name, _request(args, existing))
     rec = _kick(sh, state_dir, args.name)
-    if rec.awaiting == "confirm" and _yes(rec):
+    if rec.awaiting == "confirm" and onboard.can_confirm(rec) and _yes(rec):
         _write(state_dir, "confirm", args.name, {"revision": rec.revision})
         _kick(sh, state_dir, args.name)
     return 0
@@ -73,11 +75,32 @@ def _yes(rec: onboard.Record) -> bool:
 def _request(args: argparse.Namespace, rec: onboard.Record | None) -> dict:
     """The request of this run. A repository already in the record offers
     its commands as the answers Enter keeps."""
-    current = dict(zip(map(onboard.repo_key, rec.request["repos"]),
-                       rec.request["commands"])) if rec else {}
+    if not args.manual and (rec is None or rec.awaiting != "confirm"):
+        return _inspection_request(args, rec)
+    current = _current_commands(rec)
+    board_value = args.board or (rec.proposal.get("board") if rec else None)
+    if not board_value:
+        board_value = _board(_ask("GitHub board", "", "owner/number"))
+    result = {"repos": args.repos, "board": board_value,
+              "commands": [_commands(repo, current.get(onboard.repo_key(repo), {}))
+                           for repo in args.repos]}
+    if rec and rec.request.get("inspect"):
+        result["inspect"] = True
+    return result
+
+
+def _inspection_request(args, rec):
+    if rec and list(map(onboard.repo_key, args.repos)) == list(map(onboard.repo_key, rec.request["repos"])):
+        return {**rec.request, "board": args.board or rec.request["board"]}
     return {"repos": args.repos, "board": args.board,
-            "commands": [_commands(repo, current.get(onboard.repo_key(repo), {}))
-                         for repo in args.repos]}
+            "commands": [{} for _ in args.repos], "inspect": True}
+
+
+def _current_commands(rec):
+    if rec is None:
+        return {}
+    return {onboard.repo_key(item["repo"]): item
+            for item in rec.proposal.get("repositories", [])}
 
 
 def _commands(repo: str, current: dict) -> dict:
@@ -86,7 +109,10 @@ def _commands(repo: str, current: dict) -> dict:
     out = {"setup_cmd": ask("setup_cmd", "empty skips")}
     while not (gate := ask("gate_cmd", "required")):
         pass
-    return {**out, "gate_cmd": gate, "verify_cmd": ask("verify_cmd", "empty skips")}
+    result = {**out, "gate_cmd": gate, "verify_cmd": ask("verify_cmd", "empty skips")}
+    if "services" in current:
+        result["services"] = current["services"]
+    return result
 
 
 def _ask(name: str, default: str, hint: str) -> str:

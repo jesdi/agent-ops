@@ -304,6 +304,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         order = _order(_mode(live))
         return read_model.build_board_snapshot(
             tasks, capacity=boot.capacity,
+            onboarding_running=sources.onboarding_running(),
             models={(t.repository, t.issue): _model_for(live, t, order) for t in tasks},
             pinned_tracks={(t.repository, t.issue): _pinned_track(live, t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT), queues=[],
@@ -338,6 +339,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         mail = sources.undelivered_counts()
         return read_model.build_board(
             tasks, capacity=boot.capacity,
+            onboarding_running=sources.onboarding_running(),
             models={(t.repository, t.issue): _model_for(live, t, order, usages, now)
                     for t in tasks},
             pinned_tracks={(t.repository, t.issue): _pinned_track(live, t) for t in tasks},

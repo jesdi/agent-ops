@@ -5,8 +5,8 @@ test(`operator starts project ${project} from the worksheet and sees its queued 
   let submitted: unknown
   let processed = false
   const request = {
-    repos: ['jesdi/analytics'], board: { owner: 'jesdi', number: 4 },
-    commands: [{ setup_cmd: 'uv sync --locked', gate_cmd: 'uv run pytest -q', verify_cmd: '' }],
+    inspect: true, repos: ['jesdi/analytics'], board: { owner: 'jesdi', number: 4 },
+    commands: [{ setup_cmd: 'uv sync --locked', gate_cmd: 'uv run pytest -q', verify_cmd: null, services: null }],
   }
   await page.route(`**/api/onboarding/${project}`, async route => {
     if (route.request().method() === 'POST') {
@@ -48,7 +48,7 @@ test('operator reviews a CLI proposal, confirms it and resumes after an infrastr
       clone_path: '/home/agent/repos/analytics/analytics', worktrees_path: '/home/agent/repos/analytics/analytics.worktrees',
       setup_cmd: 'uv sync --locked', gate_cmd: 'uv run pytest -q', verify_cmd: '' }] }
   await page.route('**/api/onboarding/analytics', route => route.fulfill({ json: {
-    project: 'analytics', status: 'open', request_revision: 'request-reviewed', edit_mode: 'details',
+    project: 'analytics', status: 'open', can_confirm: true, request_revision: 'request-reviewed', edit_mode: 'details',
     request: { repos: ['jesdi/analytics'], board: proposal.board,
       commands: [{ setup_cmd: 'uv sync --locked', gate_cmd: 'uv run pytest -q', verify_cmd: '' }] },
     proposal, revision: 'revision-reviewed', confirmed_revision: phase === 'review' ? '' : 'revision-reviewed',

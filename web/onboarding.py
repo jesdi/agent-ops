@@ -21,15 +21,17 @@ class OnboardingBoard(BaseModel):
 
 
 class OnboardingCommands(BaseModel):
-    setup_cmd: str = ""
-    gate_cmd: str
-    verify_cmd: str = ""
+    setup_cmd: str | None = None
+    gate_cmd: str | None = None
+    verify_cmd: str | None = None
+    services: list[str] | None = None
 
 
 class OnboardingRequest(BaseModel):
     repos: list[str]
-    board: OnboardingBoard
-    commands: list[OnboardingCommands]
+    board: OnboardingBoard | None = None
+    commands: list[OnboardingCommands] = Field(default_factory=list)
+    inspect: bool = True
 
 
 class OnboardingStartRequest(OnboardingRequest):
@@ -48,26 +50,27 @@ class OnboardingStartRequest(OnboardingRequest):
 
     @field_validator("board")
     @classmethod
-    def existing_board(cls, value: OnboardingBoard) -> OnboardingBoard:
+    def existing_board(cls, value: OnboardingBoard | None) -> OnboardingBoard | None:
+        if value is None:
+            return value
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", value.owner) or value.number < 1:
             raise ValueError("board must name an owner and a positive number")
         return value
 
-    @field_validator("commands")
-    @classmethod
-    def required_gates(cls, values: list[OnboardingCommands]) -> list[OnboardingCommands]:
-        if any(not value.gate_cmd.strip() for value in values):
-            raise ValueError("gate command is required for each repository")
-        return values
-
     @model_validator(mode="after")
     def commands_match(self):
+        if "commands" not in self.model_fields_set:
+            self.commands = [OnboardingCommands() for _ in self.repos]
         if len(self.commands) != len(self.repos):
             raise ValueError("one commands entry is required per repository")
         return self
 
 
-class OnboardingRepository(OnboardingCommands):
+class OnboardingRepository(BaseModel):
+    setup_cmd: str = ""
+    gate_cmd: str = ""
+    verify_cmd: str = ""
+    services: list[str] = Field(default_factory=list)
     name: str
     repo: str
     github_id: int
@@ -78,13 +81,13 @@ class OnboardingRepository(OnboardingCommands):
 class OnboardingProposal(BaseModel):
     name: str
     paused: bool
-    board: OnboardingBoard
+    board: OnboardingBoard | None
     repositories: list[OnboardingRepository]
 
 
 class OnboardingPending(BaseModel):
     id: str
-    action: Literal["add", "confirm", "resume"]
+    action: Literal["add", "confirm", "resume", "skip-inspection"]
     actor: str
     created_at: str
 
@@ -97,8 +100,43 @@ class OnboardingStep(BaseModel):
     since: str
 
 
+class InspectionValue(BaseModel):
+    value: str
+    source: str
+
+
+class InspectionBoard(BaseModel):
+    value: OnboardingBoard | None
+    source: str
+
+
+class InspectionFields(BaseModel):
+    setup_cmd: InspectionValue
+    gate_cmd: InspectionValue
+    verify_cmd: InspectionValue
+
+
+class RepositoryInspection(BaseModel):
+    repo: str
+    state: Literal["waiting", "complete", "skipped"]
+    detail: str
+    request_id: str
+    fields: InspectionFields
+    services: list[InspectionValue]
+    selected_services: list[InspectionValue] = Field(default_factory=list)
+    secrets: list[InspectionValue]
+    board: InspectionBoard
+    skills: list[str]
+
+
+class OnboardingInspection(BaseModel):
+    repositories: list[RepositoryInspection] = Field(default_factory=list)
+
+
 class OnboardingView(BaseModel):
     project: str
+    can_confirm: bool = False
+    inspection: OnboardingInspection = Field(default_factory=OnboardingInspection)
     status: Literal["queued", "open", "complete"]
     request: OnboardingRequest
     request_revision: str
@@ -133,7 +171,8 @@ def _view(project: str, record, pending: list[dict]) -> OnboardingView:
         return OnboardingView(**{**asdict(record), "proposal": record.proposal or None,
                                  "pr_url": record.pr_url, "pending": pending,
                                  "request_revision": onboard.request_revision(record.request),
-                                 "edit_mode": onboard.edit_mode(record)})
+                                 "edit_mode": onboard.edit_mode(record),
+                                 "can_confirm": onboard.can_confirm(record)})
     request = next((p["payload"] for p in pending if p["action"] == "add"), None)
     if request is None:
         raise HTTPException(404, "onboarding not found")
@@ -176,10 +215,19 @@ def router(sources) -> APIRouter:
     def confirm(project: ProjectName, request: OnboardingConfirm,
                 op: Operator = Depends(current_operator)):
         record = _open_record(sources, project)
-        if record.awaiting != "confirm" or record.revision != request.revision:
+        if not onboard.can_confirm(record) or record.awaiting != "confirm" or record.revision != request.revision:
             raise HTTPException(409, "proposal changed; review it and confirm again")
         return OnboardingAccepted(intent=sources.submit_onboarding(
             "confirm", project, request.model_dump(), op.login))
+
+    @routes.post("/{project}/skip-inspection", status_code=202, response_model=OnboardingAccepted)
+    def skip_inspection(project: ProjectName, request: OnboardingConfirm,
+                        op: Operator = Depends(current_operator)):
+        record = _open_record(sources, project)
+        if record.revision != request.revision:
+            raise HTTPException(409, "proposal changed; review it before filling in by hand")
+        return OnboardingAccepted(intent=sources.submit_onboarding(
+            "skip-inspection", project, request.model_dump(), op.login))
 
     @routes.post("/{project}/resume", status_code=202, response_model=OnboardingAccepted)
     def resume(project: ProjectName, op: Operator = Depends(current_operator)):

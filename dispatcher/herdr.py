@@ -314,3 +314,14 @@ class Tab:
     def close(self) -> bool:
         """Close the tab."""
         return close_tab(self.tab_id)
+
+
+def tab_labels() -> set[str] | None:
+    """An authoritative tab snapshot; None means the server could not be read."""
+    result = _call(['tab', 'list'])
+    if result is None:
+        return None
+    tabs = result.get('tabs')
+    if not isinstance(tabs, list):
+        return None
+    return {tab['label'] for tab in tabs if isinstance(tab, dict) and isinstance(tab.get('label'), str)}

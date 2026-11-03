@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Collection, Literal
 
 from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
-                        onboard, priority, queue_ops, state, task_artifacts, triage)
+                        onboard, onboarding_sessions, priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
 from dispatcher.config import Repository
@@ -254,6 +254,9 @@ class Sources:
             # so a partial read is realistic (cf. _read_snapshot same idiom).
             return None
         return d if isinstance(d, dict) else None
+
+    def onboarding_running(self) -> int:
+        return onboarding_sessions.running(self.state_dir)
 
     def triage_state(self) -> tuple[bool, bool]:
         """(claims_paused, triage_running) from exactly ONE session-layer probe.
