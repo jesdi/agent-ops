@@ -188,3 +188,20 @@ def test_lowercase_makefile_precedence_from_filesystem_entries(
         {'Makefile': 'gate:\n\t@printf "verified\\n"\n'},
         {'gate_cmd': {'value': command, 'reason': 'Makefile target', 'evidence': 'Makefile'}})
     assert rec.proposal['repositories'][0]['gate_cmd'] == expected
+
+
+@pytest.mark.parametrize(('makefile', 'runs'), [
+    ('gate := 1\nall:\n\t@true\n', False),
+    ('gate ::= 1\nall:\n\t@true\n', False),
+    ('gate::\n\t@true\n', True),
+])
+def test_make_target_evidence_must_be_a_rule_not_an_assignment(
+        tmp_path, box, monkeypatch, makefile, runs):
+    import subprocess
+    rec = draft_for_repository(tmp_path, box, monkeypatch, {'Makefile': makefile},
+        {'gate_cmd': {'value': 'make gate', 'reason': 'Makefile target gate', 'evidence': 'Makefile'}})
+    repository = rec.proposal['repositories'][0]
+    actual = subprocess.run(['make', 'gate'], cwd=repository['clone_path'],
+                            capture_output=True, text=True, timeout=10)
+    assert (actual.returncode == 0) is runs
+    assert repository['gate_cmd'] == ('make gate' if runs else '')

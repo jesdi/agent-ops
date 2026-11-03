@@ -251,7 +251,8 @@ def _make_command(tokens: list[str], contents: str, evidence: str, root: Path) -
     args = _make_targets(tokens, evidence, root)
     if not args or any(not re.fullmatch(r'[A-Za-z0-9_.][A-Za-z0-9_.-]*', x) for x in args):
         return False
-    return all(re.search(r'^' + re.escape(target) + r'\s*:', contents, re.MULTILINE)
+    # A rule is 'target:' or 'target::'; ':=', '::=' and ':::=' are assignments.
+    return all(re.search(r'^' + re.escape(target) + r'\s*::?(?![:=])', contents, re.MULTILINE)
                for target in args)
 
 
