@@ -241,7 +241,8 @@ def _command_words(command: str) -> list[str]:
 
 def _file_command(tokens: list[str], evidence: str) -> bool:
     if tokens[0] in ('python', 'python3', 'node', 'bash', 'sh', 'ruby', 'perl'):
-        return len(tokens) > 1 and tokens[1].removeprefix('./') == evidence
+        return (len(tokens) > 1 and not tokens[1].startswith('-')
+                and tokens[1].removeprefix('./') == evidence)
     return '/' in tokens[0] and tokens[0].removeprefix('./') == evidence
 
 
@@ -253,7 +254,7 @@ def _make_command(tokens: list[str], contents: str, evidence: str) -> bool:
         args = args[2:]
     elif evidence != 'Makefile':
         return False
-    if not args or any(not re.fullmatch(r'[A-Za-z0-9_.-]+', x) for x in args):
+    if not args or any(not re.fullmatch(r'[A-Za-z0-9_.][A-Za-z0-9_.-]*', x) for x in args):
         return False
     return all(re.search(r'^' + re.escape(target) + r'\s*:', contents, re.MULTILINE)
                for target in args)
@@ -264,22 +265,36 @@ _PACKAGE_BUILTINS = {
     'yarn': {'install'}, 'bun': {'install'},
 }
 
+# Drafts support only these install flags; other forms remain manual input.
+_INSTALL_FLAGS = {
+    'npm': {'--ignore-scripts'}, 'pnpm': {'--frozen-lockfile'},
+    'yarn': set(), 'bun': set(),
+}
+
 
 def _package_command(tokens: list[str], manifest: dict) -> bool:
     if len(tokens) < 2 or tokens[0] not in _PACKAGE_BUILTINS:
         return False
     manager, action = tokens[:2]
     if action == 'run':
-        return len(tokens) > 2 and _declared_script(tokens[2], manifest)
+        return _script_command(tokens[2:], manifest)
     if action in _PACKAGE_BUILTINS[manager]:
-        return True
+        return all(arg in _INSTALL_FLAGS[manager] for arg in tokens[2:])
     return (manager == 'npm' and action in ('test', 'start', 'stop', 'restart')
-            and _declared_script(action, manifest))
+            and _script_command(tokens[1:], manifest))
+
+
+def _script_command(args: list[str], manifest: dict) -> bool:
+    return (bool(args) and _declared_script(args[0], manifest)
+            and (len(args) == 1 or args[1] == '--'))
 
 
 def _declared_script(name: str, manifest: dict) -> bool:
+    if not name or name.startswith('-'):
+        return False
     scripts = manifest.get('scripts', {})
-    return isinstance(scripts, dict) and name in scripts
+    command = scripts.get(name) if isinstance(scripts, dict) else None
+    return isinstance(command, str) and bool(command.strip())
 
 
 def _draft_names(raw: object, allowed: set | None, exclude: set | None = None) -> list[Finding]:

@@ -46,9 +46,9 @@ def test_file_evidence_must_be_invoked_not_just_mentioned(tmp_path, box, monkeyp
 
 
 @pytest.mark.parametrize('command', [
-    'npm run gate', 'npm ci', 'npm install --ignore-scripts',
+    'npm run gate', 'npm ci', 'npm ci --ignore-scripts', 'npm install --ignore-scripts',
     'pnpm run gate', 'pnpm install --frozen-lockfile',
-    'yarn run gate', 'bun run gate',
+    'yarn run gate', 'bun run gate', 'yarn install', 'bun install',
 ])
 def test_supported_package_invocations_remain_available(tmp_path, box, monkeypatch, command):
     rec = draft_for_repository(tmp_path, box, monkeypatch,
@@ -72,3 +72,70 @@ def test_direct_or_interpreted_repository_script_is_accepted(tmp_path, box, monk
         {'scripts/check.py': 'print("checked")\n'},
         {'gate_cmd': {'value': command, 'reason': 'repository script', 'evidence': 'scripts/check.py'}})
     assert rec.proposal['repositories'][0]['gate_cmd'] == command
+
+
+@pytest.mark.parametrize('command', [
+    'npm run gate --prefix nonexistent',
+    'npm run gate --prefix=nonexistent',
+    'pnpm run gate -C nonexistent',
+    'yarn run gate --cwd nonexistent',
+    'bun run gate --filter other',
+    'npm test --workspaces',
+    'npm run gate --script-shell other',
+    'npm run gate extra',
+    'npm install --prefix nonexistent',
+    'npm ci --workspace other',
+    'npm install added-package',
+    'npm install --frozen-lockfile',
+    'pnpm install --dir nonexistent',
+    'yarn install --cwd nonexistent',
+    'bun install --cwd nonexistent',
+])
+def test_package_manager_arguments_cannot_redirect_verified_evidence(tmp_path, box, monkeypatch, command):
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'package.json': json.dumps({'scripts': {'gate': 'vitest run', 'test': 'vitest run'}})},
+        {'gate_cmd': {'value': command, 'reason': 'root package script', 'evidence': 'package.json'}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == ''
+
+
+@pytest.mark.parametrize('command', [
+    'npm run gate -- --prefix nonexistent',
+    'pnpm run gate -- --prefix nonexistent',
+    'yarn run gate -- --prefix nonexistent',
+    'bun run gate -- --prefix nonexistent',
+    'npm test -- --prefix nonexistent',
+])
+def test_explicit_separator_passes_literal_arguments_to_the_declared_script(tmp_path, box, monkeypatch, command):
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'package.json': json.dumps({'scripts': {'gate': 'vitest run', 'test': 'vitest run'}})},
+        {'gate_cmd': {'value': command, 'reason': 'script arguments', 'evidence': 'package.json'}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == command
+
+
+@pytest.mark.parametrize(('name', 'script'), [
+    ('--prefix', 'vitest'), ('gate', None), ('gate', 42),
+    ('gate', []), ('gate', {}), ('gate', ''), ('gate', '   '),
+])
+def test_package_draft_requires_a_nonoption_script_name_and_nonempty_string(
+        tmp_path, box, monkeypatch, name, script):
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'package.json': json.dumps({'scripts': {name: script}})},
+        {'gate_cmd': {'value': f'npm run {name}', 'reason': 'declared script', 'evidence': 'package.json'}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == ''
+
+
+@pytest.mark.parametrize(('command', 'evidence', 'contents'), [
+    ('make --help', 'Makefile', '--help:\n\tpytest\n'),
+    ('python -c pass', '-c', 'print("checked")\n'),
+])
+def test_option_tokens_cannot_masquerade_as_repository_targets(
+        tmp_path, box, monkeypatch, command, evidence, contents):
+    rec = draft_for_repository(tmp_path, box, monkeypatch, {evidence: contents},
+        {'gate_cmd': {'value': command, 'reason': 'repository target', 'evidence': evidence}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == ''
+
+
+def test_explicit_path_to_a_file_with_a_leading_dash_is_unambiguous(tmp_path, box, monkeypatch):
+    rec = draft_for_repository(tmp_path, box, monkeypatch, {'-c': 'print("checked")\n'},
+        {'gate_cmd': {'value': 'python ./-c', 'reason': 'repository script', 'evidence': '-c'}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == 'python ./-c'
