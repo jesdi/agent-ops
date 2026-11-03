@@ -1,34 +1,27 @@
 """`agent-ops project add` (dispatcher.onboard_cli): prompts, intents, the
 kick and the record printout. The kick runs one engine run against fakes."""
 import getpass
-import io
 import json
-import sys
 
 import pytest
 
-from dispatcher import onboard, onboard_cli
+from dispatcher import onboard
 from tests.test_onboard import (  # noqa: F401
     MERGED, NOW, PR_URL, FakeSh, box, infra_routes, infra_token, no_get, record, state)
+from tests.test_onboard_cli_rerun import Kick, as_agent, stdin  # noqa: F401
+from tests.test_onboard_cli_rerun import run as add
 
 KICK = "systemctl --user start agent-ops-onboard.service"
 
 
-@pytest.fixture(autouse=True)
-def as_agent(monkeypatch):
-    monkeypatch.setattr(getpass, "getuser", lambda: "agent")
-
-
-def stdin(monkeypatch, text):
-    monkeypatch.setattr(sys, "stdin", io.StringIO(text))
-
-
-class Box:
-    """The CLI's sh: the kick runs one engine run with `engine` as its sh."""
+class Box(Kick):
+    """Kick that checks the command, records the intent actions waiting at each
+    kick and runs the engine with `engine` as its sh."""
 
     def __init__(self, config, engine=None):
-        self.config, self.engine, self.calls = config, engine or FakeSh(), []
-        self.kicked_with = []  # the intent actions waiting at each kick
+        super().__init__(config)
+        self.engine = engine or FakeSh()
+        self.kicked_with = []
 
     def __call__(self, argv, cwd=None, env=None):
         self.calls.append(argv)
@@ -38,10 +31,6 @@ class Box:
              / "onboarding-intents").glob("*.json"))])
         onboard.run(self.config, sh=self.engine, get=no_get, now=NOW)
         return ""
-
-
-def add(box, sh, *args):
-    return onboard_cli.main(["project", "add", *args, "--config", str(box)], sh=sh)
 
 
 def intents(tmp_path):
