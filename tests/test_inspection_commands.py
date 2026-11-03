@@ -139,3 +139,52 @@ def test_explicit_path_to_a_file_with_a_leading_dash_is_unambiguous(tmp_path, bo
     rec = draft_for_repository(tmp_path, box, monkeypatch, {'-c': 'print("checked")\n'},
         {'gate_cmd': {'value': 'python ./-c', 'reason': 'repository script', 'evidence': '-c'}})
     assert rec.proposal['repositories'][0]['gate_cmd'] == 'python ./-c'
+
+
+def test_implicit_make_draft_cannot_use_a_shadowed_makefile(tmp_path, box, monkeypatch):
+    import subprocess
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'Makefile': 'gate:\n\t@printf "verified\\n"\n', 'GNUmakefile': 'other:\n\t@true\n'},
+        {'gate_cmd': {'value': 'make gate', 'reason': 'Makefile target gate', 'evidence': 'Makefile'}})
+    repository = rec.proposal['repositories'][0]
+    actual = subprocess.run(['make', 'gate'], cwd=repository['clone_path'],
+                            capture_output=True, text=True, timeout=10)
+    assert actual.returncode == 2
+    assert 'No rule to make target' in actual.stderr
+    assert repository['gate_cmd'] == ''
+
+
+def test_explicit_makefile_draft_bypasses_default_precedence(tmp_path, box, monkeypatch):
+    import subprocess
+    command = 'make -f Makefile gate'
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'Makefile': 'gate:\n\t@printf "verified\\n"\n', 'GNUmakefile': 'other:\n\t@true\n'},
+        {'gate_cmd': {'value': command, 'reason': 'explicit Makefile target', 'evidence': 'Makefile'}})
+    repository = rec.proposal['repositories'][0]
+    actual = subprocess.run(['make', '-f', 'Makefile', 'gate'], cwd=repository['clone_path'],
+                            capture_output=True, text=True, timeout=10)
+    assert actual.returncode == 0
+    assert actual.stdout == 'verified\n'
+    assert repository['gate_cmd'] == command
+
+
+@pytest.mark.parametrize(('command', 'expected'), [
+    ('make gate', ''), ('make -f Makefile gate', 'make -f Makefile gate'),
+])
+def test_lowercase_makefile_precedence_from_filesystem_entries(
+        tmp_path, box, monkeypatch, command, expected):
+    from pathlib import Path
+    real_entries = Path.iterdir
+
+    def entries_with_lowercase_makefile(directory):
+        entries = list(real_entries(directory))
+        if directory.name == 'analytics':
+            entries.append(directory / 'makefile')
+        return iter(entries)
+
+    # Model two distinct names even on a case-insensitive development volume.
+    monkeypatch.setattr(Path, 'iterdir', entries_with_lowercase_makefile)
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'Makefile': 'gate:\n\t@printf "verified\\n"\n'},
+        {'gate_cmd': {'value': command, 'reason': 'Makefile target', 'evidence': 'Makefile'}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == expected

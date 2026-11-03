@@ -223,7 +223,7 @@ def _references(command: str, evidence: str, root: Path) -> bool:
     if not tokens:
         return False
     if Path(evidence).name == 'Makefile':
-        return _make_command(tokens, read(root, evidence), evidence)
+        return _make_command(tokens, read(root, evidence), evidence, root)
     if Path(evidence).name == 'package.json':
         return evidence == 'package.json' and _package_command(tokens, _document(root, evidence, json.loads))
     return _file_command(tokens, evidence)
@@ -247,18 +247,29 @@ def _file_command(tokens: list[str], evidence: str) -> bool:
     return '/' in tokens[0] and tokens[0].removeprefix('./') == evidence
 
 
-def _make_command(tokens: list[str], contents: str, evidence: str) -> bool:
-    if not tokens or tokens[0] not in ('make', 'gmake'):
-        return False
-    args = tokens[1:]
-    if args[:2] == ['-f', evidence]:
-        args = args[2:]
-    elif evidence != 'Makefile':
-        return False
+def _make_command(tokens: list[str], contents: str, evidence: str, root: Path) -> bool:
+    args = _make_targets(tokens, evidence, root)
     if not args or any(not re.fullmatch(r'[A-Za-z0-9_.][A-Za-z0-9_.-]*', x) for x in args):
         return False
     return all(re.search(r'^' + re.escape(target) + r'\s*:', contents, re.MULTILINE)
                for target in args)
+
+
+def _make_targets(tokens: list[str], evidence: str, root: Path) -> list[str]:
+    if not tokens or tokens[0] not in ('make', 'gmake'):
+        return []
+    args = tokens[1:]
+    if args[:2] == ['-f', evidence]:
+        return args[2:]
+    return args if evidence == _default_makefile(root) else []
+
+
+def _default_makefile(root: Path) -> str | None:
+    # Enumerate actual names: exists('makefile') also finds 'Makefile' on
+    # case-insensitive filesystems, where those names cannot shadow each other.
+    names = {path.name for path in root.iterdir()}
+    return next((name for name in ('GNUmakefile', 'makefile', 'Makefile')
+                 if name in names), None)
 
 
 _PACKAGE_BUILTINS = {
