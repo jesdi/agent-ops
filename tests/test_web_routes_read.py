@@ -625,3 +625,27 @@ def test_a_read_route_reads_the_priority_mode_once(tmp_path, monkeypatch, path):
                         lambda *a, **kw: reads.append(1) or real(*a, **kw))
     assert client.get(path, headers=HEADERS).status_code == 200
     assert len(reads) == 1
+
+
+def test_board_counts_onboarding_sessions_before_forecasting_claims(tmp_path):
+    fake = FakeSources()
+    fake.heartbeat = _fresh_heartbeat()
+    fake.rank["alpha"] = ([{"number": 73, "title": "t73", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 2.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    fake.onboarding_running = lambda: 1
+    client = TestClient(create_app(make_config(tmp_path, capacity=1), fake))
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert body["next_claim"]["verdict"] == "capacity-full"
+    assert body["capacity"]["active"] == 1
+    assert body["capacity"]["capacity"] == 1
+    assert body["capacity"]["slots_used"] == 0
+
+
+def test_board_snapshot_includes_inspection_capacity(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.onboarding_running = lambda: 1
+    body = client.get("/api/board/snapshot", headers=HEADERS).json()
+    assert body["capacity"]["active"] == 1
+    assert body["capacity"]["slots_used"] == 0

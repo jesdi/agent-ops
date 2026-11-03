@@ -63,7 +63,7 @@ def stdin(monkeypatch, text):
 
 
 def run(box, sh, *args):
-    return onboard_cli.main(["project", "add", *args, "--config", str(box)], sh=sh)
+    return onboard_cli.main(["project", "add", *args, "--manual", "--config", str(box)], sh=sh)
 
 
 def write_complete(tmp_path, notice=""):

@@ -34,9 +34,23 @@ describe('onboarding worksheet', () => {
     await userEvent.type(screen.getByLabelText('Setup command'), 'uv sync --locked')
     await userEvent.click(screen.getByRole('button', { name: 'Start onboarding' }))
     expect(await screen.findByRole('heading', { name: 'Onboarding received' })).toBeInTheDocument()
-    expect(submitted).toEqual({ repos: ['jesdi/analytics'], board: { owner: 'jesdi', number: 4 },
-      commands: [{ setup_cmd: 'uv sync --locked', gate_cmd: 'uv run pytest -q', verify_cmd: '' }] })
+    expect(submitted).toEqual({ inspect: true, repos: ['jesdi/analytics'], board: { owner: 'jesdi', number: 4 },
+      commands: [{ setup_cmd: 'uv sync --locked', gate_cmd: 'uv run pytest -q', verify_cmd: null, services: null }] })
   })
+})
+
+it('starts inspection with only a project and repository, leaving values available for detection', async () => {
+  let submitted: unknown
+  server.use(http.post('/api/onboarding/analytics', async ({ request }) => {
+    submitted = await request.json()
+    return HttpResponse.json({ status: 'pending', intent: 'inspect-start', request_revision: 'request-one' }, { status: 202 })
+  }), http.get('/api/onboarding/analytics', () => HttpResponse.json(ready)))
+  renderNew()
+  await userEvent.type(screen.getByLabelText('Project name'), 'analytics')
+  await userEvent.type(screen.getByLabelText('GitHub repository'), 'jesdi/analytics')
+  await userEvent.click(screen.getByRole('button', { name: 'Start onboarding' }))
+  await waitFor(() => expect(submitted).toEqual({ inspect: true, repos: ['jesdi/analytics'], board: null,
+    commands: [{ setup_cmd: null, gate_cmd: null, verify_cmd: null, services: null }] }))
 })
 
 it('keeps repository commands together when another repository is removed and preserves a failed submission', async () => {
@@ -55,8 +69,8 @@ it('keeps repository commands together when another repository is removed and pr
   expect(screen.getByLabelText('Gate command')).toHaveValue('pnpm test')
 })
 
-const request = { repos: ['jesdi/analytics'], board: { owner: 'jesdi', number: 4 },
-  commands: [{ setup_cmd: 'uv sync', gate_cmd: 'make gate', verify_cmd: '' }] }
+const request = { inspect: true, repos: ['jesdi/analytics'], board: { owner: 'jesdi', number: 4 },
+  commands: [{ setup_cmd: 'uv sync', gate_cmd: 'make gate', verify_cmd: '', services: null }] }
 const onboarding = { request_revision: 'request-one', edit_mode: 'repositories', project: 'analytics', status: 'queued', request, proposal: null, revision: '', confirmed_revision: '', awaiting: '', notice: '',
   steps: [], pr_url: '', updated_at: '', pending: [{ id: '100-add', action: 'add', actor: 'agent', created_at: '2026-11-03T10:00:00Z' }] }
 
@@ -79,7 +93,7 @@ it('finds CLI and queued onboardings in one list and opens a queued request befo
 const proposal = { name: 'analytics', paused: true, board: request.board,
   repositories: [{ name: 'analytics', repo: 'jesdi/analytics', github_id: 202, clone_path: '/home/agent/repos/analytics/analytics',
     worktrees_path: '/home/agent/repos/analytics/analytics.worktrees', ...request.commands[0] }] }
-const ready = { ...onboarding, status: 'open', pending: [], proposal, revision: 'rev-one', awaiting: 'confirm',
+const ready = { ...onboarding, can_confirm: true, status: 'open', pending: [], proposal, revision: 'rev-one', awaiting: 'confirm',
   steps: [{ name: 'resolve', state: 'verified', detail: 'Repository found', link: '', since: '' },
     { name: 'confirm', state: 'blocked', detail: 'Review the proposal', link: '', since: '' }] }
 
@@ -348,4 +362,204 @@ it('retains a submitted new-project draft through a failed first read until the 
   failRead = false
   await queryClient.invalidateQueries({ queryKey: ['onboarding'] })
   expect(await screen.findByRole('heading', { name: 'Onboarding received' })).toBeInTheDocument()
+})
+
+const inspected = { ...ready, can_confirm: true, inspection: { repositories: [{
+  repo: 'jesdi/analytics', state: 'complete', detail: '', request_id: 'inspect-one',
+  fields: { setup_cmd: { value: '', source: '' }, gate_cmd: { value: 'make gate', source: 'draft: Makefile target gate' }, verify_cmd: { value: '', source: '' } },
+  board: { value: request.board, source: 'rule: .backlog/project-meta.json' },
+  services: [{ value: 'postgres', source: 'rule: compose.yaml' }],
+  selected_services: [{ value: 'postgres', source: 'draft: integration tests need postgres' }],
+  secrets: [{ value: 'DATABASE_URL', source: 'rule: .env.example' }], skills: [],
+}] }, request: { repos: ['jesdi/analytics'], board: null, commands: [{ setup_cmd: null, gate_cmd: null, verify_cmd: null, services: null }] },
+  proposal: { ...proposal, repositories: [{ ...proposal.repositories[0]!, setup_cmd: '', services: ['postgres'] }] } }
+
+it('edits detected values without turning untouched suggestions into operator overrides', async () => {
+  let saved: unknown
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(inspected)),
+    http.post('/api/onboarding/analytics', async ({ request: req }) => {
+      saved = await req.json()
+      return HttpResponse.json({ status: 'pending', intent: 'edit-inspected', request_revision: 'edited' }, { status: 202 })
+    }))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  expect(screen.getByLabelText('GitHub board')).toHaveValue('jesdi/4')
+  expect(screen.getByLabelText('Gate command')).toHaveValue('make gate')
+  expect(screen.getByText('draft: Makefile target gate')).toBeInTheDocument()
+  expect(screen.getAllByText('Nothing found')).toHaveLength(2)
+  expect(screen.getByText('DATABASE_URL')).toBeInTheDocument()
+  expect(screen.getByText('draft: integration tests need postgres')).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('checkbox', { name: 'postgres' }))
+  await userEvent.type(screen.getByLabelText('Setup command'), 'uv sync')
+  await userEvent.click(screen.getByRole('button', { name: 'Save details' }))
+  await waitFor(() => expect(saved).toEqual({ inspect: true, expected_request_revision: 'request-one', repos: ['jesdi/analytics'], board: null,
+    commands: [{ setup_cmd: 'uv sync', gate_cmd: null, verify_cmd: null, services: [] }] }))
+})
+
+it('lets an operator skip a waiting draft and keeps the action pending until the box consumes it', async () => {
+  let skipped: unknown
+  const waiting = { ...inspected, awaiting: '', can_confirm: false, inspection: { repositories: [{ ...inspected.inspection.repositories[0]!, state: 'waiting' }] },
+    steps: [{ name: 'inspect', state: 'waiting', detail: 'waiting for a free execution unit (box full: 2/2)', link: '', since: '' }] }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(waiting)),
+    http.post('/api/onboarding/analytics/skip-inspection', async ({ request }) => {
+      skipped = await request.json()
+      return HttpResponse.json({ status: 'pending', intent: 'skip-one' }, { status: 202 })
+    }))
+  renderDetail()
+  expect(await screen.findByText('waiting for a free execution unit (box full: 2/2)')).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Fill in by hand' }))
+  await waitFor(() => expect(skipped).toEqual({ revision: 'rev-one' }))
+})
+
+it('shows provenance in review and disables confirmation until required fields are filled', async () => {
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json({ ...inspected, can_confirm: false,
+    proposal: { ...inspected.proposal, board: null, repositories: [{ ...inspected.proposal.repositories[0]!, gate_cmd: '' }] } })))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
+  const review = within(screen.getByRole('region', { name: 'Review proposal' }))
+  expect(review.getByRole('button', { name: 'Confirm proposal' })).toBeDisabled()
+  expect(review.getByText('Choose a board and fill in a gate command for every repository before confirming.')).toBeInTheDocument()
+  expect(review.getByText('DATABASE_URL')).toBeInTheDocument()
+  expect(review.getByText('rule: .env.example')).toBeInTheDocument()
+})
+
+it('matches detected commands to a repository entered as a GitHub URL and preserves an explicit cleared value', async () => {
+  let saved: unknown
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json({ ...inspected,
+    request: { ...inspected.request, repos: ['https://github.com/Jesdi/Analytics.git'] } })),
+    http.post('/api/onboarding/analytics', async ({ request }) => {
+      saved = await request.json()
+      return HttpResponse.json({ status: 'pending', intent: 'clear-one' }, { status: 202 })
+    }))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  expect(screen.getByLabelText('Gate command')).toHaveValue('make gate')
+  await userEvent.clear(screen.getByLabelText('Gate command'))
+  await userEvent.click(screen.getByRole('button', { name: 'Save details' }))
+  await waitFor(() => expect(saved).toMatchObject({ commands: [{ gate_cmd: '', setup_cmd: null, verify_cmd: null }] }))
+})
+
+it('distinguishes an intentionally skipped draft from a completed search that found nothing', async () => {
+  const skipped = { ...inspected, inspection: { repositories: [{ ...inspected.inspection.repositories[0]!, state: 'skipped',
+    fields: { setup_cmd: { value: '', source: '' }, gate_cmd: { value: '', source: '' }, verify_cmd: { value: '', source: '' } } }] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(skipped)))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  expect(screen.getAllByText('Draft skipped')).toHaveLength(3)
+  expect(screen.queryByText('Not inspected yet')).not.toBeInTheDocument()
+})
+
+it('shows that inspection found no services or secret names in proposal review', async () => {
+  const emptyFacts = { ...inspected, inspection: { repositories: [{ ...inspected.inspection.repositories[0]!, services: [], secrets: [] }] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(emptyFacts)))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
+  const review = within(screen.getByRole('region', { name: 'Review proposal' }))
+  expect(review.getAllByText('Nothing found')).toHaveLength(4)
+  expect(review.getByText('Compose services')).toBeInTheDocument()
+  expect(review.getByText('Secret names')).toBeInTheDocument()
+})
+
+it('selects a detected service by hand and saves the explicit choice', async () => {
+  let saved: unknown
+  const unselected = { ...inspected, proposal: { ...inspected.proposal,
+    repositories: [{ ...inspected.proposal.repositories[0]!, services: [] }] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(unselected)),
+    http.post('/api/onboarding/analytics', async ({ request }) => {
+      saved = await request.json()
+      return HttpResponse.json({ status: 'pending', intent: 'selected-service' }, { status: 202 })
+    }))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  const service = screen.getByRole('checkbox', { name: 'postgres' })
+  expect(service).not.toBeChecked()
+  await userEvent.click(service)
+  expect(service).toBeChecked()
+  expect(screen.getByText('you')).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Save details' }))
+  await waitFor(() => expect(saved).toMatchObject({ commands: [{ services: ['postgres'] }] }))
+})
+
+it('distinguishes detected services from selected services in review', async () => {
+  const unselected = { ...inspected, proposal: { ...inspected.proposal,
+    repositories: [{ ...inspected.proposal.repositories[0]!, services: [] }] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(unselected)))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
+  const review = within(screen.getByRole('region', { name: 'Review proposal' }))
+  expect(review.getByText('postgres — not selected')).toBeInTheDocument()
+  expect(review.getByText('rule: compose.yaml')).toBeInTheDocument()
+})
+
+it('uses detected provenance when a selected service has no draft reason', async () => {
+  const ruleSelected = { ...inspected, inspection: { repositories: [{ ...inspected.inspection.repositories[0]!, selected_services: [] }] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(ruleSelected)))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
+  const review = within(screen.getByRole('region', { name: 'Review proposal' }))
+  expect(review.getByText('postgres — selected')).toBeInTheDocument()
+  expect(review.getByText('rule: compose.yaml')).toBeInTheDocument()
+})
+
+it('keeps renamed repository suggestions attached after another row is removed and preserves manual overrides', async () => {
+  let saved: unknown
+  const renamed = { ...inspected, request: { ...inspected.request, repos: ['jesdi/unused', 'jesdi/old-analytics'],
+    commands: [{ setup_cmd: null, gate_cmd: null, verify_cmd: null, services: null }, inspected.request.commands[0]] },
+    proposal: { ...inspected.proposal, repositories: [{ ...inspected.proposal.repositories[0]!, repo: 'jesdi/unused', github_id: 999, gate_cmd: 'make other' }, inspected.proposal.repositories[0]!] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(renamed)),
+    http.post('/api/onboarding/analytics', async ({ request }) => {
+      saved = await request.json()
+      return HttpResponse.json({ status: 'pending', intent: 'alias-edited' }, { status: 202 })
+    }))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Remove repository 1' }))
+  expect(screen.getByLabelText('GitHub repository')).toHaveValue('jesdi/old-analytics')
+  expect(screen.getByLabelText('Gate command')).toHaveValue('make gate')
+  expect(screen.getByText('draft: Makefile target gate')).toBeInTheDocument()
+  expect(screen.getByRole('checkbox', { name: 'postgres' })).toBeChecked()
+  await userEvent.clear(screen.getByLabelText('Gate command'))
+  await userEvent.type(screen.getByLabelText('Gate command'), 'make my-gate')
+  await userEvent.click(screen.getByRole('button', { name: 'Save details' }))
+  await waitFor(() => expect(saved).toMatchObject({ repos: ['jesdi/old-analytics'],
+    commands: [{ setup_cmd: null, gate_cmd: 'make my-gate', verify_cmd: null, services: null }] }))
+})
+
+it('does not borrow a renamed repository suggestion when its row is changed to a different repository', async () => {
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json({ ...inspected,
+    request: { ...inspected.request, repos: ['jesdi/old-analytics'] } })))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  expect(screen.getByLabelText('Gate command')).toHaveValue('make gate')
+  await userEvent.clear(screen.getByLabelText('GitHub repository'))
+  await userEvent.type(screen.getByLabelText('GitHub repository'), 'jesdi/unrelated')
+  expect(screen.getByLabelText('Gate command')).toHaveValue('')
+  expect(screen.queryByText('draft: Makefile target gate')).not.toBeInTheDocument()
+  expect(screen.queryByRole('checkbox', { name: 'postgres' })).not.toBeInTheDocument()
+})
+
+it('does not reuse a removed row association for a newly added repository', async () => {
+  const two = { ...inspected, request: { ...inspected.request, repos: ['jesdi/unused', 'jesdi/old-analytics'],
+    commands: [{ setup_cmd: null, gate_cmd: null, verify_cmd: null, services: null }, inspected.request.commands[0]] },
+    proposal: { ...inspected.proposal, repositories: [{ ...inspected.proposal.repositories[0]!, repo: 'jesdi/unused', github_id: 999, gate_cmd: 'make other' }, inspected.proposal.repositories[0]!] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(two)))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Remove repository 2' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Add repository' }))
+  const added = within(screen.getByRole('group', { name: 'Repository 2' }))
+  await userEvent.type(added.getByLabelText('GitHub repository'), 'jesdi/old-analytics')
+  expect(added.getByLabelText('Gate command')).toHaveValue('')
+  expect(added.queryByRole('checkbox', { name: 'postgres' })).not.toBeInTheDocument()
+})
+
+it('does not associate a new request with a stale proposal after repository resolution fails', async () => {
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json({ ...inspected,
+    request: { ...inspected.request, repos: ['jesdi/missing'] },
+    steps: [{ name: 'resolve', state: 'blocked', detail: 'Repository could not be found', link: '', since: '' }] })))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  expect(screen.getByLabelText('Gate command')).toHaveValue('')
+  expect(screen.queryByText('draft: Makefile target gate')).not.toBeInTheDocument()
+  expect(screen.queryByRole('checkbox', { name: 'postgres' })).not.toBeInTheDocument()
 })

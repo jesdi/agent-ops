@@ -327,7 +327,8 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                          admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
                          ghosts: list[GhostCard] | None = None,
                          pinned_tracks: dict[tuple[str, int], str] | None = None,
-                         projects: Mapping[str, Project] | None = None
+                         projects: Mapping[str, Project] | None = None,
+                         onboarding_running: int = 0
                          ) -> BoardSnapshot:
     """Cards and capacity without any live-service dependencies; `ghosts`
     join the Queued column."""
@@ -355,7 +356,7 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
         capacity=CapacityView(
             # via dispatcher.state.active so the console never shows a
             # different capacity than the one the dispatcher enforces
-            active=len(active(in_flight)),
+            active=len(active(in_flight)) + onboarding_running,
             capacity=capacity,
             slots_used=len(slots_held),
             max_slots=max_slots(capacity),
@@ -370,6 +371,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
                 triage_running: bool,
+                onboarding_running: int = 0,
                 undelivered: dict[tuple[str, int], int] | None = None,
                 wake_blocked: set[tuple[str, int]] | None = None,
                 admissions: dict[tuple[str, int], TaskAdmissionView] | None = None,
@@ -394,13 +396,13 @@ def build_board(tasks: list[TaskState], *, capacity: int,
         tasks, capacity=capacity, models=models, events=events, queues=queues,
         undelivered=undelivered, wake_blocked=wake_blocked,
         admissions=admissions, ghosts=ghosts, pinned_tracks=pinned_tracks,
-        projects=projects)
+        projects=projects, onboarding_running=onboarding_running)
     return BoardView(
         columns=snapshot.columns, capacity=snapshot.capacity,
         median_cycle_seconds=snapshot.median_cycle_seconds,
         queue_stale=queue_stale,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
-                              capacity=capacity, gate=gate,
+                              capacity=max(0, capacity - onboarding_running), gate=gate,
                               queues=queues,
                               claims_paused=claims_paused,
                               triage_running=triage_running,

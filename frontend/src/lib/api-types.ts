@@ -175,6 +175,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/onboarding/{project}/skip-inspection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Skip Inspection */
+        post: operations["skip_inspection_api_onboarding__project__skip_inspection_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/pending-intents": {
         parameters: {
             query?: never;
@@ -774,6 +791,25 @@ export interface components {
             /** Events */
             events: components["schemas"]["EventEntry"][];
         };
+        /** InspectionBoard */
+        InspectionBoard: {
+            /** Source */
+            source: string;
+            value: components["schemas"]["OnboardingBoard"] | null;
+        };
+        /** InspectionFields */
+        InspectionFields: {
+            gate_cmd: components["schemas"]["InspectionValue"];
+            setup_cmd: components["schemas"]["InspectionValue"];
+            verify_cmd: components["schemas"]["InspectionValue"];
+        };
+        /** InspectionValue */
+        InspectionValue: {
+            /** Source */
+            source: string;
+            /** Value */
+            value: string;
+        };
         /** IssueDescription */
         IssueDescription: {
             /** Body */
@@ -929,22 +965,23 @@ export interface components {
         /** OnboardingCommands */
         OnboardingCommands: {
             /** Gate Cmd */
-            gate_cmd: string;
-            /**
-             * Setup Cmd
-             * @default
-             */
-            setup_cmd: string;
-            /**
-             * Verify Cmd
-             * @default
-             */
-            verify_cmd: string;
+            gate_cmd?: string | null;
+            /** Services */
+            services?: string[] | null;
+            /** Setup Cmd */
+            setup_cmd?: string | null;
+            /** Verify Cmd */
+            verify_cmd?: string | null;
         };
         /** OnboardingConfirm */
         OnboardingConfirm: {
             /** Revision */
             revision: string;
+        };
+        /** OnboardingInspection */
+        OnboardingInspection: {
+            /** Repositories */
+            repositories?: components["schemas"]["RepositoryInspection"][];
         };
         /** OnboardingPending */
         OnboardingPending: {
@@ -952,7 +989,7 @@ export interface components {
              * Action
              * @enum {string}
              */
-            action: "add" | "confirm" | "resume";
+            action: "add" | "confirm" | "resume" | "skip-inspection";
             /** Actor */
             actor: string;
             /** Created At */
@@ -962,7 +999,7 @@ export interface components {
         };
         /** OnboardingProposal */
         OnboardingProposal: {
-            board: components["schemas"]["OnboardingBoard"];
+            board: components["schemas"]["OnboardingBoard"] | null;
             /** Name */
             name: string;
             /** Paused */
@@ -974,7 +1011,10 @@ export interface components {
         OnboardingRepository: {
             /** Clone Path */
             clone_path: string;
-            /** Gate Cmd */
+            /**
+             * Gate Cmd
+             * @default
+             */
             gate_cmd: string;
             /** Github Id */
             github_id: number;
@@ -982,6 +1022,8 @@ export interface components {
             name: string;
             /** Repo */
             repo: string;
+            /** Services */
+            services?: string[];
             /**
              * Setup Cmd
              * @default
@@ -997,19 +1039,29 @@ export interface components {
         };
         /** OnboardingRequest */
         OnboardingRequest: {
-            board: components["schemas"]["OnboardingBoard"];
+            board?: components["schemas"]["OnboardingBoard"] | null;
             /** Commands */
-            commands: components["schemas"]["OnboardingCommands"][];
+            commands?: components["schemas"]["OnboardingCommands"][];
+            /**
+             * Inspect
+             * @default true
+             */
+            inspect: boolean;
             /** Repos */
             repos: string[];
         };
         /** OnboardingStartRequest */
         OnboardingStartRequest: {
-            board: components["schemas"]["OnboardingBoard"];
+            board?: components["schemas"]["OnboardingBoard"] | null;
             /** Commands */
-            commands: components["schemas"]["OnboardingCommands"][];
+            commands?: components["schemas"]["OnboardingCommands"][];
             /** Expected Request Revision */
             expected_request_revision?: string | null;
+            /**
+             * Inspect
+             * @default true
+             */
+            inspect: boolean;
             /** Repos */
             repos: string[];
         };
@@ -1029,6 +1081,11 @@ export interface components {
         OnboardingView: {
             /** Awaiting */
             awaiting: string;
+            /**
+             * Can Confirm
+             * @default false
+             */
+            can_confirm: boolean;
             /** Confirmed Revision */
             confirmed_revision: string;
             /**
@@ -1036,6 +1093,7 @@ export interface components {
              * @enum {string}
              */
             edit_mode: "none" | "details" | "repositories";
+            inspection?: components["schemas"]["OnboardingInspection"];
             /** Notice */
             notice: string;
             /** Pending */
@@ -1197,6 +1255,30 @@ export interface components {
         ReplyReq: {
             /** Text */
             text: string;
+        };
+        /** RepositoryInspection */
+        RepositoryInspection: {
+            board: components["schemas"]["InspectionBoard"];
+            /** Detail */
+            detail: string;
+            fields: components["schemas"]["InspectionFields"];
+            /** Repo */
+            repo: string;
+            /** Request Id */
+            request_id: string;
+            /** Secrets */
+            secrets: components["schemas"]["InspectionValue"][];
+            /** Selected Services */
+            selected_services?: components["schemas"]["InspectionValue"][];
+            /** Services */
+            services: components["schemas"]["InspectionValue"][];
+            /** Skills */
+            skills: string[];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "waiting" | "complete" | "skipped";
         };
         /** RepositoryQueue */
         RepositoryQueue: {
@@ -1708,6 +1790,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    skip_inspection_api_onboarding__project__skip_inspection_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OnboardingConfirm"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {

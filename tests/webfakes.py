@@ -123,6 +123,9 @@ class FakeSources:
     def pass_heartbeat(self):
         return self.heartbeat
 
+    def onboarding_running(self):
+        return 0
+
     def triage_state(self):
         return self._claims_paused, self._triage_running
 

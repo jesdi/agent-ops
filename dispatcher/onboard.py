@@ -32,7 +32,7 @@ from typing import Callable, Literal, NamedTuple
 
 import yaml
 
-from dispatcher import board, config, intents
+from dispatcher import board, config, intents, repository_inspection as inspection
 from dispatcher.infra_config import add_project_text, project_block
 from dispatcher.pr_poll import ci_verdict
 from dispatcher.state import state_lock, write_json_atomic
@@ -141,6 +141,8 @@ class Record:
     started_by: str = ""
     updated_at: str = ""
     request: dict = field(default_factory=dict)
+    inspection: inspection.Inspection = field(default_factory=inspection.Inspection)
+    confirm_ready: bool = False
     proposal: dict = field(default_factory=dict)    # the targets.yaml block
     revision: str = ""
     confirmed_revision: str = ""
@@ -165,7 +167,8 @@ class Record:
         ip = d.get("infra_pr")
         return cls(**{**d, "steps": [Step(**{**s, "state": StepState(s["state"])})
                                      for s in d["steps"]],
-                      "infra_pr": InfraPr(**ip) if ip else None})
+                      "infra_pr": InfraPr(**ip) if ip else None,
+                      "inspection": inspection.Inspection.from_json(d.get("inspection", {}))})
 
 
 def _record_path(state_dir: str | Path, project: str) -> Path:
@@ -194,7 +197,7 @@ def revision(proposal: dict) -> str:
 
 # -- intents ------------------------------------------------------------------
 
-QUEUE = intents.Queue("onboarding-intents", ("add", "confirm", "resume"), ("project",))
+QUEUE = intents.Queue("onboarding-intents", ("add", "confirm", "resume", "skip-inspection"), ("project",))
 
 
 class Intent(NamedTuple):
@@ -236,20 +239,34 @@ def _intent_payload(action: str, payload: dict) -> dict:
         if "expected_request_revision" in payload:
             request["expected_request_revision"] = str(payload["expected_request_revision"])
         return request
-    if action == "confirm":
+    if action in ("confirm", "skip-inspection"):
         return {"revision": str(payload["revision"])}
     return {}
 
 
 def _request(payload: dict) -> dict:
     """The validated repos, board and per-repository commands of an add."""
-    repos, b, commands = payload["repos"], payload["board"], payload["commands"]
+    repos = payload["repos"]
+    board_value = payload.get("board")
+    commands = payload.get("commands", [{} for _ in repos])
     if not repos or len(commands) != len(repos):
         raise ValueError("repos must be non-empty, with one commands entry each")
-    return {"repos": [str(x) for x in repos],
-            "board": {"owner": str(b["owner"]), "number": int(b["number"])},
-            "commands": [{k: str(dict(c).get(k) or "") for k in
-                          ("setup_cmd", "gate_cmd", "verify_cmd")} for c in commands]}
+    automatic = payload.get("inspect", False)
+    result = {"repos": [str(x) for x in repos],
+              "board": ({"owner": str(board_value["owner"]), "number": int(board_value["number"])}
+                        if board_value else None),
+              "commands": [_command_request(c, automatic) for c in commands]}
+    if "inspect" in payload:
+        result["inspect"] = bool(automatic)
+    return result
+
+
+def _command_request(raw: dict, automatic: bool) -> dict:
+    result = {key: (None if automatic and raw.get(key) is None else str(raw.get(key) or ""))
+              for key in inspection.COMMANDS}
+    if "services" in raw:
+        result["services"] = raw["services"]
+    return result
 
 
 def _drain(r: Run) -> None:
@@ -288,7 +305,7 @@ def _add(r: Run, it: Intent) -> None:
     if rec is None:
         rec = Record(it.project, started_by=it.actor, request=request)
     else:
-        rec.notice = _rerun(rec, request)
+        rec.notice = _rerun(r, rec, request)
     _save(r, rec)
 
 
@@ -310,7 +327,7 @@ def edit_mode(rec: Record) -> EditMode:
     return "details" if rec.confirmed_revision else "repositories"
 
 
-def _rerun(rec: Record, request: dict) -> str:
+def _rerun(r: Run, rec: Record, request: dict) -> str:
     """Apply a request to an existing record; the notice it leaves. The same
     request resumes. Before the merge, another one is resolved again from
     the first step and so goes back to confirm, but after confirm its
@@ -323,8 +340,23 @@ def _rerun(rec: Record, request: dict) -> str:
                 "targets.yaml by hand for now")
     if mode == "details" and _repo_keys(rec.request) != _repo_keys(request):
         return "request refused: the repositories can't change after confirm"
+    rec.confirm_ready = False
+    rec.inspection.generation += 1
     rec.request, rec.steps = request, [Step(n) for n in STEPS]
     return ""
+
+
+def _retain_inspection(r: Run, rec: Record, resolved: list[dict]) -> None:
+    """Reconcile only after GitHub resolves spellings to stable repository IDs."""
+    from dispatcher import onboarding_sessions
+    repositories = {x["github_id"]: x for x in resolved}
+    reports = rec.inspection.repositories
+    for report in reports:
+        if report.github_id in repositories:
+            report.repo = repositories[report.github_id]["repo"]
+        elif report.request_id:
+            onboarding_sessions.withdraw(r.cfg.state_dir, report.request_id)
+    rec.inspection.repositories = [x for x in reports if x.github_id in repositories]
 
 
 def repo_key(spelling: str) -> str:
@@ -337,8 +369,7 @@ def _repo_keys(request: dict) -> list[str]:
 
 
 def _same(a: dict, b: dict) -> bool:
-    return _repo_keys(a) == _repo_keys(b) and (a["board"], a["commands"]) == (
-        b["board"], b["commands"])
+    return request_revision(a) == request_revision(b)
 
 
 def _confirm(r: Run, it: Intent) -> None:
@@ -350,7 +381,7 @@ def _confirm(r: Run, it: Intent) -> None:
               file=sys.stderr)
         return
     seen = it.payload["revision"]
-    if seen == rec.revision:
+    if seen == rec.revision and can_confirm(rec):
         rec.confirmed_revision, rec.notice = seen, ""
     else:
         rec.notice = (f"confirm of revision {seen[:12]} refused: the proposal is "
@@ -366,7 +397,24 @@ def _resume(r: Run, it: Intent) -> None:
         _save(r, rec)
 
 
-_APPLY = {"add": _add, "confirm": _confirm, "resume": _resume}
+def _skip_inspection(r: Run, it: Intent) -> None:
+    rec = load_record(r.cfg.state_dir, it.project)
+    if rec is None or rec.status != "open":
+        return
+    if rec.revision != it.payload["revision"]:
+        rec.notice = "proposal changed; review it before filling in by hand"
+    else:
+        rec.confirm_ready = False
+        rec.inspection.manual = True
+        for report in rec.inspection.repositories:
+            if report.state == "waiting":
+                _skip_report(r.cfg.state_dir, report)
+        rec.notice = ""
+    _save(r, rec)
+
+
+_APPLY = {"add": _add, "confirm": _confirm, "resume": _resume,
+          "skip-inspection": _skip_inspection}
 
 
 # -- the run ------------------------------------------------------------------
@@ -428,9 +476,12 @@ def _resolve(r: Run, rec: Record) -> Outcome:
             return x
         found.append(x)
     proposal = _proposal(rec, found)
-    if out := (_held(r, rec.project, found) or _check_board(r, proposal["board"])
-               or _check_fits(r, proposal)):
+    if out := _held(r, rec.project, found):
         return out
+    if "inspect" not in rec.request:
+        if out := (_check_board(r, proposal["board"]) or _check_fits(r, proposal)):
+            return out
+    _retain_inspection(r, rec, found if "inspect" in rec.request else [])
     rec.proposal, rec.revision = proposal, revision(proposal)
     return VERIFIED
 
@@ -476,7 +527,8 @@ def _proposal(rec: Record, found: list[dict]) -> dict:
     return {"name": rec.project, "paused": True, "board": rec.request["board"],
             "repositories": [{**x, "clone_path": str(root / x["name"]),
                               "worktrees_path": str(root / f"{x['name']}.worktrees"),
-                              **commands}
+                              **{k: v or "" for k, v in commands.items() if k != "services"},
+                              **({"services": commands["services"]} if commands.get("services") else {})}
                              for x, commands in zip(found, rec.request["commands"])]}
 
 
@@ -561,16 +613,139 @@ def _resource(rec: Record, kind: str, ref: str) -> None:
         rec.resources.append(entry)
 
 
+# -- inspect ------------------------------------------------------------------
+
+
+def _inspect(r: Run, rec: Record) -> Outcome:
+    if "inspect" not in rec.request:
+        return VERIFIED
+    for repository in rec.proposal["repositories"]:
+        report = _inspection_report(r, rec, repository)
+        if report.state == "waiting":
+            _inspection_progress(r, report, repository, rec.request["inspect"])
+    _apply_inspection(rec)
+    rec.revision = revision(rec.proposal)
+    return _inspection_outcome(rec.inspection.repositories)
+
+
+def _inspection_outcome(reports: list[inspection.RepositoryInspection]) -> Outcome:
+    pending = [x for x in reports if x.state == "waiting"]
+    if pending:
+        return waiting(pending[0].detail or "waiting for repository inspection")
+    return Outcome(StepState.VERIFIED, "; ".join(x.warning for x in reports if x.error))
+
+
+def _inspection_board(rec: Record) -> dict | None:
+    if rec.request["board"]:
+        return rec.request["board"]
+    choices = {json.dumps(x.facts.board, sort_keys=True): x.facts.board
+               for x in rec.inspection.repositories if x.facts.board}
+    return next(iter(choices.values())) if len(choices) == 1 else None
+
+
+def _inspection_report(r: Run, rec: Record, repository: dict) -> inspection.RepositoryInspection:
+    from dispatcher import onboarding_sessions
+    for report in rec.inspection.repositories:
+        if report.github_id == repository["github_id"]:
+            return report
+    report = inspection.RepositoryInspection(repository["repo"], inspection.facts(repository["clone_path"]),
+                                             github_id=repository["github_id"])
+    if rec.inspection.manual or not rec.request["inspect"]:
+        report.skip()
+    else:
+        report.request_id = onboarding_sessions.ensure_request(
+            r.cfg.state_dir, rec.project, repository["repo"], request_revision(rec.request),
+            repository["clone_path"], asdict(report.facts), generation=rec.inspection.generation)
+    rec.inspection.repositories.append(report)
+    return report
+
+
+def _inspection_progress(r: Run, report: inspection.RepositoryInspection, repository: dict, automatic: bool) -> None:
+    from dispatcher import onboarding_sessions
+    if not automatic:
+        _skip_report(r.cfg.state_dir, report)
+        return
+    current = onboarding_sessions.status(r.cfg.state_dir, report.request_id)
+    report.detail = current["detail"]
+    if current["state"] in ("complete", "failed", "withdrawn"):
+        report.complete(current.get("result"), repository["clone_path"], current["detail"])
+
+
+def _skip_report(state_dir: str, report: inspection.RepositoryInspection) -> None:
+    from dispatcher import onboarding_sessions
+    onboarding_sessions.withdraw(state_dir, report.request_id)
+    report.skip()
+
+
+def inspection_view(rec: Record) -> dict:
+    """Join overrides to resolved repository IDs, independent of submitted aliases."""
+    commands = _resolved_commands(rec)
+    return {"repositories": [report.view(commands.get(report.github_id, {}), rec.request["board"])
+                             for report in rec.inspection.repositories]}
+
+
+def _resolved_commands(rec: Record) -> dict[int, dict]:
+    if rec.step("resolve").state is not StepState.VERIFIED:
+        return {}
+    return {repository["github_id"]: command for repository, command in
+            zip(rec.proposal.get("repositories", []), rec.request["commands"])}
+
+
+def _apply_inspection(rec: Record) -> None:
+    views = {report["repo"]: report for report in inspection_view(rec)["repositories"]}
+    for repository in rec.proposal["repositories"]:
+        view = views[repository["repo"]]
+        repository.update({key: item["value"] for key, item in view["fields"].items()})
+        repository["services"] = [x["value"] for x in view["selected_services"]]
+    rec.proposal["board"] = _inspection_board(rec)
+
+
 # -- confirm ------------------------------------------------------------------
 
 
+def _requirements_met(rec: Record) -> bool:
+    if not rec.proposal.get("board"):
+        return False
+    if any(not x.get("gate_cmd", "").strip() for x in rec.proposal.get("repositories", [])):
+        return False
+    if "inspect" in rec.request:
+        if len(rec.inspection.repositories) != len(rec.proposal["repositories"]):
+            return False
+    return not _invalid_services(rec) and all(x.state != "waiting" for x in rec.inspection.repositories)
+
+
+def can_confirm(rec: Record) -> bool:
+    return rec.confirm_ready and _requirements_met(rec)
+
+
+def _invalid_services(rec: Record) -> str:
+    reports = {x.repo: x for x in rec.inspection.repositories}
+    for repository in rec.proposal.get("repositories", []):
+        report = reports.get(repository["repo"])
+        if report is None:
+            continue
+        found = {x.value for x in report.facts.services}
+        invalid = set(repository.get("services", [])) - found
+        if invalid:
+            return f"{repository['repo']}: services not found in Compose files: {', '.join(sorted(invalid))}"
+    return ""
+
+
 def _confirm_step(r: Run, rec: Record) -> Outcome:
+    rec.confirm_ready = False
+    if problem := _invalid_services(rec):
+        return blocked(problem)
+    if not _requirements_met(rec):
+        return blocked("choose a board and fill in a gate command for each repository")
+    if out := (_check_board(r, rec.proposal["board"]) or _check_fits(r, rec.proposal)):
+        return out
+    rec.confirm_ready = True
     if rec.revision and rec.confirmed_revision == rec.revision:
         return VERIFIED
-    req = rec.request
+    board_value = rec.proposal["board"]
     return blocked(f"review the proposal, then confirm revision {rec.revision[:12]}: "
-                   f"agent-ops project add {rec.project} {' '.join(req['repos'])} "
-                   f"--board {req['board']['owner']}/{req['board']['number']}")
+                   f"agent-ops project add {rec.project} {' '.join(rec.request['repos'])} "
+                   f"--board {board_value['owner']}/{board_value['number']}")
 
 
 # -- config-pr ----------------------------------------------------------------
@@ -968,8 +1143,8 @@ def _listed_paused(r: Run, project: str) -> bool:
                for p in json.loads(body)["projects"])
 
 
-STEPS = ("resolve", "clone", "confirm", "config-pr", "config-merge", "deploy", "visible")
-_STEPS = {"resolve": _resolve, "clone": _clone, "confirm": _confirm_step,
+STEPS = ("resolve", "clone", "inspect", "confirm", "config-pr", "config-merge", "deploy", "visible")
+_STEPS = {"resolve": _resolve, "clone": _clone, "inspect": _inspect, "confirm": _confirm_step,
           "config-pr": _config_pr, "config-merge": _config_merge, "deploy": _deploy,
           "visible": _visible}
 

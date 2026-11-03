@@ -32,7 +32,7 @@ from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
 from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, loops,
                         messages, pr_poll, priority, queue_ops, relogin, tmux_migration,
-                        triage)
+                        triage, onboarding_sessions)
 from dispatcher.board import BoardError
 from dispatcher.github import Candidate, GitHubClient
 
@@ -2618,14 +2618,17 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not dry_run:
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
-        triage.tick(cfg, deps, config_path)
+        onboarding_sessions.reconcile(cfg.state_dir)
+        reserved = onboarding_sessions.running(cfg.state_dir)
+        triage.tick(replace(cfg, capacity=max(0, cfg.capacity - reserved)), deps, config_path)
     # Evaluate each triage signal once — triage.running() is a real herdr
     # subprocess; calling it per repository would spawn (1 + len(repositories)) processes
     # each pass. The two signals are semantically distinct: eff is reduced when
     # the sweep is running (it holds a real capacity unit active() cannot see);
     # claims are paused when any request is in flight (pending = file OR running).
     sweep_running = triage.running()
-    eff = replace(cfg, capacity=max(0, cfg.capacity - 1)) if sweep_running else cfg
+    occupied = int(sweep_running) + onboarding_sessions.running(cfg.state_dir)
+    eff = replace(cfg, capacity=max(0, cfg.capacity - occupied))
     claims_paused = triage.pending(cfg.state_dir)
     _handle_telegram(cfg, deps, dry_run)
     usages = fetch_all(cfg)
@@ -2652,7 +2655,12 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
         _poll_prs(eff, deps, repository, dry_run)
     _resume_woken(eff, deps, admit, order, dry_run)
     _spawn_feedback(eff, deps, admit, order)
-    # Phase 2: new claims, with whatever capacity phase 1 left.
+    if not dry_run:
+        launched = onboarding_sessions.tick(
+            cfg, deps, admit, order, config_path,
+            free=_box_free(eff, load_all(cfg.state_dir)))
+        eff = replace(eff, capacity=max(0, eff.capacity - launched))
+    # Phase 2: new claims, with whatever capacity phase 1 and inspection left.
     if not claims_paused:
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run)

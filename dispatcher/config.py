@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -44,6 +44,7 @@ class Repository:
     project: Project
     setup_cmd: str = ""  # "" skips worktree provisioning in create_workspace
     verify_cmd: str = ""  # "{slot}" placeholder filled at spawn time; "" means no pre-PR e2e
+    services: list[str] = field(default_factory=list)  # recorded; execution support is deferred
     gate_cmd: str = ""  # repo-owned gate (tests/lint/CRAP); "{slot}" like verify_cmd. Required by load_config.
 
 
@@ -232,6 +233,9 @@ def _repository(raw: dict, project: Project) -> Repository:
     if not str(raw.get("gate_cmd") or "").strip():
         raise ValueError(f"{owner}: gate_cmd is required "
                          "(the session runs it after every ticket)")
+    services = raw.get("services", [])
+    if not isinstance(services, list) or any(not isinstance(x, str) or not x for x in services):
+        raise ValueError(f"{owner}: services must be a list of nonempty names")
     github_id = raw.get("github_id")
     if isinstance(github_id, bool) or not isinstance(github_id, int) or github_id < 1:
         raise ValueError(f"{owner}: github_id must be the numeric GitHub "

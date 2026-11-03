@@ -25,6 +25,8 @@ class Runtime:
     # (prompt, bare model, effort) -> one-shot non-interactive args; the
     # prompt is a shell word the caller already quoted or substitutes.
     headless_args: Callable[[str, str, str], str]
+    auth_file: str          # sole provider credential file exposed to inspection
+    inspection_args: Callable[[str, str], list[str]]  # (bare model, effort), no shell quoting
     package: str = ""       # where the host package lands, "" = the lone binary at binary_mount
 
     @property
@@ -46,6 +48,10 @@ class Runtime:
     def headless(self, prompt: str, model: str, effort: str) -> str:
         """One-shot shell line; model and effort are shell-quoted here."""
         return f"{self.cli} {self.headless_args(prompt, shlex.quote(model), shlex.quote(effort) if effort else '')}"
+
+    def inspection(self, model: str, effort: str) -> list[str]:
+        """A text-only turn in a clean home; no repository tools or customizations."""
+        return [self.cli, *self.inspection_args(model, effort)]
 
     def resume(self, session_id: str, message: str) -> str:
         """The args a launch takes to continue with the (quoted) message."""
@@ -90,6 +96,14 @@ CLAUDE = Runtime(
     headless_args=lambda prompt, model, effort: (
         f"-p {prompt} --permission-mode auto --model {model}"
         f"{' --effort ' + effort if effort else ''}"),
+    auth_file=".credentials.json",
+    inspection_args=lambda model, effort: [
+        '-p', '--model', model, '--tools', '',
+        '--safe-mode', '--restricted', '--strict-mcp-config',
+        '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
+        '--no-session-persistence', '--output-format', 'text',
+        *(['--effort', effort] if effort else [])],
+
 )
 
 CODEX = Runtime(
@@ -126,6 +140,15 @@ CODEX = Runtime(
         f"exec --model {model}"
         f"{' -c model_reasoning_effort=' + effort if effort else ''}"
         f" --dangerously-bypass-approvals-and-sandbox {prompt}"),
+    auth_file="auth.json",
+    inspection_args=lambda model, effort: [
+        'exec', '--model', model, '--sandbox', 'read-only',
+        '--ephemeral', '--skip-git-repo-check',
+        '-c', 'notify=[]', '-c', 'web_search="disabled"',
+        *[arg for feature in ('shell_tool', 'unified_exec', 'code_mode', 'code_mode_host',
+                              'apps', 'plugins', 'hooks', 'multi_agent', 'multi_agent_v2')
+          for arg in ('--disable', feature)],
+        *(['-c', f'model_reasoning_effort="{effort}"'] if effort else []), '-'],
     # The whole package, not the executable: Codex spawns helpers from next
     # to its real path (code-mode host, rg, bwrap). The session image links
     # /usr/local/bin/codex to /opt/codex/bin/codex.
