@@ -121,11 +121,12 @@ class RepositoryInspection:
 class Inspection:
     repositories: list[RepositoryInspection] = field(default_factory=list)
     manual: bool = False
+    generation: int = 0  # accepted request changes; restored repositories need fresh drafts
 
     @classmethod
     def from_json(cls, raw: dict) -> Inspection:
         return cls([RepositoryInspection.from_json(x) for x in raw.get("repositories", [])],
-                   raw.get("manual", False))
+                   raw.get("manual", False), raw.get("generation", 0))
 
 
 def _findings(raw: list[dict]) -> list[Finding]:

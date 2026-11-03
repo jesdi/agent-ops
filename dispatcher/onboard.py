@@ -341,6 +341,7 @@ def _rerun(r: Run, rec: Record, request: dict) -> str:
     if mode == "details" and _repo_keys(rec.request) != _repo_keys(request):
         return "request refused: the repositories can't change after confirm"
     rec.confirm_ready = False
+    rec.inspection.generation += 1
     rec.request, rec.steps = request, [Step(n) for n in STEPS]
     return ""
 
@@ -654,7 +655,7 @@ def _inspection_report(r: Run, rec: Record, repository: dict) -> inspection.Repo
     else:
         report.request_id = onboarding_sessions.ensure_request(
             r.cfg.state_dir, rec.project, repository["repo"], request_revision(rec.request),
-            repository["clone_path"], asdict(report.facts))
+            repository["clone_path"], asdict(report.facts), generation=rec.inspection.generation)
     rec.inspection.repositories.append(report)
     return report
 

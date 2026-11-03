@@ -46,14 +46,14 @@ def _read(path):
 
 
 def ensure_request(state_dir: str | Path, project: str, repository: str, revision: str,
-                   clone_path: str, facts: dict) -> str:
-    ident = hashlib.sha256(json.dumps([project, repository, revision]).encode()).hexdigest()
+                   clone_path: str, facts: dict, *, generation: int = 0) -> str:
+    ident = hashlib.sha256(json.dumps([project, repository, revision, generation]).encode()).hexdigest()
     path = _path(state_dir, ident)
     with state_lock(state_dir, 'onboarding-sessions.lock'):
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             write_json_atomic(path, dict(id=ident, project=project, repository=repository,
-                revision=revision, clone_path=clone_path, facts=facts, state='waiting',
+                revision=revision, generation=generation, clone_path=clone_path, facts=facts, state='waiting',
                 detail='waiting for the dispatcher', result=None))
     return ident
 
