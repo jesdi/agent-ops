@@ -224,7 +224,7 @@ def _references(command: str, evidence: str, root: Path) -> bool:
     if Path(evidence).name == 'Makefile':
         return _make_command(tokens, read(root, evidence), evidence)
     if Path(evidence).name == 'package.json':
-        return _package_command(command, _document(root, evidence, json.loads))
+        return evidence == 'package.json' and _package_command(command, _document(root, evidence, json.loads))
     return evidence in [token.removeprefix('./') for token in tokens]
 
 
@@ -234,6 +234,8 @@ def _make_command(tokens: list[str], contents: str, evidence: str) -> bool:
     args = tokens[1:]
     if args[:2] == ['-f', evidence]:
         args = args[2:]
+    elif evidence != 'Makefile':
+        return False
     if not args or any(not re.fullmatch(r'[A-Za-z0-9_.-]+', x) for x in args):
         return False
     return all(re.search(r'^' + re.escape(target) + r'\s*:', contents, re.MULTILINE)

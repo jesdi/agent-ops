@@ -371,3 +371,31 @@ def test_preinspection_record_recovers_confirmation_readiness_on_unit_pass(tmp_p
     rec = onboard.load_record(state(tmp_path), 'analytics')
     assert onboard.can_confirm(rec)
     assert onboard.inspection_view(rec) == {'repositories': []}
+
+
+@pytest.mark.parametrize(('command', 'evidence', 'contents'), [
+    ('make gate', 'subdir/Makefile', 'gate:\n\tpytest\n'),
+    ('npm run gate', 'subdir/package.json', '{"scripts":{"gate":"vitest"}}'),
+])
+def test_nested_manifest_does_not_validate_a_root_command(tmp_path, box, monkeypatch, command, evidence, contents):
+    rec = draft_for_repository(tmp_path, box, monkeypatch, {evidence: contents},
+        {'gate_cmd': {'value': command, 'reason': 'nested manifest', 'evidence': evidence}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == ''
+
+
+def test_explicit_nested_makefile_keeps_valid_target(tmp_path, box, monkeypatch):
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'subdir/Makefile': 'gate:\n\tpytest\n'},
+        {'gate_cmd': {'value': 'make -f subdir/Makefile gate', 'reason': 'nested target',
+                      'evidence': 'subdir/Makefile'}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == 'make -f subdir/Makefile gate'
+
+
+@pytest.mark.parametrize('command', [
+    'make', 'echo gate', 'make -f Otherfile gate', 'make gate; echo ok',
+])
+def test_make_draft_requires_a_target_and_matching_makefile(tmp_path, box, monkeypatch, command):
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'Makefile': 'gate:\n\tpytest\n'},
+        {'gate_cmd': {'value': command, 'reason': 'gate target', 'evidence': 'Makefile'}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == ''
