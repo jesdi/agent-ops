@@ -69,6 +69,7 @@ class Run:
     get: Get
     now: datetime
     _builder: list = field(default_factory=list)   # the run's builder, once read
+    adopted: set = field(default_factory=set)      # projects whose head this run adopted
 
 
 def _builder(r: Run) -> str:
@@ -666,20 +667,35 @@ def _push_pr(r: Run, rec: Record, main: str, pr: OpenPr | None, env: dict) -> Ou
     if isinstance(pushed, Outcome):
         return pushed
     number, url = (pr.number, pr.url) if pr else _create_pr(r, rec, env)
-    rec.infra_pr = InfraPr(number, url, pushed[0], pushed[1], rec.revision,
-                           r.now.isoformat(), pushed[2])
+    _record_push(r, rec, number, url, pushed)
     _resource(rec, "infra-pr", url)
     return Outcome(StepState.VERIFIED, link=url)
 
 
-def _push(r: Run, rec: Record, main: str, env: dict,
-          link: str) -> tuple[str, str, str] | Outcome:
+class Pushed(NamedTuple):
+    """The branch's head after _push: pushed by this run's builder, or
+    adopted, built by an unknown revision."""
+    head: str
+    base: str
+    builder: str      # "" when adopted
+    adopted: bool
+
+
+def _record_push(r: Run, rec: Record, number: int, url: str, pushed: Pushed) -> None:
+    """The PR now at `pushed`; its CI window starts now. An adoption is
+    rebuilt by this revision on the next run, not this one."""
+    rec.infra_pr = InfraPr(number, url, pushed.head, pushed.base, rec.revision,
+                           r.now.isoformat(), pushed.builder)
+    if pushed.adopted:
+        r.adopted.add(rec.project)
+
+
+def _push(r: Run, rec: Record, main: str, env: dict, link: str) -> Pushed | Outcome:
     """onboard/<project> rebuilt on infra main and pushed over the head the
-    record names (a lease), never over anyone else's. Its head, base and builder.
-    A head the record doesn't name is adopted when it is this very commit,
-    pushed before a crash lost the record's save (#210: a crash between
-    create and record still finds the resource); otherwise it blocks, with
-    `link`."""
+    record names (a lease), never over anyone else's. A head the record
+    doesn't name is adopted when it is this very commit, pushed before a
+    crash lost the record's save (#210: a crash between create and record
+    still finds the resource); otherwise it blocks, with `link`."""
     branch = f"onboard/{rec.project}"
     built = _commit(r, rec, main, env)
     if isinstance(built, Outcome):
@@ -691,13 +707,13 @@ def _push(r: Run, rec: Record, main: str, env: dict,
                   f"refs/remotes/origin/{branch}").strip()
     if theirs != ours:
         if _git(r, env, "show", "-s", "--format=%P %T", theirs).split() == [base, tree]:
-            return theirs, base, ""   # built by an unknown revision
+            return Pushed(theirs, base, "", adopted=True)
         return blocked(f"{branch} on {INFRA_REPO} is at {theirs}, which this onboarding "
                        f"didn't push (it pushed {ours or 'nothing yet'}): review it, then "
                        f"delete the branch, or {ABANDON}", link)
     _git(r, env, "push", *([f"--force-with-lease={branch}:{ours}"] if ours else []),
          "origin", f"HEAD:refs/heads/{branch}")
-    return head, base, builder
+    return Pushed(head, base, builder, adopted=False)
 
 
 def _commit(r: Run, rec: Record, main: str, env: dict) -> tuple[str, str, str] | Outcome:
@@ -784,22 +800,29 @@ def _added_on_main(r: Run, rec: Record, env: dict) -> Outcome:
 
 
 def _rebuild_or_check(r: Run, rec: Record, env: dict) -> Outcome:
-    """Rebuild the PR when infra main moved, else check it."""
+    """Rebuild the PR when infra main moved or another revision built it,
+    else check it. A head adopted this run waits for the next run's rebuild."""
     ip = rec.infra_pr
+    if rec.project in r.adopted:
+        return _adopted(ip.url)
     main = _infra_main(r, env)
-    builder = _builder(r)
     moved = _git(r, env, "rev-parse", "origin/main").strip() != ip.base
-    # an adoption this run has no builder, and waits for the next run's rebuild
-    if moved or ip.builder != builder and ip.pushed_at != r.now.isoformat():
-        pushed = _push(r, rec, main, env, ip.url)
-        if isinstance(pushed, Outcome):
-            return pushed
-        rec.infra_pr = InfraPr(ip.number, ip.url, pushed[0], pushed[1], rec.revision,
-                               r.now.isoformat(), pushed[2])
-        if not moved:
-            return _checked(r, rec, env)
+    if not moved and ip.builder == _builder(r):
+        return _checked(r, rec, env)
+    pushed = _push(r, rec, main, env, ip.url)
+    if isinstance(pushed, Outcome):
+        return pushed
+    _record_push(r, rec, ip.number, ip.url, pushed)
+    if pushed.adopted:
+        return _adopted(ip.url)
+    if moved:
         return waiting("infra main moved: the PR was rebuilt on it", ip.url)
     return _checked(r, rec, env)
+
+
+def _adopted(link: str) -> Outcome:
+    return waiting("adopted the branch's head, pushed before a crash: this revision "
+                   "rebuilds it next run", link)
 
 
 def _checked(r: Run, rec: Record, env: dict) -> Outcome:
