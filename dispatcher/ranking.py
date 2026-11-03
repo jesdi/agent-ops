@@ -70,6 +70,12 @@ def _merge(items: list[Item], issues: list[dict]) -> list[dict]:
     return merged
 
 
+def on_board(items: list[Item], issues: list[dict]) -> set[tuple[str, int]]:
+    """(lowercased repository, number) of every issue some item joins."""
+    titled = _unique((i["title"], i) for i in issues)
+    return {joined[0] for item in items if (joined := _join(item, titled)) is not None}
+
+
 def _score(issue: dict) -> float | None:
     impact, effort = issue["impact"], issue["effort"]
     return None if impact is None or not effort else impact / effort

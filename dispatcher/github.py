@@ -43,15 +43,6 @@ class Candidate:
     repository: str = ""  # the member repository the issue lives in
 
 
-_ISSUES_QUERY = """
-query($owner: String!, $name: String!, $endCursor: String) {
-  repository(owner: $owner, name: $name) { issues(first: 100, after: $endCursor) {
-    pageInfo { hasNextPage endCursor }
-    nodes { number title url body state labels(first: 100) { nodes { name } } }
-  } }
-}
-"""
-
 _ISSUE_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/issues/\d+/?")
 
 
@@ -182,16 +173,9 @@ class GitHubClient:
         return rows
 
     def _issues(self, repository: Repository) -> list[dict]:
-        """Every issue of `repository`, open and closed, as ranking.rank
-        reads them. GraphQL pages, so no count cap."""
-        owner, name = repository.repo.split("/", 1)
-        pages = json.loads(_run([
-            "gh", "api", "graphql", "--paginate", "--slurp",
-            "-f", f"query={_ISSUES_QUERY}", "-f", f"owner={owner}", "-f", f"name={name}"]))
-        return [{**node, "repository": repository.repo,
-                 "labels": [label["name"] for label in node["labels"]["nodes"]]}
-                for page in pages
-                for node in page["data"]["repository"]["issues"]["nodes"]]
+        """Every issue of `repository`, open and closed (board.repo_issues),
+        read with the stored auth."""
+        return board.repo_issues(repository.repo, lambda args: _run(["gh"] + args))
 
     def candidates(self, repositories: list[Repository]) -> list[Candidate]:
         """One project's claimable rows (see rank_rows), in rank order across
