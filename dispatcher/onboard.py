@@ -621,10 +621,14 @@ def _inspect(r: Run, rec: Record) -> Outcome:
         _apply_inspection(rec, repository, report)
     _inspection_board(rec)
     rec.revision = revision(rec.proposal)
-    pending = [x for x in rec.inspection["repositories"] if x["state"] == "waiting"]
+    return _inspection_outcome(rec.inspection["repositories"])
+
+
+def _inspection_outcome(reports: list[dict]) -> Outcome:
+    pending = [x for x in reports if x["state"] == "waiting"]
     if pending:
         return waiting(pending[0]["detail"] or "waiting for repository inspection")
-    warnings = [x["detail"] for x in rec.inspection["repositories"] if x["detail"].startswith("draft unavailable:")]
+    warnings = [x["detail"] for x in reports if x["detail"].startswith("draft unavailable:")]
     return Outcome(StepState.VERIFIED, "; ".join(warnings))
 
 
@@ -672,11 +676,7 @@ def _inspection_progress(r: Run, report: dict, repository: dict) -> None:
 def _apply_inspection(rec: Record, repository: dict, report: dict) -> None:
     index = next(i for i, item in enumerate(rec.proposal["repositories"]) if item is repository)
     supplied = rec.request["commands"][index]
-    for key in inspection.COMMANDS:
-        item = report.get("draft_fields", {}).get(key, inspection.value(""))
-        repository[key] = supplied.get(key) if supplied.get(key) is not None else item["value"]
-        report["fields"][key] = (inspection.value(supplied[key], "you")
-                                 if supplied.get(key) is not None else item)
+    _apply_inspection_commands(repository, report, supplied)
     selected = supplied.get("services")
     report["selected_services"] = ([inspection.value(x, "you") for x in selected]
                                    if selected is not None else report.get("draft_services", []))
@@ -684,6 +684,13 @@ def _apply_inspection(rec: Record, repository: dict, report: dict) -> None:
     report["board"] = (inspection.value(rec.request["board"], "you") if rec.request["board"]
                        else report.get("detected_board", inspection.value(None)))
 
+
+def _apply_inspection_commands(repository: dict, report: dict, supplied: dict) -> None:
+    for key in inspection.COMMANDS:
+        item = report.get("draft_fields", {}).get(key, inspection.value(""))
+        repository[key] = supplied.get(key) if supplied.get(key) is not None else item["value"]
+        report["fields"][key] = (inspection.value(supplied[key], "you")
+                                 if supplied.get(key) is not None else item)
 
 
 # -- confirm ------------------------------------------------------------------

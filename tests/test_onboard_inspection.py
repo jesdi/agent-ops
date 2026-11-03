@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from dispatcher import onboard
 from tests.test_onboard import FakeSh, box, run, state
 
@@ -212,3 +214,76 @@ def test_nonexistent_target_is_rejected_even_when_makefile_exists(tmp_path, box,
     rec = onboard.load_record(state(tmp_path), 'analytics')
     assert rec.proposal['repositories'][0]['gate_cmd'] == ''
     assert rec.step('inspect').detail.startswith('draft unavailable:')
+
+
+def draft_for_repository(tmp_path, box, monkeypatch, files, draft):
+    def clone(argv, cwd, env):
+        root = Path(argv[-1])
+        (root / '.git').mkdir(parents=True)
+        for name, contents in files.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents)
+        return ''
+    start(tmp_path, board={'owner': 'jesdi', 'number': 4})
+    run(box, FakeSh({'git clone': clone}))
+    rec = onboard.load_record(state(tmp_path), 'analytics')
+    finish(tmp_path, box, rec, monkeypatch, draft)
+    run(box, FakeSh())
+    return onboard.load_record(state(tmp_path), 'analytics')
+
+
+@pytest.mark.parametrize(('command', 'scripts', 'expected'), [
+    ('pnpm run gate', {'gate': 'vitest run'}, 'pnpm run gate'),
+    ('npm ci', {}, 'npm ci'),
+    ('npm run absent', {'gate': 'vitest run'}, ''),
+    ('npm run gate', ['gate'], ''),
+    ('python -m pytest', {'gate': 'vitest run'}, ''),
+])
+def test_draft_package_commands_require_install_or_a_declared_script(
+        tmp_path, box, monkeypatch, command, scripts, expected):
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'package.json': json.dumps({'scripts': scripts})},
+        {'gate_cmd': {'value': command, 'reason': 'package script', 'evidence': 'package.json'}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == expected
+
+
+@pytest.mark.parametrize(('command', 'evidence', 'expected'), [
+    ('python scripts/check.py', 'scripts/check.py', 'python scripts/check.py'),
+    ('pytest', 'pyproject.toml', ''),
+    ('make gate', '../outside', ''),
+    ('make gate', '/tmp/outside', ''),
+    ('make gate', '', ''),
+])
+def test_draft_command_requires_readable_repository_evidence(
+        tmp_path, box, monkeypatch, command, evidence, expected):
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'scripts/check.py': 'print("checked")', 'pyproject.toml': '[project]\nname="demo"'},
+        {'gate_cmd': {'value': command, 'reason': 'repository evidence', 'evidence': evidence}})
+    assert rec.proposal['repositories'][0]['gate_cmd'] == expected
+
+
+@pytest.mark.parametrize('entry', [None, {'value': 3, 'reason': 'declared'},
+    {'value': 'TOKEN', 'reason': None}, {'value': 'TOKEN', 'reason': '  '},
+    {'value': 'not-a-secret-name', 'reason': 'declared'}])
+def test_invalid_draft_secret_names_do_not_replace_rule_facts(tmp_path, box, monkeypatch, entry):
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'.env.example': 'EXISTING_TOKEN=example\n'}, {'secrets': [entry]})
+    assert rec.inspection['repositories'][0]['secrets'] == [
+        {'value': 'EXISTING_TOKEN', 'source': 'rule: .env.example'}]
+
+
+def test_valid_draft_secret_name_adds_its_reason(tmp_path, box, monkeypatch):
+    rec = draft_for_repository(tmp_path, box, monkeypatch, {},
+        {'secrets': [{'value': 'API_TOKEN', 'reason': 'client configuration'}]})
+    assert rec.inspection['repositories'][0]['secrets'] == [
+        {'value': 'API_TOKEN', 'source': 'draft: client configuration'}]
+
+
+def test_draft_cannot_select_a_service_missing_from_compose(tmp_path, box, monkeypatch):
+    rec = draft_for_repository(tmp_path, box, monkeypatch,
+        {'compose.yaml': 'services:\n  postgres: {}\n'},
+        {'services': [{'value': 'redis', 'reason': 'guessed cache'}]})
+    assert rec.proposal['repositories'][0]['services'] == []
+    assert rec.inspection['repositories'][0]['services'] == [
+        {'value': 'postgres', 'source': 'rule: compose.yaml'}]

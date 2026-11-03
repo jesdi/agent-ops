@@ -448,3 +448,55 @@ it('distinguishes an intentionally skipped draft from a completed search that fo
   expect(screen.getAllByText('Draft skipped')).toHaveLength(3)
   expect(screen.queryByText('Not inspected yet')).not.toBeInTheDocument()
 })
+
+it('shows that inspection found no services or secret names in proposal review', async () => {
+  const emptyFacts = { ...inspected, inspection: { repositories: [{ ...inspected.inspection.repositories[0]!, services: [], secrets: [] }] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(emptyFacts)))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
+  const review = within(screen.getByRole('region', { name: 'Review proposal' }))
+  expect(review.getAllByText('Nothing found')).toHaveLength(4)
+  expect(review.getByText('Compose services')).toBeInTheDocument()
+  expect(review.getByText('Secret names')).toBeInTheDocument()
+})
+
+it('selects a detected service by hand and saves the explicit choice', async () => {
+  let saved: unknown
+  const unselected = { ...inspected, proposal: { ...inspected.proposal,
+    repositories: [{ ...inspected.proposal.repositories[0]!, services: [] }] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(unselected)),
+    http.post('/api/onboarding/analytics', async ({ request }) => {
+      saved = await request.json()
+      return HttpResponse.json({ status: 'pending', intent: 'selected-service' }, { status: 202 })
+    }))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }))
+  const service = screen.getByRole('checkbox', { name: 'postgres' })
+  expect(service).not.toBeChecked()
+  await userEvent.click(service)
+  expect(service).toBeChecked()
+  expect(screen.getByText('you')).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Save details' }))
+  await waitFor(() => expect(saved).toMatchObject({ commands: [{ services: ['postgres'] }] }))
+})
+
+it('distinguishes detected services from selected services in review', async () => {
+  const unselected = { ...inspected, proposal: { ...inspected.proposal,
+    repositories: [{ ...inspected.proposal.repositories[0]!, services: [] }] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(unselected)))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
+  const review = within(screen.getByRole('region', { name: 'Review proposal' }))
+  expect(review.getByText('postgres — not selected')).toBeInTheDocument()
+  expect(review.getByText('rule: compose.yaml')).toBeInTheDocument()
+})
+
+it('uses detected provenance when a selected service has no draft reason', async () => {
+  const ruleSelected = { ...inspected, inspection: { repositories: [{ ...inspected.inspection.repositories[0]!, selected_services: [] }] } }
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json(ruleSelected)))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
+  const review = within(screen.getByRole('region', { name: 'Review proposal' }))
+  expect(review.getByText('postgres — selected')).toBeInTheDocument()
+  expect(review.getByText('rule: compose.yaml')).toBeInTheDocument()
+})

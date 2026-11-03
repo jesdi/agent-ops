@@ -1,6 +1,10 @@
 """Onboarding session requests share dispatcher capacity without task records."""
+import pytest
+
 from dispatcher import onboarding_sessions as sessions
 from dispatcher.config import Config
+
+HERDR_RUN = sessions.herdr._run
 
 
 def cfg(tmp_path):
@@ -233,3 +237,28 @@ def test_runner_timeout_kills_container_before_releasing_capacity(tmp_path, monk
     assert calls == [['podman', 'run'], ['podman', 'kill']]
     assert sessions.running(tmp_path) == 0
     assert sessions.status(tmp_path, ident)['detail'] == 'inspection timed out after 10 minutes'
+
+
+@pytest.mark.parametrize(('reply', 'returncode', 'reserved'), [
+    ({'result': {'tabs': [{'label': 'unrelated', 'workspace_id': 'w1', 'tab_id': 't1'}]}}, 0, 0),
+    ({'result': {}}, 0, 1),
+    ({'error': 'unavailable'}, 1, 1),
+])
+def test_recovery_requires_an_authoritative_session_console_snapshot(
+        tmp_path, monkeypatch, reply, returncode, reserved):
+    import json
+    from datetime import datetime, timedelta, timezone
+    from subprocess import CompletedProcess
+    ident = request(tmp_path)
+    class Tab:
+        def run(self, command):
+            return True
+    monkeypatch.setattr(sessions.herdr.Tab, 'ensure', lambda *a, **kw: Tab())
+    sessions.tick(cfg(tmp_path), None, lambda _: True, lambda xs: xs, 'targets.yaml', free=2)
+    monkeypatch.setattr(sessions.herdr, '_run', HERDR_RUN)
+    monkeypatch.setattr(sessions.herdr.subprocess, 'run',
+        lambda argv, **kw: CompletedProcess(argv, returncode, json.dumps(reply), ''))
+    sessions.reconcile(tmp_path,
+        run=lambda argv, **kw: CompletedProcess(argv, 1),
+        now=datetime.now(timezone.utc) + timedelta(minutes=20))
+    assert sessions.running(tmp_path) == reserved
