@@ -11,8 +11,10 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Iterator
 
 from dispatcher import github_app
 
@@ -21,10 +23,15 @@ TASK_PERMISSIONS = {"contents": "write", "pull_requests": "write", "issues": "wr
                     "workflows": "write", "actions": "read", "checks": "read",
                     "metadata": "read"}
 
+# What a triage session may do on its repository: read, nothing else.
+TRIAGE_PERMISSIONS = {"contents": "read", "issues": "read", "pull_requests": "read",
+                      "metadata": "read"}
+
 REFRESH = timedelta(minutes=20)   # a task token with less left is re-minted
 
 TOKENS = "tokens"            # state_dir/tokens/<task_key>: a task's mounted directory
 EXPIRY = "token-expiry"      # state_dir/token-expiry/<task_key>: its token's expires_at
+TRIAGE = "triage-tokens"     # state_dir/triage-tokens/triage-*: a triage run's directory
 
 
 def _atomic(path: Path, text: str) -> None:
@@ -100,3 +107,24 @@ def sync(access: github_app.Access | None, state_dir, holders: dict[str, str],
             except (github_app.AppError, github_app.NoAccess, OSError) as exc:
                 waits.append(f"{key}: {exc}")
     return waits
+
+
+@contextmanager
+def triage(access: github_app.Access, state_dir, repo: str) -> Iterator[str]:
+    """A directory holding a read-only token for `repo` alone, for one triage
+    run; removed when the run ends, however it ends. NoAccess or AppError when
+    there is no token: triage never falls back to the host's gh config."""
+    token = access.grants([repo], TRIAGE_PERMISSIONS)[repo.lower()]
+    root = Path(state_dir) / TRIAGE
+    root.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(prefix="triage-", dir=root))   # 0700
+    try:
+        write(directory, token)
+        yield str(directory)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def prune_triage(state_dir) -> None:
+    """A killed sweep's leftovers: no triage run is live when a sweep starts."""
+    shutil.rmtree(Path(state_dir) / TRIAGE, ignore_errors=True)

@@ -99,7 +99,7 @@ def _sweep(cfg, gh, decisions):
     """Run the sweep; returns (report lines, the context the session saw)."""
     seen = {}
 
-    def session(cfg, repo, blob, started_date, entry, run=None):
+    def session(cfg, repo, blob, started_date, entry, run=None, app=None):
         seen.update(blob)
         return decisions
 

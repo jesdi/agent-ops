@@ -5,6 +5,7 @@ import subprocess
 import subprocess as _subprocess
 import sys
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -235,6 +236,8 @@ class FakeDeps:
         self.notifier = SpyNotifier()
         self.app = None
         self.github = SimpleNamespace()   # the pass sets its host credentials on it
+        self.access = None
+        self.clock = lambda: datetime.now(timezone.utc)
 
 
 OLD = "2026-07-29T00:00:00Z"
@@ -340,7 +343,7 @@ def test_sweep_runs_on_the_first_admitted_triage_entry(tmp_path):
     deps = FakeDeps()
     triage.save_cursors(tmp_path, {"o/a": OLD})
     seen = {}
-    def fake_run_session(cfg, repo, blob, started_date, entry, run=None):
+    def fake_run_session(cfg, repo, blob, started_date, entry, run=None, app=None):
         seen["entry"] = str(entry)
         return {"issues": []}
     with patch.object(triage, "fetch_all", return_value=FABLE_HOT), \

@@ -122,7 +122,7 @@ def test_triage_prompt_contains_the_track_list(tmp_path):
     real = triage._run_session
     prompt = []
 
-    def session(cfg, repo, blob, started_date, entry, run=None):
+    def session(cfg, repo, blob, started_date, entry, run=None, app=None):
         def fake_run(cmd, capture_output, text, timeout):
             d = Path(cfg.state_dir) / triage.TRIAGE_DIR
             (d / "o-a-2026-07-30.json").write_text('{"issues": []}')
