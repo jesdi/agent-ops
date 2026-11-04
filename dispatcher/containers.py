@@ -97,7 +97,8 @@ def _wrapper() -> list[str]:
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 args: str, effort: str = "",
-                second: Entry | None = None, clone: str = "") -> str:
+                second: Entry | None = None, clone: str = "",
+                gh_config: str = "") -> str:
     """The session's shell command, resolved from its qualified model ID.
     An unknown provider raises before anything runs.
     A granted `second` model (models.second_model) also gets its runtime's
@@ -108,7 +109,9 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     is the repository's configured clone path: nothing here is read from the
     worktree (its `.git` pointer is session-writable) except the task
     branch, which task_branch validates. With no clone none is mounted; the
-    launcher refuses to launch without one."""
+    launcher refuses to launch without one. `gh_config` is the host directory
+    mounted read-only as the container's gh config in place of the host's own
+    (the task's installation token): its caller owns what it holds."""
     runtime = runtime_for(model)
     extra = _runtime_args(runtime_for(second.model_id)) if second else []
     worktree = _host_path("worktree", worktree)
@@ -116,6 +119,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     branch = task_branch(worktree, name)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
     clone_mount = (_mount(_host_path("clone", clone), clone) + " ") if clone else ""
+    gh_config = _host_path("gh config", gh_config or f"{Path.home()}/.config/gh")
     home = str(Path.home())
     # podman errors on a missing bind source; waitd only creates the dir
     # when it (re)starts with the new socket path, which a spawn can race
@@ -139,7 +143,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         f"{_mount(f'{state}/wait', f'{state}/wait')} "
         f"{_mount(worktree, worktree)} -w {shlex.quote(worktree)} "
         f"{clone_mount}"
-        f"{_mount(f'{home}/.config/gh', '/root/.config/gh', 'ro')} "
+        f"{_mount(gh_config, '/root/.config/gh', 'ro')} "
         f"{_mount(f'{home}/.gitconfig', '/root/.gitconfig', 'ro')} "
         f"{shlex.quote(image())} "
         f"{runtime.launch(name, worktree, bare_model_id(model), effort)}"
@@ -148,7 +152,8 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
 
 
 def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
-               cpus: str, model: str, prompt_path: str, effort: str = "") -> list[str]:
+               cpus: str, model: str, prompt_path: str, effort: str = "", *,
+               gh_config: str) -> list[str]:
     """Headless read-only triage session: argv for subprocess.run (no pane,
     no -it). The clone is :ro — the session decides, it never writes; its
     only writable surface is /triage, where the prompt is read from and the
@@ -169,7 +174,12 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     composed; the podman argv stays a list so its shape stays assertable.
 
     The CLI is the model's runtime run headless (`claude -p`, `codex
-    exec`); an unknown provider raises before anything runs."""
+    exec`); an unknown provider raises before anything runs.
+
+    gh_config is the directory holding the repository's read-only token; it
+    is required, so the host's own gh config is never the fallback."""
+    if not gh_config:
+        raise ValueError("triage needs a token directory: the host's gh config is never mounted")
     runtime = runtime_for(model)
     home = str(Path.home())
     line = runtime.headless(f"\"$(cat {shlex.quote(prompt_path)})\"",
@@ -180,7 +190,7 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         "--memory", memory, "--cpus", cpus,
         *_runtime_args(runtime),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
-        "-v", f"{home}/.config/gh:/root/.config/gh:ro",
+        "-v", f"{gh_config}:/root/.config/gh:ro",
         "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
         "-v", f"{triage_dir}:/triage",
         image(), "bash", "-c", line,

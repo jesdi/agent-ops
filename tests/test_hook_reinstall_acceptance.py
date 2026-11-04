@@ -153,7 +153,7 @@ def test_create_workspace_matches_a_launched_worktree(tmp_path, monkeypatch, wt_
     spawn(wt)
     launched = snapshot(wt)
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         if "worktree" in args:
             w = Path(args[-2])
             w.mkdir(parents=True, exist_ok=True)

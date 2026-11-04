@@ -15,6 +15,8 @@ from urllib.parse import quote
 from dataclasses import dataclass
 from pathlib import Path
 
+from dispatcher import host_auth
+
 _TIMEOUT = 60  # per git command
 
 
@@ -50,23 +52,25 @@ def relative_artifact(worktree: str, artifact: str) -> str | None:
     return None
 
 
-def _git(worktree: str, *args: str) -> subprocess.CompletedProcess:
+def _git(worktree: str, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    """`env`: a network call's, from the pass's host credential (HostAuth.env)."""
     return subprocess.run(["git", "-C", worktree, *args],
-                          capture_output=True, text=True, timeout=_TIMEOUT)
+                          capture_output=True, text=True, timeout=_TIMEOUT, env=env)
 
 
 class _GitFailed(Exception):
     pass
 
 
-def _must(worktree: str, *args: str) -> subprocess.CompletedProcess:
-    proc = _git(worktree, *args)
+def _must(worktree: str, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    proc = _git(worktree, *args, env=env)
     if proc.returncode != 0:
         raise _GitFailed(f"git {args[0]} failed: {proc.stderr.strip()}")
     return proc
 
 
-def _commit_and_push(worktree: str, branch: str, issue: int, spec: str) -> None:
+def _commit_and_push(worktree: str, branch: str, issue: int, spec: str,
+                     env: dict | None) -> None:
     rel = Path(spec).parent.as_posix()
     if _must(worktree, "status", "--porcelain", "--", rel).stdout.strip():
         # Uncommitted (or untracked) files — the agent forgot. Commit
@@ -79,14 +83,16 @@ def _commit_and_push(worktree: str, branch: str, issue: int, spec: str) -> None:
     if _git(worktree, "ls-files", "--error-unmatch", "--", spec).returncode != 0:
         raise _GitFailed(f"spec not tracked in git: {spec}")
     head = _must(worktree, "rev-parse", "HEAD").stdout.strip()
-    remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}")
+    remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}", env=env)
     if remote.returncode != 0 or remote.stdout.split()[:1] != [head]:
-        _must(worktree, "push", "origin", f"HEAD:refs/heads/{branch}")
+        _must(worktree, "push", "origin", f"HEAD:refs/heads/{branch}", env=env)
 
 
 def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
-                     artifact: str, dry_run: bool = False) -> PublishResult:
-    """Publish the folder `artifact` (the task's spec.md) lives in."""
+                     artifact: str, dry_run: bool = False,
+                     auth: host_auth.HostAuth = host_auth.STORED) -> PublishResult:
+    """Publish the folder `artifact` (the task's spec.md) lives in; the push
+    runs on `auth`, the pass's host credential for `repo`."""
     spec = relative_artifact(worktree, artifact)
     parts = Path(spec).parts if spec else ()
     if len(parts) < 3 or ".." in parts or parts[0].lower() == ".agent":
@@ -99,7 +105,9 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
         print(f"[dry-run] ensure spec folder {rel} committed+pushed on {branch}")
         return PublishResult(url=folder_url(repo, branch, rel))
     try:
-        _commit_and_push(worktree, branch, issue, spec)
+        _commit_and_push(worktree, branch, issue, spec, auth.env(repo))
+    except host_auth.HostWait as exc:
+        return PublishResult(error=f"push waits for the GitHub App: {exc}")
     except _GitFailed as exc:
         return PublishResult(error=str(exc))
     except (OSError, subprocess.SubprocessError) as exc:
@@ -116,15 +124,17 @@ class PublishedReference:
 class ArtifactPublisher:
     """Verify artifacts against one remote branch snapshot per collection."""
 
-    def __init__(self, worktree: str, branch: str, repo: str):
-        self.worktree, self.branch, self.repo = worktree, branch, repo
+    def __init__(self, worktree: str, branch: str, repo: str,
+                 auth: host_auth.HostAuth = host_auth.STORED):
+        self.worktree, self.branch, self.repo, self.auth = worktree, branch, repo, auth
         self._resolved = False
         self._commit = ""
 
     def _remote_commit(self) -> str:
         if not self._resolved:
             self._resolved = True
-            remote = _git(self.worktree, "ls-remote", "origin", f"refs/heads/{self.branch}")
+            remote = _git(self.worktree, "ls-remote", "origin", f"refs/heads/{self.branch}",
+                          env=self.auth.env(self.repo))
             fields = remote.stdout.split() if remote.returncode == 0 else []
             self._commit = fields[0] if fields else ""
         return self._commit

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
-from dispatcher import execution_overrides, failures, spec_publish
+from dispatcher import execution_overrides, failures, host_auth, spec_publish
 from dispatcher.board import BoardError
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.github import Candidate
@@ -46,6 +46,8 @@ DENY_ALL = lambda m: main.Verdict(admitted=False, provider="anthropic", binding=
 
 
 class FakeGitHub:
+    auth = host_auth.STORED
+
     def __init__(self, cands=(), run_conclusion="", run_status_raises=False,
                  issue_states=None, issue_state_raises=False, rows=(),
                  cands_by_repository=None):
@@ -177,6 +179,7 @@ class FakeSessions:
         # without disturbing the existing spawned/resumed tuple shapes.
         self.spawn_calls = []
         self.resume_calls = []
+        self.gh_configs = []   # the gh config each spawn or resume mounts
         # Issues whose launch explodes the way a vanished worktree does:
         # the launcher checks <worktree>/.git before it builds the command to
         # mount, so a swept or half-removed checkout raises here.
@@ -201,20 +204,22 @@ class FakeSessions:
         self.sent_text.append((issue, text))
         return True
 
-    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None):
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None, gh_config=""):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.spawned.append((issue, stage_name, model, prompt, effort))
         self.spawn_calls.append((repository, issue))
+        self.gh_configs.append(gh_config)
 
     def resume(self, repository, issue, worktree, message, model, effort="", second=None,
-               *, session_id=None):
+               *, session_id=None, gh_config=""):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.resumed.append((issue, message, model, effort))
         self.resume_calls.append((repository, issue))
+        self.gh_configs.append(gh_config)
 
     def capture_tail(self, repository, issue, lines=25):
         self.call_log.append(("capture_tail", repository, issue))
@@ -276,7 +281,7 @@ def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
 
 
 def patch_workspace(monkeypatch, tmp_path):
-    def fake_create(repository, issue, base="main", dry_run=False):
+    def fake_create(repository, issue, base="main", dry_run=False, auth=None):
         wt = Path(repository.worktrees_path) / f"task-{issue}"
         (wt / ".agent").mkdir(parents=True, exist_ok=True)
         return str(wt)
@@ -1136,7 +1141,7 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
             self.ops.append(("end", issue))
             super().end(repository, issue)
 
-        def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None):
+        def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None, gh_config=""):
             self.ops.append(("spawn", stage_name))
             super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
 
@@ -1242,7 +1247,7 @@ def test_workspace_failure_reports_quarantines_and_pass_survives(tmp_path, monke
     gh = FakeGitHub([Candidate(42, "Bad", "u42"), Candidate(43, "Good", "u43")])
     sess = FakeSessions()
 
-    def failing_workspace(repository, issue, base="main", dry_run=False):
+    def failing_workspace(repository, issue, base="main", dry_run=False, auth=None):
         if issue == 42:
             raise RuntimeError("pipenv: no python 3.13")
         wt = Path(repository.worktrees_path) / f"task-{issue}"
@@ -1269,7 +1274,7 @@ def test_workspace_failure_second_pass_dedupes(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     gh = FakeGitHub([Candidate(42, "Bad", "u42")])
 
-    def failing_workspace(repository, issue, base="main", dry_run=False):
+    def failing_workspace(repository, issue, base="main", dry_run=False, auth=None):
         raise RuntimeError("pipenv: no python 3.13")
 
     monkeypatch.setattr(main, "create_workspace", failing_workspace)
@@ -3455,12 +3460,12 @@ class LiveUntilEnded(FakeSessions):
     frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
     express across a dozen passes."""
 
-    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None):
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None, gh_config=""):
         super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
         self.alive_set.add(issue)
 
     def resume(self, repository, issue, worktree, message, model, effort="", second=None,
-               *, session_id=None):
+               *, session_id=None, gh_config=""):
         super().resume(repository, issue, worktree, message, model, effort,
                        session_id=session_id)
         self.alive_set.add(issue)
@@ -4319,7 +4324,7 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple))
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config="")
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
@@ -4333,7 +4338,7 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple))
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config="")
     assert "## Operator messages" not in d.sessions.spawned[-1][3]
 
 
@@ -4989,7 +4994,7 @@ def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple))
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config="")
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
     assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
@@ -5221,7 +5226,7 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
                       main._launch_for(c, c.repositories[0], task, Stage.IMPLEMENT,
-                                       lambda m: True, tuple))
+                                       lambda m: True, tuple), gh_config="")
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
         f"stage advance must clear operator_request, got {t.operator_request!r}")

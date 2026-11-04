@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -30,8 +31,8 @@ from dispatcher.config import (Config, Repository, apply_stored_models,
                                referenced_providers, routed_providers, stranded)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
-from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, labels, loops,
-                        messages, pr_poll, priority, queue_ops, relogin, tmux_migration,
+from dispatcher import (answers, claims, eventlog, execution_overrides, failures, github_app, host_auth, intents, labels, loops,
+                        messages, pr_poll, priority, queue_ops, relogin, task_tokens, tmux_migration,
                         triage, onboarding_sessions)
 from dispatcher.board import BoardError
 from dispatcher.github import Candidate, GitHubClient
@@ -57,7 +58,7 @@ from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SLOT, PARK_CI,
                               PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
-                              WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
+                              WHY_ACCESS, WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
                               RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
                               Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_session, clear_turn_markers, delete, has_waiting,
@@ -83,6 +84,11 @@ class Deps:
     github: object
     sessions: object
     notifier: object
+    app: github_app.Client | None = None   # the GitHub App; None: the stored auth
+    # the time a task token's life is measured against
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    # The pass's App access (_begin_pass_auth): one cache for every token the pass mints.
+    access: github_app.Access | None = None
 
 
 def _now() -> str:
@@ -630,16 +636,52 @@ def _with_implement_provider(task: TaskState, stage: Stage, entry) -> list[str]:
 
 
 def _spawn_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                 launch: Launch, spec_path: str = "") -> TaskState:
+                 launch: Launch, spec_path: str = "", *, gh_config: str) -> TaskState:
     # Logical stage boundaries reset loop budgets; a replacement conversation
     # calls the same launch I/O without creating a new allowance.
     task = loops.reset(task, ResetCause.STAGE_STARTED)
-    return _launch_stage(cfg, deps, repository, task, launch, spec_path)
+    return _launch_stage(cfg, deps, repository, task, launch, spec_path, gh_config=gh_config)
+
+
+def _task_token(cfg: Config, deps: Deps, repository: Repository,
+                task: TaskState) -> str | None:
+    """The gh config a launch of `task` mounts (`gh_config` of every launch):
+    its token directory; "" with no App access, the host's own gh config, which
+    only tests see (production always wires the App). None: it can't launch
+    this pass. An App error leaves the task as it is, for the next pass (a
+    claimed task that never launched is marked `unlaunched`, which the next
+    pass's drive launches); a repository the installation doesn't reach parks
+    it for access (_wake_reached wakes it). The one place a launch asks for its
+    token, before the launch changes anything."""
+    if deps.access is None:
+        return ""
+    try:
+        return task_tokens.issue(deps.access, cfg.state_dir,
+                                 task_key(task.repository, task.issue), repository.repo)
+    except github_app.AppError as exc:
+        print(f"[warn] #{task.issue}: GitHub App error, its launch waits for the next pass: {exc}",
+              file=sys.stderr)
+        if task.stage is Stage.QUEUED and not task.park and not task.unlaunched:
+            save(cfg.state_dir, replace(task, unlaunched=True))
+        return None
+    except github_app.NoAccess as exc:
+        _park_for_input(cfg, deps, repository, task, f"{exc}: {exc.link}", reason=WHY_ACCESS)
+        return None
+
+
+def _sync_task_tokens(cfg: Config, deps: Deps) -> None:
+    """A task's token directory lives while the task holds a session
+    (task_tokens.sync); a refresh that fails waits for the next pass."""
+    repos = {r.name: r.repo for r in cfg.repositories}
+    holders = {task_key(t.repository, t.issue): repos[t.repository]
+               for t in load_all(cfg.state_dir) if holds_slot(t) and t.repository in repos}
+    for why in task_tokens.sync(deps.access, cfg.state_dir, holders, deps.clock()):
+        print(f"[warn] task token refresh waits for the next pass: {why}", file=sys.stderr)
 
 
 def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                   launch: Launch, spec_path: str = "",
-                  message: str = "") -> TaskState:
+                  message: str = "", *, gh_config: str) -> TaskState:
     stage, entry = launch.stage, launch.entry
     model = entry.model_id
     ctx = dict(
@@ -667,11 +709,11 @@ def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskSta
     _write_working(task.worktree, stage, entry)
     deps.sessions.spawn_stage(task.repository, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
-                              second=launch.second)
+                              second=launch.second, gh_config=gh_config)
     messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
     # A gated task's plan session runs at the gate, so its `done` is the approval.
     kept = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and task.gated else stage
-    task = replace(task, stage=kept, spec_path=spec_path or task.spec_path,
+    task = replace(task, stage=kept, spec_path=spec_path or task.spec_path, unlaunched=False,
                    gate_respawn_pending=(task.gate_respawn_pending
                                          and kept is Stage.AWAITING_PLAN_REVIEW),
                    operator_request=None, **NO_POKES,
@@ -686,7 +728,7 @@ def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskSta
 
 def _continue_or_restart(cfg: Config, deps: Deps, repository: Repository,
                          task: TaskState, launch: Launch,
-                         message: str = "") -> tuple[TaskState, str]:
+                         message: str = "", *, gh_config: str) -> tuple[TaskState, str]:
     """Every continuation names its recorded conversation or launches afresh."""
     stage = task.continued_stage
     record = read_session(cfg.state_dir, task.repository, task.issue)
@@ -697,14 +739,15 @@ def _continue_or_restart(cfg: Config, deps: Deps, repository: Repository,
         text = "\n\n".join(filter(None, (message, block))) or "Continue."
         deps.sessions.resume(task.repository, task.issue, task.worktree, text,
                              launch.model, launch.entry.effort,
-                             second=launch.second, session_id=record.session_id)
+                             second=launch.second, session_id=record.session_id,
+                             gh_config=gh_config)
         messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
         task = replace(task, **NO_POKES)
     else:
         detail = (f"new conversation: session recorded for {record.stage}" if record
                   else "new conversation: no session recorded")
         task = _launch_stage(cfg, deps, repository, task, replace(launch, stage=stage),
-                             message=message or "Continue.")
+                             message=message or "Continue.", gh_config=gh_config)
     eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           model=str(launch.entry), detail=detail)
@@ -938,13 +981,19 @@ def _retry_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
     stopped session's input box (same failure mode as spawning over a live
     session)."""
     entry = launch.entry
+    # The token first, before anything changes: an App error leaves the
+    # rejected signal in place, so the next pass retries.
+    gh_config = _task_token(cfg, deps, repository, task)
+    if gh_config is None:
+        return
     # Before resuming: the next pass must not re-read the rejected signal,
     # re-check the still-unfixed work, and burn the retry immediately.
     _write_working(task.worktree, act.stage, entry)
     _end_session(cfg, deps, task.repository, task.issue)
     text = (f"Your .agent/stage.json was rejected: {act.reason}. "
             f"{_RETRY_HINT[act.stage]}")
-    task, _ = _continue_or_restart(cfg, deps, repository, task, launch, text)
+    task, _ = _continue_or_restart(cfg, deps, repository, task, launch, text,
+                                   gh_config=gh_config)
     # A rejected plan is no longer on offer: the session's next ready report
     # is checked and armed again.
     save(cfg.state_dir, replace(loops.spend_retry(task, act.retry),
@@ -1011,7 +1060,7 @@ def _park_for_review(cfg: Config, deps: Deps, repository: Repository, task: Task
         pub = spec_publish.ensure_published(
             worktree=task.worktree, branch=task.branch,
             repo=repository.repo, issue=task.issue,
-            artifact=task.spec_path, dry_run=dry_run)
+            artifact=task.spec_path, dry_run=dry_run, auth=deps.github.auth)
         note += f"\n{_spec_note(pub)}"
     # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
     # the task is not stranded — the session is ended and the operator can still
@@ -1037,7 +1086,7 @@ def _wake_ci(cfg: Config, deps: Deps, repository: Repository) -> None:
             continue
         try:
             conclusion = deps.github.run_status(repository, task.ci_run_id)
-        except (subprocess.CalledProcessError, OSError) as exc:
+        except (subprocess.CalledProcessError, OSError, host_auth.HostWait) as exc:
             print(f"[warn] run_status failed for #{task.issue} run {task.ci_run_id}: {exc}",
                   file=sys.stderr)
             continue
@@ -1099,7 +1148,7 @@ def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
             if polled is None:
                 continue
             task, res = polled
-        except (subprocess.CalledProcessError, OSError) as exc:
+        except (subprocess.CalledProcessError, OSError, host_auth.HostWait) as exc:
             print(f"[warn] PR poll failed for #{task.issue}: {exc}",
                   file=sys.stderr)
             continue
@@ -1107,7 +1156,7 @@ def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
             try:
                 _finish_merged(cfg, deps, repository, task, dry_run)
             except (subprocess.CalledProcessError,
-                    subprocess.TimeoutExpired, OSError) as exc:
+                    subprocess.TimeoutExpired, OSError, host_auth.HostWait) as exc:
                 print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
                       file=sys.stderr)
                 continue
@@ -1187,7 +1236,7 @@ def _finish_merged(cfg: Config, deps: Deps, repository: Repository,
               f"#{task.issue} — {exc}", file=sys.stderr)
     _end_session(cfg, deps, task.repository, task.issue)
     if not dry_run:
-        task_artifacts.collect(cfg.state_dir, task, repository.repo)
+        task_artifacts.collect(cfg.state_dir, task, repository.repo, auth=deps.github.auth)
         task_artifacts.pin_published(cfg.state_dir, task, repository.repo)
     remove_workspace(repository, task.worktree, task.branch, dry_run=dry_run)
     deps.github.delete_branch(repository, task.branch)
@@ -1268,6 +1317,21 @@ def _oldest_first(cfg: Config):
     return lambda t: (t.updated_at, rank[t.repository])
 
 
+def _wake_reached(cfg: Config, deps: Deps) -> None:
+    """Wake each task parked for access whose repository the App reaches now."""
+    if deps.access is None:
+        return
+    repositories = {r.name: r for r in cfg.repositories}
+    for task in load_all(cfg.state_dir):
+        if (task.park, task.park_reason) != (PARK_HUMAN, WHY_ACCESS) or task.repository not in repositories:
+            continue
+        try:
+            deps.access.reached([repositories[task.repository].repo])
+        except (github_app.AppError, github_app.NoAccess):
+            continue   # asked again next pass
+        save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
+
+
 def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
                   dry_run: bool = False) -> None:
     """Box-wide, oldest wake first across every repository: capacity is shared,
@@ -1299,8 +1363,11 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
                 _mark_wake_blocked(cfg, repository, task, "no free slot")
                 continue  # stays parked, retried next pass
             task = replace(task, slot=slot)
+        gh_config = _task_token(cfg, deps, repository, task)
+        if gh_config is None:
+            continue   # stays woken (App error) or parked for access
         try:
-            _resume_one(cfg, deps, repository, task, launch)
+            _resume_one(cfg, deps, repository, task, launch, gh_config)
             # The wake's launch is the next launch: a stored one-shot
             # override is used up with it, whatever model the wake ran on.
             _consume_execution_choice(cfg, task.repository, task.issue)
@@ -1317,6 +1384,8 @@ def _wake_launch(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
     wake too. None: it waits (the gate denies the model; another task's may
     be admitted), with why it never will (_choose_launch) or ""."""
     stage = Stage(next_stage(task))
+    if stage is Stage.QUEUED:   # claimed before its first launch, which is spec
+        stage = Stage.SPEC
     override = execution_overrides.pending(
         _execution_override_for(cfg, task, stage),
         task.resume_model_override, task.resume_bypass_usage)
@@ -1329,7 +1398,7 @@ ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
 
 
 def _resume_one(cfg: Config, deps: Deps, repository: Repository,
-                task: TaskState, launch: Launch) -> None:
+                task: TaskState, launch: Launch, gh_config: str) -> None:
     """Resume a woken task on `launch`. An attach wake tells the session to
     wait for the operator: the notice is queued, so it rides with the
     operator's messages in whatever the session reads first (the resume
@@ -1341,12 +1410,12 @@ def _resume_one(cfg: Config, deps: Deps, repository: Repository,
     # running session (the failure _retry_stage and SpawnStage guard).
     _end_session(cfg, deps, task.repository, task.issue)
     if not task.hold_for_attach:
-        _launch_woken(cfg, deps, repository, task, launch)
+        _launch_woken(cfg, deps, repository, task, launch, gh_config)
         return
     notice = messages.append(cfg.state_dir, task.repository, task.issue,
                              ATTACH_TEXT, "dispatcher")
     try:
-        detail = _launch_woken(cfg, deps, repository, task, launch)
+        detail = _launch_woken(cfg, deps, repository, task, launch, gh_config)
     except Exception:
         messages.mark_delivered(cfg.state_dir, task.repository, task.issue,
                                 [notice.id])
@@ -1357,7 +1426,7 @@ def _resume_one(cfg: Config, deps: Deps, repository: Repository,
 
 
 def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
-                  task: TaskState, launch: Launch) -> str:
+                  task: TaskState, launch: Launch, gh_config: str) -> str:
     """Launch a woken task. Returns why a new conversation replaced the
     recorded one, else ""."""
     entry = launch.entry
@@ -1368,7 +1437,13 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
                               and implement_done(task)):
         # No session to continue: the stage it died in, or review after a
         # done implement session, starts afresh (state.next_launch).
-        _respawn(cfg, deps, repository, task, launch)
+        _respawn(cfg, deps, repository, task, launch, gh_config)
+        return ""
+    if task.stage is Stage.QUEUED:   # claimed, then parked for access before its first launch
+        _spawn_stage(cfg, deps, repository,
+                     replace(task, park="", park_msg_id=0, park_note="", park_reason="",
+                             hold_for_attach=False, operator_request=None), launch,
+                     gh_config=gh_config)
         return ""
     if task.stage is Stage.PR_OPEN:
         # No session to continue at pr-open: an operator wake on a parked
@@ -1380,7 +1455,7 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
                        resume_model_override="", resume_bypass_usage=False,
                        operator_request=None)
         _clear_wake_blocked(cfg, task.repository, task.issue)
-        _spawn_stage(cfg, deps, repository, task, launch)
+        _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
         eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
                               model=str(entry))
@@ -1389,7 +1464,8 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
     # and re-park the freshly resumed session.
     _write_working(task.worktree, task.stage, entry)
     _log_model(task.worktree, task.stage, str(entry))
-    task, detail = _continue_or_restart(cfg, deps, repository, task, launch)
+    task, detail = _continue_or_restart(cfg, deps, repository, task, launch,
+                                        gh_config=gh_config)
     _clear_wake_blocked(cfg, task.repository, task.issue)
     save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
                                 park_msg_id=0, park_note="",
@@ -1416,7 +1492,7 @@ def _crash_failed(task: TaskState) -> TaskState:
 
 
 def _respawn(cfg: Config, deps: Deps, repository: Repository,
-             task: TaskState, launch: Launch) -> None:
+             task: TaskState, launch: Launch, gh_config: str) -> None:
     """Resume of a task that has no session to continue; `launch` is its
     next launch. A crashed task: the stage it died in starts afresh in the
     same worktree; an implement session continues from its ledger there. A
@@ -1430,7 +1506,7 @@ def _respawn(cfg: Config, deps: Deps, repository: Repository,
                    resume_model_override="", resume_bypass_usage=False,
                    **loops.crash_resume_fields(task))
     _clear_wake_blocked(cfg, task.repository, task.issue)
-    task = _spawn_stage(cfg, deps, repository, task, launch)
+    task = _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
     eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           model=str(launch.entry), detail=detail)
@@ -1520,6 +1596,9 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         if slot is None:
             _mark_wake_blocked(cfg, repository, task, "no free slot")
             continue
+        gh_config = _task_token(cfg, deps, repository, task)
+        if gh_config is None:
+            continue   # feedback kept: retried next pass (App error) or parked for access
         _clear_wake_blocked(cfg, task.repository, task.issue)
         # Cursor := spawn time: everything the session can read live is
         # now "seen"; anything arriving after this moment re-triggers a
@@ -1533,7 +1612,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         # transition never ends it). End first so _launch doesn't type
         # the podman command into the live session's input box.
         _end_session(cfg, deps, task.repository, task.issue)
-        _spawn_stage(cfg, deps, repository, task, launch)
+        _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
         _consume_execution_choice(cfg, task.repository, task.issue)
 
 
@@ -1671,7 +1750,7 @@ def _on_publish_spec(turn: _Turn, task: TaskState, act: PublishSpec,
     pub = spec_publish.ensure_published(
         worktree=task.worktree, branch=task.branch,
         repo=turn.repository.repo, issue=task.issue,
-        artifact=task.spec_path, dry_run=turn.dry_run)
+        artifact=task.spec_path, dry_run=turn.dry_run, auth=turn.deps.github.auth)
     turn.spec_line = _spec_note(pub)
     if act.review and not pub.error:
         try:
@@ -1692,6 +1771,11 @@ def _on_notify(turn: _Turn, task: TaskState, act: Notify,
 
 def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
                     launch: Launch) -> TaskState | None:
+    # The token before anything changes: an App error leaves the hand-over
+    # (its signal) for the next pass; an unreached repository parks the task.
+    gh_config = _task_token(turn.cfg, turn.deps, turn.repository, task)
+    if gh_config is None:
+        return None
     # The previous stage's session is usually still alive here — an
     # interactive session cannot exit itself. _launch would type
     # the next stage's podman command INTO it (and the container
@@ -1708,7 +1792,8 @@ def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
     try:
-        return _spawn_stage(turn.cfg, turn.deps, turn.repository, task, launch, spec_path)
+        return _spawn_stage(turn.cfg, turn.deps, turn.repository, task, launch, spec_path,
+                            gh_config=gh_config)
     except Exception:
         # What the previous stage handed over is accepted (a checked spec, an
         # approved or gate-free plan); only this launch failed. So the task
@@ -2039,6 +2124,18 @@ def _reconcile_boards(cfg: Config, deps: Deps) -> None:
             print(f"[warn] {name}: board reconcile — {error}", file=sys.stderr)
 
 
+def _no_task_tokens(deps: Deps) -> str:
+    """Why no task token can be minted this pass, or "": the App is not
+    registered (the infra README checklist) or 1Password can't answer."""
+    if deps.access is None:
+        return ""
+    try:
+        registered = deps.access.app.registered()
+    except github_app.AppError as exc:
+        return f"the GitHub App is unavailable: {exc}"
+    return "" if registered else f"the GitHub App is not registered: {github_app.README}"
+
+
 def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[TaskState],
                admit: Admit, order: Order, pass_started: str):
     """One project's ranked candidates this pass may claim, across its member
@@ -2046,11 +2143,15 @@ def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[T
     would start. Skips issues that already have a task, quarantined issues,
     and candidates whose spec model has no headroom — a denied candidate
     leaves the next one eligible, since its model may differ."""
+    why = _no_task_tokens(deps)
+    if why:   # a claim could only park: no container ever runs on the stored auth
+        print(f"[warn] {members[0].project.name}: no claims this pass — {why}", file=sys.stderr)
+        return
     by_name = {r.name: r for r in members}
     by_issue = {(t.repository, t.issue): t for t in tasks}
     try:
         cands = deps.github.candidates(members)
-    except BoardError as exc:  # this project only: the round goes on
+    except (BoardError, host_auth.HostWait) as exc:  # this project only: the round goes on
         print(f"[warn] {members[0].project.name}: no claims this pass — {exc}",
               file=sys.stderr)
         return
@@ -2079,7 +2180,9 @@ def _commit_claim(cfg: Config, deps: Deps, repository: Repository, cand: Candida
     """Board mutation is last and irreversible: state is saved and the
     `claimed` event appended first, so a crash before the claim leaves a
     recoverable partial claim rather than a silently lost slot. A failure
-    from here on releases the board claim back to Ready."""
+    from here on releases the board claim back to Ready. A repository the
+    installation doesn't reach is claimed and parked; an App error leaves it
+    claimed and unlaunched, for the next pass (_task_token)."""
     task = TaskState(issue=cand.number, repository=repository.name,
                      stage=Stage.QUEUED, slot=slot, worktree=wt,
                      branch=f"agent/task-{cand.number}",
@@ -2091,7 +2194,10 @@ def _commit_claim(cfg: Config, deps: Deps, repository: Repository, cand: Candida
                           issue=cand.number, stage=Stage.QUEUED.value)
     try:
         deps.github.claim(repository, cand)  # irreversible board mutation — last
-        task = _spawn_stage(cfg, deps, repository, task, launch)
+        gh_config = _task_token(cfg, deps, repository, task)
+        if gh_config is None:
+            return load(cfg.state_dir, repository.name, cand.number) or task
+        task = _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
         _consume_execution_choice(cfg, repository.name, cand.number)
     except Exception:
         deps.github.release(repository, cand.number, "claim/spawn failed after provisioning")
@@ -2155,7 +2261,8 @@ def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
         if slot is None:
             return
         try:
-            wt = create_workspace(repository, cand.number, base, dry_run=dry_run)
+            wt = create_workspace(repository, cand.number, base, dry_run=dry_run,
+                                  auth=deps.github.auth)
         except MissingBaseError:
             # Not claimed, not a failure: the issue stays Ready and every pass
             # asks again; the operator hears once per issue and base.
@@ -2616,23 +2723,37 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _run_pass(cfg, deps, dry_run, config_path)
 
 
-def _sync_artifacts(cfg: Config, *, dry_run: bool = False) -> None:
+def _sync_artifacts(cfg: Config, *, dry_run: bool = False,
+                    auth: host_auth.HostAuth = host_auth.STORED) -> None:
     repos = {repository.name: repository.repo for repository in cfg.repositories}
     for task in load_all(cfg.state_dir):
         try:
             task_artifacts.collect(cfg.state_dir, task, repos.get(task.repository, ""),
-                                   publish=not dry_run and task.stage not in TERMINAL_STAGES)
-        except (OSError, ValueError):
+                                   publish=not dry_run and task.stage not in TERMINAL_STAGES,
+                                   auth=auth)
+        except (OSError, ValueError, host_auth.HostWait):
             log.exception("Artifact collection failed for %s/%s", task.repository, task.issue)
     task_artifacts.cleanup(cfg.state_dir)
+
+
+def _begin_pass_auth(cfg: Config, deps: Deps) -> None:
+    """The pass's App access and the host credentials it gives each project."""
+    deps.access = (None if deps.app is None else
+                   github_app.Access(deps.app, now=deps.clock, refresh=task_tokens.REFRESH))
+    projects: dict[str, list[str]] = {}
+    for r in cfg.repositories:
+        projects.setdefault(r.project.name, []).append(r.repo)
+    deps.github.auth = host_auth.begin(list(projects.values()), deps.access)
 
 
 def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
               config_path: str = "targets.yaml") -> None:
     pass_started = _now()
+    _begin_pass_auth(cfg, deps)
     _migrate_legacy_keys(cfg)
     _reconcile_slots(cfg)
     if not dry_run:
+        _sync_task_tokens(cfg, deps)
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
         onboarding_sessions.reconcile(cfg.state_dir)
@@ -2666,10 +2787,14 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
                      and t.stage in IN_FLIGHT_STAGES]:
             try:
                 _drive_task(eff, deps, repository, task, admit, order, dry_run)
+            except host_auth.HostWait as exc:   # the turn waits for the App, not a crash
+                print(f"[warn] #{task.issue}: {exc}; its turn waits for the next pass",
+                      file=sys.stderr)
             except Exception:
                 _fail_task_crash(eff, deps, repository, task, dry_run)
         _wake_ci(eff, deps, repository)
         _poll_prs(eff, deps, repository, dry_run)
+    _wake_reached(eff, deps)
     _resume_woken(eff, deps, admit, order, dry_run)
     _spawn_feedback(eff, deps, admit, order)
     if not dry_run:
@@ -2682,7 +2807,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     # Phase 2: new claims, with whatever capacity phase 1 and inspection left.
     if not claims_paused:
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
-    _sync_artifacts(cfg, dry_run=dry_run)
+    _sync_artifacts(cfg, dry_run=dry_run, auth=deps.github.auth)
     _flush_finished(cfg, dry_run)
     _write_heartbeat(cfg, pass_started)
 
@@ -2729,7 +2854,7 @@ def main() -> None:
     if missing:
         print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
               f"their entries are never admitted", file=sys.stderr)
-    deps = Deps(github=GitHubClient(dry_run=args.dry_run),
+    deps = Deps(github=GitHubClient(dry_run=args.dry_run), app=github_app.Client(),
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
                                   cpus=cfg.session_cpus, state_dir=cfg.state_dir,
                                   clones={t.name: t.clone_path for t in cfg.repositories}),

@@ -36,7 +36,7 @@ def cfg_no_setup(tmp_path: Path) -> Config:
 def fake_git_sh(tmp_path):
     calls = []
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         calls.append(args)
         if "worktree" in args:  # simulate git actually creating the dir
             wt = Path(args[-2])
