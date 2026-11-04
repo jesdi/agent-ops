@@ -145,26 +145,6 @@ def _read_token(credentials_path: str | Path) -> str | None:
         return None
 
 
-def _token_from_op() -> str | None:
-    """Long-lived setup-token, read from 1P at fetch time — never persisted
-    on the box. Only attempted when the caller already carries op service
-    auth (dispatcher and triage units remap it into env); web has no op
-    plumbing and must not shell out to an op that can only hang or prompt.
-    The ≥180s fetch cache bounds the 1P call rate."""
-    if not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        return None
-    try:
-        r = subprocess.run(
-            [os.environ.get("AGENT_OPS_OP", "op"), "read",
-             "op://agent-ops/agent-ops-claude/CLAUDE_CODE_OAUTH_TOKEN"],
-            capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if r.returncode != 0:
-        return None
-    return r.stdout.strip() or None
-
-
 def _credential_stores(state_dir: str | Path,
                        credentials_path: str | Path | None) -> list[str | Path]:
     # The claude-home store (mounted into every session container, renewed
@@ -186,13 +166,12 @@ class AnthropicUsage:
 
     def fetch(self, state_dir: Path, *, now: Callable[[], float] = time.time) -> ProviderUsage:
         """OAuth endpoint → ccusage → unavailable. Token preference: explicit
-        env override, the box's long-lived setup-token read from 1P at fetch
-        time, then the OAuth stores, claude-home before the host's (kept as
-        live fallbacks: the usage endpoint is unofficial and rejects the
-        static token — 403 as of 2026-09-23)."""
+        env override, then the OAuth stores, claude-home before the host's.
+        The box's long-lived setup-token is not read from 1P here: the usage
+        endpoint rejects it (403 as of 2026-09-23), and each read spent the
+        1Password account's daily budget (1000 reads)."""
         candidates = [t for t in dict.fromkeys((
             os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
-            _token_from_op(),
             *map(_read_token, _credential_stores(state_dir, self._credentials_path)),
         )) if t]
         at = now()
