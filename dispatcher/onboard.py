@@ -491,8 +491,8 @@ def _access_lost(r: Run, rec: Record) -> Outcome | None:
         r.access.reached(repos)
     except github_app.NoAccess as e:
         return blocked(str(e), e.link)
-    except github_app.AppError:   # retried by the step that needs it
-        return None
+    except Exception:   # an App error is retried by the step that needs it; like _work,
+        return None     # nothing the App does may stop the other projects' onboarding
     return None
 
 

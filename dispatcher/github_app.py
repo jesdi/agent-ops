@@ -26,7 +26,11 @@ TIMEOUT = 20
 
 
 class AppError(Exception):
-    """GitHub or 1Password gave no clear answer: 401, 5xx, a timeout, an unreadable item."""
+    """GitHub or 1Password gave no clear answer: 401, 5xx, a timeout, an unreadable item,
+    a body without the expected fields, a key that can't sign."""
+
+
+MALFORMED = (KeyError, TypeError, ValueError, AttributeError)   # what a bad body raises when read
 
 
 @dataclass(frozen=True)
@@ -87,7 +91,7 @@ def _jwt(now, sh) -> str:
             {"alg": "RS256", "typ": "JWT"},
             {"iss": app_id, "iat": iat, "exp": iat + 9 * 60}))
         return signing + "." + _b64(key.sign(signing.encode(), padding.PKCS1v15(), hashes.SHA256()))
-    except (ValueError, TypeError, AttributeError):
+    except Exception:   # any load or sign failure, UnsupportedAlgorithm included; never the key
         raise AppError("the App private key is unreadable") from None
 
 
@@ -104,10 +108,13 @@ def _call(http, method, url, token, body=None, ok=(200,)):
 
 
 def _installation(payload: dict) -> Installation:
-    login, kind = payload["account"]["login"], payload["account"]["type"]
-    base = (f"https://github.com/organizations/{login}/settings/installations"
-            if kind == "Organization" else "https://github.com/settings/installations")
-    return Installation(payload["id"], f"{base}/{payload['id']}", login)
+    try:
+        login, kind = payload["account"]["login"], payload["account"]["type"]
+        base = (f"https://github.com/organizations/{login}/settings/installations"
+                if kind == "Organization" else "https://github.com/settings/installations")
+        return Installation(int(payload["id"]), f"{base}/{payload['id']}", login)
+    except MALFORMED:
+        raise AppError("the installation answer has no account or id") from None
 
 
 def _lookup(path, http, now, sh):
@@ -126,15 +133,18 @@ def mint(installation: Installation, repos: list[str], permissions: dict, *,
     for r in repos:   # the request names repos without owner: refuse another owner's repo
         if r.split("/", 1)[0].lower() != installation.owner.lower():
             raise ValueError(f"{r} is not owned by the installation owner {installation.owner}")
-    if not names:   # an empty list would make GitHub grant every repository
-        raise ValueError("mint needs at least one repository")
+    if not names or not all(names):   # an empty list would make GitHub grant every repository
+        raise ValueError("mint needs at least one repository, each with a name")
     status, payload = _call(http, "POST", f"{API}/app/installations/{installation.id}/access_tokens",
                             _jwt(now, sh), {"repositories": names, "permissions": dict(permissions)},
                             ok=(201,))
     if status != 201:
         raise AppError(f"token request answered {status}")
-    expires = datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00"))
-    return Token(payload["token"], expires)
+    try:
+        expires = datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00"))
+        return Token(payload["token"], expires)
+    except MALFORMED:
+        raise AppError("the token answer has no token or expiry") from None
 
 
 def install_link(owner: str, *, http=_http, now=_now, sh=_sh) -> str:
@@ -142,7 +152,9 @@ def install_link(owner: str, *, http=_http, now=_now, sh=_sh) -> str:
              or _lookup(f"/orgs/{owner}/installation", http, now, sh))
     if found:
         return found.settings_url
-    _, app = _call(http, "GET", API + "/app", _jwt(now, sh))
+    status, app = _call(http, "GET", API + "/app", _jwt(now, sh))
+    if status != 200 or not isinstance(app, dict) or not app.get("slug"):
+        raise AppError(f"GET /app answered {status} without a slug")
     return f"https://github.com/apps/{app['slug']}/installations/new"
 
 
