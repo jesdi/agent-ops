@@ -345,3 +345,28 @@ def test_start_with_only_repositories_defaults_to_inspection(console, tmp_path, 
     assert view['inspection']['repositories'][0]['state'] == 'skipped'
     assert view['awaiting'] == 'confirm'
     assert not view['can_confirm']
+
+
+def test_a_new_board_can_be_requested_and_its_review_is_shown(console, tmp_path):
+    client, _ = console
+    body = {**REQUEST, "board": {"new": True}}
+    assert client.post("/api/onboarding/analytics", headers=HEADERS, json=body).status_code == 202
+    assert client.get("/api/onboarding/analytics", headers=HEADERS).json()["request"]["board"] == {"new": True}
+    from dispatcher import onboard
+    rec = onboard.Record("analytics", request=onboard._request(body),
+                         proposal={"name": "analytics", "paused": True,
+                                   "board": {"owner": "jesdi", "new": True,
+                                             "title": "analytics Backlog"}, "repositories": []},
+                         board_review=["create board 'analytics Backlog' for jesdi"])
+    onboard.write_json_atomic(onboard._record_path(tmp_path / "state", "analytics"), onboard.asdict(rec))
+    view = client.get("/api/onboarding/analytics", headers=HEADERS).json()
+    assert view["proposal"]["board"] == {"owner": "jesdi", "new": True, "title": "analytics Backlog"}
+    assert view["board_review"] == ["create board 'analytics Backlog' for jesdi"]
+    assert view["inspection"] == {"repositories": []}
+
+
+@pytest.mark.parametrize("board", [{"new": False}, {"owner": "jesdi"}, {"new": True, "number": 4}])
+def test_a_board_is_either_existing_or_new(console, board):
+    client, _ = console
+    body = {**REQUEST, "board": board}
+    assert client.post("/api/onboarding/analytics", headers=HEADERS, json=body).status_code == 422

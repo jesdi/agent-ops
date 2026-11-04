@@ -11,6 +11,7 @@ import yaml
 
 from dispatcher import onboard
 from dispatcher.infra_config import add_project_text, project_block
+from tests.fake_github import FakeGitHub
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
 
@@ -34,7 +35,7 @@ NO_BOARD = json.dumps({"data": {"repositoryOwner": None}})
 
 
 def gh_repo(github_id, full_name):
-    return json.dumps({"id": github_id, "full_name": full_name,
+    return json.dumps({"id": github_id, "node_id": f"R_{github_id}", "full_name": full_name,
                        "name": full_name.split("/")[1]})
 
 
@@ -62,8 +63,10 @@ class FakeSh:
     (argv, cwd, env). An unrouted call fails the test."""
 
     def __init__(self, routes=None):
+        self.github = FakeGitHub()      # board jesdi/4, complete and empty
+        self.github.board()
         self.routes = {"gh api repos/jesdi/analytics": gh_repo(202, "jesdi/analytics"),
-                       "gh api graphql": BOARD,
+                       "gh api graphql": self.github, "gh label": self.github,
                        "git clone": cloned,
                        "remote get-url origin": ORIGIN, **(routes or {})}
         self.calls = []
@@ -214,8 +217,11 @@ def test_resolve_checks_the_board_with_the_project_token(tmp_path, box, monkeypa
     add(tmp_path)
     sh = FakeSh()
     run(box, sh)
-    [(_, _, env)] = sh.ran("graphql")
-    assert env["GH_TOKEN"] == "project-tok"
+    board_calls = [env for argv, _, env in sh.ran("graphql") if "ProjectV2" in " ".join(argv)]
+    issue_calls = [env for argv, _, env in sh.ran("graphql") if "issues(first" in " ".join(argv)]
+    assert board_calls and all(env["GH_TOKEN"] == "project-tok" for env in board_calls)
+    # issues are the repository's: read with the box's stored auth, not the board token
+    assert issue_calls and all(env is None for env in issue_calls)
 
 
 def test_resolve_blocks_on_a_bad_slug(tmp_path, box):
@@ -455,7 +461,7 @@ def test_new_commands_after_confirm_go_back_to_confirm_and_update_the_pr(
     rec = record(tmp_path)
     assert rec["notice"] == "" and rec["awaiting"] == "confirm"
     assert rec["revision"] != first["revision"]
-    assert [s["state"] for s in rec["steps"] if s["name"] not in ("resolve", "clone", "inspect")] == ["blocked"] + ["pending"] * 4
+    assert [s["state"] for s in rec["steps"] if s["name"] not in ("resolve", "clone", "inspect")] == ["blocked"] + ["pending"] * 5
     intent(tmp_path, "confirm", {"revision": rec["revision"]}, epoch_ms=7000)
     sh = FakeSh(infra_routes(open_prs=json.dumps(
         [{"number": 7, "url": PR_URL, "headRefOid": "head1"}]), **NO_CI_RUN))

@@ -563,3 +563,36 @@ it('does not associate a new request with a stale proposal after repository reso
   expect(screen.queryByText('draft: Makefile target gate')).not.toBeInTheDocument()
   expect(screen.queryByRole('checkbox', { name: 'postgres' })).not.toBeInTheDocument()
 })
+
+it('requests a new board instead of an owner/number', async () => {
+  let submitted: unknown
+  server.use(http.post('/api/onboarding/analytics', async ({ request }) => {
+    submitted = await request.json()
+    return HttpResponse.json({ status: 'pending', intent: '100-add', request_revision: 'request-one' }, { status: 202 })
+  }), http.get('/api/onboarding/analytics', () => HttpResponse.json(ready)))
+  renderNew()
+  await userEvent.type(screen.getByLabelText('Project name'), 'analytics')
+  await userEvent.type(screen.getByLabelText('GitHub board'), 'jesdi/4')
+  await userEvent.click(screen.getByLabelText('Create a new board'))
+  expect(screen.getByLabelText('GitHub board')).toBeDisabled()
+  expect(screen.getByLabelText('GitHub board')).toHaveValue('')
+  expect(screen.getAllByText('New board: analytics Backlog').length).toBeGreaterThan(0)
+  await userEvent.type(screen.getByLabelText('GitHub repository'), 'jesdi/analytics')
+  await userEvent.click(screen.getByRole('button', { name: 'Start onboarding' }))
+  await waitFor(() => expect(submitted).toMatchObject({ board: { new: true } }))
+})
+
+it('shows what the board step will add before confirming', async () => {
+  server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json({
+    ...ready, proposal: { ...proposal, board: { owner: 'jesdi', new: true, title: 'analytics Backlog' } },
+    steps: [...ready.steps, { name: 'board', state: 'pending', detail: '', link: '', since: '' }],
+    board_review: ["create board 'analytics Backlog' for jesdi", 'add labels on jesdi/analytics: auto, inbox'] })))
+  renderDetail()
+  await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
+  const review = screen.getByRole('region', { name: 'Review proposal' })
+  expect(within(review).getByText('New board: analytics Backlog')).toBeInTheDocument()
+  expect(screen.getByText('Prepare board')).toBeInTheDocument()
+  const changes = within(review).getByRole('list', { name: 'Board changes' })
+  expect(within(changes).getAllByRole('listitem').map(item => item.textContent)).toEqual([
+    "create board 'analytics Backlog' for jesdi", 'add labels on jesdi/analytics: auto, inbox'])
+})

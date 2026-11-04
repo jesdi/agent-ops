@@ -6,10 +6,10 @@ import { useOnboardingReceipt } from '../../hooks/useOnboarding'
 import { banner, chip, type Tone } from '../../lib/tone'
 import { RepositoryFacts, Source } from './InspectionFields'
 import { OnboardingEdit } from './OnboardingEdit'
-import { button, panel, primary, PausedNote } from './OnboardingForm'
+import { boardLabel, button, panel, primary, PausedNote } from './OnboardingForm'
 
 const stateTone: Record<string, Tone> = { verified: 'running', waiting: 'neutral', blocked: 'waiting', failed: 'failed', pending: 'neutral' }
-const stepNames: Record<string, string> = { resolve: 'Resolve repositories', clone: 'Clone repositories', inspect: 'Inspect repositories', confirm: 'Confirm proposal', 'config-pr': 'Create infrastructure PR', 'config-merge': 'Merge infrastructure PR', deploy: 'Deploy configuration', visible: 'Visible in console' }
+const stepNames: Record<string, string> = { resolve: 'Resolve repositories', clone: 'Clone repositories', inspect: 'Inspect repositories', confirm: 'Confirm proposal', board: 'Prepare board', 'config-pr': 'Create infrastructure PR', 'config-merge': 'Merge infrastructure PR', deploy: 'Deploy configuration', visible: 'Visible in console' }
 
 function Steps({ steps }: { steps: OnboardingView['steps'] }) {
   return <section className={panel} aria-label="Onboarding progress"><h2 className="text-xl font-semibold">Onboarding progress</h2>
@@ -44,7 +44,9 @@ function ProposalReview({ snapshot, current, busy, confirm, refresh, close }: {
   const noLongerNeeded = current.awaiting !== 'confirm' || current.status !== 'open'
   return <section className={`${panel} space-y-4`} aria-label="Review proposal">
     <h2 className="text-xl font-semibold">Review proposal</h2>
-    <div><p className="font-semibold">{proposal.name}</p><p className="text-sm text-ink-muted">GitHub board</p><p>{proposal.board ? `${proposal.board.owner}/${proposal.board.number}` : 'Not set'}</p><Source source={snapshot.inspection?.repositories?.find(item => item.board.source)?.board.source} inspected={Boolean(snapshot.inspection?.repositories?.length)} /></div>
+    <div><p className="font-semibold">{proposal.name}</p><p className="text-sm text-ink-muted">GitHub board</p><p>{boardLabel(proposal.board, proposal.name) || 'Not set'}</p>{!(proposal.board && 'new' in proposal.board) && <Source source={snapshot.inspection?.repositories?.find(item => item.board.source)?.board.source} inspected={Boolean(snapshot.inspection?.repositories?.length)} />}</div>
+    {snapshot.board_review && snapshot.board_review.length > 0 && <div><h3 className="text-sm text-ink-muted" id="board-changes">Board changes</h3>
+      <ul aria-labelledby="board-changes" className="mt-1 list-disc space-y-1 pl-5 text-sm">{snapshot.board_review.map(line => <li key={line}>{line}</li>)}</ul></div>}
     <ProposalRepositories snapshot={snapshot} />
     <details className="text-sm"><summary className="cursor-pointer text-ink-muted">Configuration details</summary>
       <p className="mt-3 break-all text-xs text-ink-muted">Revision: {snapshot.revision}</p>

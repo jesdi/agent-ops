@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
-import { OnboardingForm, panel, primary } from '../components/onboarding/OnboardingForm'
+import { boardLabel, OnboardingForm, panel, primary } from '../components/onboarding/OnboardingForm'
 
 import { useOnboarding, useOnboardings, useOnboardingReceipt } from '../hooks/useOnboarding'
 import { banner, chip } from '../lib/tone'
@@ -53,7 +53,7 @@ function OnboardingList({ onboardings }: { onboardings: OnboardingView[] }) {
   if (!onboardings.length) return <div className={panel}><h2 className="text-xl font-semibold">No onboardings yet</h2><p className="mt-2 text-ink-muted">Add a project to connect its board and repositories.</p></div>
   return <ul className={`${panel} divide-y divide-border`}>
     {onboardings.map(item => <li key={item.project} className="py-4 first:pt-0 last:pb-0"><Link to={`/onboarding/projects/${encodeURIComponent(item.project)}`} className="flex items-center justify-between gap-4">
-      <div><span className="font-semibold underline">{item.project}</span><p className="mt-1 text-sm text-ink-muted">{item.request.board ? `${item.request.board.owner}/${item.request.board.number}` : 'Board not set'} · {item.request.repos.length} repositories</p></div>
+      <div><span className="font-semibold underline">{item.project}</span><p className="mt-1 text-sm text-ink-muted">{boardLabel(item.request.board, item.project) || 'Board not set'} · {item.request.repos.length} repositories</p></div>
       <span className={chip.neutral}>{item.status}</span>
     </Link></li>)}
   </ul>

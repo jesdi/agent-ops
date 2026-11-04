@@ -191,3 +191,15 @@ def test_agent_ops_is_the_console_script_of_project_add():
 def test_the_unit_runs_the_engine_once_from_its_module(tmp_path, box):
     onboard.main(["--config", str(box)])
     assert (state(tmp_path) / "onboarding.lock").exists()
+
+
+def test_add_with_a_new_board_shows_what_the_board_step_will_do(
+        tmp_path, box, monkeypatch, capsys):
+    stdin(monkeypatch, "\nmake gate\n\n")
+    assert add(box, Box(box), "analytics", "jesdi/analytics", "--board", "new") == 0
+    rec = record(tmp_path)
+    assert rec["request"]["board"] == {"new": True}
+    assert rec["proposal"]["board"] == {"owner": "jesdi", "new": True, "title": "analytics Backlog"}
+    out = capsys.readouterr().out
+    assert "board: create board 'analytics Backlog' for jesdi" in out
+    assert "--board new" in out

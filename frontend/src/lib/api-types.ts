@@ -795,7 +795,8 @@ export interface components {
         InspectionBoard: {
             /** Source */
             source: string;
-            value: components["schemas"]["OnboardingBoard"] | null;
+            /** Value */
+            value: components["schemas"]["OnboardingBoard"] | components["schemas"]["NewBoard"] | null;
         };
         /** InspectionFields */
         InspectionFields: {
@@ -905,6 +906,18 @@ export interface components {
             /** Untracked */
             untracked: string;
         };
+        /**
+         * NewBoard
+         * @description A board onboarding creates: `<project> Backlog`, owned by the owner
+         *     of the project's first repository.
+         */
+        NewBoard: {
+            /**
+             * New
+             * @constant
+             */
+            new: true;
+        };
         /** NextClaimView */
         NextClaimView: {
             /**
@@ -999,7 +1012,8 @@ export interface components {
         };
         /** OnboardingProposal */
         OnboardingProposal: {
-            board: components["schemas"]["OnboardingBoard"] | null;
+            /** Board */
+            board: components["schemas"]["OnboardingBoard"] | components["schemas"]["ProposedNewBoard"] | null;
             /** Name */
             name: string;
             /** Paused */
@@ -1039,7 +1053,8 @@ export interface components {
         };
         /** OnboardingRequest */
         OnboardingRequest: {
-            board?: components["schemas"]["OnboardingBoard"] | null;
+            /** Board */
+            board?: components["schemas"]["OnboardingBoard"] | components["schemas"]["NewBoard"] | null;
             /** Commands */
             commands?: components["schemas"]["OnboardingCommands"][];
             /**
@@ -1052,7 +1067,8 @@ export interface components {
         };
         /** OnboardingStartRequest */
         OnboardingStartRequest: {
-            board?: components["schemas"]["OnboardingBoard"] | null;
+            /** Board */
+            board?: components["schemas"]["OnboardingBoard"] | components["schemas"]["NewBoard"] | null;
             /** Commands */
             commands?: components["schemas"]["OnboardingCommands"][];
             /** Expected Request Revision */
@@ -1081,6 +1097,8 @@ export interface components {
         OnboardingView: {
             /** Awaiting */
             awaiting: string;
+            /** Board Review */
+            board_review?: string[];
             /**
              * Can Confirm
              * @default false
@@ -1176,6 +1194,18 @@ export interface components {
         ProjectsView: {
             /** Projects */
             projects: components["schemas"]["ProjectView"][];
+        };
+        /** ProposedNewBoard */
+        ProposedNewBoard: {
+            /**
+             * New
+             * @constant
+             */
+            new: true;
+            /** Owner */
+            owner: string;
+            /** Title */
+            title: string;
         };
         /** ProviderUsageView */
         ProviderUsageView: {

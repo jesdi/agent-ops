@@ -6,7 +6,7 @@ from dataclasses import asdict
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dispatcher import config, onboard
 from web.auth import Operator, current_operator
@@ -20,6 +20,18 @@ class OnboardingBoard(BaseModel):
     number: int = Field(strict=True)
 
 
+class NewBoard(BaseModel):
+    """A board onboarding creates: `<project> Backlog`, owned by the owner
+    of the project's first repository."""
+    model_config = ConfigDict(extra="forbid")
+    new: Literal[True]
+
+
+class ProposedNewBoard(NewBoard):
+    owner: str
+    title: str
+
+
 class OnboardingCommands(BaseModel):
     setup_cmd: str | None = None
     gate_cmd: str | None = None
@@ -29,7 +41,7 @@ class OnboardingCommands(BaseModel):
 
 class OnboardingRequest(BaseModel):
     repos: list[str]
-    board: OnboardingBoard | None = None
+    board: OnboardingBoard | NewBoard | None = None
     commands: list[OnboardingCommands] = Field(default_factory=list)
     inspect: bool = True
 
@@ -50,8 +62,8 @@ class OnboardingStartRequest(OnboardingRequest):
 
     @field_validator("board")
     @classmethod
-    def existing_board(cls, value: OnboardingBoard | None) -> OnboardingBoard | None:
-        if value is None:
+    def existing_board(cls, value: OnboardingBoard | NewBoard | None) -> OnboardingBoard | NewBoard | None:
+        if not isinstance(value, OnboardingBoard):
             return value
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", value.owner) or value.number < 1:
             raise ValueError("board must name an owner and a positive number")
@@ -81,7 +93,7 @@ class OnboardingRepository(BaseModel):
 class OnboardingProposal(BaseModel):
     name: str
     paused: bool
-    board: OnboardingBoard | None
+    board: OnboardingBoard | ProposedNewBoard | None
     repositories: list[OnboardingRepository]
 
 
@@ -106,7 +118,7 @@ class InspectionValue(BaseModel):
 
 
 class InspectionBoard(BaseModel):
-    value: OnboardingBoard | None
+    value: OnboardingBoard | NewBoard | None
     source: str
 
 
@@ -146,6 +158,7 @@ class OnboardingView(BaseModel):
     confirmed_revision: str
     awaiting: str
     notice: str
+    board_review: list[str] = Field(default_factory=list)
     steps: list[OnboardingStep]
     pr_url: str
     updated_at: str
