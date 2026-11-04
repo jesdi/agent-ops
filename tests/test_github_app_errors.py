@@ -15,9 +15,7 @@ from tests.test_onboard_app import FakeApp, run, sh_for
 
 
 def test_a_404_on_get_app_is_an_app_error(env):
-    gh = env[0]
-    gh.slug = None
-    real = gh.__call__
+    real = env[0].__call__
 
     def http(method, url, headers, body=None):
         if url.endswith("/app"):
@@ -35,7 +33,11 @@ def test_a_malformed_installation_body_is_an_app_error(env, payload):
         github_app.installation("jesdi/analytics", **{**kw(env), "http": http})
 
 
-@pytest.mark.parametrize("payload", [{}, {"token": "t"}, {"token": "t", "expires_at": "soon"}])
+@pytest.mark.parametrize("payload", [
+    {}, {"token": "t"}, {"token": "t", "expires_at": "soon"},
+    {"token": "t", "expires_at": "2026-11-04T11:00:00"},   # naive: would break the cache
+    {"token": None, "expires_at": "2026-11-04T11:00:00Z"},
+    {"token": "", "expires_at": "2026-11-04T11:00:00Z"}])
 def test_a_malformed_token_body_is_an_app_error(env, payload):
     inst = reached(env)
 
@@ -43,6 +45,28 @@ def test_a_malformed_token_body_is_an_app_error(env, payload):
         return 201, payload
     with pytest.raises(github_app.AppError):
         github_app.mint(inst, ["jesdi/analytics"], PERMS, **{**kw(env), "http": http})
+
+
+@pytest.mark.parametrize("payload", [{}, {"slug": None}, {"slug": ""}])
+def test_get_app_without_a_slug_is_an_app_error(env, payload):
+    real = env[0].__call__
+
+    def http(method, url, headers, body=None):
+        return (200, payload) if url.endswith("/app") else real(method, url, headers, body)
+    with pytest.raises(github_app.AppError):
+        github_app.install_link("acme", **{**kw(env), "http": http})
+
+
+def test_check_fails_when_the_repository_read_answers_404(env, capsys):
+    env[0].repo_status = 404
+    assert github_app.main(["check", "jesdi/analytics"], **kw(env)) != 0
+    assert "repository read: failed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("repo", ["jesdi/", "/analytics", "jesdi/a/b"])
+def test_check_refuses_a_repository_that_is_not_owner_name(env, repo, capsys):
+    assert github_app.main(["check", repo], **kw(env)) == 2
+    assert env[0].calls == []
 
 
 def test_a_key_of_an_unsupported_type_is_an_app_error(env):
@@ -67,7 +91,7 @@ def test_op_stderr_stays_out_of_the_error(env):
     assert "secret" not in text
 
 
-@pytest.mark.parametrize("repos", [["jesdi/"], ["jesdi/analytics", "jesdi/"]])
+@pytest.mark.parametrize("repos", [["jesdi/"], ["jesdi/analytics", "jesdi/"], ["jesdi"], ["/analytics"]])
 def test_mint_refuses_an_empty_repository_name_before_any_http_call(env, repos):
     inst = reached(env)
     env[0].calls.clear()
@@ -76,11 +100,41 @@ def test_mint_refuses_an_empty_repository_name_before_any_http_call(env, repos):
     assert env[0].calls == []
 
 
-def test_an_unexpected_app_error_never_stops_the_onboarding_run(tmp_path, box):
-    app = FakeApp()
+class Flaky(FakeApp):
+    """Raises a non-AppError for jesdi/analytics only, once `broken` is set."""
+    broken = False
+
+    def installation(self, repo):
+        if self.broken and repo == "jesdi/analytics":
+            raise KeyError("slug")
+        return super().installation(repo)
+
+
+def test_an_unexpected_app_error_fails_the_step_and_the_other_projects_go_on(tmp_path, box):
+    app = Flaky(reached=("jesdi/analytics", "jesdi/analytics-etl"))
     add(tmp_path)
     run(box, sh_for(), app)
     assert step(record(tmp_path), "resolve")["state"] == "verified"
-    app.fail = KeyError("slug")
+    at = next(s["name"] for s in record(tmp_path)["steps"] if s["state"] != "verified")
+    app.broken = True
+    add(tmp_path, project="etl", repos=("jesdi/analytics-etl",), epoch_ms=2000)
     run(box, sh_for(), app)   # must not raise
-    assert step(record(tmp_path), "resolve")["state"] == "verified"
+    s = step(record(tmp_path), at)
+    assert (s["state"], s["link"]) == ("failed", "")   # retried next run, never blocked with a link
+    assert "KeyError" in s["detail"]
+    assert step(record(tmp_path, "etl"), "resolve")["state"] == "verified"
+    app.broken = False
+    run(box, sh_for(), app)
+    assert step(record(tmp_path), at)["state"] != "failed"
+
+
+def test_an_app_error_building_the_install_link_fails_resolve_without_a_link(tmp_path, box):
+    app = FakeApp(reached=())
+
+    def broken(owner):
+        raise github_app.AppError("GET /app answered 404")
+    app.install_link = broken
+    add(tmp_path)
+    run(box, sh_for(), app)
+    s = step(record(tmp_path), "resolve")
+    assert (s["state"], s["link"]) == ("failed", "")

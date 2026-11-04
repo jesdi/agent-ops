@@ -465,11 +465,10 @@ def run(config_path: str | Path, sh: Sh = sh, get: Get = get,
 def _advance(r: Run, rec: Record) -> None:
     """Work the record's steps in order; stop at the first not verified."""
     at = next((s.name for s in rec.steps if s.state is not StepState.VERIFIED), "resolve")
-    lost = _access_lost(r, rec) if at != "resolve" else None   # resolve checks on its own
     for s in rec.steps:
         if s.state is StepState.VERIFIED:
             continue
-        out = lost or _work(r, rec, s.name)
+        out = _work(r, rec, s.name, recheck=s.name == at != "resolve")   # resolve checks on its own
         if out.state != s.state:
             s.since = r.now.isoformat()
         s.state, s.detail, s.link = out.state, out.detail, out.link
@@ -480,24 +479,21 @@ def _advance(r: Run, rec: Record) -> None:
     _save(r, rec)
 
 
-def _access_lost(r: Run, rec: Record) -> Outcome | None:
+def _recheck_access(r: Run, rec: Record) -> None:
     """Every timer run rechecks the App's reach of a resolved, unconfirmed
-    project's repositories and blocks the step at hand while one is missed,
+    project's repositories: NoAccess blocks the step at hand while one is missed,
     keeping the proposal; a confirmed one goes on, the board step reports it."""
     repos = [x["repo"] for x in rec.proposal.get("repositories", [])]
-    if r.access is None or not repos or rec.confirmed_revision == rec.revision:
-        return None
-    try:
+    if r.access and repos and rec.confirmed_revision != rec.revision:
         r.access.reached(repos)
-    except github_app.NoAccess as e:
-        return blocked(str(e), e.link)
-    except Exception:   # an App error is retried by the step that needs it; like _work,
-        return None     # nothing the App does may stop the other projects' onboarding
-    return None
 
 
-def _work(r: Run, rec: Record, name: str) -> Outcome:
+def _work(r: Run, rec: Record, name: str, recheck: bool = False) -> Outcome:
+    """The one error boundary of a step: nothing a step or the App raises stops
+    the run, so the other projects' onboarding goes on."""
     try:
+        if recheck:
+            _recheck_access(r, rec)
         return _STEPS[name](r, rec)
     except github_app.NoAccess as e:
         return blocked(str(e), e.link)
