@@ -146,6 +146,26 @@ def install_link(owner: str, *, http=_http, now=_now, sh=_sh) -> str:
     return f"https://github.com/apps/{app['slug']}/installations/new"
 
 
+class Client:
+    """The App as onboarding sees it: the module's calls behind one object."""
+
+    def registered(self) -> bool:
+        try:
+            _read(_sh, "GITHUB_APP_ID")
+        except AppError:
+            return False
+        return True
+
+    def installation(self, repo):
+        return installation(repo)
+
+    def install_link(self, owner):
+        return install_link(owner)
+
+    def mint(self, inst, repos, permissions):
+        return mint(inst, repos, permissions)
+
+
 def main(argv: list[str], *, http=_http, now=_now, sh=_sh) -> int:
     if len(argv) != 2 or argv[0] != "check" or "/" not in argv[1]:
         print("usage: python -m dispatcher.github_app check <owner/repo>")
