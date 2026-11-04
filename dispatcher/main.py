@@ -2268,10 +2268,6 @@ def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
             # asks again; the operator hears once per issue and base.
             _wait_in_ready(cfg, deps, repository, cand.number, f"base:{base}", f"base branch {base} is not on origin")
             continue
-        except host_auth.HostWait as exc:   # not a provisioning failure: the next pass retries
-            print(f"[warn] {name}: no claims this pass — {exc}", file=sys.stderr)
-            del in_round[name]
-            continue
         except Exception:
             # Board never claimed (claim is last, still Ready) → no release
             # needed; report + quarantine, and the pass survives.

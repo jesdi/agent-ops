@@ -260,6 +260,11 @@ class Access:
                            "the App installation", self.app.install_link(_split(missing[0])[0]))
         return by_install
 
+    def _installations(self, repos: list[str], reached_only: bool) -> dict[Installation, list[str]]:
+        if not reached_only:
+            return self.reached(repos)
+        return self._reach(repos)[0] if self.app.registered() else {}
+
     def grants(self, repos: list[str], permissions: dict, *,
                reached_only: bool = False) -> dict[str, Token]:
         """Lowercased repo -> a Token for it: one mint per installation, naming
@@ -273,12 +278,8 @@ class Access:
         hit = self._cache.get(key)
         if hit is not None and all(t.expires_at - self.refresh > self.now() for t in hit.values()):
             return hit
-        if not reached_only:
-            by_install = self.reached(repos)
-        else:
-            by_install = self._reach(repos)[0] if self.app.registered() else {}
         grants = {}
-        for inst, names in by_install.items():
+        for inst, names in self._installations(repos, reached_only).items():
             token = self.app.mint(inst, names, permissions)
             grants.update({x.lower(): token for x in names})
         self._cache[key] = grants
