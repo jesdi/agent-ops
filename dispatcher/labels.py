@@ -51,11 +51,7 @@ def missing(repo: str, track_names, gh: Gh) -> list[tuple[str, str, str]]:
     return [x for x in wanted(track_names) if x[0].lower() not in have]
 
 
-def ensure(repo: str, track_names, gh: Gh) -> list[str]:
-    """Create the labels `repo` lacks; their names."""
-    made = []
-    for name, color, description in missing(repo, track_names, gh):
-        gh(["label", "create", name, "--repo", repo, "--color", color,
-            "--description", description])
-        made.append(name)
-    return made
+def create(repo: str, label: tuple[str, str, str], gh: Gh) -> None:
+    name, color, description = label
+    gh(["label", "create", name, "--repo", repo, "--color", color, "--description", description])
+

@@ -415,6 +415,7 @@ def repo_issues(repo: str, gh: Gh) -> list[dict]:
 class Carded:
     added: list[str]       # urls of the open issues given a card
     inboxed: list[str]     # urls of the cards found without a Status, now in Inbox
+    errors: list[str] = dataclasses.field(default_factory=list)   # "<url>: <why>" per issue that failed
 
 
 def card_open_issues(f: Fields, items: list[Item], issues: list[dict], gh: Gh) -> Carded:
@@ -427,13 +428,26 @@ def card_open_issues(f: Fields, items: list[Item], issues: list[dict], gh: Gh) -
     if not due:
         return Carded([], [])
     inbox = (f.field("Status"), f.option("Status", "Inbox"))
-    added, inboxed = [], []
+    done = Carded([], [])
     for issue, item in due:
-        item_id, value = (item.id, item.status) if item else _add(f, issue["id"], gh)
-        (inboxed if item else added).append(issue["url"])
-        if value is None:
-            _set_inbox(f, item_id, inbox, gh)
-    return Carded(added, inboxed)
+        try:
+            _card(f, issue, item, inbox, gh, done)
+        except (subprocess.SubprocessError, LookupError, TypeError, ValueError) as e:
+            done.errors.append(f"{issue['url']}: {(getattr(e, 'stderr', None) or repr(e)).strip()[-300:]}")
+    return done
+
+
+def _card(f: Fields, issue: dict, item: Item | None, inbox: tuple[str, str], gh: Gh,
+          done: Carded) -> None:
+    """One issue's card, with Inbox when it has no Status; noted in `done`
+    as each write lands. One issue failing never stops the next."""
+    item_id, value = (item.id, item.status) if item else _add(f, issue["id"], gh)
+    if item is None:
+        done.added.append(issue["url"])
+    if value is None:
+        _set_inbox(f, item_id, inbox, gh)
+        if item is not None:
+            done.inboxed.append(issue["url"])
 
 
 def _due(items: list[Item], issues: list[dict]) -> list[tuple[dict, Item | None]]:

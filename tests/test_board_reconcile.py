@@ -128,3 +128,24 @@ def test_an_unreadable_label_list_still_lets_cards_in(tmp_path, gh, monkeypatch)
     synced = GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
     assert gh.status(gh.boards[("jesdi", 1)], later) == "Inbox"
     assert "rate limited" in synced.errors[0]
+
+
+def test_one_issue_failing_never_stops_the_others_and_every_write_is_reported(tmp_path, gh, monkeypatch):
+    c = two_repository_cfg(tmp_path)
+    b = gh.boards[("jesdi", 1)]
+    bad, good = gh.issue("jesdi/portfolio_eval", 2), gh.issue("jesdi/portfolio_eval", 3)
+    bare = gh.issue("jesdi/portfolio_eval", 4)
+    gh.card(b, bare)
+    gh.labels["jesdi/portfolio_eval"] = {}
+
+    def flaky(args, cwd=None, env=None):
+        line = " ".join(args)
+        if f"c={bad['id']}" in line or (args[1:3] == ["label", "create"] and args[3] == "ci"):
+            raise subprocess.CalledProcessError(1, args, stderr="HTTP 502")
+        return gh(args, cwd, env)
+    monkeypatch.setattr(github, "_run", flaky)
+    synced = GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
+    assert synced.carded.added == [good["url"]] and synced.carded.inboxed == [bare["url"]]
+    assert gh.status(b, good) == gh.status(b, bare) == "Inbox" and gh.item_of(b, bad) is None
+    assert any(bad["url"] in e for e in synced.errors) and any("label ci" in e for e in synced.errors)
+    assert "jesdi/portfolio_eval: label spec-ready" in synced.lines()

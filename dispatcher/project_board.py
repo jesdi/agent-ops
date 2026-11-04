@@ -89,20 +89,27 @@ class Synced:
 
 
 def sync(s: Survey, repos: list[str], tracks, gh: Credentials) -> Synced:
-    """Cards for the open issues, then each repository's labels. One part
+    """Cards for the open issues, then each repository's labels. One write
     failing never holds back another; its error is kept, with every write
-    the rest made."""
-    errors = []
+    that landed."""
     try:
         carded = board.card_open_issues(s.fields, s.items, s.issues, gh.board)
-    except (board.BoardError, subprocess.SubprocessError) as e:
-        carded, errors = board.Carded([], []), [f"cards: {_reason(e)}"]
+        errors = [f"card {e}" for e in carded.errors]
+    except board.BoardError as e:    # no Inbox: nothing was written
+        carded, errors = board.Carded([], []), [f"cards: {e}"]
     made = []
     for repo in repos:
         try:
-            made += [f"{repo}: label {name}" for name in labels.ensure(repo, tracks, gh.repo)]
+            wanted = labels.missing(repo, tracks, gh.repo)
         except subprocess.SubprocessError as e:
             errors.append(f"{repo} labels: {_reason(e)}")
+            continue
+        for label in wanted:
+            try:
+                labels.create(repo, label, gh.repo)
+                made.append(f"{repo}: label {label[0]}")
+            except subprocess.SubprocessError as e:
+                errors.append(f"{repo} label {label[0]}: {_reason(e)}")
     return Synced(carded, made, errors)
 
 
