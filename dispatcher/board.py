@@ -423,24 +423,34 @@ def card_open_issues(f: Fields, items: list[Item], issues: list[dict], gh: Gh) -
     so a board without it gets no card left without a Status. A card with a
     Status keeps it, so triage is never reset (#230 D6, D7). Adding is by
     node id, so equal numbers in two repositories never collide (S57)."""
-    carded = cards(items, issues)
-    due = [(i, carded.get((i["repository"].lower(), i["number"]))) for i in issues
-           if i["state"] == "OPEN"]
-    due = [(i, item) for i, item in due if item is None or item.status is None]
+    due = _due(items, issues)
     if not due:
         return Carded([], [])
-    status, inbox = f.field("Status"), f.option("Status", "Inbox")
+    inbox = (f.field("Status"), f.option("Status", "Inbox"))
     added, inboxed = [], []
     for issue, item in due:
         item_id, value = (item.id, item.status) if item else _add(f, issue["id"], gh)
         (inboxed if item else added).append(issue["url"])
         if value is None:
-            gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"i={item_id}",
-                "-f", f"f={status}", "-f", f"o={inbox}", "-f",
-                "query=mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue("
-                "input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}})"
-                "{clientMutationId}}"])
+            _set_inbox(f, item_id, inbox, gh)
     return Carded(added, inboxed)
+
+
+def _due(items: list[Item], issues: list[dict]) -> list[tuple[dict, Item | None]]:
+    """The open issues with no card (None) or a card without a Status."""
+    carded = cards(items, issues)
+    pairs = [(i, carded.get((i["repository"].lower(), i["number"]))) for i in issues
+             if i["state"] == "OPEN"]
+    return [(i, item) for i, item in pairs if item is None or item.status is None]
+
+
+def _set_inbox(f: Fields, item_id: str, inbox: tuple[str, str], gh: Gh) -> None:
+    field_id, option_id = inbox
+    gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"i={item_id}",
+        "-f", f"f={field_id}", "-f", f"o={option_id}", "-f",
+        "query=mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue("
+        "input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}})"
+        "{clientMutationId}}"])
 
 
 def _add(f: Fields, content_id: str, gh: Gh) -> tuple[str, str | None]:
