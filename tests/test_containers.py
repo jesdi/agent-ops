@@ -122,7 +122,7 @@ def test_triage_cmd_read_only_clone_and_report_mount(monkeypatch, tmp_path):
     from dispatcher import containers
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-        "claude-opus-4-8", "/triage/o-r-2026-07-30-prompt.md")
+        "claude-opus-4-8", "/triage/o-r-2026-07-30-prompt.md", gh_config="/state/triage-tokens/t")
     assert cmd[:3] == ["podman", "run", "--rm"]
     assert "-it" not in cmd
     assert "/repos/r:/repos/r:ro" in cmd
@@ -144,7 +144,7 @@ def test_triage_cmd_quotes_prompt_path_and_model(monkeypatch, tmp_path):
     from dispatcher import containers
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-        "m;rm$(id)", "/triage/a b; rm -rf /.md")
+        "m;rm$(id)", "/triage/a b; rm -rf /.md", gh_config="/state/triage-tokens/t")
     shell_line = cmd[-1]
     assert "'/triage/a b; rm -rf /.md'" in shell_line
     assert "'m;rm$(id)'" in shell_line
@@ -174,7 +174,7 @@ def test_triage_cmd_resolves_claude_token_at_spawn_via_wrapper(
     monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/opt/infra/token-wrapper")
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-        "claude-opus-4-8", "/triage/p.md")
+        "claude-opus-4-8", "/triage/p.md", gh_config="/state/triage-tokens/t")
     wrapper = "/opt/infra/token-wrapper"
     assert cmd[0] == wrapper
     assert cmd[1:4] == ["podman", "run", "--rm"]
@@ -206,7 +206,7 @@ def test_wrapper_path_is_one_executable_even_with_spaces(monkeypatch, tmp_path):
     wt, _ = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "model", "P")
     assert shlex.split(cmd)[:2] == ["/opt/my infra/token-wrapper", "podman"]
-    argv = containers.triage_cmd("triage", "/repo", "/triage", "2g", "2", "model", "/p")
+    argv = containers.triage_cmd("triage", "/repo", "/triage", "2g", "2", "model", "/p", gh_config="/state/triage-tokens/t")
     assert argv[:2] == ["/opt/my infra/token-wrapper", "podman"]
 
 
@@ -225,7 +225,7 @@ def test_triage_cmd_model_prefix_never_reaches_the_cli(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-        "anthropic/claude-opus-5", "/triage/p.md")
+        "anthropic/claude-opus-5", "/triage/p.md", gh_config="/state/triage-tokens/t")
     shell_line = cmd[-1]
     assert "--model claude-opus-5" in shell_line
     assert "anthropic/" not in shell_line
@@ -235,7 +235,7 @@ def test_triage_cmd_runs_codex_headless_for_an_openai_model(monkeypatch, tmp_pat
                                                           codex_package):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     cmd = containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-                                "openai/gpt-6-sol", "/triage/p.md", effort="high")
+                                "openai/gpt-6-sol", "/triage/p.md", effort="high", gh_config="/state/triage-tokens/t")
     assert f"{tmp_path / 'state'}/codex-home:/root/.codex" in cmd
     assert f"{codex_package}:/opt/codex:ro" in cmd
     assert "/repos/r:/repos/r:ro" in cmd
@@ -247,7 +247,7 @@ def test_triage_cmd_runs_codex_headless_for_an_openai_model(monkeypatch, tmp_pat
 def test_triage_cmd_refuses_a_provider_without_a_runtime():
     with pytest.raises(ValueError, match="no runtime for provider"):
         containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-                              "mistral/m", "/triage/p.md")
+                              "mistral/m", "/triage/p.md", gh_config="/state/triage-tokens/t")
 
 
 def test_session_cmd_passes_effort_after_the_model(tmp_path: Path, monkeypatch):
@@ -268,14 +268,14 @@ def test_session_cmd_omits_effort_when_unset(tmp_path: Path, monkeypatch):
 def test_triage_cmd_passes_effort_after_the_model():
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-        "claude-opus-5", "/triage/o-r-2026-07-30-prompt.md", effort="low")
+        "claude-opus-5", "/triage/o-r-2026-07-30-prompt.md", effort="low", gh_config="/state/triage-tokens/t")
     assert "--model claude-opus-5 --effort low" in cmd[-1]
 
 
 def test_triage_cmd_omits_effort_when_unset():
     cmd = containers.triage_cmd(
         "triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
-        "claude-opus-5", "/triage/o-r-2026-07-30-prompt.md")
+        "claude-opus-5", "/triage/o-r-2026-07-30-prompt.md", gh_config="/state/triage-tokens/t")
     assert "--effort" not in cmd[-1]
 
 
@@ -299,7 +299,7 @@ def test_containers_run_the_hosts_claude_read_only(tmp_path: Path, monkeypatch):
     assert "-e DISABLE_AUTOUPDATER=1" in session
 
     triage = containers.triage_cmd("triage-x", clone, str(tmp_path / "t"),
-                                   "4g", "2", "opus", str(tmp_path / "p"))
+                                   "4g", "2", "opus", str(tmp_path / "p"), gh_config="/state/triage-tokens/t")
     assert mount in triage
     assert "DISABLE_AUTOUPDATER=1" in triage
 
@@ -418,3 +418,9 @@ def test_setup_cmd_mounts_the_configured_clone(tmp_path, monkeypatch):
     argv = containers.setup_cmd("task-42-setup", wt, "setup.sh", clone)
     assert f"{clone}:{clone}" in argv and not [a for a in argv if ".ssh" in a]
     assert not hasattr(containers, "clone_root")
+
+
+def test_triage_cmd_refuses_to_run_without_a_token_dir():
+    with pytest.raises(ValueError, match="token directory"):
+        containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+                              "claude-opus-5", "/triage/p.md", gh_config="")

@@ -355,7 +355,7 @@ def sweep(tmp_path, usages):
     triage.save_cursors(tmp_path, {"o/a": OLD})
     seen = []
 
-    def fake_session(cfg, repo, blob, started_date, entry, run=None):
+    def fake_session(cfg, repo, blob, started_date, entry, run=None, app=None):
         seen.append(str(entry))
         return {"issues": []}
 

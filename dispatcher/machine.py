@@ -218,6 +218,10 @@ def _dead_session_actions(task: TaskState) -> list[object]:
         if unattended_rounds_used(task):
             return [ParkForReview(ReviewPark.SESSION_DIED)]
         return [SpawnStage(Stage.PLAN)]
+    if task.stage == Stage.QUEUED and task.unlaunched:
+        # Claimed while the GitHub App errored: no session ever ran, so its
+        # first stage launches now (main._task_token).
+        return [SpawnStage(Stage.SPEC)]
     if task.stage in IN_FLIGHT_STAGES:
         return [HandleCrash()]
     return []

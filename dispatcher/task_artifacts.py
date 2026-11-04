@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher import spec_publish, state
+from dispatcher import host_auth, spec_publish, state
 from dispatcher.state import TaskState
 
 log = logging.getLogger(__name__)
@@ -193,9 +193,11 @@ def _registrations(task: TaskState) -> list[Registration]:
 class Collector:
     """One collection pass owns content snapshots and a single remote lookup."""
 
-    def __init__(self, root: Path, task: TaskState, repo: str, publish: bool, now: datetime):
+    def __init__(self, root: Path, task: TaskState, repo: str, publish: bool, now: datetime,
+                 auth: host_auth.HostAuth = host_auth.STORED):
         self.root, self.task, self.now = root, task, now
-        self.publisher = spec_publish.ArtifactPublisher(task.worktree, task.branch, repo) if publish and repo else None
+        self.publisher = (spec_publish.ArtifactPublisher(task.worktree, task.branch, repo, auth)
+                          if publish and repo else None)
 
     def store(self, entry: Registration, old: StoredArtifact | None) -> StoredArtifact:
         path = _source(self.task.worktree, entry.path)
@@ -244,13 +246,15 @@ def _media_type(path: Path) -> str:
 
 
 def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
-            now: datetime | None = None) -> None:
+            now: datetime | None = None,
+            auth: host_auth.HostAuth = host_auth.STORED) -> None:
+    """`auth`: the pass's host credentials, which the remote lookup runs on."""
     now = now or datetime.now(timezone.utc)
     root = state.archive_root(state_dir, task.repository, task.issue)
     index = read(state_dir, task.repository, task.issue)
     index.retain_for(task)
     if not index.expired and Path(task.worktree).is_dir():
-        Collector(root, task, repo, publish, now).collect(index)
+        Collector(root, task, repo, publish, now, auth).collect(index)
     index.save(root / "index.json")
     state.archive(state_dir, task)
 

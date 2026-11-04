@@ -23,7 +23,7 @@ class LaunchBoundarySessions(RecordingSessions):
         self.at_launch = []
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name,
-                    model, effort="", second=None):
+                    model, effort="", second=None, gh_config=""):
         self.at_launch.append({
             "repository": repository, "issue": issue, "worktree": worktree,
             "prompt": prompt,

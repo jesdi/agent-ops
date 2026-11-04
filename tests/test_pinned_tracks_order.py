@@ -206,7 +206,7 @@ def test_triage_is_still_ordered_by_the_mode(tmp_path):
     triage.save_cursors(tmp_path, {"o/a": OLD})
     seen = []
 
-    def fake_session(cfg, repo, blob, started_date, entry, run=None):
+    def fake_session(cfg, repo, blob, started_date, entry, run=None, app=None):
         seen.append(str(entry))
         return {"issues": []}
 

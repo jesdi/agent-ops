@@ -30,6 +30,16 @@ class AppError(Exception):
     a body without the expected fields, a key that can't sign."""
 
 
+class Unregistered(AppError):
+    """1Password answered that the App item or one of its fields is absent, or
+    the key it holds can't sign: the App is not registered (Client.registered)."""
+
+
+# What `op read` says when the item or field is absent, not when it can't answer.
+_ABSENT = ("isn't an item", "isn't a field", "isn't a vault", "not found",
+           "does not have a field", "no item")
+
+
 @dataclass(frozen=True)
 class Installation:
     id: int
@@ -75,7 +85,11 @@ def _b64(raw: bytes) -> str:
 def _read(sh, field: str) -> str:
     try:
         return sh(["op", "read", ITEM + field]).strip()
-    except (subprocess.SubprocessError, OSError):   # never carry stderr: it may name the item
+    except subprocess.CalledProcessError as exc:   # never carry stderr: it may name the item
+        if any(m in (exc.stderr or "").lower() for m in _ABSENT):
+            raise Unregistered(f"no {field} in 1Password") from None
+        raise AppError(f"cannot read {field} from 1Password") from None
+    except (subprocess.SubprocessError, OSError):
         raise AppError(f"cannot read {field} from 1Password") from None
 
 
@@ -89,7 +103,7 @@ def _jwt(now, sh) -> str:
             {"iss": app_id, "iat": iat, "exp": iat + 9 * 60}))
         return signing + "." + _b64(key.sign(signing.encode(), padding.PKCS1v15(), hashes.SHA256()))
     except Exception:   # any load or sign failure, UnsupportedAlgorithm included; never the key
-        raise AppError("the App private key is unreadable") from None
+        raise Unregistered("the App private key is unreadable") from None
 
 
 def _call(http, method, url, token, read, body=None, ok=200):
@@ -198,10 +212,11 @@ class Client:
         self.kw = dict(http=http or _http, now=now or _now, sh=sh or _sh)
 
     def registered(self) -> bool:
-        """The 1Password item gives an App id and a private key that signs."""
+        """The 1Password item gives an App id and a private key that signs.
+        AppError when 1Password can't answer: an outage is not "unregistered"."""
         try:
             _jwt(self.kw["now"], self.kw["sh"])
-        except AppError:
+        except Unregistered:
             return False
         return True
 
@@ -217,10 +232,20 @@ class Client:
 
 class Access:
     """An App's reach of repositories, and installation tokens for them cached
-    until REFRESH before expiry. `app` is a Client or anything shaped like it."""
+    until `refresh` before expiry. `app` is a Client or anything shaped like it."""
 
-    def __init__(self, app, now: Callable[[], datetime] = _now):
-        self.app, self.now, self._cache = app, now, {}
+    def __init__(self, app, now: Callable[[], datetime] = _now, refresh: timedelta = REFRESH):
+        self.app, self.now, self.refresh, self._cache = app, now, refresh, {}
+
+    def _reach(self, repos: list[str]) -> tuple[dict[Installation, list[str]], list[str]]:
+        """The repos grouped by the installation that reaches them, and those none reaches."""
+        by_install, missing = {}, []
+        for repo in dict.fromkeys(repos):
+            if inst := self.app.installation(repo):
+                by_install.setdefault(inst, []).append(repo)
+            else:
+                missing.append(repo)
+        return by_install, missing
 
     def reached(self, repos: list[str]) -> dict[Installation, list[str]]:
         """The repos grouped by the installation that reaches them, asked fresh.
@@ -229,32 +254,40 @@ class Access:
             raise NoAccess("the GitHub App is not registered: the 1Password item "
                            "agent-ops/agent-ops-github-app is unreadable; follow the "
                            "infra README checklist", README)
-        by_install, missing = {}, []
-        for repo in dict.fromkeys(repos):
-            if inst := self.app.installation(repo):
-                by_install.setdefault(inst, []).append(repo)
-            else:
-                missing.append(repo)
+        by_install, missing = self._reach(repos)
         if missing:
             raise NoAccess(f"the GitHub App can't reach {', '.join(missing)}: add it to "
                            "the App installation", self.app.install_link(_split(missing[0])[0]))
         return by_install
 
-    def tokens(self, repos: list[str], permissions: dict) -> dict[str, str]:
-        """Lowercased repo -> a token for it: one mint per installation, naming
-        only that installation's repos of `repos`."""
+    def _installations(self, repos: list[str], reached_only: bool) -> dict[Installation, list[str]]:
+        if not reached_only:
+            return self.reached(repos)
+        return self._reach(repos)[0] if self.app.registered() else {}
+
+    def grants(self, repos: list[str], permissions: dict, *,
+               reached_only: bool = False) -> dict[str, Token]:
+        """Lowercased repo -> a Token for it: one mint per installation, naming
+        only that installation's repos of `repos`. reached_only: a repo no
+        installation reaches (every repo, with no App registered) is left out
+        instead of raising NoAccess."""
         if not repos:
             return {}
-        key = (tuple(sorted({x.lower() for x in repos})), tuple(sorted(permissions.items())))
-        if (hit := self._cache.get(key)) and hit[1] - REFRESH > self.now():
-            return hit[0]
-        tokens, expiries = {}, []
-        for inst, names in self.reached(repos).items():
+        key = (tuple(sorted({x.lower() for x in repos})), tuple(sorted(permissions.items())),
+               reached_only)
+        hit = self._cache.get(key)
+        if hit is not None and all(t.expires_at - self.refresh > self.now() for t in hit.values()):
+            return hit
+        grants = {}
+        for inst, names in self._installations(repos, reached_only).items():
             token = self.app.mint(inst, names, permissions)
-            tokens.update({x.lower(): token.token for x in names})
-            expiries.append(token.expires_at)
-        self._cache[key] = tokens, min(expiries)
-        return tokens
+            grants.update({x.lower(): token for x in names})
+        self._cache[key] = grants
+        return grants
+
+    def tokens(self, repos: list[str], permissions: dict) -> dict[str, str]:
+        """Lowercased repo -> its token string (see grants)."""
+        return {repo: t.token for repo, t in self.grants(repos, permissions).items()}
 
 
 def _read_repo(http, repo: str, token: str) -> str:

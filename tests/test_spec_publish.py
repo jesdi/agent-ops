@@ -206,9 +206,9 @@ def test_artifact_publication_reuses_remote_snapshot(wt, monkeypatch):
     _publish(wt)
     calls = []
     git = spec_publish._git
-    def record(worktree, *args):
+    def record(worktree, *args, **kw):
         calls.append(args)
-        return git(worktree, *args)
+        return git(worktree, *args, **kw)
     monkeypatch.setattr(spec_publish, '_git', record)
     publisher = spec_publish.ArtifactPublisher(str(wt), BRANCH, REPO)
     assert publisher.reference(SPEC_REL, path.read_bytes()) is not None

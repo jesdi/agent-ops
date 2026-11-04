@@ -21,7 +21,7 @@ def test_create_workspace(tmp_path: Path, monkeypatch):
     (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         calls.append((args, cwd, timeout))
         if "worktree" in args:  # simulate git creating the dir
             wt = Path(args[-2])
@@ -76,7 +76,7 @@ def test_create_workspace_skips_setup_when_no_setup_cmd(tmp_path: Path, monkeypa
     (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         calls.append(args)
         if "worktree" in args:  # simulate git creating the dir
             wt = Path(args[-2])
@@ -126,7 +126,7 @@ def test_create_workspace_reuses_existing_worktree_dir(tmp_path: Path, monkeypat
     (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         calls.append(args)
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
@@ -153,7 +153,7 @@ def test_create_workspace_raises_on_unhealthy_reused_worktree(tmp_path: Path, mo
     issue `git worktree add` against it."""
     calls = []
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         calls.append(args)
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
@@ -179,7 +179,7 @@ def test_create_workspace_reuses_existing_branch(tmp_path: Path, monkeypatch):
     (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         calls.append(args)
         if args[:3] == ["git", "worktree", "add"]:
             wt = Path(args[-2])
@@ -188,7 +188,7 @@ def test_create_workspace_reuses_existing_branch(tmp_path: Path, monkeypatch):
                 f"gitdir: {tmp_path / 'repo'}/.git/worktrees/task-42\n")
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
-    monkeypatch.setattr(workspace, "_branch_exists", lambda clone_path, branch: True)
+    monkeypatch.setattr(workspace, "_branch_exists", lambda clone_path, branch, env=None: True)
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     t = repository(tmp_path)
 
@@ -213,7 +213,7 @@ def test_create_workspace_raises_when_branch_checked_out_elsewhere(tmp_path: Pat
 
     calls = []
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         calls.append(args)
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
@@ -254,7 +254,7 @@ def test_create_workspace_reuses_worktree_marked_provisioned_despite_deleted_fil
     (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
     calls = []
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         calls.append(args)
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
@@ -285,7 +285,7 @@ def test_create_workspace_raises_on_deleted_file_without_marker(
     blanket bypass."""
     calls = []
 
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         calls.append(args)
 
     monkeypatch.setattr(workspace, "_sh", fake_sh)
@@ -371,7 +371,7 @@ def test_create_workspace_seeds_claude_trust(tmp_path: Path, monkeypatch):
     with nobody attached, so a first-run wizard or folder-trust dialog
     stalls the task forever (task #192 sat on the theme picker for 1.5h)."""
     (tmp_path / "repo" / ".git").mkdir(parents=True)   # the clone a real repository has
-    def fake_sh(args, cwd, timeout=300, log=None):
+    def fake_sh(args, cwd, timeout=300, log=None, env=None):
         if "worktree" in args:
             wt = Path(args[-2])
             wt.mkdir(parents=True, exist_ok=True)

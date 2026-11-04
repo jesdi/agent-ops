@@ -164,6 +164,7 @@ WHY_LOOP_CAP = "loop cap"        # a bounded loop used all its rounds
 WHY_BAD_SIGNAL = "bad signal"    # stage.json still rejected after the retries
 WHY_CONFIG = "config"            # the config strands the task (models.stranded)
 WHY_OPERATOR = "operator"        # the operator parked it
+WHY_ACCESS = "access"            # the GitHub App installation doesn't reach its repository
 
 # No poke stretch (TaskState.poked_since / pokes): `replace(task, **NO_POKES)`
 # at the clear points named on those fields.
@@ -235,6 +236,10 @@ class TaskState:
     # The stage a crash failed this task out of; Resume respawns it fresh in
     # the same worktree. "" = not resumable (kill, closed PR, pre-field crash).
     crashed_stage: str = ""
+    # Claimed, but its first launch waits on the GitHub App (an App error
+    # when its token was minted): machine launches it on the next pass.
+    # Set by main._task_token, cleared by every launch.
+    unlaunched: bool = False
     # The background wait the dispatcher has seen (see machine.pass_actions):
     # the marker's `reported` it last recorded, and herdr's state-change
     # counter at that moment. A different counter later means a new turn.

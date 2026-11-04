@@ -37,7 +37,7 @@ class Origin:
         self.branches = set(branches)
         self.calls = []  # (issue, base)
 
-        def fake_create(repository, issue, base="main", dry_run=False):
+        def fake_create(repository, issue, base="main", dry_run=False, auth=None):
             self.calls.append((issue, base))
             if base not in self.branches:
                 raise workspace.MissingBaseError(f"base {base!r} is not on origin")
@@ -208,7 +208,7 @@ def test_other_provisioning_failure_still_reports_and_quarantines(tmp_path, monk
     c = dc_replace(cfg(tmp_path), infra_repo="jesdi/agent-ops")
     seen = []
 
-    def boom(repository, issue, base="main", dry_run=False):
+    def boom(repository, issue, base="main", dry_run=False, auth=None):
         seen.append(base)
         raise RuntimeError("disk full")
     monkeypatch.setattr(main, "create_workspace", boom)
