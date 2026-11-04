@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from typing import Callable
 
 from dispatcher import board, labels
 
@@ -13,7 +14,7 @@ from dispatcher import board, labels
 @dataclass(frozen=True)
 class Credentials:
     board: board.Gh   # Projects v2, with the board token
-    repo: board.Gh    # issues and labels, with the repository credentials
+    repo: Callable[[str], board.Gh]   # issues and labels of a repository, with its credentials
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,7 @@ def label_lines(missing: dict[str, list[str]]) -> list[str]:
 
 
 def missing_labels(repos: list[str], tracks, gh: Credentials) -> dict[str, list[str]]:
-    return {repo: [x[0] for x in labels.missing(repo, tracks, gh.repo)] for repo in repos}
+    return {repo: [x[0] for x in labels.missing(repo, tracks, gh.repo(repo))] for repo in repos}
 
 
 def survey(owner: str, number: int, repos: list[str], gh: Credentials) -> Survey:
@@ -70,7 +71,7 @@ def survey(owner: str, number: int, repos: list[str], gh: Credentials) -> Survey
         gaps, clash = board.gaps(f), ""
     except board.BoardError as e:
         gaps, clash = None, str(e)
-    issues = [i for repo in repos for i in board.repo_issues(repo, gh.repo)]
+    issues = [i for repo in repos for i in board.repo_issues(repo, gh.repo(repo))]
     items = board.fetch_items(f.id, gh.board)
     outside, unreadable = board.foreign(items, {x.lower() for x in repos},
                                         {i["title"] for i in issues})
@@ -100,13 +101,13 @@ def sync(s: Survey, repos: list[str], tracks, gh: Credentials) -> Synced:
     made = []
     for repo in repos:
         try:
-            wanted = labels.missing(repo, tracks, gh.repo)
+            wanted = labels.missing(repo, tracks, gh.repo(repo))
         except subprocess.SubprocessError as e:
             errors.append(f"{repo} labels: {_reason(e)}")
             continue
         for label in wanted:
             try:
-                labels.create(repo, label, gh.repo)
+                labels.create(repo, label, gh.repo(repo))
                 made.append(f"{repo}: label {label[0]}")
             except subprocess.SubprocessError as e:
                 errors.append(f"{repo} label {label[0]}: {_reason(e)}")

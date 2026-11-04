@@ -33,7 +33,7 @@ def _board_gh(args: list[str]) -> str:
     return _run(["gh"] + args, env=_project_env())
 
 
-_GH = project_board.Credentials(board=_board_gh, repo=lambda args: _run(["gh"] + args))
+_GH = project_board.Credentials(board=_board_gh, repo=lambda _repo: lambda args: _run(["gh"] + args))
 
 
 @dataclass(frozen=True)
@@ -178,7 +178,7 @@ class GitHubClient:
     def _issues(self, repository: Repository) -> list[dict]:
         """Every issue of `repository`, open and closed (board.repo_issues),
         read with the stored auth."""
-        return board.repo_issues(repository.repo, _GH.repo)
+        return board.repo_issues(repository.repo, _GH.repo(repository.repo))
 
     def reconcile_board(self, repositories: list[Repository], tracks) -> project_board.Synced:
         """Future issues keep arriving (#230 D8): one project's open issues

@@ -146,24 +146,83 @@ def install_link(owner: str, *, http=_http, now=_now, sh=_sh) -> str:
     return f"https://github.com/apps/{app['slug']}/installations/new"
 
 
+class NoAccess(Exception):
+    """The App can't serve these repositories until the operator acts: it is not
+    registered, or its installation doesn't reach one. `link` says where to act."""
+
+    def __init__(self, detail: str, link: str):
+        super().__init__(detail)
+        self.link = link
+
+
+README = "https://github.com/jesdi/agent-ops-infra/blob/main/README.md#github-app"
+REFRESH = timedelta(minutes=5)   # remint a token this close to its expiry
+
+
 class Client:
     """The App as onboarding sees it: the module's calls behind one object."""
 
+    def __init__(self, *, http=None, now=None, sh=None):   # None: the module's, read now
+        self.kw = dict(http=http or _http, now=now or _now, sh=sh or _sh)
+
     def registered(self) -> bool:
+        """The 1Password item gives an App id and a private key that signs."""
         try:
-            _read(_sh, "GITHUB_APP_ID")
+            _jwt(self.kw["now"], self.kw["sh"])
         except AppError:
             return False
         return True
 
     def installation(self, repo):
-        return installation(repo)
+        return installation(repo, **self.kw)
 
     def install_link(self, owner):
-        return install_link(owner)
+        return install_link(owner, **self.kw)
 
     def mint(self, inst, repos, permissions):
-        return mint(inst, repos, permissions)
+        return mint(inst, repos, permissions, **self.kw)
+
+
+class Access:
+    """An App's reach of repositories, and installation tokens for them cached
+    until REFRESH before expiry. `app` is a Client or anything shaped like it."""
+
+    def __init__(self, app, now: Callable[[], datetime] = _now):
+        self.app, self.now, self._cache = app, now, {}
+
+    def reached(self, repos: list[str]) -> dict[Installation, list[str]]:
+        """The repos grouped by the installation that reaches them, asked fresh.
+        NoAccess when the App is unregistered or misses one; AppError passes."""
+        if not self.app.registered():
+            raise NoAccess("the GitHub App is not registered: the 1Password item "
+                           "agent-ops/agent-ops-github-app is unreadable; follow the "
+                           "infra README checklist", README)
+        by_install, missing = {}, []
+        for repo in dict.fromkeys(repos):
+            if inst := self.app.installation(repo):
+                by_install.setdefault(inst, []).append(repo)
+            else:
+                missing.append(repo)
+        if missing:
+            raise NoAccess(f"the GitHub App can't reach {', '.join(missing)}: add it to "
+                           "the App installation", self.app.install_link(missing[0].split("/")[0]))
+        return by_install
+
+    def tokens(self, repos: list[str], permissions: dict) -> dict[str, str]:
+        """Lowercased repo -> a token for it: one mint per installation, naming
+        only that installation's repos of `repos`."""
+        if not repos:
+            return {}
+        key = (tuple(sorted({x.lower() for x in repos})), tuple(sorted(permissions.items())))
+        if (hit := self._cache.get(key)) and hit[1] - REFRESH > self.now():
+            return hit[0]
+        tokens, expiries = {}, []
+        for inst, names in self.reached(repos).items():
+            token = self.app.mint(inst, names, permissions)
+            tokens.update({x.lower(): token.token for x in names})
+            expiries.append(token.expires_at)
+        self._cache[key] = tokens, min(expiries)
+        return tokens
 
 
 def main(argv: list[str], *, http=_http, now=_now, sh=_sh) -> int:

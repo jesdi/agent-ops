@@ -1,7 +1,10 @@
 """Fixer additions for ticket 02: timer-run recheck, clone credentials, empty repo list."""
-from dispatcher import github_app
-from tests.test_onboard import add, box, infra_token, record, step  # noqa: F401
-from tests.test_onboard_app import FakeApp, run, sh_for
+import json
+from pathlib import Path
+
+from dispatcher import github_app, onboard
+from tests.test_onboard import add, box, infra_token, record, state, step  # noqa: F401
+from tests.test_onboard_app import JESDI, FakeApp, run, sh_for
 
 
 def test_timer_run_blocks_an_unconfirmed_project_that_lost_access(tmp_path, box):
@@ -11,7 +14,49 @@ def test_timer_run_blocks_an_unconfirmed_project_that_lost_access(tmp_path, box)
     assert step(record(tmp_path), "resolve")["state"] == "verified"
     app.remove("jesdi/analytics")
     run(box, sh_for(), app)
-    assert step(record(tmp_path), "resolve")["state"] == "blocked"
+    rec = record(tmp_path)
+    s = step(rec, "confirm")
+    assert (s["state"], s["link"]) == ("blocked", JESDI.settings_url)
+    assert "jesdi/analytics" in s["detail"]
+    app.add("jesdi/analytics")
+    run(box, sh_for(), app)
+    assert "review the proposal" in step(record(tmp_path), "confirm")["detail"]
+
+
+def test_recovering_lost_access_keeps_the_inspected_proposal(tmp_path, box):
+    def clone(argv, cwd, env):
+        root = Path(argv[-1])
+        (root / ".git").mkdir(parents=True)
+        (root / ".backlog").mkdir()
+        (root / ".backlog/project-meta.json").write_text(
+            json.dumps({"owner": "jesdi", "projectNumber": 4}))
+        return ""
+
+    def sh():
+        x = sh_for()
+        x.route("git clone", clone)
+        return x
+    app = FakeApp()
+    onboard.write_intent(state(tmp_path), "add", "analytics", {
+        "repos": ["jesdi/analytics"], "board": None, "commands": [{"gate_cmd": None}],
+        "inspect": True}, "agent", 1000)
+    run(box, sh(), app)
+    rec = onboard.load_record(state(tmp_path), "analytics")
+    onboard.write_intent(state(tmp_path), "skip-inspection", "analytics",
+                         {"revision": rec.revision}, "agent", 1001)
+    run(box, sh(), app)
+    inspected = record(tmp_path)
+    assert step(inspected, "inspect")["state"] == "verified"
+    assert inspected["proposal"]["board"] == {"owner": "jesdi", "number": 4}
+    app.remove("jesdi/analytics")
+    run(box, sh(), app)
+    assert step(record(tmp_path), "confirm")["link"] == JESDI.settings_url
+    app.add("jesdi/analytics")
+    run(box, sh(), app)
+    rec = record(tmp_path)
+    assert [step(rec, n)["state"] for n in ("resolve", "clone", "inspect")] == ["verified"] * 3
+    assert (rec["proposal"], rec["revision"]) == (inspected["proposal"], inspected["revision"])
+    assert step(rec, "confirm")["link"] == ""
 
 
 def test_timer_run_retries_after_an_app_error(tmp_path, box):

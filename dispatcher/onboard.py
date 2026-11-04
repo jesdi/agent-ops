@@ -23,7 +23,6 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -71,9 +70,7 @@ class Run:
     now: datetime
     _builder: list = field(default_factory=list)   # the run's builder, once read
     adopted: set = field(default_factory=set)      # projects whose head this run adopted
-    app: object = None          # the GitHub App (github_app.Client); None: the stored auth, tests only
-    tokens: dict = field(default_factory=dict)     # sorted repos -> (token per repo, expiry)
-    started: float = field(default_factory=time.monotonic)
+    access: github_app.Access | None = None   # None: the stored auth, older tests only
 
 
 def _builder(r: Run) -> str:
@@ -455,7 +452,9 @@ _APPLY = {"add": _add, "confirm": _confirm, "resume": _resume,
 def run(config_path: str | Path, sh: Sh = sh, get: Get = get,
         now: datetime | None = None, app: object = None) -> None:
     cfg = config.load_config(config_path)
-    r = Run(Path(config_path), cfg, sh, get, now or datetime.now(timezone.utc), app=app)
+    clock = (lambda: now) if now else (lambda: datetime.now(timezone.utc))
+    r = Run(Path(config_path), cfg, sh, get, clock(),
+            access=github_app.Access(app, clock) if app else None)
     with state_lock(cfg.state_dir, "onboarding.lock"):
         _drain(r)
         for rec in list_records(cfg.state_dir):
@@ -465,15 +464,12 @@ def run(config_path: str | Path, sh: Sh = sh, get: Get = get,
 
 def _advance(r: Run, rec: Record) -> None:
     """Work the record's steps in order; stop at the first not verified."""
-    if (out := _access_lost(r, rec)) and rec.steps[0].state is StepState.VERIFIED:
-        rec.steps[0].state, rec.steps[0].detail, rec.steps[0].link = out.state, out.detail, out.link
-        rec.steps[0].since = r.now.isoformat()
-        _save(r, rec)
-        return
+    at = next((s.name for s in rec.steps if s.state is not StepState.VERIFIED), "resolve")
+    lost = _access_lost(r, rec) if at != "resolve" else None   # resolve checks on its own
     for s in rec.steps:
         if s.state is StepState.VERIFIED:
             continue
-        out = _work(r, rec, s.name)
+        out = lost or _work(r, rec, s.name)
         if out.state != s.state:
             s.since = r.now.isoformat()
         s.state, s.detail, s.link = out.state, out.detail, out.link
@@ -485,16 +481,17 @@ def _advance(r: Run, rec: Record) -> None:
 
 
 def _access_lost(r: Run, rec: Record) -> Outcome | None:
-    """Every timer run rechecks the App's reach of an unconfirmed project's
-    repositories; a confirmed one goes on, the board step reports it."""
+    """Every timer run rechecks the App's reach of a resolved, unconfirmed
+    project's repositories and blocks the step at hand while one is missed,
+    keeping the proposal; a confirmed one goes on, the board step reports it."""
     repos = [x["repo"] for x in rec.proposal.get("repositories", [])]
-    if r.app is None or not repos or rec.confirmed_revision == rec.revision:
+    if r.access is None or not repos or rec.confirmed_revision == rec.revision:
         return None
     try:
-        _reached(r, repos)
-    except AppBlocked as e:
-        return e.outcome
-    except Exception:   # an App error is retried by the step that needs it
+        r.access.reached(repos)
+    except github_app.NoAccess as e:
+        return blocked(str(e), e.link)
+    except github_app.AppError:   # retried by the step that needs it
         return None
     return None
 
@@ -502,8 +499,8 @@ def _access_lost(r: Run, rec: Record) -> Outcome | None:
 def _work(r: Run, rec: Record, name: str) -> Outcome:
     try:
         return _STEPS[name](r, rec)
-    except AppBlocked as e:
-        return e.outcome
+    except github_app.NoAccess as e:
+        return blocked(str(e), e.link)
     except Exception as e:  # any other error fails the step; every run retries it
         return Outcome(StepState.FAILED,
                        (getattr(e, "stderr", None) or repr(e)).strip()[-2000:])
@@ -512,71 +509,17 @@ def _work(r: Run, rec: Record, name: str) -> Outcome:
 # -- GitHub App access --------------------------------------------------------
 
 APP_PERMISSIONS = {"contents": "read", "issues": "write", "metadata": "read"}
-APP_README = f"https://github.com/{INFRA_REPO}/blob/main/README.md#github-app"
-APP_REFRESH = timedelta(minutes=5)   # remint a token this close to its expiry
-
-
-class AppBlocked(Exception):
-    """The App can't serve the project: the operator must act."""
-
-    def __init__(self, outcome: Outcome):
-        self.outcome = outcome
 
 
 def _tokens(r: Run, repos: list[str]) -> dict[str, str]:
-    """Lowercased repo -> an installation token for it, one mint per installation
-    naming only these repos. {} without an App. Raises AppBlocked when the App is
-    unregistered or doesn't reach a repo; an AppError fails the step instead."""
-    if r.app is None or not repos:
-        return {}
-    key = tuple(sorted({x.lower() for x in repos}))
-    elapsed = timedelta(seconds=time.monotonic() - r.started)
-    if (cached := r.tokens.get(key)) and cached[1] - APP_REFRESH > r.now + elapsed:
-        return cached[0]
-    tokens, minted = {}, []
-    for inst, names in _reached(r, repos).items():
-        token = r.app.mint(inst, names, APP_PERMISSIONS)
-        tokens.update({x.lower(): token.token for x in names})
-        minted.append(token.expires_at)
-    r.tokens[key] = tokens, min(minted)
-    return tokens
-
-
-def _reached(r: Run, repos: list[str]) -> dict:
-    """The repos grouped by the installation that reaches them; AppBlocked
-    when the App is unregistered or misses one."""
-    if not r.app.registered():
-        raise AppBlocked(blocked("the GitHub App is not registered: the 1Password item "
-                                 "agent-ops/agent-ops-github-app is unreadable; follow the "
-                                 "infra README checklist", APP_README))
-    by_install, missing = {}, []
-    for repo in dict.fromkeys(repos):
-        if inst := r.app.installation(repo):
-            by_install.setdefault(inst, []).append(repo)
-        else:
-            missing.append(repo)
-    if missing:
-        raise AppBlocked(blocked(f"the GitHub App can't reach {', '.join(missing)}: add "
-                                 "it to the App installation",
-                                 r.app.install_link(missing[0].split("/")[0])))
-    return by_install
+    """Lowercased repo -> its installation token; {} without an App.
+    github_app.NoAccess when the App is unregistered or misses a repo."""
+    return r.access.tokens(repos, APP_PERMISSIONS) if r.access else {}
 
 
 def _repo_env(tokens: dict[str, str], repo: str) -> dict | None:
     """The env of a call on `repo`: GH_TOKEN is its installation token."""
     return {**os.environ, "GH_TOKEN": tokens[repo.lower()]} if tokens else None
-
-
-def _repo_of(args: list[str], repos: list[str]) -> str:
-    """The repository a gh call names: an owner/name argument or owner=/name= fields."""
-    fields = dict(a.split("=", 1) for a in args if a.startswith(("owner=", "name=")))
-    named = {a.lower() for a in args}
-    if len(fields) == 2:
-        named.add(f"{fields['owner']}/{fields['name']}".lower())
-    for repo in repos:
-        if repo.lower() in named:
-            return repo
-    raise RuntimeError(f"gh {' '.join(args[:3])}: no project repository named")
 
 
 # -- resolve ------------------------------------------------------------------
@@ -658,14 +601,16 @@ def _proposal(rec: Record, found: list[dict]) -> dict:
                              for x, commands in zip(found, rec.request["commands"])]}
 
 
-def _gh(r: Run, repos: list[str] = ()) -> project_board.Credentials:
-    """Board calls carry the board token; repository calls the installation
-    token of the repository they name (the stored auth without an App)."""
-    def repo(args):
-        tokens = _tokens(r, list(repos))
-        return r.sh(["gh", *args], env=_repo_env(tokens, _repo_of(args, list(repos))) if tokens else None)
-    return project_board.Credentials(board=lambda args: r.sh(["gh", *args], env=board.project_env()),
-                                     repo=repo)
+def _board_gh(r: Run) -> board.Gh:
+    return lambda args: r.sh(["gh", *args], env=board.project_env())
+
+
+def _gh(r: Run, repos: list[str]) -> project_board.Credentials:
+    """Board calls carry the board token; a call on one of `repos` carries
+    its installation token (the stored auth without an App)."""
+    def repo(name: str) -> board.Gh:
+        return lambda args: r.sh(["gh", *args], env=_repo_env(_tokens(r, repos), name))
+    return project_board.Credentials(board=_board_gh(r), repo=repo)
 
 
 def _check_board(r: Run, rec: Record, proposal: dict) -> Outcome | None:
@@ -902,9 +847,9 @@ def _confirm_step(r: Run, rec: Record) -> Outcome:
     confirmed = bool(rec.revision) and rec.confirmed_revision == rec.revision
     try:
         out = _check_board(r, rec, rec.proposal) or _check_fits(r, rec.proposal)
-    except AppBlocked as e:   # a confirmed project goes on: the board step reports it
+    except github_app.NoAccess as e:   # a confirmed project goes on: the board step reports it
         if not confirmed:
-            return e.outcome
+            return blocked(str(e), e.link)
         out = None
     if out:
         return out
@@ -927,8 +872,8 @@ def _board(r: Run, rec: Record) -> Outcome:
     it doesn't go back to confirm (D11)."""
     owner = rec.proposal["board"]["owner"]
     repos = [x["repo"] for x in rec.proposal["repositories"]]
-    if r.app:
-        _reached(r, repos)   # a fresh access check, never the token cache
+    if r.access:
+        r.access.reached(repos)   # a fresh access check, never the token cache
     tokens = _tokens(r, repos)   # first: a repository the App lost blocks before any write
     number = rec.proposal["board"].get("number") or _new_board(r, rec)
     if isinstance(number, Outcome):
@@ -966,13 +911,13 @@ def _new_board(r: Run, rec: Record) -> int | Outcome:
     if rec.board_number:
         return rec.board_number
     owner, title = rec.proposal["board"]["owner"], rec.proposal["board"]["title"]
-    found = board.find(owner, title, _gh(r).board)
+    found = board.find(owner, title, _board_gh(r))
     if len(found) > 1:
         return blocked(f"{owner} has {len(found)} boards titled {title!r}: rename all but "
                        "one, then resume")
-    number = found[0] if found else board.create(owner, title, _gh(r).board)
+    number = found[0] if found else board.create(owner, title, _board_gh(r))
     # A crash may have lost the save between create and settle: settle either way.
-    board.settle(owner, number, _gh(r).board)
+    board.settle(owner, number, _board_gh(r))
     rec.board_number = number
     return number
 
@@ -983,7 +928,7 @@ def _link(r: Run, f: board.Fields, owner: str, repos: list[str], tokens: dict) -
     own = [x for x in repos if x.split("/")[0].lower() == owner.lower()]
     ids = [json.loads(r.sh(["gh", "api", f"repos/{x}"], env=_repo_env(tokens, x)))["node_id"]
            for x in own]
-    board.link(f, ids, _gh(r).board)
+    board.link(f, ids, _board_gh(r))
     others = [x for x in repos if x not in own]
     return f"not linked, another owner: {', '.join(others)}" if others else ""
 
