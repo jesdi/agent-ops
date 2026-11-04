@@ -34,10 +34,11 @@ def session_name(repository: str, issue: int) -> str:
 
 def podman_cmd(repository: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
-               second: Entry | None = None, clone: str = "") -> str:
+               second: Entry | None = None, clone: str = "",
+               gh_config: str = "") -> str:
     return containers.session_cmd(session_name(repository, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
-                                  second=second, clone=clone)
+                                  second=second, clone=clone, gh_config=gh_config)
 
 
 # The idle time of a session that is not `working` but whose status just
@@ -77,7 +78,7 @@ class Sessions:
 
     def _launch(self, repository: str, issue: int, worktree: str, model: str,
                 args: str, effort: str = "",
-                second: Entry | None = None) -> None:
+                second: Entry | None = None, gh_config: str = "") -> None:
         # The clone comes from the repository's configuration, never from the
         # worktree's `.git` pointer, which the session can rewrite.
         clone = self.clones.get(repository)
@@ -95,7 +96,7 @@ class Sessions:
         runtime = runtime_for(model)
         cmd = podman_cmd(repository, issue, worktree, self.memory, self.cpus,
                          model, args, effort=effort,
-                         second=second, clone=clone)
+                         second=second, clone=clone, gh_config=gh_config)
         workspace.install_stop_hook(worktree)
         tab = herdr.Tab.ensure(
             repository, session_name(repository, issue), worktree,
@@ -118,7 +119,7 @@ class Sessions:
 
     def spawn_stage(self, repository: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "",
-                    second: Entry | None = None) -> None:
+                    second: Entry | None = None, gh_config: str = "") -> None:
         """Start a fresh conversation; real launches require state_dir."""
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
@@ -131,11 +132,11 @@ class Sessions:
                                       f"prompt-{stage_name}.md", prompt)
         self._launch(repository, issue, worktree, model,
                      f'"$(cat .agent/prompt-{stage_name}.md)"', effort=effort,
-                     second=second)
+                     second=second, gh_config=gh_config)
 
     def resume(self, repository: str, issue: int, worktree: str, message: str,
                model: str, effort: str = "", second: Entry | None = None,
-               *, session_id: str) -> None:
+               *, session_id: str, gh_config: str = "") -> None:
         if self.dry_run:
             print(f"[dry-run] resume {session_name(repository, issue)} on {model} "
                   f"at {worktree}")
@@ -143,7 +144,7 @@ class Sessions:
         runtime = runtime_for(model)
         self._launch(repository, issue, worktree, model,
                      runtime.resume(session_id, shlex.quote(message)), effort=effort,
-                     second=second)
+                     second=second, gh_config=gh_config)
 
     def capture_tail(self, repository: str, issue: int, lines: int = 25) -> str:
         if self.dry_run:

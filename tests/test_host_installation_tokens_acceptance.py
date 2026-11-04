@@ -42,6 +42,11 @@ INSTALL = github_app.Installation(9001, "https://github.com/settings/installatio
 REAL_RUN = subprocess.run
 
 
+TASK_PERMISSIONS = {"contents": "write", "pull_requests": "write", "issues": "write",
+                    "workflows": "write", "actions": "read", "checks": "read",
+                    "metadata": "read"}
+
+
 class FakeApp:
     """The installation reaches `reached`; every mint is recorded."""
 
@@ -72,7 +77,10 @@ class FakeApp:
         return github_app.Token(token, datetime(2099, 1, 1, tzinfo=timezone.utc))
 
     def tokens_for(self, repo):
-        return [t for repos, _, t in self.mints if repo in repos]
+        """The host's mints for `repo`; a task container's own token (ticket 04: the
+        A3 permissions, mounted into the container) is not host work."""
+        return [t for repos, perms, t in self.mints
+                if repo in repos and perms != TASK_PERMISSIONS]
 
 
 class Call:
@@ -220,7 +228,8 @@ def test_an_unreached_repository_s_host_calls_carry_no_gh_token(world):
     portfolio = world.for_repo("jesdi/portfolio_eval")
     assert {"pr-poll", "label"} <= kinds(portfolio)
     assert [c.line for c in portfolio if c.token is not None] == []
-    assert [repos for repos, _, _ in world.app.mints] == [["jesdi/analytics"]]
+    assert [repos for repos, perms, _ in world.app.mints
+            if perms != TASK_PERMISSIONS] == [["jesdi/analytics"]]
 
 
 @pytest.mark.parametrize("ready, clone, reached", [("analytics", "analytics", True),

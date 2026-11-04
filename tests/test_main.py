@@ -201,7 +201,7 @@ class FakeSessions:
         self.sent_text.append((issue, text))
         return True
 
-    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None):
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None, gh_config=""):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")

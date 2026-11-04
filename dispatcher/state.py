@@ -164,6 +164,7 @@ WHY_LOOP_CAP = "loop cap"        # a bounded loop used all its rounds
 WHY_BAD_SIGNAL = "bad signal"    # stage.json still rejected after the retries
 WHY_CONFIG = "config"            # the config strands the task (models.stranded)
 WHY_OPERATOR = "operator"        # the operator parked it
+WHY_ACCESS = "access"            # the GitHub App installation doesn't reach its repository
 
 # No poke stretch (TaskState.poked_since / pokes): `replace(task, **NO_POKES)`
 # at the clear points named on those fields.
