@@ -669,64 +669,14 @@ def _task_token(cfg: Config, deps: Deps, repository: Repository,
         return None
 
 
-_EXPIRES = "# expires_at: "
-TOKEN_REFRESH = timedelta(minutes=20)
-
-
-def _write_hosts(directory: Path, token: github_app.Token) -> None:
-    """hosts.yml by rename, so a reader sees the old file or the new one whole."""
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".hosts-")   # 0600
-    try:
-        with os.fdopen(fd, "w") as out:
-            out.write(f"{_EXPIRES}{token.expires_at.isoformat()}\n"
-                      f"github.com:\n    oauth_token: {token.token}\n    user: x-access-token\n"
-                      "    git_protocol: https\n")
-        os.replace(tmp, directory / "hosts.yml")
-    except BaseException:
-        os.unlink(tmp)
-        raise
-
-
-def _token_expiry(directory: Path) -> datetime | None:
-    try:
-        first = (directory / "hosts.yml").read_text().splitlines()[0]
-        return datetime.fromisoformat(first.removeprefix(_EXPIRES))
-    except (OSError, IndexError, ValueError):
-        return None
-
-
-def _token_due(deps: Deps, directory: Path) -> bool:
-    expires = _token_expiry(directory)
-    now = deps.clock() if deps.clock else datetime.now(timezone.utc)
-    # no readable expiry (a file from before the marker existed): mint afresh
-    return deps.app is not None and (expires is None or expires - now < TOKEN_REFRESH)
-
-
-def _refresh_task_token(cfg: Config, deps: Deps, task: TaskState) -> None:
-    """An App error keeps the current file; the next pass retries."""
-    repository = next(r for r in cfg.repositories if r.name == task.repository)
-    try:
-        task_tokens.issue(deps.access, cfg.state_dir, task_key(task.repository, task.issue),
-                          repository.repo)
-    except (github_app.AppError, github_app.NoAccess) as exc:
-        print(f"[warn] #{task.issue}: task token refresh waits for the next pass: {exc}",
-              file=sys.stderr)
-
-
 def _sync_task_tokens(cfg: Config, deps: Deps) -> None:
-    """tokens/<task_key> lives while its task holds a session: others go (crash
-    leftovers too), and a token with under TOKEN_REFRESH left is re-minted."""
-    root = Path(cfg.state_dir) / "tokens"
-    if not root.is_dir():
-        return
-    names = {r.name for r in cfg.repositories}
-    holders = {task_key(t.repository, t.issue): t for t in load_all(cfg.state_dir)
-               if holds_slot(t) and t.repository in names}
-    for directory in root.iterdir():
-        if directory.name not in holders:
-            shutil.rmtree(directory, ignore_errors=True)
-        elif _token_due(deps, directory):
-            _refresh_task_token(cfg, deps, holders[directory.name])
+    """A task's token directory lives while the task holds a session
+    (task_tokens.sync); a refresh that fails waits for the next pass."""
+    repos = {r.name: r.repo for r in cfg.repositories}
+    holders = {task_key(t.repository, t.issue): repos[t.repository]
+               for t in load_all(cfg.state_dir) if holds_slot(t) and t.repository in repos}
+    for why in task_tokens.sync(deps.access, cfg.state_dir, holders, deps.clock()):
+        print(f"[warn] task token refresh waits for the next pass: {why}", file=sys.stderr)
 
 
 def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
@@ -2792,7 +2742,8 @@ def _sync_artifacts(cfg: Config, *, dry_run: bool = False,
 
 def _begin_pass_auth(cfg: Config, deps: Deps) -> None:
     """The pass's App access and the host credentials it gives each project."""
-    deps.access = None if deps.app is None else github_app.Access(deps.app, now=deps.clock)
+    deps.access = (None if deps.app is None else
+                   github_app.Access(deps.app, now=deps.clock, refresh=task_tokens.REFRESH))
     projects: dict[str, list[str]] = {}
     for r in cfg.repositories:
         projects.setdefault(r.project.name, []).append(r.repo)

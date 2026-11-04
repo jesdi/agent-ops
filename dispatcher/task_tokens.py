@@ -9,8 +9,9 @@ The token's expiry is dispatcher state, kept outside the mounted directory.
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from dispatcher import github_app
@@ -19,6 +20,8 @@ from dispatcher import github_app
 TASK_PERMISSIONS = {"contents": "write", "pull_requests": "write", "issues": "write",
                     "workflows": "write", "actions": "read", "checks": "read",
                     "metadata": "read"}
+
+REFRESH = timedelta(minutes=20)   # a task token with less left is re-minted
 
 TOKENS = "tokens"            # state_dir/tokens/<task_key>: a task's mounted directory
 EXPIRY = "token-expiry"      # state_dir/token-expiry/<task_key>: its token's expires_at
@@ -67,3 +70,33 @@ def expires_at(state_dir, key: str) -> datetime | None:
         return datetime.fromisoformat((Path(state_dir) / EXPIRY / key).read_text().strip())
     except (OSError, ValueError):
         return None
+
+
+def _due(state_dir, key: str, now: datetime) -> bool:
+    """Under REFRESH left, or no expiry recorded (the record lost: mint afresh)."""
+    expires = expires_at(state_dir, key)
+    return expires is None or expires - now < REFRESH
+
+
+def sync(access: github_app.Access | None, state_dir, holders: dict[str, str],
+         now: datetime) -> list[str]:
+    """Keep a token directory only for `holders` (task key -> its repository):
+    any other directory goes with its expiry record, a crash's leftovers too.
+    A holder's token with under REFRESH left is re-minted (no App access: none
+    is). Returns why each refresh that failed waits for the next pass; the
+    current hosts.yml stays in place."""
+    root, records = Path(state_dir) / TOKENS, Path(state_dir) / EXPIRY
+    for record in records.iterdir() if records.is_dir() else ():
+        if record.name not in holders:
+            record.unlink(missing_ok=True)
+    waits = []
+    for directory in root.iterdir() if root.is_dir() else ():
+        key = directory.name
+        if key not in holders:
+            shutil.rmtree(directory, ignore_errors=True)
+        elif access is not None and _due(state_dir, key, now):
+            try:
+                issue(access, state_dir, key, holders[key])
+            except (github_app.AppError, github_app.NoAccess, OSError) as exc:
+                waits.append(f"{key}: {exc}")
+    return waits
