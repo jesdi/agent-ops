@@ -1,31 +1,27 @@
 """The real github_app.Client behind onboarding (spec S3, R4): registered()
 needs both the App id and a usable private key, and onboarding blocks at
 resolve with the README checklist when either is unreadable."""
-import subprocess
-
 import pytest
 
 from dispatcher import github_app, onboard
-from tests.test_github_app import NOW, FakeGitHub, FakeOp, key, pem  # noqa: F401  (fixtures)
+from tests.test_github_app import NOW, FakeGitHub, FakeSecrets, key, pem  # noqa: F401  (fixtures)
 from tests.test_onboard import add, box, record, state, step  # noqa: F401  (box is a fixture)
 from tests.test_onboard_app import run, sh_for
 
 
-class Op(FakeOp):
-    """FakeOp whose `unreadable` fields fail like a missing 1Password field."""
+class Op(FakeSecrets):
+    """FakeSecrets whose `unreadable` fields are absent from the cache, as before the 1Password item exists."""
 
     def __init__(self, pem, *unreadable):
         super().__init__(pem)
         self.unreadable = set(unreadable)
 
-    def __call__(self, argv, cwd=None, env=None):
-        if argv[2].rsplit("/", 1)[1] in self.unreadable:
-            raise subprocess.CalledProcessError(1, argv, stderr="field not found")
-        return super().__call__(argv, cwd, env)
+    def __call__(self, field):
+        return "" if field in self.unreadable else super().__call__(field)
 
 
 def client(op, gh=None):
-    return github_app.Client(http=gh or FakeGitHub(), now=lambda: NOW, sh=op)
+    return github_app.Client(http=gh or FakeGitHub(), now=lambda: NOW, secret=op)
 
 
 def test_registered_with_a_readable_id_and_key(pem):
@@ -75,7 +71,8 @@ def test_onboarding_with_the_real_client_resolves_and_clones(tmp_path, box, pem)
 
 def test_the_unit_builds_the_real_client(tmp_path, box, pem, monkeypatch):
     """onboard.main, the unit's entry, reads the App through github_app's own seams."""
-    monkeypatch.setattr(github_app, "_sh", Op(pem, "GITHUB_APP_PRIVATE_KEY"))
+    monkeypatch.setenv("GITHUB_APP_ID", "123456")             # the key's item field is absent:
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", "")          # the cache holds it empty
     monkeypatch.setattr(github_app, "_http", lambda *a: pytest.fail("no GitHub call without a key"))
     add(tmp_path)
     onboard.main(["--config", str(box)])

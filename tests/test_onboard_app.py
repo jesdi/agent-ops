@@ -5,7 +5,7 @@ Interface under test: `onboard.run(config, sh=, get=, now=, app=)`. `app` is the
 GitHub App as onboarding sees it, a duck-typed object (the real one wraps
 dispatcher.github_app):
 
-    app.registered() -> bool                      # False: the 1Password item is unreadable
+    app.registered() -> bool                      # False: the secret cache has no App id or key
     app.installation(repo) -> Installation | None # None: the installation doesn't reach repo
     app.install_link(owner) -> str                # the owner's installation settings, else the install page
     app.mint(installation, repos, permissions) -> Token(token, expires_at)

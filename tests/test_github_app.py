@@ -4,17 +4,16 @@ Interface under test (all collaborators injected as keyword arguments):
 
     http(method, url, headers, body) -> (status, payload dict)   # raises TimeoutError on timeout
     now() -> aware datetime
-    sh(argv, cwd=None, env=None) -> str                          # `op read op://.../<FIELD>`
+    secret(field) -> str                                         # the unit's cached field; "" = absent
 
-    installation(repo, *, http, now, sh) -> Installation | None  # None = not reached
-    mint(installation, repos, permissions, *, http, now, sh) -> Token(token, expires_at: datetime)
-    install_link(owner, *, http, now, sh) -> str
-    main(["check", "owner/repo"], *, http, now, sh) -> exit code
-    AppError: raised on 401, 5xx, timeout, unreadable 1Password item.
+    installation(repo, *, http, now, secret) -> Installation | None  # None = not reached
+    mint(installation, repos, permissions, *, http, now, secret) -> Token(token, expires_at: datetime)
+    install_link(owner, *, http, now, secret) -> str
+    main(["check", "owner/repo"], *, http, now, secret) -> exit code
+    AppError: raised on 401, 5xx, timeout; Unregistered (an AppError) on an absent field.
 """
 import base64
 import json
-import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,21 +45,18 @@ def b64d(part):
     return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
 
 
-class FakeOp:
-    """`op read op://agent-ops/agent-ops-github-app/<FIELD>`; records every argv."""
+class FakeSecrets:
+    """The App fields as a unit loads them from the secret cache; records every field read."""
 
     def __init__(self, pem, readable=True):
         self.fields = {"GITHUB_APP_ID": APP_ID, "GITHUB_APP_CLIENT_ID": "Iv1.abc",
                        "GITHUB_APP_PRIVATE_KEY": pem}
         self.readable = readable
-        self.argvs = []
+        self.read = []
 
-    def __call__(self, argv, cwd=None, env=None):
-        self.argvs.append(list(argv))
-        if not self.readable:
-            raise subprocess.CalledProcessError(1, argv, stderr="item not found")
-        assert argv[1] == "read" and argv[2].startswith("op://agent-ops/agent-ops-github-app/")
-        return self.fields[argv[2].rsplit("/", 1)[1]] + "\n"
+    def __call__(self, field):
+        self.read.append(field)
+        return self.fields[field] if self.readable else ""
 
 
 class FakeGitHub:
@@ -111,12 +107,12 @@ class FakeGitHub:
 
 @pytest.fixture
 def env(pem):
-    return FakeGitHub(), FakeOp(pem), (lambda: NOW)
+    return FakeGitHub(), FakeSecrets(pem), (lambda: NOW)
 
 
 def kw(env):
     gh, op, now = env
-    return dict(http=gh, now=now, sh=op)
+    return dict(http=gh, now=now, secret=op)
 
 
 def reached(env):
@@ -162,7 +158,6 @@ def test_mint_leaves_no_file_holding_the_key(env, pem, tmp_path, monkeypatch):
     held = [p for d in (state, tmp) for p in d.rglob("*")
             if p.is_file() and body.encode() in p.read_bytes()]
     assert held == []
-    assert all(pem.strip() not in " ".join(a) for a in env[1].argvs)
 
 
 def test_mint_names_only_its_repository_and_permissions(env):
@@ -196,11 +191,11 @@ def test_installation_raises_on_an_unclear_answer(env, fail):
         github_app.installation("jesdi/analytics", **kw(env))
 
 
-def test_installation_raises_when_the_item_is_unreadable(pem):
+def test_installation_raises_when_the_app_is_not_cached(pem):
     gh = FakeGitHub()
-    with pytest.raises(github_app.AppError):
+    with pytest.raises(github_app.Unregistered):
         github_app.installation("jesdi/analytics", http=gh, now=lambda: NOW,
-                                sh=FakeOp(pem, readable=False))
+                                secret=FakeSecrets(pem, readable=False))
 
 
 def test_install_link_for_a_user_with_an_installation(env):

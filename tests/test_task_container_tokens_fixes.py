@@ -3,7 +3,6 @@ changes anything. An App error waits for the next pass and an unreached
 repository parks the task for access, at a claim, a stage hand-over, a feedback
 round, a retry and a resume. 1Password failing is not the App being unregistered."""
 import json
-import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -169,24 +168,18 @@ def test_without_a_usable_app_no_issue_is_claimed(tmp_path, monkeypatch, capsys,
     assert "no claims this pass" in capsys.readouterr().err
 
 
-# --- 1Password failing is not "unregistered" --------------------------------------------------
+# --- the App's key comes from the unit's environment (the secret cache) ---------------------
 
-def op_failing(stderr):
-    def sh(argv, cwd=None, env=None):
-        raise subprocess.CalledProcessError(1, argv, stderr=stderr)
-    return sh
-
-
-@pytest.mark.parametrize("stderr", ['"agent-ops-github-app" isn\'t an item in the "agent-ops" vault',
-                                    "field not found"])
-def test_an_absent_item_or_field_reads_as_unregistered(stderr):
-    assert github_app.Client(sh=op_failing(stderr)).registered() is False
-
-
-@pytest.mark.parametrize("stderr", ["dial tcp: i/o timeout", "401 Unauthorized", ""])
-def test_a_1password_outage_is_an_app_error_not_unregistered(stderr):
-    with pytest.raises(github_app.AppError):
-        github_app.Client(sh=op_failing(stderr)).registered()
+@pytest.mark.parametrize("cached", [None, "", "  \n"], ids=["unset", "empty", "blank"])
+def test_an_app_missing_from_the_secret_cache_reads_as_unregistered(monkeypatch, cached):
+    """Until the 1Password item exists the cache holds the fields empty; an
+    outage keeps the last good copy, so github_app never sees one."""
+    for field in ("GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY"):
+        if cached is None:
+            monkeypatch.delenv(field, raising=False)
+        else:
+            monkeypatch.setenv(field, cached)
+    assert github_app.Client().registered() is False
 
 
 # --- the direct seams ----------------------------------------------------------------------------

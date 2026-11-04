@@ -1,13 +1,15 @@
 """GitHub App access: sign as the App, find installations, mint repo-narrowed tokens.
 
-The private key is read from 1Password on every call, held in memory only, and
-never written, logged, put in argv or in an exception message.
+The App id and private key come from the unit's environment, loaded from the
+box's encrypted secret cache (never from 1Password per call: that spent its daily
+read limit). The key is held in memory only, and never written, logged, put in
+argv or in an exception message.
 """
 from __future__ import annotations
 
 import base64
 import json
-import subprocess
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -21,23 +23,19 @@ from cryptography.hazmat.primitives.asymmetric import padding
 Http = Callable[..., tuple[int, dict]]   # (method, url, headers, body) -> (status, payload)
 
 API = "https://api.github.com"
-ITEM = "op://agent-ops/agent-ops-github-app/"
 TIMEOUT = 20
 
 
 class AppError(Exception):
-    """GitHub or 1Password gave no clear answer: 401, 5xx, a timeout, an unreadable item,
-    a body without the expected fields, a key that can't sign."""
+    """GitHub gave no clear answer: 401, 5xx, a timeout, a body without the
+    expected fields."""
 
 
 class Unregistered(AppError):
-    """1Password answered that the App item or one of its fields is absent, or
-    the key it holds can't sign: the App is not registered (Client.registered)."""
+    """The secret cache has no App id or private key (the 1Password item is
+    absent), or the key can't sign: the App is not registered (Client.registered)."""
 
 
-# What `op read` says when the item or field is absent, not when it can't answer.
-_ABSENT = ("isn't an item", "isn't a field", "isn't a vault", "not found",
-           "does not have a field", "no item")
 
 
 @dataclass(frozen=True)
@@ -69,9 +67,9 @@ def _http(method, url, headers, body=None):
         return status, {}
 
 
-def _sh(argv, cwd=None, env=None):
-    return subprocess.run(argv, cwd=cwd, env=env, check=True, capture_output=True,
-                          text=True).stdout
+def _secret(field: str) -> str:
+    """The field as the unit loaded it from the secret cache; empty when absent."""
+    return os.environ.get(field, "")
 
 
 def _now():
@@ -82,19 +80,15 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
-def _read(sh, field: str) -> str:
-    try:
-        return sh(["op", "read", ITEM + field]).strip()
-    except subprocess.CalledProcessError as exc:   # never carry stderr: it may name the item
-        if any(m in (exc.stderr or "").lower() for m in _ABSENT):
-            raise Unregistered(f"no {field} in 1Password") from None
-        raise AppError(f"cannot read {field} from 1Password") from None
-    except (subprocess.SubprocessError, OSError):
-        raise AppError(f"cannot read {field} from 1Password") from None
+def _read(secret, field: str) -> str:
+    value = secret(field).strip()
+    if not value:
+        raise Unregistered(f"no {field} in the secret cache")
+    return value
 
 
-def _jwt(now, sh) -> str:
-    app_id, pem = _read(sh, "GITHUB_APP_ID"), _read(sh, "GITHUB_APP_PRIVATE_KEY")
+def _jwt(now, secret) -> str:
+    app_id, pem = _read(secret, "GITHUB_APP_ID"), _read(secret, "GITHUB_APP_PRIVATE_KEY")
     try:
         key = serialization.load_pem_private_key(pem.encode(), None)
         iat = int((now() - timedelta(minutes=1)).timestamp())
@@ -155,17 +149,17 @@ def _split(repo: str) -> tuple[str, str]:
     return owner, name
 
 
-def _lookup(path, http, now, sh):
-    return _call(http, "GET", API + path, _jwt(now, sh), _installation)
+def _lookup(path, http, now, secret):
+    return _call(http, "GET", API + path, _jwt(now, secret), _installation)
 
 
-def installation(repo: str, *, http=_http, now=_now, sh=_sh) -> Installation | None:
+def installation(repo: str, *, http=_http, now=_now, secret=_secret) -> Installation | None:
     """None means the App does not reach `repo` (GitHub answered 404)."""
-    return _lookup(f"/repos/{repo}/installation", http, now, sh)
+    return _lookup(f"/repos/{repo}/installation", http, now, secret)
 
 
 def mint(installation: Installation, repos: list[str], permissions: dict, *,
-         http=_http, now=_now, sh=_sh) -> Token:
+         http=_http, now=_now, secret=_secret) -> Token:
     if not repos:   # an empty list would make GitHub grant every repository
         raise ValueError("mint needs at least one repository")
     names = []
@@ -174,19 +168,19 @@ def mint(installation: Installation, repos: list[str], permissions: dict, *,
             raise ValueError(f"{owner}/{name} is not owned by the installation owner {installation.owner}")
         names.append(name)
     token = _call(http, "POST", f"{API}/app/installations/{installation.id}/access_tokens",
-                  _jwt(now, sh), _token, {"repositories": names, "permissions": dict(permissions)},
+                  _jwt(now, secret), _token, {"repositories": names, "permissions": dict(permissions)},
                   ok=201)
     if token is None:
         raise AppError("token request answered 404")
     return token
 
 
-def install_link(owner: str, *, http=_http, now=_now, sh=_sh) -> str:
-    found = (_lookup(f"/users/{owner}/installation", http, now, sh)
-             or _lookup(f"/orgs/{owner}/installation", http, now, sh))
+def install_link(owner: str, *, http=_http, now=_now, secret=_secret) -> str:
+    found = (_lookup(f"/users/{owner}/installation", http, now, secret)
+             or _lookup(f"/orgs/{owner}/installation", http, now, secret))
     if found:
         return found.settings_url
-    slug = _call(http, "GET", API + "/app", _jwt(now, sh), _slug)
+    slug = _call(http, "GET", API + "/app", _jwt(now, secret), _slug)
     if slug is None:
         raise AppError("GET /app answered 404")
     return f"https://github.com/apps/{slug}/installations/new"
@@ -208,14 +202,13 @@ REFRESH = timedelta(minutes=5)   # remint a token this close to its expiry
 class Client:
     """The App as onboarding sees it: the module's calls behind one object."""
 
-    def __init__(self, *, http=None, now=None, sh=None):   # None: the module's, read now
-        self.kw = dict(http=http or _http, now=now or _now, sh=sh or _sh)
+    def __init__(self, *, http=None, now=None, secret=None):   # None: the module's, read now
+        self.kw = dict(http=http or _http, now=now or _now, secret=secret or _secret)
 
     def registered(self) -> bool:
-        """The 1Password item gives an App id and a private key that signs.
-        AppError when 1Password can't answer: an outage is not "unregistered"."""
+        """The secret cache gives an App id and a private key that signs."""
         try:
-            _jwt(self.kw["now"], self.kw["sh"])
+            _jwt(self.kw["now"], self.kw["secret"])
         except Unregistered:
             return False
         return True
@@ -251,9 +244,9 @@ class Access:
         """The repos grouped by the installation that reaches them, asked fresh.
         NoAccess when the App is unregistered or misses one; AppError passes."""
         if not self.app.registered():
-            raise NoAccess("the GitHub App is not registered: the 1Password item "
-                           "agent-ops/agent-ops-github-app is unreadable; follow the "
-                           "infra README checklist", README)
+            raise NoAccess("the GitHub App is not registered: the secret cache has no "
+                           "App id or key from 1Password item agent-ops/agent-ops-github-app; "
+                           "follow the infra README checklist", README)
         by_install, missing = self._reach(repos)
         if missing:
             raise NoAccess(f"the GitHub App can't reach {', '.join(missing)}: add it to "
@@ -299,9 +292,9 @@ def _read_repo(http, repo: str, token: str) -> str:
     return "passed" if read else "failed (404)"
 
 
-def _check(repo: str, http, now, sh) -> int:
-    kw = dict(http=http, now=now, sh=sh)
-    _jwt(now, sh)
+def _check(repo: str, http, now, secret) -> int:
+    kw = dict(http=http, now=now, secret=secret)
+    _jwt(now, secret)
     print("jwt: passed")
     inst = installation(repo, **kw)
     if inst is None:
@@ -316,12 +309,12 @@ def _check(repo: str, http, now, sh) -> int:
     return 0 if result == "passed" else 1
 
 
-def main(argv: list[str], *, http=_http, now=_now, sh=_sh) -> int:
+def main(argv: list[str], *, http=_http, now=_now, secret=_secret) -> int:
     if len(argv) != 2 or argv[0] != "check" or argv[1].count("/") != 1 or "" in argv[1].split("/"):
         print("usage: python -m dispatcher.github_app check <owner/repo>")
         return 2
     try:
-        return _check(argv[1], http, now, sh)
+        return _check(argv[1], http, now, secret)
     except AppError as exc:
         print(f"error: {exc}")
         return 1

@@ -2,14 +2,13 @@
 wrong comes out as AppError (retried, never "blocked with a link"), and no
 message carries the key or op's output. An unexpected error from the App never
 stops onboarding of every other project (final review of 8a)."""
-import subprocess
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from dispatcher import github_app
-from tests.test_github_app import PERMS, FakeOp, env, key, kw, pem, reached  # noqa: F401
+from tests.test_github_app import PERMS, FakeSecrets, env, key, kw, pem, reached  # noqa: F401
 from tests.test_onboard import add, box, record, step  # noqa: F401
 from tests.test_onboard_app import FakeApp, run, sh_for
 
@@ -77,20 +76,9 @@ def test_a_key_of_an_unsupported_type_is_an_app_error(env):
         serialization.NoEncryption()).decode()
     gh, _, now = env
     with pytest.raises(github_app.AppError) as exc:
-        github_app.installation("jesdi/analytics", http=gh, now=now, sh=FakeOp(other))
+        github_app.installation("jesdi/analytics", http=gh, now=now, secret=FakeSecrets(other))
     assert "PRIVATE KEY" not in str(exc.value)
-    assert not github_app.Client(http=gh, now=now, sh=FakeOp(other)).registered()
-
-
-def test_op_stderr_stays_out_of_the_error(env):
-    gh, _, now = env
-
-    def op(argv, cwd=None, env=None):
-        raise subprocess.CalledProcessError(1, argv, output="secret-out", stderr="secret-err")
-    with pytest.raises(github_app.AppError) as exc:
-        github_app.installation("jesdi/analytics", http=gh, now=now, sh=op)
-    text = str(exc.value) + repr(exc.value.__cause__) + repr(exc.value.__context__)
-    assert "secret" not in text
+    assert not github_app.Client(http=gh, now=now, secret=FakeSecrets(other)).registered()
 
 
 @pytest.mark.parametrize("repos", [["jesdi/"], ["jesdi/analytics", "jesdi/"], ["jesdi"], ["/analytics"]])
