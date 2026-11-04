@@ -179,6 +179,7 @@ class FakeSessions:
         # without disturbing the existing spawned/resumed tuple shapes.
         self.spawn_calls = []
         self.resume_calls = []
+        self.gh_configs = []   # the gh config each spawn or resume mounts
         # Issues whose launch explodes the way a vanished worktree does:
         # the launcher checks <worktree>/.git before it builds the command to
         # mount, so a swept or half-removed checkout raises here.
@@ -209,14 +210,16 @@ class FakeSessions:
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.spawned.append((issue, stage_name, model, prompt, effort))
         self.spawn_calls.append((repository, issue))
+        self.gh_configs.append(gh_config)
 
     def resume(self, repository, issue, worktree, message, model, effort="", second=None,
-               *, session_id=None):
+               *, session_id=None, gh_config=""):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
         self.resumed.append((issue, message, model, effort))
         self.resume_calls.append((repository, issue))
+        self.gh_configs.append(gh_config)
 
     def capture_tail(self, repository, issue, lines=25):
         self.call_log.append(("capture_tail", repository, issue))
@@ -1138,7 +1141,7 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
             self.ops.append(("end", issue))
             super().end(repository, issue)
 
-        def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None):
+        def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None, gh_config=""):
             self.ops.append(("spawn", stage_name))
             super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
 
@@ -3457,12 +3460,12 @@ class LiveUntilEnded(FakeSessions):
     frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
     express across a dozen passes."""
 
-    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None):
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None, gh_config=""):
         super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
         self.alive_set.add(issue)
 
     def resume(self, repository, issue, worktree, message, model, effort="", second=None,
-               *, session_id=None):
+               *, session_id=None, gh_config=""):
         super().resume(repository, issue, worktree, message, model, effort,
                        session_id=session_id)
         self.alive_set.add(issue)
@@ -4321,7 +4324,7 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple))
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config="")
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
@@ -4335,7 +4338,7 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple))
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config="")
     assert "## Operator messages" not in d.sessions.spawned[-1][3]
 
 
@@ -4991,7 +4994,7 @@ def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple))
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config="")
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
     assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
@@ -5223,7 +5226,7 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
                       main._launch_for(c, c.repositories[0], task, Stage.IMPLEMENT,
-                                       lambda m: True, tuple))
+                                       lambda m: True, tuple), gh_config="")
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
         f"stage advance must clear operator_request, got {t.operator_request!r}")

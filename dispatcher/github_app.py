@@ -30,6 +30,16 @@ class AppError(Exception):
     a body without the expected fields, a key that can't sign."""
 
 
+class Unregistered(AppError):
+    """1Password answered that the App item or one of its fields is absent, or
+    the key it holds can't sign: the App is not registered (Client.registered)."""
+
+
+# What `op read` says when the item or field is absent, not when it can't answer.
+_ABSENT = ("isn't an item", "isn't a field", "isn't a vault", "not found",
+           "does not have a field", "no item")
+
+
 @dataclass(frozen=True)
 class Installation:
     id: int
@@ -75,7 +85,11 @@ def _b64(raw: bytes) -> str:
 def _read(sh, field: str) -> str:
     try:
         return sh(["op", "read", ITEM + field]).strip()
-    except (subprocess.SubprocessError, OSError):   # never carry stderr: it may name the item
+    except subprocess.CalledProcessError as exc:   # never carry stderr: it may name the item
+        if any(m in (exc.stderr or "").lower() for m in _ABSENT):
+            raise Unregistered(f"no {field} in 1Password") from None
+        raise AppError(f"cannot read {field} from 1Password") from None
+    except (subprocess.SubprocessError, OSError):
         raise AppError(f"cannot read {field} from 1Password") from None
 
 
@@ -89,7 +103,7 @@ def _jwt(now, sh) -> str:
             {"iss": app_id, "iat": iat, "exp": iat + 9 * 60}))
         return signing + "." + _b64(key.sign(signing.encode(), padding.PKCS1v15(), hashes.SHA256()))
     except Exception:   # any load or sign failure, UnsupportedAlgorithm included; never the key
-        raise AppError("the App private key is unreadable") from None
+        raise Unregistered("the App private key is unreadable") from None
 
 
 def _call(http, method, url, token, read, body=None, ok=200):
@@ -198,10 +212,11 @@ class Client:
         self.kw = dict(http=http or _http, now=now or _now, sh=sh or _sh)
 
     def registered(self) -> bool:
-        """The 1Password item gives an App id and a private key that signs."""
+        """The 1Password item gives an App id and a private key that signs.
+        AppError when 1Password can't answer: an outage is not "unregistered"."""
         try:
             _jwt(self.kw["now"], self.kw["sh"])
-        except AppError:
+        except Unregistered:
             return False
         return True
 

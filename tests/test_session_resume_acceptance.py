@@ -46,14 +46,14 @@ class RecordingSessions(FakeSessions):
         self.resume_records = []
 
     def resume(self, repository, issue, worktree, message, model, effort="",
-               second=None, *, session_id=None):
+               second=None, *, session_id=None, gh_config=""):
         self.resume_records.append({
             "repository": repository, "issue": issue, "worktree": worktree,
             "message": message, "model": model, "session_id": session_id,
         })
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model,
-                    effort="", second=None):
+                    effort="", second=None, gh_config=""):
         super().spawn_stage(repository, issue, worktree, prompt, stage_name,
                             model, effort, second)
         if self.launch_real:

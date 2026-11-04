@@ -44,7 +44,7 @@ class RecordingSessions(FakeSessions):
         self.continuations = []
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name,
-                    model, effort="", second=None):
+                    model, effort="", second=None, gh_config=""):
         self.launches.append({
             "repository": repository, "issue": issue, "worktree": worktree,
             "prompt": prompt, "stage": stage_name, "model": model,
@@ -53,7 +53,7 @@ class RecordingSessions(FakeSessions):
         self.alive_set.add(issue)
 
     def resume(self, repository, issue, worktree, message, model, effort="",
-               second=None, session_id=None):
+               second=None, session_id=None, gh_config=""):
         # Accept T04's session_id keyword. Any call, named or implicit,
         # violates T05's fresh-conversation path.
         self.continuations.append({

@@ -102,12 +102,12 @@ class GrantSessions(FakeSessions):
         self.spawn_seconds, self.resume_seconds = [], []
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model,
-                    effort="", second=None):
+                    effort="", second=None, gh_config=""):
         super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
         self.spawn_seconds.append((stage_name, second))
 
     def resume(self, repository, issue, worktree, message, model, effort="",
-               second=None, *, session_id=None):
+               second=None, *, session_id=None, gh_config=""):
         super().resume(repository, issue, worktree, message, model, effort,
                        session_id=session_id)
         self.resume_seconds.append(second)
