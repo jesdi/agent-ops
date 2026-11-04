@@ -14,7 +14,7 @@ from dispatcher.github import Candidate
 from dispatcher.models import parse_policy, tracks_text
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps,
                              patch_usage, patch_workspace)
-from tests.test_triage import BLOB, OK_USAGE, OLD, RESULT, FakeDeps, _sweep_cfg
+from tests.test_triage import BLOB, OK_USAGE, OLD, RESULT, FakeDeps, _app, _sweep_cfg
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "targets.example.yaml"
 FABLE, OPUS = "anthropic/claude-fable-5-1", "anthropic/claude-opus-5"
@@ -128,7 +128,7 @@ def test_triage_prompt_contains_the_track_list(tmp_path):
             (d / "o-a-2026-07-30.json").write_text('{"issues": []}')
             prompt.append((d / "o-a-2026-07-30-prompt.md").read_text())
             return subprocess.CompletedProcess(cmd, 0, "", "")
-        return real(cfg, repo, blob, "2026-07-30", entry, run=fake_run)
+        return real(cfg, repo, blob, "2026-07-30", entry, run=fake_run, app=_app())
 
     with patch.object(triage, "fetch_all", return_value=OK_USAGE), \
          patch.object(triage, "_run_session", side_effect=session), \

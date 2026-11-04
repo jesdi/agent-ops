@@ -152,7 +152,8 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
 
 
 def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
-               cpus: str, model: str, prompt_path: str, effort: str = "") -> list[str]:
+               cpus: str, model: str, prompt_path: str, effort: str = "", *,
+               gh_config: str) -> list[str]:
     """Headless read-only triage session: argv for subprocess.run (no pane,
     no -it). The clone is :ro — the session decides, it never writes; its
     only writable surface is /triage, where the prompt is read from and the
@@ -173,7 +174,12 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     composed; the podman argv stays a list so its shape stays assertable.
 
     The CLI is the model's runtime run headless (`claude -p`, `codex
-    exec`); an unknown provider raises before anything runs."""
+    exec`); an unknown provider raises before anything runs.
+
+    gh_config is the directory holding the repository's read-only token; it
+    is required, so the host's own gh config is never the fallback."""
+    if not gh_config:
+        raise ValueError("triage needs a token directory: the host's gh config is never mounted")
     runtime = runtime_for(model)
     home = str(Path.home())
     line = runtime.headless(f"\"$(cat {shlex.quote(prompt_path)})\"",
@@ -184,7 +190,7 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
         "--memory", memory, "--cpus", cpus,
         *_runtime_args(runtime),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
-        "-v", f"{home}/.config/gh:/root/.config/gh:ro",
+        "-v", f"{gh_config}:/root/.config/gh:ro",
         "-v", f"{home}/.gitconfig:/root/.gitconfig:ro",
         "-v", f"{triage_dir}:/triage",
         image(), "bash", "-c", line,

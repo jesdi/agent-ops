@@ -7,12 +7,14 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher import (board, claims, containers, herdr, priority,
+from dispatcher import (board, claims, containers, github_app, herdr, priority,
                         triage_apply, triage_prefetch)
 from dispatcher.config import Config, policy_for, routed_providers
 from dispatcher.models import Entry, triage_entry, tracks_text
@@ -171,8 +173,43 @@ def _policy_for_repo(cfg: Config, repo: str):
     return policy_for(cfg, repository)
 
 
+TRIAGE_PERMISSIONS = {"contents": "read", "issues": "read", "pull_requests": "read",
+                      "metadata": "read"}
+
+
+TRIAGE_TOKENS = "triage-tokens"
+
+
+def _token_dir(cfg: Config, app, repo: str) -> str:
+    """A 0700 directory holding a hosts.yml with a read-only token minted for
+    `repo` alone. An App error fails the repo rather than falling back to the
+    host's gh config."""
+    token = github_app.Access(app).grants([repo], TRIAGE_PERMISSIONS)[repo.lower()]
+    root = Path(cfg.state_dir) / TRIAGE_TOKENS   # not tokens/: main._sync_task_tokens prunes that
+    root.mkdir(parents=True, exist_ok=True)
+    directory = tempfile.mkdtemp(prefix="triage-", dir=root)   # 0700
+    fd = os.open(Path(directory) / "hosts.yml", os.O_WRONLY | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "w") as out:
+        out.write(f"github.com:\n    oauth_token: {token.token}\n    user: x-access-token\n"
+                  "    git_protocol: https\n")
+    return directory
+
+
 def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
-                 entry: Entry, run=subprocess.run) -> dict:
+                 entry: Entry, run=subprocess.run, app=None) -> dict:
+    """`app` None (no App wired) fails the repo: triage never falls back to
+    the host's gh config."""
+    if app is None:
+        raise SweepError("no GitHub App wired: triage has no token for this repository")
+    token_dir = _token_dir(cfg, app, repo)
+    try:
+        return _session(cfg, repo, blob, started_date, entry, run, token_dir)
+    finally:
+        shutil.rmtree(token_dir, ignore_errors=True)
+
+
+def _session(cfg: Config, repo: str, blob: dict, started_date: str,
+             entry: Entry, run, token_dir: str) -> dict:
     triage_dir = Path(cfg.state_dir) / TRIAGE_DIR
     triage_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{repo.replace('/', '-')}-{started_date}"
@@ -193,7 +230,8 @@ def _run_session(cfg: Config, repo: str, blob: dict, started_date: str,
     cmd = containers.triage_cmd(name, _clone_for(cfg, repo),
                                 str(triage_dir), cfg.session_memory,
                                 cfg.session_cpus, entry.model_id,
-                                f"/triage/{prompt_name}", effort=entry.effort)
+                                f"/triage/{prompt_name}", effort=entry.effort,
+                                gh_config=token_dir)
     try:
         proc = run(cmd, capture_output=True, text=True,
                    timeout=SESSION_TIMEOUT_SECONDS)
@@ -252,6 +290,7 @@ def _board(cfg: Config, repo: str, lines: list[str], run):
 
 def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
     clear_request(cfg.state_dir)
+    shutil.rmtree(Path(cfg.state_dir) / TRIAGE_TOKENS, ignore_errors=True)  # a killed sweep's leftovers
     started = _cursor_now()  # the value every advanced cursor is set to
     started_date = started[:10]
     usages = fetch_all(cfg)
@@ -282,7 +321,8 @@ def run_sweep(cfg: Config, deps, run=subprocess.run) -> None:
                 cursors[repo] = started
                 lines.append(f"{repo}: nothing new")
                 continue
-            decisions = _run_session(cfg, repo, blob, started_date, entry, run=run)
+            decisions = _run_session(cfg, repo, blob, started_date, entry, run=run,
+                                     **({"app": deps.app} if deps.app else {}))
             inventory = frozenset(l["name"] for l in blob["labels"])
             result = triage_apply.apply(repo, decisions, inventory, run=run,
                                         board=brd)
@@ -313,7 +353,8 @@ def guarded_sweep(cfg: Config, deps) -> None:
 
 
 LAUNCH_ENV_VARS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-                   "AGENT_OPS_STATE_DIR", "GH_PROJECT_TOKEN")
+                   "AGENT_OPS_STATE_DIR", "GH_PROJECT_TOKEN",
+                   "OP_SERVICE_ACCOUNT_TOKEN")  # the runner mints triage tokens via op
 
 
 def _repo_dir() -> str:

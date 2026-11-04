@@ -368,7 +368,7 @@ def test_run_session_passes_effort_and_tracks(tmp_path):
         (Path(cfg.state_dir) / triage.TRIAGE_DIR / "o-a-2026-07-30.json").write_text('{"issues": []}')
         return subprocess.CompletedProcess(cmd, 0, "", "")
     triage._run_session(cfg, "o/a", BLOB, "2026-07-30",
-                        cfg.models.triage[0], run=run)
+                        cfg.models.triage[0], run=run, app=_app())
     assert "--model claude-sonnet-5 --effort low" in calls[0][-1]
     prompt = (Path(cfg.state_dir) / triage.TRIAGE_DIR / "o-a-2026-07-30-prompt.md").read_text()
     assert "- `t`: w" in prompt
@@ -479,7 +479,7 @@ def test_run_session_timeout_kills_and_raises(tmp_path):
         return _subprocess.CompletedProcess(args, 0, "", "")
 
     with pytest.raises(triage.SweepError):
-        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run)
+        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run, app=_app())
     assert ["podman", "kill", "triage-o-a"] in calls
 
 
@@ -490,7 +490,7 @@ def test_run_session_missing_decisions_raises(tmp_path):
         return _subprocess.CompletedProcess(args, 0, "", "")
 
     with pytest.raises(triage.SweepError):
-        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run)
+        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run, app=_app())
 
 
 def test_run_session_reads_decisions(tmp_path):
@@ -504,7 +504,7 @@ def test_run_session_reads_decisions(tmp_path):
         (tdir / "o-a-2026-07-30.json").write_text('{"issues": []}')
         return _subprocess.CompletedProcess(args, 0, "", "")
 
-    got = triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run)
+    got = triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run, app=_app())
     assert got == {"issues": []}
     argv = captured[0]
     assert f"{tdir}:/triage" in argv
@@ -531,7 +531,7 @@ def test_run_session_prompt_never_in_argv_for_a_huge_blob(tmp_path):
         (tdir / "o-a-2026-07-30.json").write_text('{"issues": []}')
         return _subprocess.CompletedProcess(args, 0, "", "")
 
-    triage._run_session(cfg, "o/a", huge, "2026-07-30", cfg.models.triage[0], run=fake_run)
+    triage._run_session(cfg, "o/a", huge, "2026-07-30", cfg.models.triage[0], run=fake_run, app=_app())
     assert max(len(a) for a in captured[0]) < 4096
     prompt = (tdir / "o-a-2026-07-30-prompt.md").read_text()
     # bounded, and the session is told the context was cut
@@ -563,7 +563,7 @@ def test_run_session_prompt_stays_under_the_argv_ceiling(tmp_path):
         (tdir / "o-a-2026-07-30.json").write_text('{"issues": []}')
         return _subprocess.CompletedProcess(args, 0, "", "")
 
-    triage._run_session(cfg, "o/a", worst, "2026-07-30", cfg.models.triage[0], run=fake_run)
+    triage._run_session(cfg, "o/a", worst, "2026-07-30", cfg.models.triage[0], run=fake_run, app=_app())
     written = (tdir / "o-a-2026-07-30-prompt.md").read_text().encode()
     assert len(written) < ARGV_CEILING_BYTES
     assert len(written) < 0.75 * ARGV_CEILING_BYTES  # real margin, not 5%
@@ -576,7 +576,7 @@ def test_run_session_nonzero_rc_surfaces_rc_and_stderr(tmp_path):
         return _subprocess.CompletedProcess(args, 1, "", "fatal: image pull failed")
 
     with pytest.raises(triage.SweepError) as exc_info:
-        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run)
+        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0], run=fake_run, app=_app())
     msg = str(exc_info.value)
     assert "rc=1" in msg
     assert "fatal: image pull failed" in msg
@@ -825,3 +825,17 @@ def test_pass_skips_claims_and_reduces_capacity_while_triage(tmp_path,
     dmain.run_pass(cfg, deps)
     assert seen_claim["capacity"] == cfg.capacity
     assert seen_resume["capacity"] == cfg.capacity
+
+
+def test_run_session_without_an_app_fails_and_spawns_nothing(tmp_path):
+    cfg = _sweep_cfg(tmp_path)
+    calls = []
+    with pytest.raises(triage.SweepError, match="no GitHub App"):
+        triage._run_session(cfg, "o/a", BLOB, "2026-07-30", cfg.models.triage[0],
+                            run=lambda *a, **k: calls.append(a))
+    assert calls == []
+
+
+def _app():
+    from tests.test_host_installation_tokens_acceptance import FakeApp
+    return FakeApp(reached=("o/a",))

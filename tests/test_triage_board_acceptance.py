@@ -73,6 +73,8 @@ class Notifier:
 
 
 class Deps:
+    app = None
+
     def __init__(self):
         self.notifier = Notifier()
 
