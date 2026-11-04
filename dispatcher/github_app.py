@@ -113,6 +113,8 @@ def _call(http, method, url, token, read, body=None, ok=200):
 
 def _installation(payload: dict) -> Installation:
     login, kind = payload["account"]["login"], payload["account"]["type"]
+    if not isinstance(login, str) or not login:
+        raise ValueError("no account login")
     base = (f"https://github.com/organizations/{login}/settings/installations"
             if kind == "Organization" else "https://github.com/settings/installations")
     return Installation(int(payload["id"]), f"{base}/{payload['id']}", login)
@@ -255,28 +257,38 @@ class Access:
         return tokens
 
 
+def _read_repo(http, repo: str, token: str) -> str:
+    """'passed', or why the token couldn't read `repo`."""
+    try:
+        read = _call(http, "GET", f"{API}/repos/{repo}", token, lambda _: True)
+    except AppError as exc:
+        return f"failed ({exc})"
+    return "passed" if read else "failed (404)"
+
+
+def _check(repo: str, http, now, sh) -> int:
+    kw = dict(http=http, now=now, sh=sh)
+    _jwt(now, sh)
+    print("jwt: passed")
+    inst = installation(repo, **kw)
+    if inst is None:
+        print(f"installation: not reached; install the App here: "
+              f"{install_link(_split(repo)[0], **kw)}")
+        return 1
+    print(f"installation: passed ({inst.id})")
+    tok = mint(inst, [repo], {"contents": "read"}, **kw)
+    print(f"token: passed (expires {tok.expires_at.isoformat()})")
+    result = _read_repo(http, repo, tok.token)
+    print(f"repository read: {result}")
+    return 0 if result == "passed" else 1
+
+
 def main(argv: list[str], *, http=_http, now=_now, sh=_sh) -> int:
     if len(argv) != 2 or argv[0] != "check" or argv[1].count("/") != 1 or "" in argv[1].split("/"):
         print("usage: python -m dispatcher.github_app check <owner/repo>")
         return 2
-    repo = argv[1]
-    kw = dict(http=http, now=now, sh=sh)
     try:
-        _jwt(now, sh)
-        print("jwt: passed")
-        inst = installation(repo, **kw)
-        if inst is None:
-            print(f"installation: not reached; install the App here: "
-                  f"{install_link(_split(repo)[0], **kw)}")
-            return 1
-        print(f"installation: passed ({inst.id})")
-        tok = mint(inst, [repo], {"contents": "read"}, **kw)
-        print(f"token: passed (expires {tok.expires_at.isoformat()})")
-        if _call(http, "GET", f"{API}/repos/{repo}", tok.token, lambda _: True) is None:
-            print("repository read: failed (404)")
-            return 1
-        print("repository read: passed")
-        return 0
+        return _check(argv[1], http, now, sh)
     except AppError as exc:
         print(f"error: {exc}")
         return 1

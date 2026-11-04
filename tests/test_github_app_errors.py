@@ -25,7 +25,8 @@ def test_a_404_on_get_app_is_an_app_error(env):
         github_app.install_link("acme", **{**kw(env), "http": http})
 
 
-@pytest.mark.parametrize("payload", [{}, {"id": 1}, {"account": None, "id": 1}, []])
+@pytest.mark.parametrize("payload", [{}, {"id": 1}, {"account": None, "id": 1}, [],
+                                     {"id": 1, "account": {"login": None, "type": "User"}}])
 def test_a_malformed_installation_body_is_an_app_error(env, payload):
     def http(method, url, headers, body=None):
         return 200, payload
@@ -57,8 +58,9 @@ def test_get_app_without_a_slug_is_an_app_error(env, payload):
         github_app.install_link("acme", **{**kw(env), "http": http})
 
 
-def test_check_fails_when_the_repository_read_answers_404(env, capsys):
-    env[0].repo_status = 404
+@pytest.mark.parametrize("status", [404, 403])
+def test_check_names_the_failed_repository_read(env, capsys, status):
+    env[0].repo_status = status
     assert github_app.main(["check", "jesdi/analytics"], **kw(env)) != 0
     assert "repository read: failed" in capsys.readouterr().out
 
