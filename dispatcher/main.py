@@ -84,8 +84,11 @@ class Deps:
     github: object
     sessions: object
     notifier: object
-    app: object = None   # the GitHub App (github_app.Client); None: the stored auth
-    clock: Callable[[], datetime] | None = None   # the time a task token's life is measured against; None: now
+    app: github_app.Client | None = None   # the GitHub App; None: the stored auth
+    # the time a task token's life is measured against
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    # The pass's App access (_begin_pass_auth): one cache for every token the pass mints.
+    access: github_app.Access | None = None
 
 
 def _now() -> str:
@@ -1113,7 +1116,7 @@ def _park_for_review(cfg: Config, deps: Deps, repository: Repository, task: Task
         pub = spec_publish.ensure_published(
             worktree=task.worktree, branch=task.branch,
             repo=repository.repo, issue=task.issue,
-            artifact=task.spec_path, dry_run=dry_run)
+            artifact=task.spec_path, dry_run=dry_run, auth=deps.github.auth)
         note += f"\n{_spec_note(pub)}"
     # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
     # the task is not stranded — the session is ended and the operator can still
@@ -1139,7 +1142,7 @@ def _wake_ci(cfg: Config, deps: Deps, repository: Repository) -> None:
             continue
         try:
             conclusion = deps.github.run_status(repository, task.ci_run_id)
-        except (subprocess.CalledProcessError, OSError) as exc:
+        except (subprocess.CalledProcessError, OSError, host_auth.HostWait) as exc:
             print(f"[warn] run_status failed for #{task.issue} run {task.ci_run_id}: {exc}",
                   file=sys.stderr)
             continue
@@ -1201,7 +1204,7 @@ def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
             if polled is None:
                 continue
             task, res = polled
-        except (subprocess.CalledProcessError, OSError) as exc:
+        except (subprocess.CalledProcessError, OSError, host_auth.HostWait) as exc:
             print(f"[warn] PR poll failed for #{task.issue}: {exc}",
                   file=sys.stderr)
             continue
@@ -1209,7 +1212,7 @@ def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
             try:
                 _finish_merged(cfg, deps, repository, task, dry_run)
             except (subprocess.CalledProcessError,
-                    subprocess.TimeoutExpired, OSError) as exc:
+                    subprocess.TimeoutExpired, OSError, host_auth.HostWait) as exc:
                 print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
                       file=sys.stderr)
                 continue
@@ -1289,7 +1292,7 @@ def _finish_merged(cfg: Config, deps: Deps, repository: Repository,
               f"#{task.issue} — {exc}", file=sys.stderr)
     _end_session(cfg, deps, task.repository, task.issue)
     if not dry_run:
-        task_artifacts.collect(cfg.state_dir, task, repository.repo)
+        task_artifacts.collect(cfg.state_dir, task, repository.repo, auth=deps.github.auth)
         task_artifacts.pin_published(cfg.state_dir, task, repository.repo)
     remove_workspace(repository, task.worktree, task.branch, dry_run=dry_run)
     deps.github.delete_branch(repository, task.branch)
@@ -1821,7 +1824,7 @@ def _on_publish_spec(turn: _Turn, task: TaskState, act: PublishSpec,
     pub = spec_publish.ensure_published(
         worktree=task.worktree, branch=task.branch,
         repo=turn.repository.repo, issue=task.issue,
-        artifact=task.spec_path, dry_run=turn.dry_run)
+        artifact=task.spec_path, dry_run=turn.dry_run, auth=turn.deps.github.auth)
     turn.spec_line = _spec_note(pub)
     if act.review and not pub.error:
         try:
@@ -2321,11 +2324,16 @@ def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
         if slot is None:
             return
         try:
-            wt = create_workspace(repository, cand.number, base, dry_run=dry_run)
+            wt = create_workspace(repository, cand.number, base, dry_run=dry_run,
+                                  auth=deps.github.auth)
         except MissingBaseError:
             # Not claimed, not a failure: the issue stays Ready and every pass
             # asks again; the operator hears once per issue and base.
             _wait_in_ready(cfg, deps, repository, cand.number, f"base:{base}", f"base branch {base} is not on origin")
+            continue
+        except host_auth.HostWait as exc:   # not a provisioning failure: the next pass retries
+            print(f"[warn] {name}: no claims this pass — {exc}", file=sys.stderr)
+            del in_round[name]
             continue
         except Exception:
             # Board never claimed (claim is last, still Ready) → no release
@@ -2782,28 +2790,32 @@ def run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _run_pass(cfg, deps, dry_run, config_path)
 
 
-def _sync_artifacts(cfg: Config, *, dry_run: bool = False) -> None:
+def _sync_artifacts(cfg: Config, *, dry_run: bool = False,
+                    auth: host_auth.HostAuth = host_auth.STORED) -> None:
     repos = {repository.name: repository.repo for repository in cfg.repositories}
     for task in load_all(cfg.state_dir):
         try:
             task_artifacts.collect(cfg.state_dir, task, repos.get(task.repository, ""),
-                                   publish=not dry_run and task.stage not in TERMINAL_STAGES)
-        except (OSError, ValueError):
+                                   publish=not dry_run and task.stage not in TERMINAL_STAGES,
+                                   auth=auth)
+        except (OSError, ValueError, host_auth.HostWait):
             log.exception("Artifact collection failed for %s/%s", task.repository, task.issue)
     task_artifacts.cleanup(cfg.state_dir)
 
 
-def _begin_host_auth(cfg: Config, deps: Deps) -> None:
+def _begin_pass_auth(cfg: Config, deps: Deps) -> None:
+    """The pass's App access and the host credentials it gives each project."""
+    deps.access = None if deps.app is None else github_app.Access(deps.app, now=deps.clock)
     projects: dict[str, list[str]] = {}
     for r in cfg.repositories:
         projects.setdefault(r.project.name, []).append(r.repo)
-    host_auth.begin(list(projects.values()), deps.app)
+    deps.github.auth = host_auth.begin(list(projects.values()), deps.access)
 
 
 def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
               config_path: str = "targets.yaml") -> None:
     pass_started = _now()
-    _begin_host_auth(cfg, deps)
+    _begin_pass_auth(cfg, deps)
     _migrate_legacy_keys(cfg)
     _reconcile_slots(cfg)
     if not dry_run:
@@ -2841,6 +2853,9 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
                      and t.stage in IN_FLIGHT_STAGES and not _awaiting_launch(eff, t)]:
             try:
                 _drive_task(eff, deps, repository, task, admit, order, dry_run)
+            except host_auth.HostWait as exc:   # the turn waits for the App, not a crash
+                print(f"[warn] #{task.issue}: {exc}; its turn waits for the next pass",
+                      file=sys.stderr)
             except Exception:
                 _fail_task_crash(eff, deps, repository, task, dry_run)
         _wake_ci(eff, deps, repository)
@@ -2858,7 +2873,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     # Phase 2: new claims, with whatever capacity phase 1 and inspection left.
     if not claims_paused:
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
-    _sync_artifacts(cfg, dry_run=dry_run)
+    _sync_artifacts(cfg, dry_run=dry_run, auth=deps.github.auth)
     _flush_finished(cfg, dry_run)
     _write_heartbeat(cfg, pass_started)
 

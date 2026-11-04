@@ -174,7 +174,7 @@ def _branch_exists(clone_path: str, branch: str, env: dict | None = None) -> boo
     return proc.returncode == 0
 
 
-def _worktree_registered_at(clone_path: str, branch: str, env: dict | None = None) -> str | None:
+def _worktree_registered_at(clone_path: str, branch: str, env: dict | None) -> str | None:
     """Return the worktree path where `branch` is currently registered
     according to `git worktree list --porcelain`, or None if it isn't
     registered anywhere (or the probe couldn't run — tolerant like
@@ -357,41 +357,40 @@ class MissingBaseError(RuntimeError):
     """The task's base is not a branch on origin."""
 
 
-def _git_ok(args: list[str], cwd: str, **kw) -> bool:
+def _git_ok(args: list[str], cwd: str, env: dict | None) -> bool:
     try:
-        _sh(args, cwd=cwd, **kw)
+        _sh(args, cwd=cwd, env=env)
     except subprocess.CalledProcessError:
         return False
     return True
 
 
-def _fetch_base(repository: Repository, base: str) -> str:
+def _fetch_base(repository: Repository, base: str, env: dict | None) -> str:
     """Fetch origin and return the tracking ref of `base`, fetched by its exact
     name. origin itself is asked whether the branch exists (ls-remote exits 2
     when it does not), and the explicit refspec updates the tracking ref
     whatever remote.origin.fetch maps, so a stale ref of a deleted base, or one
     a narrow refspec never prunes, never passes for the base."""
-    kw = host_auth.kw(repository.repo)
-    _sh(["git", "fetch", "--prune", "origin"], cwd=repository.clone_path, **kw)
+    _sh(["git", "fetch", "--prune", "origin"], cwd=repository.clone_path, env=env)
     head = f"refs/heads/{base}"
     try:
-        _sh(["git", "ls-remote", "--exit-code", "origin", head], cwd=repository.clone_path, **kw)
+        _sh(["git", "ls-remote", "--exit-code", "origin", head], cwd=repository.clone_path, env=env)
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 2:
             raise MissingBaseError(f"base branch {base!r} is not on origin") from exc
         raise
     ref = f"refs/remotes/origin/{base}"
-    _sh(["git", "fetch", "origin", f"+{head}:{ref}"], cwd=repository.clone_path, **kw)
+    _sh(["git", "fetch", "origin", f"+{head}:{ref}"], cwd=repository.clone_path, env=env)
     return ref
 
 
 def _check_reused_base(repository: Repository, branch: str, base_ref: str,
-                       **kw) -> None:
+                       env: dict | None) -> None:
     """A reused task branch must hold no commit outside the base: one made
     from another base (the issue's base line edited between a failed
     provisioning and its retry) would carry that base's commits into the PR."""
     if not _git_ok(["git", "merge-base", "--is-ancestor", branch, base_ref],
-                   repository.clone_path, **kw):
+                   repository.clone_path, env):
         raise RuntimeError(
             f"branch {branch!r} has commits outside {base_ref!r}; refusing "
             f"to reuse it for that base — this needs manual inspection")
@@ -406,13 +405,16 @@ def _advance_to_base(wt: str, base_ref: str) -> None:
 
 
 def create_workspace(repository: Repository, issue: int, base: str = "main",
-                     dry_run: bool = False) -> str:
+                     dry_run: bool = False,
+                     auth: host_auth.HostAuth = host_auth.STORED) -> str:
+    """Every git call in the clone runs on `auth`, the pass's host credential
+    for the repository (the fetches need it; the local calls carry it alike)."""
     wt = str(Path(repository.worktrees_path) / f"task-{issue}")
     branch = f"agent/task-{issue}"
     if dry_run:
         print(f"[dry-run] create worktree {wt} on {branch}")
         return wt
-    kw = host_auth.kw(repository.repo)
+    env = auth.env(repository.repo)
 
     if Path(wt).exists():
         # Retry after a partial provisioning failure: the worktree (and
@@ -429,11 +431,11 @@ def create_workspace(repository: Repository, issue: int, base: str = "main",
                 f"worktree {wt} exists but failed its health check "
                 f"({problem}); refusing to reuse it — this needs manual "
                 f"inspection, not a silent retry")
-        base_ref = _fetch_base(repository, base)
-        _check_reused_base(repository, branch, base_ref, **kw)
+        base_ref = _fetch_base(repository, base, env)
+        _check_reused_base(repository, branch, base_ref, env)
         _advance_to_base(wt, base_ref)
         _mark_provisioned(wt)
-    elif _branch_exists(repository.clone_path, branch, **kw):
+    elif _branch_exists(repository.clone_path, branch, env):
         # Worktree was removed (e.g. manual cleanup) but the branch
         # survived — attach a fresh worktree to it instead of trying to
         # (re)create the branch with -b, which would die on "already
@@ -445,21 +447,21 @@ def create_workspace(repository: Repository, issue: int, base: str = "main",
         # preserved a crashed tree via `git worktree move`) — guard
         # against that before touching -f: it must only ever resolve the
         # registered-but-missing case it exists for.
-        other = _worktree_registered_at(repository.clone_path, branch, **kw)
+        other = _worktree_registered_at(repository.clone_path, branch, env)
         if other is not None and os.path.realpath(other) != os.path.realpath(wt):
             raise RuntimeError(
                 f"branch {branch!r} is already checked out at {other!r}; "
                 f"refusing to `git worktree add -f` a second checkout at "
                 f"{wt!r} — this needs manual inspection, not a silent -f")
-        base_ref = _fetch_base(repository, base)
-        _check_reused_base(repository, branch, base_ref, **kw)
-        _sh(["git", "worktree", "add", "-f", wt, branch], cwd=repository.clone_path, **kw)
+        base_ref = _fetch_base(repository, base, env)
+        _check_reused_base(repository, branch, base_ref, env)
+        _sh(["git", "worktree", "add", "-f", wt, branch], cwd=repository.clone_path, env=env)
         _advance_to_base(wt, base_ref)
         _mark_provisioned(wt)
     else:
-        base_ref = _fetch_base(repository, base)
+        base_ref = _fetch_base(repository, base, env)
         _sh(["git", "worktree", "add", "-b", branch, wt, base_ref],
-            cwd=repository.clone_path, **kw)
+            cwd=repository.clone_path, env=env)
         _mark_provisioned(wt)
     if repository.setup_cmd:
         _sh(containers.setup_cmd(f"task-{repository.name}-{issue}-setup", wt,

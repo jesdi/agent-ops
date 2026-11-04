@@ -33,9 +33,6 @@ def _board_gh(args: list[str]) -> str:
     return _run(["gh"] + args, env=_project_env())
 
 
-_GH = project_board.Credentials(board=_board_gh, repo=lambda repo: lambda args: _run(["gh"] + args, **host_auth.kw(repo)))
-
-
 @dataclass(frozen=True)
 class Candidate:
     number: int
@@ -59,6 +56,13 @@ class GitHubClient:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
         self._viewer_login: str | None = None
+        self.auth = host_auth.STORED   # the pass's host credentials (main._run_pass)
+        self._gh = project_board.Credentials(
+            board=_board_gh, repo=lambda repo: lambda args: self._host(repo, ["gh"] + args))
+
+    def _host(self, repo: str, args: list[str]) -> str:
+        """One host call on `repo`, on the pass's credential for it."""
+        return _run(args, **self.auth.kw(repo))
 
     # -- read side ---------------------------------------------------------
 
@@ -75,10 +79,9 @@ class GitHubClient:
         return self._viewer_login
 
     def pr_view(self, repository: Repository, pr_number: int) -> dict:
-        out = _run(["gh", "pr", "view", str(pr_number), "--repo", repository.repo,
+        out = self._host(repository.repo, ["gh", "pr", "view", str(pr_number), "--repo", repository.repo,
                     "--json",
-                    "state,mergedAt,reviewDecision,reviews,comments,mergeable,headRefOid,headRefName"],
-                  **host_auth.kw(repository.repo))
+                    "state,mergedAt,reviewDecision,reviews,comments,mergeable,headRefOid,headRefName"])
         return json.loads(out)
 
     def ci_statuses(self, repository: Repository, head: str, branch: str) -> list[CIStatus]:
@@ -106,7 +109,7 @@ class GitHubClient:
                 "-f", f"head_sha={head}", "-f", "per_page=100"]
         if branch:
             args += ["-f", f"branch={branch}"]
-        pages = json.loads(_run(args, **host_auth.kw(repository.repo)))
+        pages = json.loads(self._host(repository.repo, args))
         latest: dict[tuple[int, str, str], dict] = {}
         for page in pages:
             for run in page["workflow_runs"]:
@@ -126,9 +129,9 @@ class GitHubClient:
 
     def _commit_statuses(self, repository: Repository, head: str,
                          branch: str) -> list[CIStatus]:
-        pages = json.loads(_run([
+        pages = json.loads(self._host(repository.repo, [
             "gh", "api", f"repos/{repository.repo}/commits/{head}/statuses?per_page=100",
-            "--paginate", "--slurp"], **host_auth.kw(repository.repo)))
+            "--paginate", "--slurp"]))
         latest: dict[str, dict] = {}
         for page in pages:
             for status in page:
@@ -144,9 +147,9 @@ class GitHubClient:
         closed PR and a newer open one would otherwise leave gh to decide
         which PR the dispatcher watches forever. Prefer the open one; among
         equals take the highest number (the most recent)."""
-        out = _run(["gh", "pr", "list", "--repo", repository.repo,
+        out = self._host(repository.repo, ["gh", "pr", "list", "--repo", repository.repo,
                     "--head", branch, "--state", "all",
-                    "--json", "number,state", "--limit", "50"], **host_auth.kw(repository.repo))
+                    "--json", "number,state", "--limit", "50"])
         rows = json.loads(out)
         if not rows:
             return 0
@@ -155,8 +158,8 @@ class GitHubClient:
         return best["number"]
 
     def run_status(self, repository: Repository, run_id: int) -> str:
-        out = _run(["gh", "run", "view", str(run_id), "--repo", repository.repo,
-                    "--json", "status,conclusion"], **host_auth.kw(repository.repo))
+        out = self._host(repository.repo, ["gh", "run", "view", str(run_id), "--repo", repository.repo,
+                    "--json", "status,conclusion"])
         d = json.loads(out)
         return (d.get("conclusion") or "") if d.get("status") == "completed" else ""
 
@@ -179,7 +182,7 @@ class GitHubClient:
     def _issues(self, repository: Repository) -> list[dict]:
         """Every issue of `repository`, open and closed (board.repo_issues),
         read with the stored auth."""
-        return board.repo_issues(repository.repo, _GH.repo(repository.repo))
+        return board.repo_issues(repository.repo, self._gh.repo(repository.repo))
 
     def reconcile_board(self, repositories: list[Repository], tracks) -> project_board.Synced:
         """Future issues keep arriving (#230 D8): one project's open issues
@@ -189,8 +192,8 @@ class GitHubClient:
             return project_board.Synced(board.Carded([], []), [], [])
         b = repositories[0].project.board
         repos = [r.repo for r in repositories]
-        return project_board.sync(project_board.survey(b.owner, b.number, repos, _GH),
-                                  repos, tracks, _GH)
+        return project_board.sync(project_board.survey(b.owner, b.number, repos, self._gh),
+                                  repos, tracks, self._gh)
 
     def candidates(self, repositories: list[Repository]) -> list[Candidate]:
         """One project's claimable rows (see rank_rows), in rank order across
@@ -238,9 +241,9 @@ class GitHubClient:
         # repo (the item has no number). GitHub syncs linked-item titles
         # to issue titles, so the title — fetched with the stored repo auth —
         # is the join key.
-        title = json.loads(_run(["gh", "issue", "view", str(issue),
+        title = json.loads(self._host(repository.repo, ["gh", "issue", "view", str(issue),
                                  "--repo", repository.repo,
-                                 "--json", "title"], **host_auth.kw(repository.repo)))["title"]
+                                 "--json", "title"]))["title"]
         matches = [item.id for item in items
                    if item.number is None and item.title == title]
         if len(matches) == 1:
@@ -249,8 +252,8 @@ class GitHubClient:
                           f" (title join: {len(matches)} items match {title!r})")
 
     def issue_view(self, repo: str, number: int) -> dict:
-        out = _run(["gh", "issue", "view", str(number), "--repo", repo,
-                    "--json", "title,body,url"], **host_auth.kw(repo))
+        out = self._host(repo, ["gh", "issue", "view", str(number), "--repo", repo,
+                    "--json", "title,body,url"])
         return json.loads(out)
 
     def issue_body(self, repository: Repository, issue: int) -> str:
@@ -260,8 +263,8 @@ class GitHubClient:
         if self.dry_run:
             print(f"[dry-run] issue_state {repo}#{number} -> OPEN")
             return "OPEN"  # safe default: quarantined tasks stay blocked
-        out = _run(["gh", "issue", "view", str(number), "--repo", repo,
-                    "--json", "state"], **host_auth.kw(repo))
+        out = self._host(repo, ["gh", "issue", "view", str(number), "--repo", repo,
+                    "--json", "state"])
         return json.loads(out)["state"]
 
     # -- write side --------------------------------------------------------
@@ -270,8 +273,8 @@ class GitHubClient:
         if self.dry_run:
             print(f"[dry-run] create_issue on {repo}: {title}")
             return 0
-        out = _run(["gh", "issue", "create", "--repo", repo,
-                    "--title", title, "--body", body], **host_auth.kw(repo))
+        out = self._host(repo, ["gh", "issue", "create", "--repo", repo,
+                    "--title", title, "--body", body])
         return int(out.strip().rstrip("/").rsplit("/", 1)[-1])
 
     def set_status(self, repository: Repository, issue: int, status: str) -> None:
@@ -303,24 +306,22 @@ class GitHubClient:
         if self.dry_run:
             print(f"[dry-run] add_label #{issue} +{label}")
             return
-        _run(["gh", "issue", "edit", str(issue),
-              "--repo", repository.repo, "--add-label", label],
-             **host_auth.kw(repository.repo))
+        self._host(repository.repo, ["gh", "issue", "edit", str(issue),
+              "--repo", repository.repo, "--add-label", label])
 
     def comment(self, repository: Repository, issue: int, body: str) -> None:
         if self.dry_run:
             print(f"[dry-run] comment #{issue}: {body}")
             return
-        _run(["gh", "issue", "comment", str(issue),
-              "--repo", repository.repo, "--body", body],
-             **host_auth.kw(repository.repo))
+        self._host(repository.repo, ["gh", "issue", "comment", str(issue),
+              "--repo", repository.repo, "--body", body])
 
     def close_issue(self, repo: str, number: int) -> None:
         if self.dry_run:
             print(f"[dry-run] close_issue {repo}#{number}")
             return
-        _run(["gh", "issue", "close", str(number), "--repo", repo,
-              "--reason", "completed"], **host_auth.kw(repo))
+        self._host(repo, ["gh", "issue", "close", str(number), "--repo", repo,
+              "--reason", "completed"])
 
     def claim(self, repository: Repository, cand: Candidate) -> None:
         if self.dry_run:
@@ -348,8 +349,8 @@ class GitHubClient:
             return
         self.comment(repository, issue,
                      "🤖 canceled by operator — moved to Wont do.")
-        _run(["gh", "issue", "close", str(issue), "--repo", repository.repo,
-              "--reason", "not planned"], **host_auth.kw(repository.repo))
+        self._host(repository.repo, ["gh", "issue", "close", str(issue), "--repo", repository.repo,
+              "--reason", "not planned"])
         try:
             self.set_status(repository, issue, "Wont do")
         except board.BoardError as e:
@@ -363,25 +364,26 @@ class GitHubClient:
             print(f"[dry-run] delete_branch {repository.repo}:{branch}")
             return
         try:
-            _run(["gh", "api", "-X", "DELETE",
-                  f"repos/{repository.repo}/git/refs/heads/{branch}"],
-                 **host_auth.kw(repository.repo))
+            self._host(repository.repo, ["gh", "api", "-X", "DELETE",
+                  f"repos/{repository.repo}/git/refs/heads/{branch}"])
         except (subprocess.CalledProcessError, OSError):
             pass
+        except host_auth.HostWait as exc:   # left for GitHub's delete-on-merge or the operator
+            log.warning("branch %s of %s not deleted: %s", branch, repository.repo, exc)
 
     def append_blocked_by(self, repository: Repository, issue: int,
                           blocker: int) -> None:
         if self.dry_run:
             print(f"[dry-run] append_blocked_by #{issue} <- #{blocker}")
             return
-        body = json.loads(_run(["gh", "issue", "view", str(issue),
+        body = json.loads(self._host(repository.repo, ["gh", "issue", "view", str(issue),
                                 "--repo", repository.repo,
-                                "--json", "body"], **host_auth.kw(repository.repo)))["body"] or ""
+                                "--json", "body"]))["body"] or ""
         # Idempotent: skip if a Blocked-by line, as ranking reads them,
         # already references this blocker.
         if blocker in ranking.blocked_by(body):
             return
         line = f"Blocked by: #{blocker}"
         new_body = f"{body.rstrip()}\n\n{line}\n" if body.strip() else f"{line}\n"
-        _run(["gh", "issue", "edit", str(issue), "--repo", repository.repo,
-              "--body", new_body], **host_auth.kw(repository.repo))
+        self._host(repository.repo, ["gh", "issue", "edit", str(issue), "--repo", repository.repo,
+              "--body", new_body])

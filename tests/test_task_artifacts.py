@@ -161,6 +161,7 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
     from dispatcher import main
     from tests.webfakes import make_repository
     from types import SimpleNamespace
+    from dispatcher import host_auth
     state, task = setup(tmp_path)
     repository = make_repository()
     cfg = replace(make_config(state), done_retention_days=0)
@@ -175,7 +176,7 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
     deps = SimpleNamespace(
         sessions=SimpleNamespace(end=lambda *a: None),
         github=SimpleNamespace(delete_branch=lambda *a: None, issue_state=lambda *a: 'CLOSED',
-                               set_status=lambda *a: None),
+                               set_status=lambda *a: None, auth=host_auth.STORED),
     )
     main._finish_merged(cfg, deps, repository, task)
     main._sync_artifacts(cfg)

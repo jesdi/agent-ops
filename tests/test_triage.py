@@ -6,6 +6,7 @@ import subprocess as _subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -233,6 +234,7 @@ class FakeDeps:
     def __init__(self):
         self.notifier = SpyNotifier()
         self.app = None
+        self.github = SimpleNamespace()   # the pass sets its host credentials on it
 
 
 OLD = "2026-07-29T00:00:00Z"

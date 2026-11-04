@@ -217,10 +217,20 @@ class Client:
 
 class Access:
     """An App's reach of repositories, and installation tokens for them cached
-    until REFRESH before expiry. `app` is a Client or anything shaped like it."""
+    until `refresh` before expiry. `app` is a Client or anything shaped like it."""
 
-    def __init__(self, app, now: Callable[[], datetime] = _now):
-        self.app, self.now, self._cache = app, now, {}
+    def __init__(self, app, now: Callable[[], datetime] = _now, refresh: timedelta = REFRESH):
+        self.app, self.now, self.refresh, self._cache = app, now, refresh, {}
+
+    def _reach(self, repos: list[str]) -> tuple[dict[Installation, list[str]], list[str]]:
+        """The repos grouped by the installation that reaches them, and those none reaches."""
+        by_install, missing = {}, []
+        for repo in dict.fromkeys(repos):
+            if inst := self.app.installation(repo):
+                by_install.setdefault(inst, []).append(repo)
+            else:
+                missing.append(repo)
+        return by_install, missing
 
     def reached(self, repos: list[str]) -> dict[Installation, list[str]]:
         """The repos grouped by the installation that reaches them, asked fresh.
@@ -229,27 +239,31 @@ class Access:
             raise NoAccess("the GitHub App is not registered: the 1Password item "
                            "agent-ops/agent-ops-github-app is unreadable; follow the "
                            "infra README checklist", README)
-        by_install, missing = {}, []
-        for repo in dict.fromkeys(repos):
-            if inst := self.app.installation(repo):
-                by_install.setdefault(inst, []).append(repo)
-            else:
-                missing.append(repo)
+        by_install, missing = self._reach(repos)
         if missing:
             raise NoAccess(f"the GitHub App can't reach {', '.join(missing)}: add it to "
                            "the App installation", self.app.install_link(_split(missing[0])[0]))
         return by_install
 
-    def grants(self, repos: list[str], permissions: dict) -> dict[str, Token]:
+    def grants(self, repos: list[str], permissions: dict, *,
+               reached_only: bool = False) -> dict[str, Token]:
         """Lowercased repo -> a Token for it: one mint per installation, naming
-        only that installation's repos of `repos`."""
+        only that installation's repos of `repos`. reached_only: a repo no
+        installation reaches (every repo, with no App registered) is left out
+        instead of raising NoAccess."""
         if not repos:
             return {}
-        key = (tuple(sorted({x.lower() for x in repos})), tuple(sorted(permissions.items())))
-        if (hit := self._cache.get(key)) and min(t.expires_at for t in hit.values()) - REFRESH > self.now():
+        key = (tuple(sorted({x.lower() for x in repos})), tuple(sorted(permissions.items())),
+               reached_only)
+        hit = self._cache.get(key)
+        if hit is not None and all(t.expires_at - self.refresh > self.now() for t in hit.values()):
             return hit
+        if not reached_only:
+            by_install = self.reached(repos)
+        else:
+            by_install = self._reach(repos)[0] if self.app.registered() else {}
         grants = {}
-        for inst, names in self.reached(repos).items():
+        for inst, names in by_install.items():
             token = self.app.mint(inst, names, permissions)
             grants.update({x.lower(): token for x in names})
         self._cache[key] = grants

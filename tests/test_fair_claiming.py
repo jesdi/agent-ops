@@ -128,7 +128,7 @@ def test_provisioning_failure_scoped_to_repository_other_repository_still_claims
         "portfolio_eval": [Candidate(10, "PE candidate", "u10")],
     })
 
-    def failing_workspace(repository, issue, base="main", dry_run=False):
+    def failing_workspace(repository, issue, base="main", dry_run=False, auth=None):
         if repository.name == "factorial":
             raise RuntimeError("podman down")
         wt = Path(repository.worktrees_path) / f"task-{issue}"
