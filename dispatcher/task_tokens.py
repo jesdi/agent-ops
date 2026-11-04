@@ -85,6 +85,13 @@ def _due(state_dir, key: str, now: datetime) -> bool:
     return expires is None or expires - now < REFRESH
 
 
+def _prune_records(state_dir, holders: dict[str, str]) -> None:
+    records = Path(state_dir) / EXPIRY
+    for record in records.iterdir() if records.is_dir() else ():
+        if record.name not in holders:
+            record.unlink(missing_ok=True)
+
+
 def sync(access: github_app.Access | None, state_dir, holders: dict[str, str],
          now: datetime) -> list[str]:
     """Keep a token directory only for `holders` (task key -> its repository):
@@ -92,10 +99,8 @@ def sync(access: github_app.Access | None, state_dir, holders: dict[str, str],
     A holder's token with under REFRESH left is re-minted (no App access: none
     is). Returns why each refresh that failed waits for the next pass; the
     current hosts.yml stays in place."""
-    root, records = Path(state_dir) / TOKENS, Path(state_dir) / EXPIRY
-    for record in records.iterdir() if records.is_dir() else ():
-        if record.name not in holders:
-            record.unlink(missing_ok=True)
+    _prune_records(state_dir, holders)
+    root = Path(state_dir) / TOKENS
     waits = []
     for directory in root.iterdir() if root.is_dir() else ():
         key = directory.name
