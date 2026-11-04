@@ -30,7 +30,7 @@ from dispatcher.config import (Config, Repository, apply_stored_models,
                                referenced_providers, routed_providers, stranded)
 from dispatcher.usage import ProviderUsage, Verdict, admits, verdict_note
 from dispatcher.usage_providers import ADAPTERS, fetch_all
-from dispatcher import (answers, claims, eventlog, execution_overrides, failures, intents, labels, loops,
+from dispatcher import (answers, claims, eventlog, execution_overrides, failures, github_app, host_auth, intents, labels, loops,
                         messages, pr_poll, priority, queue_ops, relogin, tmux_migration,
                         triage, onboarding_sessions)
 from dispatcher.board import BoardError
@@ -83,6 +83,7 @@ class Deps:
     github: object
     sessions: object
     notifier: object
+    app: object = None   # the GitHub App (github_app.Client); None: the stored auth
 
 
 def _now() -> str:
@@ -2050,7 +2051,7 @@ def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[T
     by_issue = {(t.repository, t.issue): t for t in tasks}
     try:
         cands = deps.github.candidates(members)
-    except BoardError as exc:  # this project only: the round goes on
+    except (BoardError, host_auth.HostWait) as exc:  # this project only: the round goes on
         print(f"[warn] {members[0].project.name}: no claims this pass — {exc}",
               file=sys.stderr)
         return
@@ -2627,9 +2628,17 @@ def _sync_artifacts(cfg: Config, *, dry_run: bool = False) -> None:
     task_artifacts.cleanup(cfg.state_dir)
 
 
+def _begin_host_auth(cfg: Config, deps: Deps) -> None:
+    projects: dict[str, list[str]] = {}
+    for r in cfg.repositories:
+        projects.setdefault(r.project.name, []).append(r.repo)
+    host_auth.begin(list(projects.values()), deps.app)
+
+
 def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
               config_path: str = "targets.yaml") -> None:
     pass_started = _now()
+    _begin_host_auth(cfg, deps)
     _migrate_legacy_keys(cfg)
     _reconcile_slots(cfg)
     if not dry_run:
@@ -2729,7 +2738,7 @@ def main() -> None:
     if missing:
         print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
               f"their entries are never admitted", file=sys.stderr)
-    deps = Deps(github=GitHubClient(dry_run=args.dry_run),
+    deps = Deps(github=GitHubClient(dry_run=args.dry_run), app=github_app.Client(),
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
                                   cpus=cfg.session_cpus, state_dir=cfg.state_dir,
                                   clones={t.name: t.clone_path for t in cfg.repositories}),

@@ -232,6 +232,7 @@ class SpyNotifier:
 class FakeDeps:
     def __init__(self):
         self.notifier = SpyNotifier()
+        self.app = None
 
 
 OLD = "2026-07-29T00:00:00Z"

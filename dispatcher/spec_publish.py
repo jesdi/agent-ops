@@ -15,6 +15,8 @@ from urllib.parse import quote
 from dataclasses import dataclass
 from pathlib import Path
 
+from dispatcher import host_auth
+
 _TIMEOUT = 60  # per git command
 
 
@@ -50,23 +52,26 @@ def relative_artifact(worktree: str, artifact: str) -> str | None:
     return None
 
 
-def _git(worktree: str, *args: str) -> subprocess.CompletedProcess:
+def _git(worktree: str, *args: str, repo: str | None = None) -> subprocess.CompletedProcess:
+    """`repo` set: a network call, on the pass's host credential (HostWait, an
+    OSError, when the App errored for it)."""
+    kw = host_auth.kw(repo) if repo else {}
     return subprocess.run(["git", "-C", worktree, *args],
-                          capture_output=True, text=True, timeout=_TIMEOUT)
+                          capture_output=True, text=True, timeout=_TIMEOUT, **kw)
 
 
 class _GitFailed(Exception):
     pass
 
 
-def _must(worktree: str, *args: str) -> subprocess.CompletedProcess:
-    proc = _git(worktree, *args)
+def _must(worktree: str, *args: str, repo: str | None = None) -> subprocess.CompletedProcess:
+    proc = _git(worktree, *args, repo=repo)
     if proc.returncode != 0:
         raise _GitFailed(f"git {args[0]} failed: {proc.stderr.strip()}")
     return proc
 
 
-def _commit_and_push(worktree: str, branch: str, issue: int, spec: str) -> None:
+def _commit_and_push(worktree: str, branch: str, issue: int, spec: str, repo: str) -> None:
     rel = Path(spec).parent.as_posix()
     if _must(worktree, "status", "--porcelain", "--", rel).stdout.strip():
         # Uncommitted (or untracked) files — the agent forgot. Commit
@@ -79,9 +84,9 @@ def _commit_and_push(worktree: str, branch: str, issue: int, spec: str) -> None:
     if _git(worktree, "ls-files", "--error-unmatch", "--", spec).returncode != 0:
         raise _GitFailed(f"spec not tracked in git: {spec}")
     head = _must(worktree, "rev-parse", "HEAD").stdout.strip()
-    remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}")
+    remote = _git(worktree, "ls-remote", "origin", f"refs/heads/{branch}", repo=repo)
     if remote.returncode != 0 or remote.stdout.split()[:1] != [head]:
-        _must(worktree, "push", "origin", f"HEAD:refs/heads/{branch}")
+        _must(worktree, "push", "origin", f"HEAD:refs/heads/{branch}", repo=repo)
 
 
 def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
@@ -99,7 +104,7 @@ def ensure_published(*, worktree: str, branch: str, repo: str, issue: int,
         print(f"[dry-run] ensure spec folder {rel} committed+pushed on {branch}")
         return PublishResult(url=folder_url(repo, branch, rel))
     try:
-        _commit_and_push(worktree, branch, issue, spec)
+        _commit_and_push(worktree, branch, issue, spec, repo)
     except _GitFailed as exc:
         return PublishResult(error=str(exc))
     except (OSError, subprocess.SubprocessError) as exc:
@@ -124,7 +129,7 @@ class ArtifactPublisher:
     def _remote_commit(self) -> str:
         if not self._resolved:
             self._resolved = True
-            remote = _git(self.worktree, "ls-remote", "origin", f"refs/heads/{self.branch}")
+            remote = _git(self.worktree, "ls-remote", "origin", f"refs/heads/{self.branch}", repo=self.repo)
             fields = remote.stdout.split() if remote.returncode == 0 else []
             self._commit = fields[0] if fields else ""
         return self._commit
