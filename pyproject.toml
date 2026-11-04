@@ -3,7 +3,7 @@ name = "agent-ops"
 version = "0.1.0"
 description = "Autonomous backlog pipeline dispatcher"
 requires-python = ">=3.11"
-dependencies = ["pyyaml>=6.0", "fastapi", "uvicorn[standard]"]
+dependencies = ["pyyaml>=6.0", "fastapi", "uvicorn[standard]", "cryptography"]
 
 [project.scripts]
 agent-ops = "dispatcher.onboard_cli:main"
