@@ -845,11 +845,26 @@ def _board(r: Run, rec: Record) -> Outcome:
     number = rec.proposal["board"].get("number") or _new_board(r, rec)
     if isinstance(number, Outcome):
         return number
+    repos = [x["repo"] for x in rec.proposal["repositories"]]
+    issues = [i for repo in repos for i in board.repo_issues(repo, _repo_gh(r))]
+    f = _prepared(r, rec, owner, number, repos, issues)
+    if isinstance(f, Outcome):
+        return f
+    for repo in repos:
+        labels.ensure(repo, labels.tracks(r.cfg), _repo_gh(r))
+    note = _link(r, f, owner, repos)
+    added = board.add_missing(f, board.fetch_items(f.id, _board_gh(r)), issues, _board_gh(r))
+    _verify_board(r, owner, number, repos, issues, added)
+    return Outcome(StepState.VERIFIED, note, f.url)
+
+
+def _prepared(r: Run, rec: Record, owner: str, number: int, repos: list[str],
+              issues: list[dict]) -> board.Fields | Outcome:
+    """Board `number` with the fixed structure added, read again; a block
+    on a type clash or a foreign card, before anything is written."""
     board.forget(owner, number)
     f = board.fields(owner, number, _board_gh(r))
     _resource(rec, "board", f.url)
-    repos = [x["repo"] for x in rec.proposal["repositories"]]
-    issues = [i for repo in repos for i in board.repo_issues(repo, _repo_gh(r))]
     try:
         gaps = board.gaps(f)
     except board.BoardError as e:
@@ -858,13 +873,7 @@ def _board(r: Run, rec: Record) -> Outcome:
         return outside
     board.prepare(f, gaps, _board_gh(r), fresh=bool(rec.proposal["board"].get("new")))
     board.forget(owner, number)
-    f = board.fields(owner, number, _board_gh(r))
-    for repo in repos:
-        labels.ensure(repo, labels.tracks(r.cfg), _repo_gh(r))
-    note = _link(r, f, owner, repos)
-    added = board.add_missing(f, board.fetch_items(f.id, _board_gh(r)), issues, _board_gh(r))
-    _verify_board(r, owner, number, repos, issues, added)
-    return Outcome(StepState.VERIFIED, note, f.url)
+    return board.fields(owner, number, _board_gh(r))
 
 
 def _new_board(r: Run, rec: Record) -> int | Outcome:

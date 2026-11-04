@@ -228,13 +228,19 @@ class Gaps:
                 *(f"add Status option {s}" for s in self.statuses)]
 
 
+def _kind(data_type: str) -> str:
+    return data_type.lower().replace("_", " ")
+
+
+def _clashes(f: Fields) -> list[str]:
+    return [f"{n} is {_kind(f.types[n])}, not {_kind(REQUIRED[n])}"
+            for n in REQUIRED if f.types.get(n, REQUIRED[n]) != REQUIRED[n]]
+
+
 def gaps(f: Fields) -> Gaps:
     """`f`'s gaps; a BoardError naming every required field of another type,
     which is never replaced or guessed at (S10)."""
-    clash = [f"{n} is {f.types[n].lower().replace('_', ' ')}, not "
-             f"{REQUIRED[n].lower().replace('_', ' ')}"
-             for n in REQUIRED if n in f.types and f.types[n] != REQUIRED[n]]
-    if clash:
+    if clash := _clashes(f):
         raise BoardError(f"project {f.project}: field {'; '.join(clash)}: rename or "
                          "delete it on the board, or choose another board")
     absent = tuple(n for n in REQUIRED if n not in f.types)
@@ -261,21 +267,30 @@ def prepare(f: Fields, g: Gaps, gh: Callable[[list[str]], str], fresh: bool = Fa
     On a `fresh` board, one onboarding created, Status holds exactly
     STATUSES instead of GitHub's defaults (Todo, In Progress, Done)."""
     for name in g.fields:
-        if REQUIRED[name] == "NUMBER":
-            body = "dataType:NUMBER"
-        else:
-            body = "dataType:SINGLE_SELECT,singleSelectOptions:" + _options(
-                {"name": o} for o in _NEW_OPTIONS[name])
-        gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"name={name}", "-f",
-            "query=mutation($p:ID!,$name:String!){createProjectV2Field(input:"
-            f"{{projectId:$p,name:$name,{body}}}){{clientMutationId}}}}"])
+        _create_field(f, name, gh)
     if g.statuses:
-        options = [*f.specs["Status"], *({"name": s} for s in g.statuses)]
-        if fresh:
-            options = [next((o for o in options if o["name"] == s), {"name": s}) for s in STATUSES]
+        options = _status_options(f, g, fresh)
         gh(["api", "graphql", "-f", f"f={f.field('Status')}", "-f",
             "query=mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,"
             f"singleSelectOptions:{_options(options)}}}){{clientMutationId}}}}"])
+
+
+def _create_field(f: Fields, name: str, gh: Callable[[list[str]], str]) -> None:
+    if REQUIRED[name] == "NUMBER":
+        body = "dataType:NUMBER"
+    else:
+        body = "dataType:SINGLE_SELECT,singleSelectOptions:" + _options(
+            {"name": o} for o in _NEW_OPTIONS[name])
+    gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"name={name}", "-f",
+        "query=mutation($p:ID!,$name:String!){createProjectV2Field(input:"
+        f"{{projectId:$p,name:$name,{body}}}){{clientMutationId}}}}"])
+
+
+def _status_options(f: Fields, g: Gaps, fresh: bool) -> list[dict]:
+    options = [*f.specs["Status"], *({"name": s} for s in g.statuses)]
+    if fresh:
+        options = [next((o for o in options if o["name"] == s), {"name": s}) for s in STATUSES]
+    return options
 
 
 def foreign(items: list[Item], members: set[str], titles: set[str]) -> tuple[list[str], int]:

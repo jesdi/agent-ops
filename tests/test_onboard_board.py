@@ -222,3 +222,16 @@ def test_a_complete_record_from_before_stays_complete(tmp_path, box):
     p.write_text(json.dumps(old))
     rec = onboard.load_record(state(tmp_path), "analytics")
     assert rec.step("board").state is onboard.StepState.VERIFIED
+
+
+def test_two_boards_with_the_new_boards_title_block_instead_of_guessing(
+        tmp_path, box, infra_token):
+    gh = FakeGitHub()
+    rec = to_confirm(tmp_path, box, gh, board={"new": True})
+    gh.board("jesdi", 7, title="analytics Backlog")
+    gh.board("jesdi", 8, title="analytics Backlog")
+    intent(tmp_path, "confirm", {"revision": rec["revision"]})
+    run(box, sh_for(gh, **infra_routes(**NO_CI_RUN)))
+    s = step(record(tmp_path), "board")
+    assert s["state"] == "blocked" and "2 boards titled 'analytics Backlog'" in s["detail"]
+    assert len(gh.boards) == 2

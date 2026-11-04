@@ -70,6 +70,24 @@ export function boardLabel(board: AnyBoard, project: string) {
   return board && 'new' in board ? `New board: ${project || '<project>'} Backlog` : boardText(board)
 }
 
+function BoardField({ project, value, newBoard, onBoard, onNewBoard, source, inspected }: {
+  project: string; value: string; newBoard: boolean; onBoard: (value: string) => void
+  onNewBoard: (value: boolean) => void; source?: string; inspected: boolean
+}) {
+  return <div>
+    <Field label="GitHub board" hint={newBoard ? 'Onboarding creates the board after you confirm.' : 'owner/number. Leave blank to detect committed board details.'}
+      pattern="[^/\s]+/[1-9][0-9]*" value={value} disabled={newBoard} onChange={e => onBoard(e.target.value)} />
+    <label className="mt-2 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" className="size-4" checked={newBoard} onChange={e => onNewBoard(e.target.checked)} />Create a new board</label>
+    {newBoard ? <p className="text-xs text-ink-muted">{boardLabel({ new: true }, project)}, owned by the first repository’s owner.</p>
+      : <Source source={source} inspected={inspected} />}
+  </div>
+}
+
+function newBoardChosen(request?: OnboardingRequest, proposal?: OnboardingProposal | null) {
+  if (request?.board) return 'new' in request.board
+  return Boolean(proposal?.board && 'new' in proposal.board)
+}
+
 function repositoryKey(spelling: string) {
   return spelling.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\/$/, '').replace(/\.git$/, '').toLowerCase()
 }
@@ -114,8 +132,7 @@ export function OnboardingForm({ project = '', request, requestRevision, reposit
 }) {
   const [name, setName] = useState(project)
   const [board, setBoard] = useState<string | null>(() => request?.board ? boardText(request.board) : null)
-  const [newBoard, setNewBoard] = useState(() => Boolean(
-    (request?.board && 'new' in request.board) || (!request?.board && proposal?.board && 'new' in proposal.board)))
+  const [newBoard, setNewBoard] = useState(() => newBoardChosen(request, proposal))
   const shownBoard = newBoard ? '' : board ?? boardText(proposal?.board)
   const [repos, setRepos] = useState(() => initialDraft(request, proposal, inspection))
   const mutation = useMutation({ mutationFn: (body: OnboardingStartRequest) => api.startOnboarding(name, body), onSuccess: accepted => onSaved(name, accepted) })
@@ -132,10 +149,9 @@ export function OnboardingForm({ project = '', request, requestRevision, reposit
     <fieldset disabled={mutation.isPending || disabled} className="min-w-0 space-y-5">
       <section className={panel}><h2 className="text-xl font-semibold">Project</h2><div className="mt-5 grid gap-5 md:grid-cols-2">
         <Field label="Project name" hint="Lowercase letters, numbers and hyphens. Cannot change later." required pattern="[a-z0-9-]+" value={name} disabled={Boolean(project)} onChange={e => setName(e.target.value)} />
-        <div><Field label="GitHub board" hint={newBoard ? 'Onboarding creates the board after you confirm.' : 'owner/number. Leave blank to detect committed board details.'} pattern="[^/\s]+/[1-9][0-9]*" value={shownBoard} disabled={newBoard} onChange={e => setBoard(e.target.value)} />
-        <label className="mt-2 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" className="size-4" checked={newBoard} onChange={e => setNewBoard(e.target.checked)} />Create a new board</label>
-        {newBoard ? <p className="text-xs text-ink-muted">{boardLabel({ new: true }, name)}, owned by the first repository’s owner.</p>
-          : <Source source={board === null ? inspection?.repositories?.find(item => item.board.source)?.board.source : 'you'} inspected={Boolean(inspection?.repositories?.length)} />}</div>
+        <BoardField project={name} value={shownBoard} newBoard={newBoard} onBoard={setBoard} onNewBoard={setNewBoard}
+          source={board === null ? inspection?.repositories?.find(item => item.board.source)?.board.source : 'you'}
+          inspected={Boolean(inspection?.repositories?.length)} />
       </div></section>
       <section className={`${panel} space-y-5`}><div><h2 className="text-xl font-semibold">Repositories &amp; commands</h2><p className="mt-1 text-sm text-ink-muted">The box inspects each repository and suggests commands. You can enter known values now.</p></div>
         {repos.map((draft, index) => <RepositoryFields key={draft.id} draft={draft} number={index + 1} locked={repositoriesLocked}
