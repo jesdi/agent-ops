@@ -7,7 +7,8 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import github, labels
-from dispatcher.board import BoardError
+from dispatcher import project_board
+from dispatcher.board import Carded
 from dispatcher.github import GitHubClient
 from tests.configfakes import with_project
 from tests.fake_github import FakeGitHub
@@ -32,26 +33,26 @@ def test_reconcile_adds_a_card_for_a_new_issue_and_keeps_triage(tmp_path, gh):
     later = gh.issue("jesdi/portfolio_eval", 2)
     gh.issue("jesdi/portfolio_eval", 3, state="CLOSED")
 
-    lines = GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
+    lines = GitHubClient().reconcile_board(c.repositories[:1], {"standard"}).lines()
 
     assert gh.status(b, triaged) == "Ready" and gh.status(b, later) == "Inbox"
     assert len(b["items"]) == 2
     assert "card added: https://github.com/jesdi/portfolio_eval/issues/2" in lines
     assert "track:standard" in gh.labels["jesdi/portfolio_eval"]
-    assert GitHubClient().reconcile_board(c.repositories[:1], {"standard"}) == []
+    assert GitHubClient().reconcile_board(c.repositories[:1], {"standard"}).lines() == []
 
 
 def test_a_track_added_later_reaches_every_repository(tmp_path, gh):
     c = two_repository_cfg(tmp_path)
     GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
-    lines = GitHubClient().reconcile_board(c.repositories[:1], {"standard", "fast"})
+    lines = GitHubClient().reconcile_board(c.repositories[:1], {"standard", "fast"}).lines()
     assert lines == ["jesdi/portfolio_eval: label track:fast"]
 
 
 def test_a_dry_run_writes_nothing(tmp_path, gh):
     c = two_repository_cfg(tmp_path)
     gh.issue("jesdi/portfolio_eval", 2)
-    assert GitHubClient(dry_run=True).reconcile_board(c.repositories[:1], {"standard"}) == []
+    assert GitHubClient(dry_run=True).reconcile_board(c.repositories[:1], {"standard"}).lines() == []
     assert gh.boards[("jesdi", 1)]["items"] == [] and gh.labels == {}
 
 
@@ -65,7 +66,7 @@ class Reconciling(FakeClient):
         self.reconciled.append((project, sorted(tracks)))
         if project in self.fails:
             raise RuntimeError("board unreachable")
-        return [f"card added: {project}"]
+        return project_board.Synced(Carded([f"https://example/{project}"], []), [], [])
 
 
 def test_every_pass_reconciles_every_project_paused_included(tmp_path, monkeypatch, capsys):
@@ -79,17 +80,25 @@ def test_every_pass_reconciles_every_project_paused_included(tmp_path, monkeypat
     assert all(t == sorted(labels.tracks(c)) and t for _, t in client.reconciled)
     err = capsys.readouterr()
     assert "board unreachable" in err.err
-    assert "card added: factorial" in err.out + err.err
+    assert "card added: https://example/factorial" in err.out
 
 
-def test_a_board_without_inbox_gets_no_card_without_a_status(tmp_path, gh):
+def test_a_board_without_inbox_gets_no_card_but_still_its_labels(tmp_path, gh):
     c = two_repository_cfg(tmp_path)
     b = gh.boards[("jesdi", 1)]
     b["fields"]["Status"]["options"] = [o for o in b["fields"]["Status"]["options"] if o["name"] != "Inbox"]
     gh.issue("jesdi/portfolio_eval", 2)
-    with pytest.raises(BoardError, match="Inbox"):
-        GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
+    synced = GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
     assert b["items"] == []
+    assert len(synced.errors) == 1 and "Inbox" in synced.errors[0]
+    assert "track:standard" in gh.labels["jesdi/portfolio_eval"]
+
+
+def test_a_board_without_inbox_and_nothing_to_card_is_fine(tmp_path, gh):
+    c = two_repository_cfg(tmp_path)
+    b = gh.boards[("jesdi", 1)]
+    b["fields"]["Status"]["options"] = [o for o in b["fields"]["Status"]["options"] if o["name"] != "Inbox"]
+    assert GitHubClient().reconcile_board(c.repositories[:1], {"standard"}).errors == []
 
 
 def test_a_repository_refusing_labels_still_gets_its_cards(tmp_path, gh, monkeypatch):
@@ -101,6 +110,21 @@ def test_a_repository_refusing_labels_still_gets_its_cards(tmp_path, gh, monkeyp
             raise subprocess.CalledProcessError(1, args, stderr="HTTP 403")
         return gh(args, cwd, env)
     monkeypatch.setattr(github, "_run", no_labels)
-    with pytest.raises(subprocess.CalledProcessError):
-        GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
+    synced = GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
     assert gh.status(gh.boards[("jesdi", 1)], later) == "Inbox"
+    assert synced.carded.added == [later["url"]]
+    assert synced.errors and "HTTP 403" in synced.errors[0]
+
+
+def test_an_unreadable_label_list_still_lets_cards_in(tmp_path, gh, monkeypatch):
+    c = two_repository_cfg(tmp_path)
+    later = gh.issue("jesdi/portfolio_eval", 2)
+
+    def no_label_list(args, cwd=None, env=None):
+        if args[1:3] == ["label", "list"]:
+            raise subprocess.CalledProcessError(1, args, stderr="rate limited")
+        return gh(args, cwd, env)
+    monkeypatch.setattr(github, "_run", no_label_list)
+    synced = GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
+    assert gh.status(gh.boards[("jesdi", 1)], later) == "Inbox"
+    assert "rate limited" in synced.errors[0]

@@ -2029,12 +2029,14 @@ def _reconcile_boards(cfg: Config, deps: Deps) -> None:
     tracks = labels.tracks(cfg)
     for name, members in by_project(cfg.repositories).items():
         try:
-            lines = deps.github.reconcile_board(members, tracks)
+            synced = deps.github.reconcile_board(members, tracks)
         except Exception as exc:  # this project only: the pass goes on
             print(f"[warn] {name}: board reconcile failed — {exc}", file=sys.stderr)
             continue
-        for line in lines:
+        for line in synced.lines():
             print(f"[board] {name}: {line}")
+        for error in synced.errors:
+            print(f"[warn] {name}: board reconcile — {error}", file=sys.stderr)
 
 
 def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[TaskState],

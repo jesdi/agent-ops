@@ -276,7 +276,7 @@ def test_a_status_spelled_in_another_case_blocks_instead_of_adding_a_twin(tmp_pa
     gh, b = github(Status=("SINGLE_SELECT", ("Todo", "In Progress", "Done")))
     s = blocker(to_confirm(tmp_path, box, gh))
     assert s["state"] == "blocked"
-    assert "Status option 'In Progress' is spelled 'In progress' here" in s["detail"]
+    assert "Status option 'In progress' is spelled 'In Progress' here" in s["detail"]
     assert [o["name"] for o in b["fields"]["Status"]["options"]] == ["Todo", "In Progress", "Done"]
 
 
@@ -286,3 +286,23 @@ def test_a_card_left_without_a_status_gets_inbox(tmp_path, box, infra_token):
     gh.card(b, bare)
     through_board(tmp_path, box, gh)
     assert gh.status(b, bare) == "Inbox" and len(b["items"]) == 1
+
+
+def test_more_than_ten_foreign_cards_are_listed_ten_and_counted(tmp_path, box):
+    gh, b = github()
+    for n in range(1, 13):
+        gh.card(b, gh.issue("jesdi/billing", n))
+    s = blocker(to_confirm(tmp_path, box, gh))
+    assert "https://github.com/jesdi/billing/issues/10 and 2 more" in s["detail"]
+    assert "issues/11" not in s["detail"]
+
+
+def test_existing_area_options_and_extra_fields_are_left_alone(tmp_path, box, infra_token):
+    gh, b = github(Area=("SINGLE_SELECT", ("api", "web")), Sprint="ITERATION",
+                   Status=("SINGLE_SELECT", (*STATUSES, "Blocked")))
+    area = [dict(o) for o in b["fields"]["Area"]["options"]]
+    rec = through_board(tmp_path, box, gh)
+    assert step(rec, "board")["state"] == "verified"
+    assert b["fields"]["Area"]["options"] == area
+    assert b["fields"]["Sprint"]["type"] == "ITERATION"
+    assert [o["name"] for o in b["fields"]["Status"]["options"]] == [*STATUSES, "Blocked"]

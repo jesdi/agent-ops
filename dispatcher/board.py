@@ -266,7 +266,7 @@ def _clashes(f: Fields) -> list[str]:
                for n in REQUIRED if f.types.get(n, REQUIRED[n]) != REQUIRED[n]]
     if f.types.get("Status") == "SINGLE_SELECT":
         have = f.options("Status")
-        clashes += [f"Status option {o!r} is spelled {s!r} here"
+        clashes += [f"Status option {s!r} is spelled {o!r} here"
                     for s in STATUSES if s not in have
                     for o in have if o.lower() == s.lower()]
     return clashes
@@ -349,27 +349,29 @@ def find(owner: str, title: str, gh: Gh) -> list[int]:
 
 
 def create(owner: str, title: str, gh: Gh) -> int:
-    """A new board of `owner` (`settle`d); its number."""
+    """A new board of `owner`, with GitHub's default fields; its number."""
     owner_id = json.loads(gh(["api", "graphql", "-f", f"owner={owner}", "-f",
                               "query=query($owner:String!){repositoryOwner(login: $owner) { id } }"])
                           )["data"]["repositoryOwner"]["id"]
     out = gh(["api", "graphql", "-f", f"owner={owner_id}", "-f", f"title={title}", "-f",
               "query=mutation($owner:ID!,$title:String!){createProjectV2(input:"
               "{ownerId:$owner,title:$title}){projectV2{number}}}"])
-    number = json.loads(out)["data"]["createProjectV2"]["projectV2"]["number"]
-    settle(owner, number, gh)
-    return number
+    return json.loads(out)["data"]["createProjectV2"]["projectV2"]["number"]
+
+
+GITHUB_STATUSES = ("Todo", "In Progress", "Done")
 
 
 def settle(owner: str, number: int, gh: Gh) -> None:
-    """Give a board with no cards exactly the Status options STATUSES, in
-    place of GitHub's defaults (Todo, In Progress, Done): with no card there
-    is no value to lose. A board with cards is left alone."""
+    """Give a board that still has GitHub's default Status options and no
+    card exactly STATUSES: no value can be lost. Any other board is left to
+    the additions-only preparation."""
     forget(owner, number)
     f = fields(owner, number, gh)
-    if fetch_items(f.id, gh):
+    current = f.specs.get("Status", [])
+    if tuple(o["name"] for o in current) != GITHUB_STATUSES or fetch_items(f.id, gh):
         return
-    have = {o["name"]: o for o in f.specs.get("Status", [])}
+    have = {o["name"]: o for o in current}
     _set_options(f.field("Status"), [have.get(s, {"name": s}) for s in STATUSES], gh)
     forget(owner, number)
 
@@ -409,29 +411,36 @@ def repo_issues(repo: str, gh: Gh) -> list[dict]:
             for page in pages for node in page["data"]["repository"]["issues"]["nodes"]]
 
 
-def card_open_issues(f: Fields, items: list[Item], issues: list[dict], gh: Gh) -> list[str]:
+@dataclass(frozen=True)
+class Carded:
+    added: list[str]       # urls of the open issues given a card
+    inboxed: list[str]     # urls of the cards found without a Status, now in Inbox
+
+
+def card_open_issues(f: Fields, items: list[Item], issues: list[dict], gh: Gh) -> Carded:
     """Give every open issue in `issues` a card on board `f`, and every such
-    card without a Status Inbox; the urls of the cards added. Inbox is
-    resolved before any write, so a board without it gets no card. A card
-    with a Status keeps it, so triage is never reset (#230 D6, D7). Adding
-    is by node id, so equal numbers in two repositories never collide (S57)."""
-    status, inbox = f.field("Status"), f.option("Status", "Inbox")
+    card without a Status Inbox. Inbox is resolved before the first write,
+    so a board without it gets no card left without a Status. A card with a
+    Status keeps it, so triage is never reset (#230 D6, D7). Adding is by
+    node id, so equal numbers in two repositories never collide (S57)."""
     carded = cards(items, issues)
-    added = []
-    for issue in issues:
-        if issue["state"] != "OPEN":
-            continue
-        item = carded.get((issue["repository"].lower(), issue["number"]))
+    due = [(i, carded.get((i["repository"].lower(), i["number"]))) for i in issues
+           if i["state"] == "OPEN"]
+    due = [(i, item) for i, item in due if item is None or item.status is None]
+    if not due:
+        return Carded([], [])
+    status, inbox = f.field("Status"), f.option("Status", "Inbox")
+    added, inboxed = [], []
+    for issue, item in due:
         item_id, value = (item.id, item.status) if item else _add(f, issue["id"], gh)
-        if item is None:
-            added.append(issue["url"])
+        (inboxed if item else added).append(issue["url"])
         if value is None:
             gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"i={item_id}",
                 "-f", f"f={status}", "-f", f"o={inbox}", "-f",
                 "query=mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue("
                 "input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}})"
                 "{clientMutationId}}"])
-    return added
+    return Carded(added, inboxed)
 
 
 def _add(f: Fields, content_id: str, gh: Gh) -> tuple[str, str | None]:

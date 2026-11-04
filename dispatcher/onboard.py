@@ -561,8 +561,8 @@ def _proposal(rec: Record, found: list[dict]) -> dict:
                              for x, commands in zip(found, rec.request["commands"])]}
 
 
-def _gh(r: Run) -> project_board.Gh:
-    return project_board.Gh(board=lambda args: r.sh(["gh", *args], env=board.project_env()),
+def _gh(r: Run) -> project_board.Credentials:
+    return project_board.Credentials(board=lambda args: r.sh(["gh", *args], env=board.project_env()),
                             repo=lambda args: r.sh(["gh", *args]))
 
 
@@ -577,12 +577,13 @@ def _check_board(r: Run, rec: Record, proposal: dict) -> Outcome | None:
             project_board.missing_labels(repos, tracks, _gh(r)))]
         return None
     try:
-        s = project_board.survey(b["owner"], b["number"], repos, tracks, _gh(r))
+        s = project_board.survey(b["owner"], b["number"], repos, _gh(r))
     except board.BoardError as e:
         return blocked(str(e))
     if blocker := s.blocker():
         return blocked(blocker, s.fields.url)
-    rec.board_review = s.review()
+    rec.board_review = [*s.review(), *project_board.label_lines(
+        project_board.missing_labels(repos, tracks, _gh(r)))]
     return None
 
 
@@ -815,19 +816,30 @@ def _board(r: Run, rec: Record) -> Outcome:
     if isinstance(number, Outcome):
         return number
     repos, tracks, gh = [x["repo"] for x in rec.proposal["repositories"]], labels.tracks(r.cfg), _gh(r)
-    s = project_board.survey(owner, number, repos, tracks, gh)
+    s = project_board.survey(owner, number, repos, gh)
     _resource(rec, "board", s.fields.url)
     if blocker := s.blocker():
         return blocked(blocker, s.fields.url)
     board.prepare(s.fields, s.gaps, gh.board)
     note = _link(r, s.fields, owner, repos)
-    synced = project_board.sync(project_board.survey(owner, number, repos, tracks, gh), tracks, gh)
-    s = project_board.survey(owner, number, repos, tracks, gh)
-    problems = [*s.gaps.lines(), *project_board.label_lines(s.missing_labels),
-                *(f"no card for {i['url']}" for i in s.uncarded() if i["url"] not in synced.cards)]
-    if problems:   # fails the step: the next run tries again
-        raise RuntimeError(f"board {s.fields.project} after preparing: {'; '.join(problems)}")
+    s = project_board.survey(owner, number, repos, gh)
+    synced = project_board.sync(s, repos, tracks, gh)
+    _verify_board(owner, number, repos, tracks, gh, s.issues, synced)
     return Outcome(StepState.VERIFIED, note, s.fields.url)
+
+
+def _verify_board(owner: str, number: int, repos: list[str], tracks, gh: project_board.Credentials,
+                  imported: list[dict], synced: project_board.Synced) -> None:
+    """A fresh read shows the full structure, every label on every
+    repository and a card for every open issue counted at import; raises,
+    failing the step for the next run, otherwise."""
+    s = project_board.survey(owner, number, repos, gh)
+    problems = [*synced.errors, *(s.gaps.lines() if s.gaps else [s.clash]),
+                *project_board.label_lines(project_board.missing_labels(repos, tracks, gh)),
+                *(f"no card for {i['url']}" for i in s.uncarded(imported)
+                  if i["url"] not in synced.carded.added)]
+    if problems:
+        raise RuntimeError(f"board {s.fields.project} after preparing: {'; '.join(problems)}")
 
 
 def _new_board(r: Run, rec: Record) -> int | Outcome:
@@ -840,10 +852,11 @@ def _new_board(r: Run, rec: Record) -> int | Outcome:
     if len(found) > 1:
         return blocked(f"{owner} has {len(found)} boards titled {title!r}: rename all but "
                        "one, then resume")
-    if found:   # made by a run whose save a crash lost, maybe before it settled
-        board.settle(owner, found[0], _gh(r).board)
-    rec.board_number = found[0] if found else board.create(owner, title, _gh(r).board)
-    return rec.board_number
+    number = found[0] if found else board.create(owner, title, _gh(r).board)
+    # A crash may have lost the save between create and settle: settle either way.
+    board.settle(owner, number, _gh(r).board)
+    rec.board_number = number
+    return number
 
 
 def _link(r: Run, f: board.Fields, owner: str, repos: list[str]) -> str:
