@@ -355,11 +355,12 @@ def test_a_new_board_can_be_requested_and_its_review_is_shown(console, tmp_path)
     from dispatcher import onboard
     rec = onboard.Record("analytics", request=onboard._request(body),
                          proposal={"name": "analytics", "paused": True,
-                                   "board": {"owner": "jesdi", "new": True}, "repositories": []},
+                                   "board": {"owner": "jesdi", "new": True,
+                                             "title": "analytics Backlog"}, "repositories": []},
                          board_review=["create board 'analytics Backlog' for jesdi"])
     onboard.write_json_atomic(onboard._record_path(tmp_path / "state", "analytics"), onboard.asdict(rec))
     view = client.get("/api/onboarding/analytics", headers=HEADERS).json()
-    assert view["proposal"]["board"] == {"owner": "jesdi", "new": True}
+    assert view["proposal"]["board"] == {"owner": "jesdi", "new": True, "title": "analytics Backlog"}
     assert view["board_review"] == ["create board 'analytics Backlog' for jesdi"]
     assert view["inspection"] == {"repositories": []}
 

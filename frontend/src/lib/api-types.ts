@@ -1204,6 +1204,8 @@ export interface components {
             new: true;
             /** Owner */
             owner: string;
+            /** Title */
+            title: string;
         };
         /** ProviderUsageView */
         ProviderUsageView: {

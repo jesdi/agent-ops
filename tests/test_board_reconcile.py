@@ -1,10 +1,13 @@
 """Future issues keep arriving (#230 D8): every dispatcher pass gives each
 open issue with no card a card in Inbox, and every repository the labels it
 lacks, for every project, paused ones included."""
+import subprocess
+
 import pytest
 
 import dispatcher.main as main
 from dispatcher import github, labels
+from dispatcher.board import BoardError
 from dispatcher.github import GitHubClient
 from tests.configfakes import with_project
 from tests.fake_github import FakeGitHub
@@ -77,3 +80,27 @@ def test_every_pass_reconciles_every_project_paused_included(tmp_path, monkeypat
     err = capsys.readouterr()
     assert "board unreachable" in err.err
     assert "card added: factorial" in err.out + err.err
+
+
+def test_a_board_without_inbox_gets_no_card_without_a_status(tmp_path, gh):
+    c = two_repository_cfg(tmp_path)
+    b = gh.boards[("jesdi", 1)]
+    b["fields"]["Status"]["options"] = [o for o in b["fields"]["Status"]["options"] if o["name"] != "Inbox"]
+    gh.issue("jesdi/portfolio_eval", 2)
+    with pytest.raises(BoardError, match="Inbox"):
+        GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
+    assert b["items"] == []
+
+
+def test_a_repository_refusing_labels_still_gets_its_cards(tmp_path, gh, monkeypatch):
+    c = two_repository_cfg(tmp_path)
+    later = gh.issue("jesdi/portfolio_eval", 2)
+
+    def no_labels(args, cwd=None, env=None):
+        if args[1:3] == ["label", "create"]:
+            raise subprocess.CalledProcessError(1, args, stderr="HTTP 403")
+        return gh(args, cwd, env)
+    monkeypatch.setattr(github, "_run", no_labels)
+    with pytest.raises(subprocess.CalledProcessError):
+        GitHubClient().reconcile_board(c.repositories[:1], {"standard"})
+    assert gh.status(gh.boards[("jesdi", 1)], later) == "Inbox"

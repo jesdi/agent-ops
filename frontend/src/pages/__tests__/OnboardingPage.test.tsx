@@ -584,12 +584,14 @@ it('requests a new board instead of an owner/number', async () => {
 
 it('shows what the board step will add before confirming', async () => {
   server.use(http.get('/api/onboarding/analytics', () => HttpResponse.json({
-    ...ready, proposal: { ...proposal, board: { owner: 'jesdi', new: true } },
+    ...ready, proposal: { ...proposal, board: { owner: 'jesdi', new: true, title: 'analytics Backlog' } },
+    steps: [...ready.steps, { name: 'board', state: 'pending', detail: '', link: '', since: '' }],
     board_review: ["create board 'analytics Backlog' for jesdi", 'add labels on jesdi/analytics: auto, inbox'] })))
   renderDetail()
   await userEvent.click(await screen.findByRole('button', { name: 'Review proposal' }))
   const review = screen.getByRole('region', { name: 'Review proposal' })
   expect(within(review).getByText('New board: analytics Backlog')).toBeInTheDocument()
+  expect(screen.getByText('Prepare board')).toBeInTheDocument()
   const changes = within(review).getByRole('list', { name: 'Board changes' })
   expect(within(changes).getAllByRole('listitem').map(item => item.textContent)).toEqual([
     "create board 'analytics Backlog' for jesdi", 'add labels on jesdi/analytics: auto, inbox'])

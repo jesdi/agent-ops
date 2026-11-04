@@ -65,9 +65,10 @@ function boardText(board: AnyBoard) {
   return board && 'number' in board ? `${board.owner}/${board.number}` : ''
 }
 
-/** owner/number, or the title a new board gets; '' when there is none. */
+/** owner/number, or the title a new board gets (the proposal's, or the one the box will give it); '' when there is none. */
 export function boardLabel(board: AnyBoard, project: string) {
-  return board && 'new' in board ? `New board: ${project || '<project>'} Backlog` : boardText(board)
+  if (!board || !('new' in board)) return boardText(board)
+  return `New board: ${'title' in board ? board.title : `${project || '<project>'} Backlog`}`
 }
 
 function BoardField({ project, value, newBoard, onBoard, onNewBoard, source, inspected }: {

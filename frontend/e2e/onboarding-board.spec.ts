@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-const proposal = { name: 'analytics', paused: true, board: { owner: 'jesdi', new: true },
+const proposal = { name: 'analytics', paused: true, board: { owner: 'jesdi', new: true, title: 'analytics Backlog' },
   repositories: [{ name: 'analytics', repo: 'jesdi/analytics', github_id: 202,
     clone_path: '/home/agent/repos/analytics/analytics', worktrees_path: '/home/agent/repos/analytics/analytics.worktrees',
     setup_cmd: '', gate_cmd: 'make gate', verify_cmd: '' }] }

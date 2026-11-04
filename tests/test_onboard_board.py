@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from dispatcher import onboard
 from tests.fake_github import FakeGitHub, STATUSES, complete
@@ -180,7 +181,7 @@ def test_a_new_board_is_created_once_even_after_a_crash(tmp_path, box, infra_tok
     gh = FakeGitHub()
     issue = gh.issue("jesdi/analytics", 1)
     rec = to_confirm(tmp_path, box, gh, board={"new": True})
-    assert rec["proposal"]["board"] == {"owner": "jesdi", "new": True}
+    assert rec["proposal"]["board"] == {"owner": "jesdi", "new": True, "title": "analytics Backlog"}
     assert "create board 'analytics Backlog' for jesdi" in rec["board_review"]
     intent(tmp_path, "confirm", {"revision": rec["revision"]})
     gh.fail_after = "createProjectV2("
@@ -194,9 +195,9 @@ def test_a_new_board_is_created_once_even_after_a_crash(tmp_path, box, infra_tok
     assert [o["name"] for o in b["fields"]["Status"]["options"]] == list(STATUSES)
     assert gh.status(b, issue) == "Inbox"
     assert rec["board_number"] == 1
-    pushed = (scratch(tmp_path) / "config/targets.yaml").read_text()
-    assert "board: {owner: jesdi, number: 1}" in pushed or "number: 1" in pushed
-    assert "new: true" not in pushed
+    pushed = yaml.safe_load((scratch(tmp_path) / "config/targets.yaml").read_text())
+    entry = next(p for p in pushed["projects"] if p["name"] == "analytics")
+    assert entry["board"] == {"owner": "jesdi", "number": 1}
 
 
 def test_an_open_record_from_before_gains_the_board_step_before_config_pr(tmp_path, box):
@@ -235,3 +236,53 @@ def test_two_boards_with_the_new_boards_title_block_instead_of_guessing(
     s = step(record(tmp_path), "board")
     assert s["state"] == "blocked" and "2 boards titled 'analytics Backlog'" in s["detail"]
     assert len(gh.boards) == 2
+
+
+def test_a_foreign_card_that_appears_after_confirm_blocks_the_board_step(
+        tmp_path, box, infra_token):
+    gh, b = github()
+    gh.issue("jesdi/analytics", 1)
+    rec = to_confirm(tmp_path, box, gh)
+    intent(tmp_path, "confirm", {"revision": rec["revision"]})
+    gh.fail_after = "addProjectV2ItemById"      # the board step fails once, after confirm
+    run(box, sh_for(gh, **infra_routes(**NO_CI_RUN)))
+    gh.card(b, gh.issue("jesdi/billing", 9))
+    run(box, sh_for(gh, **infra_routes(**NO_CI_RUN)))
+    rec = record(tmp_path)
+    assert step(rec, "confirm")["state"] == "verified"
+    s = step(rec, "board")
+    assert s["state"] == "blocked" and "https://github.com/jesdi/billing/issues/9" in s["detail"]
+    assert s["link"] == "https://github.com/users/jesdi/projects/4"
+
+
+def test_a_board_made_before_a_lost_save_is_found_by_title_and_reused(
+        tmp_path, box, infra_token):
+    """The create ran but the record never kept its number: the rerun finds
+    the board by its title, adds only what is missing and keeps every value."""
+    gh = FakeGitHub()
+    issue = gh.issue("jesdi/analytics", 1)
+    rec = to_confirm(tmp_path, box, gh, board={"new": True})
+    made = gh.board("jesdi", 3, title="analytics Backlog", fields={"Status": ("SINGLE_SELECT", STATUSES)})
+    gh.card(made, issue, "Ready")
+    intent(tmp_path, "confirm", {"revision": rec["revision"]})
+    run(box, sh_for(gh, **infra_routes(**NO_CI_RUN)))
+    rec = record(tmp_path)
+    assert step(rec, "board")["state"] == "verified" and rec["board_number"] == 3
+    assert list(gh.boards) == [("jesdi", 3)]
+    assert gh.status(made, issue) == "Ready" and "Impact" in made["fields"]
+
+
+def test_a_status_spelled_in_another_case_blocks_instead_of_adding_a_twin(tmp_path, box):
+    gh, b = github(Status=("SINGLE_SELECT", ("Todo", "In Progress", "Done")))
+    s = blocker(to_confirm(tmp_path, box, gh))
+    assert s["state"] == "blocked"
+    assert "Status option 'In Progress' is spelled 'In progress' here" in s["detail"]
+    assert [o["name"] for o in b["fields"]["Status"]["options"]] == ["Todo", "In Progress", "Done"]
+
+
+def test_a_card_left_without_a_status_gets_inbox(tmp_path, box, infra_token):
+    gh, b = github()
+    bare = gh.issue("jesdi/analytics", 1)
+    gh.card(b, bare)
+    through_board(tmp_path, box, gh)
+    assert gh.status(b, bare) == "Inbox" and len(b["items"]) == 1

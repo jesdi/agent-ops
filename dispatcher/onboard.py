@@ -32,7 +32,7 @@ from typing import Callable, Literal, NamedTuple
 
 import yaml
 
-from dispatcher import board, config, intents, labels, ranking, repository_inspection as inspection
+from dispatcher import board, config, intents, labels, project_board, repository_inspection as inspection
 from dispatcher.infra_config import add_project_text, project_block
 from dispatcher.pr_poll import ci_verdict
 from dispatcher.state import state_lock, write_json_atomic
@@ -281,10 +281,11 @@ def _board_request(value: dict | None) -> dict | None:
     return {"owner": str(value["owner"]), "number": int(value["number"])}
 
 
-def _board_choice(chosen: dict | None, first_repo: str) -> dict | None:
-    """The proposal's board: a new one belongs to the first repository's owner."""
+def _board_choice(chosen: dict | None, project: str, first_repo: str) -> dict | None:
+    """The proposal's board: a new one is "<project> Backlog", owned by the
+    first repository's owner."""
     if chosen and chosen.get("new"):
-        return {"owner": first_repo.split("/")[0], "new": True}
+        return {"owner": first_repo.split("/")[0], "new": True, "title": f"{project} Backlog"}
     return chosen
 
 
@@ -552,7 +553,7 @@ def _proposal(rec: Record, found: list[dict]) -> dict:
     """The targets.yaml block: paused, paths derived (#226)."""
     root = Path(config.REPOS_ROOT).expanduser() / rec.project
     return {"name": rec.project, "paused": True,
-            "board": _board_choice(rec.request["board"], found[0]["repo"]),
+            "board": _board_choice(rec.request["board"], rec.project, found[0]["repo"]),
             "repositories": [{**x, "clone_path": str(root / x["name"]),
                               "worktrees_path": str(root / f"{x['name']}.worktrees"),
                               **{k: v or "" for k, v in commands.items() if k != "services"},
@@ -560,61 +561,29 @@ def _proposal(rec: Record, found: list[dict]) -> dict:
                              for x, commands in zip(found, rec.request["commands"])]}
 
 
-def _board_gh(r: Run) -> Callable[[list[str]], str]:
-    """gh with the board token: every Projects v2 read and write."""
-    return lambda args: r.sh(["gh", *args], env=board.project_env())
-
-
-def _repo_gh(r: Run) -> Callable[[list[str]], str]:
-    """gh with the box's repository credentials: issues and labels."""
-    return lambda args: r.sh(["gh", *args])
+def _gh(r: Run) -> project_board.Gh:
+    return project_board.Gh(board=lambda args: r.sh(["gh", *args], env=board.project_env()),
+                            repo=lambda args: r.sh(["gh", *args]))
 
 
 def _check_board(r: Run, rec: Record, proposal: dict) -> Outcome | None:
-    """Refuse a board with a required field of another type or a card from
-    outside the project (#230 D1, D4); else note in the record what the
-    board step will add, for the operator to confirm."""
+    """Refuse a board with a clashing field or a card from outside the
+    project; else note in the record what the board step will add, for the
+    operator to confirm (#230 D11)."""
     b, repos = proposal["board"], [x["repo"] for x in proposal["repositories"]]
-    review = []
-    if b.get("new"):
-        review.append(f"create board {_new_title(rec)!r} for {b['owner']}")
-    else:
-        board.forget(b["owner"], b["number"])   # the live board, never a cached read
-        try:
-            f = board.fields(b["owner"], b["number"], _board_gh(r))
-            review += board.gaps(f).lines()
-        except board.BoardError as e:
-            return blocked(str(e))
-        issues = [i for repo in repos for i in board.repo_issues(repo, _repo_gh(r))]
-        outside, unreadable = _foreign(r, f, repos, issues)
-        if outside:
-            return outside
-        if unreadable:
-            review.append(f"{unreadable} card{'s' * (unreadable > 1)} the board token can't "
-                          "read: they stay as they are")
     tracks = labels.tracks(r.cfg)
-    for repo in repos:
-        if missing := labels.missing(repo, tracks, _repo_gh(r)):
-            review.append(f"add labels on {repo}: {', '.join(sorted(x[0] for x in missing))}")
-    rec.board_review = review
+    if b.get("new"):
+        rec.board_review = [f"create board {b['title']!r} for {b['owner']}", *project_board.label_lines(
+            project_board.missing_labels(repos, tracks, _gh(r)))]
+        return None
+    try:
+        s = project_board.survey(b["owner"], b["number"], repos, tracks, _gh(r))
+    except board.BoardError as e:
+        return blocked(str(e))
+    if blocker := s.blocker():
+        return blocked(blocker, s.fields.url)
+    rec.board_review = s.review()
     return None
-
-
-def _foreign(r: Run, f: board.Fields, repos: list[str], issues: list[dict]) -> tuple[Outcome | None, int]:
-    """A block listing up to 10 cards from outside `repos`, else None; and
-    the count of cards the board token can't read."""
-    outside, unreadable = board.foreign(board.fetch_items(f.id, _board_gh(r)),
-                                        {x.lower() for x in repos}, {i["title"] for i in issues})
-    if not outside:
-        return None, unreadable
-    more = f" and {len(outside) - 10} more" if len(outside) > 10 else ""
-    return blocked(f"board {f.project} holds cards from outside the project: "
-                   f"{', '.join(outside[:10])}{more}. Nothing was removed: choose "
-                   "another board or a new one", f.url), unreadable
-
-
-def _new_title(rec: Record) -> str:
-    return f"{rec.project} Backlog"
 
 
 def _config_proposal(proposal: dict, number: int) -> dict:
@@ -622,7 +591,7 @@ def _config_proposal(proposal: dict, number: int) -> dict:
     b = proposal["board"]
     if not (b and b.get("new")):
         return proposal
-    return {**proposal, "board": {"owner": b["owner"], "number": number}}
+    return {**proposal, "board": {"owner": b["owner"], "number": number}}   # no "new", no "title"
 
 
 def _check_fits(r: Run, proposal: dict) -> Outcome | None:
@@ -722,7 +691,7 @@ def _inspection_outcome(reports: list[inspection.RepositoryInspection]) -> Outco
 
 def _inspection_board(rec: Record) -> dict | None:
     if rec.request["board"]:
-        return _board_choice(rec.request["board"], rec.proposal["repositories"][0]["repo"])
+        return _board_choice(rec.request["board"], rec.project, rec.proposal["repositories"][0]["repo"])
     choices = {json.dumps(x.facts.board, sort_keys=True): x.facts.board
                for x in rec.inspection.repositories if x.facts.board}
     return next(iter(choices.values())) if len(choices) == 1 else None
@@ -839,41 +808,26 @@ def _confirm_step(r: Run, rec: Record) -> Outcome:
 
 def _board(r: Run, rec: Record) -> Outcome:
     """Prepare the confirmed board (#230): recompute from the live board and
-    add only what is still missing. A new type clash or foreign card blocks
-    here; it doesn't go back to confirm (D11)."""
+    add only what is still missing. A new clash or foreign card blocks here;
+    it doesn't go back to confirm (D11)."""
     owner = rec.proposal["board"]["owner"]
     number = rec.proposal["board"].get("number") or _new_board(r, rec)
     if isinstance(number, Outcome):
         return number
-    repos = [x["repo"] for x in rec.proposal["repositories"]]
-    issues = [i for repo in repos for i in board.repo_issues(repo, _repo_gh(r))]
-    f = _prepared(r, rec, owner, number, repos, issues)
-    if isinstance(f, Outcome):
-        return f
-    for repo in repos:
-        labels.ensure(repo, labels.tracks(r.cfg), _repo_gh(r))
-    note = _link(r, f, owner, repos)
-    added = board.add_missing(f, board.fetch_items(f.id, _board_gh(r)), issues, _board_gh(r))
-    _verify_board(r, owner, number, repos, issues, added)
-    return Outcome(StepState.VERIFIED, note, f.url)
-
-
-def _prepared(r: Run, rec: Record, owner: str, number: int, repos: list[str],
-              issues: list[dict]) -> board.Fields | Outcome:
-    """Board `number` with the fixed structure added, read again; a block
-    on a type clash or a foreign card, before anything is written."""
-    board.forget(owner, number)
-    f = board.fields(owner, number, _board_gh(r))
-    _resource(rec, "board", f.url)
-    try:
-        gaps = board.gaps(f)
-    except board.BoardError as e:
-        return blocked(str(e), f.url)
-    if (outside := _foreign(r, f, repos, issues)[0]) is not None:
-        return outside
-    board.prepare(f, gaps, _board_gh(r), fresh=bool(rec.proposal["board"].get("new")))
-    board.forget(owner, number)
-    return board.fields(owner, number, _board_gh(r))
+    repos, tracks, gh = [x["repo"] for x in rec.proposal["repositories"]], labels.tracks(r.cfg), _gh(r)
+    s = project_board.survey(owner, number, repos, tracks, gh)
+    _resource(rec, "board", s.fields.url)
+    if blocker := s.blocker():
+        return blocked(blocker, s.fields.url)
+    board.prepare(s.fields, s.gaps, gh.board)
+    note = _link(r, s.fields, owner, repos)
+    synced = project_board.sync(project_board.survey(owner, number, repos, tracks, gh), tracks, gh)
+    s = project_board.survey(owner, number, repos, tracks, gh)
+    problems = [*s.gaps.lines(), *project_board.label_lines(s.missing_labels),
+                *(f"no card for {i['url']}" for i in s.uncarded() if i["url"] not in synced.cards)]
+    if problems:   # fails the step: the next run tries again
+        raise RuntimeError(f"board {s.fields.project} after preparing: {'; '.join(problems)}")
+    return Outcome(StepState.VERIFIED, note, s.fields.url)
 
 
 def _new_board(r: Run, rec: Record) -> int | Outcome:
@@ -881,12 +835,14 @@ def _new_board(r: Run, rec: Record) -> int | Outcome:
     found by its title (a crash lost the save after the create), else new."""
     if rec.board_number:
         return rec.board_number
-    owner, title = rec.proposal["board"]["owner"], _new_title(rec)
-    found = board.find(owner, title, _board_gh(r))
+    owner, title = rec.proposal["board"]["owner"], rec.proposal["board"]["title"]
+    found = board.find(owner, title, _gh(r).board)
     if len(found) > 1:
         return blocked(f"{owner} has {len(found)} boards titled {title!r}: rename all but "
                        "one, then resume")
-    rec.board_number = found[0] if found else board.create(owner, title, _board_gh(r))
+    if found:   # made by a run whose save a crash lost, maybe before it settled
+        board.settle(owner, found[0], _gh(r).board)
+    rec.board_number = found[0] if found else board.create(owner, title, _gh(r).board)
     return rec.board_number
 
 
@@ -895,27 +851,9 @@ def _link(r: Run, f: board.Fields, owner: str, repos: list[str]) -> str:
     others, which GitHub can't link (#230 D9)."""
     own = [x for x in repos if x.split("/")[0].lower() == owner.lower()]
     ids = [json.loads(r.sh(["gh", "api", f"repos/{x}"]))["node_id"] for x in own]
-    board.link(f, ids, _board_gh(r))
+    board.link(f, ids, _gh(r).board)
     others = [x for x in repos if x not in own]
     return f"not linked, another owner: {', '.join(others)}" if others else ""
-
-
-def _verify_board(r: Run, owner: str, number: int, repos: list[str], issues: list[dict],
-                  added: list[str]) -> None:
-    """A fresh read shows the full structure, every label on every
-    repository and a card for every open issue; raises, failing the step
-    for the next run, otherwise. A card the board token can't read joins no
-    issue, so one added this run counts."""
-    board.forget(owner, number)
-    f = board.fields(owner, number, _board_gh(r))
-    problems = board.gaps(f).lines()
-    problems += [f"labels missing on {repo}" for repo in repos
-                 if labels.missing(repo, labels.tracks(r.cfg), _repo_gh(r))]
-    on = ranking.on_board(board.fetch_items(f.id, _board_gh(r)), issues)
-    problems += [f"no card for {i['url']}" for i in issues if i["state"] == "OPEN"
-                 and (i["repository"].lower(), i["number"]) not in on and i["url"] not in added]
-    if problems:
-        raise RuntimeError(f"board {f.project} after preparing: {'; '.join(problems)}")
 
 
 # -- config-pr ----------------------------------------------------------------

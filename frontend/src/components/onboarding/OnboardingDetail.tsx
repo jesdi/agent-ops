@@ -9,7 +9,7 @@ import { OnboardingEdit } from './OnboardingEdit'
 import { boardLabel, button, panel, primary, PausedNote } from './OnboardingForm'
 
 const stateTone: Record<string, Tone> = { verified: 'running', waiting: 'neutral', blocked: 'waiting', failed: 'failed', pending: 'neutral' }
-const stepNames: Record<string, string> = { resolve: 'Resolve repositories', clone: 'Clone repositories', inspect: 'Inspect repositories', confirm: 'Confirm proposal', 'config-pr': 'Create infrastructure PR', 'config-merge': 'Merge infrastructure PR', deploy: 'Deploy configuration', visible: 'Visible in console' }
+const stepNames: Record<string, string> = { resolve: 'Resolve repositories', clone: 'Clone repositories', inspect: 'Inspect repositories', confirm: 'Confirm proposal', board: 'Prepare board', 'config-pr': 'Create infrastructure PR', 'config-merge': 'Merge infrastructure PR', deploy: 'Deploy configuration', visible: 'Visible in console' }
 
 function Steps({ steps }: { steps: OnboardingView['steps'] }) {
   return <section className={panel} aria-label="Onboarding progress"><h2 className="text-xl font-semibold">Onboarding progress</h2>

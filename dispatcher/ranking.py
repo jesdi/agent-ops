@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from operator import itemgetter
 
-from dispatcher.board import Item, _unique
+from dispatcher.board import Item, _unique, join_issue as _join
 
 _BLOCKED_LINE = re.compile(r"^\s*Blocked by:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _ISSUE_REF = re.compile(r"#(\d+)")
@@ -27,25 +27,6 @@ def blocked_by(body: str | None) -> list[int]:
 def _whole(value: float | None) -> int | None:
     """A board number as rank.py read it: truncated to a whole number."""
     return None if value is None else int(value)
-
-
-_NOT_ISSUES = {"DRAFT_ISSUE", "PULL_REQUEST"}
-
-
-def _join(item: Item, titled: dict[str, dict]) -> tuple | None:
-    """((repository, number), title, url) of the issue `item` links to. An
-    item whose issue the board token cannot see joins by title (GitHub syncs
-    linked-item titles to issue titles); a title no issue or two issues
-    carry, a draft or a pull request joins nothing. (rank.py title-joined
-    drafts too, so a draft sharing an issue's title ranked that issue.)"""
-    if item.number is not None:
-        return (item.repository.lower(), item.number), item.title, item.url
-    if item.kind in _NOT_ISSUES:
-        return None
-    issue = titled.get(item.title)
-    if issue is None:
-        return None
-    return (issue["repository"].lower(), issue["number"]), issue["title"], issue["url"]
 
 
 def _record(item: Item, key: tuple, title: str, url: str, issue: dict) -> dict:
@@ -68,12 +49,6 @@ def _merge(items: list[Item], issues: list[dict]) -> list[dict]:
         if joined is not None:
             merged.append(_record(item, *joined, keyed.get(joined[0], {})))
     return merged
-
-
-def on_board(items: list[Item], issues: list[dict]) -> set[tuple[str, int]]:
-    """(lowercased repository, number) of every issue some item joins."""
-    titled = _unique((i["title"], i) for i in issues)
-    return {joined[0] for item in items if (joined := _join(item, titled)) is not None}
 
 
 def _score(issue: dict) -> float | None:

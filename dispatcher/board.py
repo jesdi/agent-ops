@@ -118,6 +118,32 @@ def _unique(pairs) -> dict:
     return {key: values[0] for key, values in seen.items() if len(values) == 1}
 
 
+_NOT_ISSUES = {"DRAFT_ISSUE", "PULL_REQUEST"}
+
+
+def join_issue(item: Item, titled: dict[str, dict]) -> tuple | None:
+    """((repository, number), title, url) of the issue `item` links to. An
+    item whose issue the board token cannot see joins by title (GitHub syncs
+    linked-item titles to issue titles); a title no issue or two issues
+    carry, a draft or a pull request joins nothing. (rank.py title-joined
+    drafts too, so a draft sharing an issue's title ranked that issue.)"""
+    if item.number is not None:
+        return (item.repository.lower(), item.number), item.title, item.url
+    if item.kind in _NOT_ISSUES:
+        return None
+    issue = titled.get(item.title)
+    if issue is None:
+        return None
+    return (issue["repository"].lower(), issue["number"]), issue["title"], issue["url"]
+
+
+def cards(items: list[Item], issues: list[dict]) -> dict[tuple[str, int], Item]:
+    """(lowercased repository, number) of every issue some item joins -> that item."""
+    titled = _unique((i["title"], i) for i in issues)
+    return {joined[0]: item for item in items
+            if (joined := join_issue(item, titled)) is not None}
+
+
 def join(items: list[Item], issues: list[dict]) -> dict[int, Item]:
     """issue number -> its board item. `issues` rows carry number + title.
     An item without a number joins by title; a title shared by two issues or
@@ -214,6 +240,11 @@ AREAS = ("feature", "bug", "infra", "docs", "research")
 REQUIRED = {"Status": "SINGLE_SELECT", "Impact": "NUMBER", "Effort": "NUMBER",
             "Score": "NUMBER", "Boost": "NUMBER", "Area": "SINGLE_SELECT"}
 _NEW_OPTIONS = {"Status": STATUSES, "Area": AREAS}
+Gh = Callable[[list[str]], str]
+
+
+def _kind(data_type: str) -> str:
+    return data_type.lower().replace("_", " ")
 
 
 @dataclass(frozen=True)
@@ -223,26 +254,29 @@ class Gaps:
     statuses: tuple[str, ...] = ()   # Status options it lacks
 
     def lines(self) -> list[str]:
-        kind = {"NUMBER": "number", "SINGLE_SELECT": "single select"}
-        return [*(f"add {kind[REQUIRED[n]]} field {n}" for n in self.fields),
+        return [*(f"add {_kind(REQUIRED[n])} field {n}" for n in self.fields),
                 *(f"add Status option {s}" for s in self.statuses)]
 
 
-def _kind(data_type: str) -> str:
-    return data_type.lower().replace("_", " ")
-
-
 def _clashes(f: Fields) -> list[str]:
-    return [f"{n} is {_kind(f.types[n])}, not {_kind(REQUIRED[n])}"
-            for n in REQUIRED if f.types.get(n, REQUIRED[n]) != REQUIRED[n]]
+    """Required fields of another type, and Status options that differ from
+    a required one only in case (GitHub's default "In Progress"): neither is
+    replaced or guessed at (S10)."""
+    clashes = [f"field {n} is {_kind(f.types[n])}, not {_kind(REQUIRED[n])}"
+               for n in REQUIRED if f.types.get(n, REQUIRED[n]) != REQUIRED[n]]
+    if f.types.get("Status") == "SINGLE_SELECT":
+        have = f.options("Status")
+        clashes += [f"Status option {o!r} is spelled {s!r} here"
+                    for s in STATUSES if s not in have
+                    for o in have if o.lower() == s.lower()]
+    return clashes
 
 
 def gaps(f: Fields) -> Gaps:
-    """`f`'s gaps; a BoardError naming every required field of another type,
-    which is never replaced or guessed at (S10)."""
+    """`f`'s gaps; a BoardError naming every clash."""
     if clash := _clashes(f):
-        raise BoardError(f"project {f.project}: field {'; '.join(clash)}: rename or "
-                         "delete it on the board, or choose another board")
+        raise BoardError(f"project {f.project}: {'; '.join(clash)}: rename or delete it "
+                         "on the board, or choose another board")
     absent = tuple(n for n in REQUIRED if n not in f.types)
     statuses = () if "Status" in absent else tuple(
         s for s in STATUSES if s not in f.options("Status"))
@@ -261,21 +295,23 @@ def _options(options) -> str:
     return "[" + ",".join(_option(o) for o in options) + "]"
 
 
-def prepare(f: Fields, g: Gaps, gh: Callable[[list[str]], str], fresh: bool = False) -> None:
+def _set_options(field_id: str, options: list[dict], gh: Gh) -> None:
+    """Replace a single select's options: resend existing ones with their id."""
+    gh(["api", "graphql", "-f", f"f={field_id}", "-f",
+        "query=mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,"
+        f"singleSelectOptions:{_options(options)}}}){{clientMutationId}}}}"])
+
+
+def prepare(f: Fields, g: Gaps, gh: Gh) -> None:
     """Add what `g` names to board `f`. Status options are appended with
-    every existing option resent by id: an update replaces the whole list.
-    On a `fresh` board, one onboarding created, Status holds exactly
-    STATUSES instead of GitHub's defaults (Todo, In Progress, Done)."""
+    every existing option resent by id: an update replaces the whole list."""
     for name in g.fields:
         _create_field(f, name, gh)
     if g.statuses:
-        options = _status_options(f, g, fresh)
-        gh(["api", "graphql", "-f", f"f={f.field('Status')}", "-f",
-            "query=mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,"
-            f"singleSelectOptions:{_options(options)}}}){{clientMutationId}}}}"])
+        _set_options(f.field("Status"), [*f.specs["Status"], *({"name": s} for s in g.statuses)], gh)
 
 
-def _create_field(f: Fields, name: str, gh: Callable[[list[str]], str]) -> None:
+def _create_field(f: Fields, name: str, gh: Gh) -> None:
     if REQUIRED[name] == "NUMBER":
         body = "dataType:NUMBER"
     else:
@@ -284,13 +320,6 @@ def _create_field(f: Fields, name: str, gh: Callable[[list[str]], str]) -> None:
     gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"name={name}", "-f",
         "query=mutation($p:ID!,$name:String!){createProjectV2Field(input:"
         f"{{projectId:$p,name:$name,{body}}}){{clientMutationId}}}}"])
-
-
-def _status_options(f: Fields, g: Gaps, fresh: bool) -> list[dict]:
-    options = [*f.specs["Status"], *({"name": s} for s in g.statuses)]
-    if fresh:
-        options = [next((o for o in options if o["name"] == s), {"name": s}) for s in STATUSES]
-    return options
 
 
 def foreign(items: list[Item], members: set[str], titles: set[str]) -> tuple[list[str], int]:
@@ -309,7 +338,7 @@ def foreign(items: list[Item], members: set[str], titles: set[str]) -> tuple[lis
     return outside, unreadable
 
 
-def find(owner: str, title: str, gh: Callable[[list[str]], str]) -> list[int]:
+def find(owner: str, title: str, gh: Gh) -> list[int]:
     """The numbers of `owner`'s boards titled exactly `title`."""
     out = gh(["api", "graphql", "-f", f"owner={owner}", "-f", f"title={title}", "-f",
               "query=query($owner:String!,$title:String!){repositoryOwner(login:$owner){"
@@ -319,18 +348,33 @@ def find(owner: str, title: str, gh: Callable[[list[str]], str]) -> list[int]:
     return [n["number"] for n in nodes if n["title"] == title]
 
 
-def create(owner: str, title: str, gh: Callable[[list[str]], str]) -> int:
-    """A new board of `owner`; its number."""
+def create(owner: str, title: str, gh: Gh) -> int:
+    """A new board of `owner` (`settle`d); its number."""
     owner_id = json.loads(gh(["api", "graphql", "-f", f"owner={owner}", "-f",
                               "query=query($owner:String!){repositoryOwner(login: $owner) { id } }"])
                           )["data"]["repositoryOwner"]["id"]
     out = gh(["api", "graphql", "-f", f"owner={owner_id}", "-f", f"title={title}", "-f",
               "query=mutation($owner:ID!,$title:String!){createProjectV2(input:"
               "{ownerId:$owner,title:$title}){projectV2{number}}}"])
-    return json.loads(out)["data"]["createProjectV2"]["projectV2"]["number"]
+    number = json.loads(out)["data"]["createProjectV2"]["projectV2"]["number"]
+    settle(owner, number, gh)
+    return number
 
 
-def link(f: Fields, repository_ids: list[str], gh: Callable[[list[str]], str]) -> None:
+def settle(owner: str, number: int, gh: Gh) -> None:
+    """Give a board with no cards exactly the Status options STATUSES, in
+    place of GitHub's defaults (Todo, In Progress, Done): with no card there
+    is no value to lose. A board with cards is left alone."""
+    forget(owner, number)
+    f = fields(owner, number, gh)
+    if fetch_items(f.id, gh):
+        return
+    have = {o["name"]: o for o in f.specs.get("Status", [])}
+    _set_options(f.field("Status"), [have.get(s, {"name": s}) for s in STATUSES], gh)
+    forget(owner, number)
+
+
+def link(f: Fields, repository_ids: list[str], gh: Gh) -> None:
     """Link board `f` to every repository (node id) not linked yet."""
     out = gh(["api", "graphql", "-f", f"p={f.id}", "-f",
               "query=query($p:ID!){node(id:$p){... on ProjectV2 {"
@@ -353,7 +397,7 @@ query($owner: String!, $name: String!, $endCursor: String) {
 """
 
 
-def repo_issues(repo: str, gh: Callable[[list[str]], str]) -> list[dict]:
+def repo_issues(repo: str, gh: Gh) -> list[dict]:
     """Every issue of `repo`, open and closed, as ranking.rank reads them,
     with its node id. GraphQL pages, so no count cap. `gh` reads the repo."""
     owner, name = repo.split("/", 1)
@@ -365,31 +409,40 @@ def repo_issues(repo: str, gh: Callable[[list[str]], str]) -> list[dict]:
             for page in pages for node in page["data"]["repository"]["issues"]["nodes"]]
 
 
-def add_missing(f: Fields, items: list[Item], issues: list[dict],
-                gh: Callable[[list[str]], str]) -> list[str]:
-    """Add a card for every open issue in `issues` with none on board `f`;
-    the urls added. A card the add finds without a Status gets Inbox, so
-    triage on an existing card is never reset (#230 D6, D7). Adding is by
-    node id, so equal numbers in two repositories never collide (S57)."""
-    from dispatcher import ranking
-    on_board = ranking.on_board(items, issues)
+def card_open_issues(f: Fields, items: list[Item], issues: list[dict], gh: Gh) -> list[str]:
+    """Give every open issue in `issues` a card on board `f`, and every such
+    card without a Status Inbox; the urls of the cards added. Inbox is
+    resolved before any write, so a board without it gets no card. A card
+    with a Status keeps it, so triage is never reset (#230 D6, D7). Adding
+    is by node id, so equal numbers in two repositories never collide (S57)."""
+    status, inbox = f.field("Status"), f.option("Status", "Inbox")
+    carded = cards(items, issues)
     added = []
     for issue in issues:
-        if issue["state"] != "OPEN" or (issue["repository"].lower(), issue["number"]) in on_board:
+        if issue["state"] != "OPEN":
             continue
-        out = gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"c={issue['id']}", "-f",
-                  "query=mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:"
-                  "{projectId:$p,contentId:$c}){item{id status: fieldValueByName("
-                  'name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }}}}'])
-        item = json.loads(out)["data"]["addProjectV2ItemById"]["item"]
-        if not item.get("status"):
-            gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"i={item['id']}",
-                "-f", f"f={f.field('Status')}", "-f", f"o={f.option('Status', 'Inbox')}", "-f",
+        item = carded.get((issue["repository"].lower(), issue["number"]))
+        item_id, value = (item.id, item.status) if item else _add(f, issue["id"], gh)
+        if item is None:
+            added.append(issue["url"])
+        if value is None:
+            gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"i={item_id}",
+                "-f", f"f={status}", "-f", f"o={inbox}", "-f",
                 "query=mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue("
                 "input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}})"
                 "{clientMutationId}}"])
-        added.append(issue["url"])
     return added
+
+
+def _add(f: Fields, content_id: str, gh: Gh) -> tuple[str, str | None]:
+    """The card of `content_id` on board `f`, added if missing (GitHub
+    returns the existing one): its id and Status."""
+    out = gh(["api", "graphql", "-f", f"p={f.id}", "-f", f"c={content_id}", "-f",
+              "query=mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:"
+              "{projectId:$p,contentId:$c}){item{id status: fieldValueByName("
+              'name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }}}}'])
+    item = json.loads(out)["data"]["addProjectV2ItemById"]["item"]
+    return item["id"], (item.get("status") or {}).get("name")
 
 
 # -- the triage sweep's view --------------------------------------------------

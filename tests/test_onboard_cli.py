@@ -199,7 +199,7 @@ def test_add_with_a_new_board_shows_what_the_board_step_will_do(
     assert add(box, Box(box), "analytics", "jesdi/analytics", "--board", "new") == 0
     rec = record(tmp_path)
     assert rec["request"]["board"] == {"new": True}
-    assert rec["proposal"]["board"] == {"owner": "jesdi", "new": True}
+    assert rec["proposal"]["board"] == {"owner": "jesdi", "new": True, "title": "analytics Backlog"}
     out = capsys.readouterr().out
     assert "board: create board 'analytics Backlog' for jesdi" in out
     assert "--board new" in out

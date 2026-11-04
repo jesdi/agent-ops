@@ -29,6 +29,7 @@ class NewBoard(BaseModel):
 
 class ProposedNewBoard(NewBoard):
     owner: str
+    title: str
 
 
 class OnboardingCommands(BaseModel):

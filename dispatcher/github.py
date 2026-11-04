@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator
 
-from dispatcher import board, labels, ranking
+from dispatcher import board, project_board, ranking
 from dispatcher.config import Repository
 from dispatcher.pr_poll import CIStatus
 
@@ -31,6 +31,9 @@ _project_env = board.project_env
 def _board_gh(args: list[str]) -> str:
     """One gh call with the project token: every board read and write."""
     return _run(["gh"] + args, env=_project_env())
+
+
+_GH = project_board.Gh(board=_board_gh, repo=lambda args: _run(["gh"] + args))
 
 
 @dataclass(frozen=True)
@@ -175,22 +178,17 @@ class GitHubClient:
     def _issues(self, repository: Repository) -> list[dict]:
         """Every issue of `repository`, open and closed (board.repo_issues),
         read with the stored auth."""
-        return board.repo_issues(repository.repo, lambda args: _run(["gh"] + args))
+        return board.repo_issues(repository.repo, _GH.repo)
 
     def reconcile_board(self, repositories: list[Repository], tracks) -> list[str]:
         """Future issues keep arriving (#230 D8): one project's open issues
-        with no card get one, in Inbox (board.add_missing), and its
-        repositories the labels they lack. One line per write."""
+        get a card, in Inbox, and its repositories the labels they lack
+        (project_board.sync). One line per write."""
         if self.dry_run:
             return []
-        read = lambda args: _run(["gh"] + args)
-        lines = [f"{r.repo}: label {name}" for r in repositories
-                 for name in labels.ensure(r.repo, tracks, read)]
-        with self._live_fields(repositories[0]) as fields:
-            issues = [issue for r in repositories for issue in self._issues(r)]
-            added = board.add_missing(fields, board.fetch_items(fields.id, _board_gh),
-                                      issues, _board_gh)
-        return lines + [f"card added: {url}" for url in added]
+        b = repositories[0].project.board
+        s = project_board.survey(b.owner, b.number, [r.repo for r in repositories], tracks, _GH)
+        return project_board.sync(s, tracks, _GH).lines()
 
     def candidates(self, repositories: list[Repository]) -> list[Candidate]:
         """One project's claimable rows (see rank_rows), in rank order across
