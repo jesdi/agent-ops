@@ -85,6 +85,7 @@ class Deps:
     sessions: object
     notifier: object
     app: object = None   # the GitHub App (github_app.Client); None: the stored auth
+    clock: Callable[[], datetime] | None = None   # the time a task token's life is measured against; None: now
 
 
 def _now() -> str:
@@ -654,15 +655,70 @@ def _task_gh_config(cfg: Config, deps: Deps, repository: Repository, issue: int)
     a task never falls back to the host's credentials."""
     if deps.app is None:
         return ""   # no App wired: the host's own gh config, as before
-    token = github_app.Access(deps.app).tokens([repository.repo], TASK_PERMISSIONS)[repository.repo.lower()]
+    token = github_app.Access(deps.app).grants([repository.repo], TASK_PERMISSIONS)[repository.repo.lower()]
     directory = Path(cfg.state_dir) / "tokens" / task_key(repository.name, issue)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # ponytail: the token lives until the task ends (an hour at most); sweep tokens/ with the task's files if it must not outlive them
-    fd = os.open(directory / "hosts.yml", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as out:
-        out.write(f"github.com:\n    oauth_token: {token}\n    user: x-access-token\n"
-                  "    git_protocol: https\n")
+    _write_hosts(directory, token)
     return str(directory)
+
+
+_EXPIRES = "# expires_at: "
+TOKEN_REFRESH = timedelta(minutes=20)
+
+
+def _write_hosts(directory: Path, token: github_app.Token) -> None:
+    """hosts.yml by rename, so a reader sees the old file or the new one whole."""
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".hosts-")   # 0600
+    try:
+        with os.fdopen(fd, "w") as out:
+            out.write(f"{_EXPIRES}{token.expires_at.isoformat()}\n"
+                      f"github.com:\n    oauth_token: {token.token}\n    user: x-access-token\n"
+                      "    git_protocol: https\n")
+        os.replace(tmp, directory / "hosts.yml")
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+def _token_expiry(directory: Path) -> datetime | None:
+    try:
+        first = (directory / "hosts.yml").read_text().splitlines()[0]
+        return datetime.fromisoformat(first.removeprefix(_EXPIRES))
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _token_due(deps: Deps, directory: Path) -> bool:
+    expires = _token_expiry(directory)
+    now = deps.clock() if deps.clock else datetime.now(timezone.utc)
+    # no readable expiry (a file from before the marker existed): mint afresh
+    return deps.app is not None and (expires is None or expires - now < TOKEN_REFRESH)
+
+
+def _refresh_task_token(cfg: Config, deps: Deps, task: TaskState) -> None:
+    """An App error keeps the current file; the next pass retries."""
+    repository = next(r for r in cfg.repositories if r.name == task.repository)
+    try:
+        _task_gh_config(cfg, deps, repository, task.issue)
+    except (github_app.AppError, github_app.NoAccess) as exc:
+        print(f"[warn] #{task.issue}: task token refresh waits for the next pass: {exc}",
+              file=sys.stderr)
+
+
+def _sync_task_tokens(cfg: Config, deps: Deps) -> None:
+    """tokens/<task_key> lives while its task holds a session: others go (crash
+    leftovers too), and a token with under TOKEN_REFRESH left is re-minted."""
+    root = Path(cfg.state_dir) / "tokens"
+    if not root.is_dir():
+        return
+    names = {r.name for r in cfg.repositories}
+    holders = {task_key(t.repository, t.issue): t for t in load_all(cfg.state_dir)
+               if holds_slot(t) and t.repository in names}
+    for directory in root.iterdir():
+        if directory.name not in holders:
+            shutil.rmtree(directory, ignore_errors=True)
+        elif _token_due(deps, directory):
+            _refresh_task_token(cfg, deps, holders[directory.name])
 
 
 def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
@@ -2751,6 +2807,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _migrate_legacy_keys(cfg)
     _reconcile_slots(cfg)
     if not dry_run:
+        _sync_task_tokens(cfg, deps)
         _apply_intents(cfg, deps)
         _prune_snapshots(cfg)
         onboarding_sessions.reconcile(cfg.state_dir)

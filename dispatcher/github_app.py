@@ -240,21 +240,24 @@ class Access:
                            "the App installation", self.app.install_link(_split(missing[0])[0]))
         return by_install
 
-    def tokens(self, repos: list[str], permissions: dict) -> dict[str, str]:
-        """Lowercased repo -> a token for it: one mint per installation, naming
+    def grants(self, repos: list[str], permissions: dict) -> dict[str, Token]:
+        """Lowercased repo -> a Token for it: one mint per installation, naming
         only that installation's repos of `repos`."""
         if not repos:
             return {}
         key = (tuple(sorted({x.lower() for x in repos})), tuple(sorted(permissions.items())))
-        if (hit := self._cache.get(key)) and hit[1] - REFRESH > self.now():
-            return hit[0]
-        tokens, expiries = {}, []
+        if (hit := self._cache.get(key)) and min(t.expires_at for t in hit.values()) - REFRESH > self.now():
+            return hit
+        grants = {}
         for inst, names in self.reached(repos).items():
             token = self.app.mint(inst, names, permissions)
-            tokens.update({x.lower(): token.token for x in names})
-            expiries.append(token.expires_at)
-        self._cache[key] = tokens, min(expiries)
-        return tokens
+            grants.update({x.lower(): token for x in names})
+        self._cache[key] = grants
+        return grants
+
+    def tokens(self, repos: list[str], permissions: dict) -> dict[str, str]:
+        """Lowercased repo -> its token string (see grants)."""
+        return {repo: t.token for repo, t in self.grants(repos, permissions).items()}
 
 
 def _read_repo(http, repo: str, token: str) -> str:
