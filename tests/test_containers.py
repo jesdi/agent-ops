@@ -107,14 +107,16 @@ def test_setup_cmd_is_one_shot_with_cache_volumes(tmp_path: Path, monkeypatch):
     joined = " ".join(argv)
     assert "claude-home" not in joined and ".config/gh" not in joined
     assert "--memory" not in argv and "--cpus" not in argv
-    assert argv[-2:] == ["agent-ops-session", "scripts/provision-worktree.sh"]
+    assert argv[-4:] == ["agent-ops-session", "sh", "-c", "scripts/provision-worktree.sh"]
 
 
-def test_setup_cmd_splits_multiword_commands(tmp_path: Path, monkeypatch):
+def test_setup_cmd_runs_a_shell_line_like_gate_and_verify(tmp_path: Path, monkeypatch):
+    """Onboarding proposes setup_cmd as a shell line, as it does gate_cmd and verify_cmd."""
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
-    argv = containers.setup_cmd("task-7-setup", wt, "bash scripts/provision.sh --fast", clone)
-    assert argv[-3:] == ["bash", "scripts/provision.sh", "--fast"]
+    line = "uv sync --locked && cd frontend && pnpm install --frozen-lockfile"
+    argv = containers.setup_cmd("task-7-setup", wt, line, clone)
+    assert argv[-3:] == ["sh", "-c", line]
 
 
 def test_triage_cmd_read_only_clone_and_report_mount(monkeypatch, tmp_path):
