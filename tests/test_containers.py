@@ -5,6 +5,8 @@ import pytest
 
 from dispatcher import containers
 
+TOKENS = "/state/tokens/pe-42"   # the task's token directory (task_tokens.issue)
+
 
 def make_worktree(tmp_path: Path) -> tuple[str, str]:
     clone = tmp_path / "repos" / "pe"
@@ -26,7 +28,7 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
-                                 "--continue 'hi'", clone=clone)
+                                 "--continue 'hi'", clone=clone, gh_config=TOKENS)
     assert "podman run --rm -it --name task-42 " in cmd
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd and f"-w {wt}" in cmd
@@ -43,7 +45,7 @@ def test_session_cmd_enables_remote_control_named_after_the_task(tmp_path: Path,
     # its task (the container/session name) to be identifiable there.
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P", gh_config=TOKENS)
     assert "--remote-control task-42" in cmd
 
 
@@ -55,7 +57,7 @@ def test_session_cmd_sets_claude_config_dir(tmp_path: Path, monkeypatch):
     # CLAUDE_CONFIG_DIR relocates all of it inside the mounted claude-home.
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P", gh_config=TOKENS)
     assert "-e CLAUDE_CONFIG_DIR=/root/.claude" in cmd
 
 
@@ -67,7 +69,7 @@ def test_session_cmd_exposes_waitd_socket(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P", gh_config=TOKENS)
     assert ("-v /home/agent/agent-ops-state/wait"
             ":/home/agent/agent-ops-state/wait" in cmd)
     assert "-e AGENT_OPS_STATE_DIR=/home/agent/agent-ops-state" in cmd
@@ -80,7 +82,7 @@ def test_session_cmd_creates_wait_dir_mount_source(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
-    containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P", gh_config=TOKENS)
     assert (tmp_path / "state" / "wait").is_dir()
 
 
@@ -88,7 +90,7 @@ def test_session_cmd_carries_the_model_flag(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-sonnet-4-6", "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-sonnet-4-6", "P", gh_config=TOKENS)
     assert "--model claude-sonnet-4-6" in cmd
 
 
@@ -161,7 +163,7 @@ def test_session_cmd_resolves_claude_token_at_spawn_via_wrapper(
     wt, _ = make_worktree(tmp_path)
     monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/opt/infra/token-wrapper")
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
-                                 "P")
+                                 "P", gh_config=TOKENS)
     wrapper = "/opt/infra/token-wrapper"
     assert cmd.startswith(f"{wrapper} podman run --rm -it --name task-42 ")
     assert "-e CLAUDE_CODE_OAUTH_TOKEN " in cmd
@@ -187,7 +189,7 @@ def test_session_cmd_injects_the_task_branch_from_task_json(tmp_path: Path, monk
     wt, _ = make_worktree(tmp_path)
     agent = Path(wt) / ".agent"; agent.mkdir()
     (agent / "task.json").write_text('{"issue": 42, "repository": "pe", "branch": "agent/task-42"}')
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P", gh_config=TOKENS)
     assert "-e AGENT_OPS_TASK_BRANCH=agent/task-42 " in cmd
 
 
@@ -196,7 +198,7 @@ def test_session_cmd_omits_the_branch_for_pre_field_worktrees(tmp_path: Path, mo
     # lease pushes, which is the safe side.
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P", gh_config=TOKENS)
     assert "AGENT_OPS_TASK_BRANCH" not in cmd
 
 
@@ -204,7 +206,7 @@ def test_wrapper_path_is_one_executable_even_with_spaces(monkeypatch, tmp_path):
     import shlex
     monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/opt/my infra/token-wrapper")
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "model", "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "model", "P", gh_config=TOKENS)
     assert shlex.split(cmd)[:2] == ["/opt/my infra/token-wrapper", "podman"]
     argv = containers.triage_cmd("triage", "/repo", "/triage", "2g", "2", "model", "/p", gh_config="/state/triage-tokens/t")
     assert argv[:2] == ["/opt/my infra/token-wrapper", "podman"]
@@ -215,7 +217,7 @@ def test_model_prefix_never_reaches_the_cli(tmp_path: Path, monkeypatch, model_i
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, _ = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", model_id, "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", model_id, "P", gh_config=TOKENS)
     provider, bare = model_id.split("/")
     assert f"--model {bare}" in cmd
     assert f"{provider}/" not in cmd
@@ -254,14 +256,14 @@ def test_session_cmd_passes_effort_after_the_model(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     wt, _clone = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "anthropic/claude-luna",
-                                 "--continue 'hi'", effort="xhigh")
+                                 "--continue 'hi'", effort="xhigh", gh_config=TOKENS)
     assert cmd.endswith("--model claude-luna --effort xhigh --continue 'hi'")
 
 
 def test_session_cmd_omits_effort_when_unset(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     wt, _clone = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5-1", "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5-1", "P", gh_config=TOKENS)
     assert "--effort" not in cmd
 
 
@@ -294,7 +296,7 @@ def test_containers_run_the_hosts_claude_read_only(tmp_path: Path, monkeypatch):
     mount = f"{os.path.realpath(versions / '2.1.280')}:/usr/local/bin/claude:ro"
 
     wt, clone = make_worktree(tmp_path)
-    session = containers.session_cmd("task-x", wt, "4g", "2", "opus", "")
+    session = containers.session_cmd("task-x", wt, "4g", "2", "opus", "", gh_config=TOKENS)
     assert f"-v {mount}" in session
     assert "-e DISABLE_AUTOUPDATER=1" in session
 
@@ -315,7 +317,7 @@ def test_a_lone_codex_executable_is_refused_not_mounted_by_guess(tmp_path: Path,
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     wt, _ = make_worktree(tmp_path)
     with pytest.raises(RuntimeError, match="not a Codex package"):
-        containers.session_cmd("task-x", wt, "4g", "2", "openai/gpt-6-astra", "")
+        containers.session_cmd("task-x", wt, "4g", "2", "openai/gpt-6-astra", "", gh_config=TOKENS)
 
 
 # --- nothing in the command comes from the session-writable worktree ---------
@@ -339,7 +341,7 @@ def test_session_cmd_mounts_the_configured_clone_whatever_the_worktree_says(
     wt = _hostile_worktree(tmp_path, gitdir)
     clone = str(tmp_path / "configured-clone")
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P",
-                                 clone=clone)
+                                 clone=clone, gh_config=TOKENS)
     argv = shlex.split(cmd)
     mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
     assert f"{clone}:{clone}" in mounts
@@ -353,7 +355,7 @@ def test_session_cmd_without_a_clone_mounts_none(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     wt, clone = make_worktree(tmp_path)
     argv = shlex.split(containers.session_cmd("task-42", wt, "2g", "2",
-                                              "claude-fable-5", "P"))
+                                              "claude-fable-5", "P", gh_config=TOKENS))
     assert f"{wt}:{wt}" in argv and not [a for a in argv if a.startswith(f"{clone}:")]
 
 
@@ -365,7 +367,7 @@ def test_session_cmd_refuses_a_branch_that_is_not_the_tasks_own(tmp_path, monkey
     wt = _hostile_worktree(tmp_path, "/x/.git/worktrees/t",
                            _json.dumps({"issue": 42, "branch": branch}))
     cmd = containers.session_cmd("task-pe-42", wt, "2g", "2", "claude-fable-5", "P",
-                                 clone=str(tmp_path / "clone"))
+                                 clone=str(tmp_path / "clone"), gh_config=TOKENS)
     assert "AGENT_OPS_TASK_BRANCH" not in cmd and "pwned" not in cmd
 
 
@@ -373,7 +375,7 @@ def test_session_cmd_keeps_the_tasks_own_branch(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     wt = _hostile_worktree(tmp_path, "/x/.git/worktrees/t",
                            '{"issue": 42, "branch": "agent/task-42"}')
-    cmd = containers.session_cmd("task-pe-42", wt, "2g", "2", "claude-fable-5", "P")
+    cmd = containers.session_cmd("task-pe-42", wt, "2g", "2", "claude-fable-5", "P", gh_config=TOKENS)
     assert "-e AGENT_OPS_TASK_BRANCH=agent/task-42 " in cmd
 
 
@@ -389,7 +391,7 @@ def test_every_value_in_the_session_command_is_one_shell_word(tmp_path, monkeypa
     wt.mkdir()
     clone = str(tmp_path / "cl one>y")
     cmd = containers.session_cmd("task-pe-42;id", str(wt), "2g;id", "2|id", model, "P",
-                                 effort="high;id", clone=clone)
+                                 effort="high;id", clone=clone, gh_config=TOKENS)
     argv = shlex.split(cmd)
     def after(flag):
         return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
@@ -408,7 +410,7 @@ def test_every_value_in_the_session_command_is_one_shell_word(tmp_path, monkeypa
 def test_session_cmd_refuses_a_worktree_path_it_cannot_quote_everywhere(tmp_path, monkeypatch, bad):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
     with pytest.raises(ValueError, match="worktree"):
-        containers.session_cmd("task-42", bad, "2g", "2", "claude-fable-5", "P")
+        containers.session_cmd("task-42", bad, "2g", "2", "claude-fable-5", "P", gh_config=TOKENS)
 
 
 def test_setup_cmd_mounts_the_configured_clone(tmp_path, monkeypatch):
@@ -424,3 +426,12 @@ def test_triage_cmd_refuses_to_run_without_a_token_dir():
     with pytest.raises(ValueError, match="token directory"):
         containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
                               "claude-opus-5", "/triage/p.md", gh_config="")
+
+
+@pytest.mark.parametrize("gh_config", ["", None])
+def test_session_cmd_refuses_to_run_without_a_token_directory(tmp_path, monkeypatch, gh_config):
+    """The host's ~/.config/gh holds the box's all-repos PAT: never a fallback."""
+    wt, clone = make_worktree(tmp_path)
+    with pytest.raises(ValueError, match="token directory"):
+        containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P",
+                               clone=clone, gh_config=gh_config)

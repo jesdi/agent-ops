@@ -12,13 +12,13 @@ Interface defined here: `main.Deps` takes `app=`, the GitHub App as the
 dispatcher sees it, duck-typed exactly like the one onboarding takes
 (`onboard.run(app=)`, see tests/test_onboard_app.py):
 
-    app.registered() -> bool                      # False: no App, stored auth everywhere
+    app.registered() -> bool                      # False: not registered, no claims
     app.installation(repo) -> Installation | None # None: the installation doesn't reach repo
     app.install_link(owner) -> str
     app.mint(installation, repos, permissions) -> Token(token, expires_at)
     any of them may raise github_app.AppError (GitHub answered 500)
 
-`app=None` (the default) means the stored auth, as today.
+`app` is required: a dispatcher is never wired without one.
 """
 import json
 import logging
@@ -182,8 +182,7 @@ class World:
             self.pr_task(repository)
         self.calls.clear()
         deps = main.Deps(github=github.GitHubClient(), sessions=FakeSessions(),
-                         notifier=FakeNotifier())
-        deps.app = self.app if app == "default" else app
+                         notifier=FakeNotifier(), app=self.app if app == "default" else app)
         main.run_pass(self.cfg, deps)
         return deps
 

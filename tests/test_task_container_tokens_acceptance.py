@@ -53,16 +53,17 @@ class TokenSessions(FakeSessions):
         self.clones, self.launches = clones, []
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model,
-                    effort="", second=None, gh_config=""):
-        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort, second)
-        hosts = Path(gh_config, "hosts.yml") if gh_config else None
-        extra = {"gh_config": gh_config} if gh_config else {}
+                    effort="", second=None, *, gh_config):
+        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort, second,
+                            gh_config=gh_config)
+        hosts = Path(gh_config, "hosts.yml")
         argv = containers.session_cmd(session_name(repository, issue), worktree, "2g", "2",
-                                      model, "P", clone=self.clones[repository], **extra)
+                                      model, "P", clone=self.clones[repository],
+                                      gh_config=gh_config)
         self.launches.append(dict(
             repository=repository, issue=issue, gh_config=gh_config, argv=argv,
-            hosts=hosts.read_text() if hosts and hosts.exists() else None,
-            mode=stat.S_IMODE(hosts.stat().st_mode) if hosts and hosts.exists() else None))
+            hosts=hosts.read_text() if hosts.exists() else None,
+            mode=stat.S_IMODE(hosts.stat().st_mode) if hosts.exists() else None))
 
 
 class BotApp(FakeApp):
@@ -96,8 +97,8 @@ def world_of(tmp_path, monkeypatch, ready, app=FakeApp):
 
 def spawn_pass(world):
     sessions = TokenSessions({r.name: r.clone_path for r in world.cfg.repositories})
-    deps = main.Deps(github=github.GitHubClient(), sessions=sessions, notifier=FakeNotifier())
-    deps.app = world.app
+    deps = main.Deps(github=github.GitHubClient(), sessions=sessions, notifier=FakeNotifier(),
+                     app=world.app)
     world.calls.clear()
     main.run_pass(world.cfg, deps)
     return sessions
@@ -257,8 +258,8 @@ def poll(tmp_path, monkeypatch, home, comments):
     world.comments = comments
     world.pr_task(world.cfg.repositories[1])            # analytics
     sessions = TokenSessions({r.name: r.clone_path for r in world.cfg.repositories})
-    deps = main.Deps(github=github.GitHubClient(), sessions=sessions, notifier=FakeNotifier())
-    deps.app = world.app
+    deps = main.Deps(github=github.GitHubClient(), sessions=sessions, notifier=FakeNotifier(),
+                     app=world.app)
     world.calls.clear()
     main.run_pass(world.cfg, deps)
     return world, sessions

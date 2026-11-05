@@ -1,6 +1,7 @@
 import pytest
 
 from dispatcher import runtimes
+from tests.test_containers import TOKENS
 
 
 def test_bare_and_anthropic_ids_run_on_claude():
@@ -31,7 +32,7 @@ def test_a_session_on_a_provider_with_no_runtime_fails_before_any_tab(tmp_path, 
     monkeypatch.setattr(herdr.Tab, "ensure", lambda *a, **k: tabs.append(a))
     with pytest.raises(ValueError, match="no runtime for provider 'mistral'"):
         sessions.Sessions().resume("acme", 42, str(tmp_path), "go", "mistral/large",
-                                   session_id="recorded-session")
+                                   session_id="recorded-session", gh_config=TOKENS)
     assert tabs == []
 
 

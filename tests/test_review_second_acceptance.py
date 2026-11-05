@@ -22,7 +22,7 @@ import dispatcher.main as main
 from dispatcher import containers, execution_overrides, herdr, sessions
 from dispatcher.models import Entry, parse_policy
 from dispatcher.state import PARK_WAKE, Stage, TaskState, load, save, SessionRecord, write_session
-from tests.test_containers import make_worktree
+from tests.test_containers import TOKENS, make_worktree
 from tests.test_main import FakeSessions, cfg, deps, make_task
 from tests.usagefakes import session_usage
 
@@ -102,14 +102,15 @@ class GrantSessions(FakeSessions):
         self.spawn_seconds, self.resume_seconds = [], []
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model,
-                    effort="", second=None, gh_config=""):
-        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
+                    effort="", second=None, *, gh_config):
+        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort,
+                            gh_config=gh_config)
         self.spawn_seconds.append((stage_name, second))
 
     def resume(self, repository, issue, worktree, message, model, effort="",
-               second=None, *, session_id=None, gh_config=""):
+               second=None, *, session_id=None, gh_config):
         super().resume(repository, issue, worktree, message, model, effort,
-                       session_id=session_id)
+                       session_id=session_id, gh_config=gh_config)
         self.resume_seconds.append(second)
 
 
@@ -207,7 +208,7 @@ def test_session_cmd_with_grant_mounts_codex_and_codex_home(tmp_path, monkeypatc
     codex_mount = _codex_session_env(tmp_path, monkeypatch, codex_package)
     wt, _ = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-opus-5", "P",
-                                 second=SECOND)
+                                 second=SECOND, gh_config=TOKENS)
     _assert_granted(cmd, tmp_path, codex_mount)
 
 
@@ -230,11 +231,11 @@ def test_sessions_spawn_and_resume_carry_the_grant_to_the_command(tmp_path, monk
     monkeypatch.setattr(herdr.Tab, "ensure", lambda *a, **k: _Tab(cmds))
     s = sessions.Sessions(state_dir=tmp_path)
     s.spawn_stage("acme", 42, wt, "P", "review", "anthropic/claude-opus-5",
-                  second=SECOND)
+                  second=SECOND, gh_config=TOKENS)
     s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5", second=SECOND,
-             session_id="recorded-session")
+             session_id="recorded-session", gh_config=TOKENS)
     s.resume("acme", 42, wt, "go", "anthropic/claude-opus-5",
-             session_id="recorded-session")
+             session_id="recorded-session", gh_config=TOKENS)
     assert len(cmds) == 3
     _assert_granted(cmds[0], tmp_path, codex_mount)
     _assert_granted(cmds[1], tmp_path, codex_mount)
@@ -248,8 +249,8 @@ def test_session_cmd_without_grant_is_byte_identical(tmp_path, monkeypatch,
     _codex_session_env(tmp_path, monkeypatch, codex_package)
     wt, _ = make_worktree(tmp_path)
     args = ("task-42", wt, "2g", "2", "claude-opus-5", "P")
-    today = containers.session_cmd(*args, effort="high")
-    assert containers.session_cmd(*args, effort="high", second=None) == today
+    today = containers.session_cmd(*args, effort="high", gh_config=TOKENS)
+    assert containers.session_cmd(*args, effort="high", second=None, gh_config=TOKENS) == today
     assert "codex" not in today.lower()
 
 

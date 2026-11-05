@@ -97,8 +97,8 @@ def _wrapper() -> list[str]:
 
 def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
                 args: str, effort: str = "",
-                second: Entry | None = None, clone: str = "",
-                gh_config: str = "") -> str:
+                second: Entry | None = None, clone: str = "", *,
+                gh_config: str) -> str:
     """The session's shell command, resolved from its qualified model ID.
     An unknown provider raises before anything runs.
     A granted `second` model (models.second_model) also gets its runtime's
@@ -110,8 +110,11 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     worktree (its `.git` pointer is session-writable) except the task
     branch, which task_branch validates. With no clone none is mounted; the
     launcher refuses to launch without one. `gh_config` is the host directory
-    mounted read-only as the container's gh config in place of the host's own
-    (the task's installation token): its caller owns what it holds."""
+    mounted read-only as the container's gh config (the task's installation
+    token): its caller owns what it holds. It is required, so the host's own
+    gh config, the box's all-repos PAT, is never the fallback."""
+    if not gh_config:
+        raise ValueError("a session needs a token directory: the host's gh config is never mounted")
     runtime = runtime_for(model)
     extra = _runtime_args(runtime_for(second.model_id)) if second else []
     worktree = _host_path("worktree", worktree)
@@ -119,7 +122,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     branch = task_branch(worktree, name)
     branch_env = f"-e AGENT_OPS_TASK_BRANCH={shlex.quote(branch)} " if branch else ""
     clone_mount = (_mount(_host_path("clone", clone), clone) + " ") if clone else ""
-    gh_config = _host_path("gh config", gh_config or f"{Path.home()}/.config/gh")
+    gh_config = _host_path("gh config", gh_config)
     home = str(Path.home())
     # podman errors on a missing bind source; waitd only creates the dir
     # when it (re)starts with the new socket path, which a spawn can race

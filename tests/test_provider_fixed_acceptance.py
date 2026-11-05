@@ -17,6 +17,7 @@ from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
 from dispatcher.state import PARK_HUMAN, Stage, TaskState, save
 import dispatcher.main as main
+from tests.test_main import EveryRepoApp
 from tests.webfakes import HEADERS, FakeSources, make_task
 from tests.usagefakes import session_usage
 from web.app import create_app
@@ -142,7 +143,7 @@ def test_dispatcher_drops_a_cross_provider_resume_intent_and_records_an_event(
     # This is the dispatcher's authoritative resume-intent path, exercised
     # directly (not the full run_pass) so this stays a test of that one
     # decision and not of triage/claim/usage-fetch machinery unrelated to it.
-    main._apply_intents(c, main.Deps(github=None, sessions=None, notifier=None))
+    main._apply_intents(c, main.Deps(github=None, sessions=None, notifier=None, app=EveryRepoApp()))
 
     from dispatcher.state import load
     reloaded = load(c.state_dir, "alpha", 7)

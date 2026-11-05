@@ -68,9 +68,9 @@ class Run:
     sh: Sh
     get: Get
     now: datetime
+    access: github_app.Access   # every repository call carries its installation token
     _builder: list = field(default_factory=list)   # the run's builder, once read
     adopted: set = field(default_factory=set)      # projects whose head this run adopted
-    access: github_app.Access | None = None   # None: the stored auth, older tests only
 
 
 def _builder(r: Run) -> str:
@@ -450,11 +450,11 @@ _APPLY = {"add": _add, "confirm": _confirm, "resume": _resume,
 
 
 def run(config_path: str | Path, sh: Sh = sh, get: Get = get,
-        now: datetime | None = None, app: object = None) -> None:
+        now: datetime | None = None, *, app: github_app.Client) -> None:
+    """`app` is required: no repository call ever falls back to the box's stored auth."""
     cfg = config.load_config(config_path)
     clock = (lambda: now) if now else (lambda: datetime.now(timezone.utc))
-    r = Run(Path(config_path), cfg, sh, get, clock(),
-            access=github_app.Access(app, clock) if app else None)
+    r = Run(Path(config_path), cfg, sh, get, clock(), github_app.Access(app, clock))
     with state_lock(cfg.state_dir, "onboarding.lock"):
         _drain(r)
         for rec in list_records(cfg.state_dir):
@@ -484,7 +484,7 @@ def _recheck_access(r: Run, rec: Record) -> None:
     project's repositories: NoAccess blocks the step at hand while one is missed,
     keeping the proposal; a confirmed one goes on, the board step reports it."""
     repos = [x["repo"] for x in rec.proposal.get("repositories", [])]
-    if r.access and repos and rec.confirmed_revision != rec.revision:
+    if repos and rec.confirmed_revision != rec.revision:
         r.access.reached(repos)
 
 
@@ -508,14 +508,14 @@ APP_PERMISSIONS = {"contents": "read", "issues": "write", "metadata": "read"}
 
 
 def _tokens(r: Run, repos: list[str]) -> dict[str, str]:
-    """Lowercased repo -> its installation token; {} without an App.
+    """Lowercased repo -> its installation token.
     github_app.NoAccess when the App is unregistered or misses a repo."""
-    return r.access.tokens(repos, APP_PERMISSIONS) if r.access else {}
+    return r.access.tokens(repos, APP_PERMISSIONS)
 
 
-def _repo_env(tokens: dict[str, str], repo: str) -> dict | None:
+def _repo_env(tokens: dict[str, str], repo: str) -> dict:
     """The env of a call on `repo`: GH_TOKEN is its installation token."""
-    return {**os.environ, "GH_TOKEN": tokens[repo.lower()]} if tokens else None
+    return {**os.environ, "GH_TOKEN": tokens[repo.lower()]}
 
 
 # -- resolve ------------------------------------------------------------------
@@ -550,12 +550,12 @@ def _resolve(r: Run, rec: Record) -> Outcome:
     return VERIFIED
 
 
-def _github_repo(r: Run, spelling: str, tokens: dict | None = None) -> dict | Outcome:
+def _github_repo(r: Run, spelling: str, tokens: dict[str, str]) -> dict | Outcome:
     s = slug(spelling)
     if not s:
         return blocked(f"{spelling!r} is not a GitHub repository (owner/name or its URL)")
     try:
-        d = json.loads(r.sh(["gh", "api", f"repos/{s}"], env=_repo_env(tokens or {}, s)))
+        d = json.loads(r.sh(["gh", "api", f"repos/{s}"], env=_repo_env(tokens, s)))
     except subprocess.CalledProcessError as e:
         if "404" not in (e.stderr or ""):
             raise
@@ -603,7 +603,7 @@ def _board_gh(r: Run) -> board.Gh:
 
 def _gh(r: Run, repos: list[str]) -> project_board.Credentials:
     """Board calls carry the board token; a call on one of `repos` carries
-    its installation token (the stored auth without an App)."""
+    its installation token."""
     def repo(name: str) -> board.Gh:
         return lambda args: r.sh(["gh", *args], env=_repo_env(_tokens(r, repos), name))
     return project_board.Credentials(board=_board_gh(r), repo=repo)
@@ -661,7 +661,7 @@ def _clone(r: Run, rec: Record) -> Outcome:
     return VERIFIED
 
 
-def _clone_one(r: Run, path: Path, repo: str, tokens: dict | None = None) -> Outcome | None:
+def _clone_one(r: Run, path: Path, repo: str, tokens: dict[str, str]) -> Outcome | None:
     """Clone into <path>.partial, then rename: a path that exists is a whole
     clone. The repository at the path must be `repo`."""
     if not path.exists():
@@ -671,10 +671,10 @@ def _clone_one(r: Run, path: Path, repo: str, tokens: dict | None = None) -> Out
         partial.parent.mkdir(parents=True, exist_ok=True)
         # An explicit https URL: gh's git_protocol may be ssh on the box, which
         # has no GitHub ssh key; git's gh credential helper authenticates https.
-        env = _repo_env(tokens or {}, repo)
-        if env:   # as GIT_AS_GH, through the env so the argv stays a plain `git clone`
-            env.update(GIT_CONFIG_COUNT="2", GIT_CONFIG_KEY_0="credential.helper", GIT_CONFIG_VALUE_0="",
-                       GIT_CONFIG_KEY_1="credential.helper", GIT_CONFIG_VALUE_1="!gh auth git-credential")
+        env = _repo_env(tokens, repo)
+        # as GIT_AS_GH, through the env so the argv stays a plain `git clone`
+        env.update(GIT_CONFIG_COUNT="2", GIT_CONFIG_KEY_0="credential.helper", GIT_CONFIG_VALUE_0="",
+                   GIT_CONFIG_KEY_1="credential.helper", GIT_CONFIG_VALUE_1="!gh auth git-credential")
         r.sh(["git", "clone", f"https://github.com/{repo}.git", str(partial)], env=env)
         partial.rename(path)
     origin = _origin(r, path)
@@ -868,8 +868,7 @@ def _board(r: Run, rec: Record) -> Outcome:
     it doesn't go back to confirm (D11)."""
     owner = rec.proposal["board"]["owner"]
     repos = [x["repo"] for x in rec.proposal["repositories"]]
-    if r.access:
-        r.access.reached(repos)   # a fresh access check, never the token cache
+    r.access.reached(repos)   # a fresh access check, never the token cache
     tokens = _tokens(r, repos)   # first: a repository the App lost blocks before any write
     number = rec.proposal["board"].get("number") or _new_board(r, rec)
     if isinstance(number, Outcome):

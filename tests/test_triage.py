@@ -16,6 +16,7 @@ from dispatcher import herdr, triage
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
 from dispatcher.triage_apply import ApplyResult
+from tests.test_main import EveryRepoApp
 from tests.usagefakes import session_usage
 
 H_NO_TABS = '{"id":"i","result":{"tabs":[],"type":"tab_list"}}'
@@ -234,9 +235,8 @@ class SpyNotifier:
 class FakeDeps:
     def __init__(self):
         self.notifier = SpyNotifier()
-        self.app = None
+        self.app = EveryRepoApp()
         self.github = SimpleNamespace()   # the pass sets its host credentials on it
-        self.access = None
         self.clock = lambda: datetime.now(timezone.utc)
 
 
