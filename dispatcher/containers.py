@@ -198,8 +198,9 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
 
 
 def setup_cmd(name: str, worktree: str, setup: str, clone: str) -> list[str]:
-    """One-shot provisioning container: argv, never a shell line. `clone` is
-    the repository's configured clone path."""
+    """One-shot provisioning container. The host runs argv, never a shell line;
+    `setup`, like gate_cmd and verify_cmd, is a shell line run by `sh -c` in
+    the container. `clone` is the repository's configured clone path."""
     return [
         "podman", "run", "--rm", "--name", name,
         "-v", f"{worktree}:{worktree}", "-w", worktree,
@@ -207,7 +208,8 @@ def setup_cmd(name: str, worktree: str, setup: str, clone: str) -> list[str]:
         "-v", "agent-ops-npm-cache:/root/.npm",
         "-v", "agent-ops-xdg-cache:/root/.cache",
         image(),
-    ] + shlex.split(setup)
+        "sh", "-c", setup,
+    ]
 
 
 def inspection_cmd(name: str, clone: str, request_dir: str, state_dir: str,
