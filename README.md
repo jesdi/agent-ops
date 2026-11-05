@@ -252,7 +252,7 @@ Existing fixture/support files are skipped. Missing paths, directories, paths ou
 
 `make gate` always runs the complete pytest and Vitest suites, frontend lint/types, API-type freshness, the production build, and CRAP scoring, independently of either selection variable. Keep the repository's `gate_cmd` set to `make gate`. The full browser suite remains `cd frontend && pnpm test:e2e`, also run by CI.
 
-Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills. Setup also enables the committed git hooks (`core.hooksPath .githooks`). Their `post-checkout` hook installs the skills in any new worktree, including a plain `git worktree add` or one Claude Code creates.
+Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills. Setup also enables the committed git hooks (`core.hooksPath .githooks`). Their `post-checkout` hook installs the skills in any new worktree, including a plain `git worktree add` or one Claude Code creates. Their `pre-push` hook refuses a pushed commit with a `Co-authored-by` trailer and, when `commit.gpgsign` is on, one with no good signature; `git push --no-verify` bypasses it.
 
 ### Agent skills
 
