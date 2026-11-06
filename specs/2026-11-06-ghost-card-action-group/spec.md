@@ -63,7 +63,14 @@ No operator questionnaire was raised; nothing in that design was open.
 - **When** the operator looks for the Boost button of `beta#73`
 - **Then** `within(getByRole('group', { name: 'beta#73' })).getByRole('button', { name: 'Boost' })`
   finds exactly one button, distinct from the one inside the `alpha#73` group
-- **And** clicking it boosts issue 73 of `beta`, not of `alpha`
+- **And** no group is named by the number alone: `queryByRole('group', { name: '#73' })` and
+  `queryByRole('group', { name: '73' })` return null
+
+### Scenario: boundary — the group name is exactly the identifier (R1)
+
+- **Given** the expanded `widget#73` ghost
+- **Then** `getByRole('group', { name: 'widget#73' })` matches by exact string, and no group is
+  named `Details for widget#73` or `Actions for widget#73`
 
 ### Scenario: board-level disambiguation with several ghosts (R1, R5)
 
@@ -86,6 +93,10 @@ No operator questionnaire was raised; nothing in that design was open.
   exists while a card is expanded; the scenarios expand first.
 - `BoardPage` keys ghosts by `repository#number` because numbers collide across projects; R5
   carries that constraint into the group name.
+
+- The queue actions themselves are keyed by issue number only: `onBoost`/`onNext`/`onReady`
+  receive the number, and `POST /api/queue/boost` sends `{ issue, amount }`. The group names the
+  issue for assistive technology; it does not change which issue an action reaches (R4).
 
 ## Out of scope
 
