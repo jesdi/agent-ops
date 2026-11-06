@@ -141,6 +141,20 @@ def test_hosts_yml_holds_a_token_minted_for_the_task_repository_with_the_a3_perm
         assert secret not in launch["hosts"]
 
 
+def test_the_token_dir_carries_the_session_signing_key_the_gitconfig_names(
+        tmp_path, monkeypatch, home):
+    """~/.gitconfig signs with /root/.config/gh/agent-ops-signing-key, a path
+    inside this mount: without the copy every session's first commit fails."""
+    monkeypatch.setattr(Path, "home", lambda: home)   # over conftest's isolated home
+    key = home / ".config" / "gh" / "agent-ops-signing-key"
+    key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----signing")
+    world = world_of(tmp_path, monkeypatch, ("analytics",))
+    launch = analytics_launch(world, tmp_path)
+    copy = Path(launch["gh_config"], "agent-ops-signing-key")
+    assert copy.read_bytes() == key.read_bytes()
+    assert stat.S_IMODE(copy.stat().st_mode) == 0o600
+
+
 def test_hosts_yml_is_not_readable_by_other_users(tmp_path, monkeypatch, home):
     world = world_of(tmp_path, monkeypatch, ("analytics",))
     launch = analytics_launch(world, tmp_path)

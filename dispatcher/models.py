@@ -194,7 +194,7 @@ class ModelPolicy:
     triage: tuple[Entry, ...]
     untracked: str          # the track a candidate with no track: label specs on
     tracks: Mapping[str, Track]
-    review_second: Entry | None = None  # what a Claude review session's codex exec runs on
+    review_second: Entry | None = None  # the Codex a Claude review/implement session may run
     pinned: tuple[str, ...] = ()  # tracks whose entries the priority mode never reorders
 
     def entries(self) -> list[Entry]:
@@ -389,15 +389,21 @@ def triage_entry(policy: ModelPolicy, admitted: Admitted,
     return next((e for e in order(policy.triage) if admitted(e.model_id)), None)
 
 
+# Stages whose skill reviews through Codex: review-diff's correctness pass
+# (review) and implement-spec's reviewer and final reviewer (implement).
+SECOND_MODEL_STAGES = frozenset({"review", "implement"})
+
+
 def second_model(policy: ModelPolicy, stage: str, entry: Entry,
                  admitted: Admitted) -> Entry | None:
-    """The `review_second` entry a Claude review session may also run
-    (`codex exec` in review-diff), or None: set, a review stage on an
-    anthropic entry, and admitted by the gate itself. The caller passes the
-    real gate, never a bypass: an operator bypass forces the stage's own
-    pick, not a second subscription."""
+    """The `review_second` entry a Claude review or implement session may
+    also run (`codex exec` in review-diff; implement-spec's cross-provider
+    reviewers), or None: set, one of SECOND_MODEL_STAGES on an anthropic
+    entry, and admitted by the gate itself. The caller passes the real gate,
+    never a bypass: an operator bypass forces the stage's own pick, not a
+    second subscription."""
     second = policy.review_second
-    if (stage != "review" or entry.provider != DEFAULT_PROVIDER
+    if (stage not in SECOND_MODEL_STAGES or entry.provider != DEFAULT_PROVIDER
             or second is None or not admitted(second.model_id)):
         return None
     return second

@@ -185,8 +185,11 @@ is the permission**:
   also gets the host `codex` binary and codex-home mounted, with
   `CODEX_HOME`. If denied or unset, it gets neither, and review-diff takes its
   fallback. The skill is unchanged.
-- The decision is made **at spawn**, on the review stage only (not
-  address-review), and a resume re-decides it. `bypass_usage` never covers it:
+- The decision is made **at spawn**, on the review and implement stages
+  only (not address-review), and a resume re-decides it. Implement is
+  included because implement-spec's reviewer and final reviewer run on
+  Codex, and its driver refuses to start without a cross-provider final
+  reviewer on PATH. `bypass_usage` never covers it:
   an operator bypass forces the stage's own pick, not a second subscription.
 - Usage needs no bookkeeping of its own. The `codex exec` calls draw on
   OpenAI's real windows, and the next usage fetch sees them.
