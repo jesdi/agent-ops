@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -109,6 +110,24 @@ def test_falls_back_to_ccusage_with_a_session_window_only(tmp_path, monkeypatch)
     assert (w.kind, w.length) == (WindowKind.SESSION, timedelta(hours=5))
     assert abs(w.used - 0.62) < 1e-9
     assert 44 <= (w.resets_at - datetime.now(timezone.utc)).total_seconds() / 60 <= 46
+
+
+def test_a_dead_token_is_unavailable_even_if_ccusage_would_answer(tmp_path, monkeypatch):
+    """#75: ccusage reads local JSONL logs and proves nothing about the OAuth
+    token the fleet needs. A dead token must read as unavailable, never as a
+    healthy ccusage session window: the auth-dark detector and the spawn gate
+    only act on `unavailable`."""
+    monkeypatch.setattr(up, "_http_get_json", boom)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "ccusage"
+    fake.write_text("#!/bin/sh\n"
+                    'echo \'{"blocks": [{"isActive": true, "projection": {"remainingMinutes": 45}, '
+                    '"percentUsed": 62.0}]}\'\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
+    assert u.source == "unavailable" and u.windows == ()
 
 
 def test_both_dark_is_unavailable(tmp_path, monkeypatch):
