@@ -94,3 +94,51 @@ it('a failing retry surfaces the API detail inline instead of looking like succe
     ),
   )
 })
+
+// #43: two quarantined tasks sharing an issue number on different repositories,
+// so the per-row state is proven to be keyed `${repository}#${task_issue}`.
+const twoQuarantined = {
+  quarantined: [
+    {
+      repository: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
+      blocker_issue: 39, fingerprint: 'f1', created_at: '2026-07-24T22:10:00Z',
+      blocker_open: true,
+    },
+    {
+      repository: 'gadget', task_issue: 38, blocker_repo: 'jesdi/gadget',
+      blocker_issue: 40, fingerprint: 'f2', created_at: '2026-07-24T22:10:00Z',
+      blocker_open: true,
+    },
+  ],
+  fingerprints: [],
+}
+
+it('each Retry button names the task it retries', async () => {
+  server.use(http.get('/api/failures', () => HttpResponse.json(twoQuarantined)))
+  renderWithProviders(<FailuresPage />)
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Retry widget task #38' })).toBeInTheDocument(),
+  )
+  expect(screen.getByRole('button', { name: 'Retry gadget task #38' })).toBeInTheDocument()
+})
+
+it('an in-flight retry disables only its own row', async () => {
+  let release!: () => void
+  const held = new Promise<void>((resolve) => { release = resolve })
+  server.use(
+    http.get('/api/failures', () => HttpResponse.json(twoQuarantined)),
+    http.post('/api/task/widget/38/retry', async () => {
+      await held
+      return HttpResponse.json({ status: 'pending', intent: '175-38-retry' }, { status: 202 })
+    }),
+  )
+  renderWithProviders(<FailuresPage />)
+  const buttons = await screen.findAllByRole('button', { name: /^Retry/ })
+  expect(buttons).toHaveLength(2)
+  const [widget, gadget] = buttons as [HTMLElement, HTMLElement]
+  await userEvent.click(widget)
+  await waitFor(() => expect(widget).toBeDisabled())
+  expect(gadget).toBeEnabled()
+  release()
+  await waitFor(() => expect(widget).toBeEnabled())
+})
