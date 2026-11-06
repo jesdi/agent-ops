@@ -87,6 +87,15 @@ clock, in `tests/test_web_sources.py` (as the existing cache tests do).
 - **And given** a negative-cached description (R2), a request inside the retry
   window returns the same non-empty `error`
 
+### Scenario: R1/R3 — Boundary: the refreshed window ends at exactly the TTL
+
+- **Given** a warm description (or rank) cache that went stale during an
+  outage and was re-probed once at time P
+- **When** a request arrives at `P + TTL - 1` and another at `P + TTL`
+  (`DESCRIPTION_TTL_SECONDS` / `RANK_TTL_SECONDS`)
+- **Then** the first is served from cache with no `gh` call; the second
+  re-probes `gh` once (same `<` comparison as the success path)
+
 ### Scenario: R5 — Success path unchanged
 
 - **Given** `gh` is healthy
@@ -102,5 +111,8 @@ clock, in `tests/test_web_sources.py` (as the existing cache tests do).
 - The reproduction tests are already committed (`test: reproduce …`); they
   read `DESCRIPTION_RETRY_SECONDS` through `web.sources` so the rest of the
   module still collects while the constant does not exist.
+- `DESCRIPTION_RETRY_SECONDS = 30` is the spec session's proposal: the issue
+  only asks for "a shorter interval". It is an open question on the review
+  page.
 - One ticket covers it: both methods, one new constant, no new module or
   helper.
