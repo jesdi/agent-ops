@@ -1,0 +1,77 @@
+{
+  "maxAutoRisk": 3,
+  "mergeMethod": "merge",
+  "judgeMaxLines": 1500,
+  "waitMinutes": 60,
+  "paths": {
+    "auth/security": [
+      ".merge-risk.json",
+      "**/.env*",
+      ".github/CODEOWNERS",
+      "dispatcher/github_app.py",
+      "dispatcher/host_auth.py",
+      "dispatcher/task_tokens.py",
+      "dispatcher/usage_providers.py",
+      "dispatcher/github.py",
+      "dispatcher/runtimes.py",
+      "dispatcher/containers.py",
+      "dispatcher/onboard.py",
+      "dispatcher/onboarding_runner.py",
+      "web/auth.py",
+      "web/app.py",
+      "web/__main__.py",
+      "telegram/inbound.py"
+    ],
+    "infra": [
+      ".github/workflows/deploy-pin.yml",
+      "dispatcher/convergence.py",
+      "dispatcher/infra_config.py"
+    ],
+    "ci": [
+      ".github/**",
+      ".githooks/**",
+      ".claude/settings.json",
+      "Makefile",
+      "scripts/**"
+    ],
+    "schema/migration": [
+      "dispatcher/state.py",
+      "dispatcher/tmux_migration.py"
+    ],
+    "data-delete": [
+      "dispatcher/workspace.py",
+      "dispatcher/task_artifacts.py"
+    ],
+    "config": [
+      ".my-skills.json",
+      "skills-lock.json",
+      ".crap-gate.json",
+      ".python-version",
+      ".backlog/**",
+      "targets.example.yaml",
+      "pyproject.toml",
+      "frontend/*.json",
+      "frontend/*.config.ts",
+      "frontend/.oxlintrc.json",
+      "frontend/pnpm-workspace.yaml"
+    ],
+    "deps": [
+      "pyproject.toml",
+      "frontend/package.json"
+    ],
+    "docs": [
+      "specs/**"
+    ],
+    "tests": [
+      "frontend/e2e/**",
+      "frontend/src/test/**"
+    ],
+    "ui": [
+      "frontend/index.html",
+      "frontend/public/**",
+      "frontend/src/components/**",
+      "frontend/src/pages/**",
+      "frontend/src/**/*.css"
+    ]
+  }
+}
