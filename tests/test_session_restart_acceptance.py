@@ -18,7 +18,7 @@ from dispatcher.state import (
 )
 from telegram.inbound import Command
 from tests.test_main import (
-    REVIEW_PAGE_STUB, FakeGitHub, FakeNotifier, FakeSessions, cfg, gate_signal,
+    REVIEW_PAGE_STUB, EveryRepoApp, FakeGitHub, FakeNotifier, FakeSessions, cfg, gate_signal,
     make_task, patch_events, write_tickets,
 )
 from tests.usagefakes import session_usage
@@ -44,7 +44,7 @@ class RecordingSessions(FakeSessions):
         self.continuations = []
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name,
-                    model, effort="", second=None, gh_config=""):
+                    model, effort="", second=None, *, gh_config):
         self.launches.append({
             "repository": repository, "issue": issue, "worktree": worktree,
             "prompt": prompt, "stage": stage_name, "model": model,
@@ -53,7 +53,7 @@ class RecordingSessions(FakeSessions):
         self.alive_set.add(issue)
 
     def resume(self, repository, issue, worktree, message, model, effort="",
-               second=None, session_id=None, gh_config=""):
+               second=None, *, session_id=None, gh_config):
         # Accept T04's session_id keyword. Any call, named or implicit,
         # violates T05's fresh-conversation path.
         self.continuations.append({
@@ -151,7 +151,8 @@ def _arrange(tmp_path, monkeypatch, model, kind="wake", record="absent",
         # Each retry policy permits exactly one bounce for its rejection.
         sessions.alive_set.add(issue)
     notifier = FakeNotifier()
-    dependencies = main.Deps(github=FakeGitHub(), sessions=sessions, notifier=notifier)
+    dependencies = main.Deps(github=FakeGitHub(), sessions=sessions, notifier=notifier,
+                             app=EveryRepoApp())
     before = load(c.state_dir, "portfolio_eval", issue)
     return c, dependencies, before, (queued, second)
 

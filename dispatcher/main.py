@@ -19,7 +19,7 @@ import tempfile
 import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -84,11 +84,16 @@ class Deps:
     github: object
     sessions: object
     notifier: object
-    app: github_app.Client | None = None   # the GitHub App; None: the stored auth
+    # The GitHub App: every container's token comes from it. Required, so no
+    # launch ever falls back to the box's stored all-repos PAT.
+    app: github_app.Client
     # the time a task token's life is measured against
     clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     # The pass's App access (_begin_pass_auth): one cache for every token the pass mints.
-    access: github_app.Access | None = None
+    access: github_app.Access = field(init=False)
+
+    def __post_init__(self):
+        self.access = _access(self)
 
 
 def _now() -> str:
@@ -646,15 +651,12 @@ def _spawn_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
 def _task_token(cfg: Config, deps: Deps, repository: Repository,
                 task: TaskState) -> str | None:
     """The gh config a launch of `task` mounts (`gh_config` of every launch):
-    its token directory; "" with no App access, the host's own gh config, which
-    only tests see (production always wires the App). None: it can't launch
+    its token directory, never the host's own gh config. None: it can't launch
     this pass. An App error leaves the task as it is, for the next pass (a
     claimed task that never launched is marked `unlaunched`, which the next
     pass's drive launches); a repository the installation doesn't reach parks
     it for access (_wake_reached wakes it). The one place a launch asks for its
     token, before the launch changes anything."""
-    if deps.access is None:
-        return ""
     try:
         return task_tokens.issue(deps.access, cfg.state_dir,
                                  task_key(task.repository, task.issue), repository.repo)
@@ -1319,8 +1321,6 @@ def _oldest_first(cfg: Config):
 
 def _wake_reached(cfg: Config, deps: Deps) -> None:
     """Wake each task parked for access whose repository the App reaches now."""
-    if deps.access is None:
-        return
     repositories = {r.name: r for r in cfg.repositories}
     for task in load_all(cfg.state_dir):
         if (task.park, task.park_reason) != (PARK_HUMAN, WHY_ACCESS) or task.repository not in repositories:
@@ -2126,9 +2126,7 @@ def _reconcile_boards(cfg: Config, deps: Deps) -> None:
 
 def _no_task_tokens(deps: Deps) -> str:
     """Why no task token can be minted this pass, or "": the App is not
-    registered (the infra README checklist) or 1Password can't answer."""
-    if deps.access is None:
-        return ""
+    registered (the infra README checklist) or the App errored."""
     try:
         registered = deps.access.app.registered()
     except github_app.AppError as exc:
@@ -2736,10 +2734,13 @@ def _sync_artifacts(cfg: Config, *, dry_run: bool = False,
     task_artifacts.cleanup(cfg.state_dir)
 
 
+def _access(deps: Deps) -> github_app.Access:
+    return github_app.Access(deps.app, now=deps.clock, refresh=task_tokens.REFRESH)
+
+
 def _begin_pass_auth(cfg: Config, deps: Deps) -> None:
     """The pass's App access and the host credentials it gives each project."""
-    deps.access = (None if deps.app is None else
-                   github_app.Access(deps.app, now=deps.clock, refresh=task_tokens.REFRESH))
+    deps.access = _access(deps)
     projects: dict[str, list[str]] = {}
     for r in cfg.repositories:
         projects.setdefault(r.project.name, []).append(r.repo)

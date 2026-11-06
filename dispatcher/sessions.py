@@ -34,8 +34,8 @@ def session_name(repository: str, issue: int) -> str:
 
 def podman_cmd(repository: str, issue: int, worktree: str, memory: str, cpus: str,
                model: str, args: str, effort: str = "",
-               second: Entry | None = None, clone: str = "",
-               gh_config: str = "") -> str:
+               second: Entry | None = None, clone: str = "", *,
+               gh_config: str) -> str:
     return containers.session_cmd(session_name(repository, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
                                   second=second, clone=clone, gh_config=gh_config)
@@ -78,7 +78,7 @@ class Sessions:
 
     def _launch(self, repository: str, issue: int, worktree: str, model: str,
                 args: str, effort: str = "",
-                second: Entry | None = None, gh_config: str = "") -> None:
+                second: Entry | None = None, *, gh_config: str) -> None:
         # The clone comes from the repository's configuration, never from the
         # worktree's `.git` pointer, which the session can rewrite.
         clone = self.clones.get(repository)
@@ -119,7 +119,7 @@ class Sessions:
 
     def spawn_stage(self, repository: str, issue: int, worktree: str, prompt: str,
                     stage_name: str, model: str, effort: str = "",
-                    second: Entry | None = None, gh_config: str = "") -> None:
+                    second: Entry | None = None, *, gh_config: str) -> None:
         """Start a fresh conversation; real launches require state_dir."""
         if self.dry_run:
             print(f"[dry-run] spawn stage '{stage_name}' on {model} in session "
@@ -136,7 +136,7 @@ class Sessions:
 
     def resume(self, repository: str, issue: int, worktree: str, message: str,
                model: str, effort: str = "", second: Entry | None = None,
-               *, session_id: str, gh_config: str = "") -> None:
+               *, session_id: str, gh_config: str) -> None:
         if self.dry_run:
             print(f"[dry-run] resume {session_name(repository, issue)} on {model} "
                   f"at {worktree}")

@@ -12,6 +12,7 @@ import yaml
 from dispatcher import onboard
 from dispatcher.infra_config import add_project_text, project_block
 from tests.fake_github import FakeGitHub
+from tests.test_main import EveryRepoApp
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
 
@@ -123,7 +124,7 @@ def add(tmp_path, project="analytics", repos=("jesdi/analytics",),
 
 
 def run(box, sh, get=no_get, now=NOW):
-    onboard.run(box, sh=sh, get=get, now=now)
+    onboard.run(box, sh=sh, get=get, now=now, app=EveryRepoApp())
 
 
 def record(tmp_path, project="analytics"):
@@ -220,8 +221,8 @@ def test_resolve_checks_the_board_with_the_project_token(tmp_path, box, monkeypa
     board_calls = [env for argv, _, env in sh.ran("graphql") if "ProjectV2" in " ".join(argv)]
     issue_calls = [env for argv, _, env in sh.ran("graphql") if "issues(first" in " ".join(argv)]
     assert board_calls and all(env["GH_TOKEN"] == "project-tok" for env in board_calls)
-    # issues are the repository's: read with the box's stored auth, not the board token
-    assert issue_calls and all(env is None for env in issue_calls)
+    # issues are the repository's: read with its installation token, not the board token
+    assert issue_calls and all(env["GH_TOKEN"] == "ghs_every_repo" for env in issue_calls)
 
 
 def test_resolve_blocks_on_a_bad_slug(tmp_path, box):

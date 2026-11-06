@@ -14,6 +14,7 @@ from dataclasses import replace as dc_replace
 import dispatcher.main as main
 from dispatcher.pr_poll import CIStatus
 from dispatcher.state import PARK_HUMAN, Stage, load
+from tests.test_containers import TOKENS
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
                              deps, make_task, patch_usage, payload,
                              pr_open_task)
@@ -41,7 +42,7 @@ def test_review_prompt_without_verify_cmd_states_no_pre_pr_e2e(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
                       main._launch_for(c, c.repositories[0], task, Stage.REVIEW,
-                                       lambda m: True, tuple), gh_config="")
+                                       lambda m: True, tuple), gh_config=TOKENS)
     prompt = d.sessions.spawned[-1][3]
 
     assert NO_E2E_PHRASE in prompt
@@ -59,7 +60,7 @@ def test_review_prompt_without_verify_cmd_pr_body_asks_gate_not_e2e_url(tmp_path
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
                       main._launch_for(c, c.repositories[0], task, Stage.REVIEW,
-                                       lambda m: True, tuple), gh_config="")
+                                       lambda m: True, tuple), gh_config=TOKENS)
     prompt = d.sessions.spawned[-1][3]
 
     assert E2E_URL_PHRASE not in prompt
@@ -74,7 +75,7 @@ def test_address_review_prompt_without_verify_cmd_has_no_e2e_step(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
                       main._launch_for(c, c.repositories[0], task,
-                                       Stage.ADDRESS_REVIEW, lambda m: True, tuple), gh_config="")
+                                       Stage.ADDRESS_REVIEW, lambda m: True, tuple), gh_config=TOKENS)
     prompt = d.sessions.spawned[-1][3]
 
     assert "awaiting-ci" not in prompt
@@ -90,7 +91,7 @@ def test_review_and_address_review_prompts_with_verify_cmd_keep_e2e_step(tmp_pat
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
                       main._launch_for(c, c.repositories[0], task, Stage.REVIEW,
-                                       lambda m: True, tuple), gh_config="")
+                                       lambda m: True, tuple), gh_config=TOKENS)
     review_prompt = d.sessions.spawned[-1][3]
     assert "awaiting-ci" in review_prompt
     assert "make e2e-slot SLOT=0" in review_prompt
@@ -101,7 +102,7 @@ def test_review_and_address_review_prompts_with_verify_cmd_keep_e2e_step(tmp_pat
     task = load(c.state_dir, "portfolio_eval", 43)
     main._spawn_stage(c, d, c.repositories[0], task,
                       main._launch_for(c, c.repositories[0], task,
-                                       Stage.ADDRESS_REVIEW, lambda m: True, tuple), gh_config="")
+                                       Stage.ADDRESS_REVIEW, lambda m: True, tuple), gh_config=TOKENS)
     address_review_prompt = d.sessions.spawned[-1][3]
     assert "awaiting-ci" in address_review_prompt
     assert "make e2e-slot SLOT=1" in address_review_prompt

@@ -9,12 +9,13 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
-from dispatcher import execution_overrides, failures, host_auth, spec_publish
+from dispatcher import execution_overrides, failures, github_app, host_auth, spec_publish
 from dispatcher.board import BoardError
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.github import Candidate
 from dispatcher.pr_poll import CIStatus
 from dispatcher.models import parse_policy
+from tests.test_containers import TOKENS
 from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                PARK_REVIEW, PARK_WAKE, AnswersRequest,
                                LoopCaps, PlanApprovalRequest, Stage,
@@ -204,7 +205,8 @@ class FakeSessions:
         self.sent_text.append((issue, text))
         return True
 
-    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None, gh_config=""):
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="",
+                    second=None, *, gh_config):
         if issue in self.spawn_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
@@ -213,7 +215,7 @@ class FakeSessions:
         self.gh_configs.append(gh_config)
 
     def resume(self, repository, issue, worktree, message, model, effort="", second=None,
-               *, session_id=None, gh_config=""):
+               *, session_id=None, gh_config):
         if issue in self.resume_raises:
             raise FileNotFoundError(
                 f"[Errno 2] No such file or directory: '{worktree}/.git'")
@@ -229,6 +231,25 @@ class FakeSessions:
         self.ended.append(issue)
         self.end_calls.append((repository, issue))
         self.call_log.append(("end", repository, issue))
+
+
+class EveryRepoApp:
+    """A registered GitHub App whose installation reaches every repository: the
+    explicit App every dispatcher is wired with (main.Deps requires one)."""
+
+    INSTALLATION = github_app.Installation(1, "https://github.com/settings/installations/1", "any")
+
+    def registered(self):
+        return True
+
+    def installation(self, repo):
+        return self.INSTALLATION
+
+    def install_link(self, owner):
+        return self.INSTALLATION.settings_url
+
+    def mint(self, installation, repos, permissions):
+        return github_app.Token("ghs_every_repo", datetime(2099, 1, 1, tzinfo=timezone.utc))
 
 
 class FakeNotifier:
@@ -292,7 +313,7 @@ def patch_workspace(monkeypatch, tmp_path):
 def deps(gh=None, sess=None, notifier=None):
     return main.Deps(github=gh or FakeGitHub(),
                      sessions=sess or FakeSessions(),
-                     notifier=notifier or FakeNotifier())
+                     notifier=notifier or FakeNotifier(), app=EveryRepoApp())
 
 
 def make_task(c, issue=42, stage=Stage.IMPLEMENT, slot=0,
@@ -1141,9 +1162,10 @@ def test_stage_advance_ends_previous_session_before_spawn(tmp_path, monkeypatch)
             self.ops.append(("end", issue))
             super().end(repository, issue)
 
-        def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None, gh_config=""):
+        def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="",
+                    second=None, *, gh_config):
             self.ops.append(("spawn", stage_name))
-            super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
+            super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort, gh_config=gh_config)
 
     sess = OrderedSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
@@ -3460,14 +3482,15 @@ class LiveUntilEnded(FakeSessions):
     frees capacity), and the one a fixed `FakeSessions(alive=...)` set cannot
     express across a dozen passes."""
 
-    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="", second=None, gh_config=""):
-        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort)
+    def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="",
+                    second=None, *, gh_config):
+        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort, gh_config=gh_config)
         self.alive_set.add(issue)
 
     def resume(self, repository, issue, worktree, message, model, effort="", second=None,
-               *, session_id=None, gh_config=""):
+               *, session_id=None, gh_config):
         super().resume(repository, issue, worktree, message, model, effort,
-                       session_id=session_id)
+                       session_id=session_id, gh_config=gh_config)
         self.alive_set.add(issue)
 
     def end(self, repository, issue):
@@ -4324,7 +4347,7 @@ def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config="")
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config=TOKENS)
     prompt = d.sessions.spawned[-1][3]
     assert "## Operator messages" in prompt
     assert "pre-brief: use the v2 API" in prompt
@@ -4338,7 +4361,7 @@ def test_spawn_without_messages_leaves_the_prompt_untouched(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config="")
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config=TOKENS)
     assert "## Operator messages" not in d.sessions.spawned[-1][3]
 
 
@@ -4994,7 +5017,7 @@ def test_spawn_stage_clears_review_gate_e2e_but_retains_ci(tmp_path):
     d = deps()
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config="")
+                      main._launch_for(c, c.repositories[0], task, Stage.SPEC, lambda m: True, tuple), gh_config=TOKENS)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds) == (0, 0, 0)
     assert t.ci_rounds == 3  # ci belongs to the PR, not the stage
@@ -5226,7 +5249,7 @@ def test_spawn_stage_clears_operator_request_but_preserves_spec_path(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
                       main._launch_for(c, c.repositories[0], task, Stage.IMPLEMENT,
-                                       lambda m: True, tuple), gh_config="")
+                                       lambda m: True, tuple), gh_config=TOKENS)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
         f"stage advance must clear operator_request, got {t.operator_request!r}")
@@ -5899,7 +5922,7 @@ def test_flapping_at_the_gate_gets_two_new_rounds_then_parks(tmp_path, monkeypat
     gh = FakeGitHub()
     monkeypatch.setattr(main.spec_publish, "ensure_published",
                         lambda **k: spec_publish.PublishResult(url=SPEC_URL))
-    d = main.Deps(github=gh, sessions=sess, notifier=notifier)
+    d = main.Deps(github=gh, sessions=sess, notifier=notifier, app=EveryRepoApp())
     main.run_pass(c, d)
     for _flap in range(10):
         if load(c.state_dir, "portfolio_eval", 42).park:

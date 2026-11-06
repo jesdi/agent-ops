@@ -11,7 +11,7 @@ import pytest
 from dispatcher import containers, sessions
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.state import Stage
-from tests.test_containers import make_worktree
+from tests.test_containers import TOKENS, make_worktree
 from tests.test_prompts import CTX
 
 
@@ -35,7 +35,7 @@ def test_codex_spawn_mounts_host_binary_and_codex_home(tmp_path, monkeypatch,
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-5-codex", "P",
-                                 effort="high")
+                                 effort="high", gh_config=TOKENS)
 
     import os as _os
     mount = f"{_os.path.realpath(codex_package)}:/opt/codex:ro"
@@ -54,7 +54,7 @@ def test_codex_spawn_command_shape(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-5-codex", "P",
-                                 effort="high")
+                                 effort="high", gh_config=TOKENS)
 
     assert "--model gpt-5-codex" in cmd
     assert "-c model_reasoning_effort=high" in cmd
@@ -71,7 +71,7 @@ def test_codex_spawn_omits_effort_flag_when_unset(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-5-codex", "P",
-                                 effort="")
+                                 effort="", gh_config=TOKENS)
     assert "model_reasoning_effort" not in cmd
     assert "--model gpt-5-codex" in cmd
 
@@ -98,7 +98,7 @@ def test_codex_session_resume_tab_gets_herdr_agent_codex(tmp_path, monkeypatch):
     monkeypatch.setattr(herdr.Tab, "ensure", fake_ensure)
     with pytest.raises(RuntimeError):
         sessions.Sessions().resume("acme", 42, wt, "go", "openai/gpt-5-codex",
-                                   session_id="recorded-session")
+                                   session_id="recorded-session", gh_config=TOKENS)
     assert calls, "Tab.ensure was never called"
     assert calls[0].get("env") == {"HERDR_AGENT": "codex"}
 
@@ -109,7 +109,7 @@ def test_claude_session_never_mounts_codex_home(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", "/home/agent/agent-ops-state")
     monkeypatch.setenv("AGENT_OPS_SESSION_IMAGE", "agent-ops-session")
     wt, clone = make_worktree(tmp_path)
-    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P")
+    cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P", gh_config=TOKENS)
     assert "codex-home" not in cmd
     assert "CODEX_HOME" not in cmd
     assert "/opt/codex" not in cmd
