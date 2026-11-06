@@ -5,10 +5,11 @@
 - **The marker gains one field, `last_alert`** (ISO-8601 UTC, written by `_now()`), beside
   `since` and `alerted` — the issue's own proposal; the marker stays the only state, so no
   second file to keep in step with it.
+- **The grace rises from 30 to 60 minutes and the interval is 8 hours** (operator's answer) — first alert 1 h into an outage, then every 8 h: three alerts over a 21-hour outage; a blip shorter than an hour never pages.
 - **`AUTH_DARK_REALERT_HOURS` is a module constant in `dispatcher/main.py`** next to
   `AUTH_DARK_GRACE_MINUTES` — not configurable (proposal non-goal); changing it is a code change.
 - **The interval is measured from the last alert, not from `since`** — alerts land at
-  grace + k·interval (0.5 h, 4.5 h, …) whatever the pass cadence; a late pass delays only that
+  grace + k·interval (1 h, 9 h, 17 h, …) whatever the pass cadence; a late pass delays only that
   reminder, it never shifts later ones earlier.
 - **`minutes` stays the age of `since`** — every reminder says how long the box has been dark,
   so a reader who saw only the latest message still sees the whole outage.
@@ -22,7 +23,7 @@
   the next pass, the cheaper failure.
 - **An alerted marker is parsed before it returns** — today `alerted` true returns before `since` is read, so a corrupt alerted marker was never repaired; now it is (req 8).
 - **An unparseable `last_alert` (on an alerted marker) resets the marker like an unparseable `since`** — one repair
-  path; the price is that the incident restarts its grace (≤ 30 min of silence) and `minutes`
+  path; the price is that the incident restarts its grace (≤ 60 min of silence) and `minutes`
   restarts from the repair.
 - **A `last_alert` in the future (clock stepped back) gets no special case** — the reminder is
   delayed until the clock passes it; the box's clock is NTP-synced, so the delay is bounded by

@@ -15,9 +15,9 @@ The operator, who reads Telegram and is the only one who can re-login on the box
 
 ## Goal
 
-While the box stays dark, the operator is reminded with a fresh `auth_dark` alert every
-`AUTH_DARK_REALERT_HOURS` (4 recommended; the issue leaves N open) after the first one, keeping the 30-minute grace before the first alert and the marker cleared on
-recovery.
+While the box stays dark, the operator is reminded with a fresh `auth_dark` alert every 8 hours
+after the first one, and the first alert comes after 1 hour of darkness instead of 30 minutes
+(the operator's answer on the plan review); the marker is still cleared on recovery.
 
 ## Non-goals
 
