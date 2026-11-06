@@ -6,13 +6,12 @@ Terms:
   `unavailable` (unchanged from today's `_auth_dark_edge`).
 - **The marker**: the JSON file `<state_dir>/auth-dark`. Today it holds
   `{"since": <ISO-8601 UTC>, "alerted": <bool>}`. `since` is when the incident began.
-- **Grace**: `AUTH_DARK_GRACE_MINUTES`, raised from 30 to 60 by the operator's answer on the plan
-  review: the first alert comes 1 hour into the outage. Every "grace" below stands for this
-  constant.
+- **Grace**: `AUTH_DARK_GRACE_MINUTES` (30), unchanged (confirmed by the operator on the plan
+  review). Every "grace" below stands for this constant.
 - **Re-alert interval**: a new module constant in `dispatcher/main.py`,
   `AUTH_DARK_REALERT_HOURS = 8`, beside the grace constant. The issue asks for "every N hours";
-  the operator chose 8 on the plan review (a ~21-hour outage sends three alerts, at 1 h, 9 h
-  and 17 h). Every "8 h" below stands for this constant.
+  the operator chose 8 on the plan review (a ~21-hour outage sends three alerts, at 0.5 h,
+  8.5 h and 16.5 h). Every "8 h" below stands for this constant.
 - **Last alert time**: the moment the most recent `auth_dark` alert of the current incident was
   sent. The marker gains a field holding it as an ISO-8601 UTC string (the implementation names
   it; the marker keeps `since` and `alerted`).
@@ -26,9 +25,9 @@ into the marker.
 
 ## Requirements
 
-1. **Grace is one hour.** The first dark pass writes the marker with `alerted` false and sends
-   nothing; dark passes inside the 60-minute grace send nothing and leave `since` untouched.
-2. **First alert after the grace.** The first dark pass at or past the grace sends exactly one
+1. **Grace is unchanged.** The first dark pass writes the marker with `alerted` false and sends
+   nothing; dark passes inside the 30-minute grace send nothing and leave `since` untouched.
+2. **First alert is unchanged.** The first dark pass at or past the grace sends exactly one
    `auth_dark` alert, sets `alerted` true and records the last alert time as that pass's time.
 3. **Re-alert after the interval.** A dark pass whose last alert time is at least
    `AUTH_DARK_REALERT_HOURS` (8 h) ago sends exactly one more `auth_dark` alert and moves the last
@@ -71,23 +70,22 @@ into the marker.
 - **When** a dark pass runs
 - **Then** nothing is sent and the marker is unchanged (still inside the grace)
 
-### Scenario: still silent at 59 minutes (req 1)
+### Scenario: still silent at 29 minutes (req 1)
 
-- **Given** a marker `{"since": now − 59 min, "alerted": false}` (silent under the new grace,
-  where the old 30-minute grace would have alerted)
+- **Given** a marker `{"since": now − 29 min, "alerted": false}`
 - **When** a dark pass runs
 - **Then** no `auth_dark` alert is sent and `alerted` stays false
 
 ### Scenario: first alert at grace boundary (req 2)
 
-- **Given** a marker `{"since": now − 61 min, "alerted": false}`
+- **Given** a marker `{"since": now − 31 min, "alerted": false}`
 - **When** a dark pass runs
 - **Then** `notifier.sent.count("auth_dark") == 1`, `alerted` is true, `since` is unchanged, and
   the last alert time is within a few seconds of now
 
 ### Scenario: one alert, then silence for the next pass (req 2, req 4)
 
-- **Given** a marker `{"since": now − 61 min, "alerted": false}`
+- **Given** a marker `{"since": now − 31 min, "alerted": false}`
 - **When** two dark passes run back to back
 - **Then** exactly one `auth_dark` alert was sent
 
@@ -209,11 +207,9 @@ Nothing beneath the issue's proposal: `_auth_dark_edge` (`dispatcher/main.py`) a
 (`tests/test_main.py`, "auth-dark edge tests") are as PR #73 left them, the `auth_dark`
 template (`telegram/templates.py`) already renders `{minutes}` and `{host}` only, and
 `_budget_edge` still defers the unavailable case to this edge. The existing auth-dark tests
-build their markers from `main.AUTH_DARK_GRACE_MINUTES`, so they keep passing with a 60-minute
-grace; `test_auth_dark_alerts_once_after_grace`'s third pass runs seconds after the first alert,
-inside the interval. Three comments state the grace as "30 minutes" and move with the constant:
-the `_budget_edge` and `_auth_dark_edge` docstrings and the docstring of
-`test_unavailable_usage_sends_no_budget_stall`.
+build their markers from `main.AUTH_DARK_GRACE_MINUTES`, and
+`test_auth_dark_alerts_once_after_grace` keeps passing as written: its third pass runs seconds
+after the first alert, inside the interval.
 
 ## Out of scope
 
