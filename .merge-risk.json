@@ -7,14 +7,18 @@
     "auth/security": [
       ".merge-risk.json",
       "**/.env*",
+      ".github/CODEOWNERS",
       "dispatcher/github_app.py",
       "dispatcher/host_auth.py",
       "dispatcher/task_tokens.py",
       "dispatcher/usage_providers.py",
+      "dispatcher/github.py",
+      "dispatcher/runtimes.py",
       "dispatcher/containers.py",
       "dispatcher/onboard.py",
       "dispatcher/onboarding_runner.py",
       "web/auth.py",
+      "web/app.py",
       "web/__main__.py",
       "telegram/inbound.py"
     ],
@@ -24,6 +28,7 @@
       "dispatcher/infra_config.py"
     ],
     "ci": [
+      ".github/**",
       ".githooks/**",
       ".claude/settings.json",
       "Makefile",
