@@ -6,6 +6,7 @@ import subprocess
 from dispatcher import eventlog, execution_overrides, state
 from dispatcher.queue_ops import QueuePlan
 from tests.webfakes import make_config, make_repository
+import web.sources
 from web.sources import DESCRIPTION_TTL_SECONDS, RANK_TTL_SECONDS, Sources
 
 
@@ -619,3 +620,61 @@ def test_state_fingerprint_board_and_usage_follow_the_priority_mode(tmp_path):
     assert f2["board"] != f1["board"]
     assert f2["usage"] != f1["usage"]
 
+
+
+def test_issue_description_outage_reprobes_at_ttl_cadence_not_per_request(tmp_path):
+    """#83: during a gh outage every request re-shelled `gh issue view` (a
+    120 s subprocess). A failed fetch must be remembered: a stale serve is
+    re-probed once per TTL, a cold failure once per retry interval."""
+    calls = []
+    down = [False]
+
+    class FakeGH:
+        def issue_view(self, repo, number):
+            calls.append((repo, number))
+            if down[0]:
+                raise RuntimeError("gh down")
+            return {"title": "T", "body": "B", "url": "u"}
+
+    clock = [1000.0]
+    _, src = make_sources(tmp_path, github=FakeGH(), clock=lambda: clock[0])
+    src.issue_description("jesdi/alpha", 73)
+    down[0] = True
+    clock[0] += DESCRIPTION_TTL_SECONDS + 1
+    for _ in range(5):
+        assert src.issue_description("jesdi/alpha", 73)["title"] == "T"
+    assert len(calls) == 2   # one probe on expiry, then the stale serve holds
+    clock[0] += DESCRIPTION_TTL_SECONDS + 1
+    src.issue_description("jesdi/alpha", 73)
+    assert len(calls) == 3   # re-probed once the refreshed TTL lapses
+
+    for _ in range(5):
+        assert src.issue_description("jesdi/alpha", 99)["error"] != ""
+    assert len(calls) == 4   # cold failure negative-cached
+    clock[0] += web.sources.DESCRIPTION_RETRY_SECONDS + 1
+    down[0] = False
+    assert src.issue_description("jesdi/alpha", 99)["error"] == ""
+    assert len(calls) == 5   # recovery seen after the short retry interval
+
+
+def test_rank_rows_outage_reprobes_at_ttl_cadence_not_per_request(tmp_path):
+    gh = FakeGitHub()
+    gh.rows["alpha"] = [{"number": 9, "boost": 0}]
+    clock = FakeClock()
+    _, src = make_sources(tmp_path, github=gh, clock=clock)
+    repository = make_repository()
+    rows, as_of, _ = src.rank_rows([repository])
+    gh.fail = True
+    clock.t += RANK_TTL_SECONDS + 1
+    for _ in range(5):
+        assert src.rank_rows([repository]) == (rows, as_of, True)
+    assert gh.calls == 2
+    clock.t += RANK_TTL_SECONDS + 1
+    src.rank_rows([repository])
+    assert gh.calls == 3
+
+    cold = make_repository(name="beta", repo="jesdi/beta")
+    for _ in range(5):
+        cold_rows, _, stale = src.rank_rows([cold])
+        assert cold_rows == [] and stale is True
+    assert gh.calls == 4
