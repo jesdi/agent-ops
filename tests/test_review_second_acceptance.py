@@ -79,11 +79,18 @@ def test_second_model_none_when_unset():
     assert _second_model()(UNSET, "review", CLAUDE, admit_all) is None
 
 
-# --- 4. any non-review stage, including address-review -> None -------------
+# --- 4. any other stage, including address-review -> None ------------------
 
-@pytest.mark.parametrize("stage", ["spec", "plan", "implement", "address-review"])
+@pytest.mark.parametrize("stage", ["spec", "plan", "address-review"])
 def test_second_model_none_for_non_review_stage(stage):
     assert _second_model()(POLICY, stage, CLAUDE, admit_all) is None
+
+
+# --- 4b. implement: implement-spec's reviewers run on Codex ----------------
+
+def test_second_model_granted_on_admitted_anthropic_implement():
+    assert _second_model()(POLICY, "implement", CLAUDE, admit_all) == SECOND
+    assert _second_model()(POLICY, "implement", CLAUDE, deny_openai) is None
 
 
 # --- 5. a Codex (openai/...) stage entry -> None ---------------------------

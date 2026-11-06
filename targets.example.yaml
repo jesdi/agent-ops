@@ -93,7 +93,7 @@ loop_caps:
 models:
   triage: [claude-sonnet-5@medium]       # daily triage sweep, first admitted
   untracked: standard                    # spec-stage track when no track: label
-  # review_second: openai/gpt-sol   # the gated second model (ticket 10, not yet built): validated, not yet consumed
+  # review_second: openai/gpt-sol   # gated Codex for Claude review/implement sessions; implement-spec needs it
   tracks:
     trivial:
       # plan_review: false makes this track gate-free. The plan-review gate is skipped only
