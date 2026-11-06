@@ -39,7 +39,10 @@ Terms:
    `test_ccusage_used_is_clamped_and_resets_follow_the_injected_clock`) are
    deleted; every `monkeypatch.setattr(up, "_ccusage_json", ...)` line is
    removed, and a test whose `monkeypatch` becomes unused drops it from its
-   signature. The reproduction test from requirement 1 stays as the guard.
+   signature. The reproduction test from requirement 1 stays as the guard. Test
+   imports that the deletions leave unused (`timedelta`, `WindowKind`, ...) are
+   dropped, and the docstring of `test_an_empty_oauth_reading_is_not_oauth`
+   loses "then ccusage".
 7. **The suite and the gate pass.** `make test` passes; `make gate` is green
    before the PR.
 
