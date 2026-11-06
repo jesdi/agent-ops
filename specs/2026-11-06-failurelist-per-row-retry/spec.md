@@ -22,7 +22,7 @@
 
 ## Scenarios
 
-The fixture for scenarios 1–4 is two quarantined tasks that share an issue number on
+The fixture for scenarios 1–5 is two quarantined tasks that share an issue number on
 different repositories: `widget` task #38 (blocker #39) and `gadget` task #38 (blocker #40),
 served by `GET /api/failures`.
 
@@ -45,6 +45,7 @@ Committed as the failing test `each Retry button names the task it retries`.
 - **When** the buttons are queried by role
 - **Then** there is a button named exactly `Retry widget task #38` and one named exactly
   `Retry gadget task #38` (today both are named `Retry`)
+- **And** each of those buttons still shows the visible text `Retry`
 
 ### Scenario: same issue number on another repository does not share busy state (req 1)
 
