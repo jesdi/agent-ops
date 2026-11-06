@@ -114,12 +114,24 @@ No settled decision is contradicted by the code.
 - **When** running `git diff --quiet origin/main -- frontend/pnpm-lock.yaml`
 - **Then** it exits 0
 
+### Scenario: lockfile edited is a violation (R4)
+
+- **Given** a branch where `pnpm install` regenerated `frontend/pnpm-lock.yaml`
+- **When** running `git diff --quiet origin/main -- frontend/pnpm-lock.yaml`
+- **Then** it exits 1 and the change is rejected
+
 ### Scenario: CI green on Node 24 (R5)
 
 - **Given** the PR for this change
 - **When** the `ci` workflow runs on it
 - **Then** jobs `frontend` and `e2e` succeed, and each job's `actions/setup-node` step log shows
   `node` resolved to a `v24.` version
+
+### Scenario: a job still on Node 22 is a violation (R5)
+
+- **Given** a `frontend` or `e2e` job whose `actions/setup-node` log shows `v22.`
+- **When** the R5 check reads the log
+- **Then** it fails, even if the job is green
 
 ### Scenario: local install, build and test on Node 24 (R6)
 
@@ -139,6 +151,12 @@ No settled decision is contradicted by the code.
 - **When** listing the changed files
 - **Then** the list is `.github/workflows/ci.yml`, `frontend/.node-version`, `frontend/package.json`
   and the two files of `specs/2026-11-06-pin-node-24/`, nothing else
+
+### Scenario: a fourth file changed is a violation (R7)
+
+- **Given** a diff that also touches `frontend/pnpm-lock.yaml` or `.github/workflows/deploy-pin.yml`
+- **When** listing the changed files
+- **Then** the R7 check fails
 
 ## Out of scope
 
