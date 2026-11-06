@@ -78,8 +78,8 @@ Test: `tests/test_web_sources.py::test_board_survives_an_unwritable_usage_cache`
 - **Then** the adapter is called once and both calls return the same reading
 - **And** `usage/anthropic.json` exists
 
-(Existing tests in `tests/test_usage_providers.py` may already cover this
-boundary; if so, no new test is needed for it.)
+Test: `tests/test_usage_providers.py::test_cache_is_per_provider_and_respects_min_poll`
+(existing; it already covers this boundary, so no new test is needed).
 
 ## Out of scope
 
