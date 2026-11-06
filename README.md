@@ -239,7 +239,7 @@ make gate             # before pushing: both suites, api-types, build, CRAP gate
 
 `make test` and `make gate` run each Python command through `uv run --locked`, so a `.venv` that drifted from `uv.lock` is brought back before the suites run. To change a dependency, edit `pyproject.toml` and run `uv lock` (or `uv lock --upgrade-package <name>`), then commit both files. CI fails when `uv.lock` does not match `pyproject.toml`.
 
-Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills. Setup also enables the committed git hooks (`core.hooksPath .githooks`). Their `post-checkout` hook installs the skills in any new worktree, including a plain `git worktree add` or one Claude Code creates.
+Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills. Setup also enables the committed git hooks (`core.hooksPath .githooks`). Their `post-checkout` hook installs the skills in any new worktree, including a plain `git worktree add` or one Claude Code creates. Their `pre-push` hook refuses a pushed commit with a `Co-authored-by` trailer and, when `commit.gpgsign` is on, one with no good signature; `git push --no-verify` bypasses it.
 
 ### Agent skills
 
