@@ -8,8 +8,10 @@ Terms:
   `{"since": <ISO-8601 UTC>, "alerted": <bool>}`. `since` is when the incident began.
 - **Grace**: `AUTH_DARK_GRACE_MINUTES` (30), unchanged.
 - **Re-alert interval**: a new module constant in `dispatcher/main.py`,
-  `AUTH_DARK_REALERT_HOURS = 4`, beside the grace constant. Chosen so a ~21-hour outage sends
-  about six alerts (at 0.5 h, 4.5 h, 8.5 h, 12.5 h, 16.5 h, 20.5 h) rather than one or dozens.
+  `AUTH_DARK_REALERT_HOURS`, beside the grace constant. The issue asks for "every N hours" and
+  leaves N open; 4 is the recommended value, pending the operator's answer on the plan review
+  (a ~21-hour outage would then send six alerts, at 0.5 h, 4.5 h, 8.5 h, 12.5 h, 16.5 h and
+  20.5 h). Every "4 h" below stands for this constant.
 - **Last alert time**: the moment the most recent `auth_dark` alert of the current incident was
   sent. The marker gains a field holding it as an ISO-8601 UTC string (the implementation names
   it; the marker keeps `since` and `alerted`).
@@ -41,10 +43,12 @@ into the marker.
 7. **Legacy marker is honored.** A legacy marker counts its last alert time as `since`: it
    re-alerts on the first dark pass once `since` is at least 4 h old, keeps that `since`, and
    records the new last alert time; when `since` is younger than 4 h it stays silent.
-8. **Corrupt markers still repair.** A marker that is not JSON, is JSON but not an object, lacks
-   `since`, or has an unparseable `since` or last alert time is reset to a fresh marker
-   (`alerted` false, new `since`, no last alert time) without raising and without alerting, as
-   today.
+8. **Corrupt markers repair.** A marker that is not JSON, is JSON but not an object, lacks
+   `since`, or has an unparseable `since`, or that has `alerted` true and an unparseable last
+   alert time, is reset to a fresh marker (`alerted` false, new `since`, no last alert time)
+   without raising and without alerting. Today only a marker with `alerted` false is repaired
+   (an alerted one returns before `since` is parsed); with this change an alerted marker is
+   parsed and repaired too. A marker with `alerted` false never reads its last alert time.
 
 ## Scenarios
 
@@ -59,6 +63,12 @@ into the marker.
 - **Given** a marker written by a dark pass moments ago (`since` = now, `alerted` false)
 - **When** a second dark pass runs
 - **Then** nothing is sent and `since` is byte-identical to before
+
+### Scenario: a stray last alert time does not skip the grace (req 1, req 8)
+
+- **Given** a marker `{"since": now − 10 min, "alerted": false, <last alert field>: "garbage"}`
+- **When** a dark pass runs
+- **Then** nothing is sent and the marker is unchanged (still inside the grace)
 
 ### Scenario: first alert at grace boundary (req 2)
 
@@ -139,6 +149,13 @@ into the marker.
 - **When** a dark pass runs
 - **Then** no `auth_dark` alert is sent and `since` is unchanged
 
+### Scenario: legacy marker exactly at the interval re-alerts (req 7)
+
+- **Given** a legacy marker `{"since": now − 4 h, "alerted": true}` (`since` computed before the
+  pass, so at pass time it is ≥ 4 h old)
+- **When** a dark pass runs
+- **Then** exactly one `auth_dark` alert is sent
+
 ### Scenario: non-JSON marker repairs (req 8)
 
 - **Given** the marker file contains `not valid json{{`
@@ -150,6 +167,20 @@ into the marker.
 - **Given** the marker file contains `null`
 - **When** a dark pass runs
 - **Then** it does not raise, the marker has `alerted` false, and nothing is sent
+
+### Scenario: marker without `since` repairs (req 8)
+
+- **Given** a marker `{"alerted": true}`
+- **When** a dark pass runs
+- **Then** it does not raise, the marker has `alerted` false and a fresh `since`, and nothing is
+  sent
+
+### Scenario: unparseable `since` repairs (req 8)
+
+- **Given** a marker `{"since": "garbage", "alerted": true, <last alert field>: now − 5 h}`
+- **When** a dark pass runs
+- **Then** it does not raise, the marker is reset (`alerted` false, fresh `since`, no last alert
+  time), and nothing is sent
 
 ### Scenario: unparseable last alert time repairs (req 8)
 
