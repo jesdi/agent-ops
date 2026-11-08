@@ -64,7 +64,7 @@ def check(selected: dict[str, list[str]]) -> None:
             frontend=True, env={**os.environ, "FAST_GATE_VITEST_FILES": json.dumps(files)})
     if selected["playwright"]:
         # Playwright's positional arguments are regexes, not literal file names.
-        filters = ["(^|/)" + re.escape(str(Path(path).relative_to("frontend"))) + "$"
+        filters = ["^" + re.escape(str(ROOT / path)) + "$"
                    for path in selected["playwright"]]
         run(["pnpm", "build"], frontend=True)
         for pattern in filters:

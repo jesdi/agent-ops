@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,9 @@ if tool == 'uv' and args[:4] == ['run', '--locked', 'python', 'scripts/fast_gate
     sys.exit(subprocess.call([sys.executable, *args[3:]]))
 with open(os.environ['COMMAND_LOG'], 'a') as log:
     log.write(json.dumps([tool, args, os.environ.get('FAST_GATE_VITEST_FILES')]) + '\\n')
-sys.exit(7 if os.environ.get('FAIL_COMMAND') in [' '.join([tool, *args])] else 0)
+command = ' '.join([tool, *args])
+fail = os.environ.get('FAIL_COMMAND')
+sys.exit(7 if fail and (command == fail or command.startswith(fail + ' ')) else 0)
 """
     for tool in ("uv", "pnpm", "git"):
         executable = bin_dir / tool
@@ -38,6 +41,8 @@ sys.exit(7 if os.environ.get('FAIL_COMMAND') in [' '.join([tool, *args])] else 0
         executable.chmod(0o755)
 
     class Gate:
+        root = tmp_path
+
         def file(self, path):
             file = tmp_path / path
             file.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +86,7 @@ def test_mixed_selection_routes_only_selected_tests_and_skips_fixtures(gate):
         ["uv", ["run", "--locked", "python", "-m", "pytest", "-q", "tests/test_alpha.py::test_one"]],
         ["pnpm", ["exec", "vitest", "run", "--config", "vitest.fast.config.ts"]],
         ["pnpm", ["build"]],
-        ["pnpm", ["exec", "playwright", "test", "(^|/)e2e/a\\.spec\\.ts$"]],
+        ["pnpm", ["exec", "playwright", "test", "^" + re.escape(str(gate.root / "frontend/e2e/a.spec.ts")) + "$"]],
     ]
     assert json.loads(gate.calls[3][2]) == ["src/a.test.ts"]
 
@@ -141,22 +146,31 @@ def test_each_python_and_browser_selection_runs_separately_to_detect_no_tests(ga
     assert result.returncode == 0, result.stderr
     assert [call[1][-1] for call in gate.calls if call[0] == "uv"] == list(files[:2])
     assert [call[1][-1] for call in gate.calls if call[1][:3] == ["exec", "playwright", "test"]] == [
-        "(^|/)e2e/a\\.spec\\.ts$", "(^|/)e2e/b\\.spec\\.ts$",
+        "^" + re.escape(str(gate.root / path)) + "$" for path in files[2:]
     ]
+
+
+def test_browser_filter_excludes_nested_files_with_the_same_suffix(gate):
+    gate.file("frontend/e2e/a.spec.ts")
+    result = gate.run("frontend/e2e/a.spec.ts")
+    assert result.returncode == 0, result.stderr
+    pattern = gate.calls[-1][1][-1]
+    assert re.search(pattern, str(gate.root / "frontend/e2e/a.spec.ts"))
+    assert not re.search(pattern, str(gate.root / "frontend/e2e/nested/e2e/a.spec.ts"))
 
 
 @pytest.mark.parametrize("failed", [
     "pnpm lint", "pnpm typecheck",
     "uv run --locked python -m pytest -q tests/test_alpha.py",
     "pnpm exec vitest run --config vitest.fast.config.ts", "pnpm build",
-    "pnpm exec playwright test (^|/)e2e/a\\.spec\\.ts$",
+    "pnpm exec playwright test",
 ])
 def test_any_failed_check_fails_the_fast_gate(gate, failed):
     for path in ("tests/test_alpha.py", "frontend/src/a.test.ts", "frontend/e2e/a.spec.ts"):
         gate.file(path)
     result = gate.run("tests/test_alpha.py frontend/src/a.test.ts frontend/e2e/a.spec.ts", fail=failed)
     assert result.returncode != 0
-    assert " ".join([gate.calls[-1][0], *gate.calls[-1][1]]) == failed
+    assert " ".join([gate.calls[-1][0], *gate.calls[-1][1]]).startswith(failed)
 
 
 def test_full_gate_runs_full_suites_even_with_missing_locked_paths(gate):
