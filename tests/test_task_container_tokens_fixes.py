@@ -10,6 +10,7 @@ import pytest
 import dispatcher.main as main
 from dispatcher import github_app, task_tokens
 from dispatcher.github import Candidate
+from dispatcher.models import Entry
 from dispatcher.state import NO_SLOT, PARK_HUMAN, WHY_ACCESS, Stage, TaskState, load, load_all
 from tests.test_host_installation_tokens_acceptance import INSTALL, FakeApp
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, make_task, patch_usage,
@@ -196,13 +197,13 @@ def test_resume_passes_the_task_token_dir(tmp_path, monkeypatch):
     cfg_ = SimpleNamespace(state_dir=str(tmp_path))
     deps = SimpleNamespace(access=github_app.Access(FakeApp()), sessions=Recorder())
     task = TaskState(issue=7, repository="analytics", stage=Stage.IMPLEMENT, slot=0,
-                     worktree="w", branch="b", title="t", updated_at="")
+                     worktree=str(tmp_path), branch="b", title="t", updated_at="")
     monkeypatch.setattr(main, "read_session", lambda *a: SimpleNamespace(stage="implement", session_id="s1"))
     monkeypatch.setattr(main, "_heal_identity", lambda t: None)
     monkeypatch.setattr(main, "_drain", lambda *a: ("", []))
     monkeypatch.setattr(main.messages, "mark_delivered", lambda *a: None)
     monkeypatch.setattr(main.eventlog, "append_event", lambda *a, **k: None)
-    launch = SimpleNamespace(model="m", entry=SimpleNamespace(effort=""), second=None)
+    launch = main.Launch(Stage.IMPLEMENT, Entry("anthropic", "claude-opus-5"))
     gh_config = main._task_token(cfg_, deps, REPO, task)
     main._continue_or_restart(cfg_, deps, REPO, task, launch, gh_config=gh_config)
     [kw] = deps.sessions.resumed

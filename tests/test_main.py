@@ -1461,7 +1461,8 @@ def test_woken_task_resumes_before_new_claims(tmp_path, monkeypatch):
     gh = FakeGitHub([Candidate(99, "fresh", "u")])
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))
-    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
+    assert [(issue, text.split("\n\n")[0], model, effort)
+            for issue, text, model, effort in sess.resumed] == [(42, "Continue.", "anthropic/claude-opus-5", "")]
     assert gh.claimed == []  # head-of-queue: resume consumed the only slot
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == "" and t.park_msg_id == 0
@@ -2066,7 +2067,8 @@ def test_resume_uses_the_model_for_the_parked_stage(tmp_path, monkeypatch):
     make_task(c, issue=42, stage=Stage.IMPLEMENT, park=PARK_WAKE)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
-    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
+    assert [(issue, text.split("\n\n")[0], model, effort)
+            for issue, text, model, effort in sess.resumed] == [(42, "Continue.", "anthropic/claude-opus-5", "")]
 
 
 def test_models_log_appends_one_line_per_spawn(tmp_path, monkeypatch):
@@ -2787,7 +2789,8 @@ def test_a_stale_attached_marker_no_longer_holds_anything(tmp_path, monkeypatch)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     # The stale marker is ignored; the task resumes normally
-    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
+    assert [(issue, text.split("\n\n")[0], model, effort)
+            for issue, text, model, effort in sess.resumed] == [(42, "Continue.", "anthropic/claude-opus-5", "")]
     assert load(c.state_dir, "portfolio_eval", 42).park == ""
 
 
@@ -2979,7 +2982,8 @@ def test_resume_woken_ends_session_before_resuming(tmp_path, monkeypatch):
     sess = FakeSessions(alive=[42])
     main.run_pass(c, deps(sess=sess))
     assert sess.ended == [42]
-    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
+    assert [(issue, text.split("\n\n")[0], model, effort)
+            for issue, text, model, effort in sess.resumed] == [(42, "Continue.", "anthropic/claude-opus-5", "")]
 
 
 def test_woken_pre_router_task_resumes_on_the_untracked_track(tmp_path, monkeypatch):
@@ -2991,7 +2995,8 @@ def test_woken_pre_router_task_resumes_on_the_untracked_track(tmp_path, monkeypa
     make_task(c, stage=Stage.IMPLEMENT, park=PARK_WAKE, track="")
     sess = FakeSessions(alive=[42])
     main.run_pass(c, deps(sess=sess))
-    assert sess.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
+    assert [(issue, text.split("\n\n")[0], model, effort)
+            for issue, text, model, effort in sess.resumed] == [(42, "Continue.", "anthropic/claude-opus-5", "")]
 
 
 def test_reply_to_login_park_injects_code(tmp_path, monkeypatch):
@@ -4385,7 +4390,7 @@ def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
     make_task(c, issue=42, park=PARK_WAKE, slot=NO_SLOT)
     d = deps()
     main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
-    assert d.sessions.resumed[-1][1] == "Continue."
+    assert d.sessions.resumed[-1][1].split("\n\n")[0] == "Continue."
 
 
 def test_retry_plan_delivers_queued_messages_too(tmp_path):
