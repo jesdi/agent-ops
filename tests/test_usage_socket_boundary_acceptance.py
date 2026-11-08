@@ -5,6 +5,7 @@ and the modes/ownership it leaves on disk."""
 import grp
 import httpx
 import os
+import pwd
 import shutil
 import signal
 import socket
@@ -116,12 +117,21 @@ def test_never_more_permissive_than_0750_and_0660_under_umask_000(work):
     assert not bad, f"too permissive while it existed: {bad[:3]}"
 
 
-def _run_as(user: str, probe: str, sock: Path):
-    """Run a stdlib-only probe as `user`. Not sys.executable: our interpreter
-    lives under our home (venv, uv's Python), which another user cannot
-    traverse, so use the system python3 that sudo's PATH finds."""
-    return subprocess.run(["sudo", "-n", "-u", user, "/usr/bin/env", "python3", "-c", probe, str(sock)],
-                          capture_output=True, text=True)
+def _run_as(user: str, probe: str, sock: Path, group: str | None = None):
+    """Drop the child identity directly; no privilege-management executable.
+
+    The system interpreter is accessible to the other user, unlike a Python
+    installed beneath the invoking user's home. Clear inherited groups so the
+    negative probe cannot accidentally retain access through the parent.
+    """
+    if os.geteuid() != 0:
+        pytest.skip("changing the probe identity requires root in this namespace")
+    account = pwd.getpwnam(user)
+    groups = [] if group is None else [grp.getgrnam(group).gr_gid]
+    return subprocess.run(
+        ["/usr/bin/env", "python3", "-c", probe, str(sock)],
+        user=account.pw_uid, group=account.pw_gid, extra_groups=groups,
+        capture_output=True, text=True)
 
 
 def test_user_outside_the_group_is_refused_by_the_os(work):
@@ -134,8 +144,7 @@ def test_user_outside_the_group_is_refused_by_the_os(work):
         wait_for_socket(proc, sock)
         os.chmod(work, 0o755)
         r = _run_as("nobody", probe, sock)
-        if r.returncode != 0 and "REFUSED" not in r.stdout and "CONNECTED" not in r.stdout:
-            pytest.skip("cannot act as a second local user here")
+        assert r.returncode == 0, r.stderr
         assert r.stdout.strip() == "REFUSED"
     finally:
         stop(proc)
@@ -144,7 +153,9 @@ def test_user_outside_the_group_is_refused_by_the_os(work):
 def _other_member():
     """(user, group) with user a member of a group we also belong to, user not
     us and not root (root bypasses permission bits), or None."""
-    import pwd
+    if os.geteuid() == 0:
+        # The child probe can receive this group without editing system users.
+        return "nobody", _group_name()
     me = pwd.getpwuid(os.getuid()).pw_name
     for gid in os.getgroups():
         g = grp.getgrgid(gid)
@@ -167,13 +178,12 @@ def test_user_in_the_group_can_get_usage_through_the_socket(work):
     try:
         wait_for_socket(proc, sock)
         # Group members must be able to traverse the directory and connect;
-        # check this even on hosts where sudo cannot run the separate user.
+        # check this even on hosts that cannot change the child identity.
         assert stat.S_IMODE(sock.parent.stat().st_mode) & 0o050 == 0o050, "configured group cannot traverse socket directory"
         assert stat.S_IMODE(sock.stat().st_mode) & 0o060 == 0o060, "configured group cannot connect to socket"
         os.chmod(work, 0o755)
-        r = _run_as(user, probe, sock)
-        if r.returncode != 0 and "STATUS" not in r.stdout and "Permission" not in r.stderr:
-            pytest.skip("cannot act as a second local user here")
+        r = _run_as(user, probe, sock, group)
+        assert r.returncode == 0, r.stderr
         assert r.stdout.strip() == "STATUS 200", r.stderr
     finally:
         stop(proc)
