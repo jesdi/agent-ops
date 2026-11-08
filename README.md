@@ -234,7 +234,7 @@ Requires [uv](https://docs.astral.sh/uv/), Node and pnpm. uv installs the Python
 ```bash
 ./scripts/setup.sh    # .venv, Python and frontend deps, agent skills
 make test
-make fast             # candidate checks: both unit suites, frontend lint and types
+make fast             # candidate checks: selected tests, frontend lint and types
 make gate             # before pushing: both suites, api-types, build, CRAP gate
 ```
 
@@ -246,7 +246,11 @@ Use the two gate tiers with implement-spec:
 sh .my-skills/implement-spec/run.sh --gate 'make gate' --fast-gate 'make fast' --spec specs/<slug>/spec.md --push
 ```
 
-`make fast` runs all pytest and Vitest tests, including locked acceptance tests in those suites; it does not select tests from the diff. It skips API generation, the production bundle, and coverage/CRAP scoring. When the driver's whitespace-separated `IMPLEMENT_SPEC_LOCKED` list includes a file under `frontend/e2e/`, it also runs the browser suite via `pnpm test:e2e` (including the build that suite needs). Install Chromium once with `cd frontend && pnpm exec playwright install chromium` before running browser tickets. Without browser locks, run `cd frontend && pnpm test:e2e` explicitly for browser verification; CI also runs that suite. `make gate` includes `make fast` and adds API-type freshness, the production build, and CRAP scoring. Keep the repository's `gate_cmd` set to `make gate`.
+`make fast` runs frontend lint and types, then only tests named in the driver's whitespace-separated `IMPLEMENT_SPEC_LOCKED` list. Override that selection with `make fast TESTS='tests/test_answers_intent.py frontend/src/lib/__tests__/reviewBridge.test.ts'`; `TESTS=''` explicitly selects no tests. An empty or fixtures-only list reports “no tests selected” and runs no test suite. Paths are repository-relative (`./` is accepted); pytest node IDs such as `tests/test_answers_intent.py::test_name` are supported. Paths containing whitespace need explicit arguments to `uv run --locked python scripts/fast_gate.py` instead of the environment list.
+
+Existing fixture/support files are skipped. Missing paths, directories, paths outside the repository, unsupported test file types, and test-runner failures fail the command. Python files named `test_*.py` or `*_test.py` run through pytest; `frontend/src/**/*.{test,spec}.{ts,tsx}` files run through Vitest with exact includes; `frontend/e2e/**/*.spec.ts` files run through Playwright with literal file filters on both configured devices. A selected file that collects no tests fails. Browser selection builds the app first; install Chromium once with `cd frontend && pnpm exec playwright install chromium` before running browser tickets.
+
+`make gate` always runs the complete pytest and Vitest suites, frontend lint/types, API-type freshness, the production build, and CRAP scoring, independently of either selection variable. Keep the repository's `gate_cmd` set to `make gate`. The full browser suite remains `cd frontend && pnpm test:e2e`, also run by CI.
 
 Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills. Setup also enables the committed git hooks (`core.hooksPath .githooks`). Their `post-checkout` hook installs the skills in any new worktree, including a plain `git worktree add` or one Claude Code creates.
 
