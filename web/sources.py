@@ -24,6 +24,7 @@ from dispatcher.state import TaskState
 
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
+DESCRIPTION_RETRY_SECONDS = 30.0  # cold failure: retry sooner than the TTL
 DISPATCHER_KICK = ("systemctl", "--user", "start", "--no-block",
                    "agent-ops-dispatcher.service")
 
@@ -137,25 +138,31 @@ class Sources:
         key = repositories[0].project.name
         cached = self._rank_cache.get(key)
         if cached and now - cached["fetched_at"] < RANK_TTL_SECONDS:
-            return cached["rows"], cached["as_of"], False
+            return cached["rows"], cached["as_of"], cached["stale"]
         try:
             rows = self._github.rank_rows(repositories)
         except Exception:
-            if cached:  # never a blank queue if a cache ever existed
-                return cached["rows"], cached["as_of"], True
-            return [], _iso(now), True
+            # Re-probe gh once per TTL, not per request: the failure is cached
+            # as a stale entry (never a blank queue if a cache ever existed).
+            entry = {"rows": cached["rows"] if cached else [],
+                     "as_of": cached["as_of"] if cached else _iso(now),
+                     "fetched_at": now, "stale": True}
+            self._rank_cache[key] = entry
+            return entry["rows"], entry["as_of"], True
         self._rank_cache[key] = {
-            "rows": rows, "fetched_at": now, "as_of": _iso(now)}
+            "rows": rows, "fetched_at": now, "as_of": _iso(now), "stale": False}
         return rows, _iso(now), False
 
     def issue_description(self, repo: str, number: int) -> dict:
         """gh-backed issue body with a TTL cache. A fetch failure serves the
         last cached value if one exists (stale beats blank, cf. rank_rows);
-        cold-cache failure returns an explicit error payload, never raises."""
+        cold-cache failure returns an explicit error payload, never raises.
+        Either way the failure is cached, so gh is re-probed once per window
+        (the TTL, or DESCRIPTION_RETRY_SECONDS after a cold failure)."""
         now = self._clock()
         key = (repo, number)
         cached = self._desc_cache.get(key)
-        if cached and now - cached["at"] < DESCRIPTION_TTL_SECONDS:
+        if cached and now - cached["at"] < cached["ttl"]:
             return cached["data"]
         try:
             d = self._github.issue_view(repo, number)
@@ -163,12 +170,15 @@ class Sources:
                     "body": str(d.get("body") or ""),
                     "url": str(d.get("url") or ""),
                     "fetched_at": _iso(now), "error": ""}
+            ttl = DESCRIPTION_TTL_SECONDS
         except Exception as exc:
-            if cached:
-                return cached["data"]
-            return {"title": "", "body": "", "url": "",
-                    "fetched_at": _iso(now), "error": str(exc)}
-        self._desc_cache[key] = {"data": data, "at": now}
+            if cached and not cached["data"]["error"]:
+                data, ttl = cached["data"], DESCRIPTION_TTL_SECONDS
+            else:
+                data = {"title": "", "body": "", "url": "",
+                        "fetched_at": _iso(now), "error": str(exc)}
+                ttl = DESCRIPTION_RETRY_SECONDS
+        self._desc_cache[key] = {"data": data, "at": now, "ttl": ttl}
         return data
 
     def usage(self, routed: Collection[str]) -> dict[str, ProviderUsage]:
