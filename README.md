@@ -234,10 +234,19 @@ Requires [uv](https://docs.astral.sh/uv/), Node and pnpm. uv installs the Python
 ```bash
 ./scripts/setup.sh    # .venv, Python and frontend deps, agent skills
 make test
+make fast             # candidate checks: both unit suites, frontend lint and types
 make gate             # before pushing: both suites, api-types, build, CRAP gate
 ```
 
-`make test` and `make gate` run each Python command through `uv run --locked`, so a `.venv` that drifted from `uv.lock` is brought back before the suites run. To change a dependency, edit `pyproject.toml` and run `uv lock` (or `uv lock --upgrade-package <name>`), then commit both files. CI fails when `uv.lock` does not match `pyproject.toml`.
+`make test`, `make fast` and `make gate` run each Python command through `uv run --locked`, so a `.venv` that drifted from `uv.lock` is brought back before the suites run. To change a dependency, edit `pyproject.toml` and run `uv lock` (or `uv lock --upgrade-package <name>`), then commit both files. CI fails when `uv.lock` does not match `pyproject.toml`.
+
+Use the two gate tiers with implement-spec:
+
+```bash
+sh .my-skills/implement-spec/run.sh --gate 'make gate' --fast-gate 'make fast' --spec specs/<slug>/spec.md --push
+```
+
+`make fast` runs all pytest and Vitest tests, including locked acceptance tests in those suites; it does not select tests from the diff. It skips API generation, the production bundle, and coverage/CRAP scoring. When the driver's whitespace-separated `IMPLEMENT_SPEC_LOCKED` list includes a file under `frontend/e2e/`, it also runs the browser suite via `pnpm test:e2e` (including the build that suite needs). Install Chromium once with `cd frontend && pnpm exec playwright install chromium` before running browser tickets. Without browser locks, run `cd frontend && pnpm test:e2e` explicitly for browser verification; CI also runs that suite. `make gate` includes `make fast` and adds API-type freshness, the production build, and CRAP scoring. Keep the repository's `gate_cmd` set to `make gate`.
 
 Start new work with `./scripts/new-worktree.sh <branch> [base]`. It creates `.worktrees/<branch>` from the latest `origin/<base>` (default `main`) and runs setup there, so a new worktree always has its skills. Setup also enables the committed git hooks (`core.hooksPath .githooks`). Their `post-checkout` hook installs the skills in any new worktree, including a plain `git worktree add` or one Claude Code creates.
 

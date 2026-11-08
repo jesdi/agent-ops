@@ -1,4 +1,4 @@
-.PHONY: test gate
+.PHONY: test fast gate
 
 # Each command runs in .venv through uv: uv run first brings .venv to the exact
 # versions of uv.lock (the set CI installs), and --locked fails when uv.lock
@@ -9,10 +9,18 @@ RUN := uv run --locked
 test:  ## Dispatcher/console unit suite
 	$(RUN) python -m pytest -q
 
+fast: test  ## Candidate checks without coverage or a production bundle
+	cd frontend && pnpm lint && pnpm typecheck && pnpm test
+	@set -f; for path in $${IMPLEMENT_SPEC_LOCKED:-}; do \
+		case "$$path" in frontend/e2e/*|./frontend/e2e/*) \
+			cd frontend && pnpm test:e2e; exit $$? ;; \
+		esac; \
+	done
+
 # The box's gate_cmd: sessions run it after every ticket and in review.
 # Mirrors CI (api-types freshness, typecheck + build, both suites). The suites
 # run explicitly because the CRAP gate skips an area with no changed source.
-gate: test  ## Everything a change must pass before it is pushed
+gate: fast  ## Everything a change must pass before it is pushed
 	cd frontend && $(RUN) pnpm gen:api && git diff --exit-code src/lib/api-types.ts
-	cd frontend && pnpm build && pnpm test
+	cd frontend && pnpm build
 	$(RUN) sh .my-skills/crap-gate/run.sh
