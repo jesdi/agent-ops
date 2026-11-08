@@ -39,7 +39,7 @@ export function GhostCardView({ ghost, isNext, paused = false, busy, onBoost, on
         {ghost.admission && (
           <AdmissionWarning repository={ghost.repository} issue={ghost.number} admission={ghost.admission} />
         )}
-        <div className="mt-2 flex gap-1">
+        <div role="group" aria-label={`${ghost.repository}#${ghost.number}`} className="mt-2 flex gap-1">
           <button type="button" className={ACTION} disabled={busy} onClick={() => onBoost(ghost.number, 1)}>Boost</button>
           <button type="button" className={ACTION} disabled={busy} onClick={() => onBoost(ghost.number, -1)}>Demote</button>
           <button type="button" className={ACTION} disabled={busy} onClick={() => onNext(ghost.number)}>Next</button>
