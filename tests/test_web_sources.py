@@ -678,3 +678,137 @@ def test_rank_rows_outage_reprobes_at_ttl_cadence_not_per_request(tmp_path):
         cold_rows, _, stale = src.rank_rows([cold])
         assert cold_rows == [] and stale is True
     assert gh.calls == 4
+
+
+class DescGH:
+    """issue_view fake: counts calls, fails while `down`."""
+    def __init__(self, down=False):
+        self.calls = 0
+        self.down = down
+
+    def issue_view(self, repo, number):
+        self.calls += 1
+        if self.down:
+            raise RuntimeError("gh down")
+        return {"title": "T", "body": "B", "url": "u"}
+
+
+def _desc_sources(tmp_path, gh):
+    clock = [1000.0]
+    _, src = make_sources(tmp_path, github=gh, clock=lambda: clock[0])
+    return src, clock
+
+
+def _stale_desc(tmp_path):
+    gh = DescGH()
+    src, clock = _desc_sources(tmp_path, gh)
+    src.issue_description("jesdi/alpha", 73)
+    gh.down = True
+    clock[0] += DESCRIPTION_TTL_SECONDS + 1
+    return gh, src, clock
+
+
+def _stale_rank(tmp_path):
+    gh = FakeGitHub()
+    gh.rows["alpha"] = [{"number": 9, "boost": 0}]
+    clock = FakeClock()
+    _, src = make_sources(tmp_path, github=gh, clock=clock)
+    repository = make_repository()
+    rows, as_of, _ = src.rank_rows([repository])
+    gh.fail = True
+    clock.t += RANK_TTL_SECONDS + 1
+    return gh, src, clock, repository, rows, as_of
+
+
+def test_ac_r1_warm_description_outage_probes_once_per_ttl(tmp_path):
+    gh, src, clock = _stale_desc(tmp_path)
+    for _ in range(5):
+        d = src.issue_description("jesdi/alpha", 73)
+        assert (d["title"], d["error"]) == ("T", "")
+    assert gh.calls == 2
+    clock[0] += DESCRIPTION_TTL_SECONDS + 1
+    src.issue_description("jesdi/alpha", 73)
+    assert gh.calls == 3
+
+
+def test_ac_r2_cold_description_failure_is_negative_cached(tmp_path):
+    gh = DescGH(down=True)
+    src, _ = _desc_sources(tmp_path, gh)
+    for _ in range(5):
+        d = src.issue_description("jesdi/alpha", 99)
+        assert d["title"] == "" and d["error"] != ""
+    assert gh.calls == 1
+
+
+def test_ac_r2_description_recovers_after_retry_interval(tmp_path):
+    gh = DescGH(down=True)
+    src, clock = _desc_sources(tmp_path, gh)
+    for _ in range(2):
+        src.issue_description("jesdi/alpha", 99)
+    assert gh.calls == 1
+    clock[0] += web.sources.DESCRIPTION_RETRY_SECONDS + 1
+    gh.down = False
+    d = src.issue_description("jesdi/alpha", 99)
+    assert gh.calls == 2 and (d["title"], d["error"]) == ("T", "")
+    clock[0] += 100
+    assert src.issue_description("jesdi/alpha", 99)["title"] == "T"
+    assert gh.calls == 2
+
+
+def test_ac_r3_warm_rank_outage_probes_once_per_ttl(tmp_path):
+    gh, src, clock, repository, rows, as_of = _stale_rank(tmp_path)
+    for _ in range(5):
+        assert src.rank_rows([repository]) == (rows, as_of, True)
+    assert gh.calls == 2
+    clock.t += RANK_TTL_SECONDS + 1
+    src.rank_rows([repository])
+    assert gh.calls == 3
+
+
+def test_ac_r4_cold_rank_failure_is_negative_cached(tmp_path):
+    gh = FakeGitHub()
+    gh.fail = True
+    _, src = make_sources(tmp_path, github=gh)
+    for _ in range(5):
+        rows, _, stale = src.rank_rows([make_repository()])
+        assert rows == [] and stale is True
+    assert gh.calls == 1
+
+
+def test_ac_r5_failure_written_entries_keep_their_marker(tmp_path):
+    gh, src, clock, repository, rows, as_of = _stale_rank(tmp_path)
+    src.rank_rows([repository])
+    clock.t += 1
+    assert src.rank_rows([repository])[2] is True
+    assert gh.calls == 2
+
+    dgh = DescGH(down=True)
+    dsrc, _ = _desc_sources(tmp_path, dgh)
+    first = dsrc.issue_description("jesdi/alpha", 99)
+    again = dsrc.issue_description("jesdi/alpha", 99)
+    assert dgh.calls == 1
+    assert first["error"] != "" and again["error"] == first["error"]
+
+
+def test_ac_boundary_description_window_ends_at_exactly_ttl(tmp_path):
+    gh, src, clock = _stale_desc(tmp_path)
+    src.issue_description("jesdi/alpha", 73)
+    assert gh.calls == 2
+    clock[0] += DESCRIPTION_TTL_SECONDS - 1
+    src.issue_description("jesdi/alpha", 73)
+    assert gh.calls == 2
+    clock[0] += 1
+    src.issue_description("jesdi/alpha", 73)
+    assert gh.calls == 3
+
+
+def test_ac_boundary_rank_window_ends_at_exactly_ttl(tmp_path):
+    gh, src, clock, repository, _, _ = _stale_rank(tmp_path)
+    src.rank_rows([repository])
+    assert gh.calls == 2
+    clock.t += RANK_TTL_SECONDS - 1
+    src.rank_rows([repository])
+    assert gh.calls == 2
+    clock.t += 1
+    src.rank_rows([repository])
+    assert gh.calls == 3
