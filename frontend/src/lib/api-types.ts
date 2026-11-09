@@ -758,6 +758,11 @@ export interface components {
             note: string;
             /** Provider */
             provider: string;
+            /**
+             * Reason
+             * @default ok
+             */
+            reason: string;
         };
         /**
          * GhostCard

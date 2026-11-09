@@ -360,7 +360,9 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                                                        usages, now),
             projects=repository_projects,
             last_claimed=sources.last_claims(),
-            max_open=boot.max_open)
+            max_open=boot.max_open,
+            quarantined={(q["repository"], q["task_issue"])
+                         for q in sources.quarantine_entries()})
 
     @app.get("/api/task/{repository}/{issue}",
              response_model=read_model.TaskDetail)

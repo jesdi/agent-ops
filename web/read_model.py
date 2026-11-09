@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from typing import Annotated, Collection, Literal, Mapping
+from typing import Annotated, Collection, Literal, Mapping, NamedTuple
 
 from pydantic import BaseModel, Field, StrictBool, StrictStr
 
@@ -379,6 +379,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 projects: Mapping[str, Project],
                 last_claimed: Mapping[str, str],
                 max_open: int = sys.maxsize,
+                quarantined: Collection[tuple[str, int]] | None = None,
                 pinned_tracks: dict[tuple[str, int], str] | None = None,
                 ) -> BoardView:
     # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
@@ -408,7 +409,8 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                               triage_running=triage_running,
                               projects=projects,
                               last_claimed=last_claimed,
-                              max_open=max_open))
+                              max_open=max_open,
+                              quarantined=quarantined or ()))
 
 
 class TaskDetail(BaseModel):
@@ -568,6 +570,7 @@ class GateView(BaseModel):
     note: str                  # verdict_note: the binding window and its numbers
     minutes_to_reset: float    # of the binding window; 0 when there is none
     binding: WindowView | None
+    reason: str = "ok"         # the usage Verdict's reason; "unavailable" = dead login
 
 
 class PriorityView(BaseModel):
@@ -633,7 +636,7 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
         gate=GateView(model=default_model, provider=verdict.provider,
                       admitted=verdict.admitted, note=verdict_note(verdict, now),
                       minutes_to_reset=binding.minutes_to_reset if binding else 0.0,
-                      binding=binding),
+                      binding=binding, reason=verdict.reason),
         priority=PriorityView(
             mode=mode, options=[priority.AUTO, *sorted(routed)],
             first=ranked[0].provider if ranked else "",
@@ -784,7 +787,7 @@ _TIMELINE_EVENTS = {"claimed", "stage-started", "parked", "resumed", "merged"}
 
 
 class NextClaimView(BaseModel):
-    verdict: str          # will-claim|no-candidates|projects-paused|capacity-full|budget-blocked|claims-paused|unknown
+    verdict: str          # will-claim|no-candidates|projects-paused|capacity-full|budget-blocked|auth-dark|claims-paused|unknown
     next_pass_eta: str    # ISO; "" when verdict == "unknown"
     next_issue: int = 0
     next_repository: str = ""
@@ -796,6 +799,34 @@ def _is_candidate(r: dict) -> bool:
     """Mirror of GitHubClient.candidates: what the claim round would consume."""
     return (r.get("status") == "Ready" and not r.get("blocked")
             and "auto" in (r.get("labels") or []))
+
+
+class Blocker(NamedTuple):
+    name: str       # dispatcher-down|claims-paused|auth-dark|budget-blocked|projects-paused|capacity-full
+    evidence: str
+
+
+def local_blocker(heartbeat: dict | None, *, now: datetime,
+                  tasks: list[TaskState], capacity: int, gate: GateView,
+                  claims_paused: bool, triage_running: bool,
+                  projects: Mapping[str, Project],
+                  max_open: int = sys.maxsize) -> Blocker | None:
+    """The shared local claim gate, shared by the console forecast and
+    `agent-ops status`: the first blocker readable from local state, or None.
+    Order: heartbeat, triage hold, usage (unavailable = auth-dark, any other
+    denial = budget-blocked), every project paused, no claim room."""
+    if _pass_eta(heartbeat, now) is None:
+        return Blocker("dispatcher-down", "no fresh pass heartbeat")
+    if claims_paused:
+        return Blocker("claims-paused", "triage sweep pending")
+    if not gate.admitted:
+        return Blocker("auth-dark" if gate.reason == "unavailable"
+                       else "budget-blocked", gate.note)
+    if projects and all(p.paused for p in projects.values()):
+        return Blocker("projects-paused", "every project is paused")
+    if claim_room(capacity, max_open, tasks, triage_running) <= 0:
+        return Blocker("capacity-full", "no free claim room")
+    return None
 
 
 def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
@@ -816,7 +847,9 @@ def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
 
 
 def _queue_heads(queues: list[tuple[str, list[dict]]],
-                 tasks: list[TaskState]) -> dict[str, tuple[str, int]]:
+                 tasks: list[TaskState],
+                 quarantined: Collection[tuple[str, int]] = ()
+                 ) -> dict[str, tuple[str, int]]:
     """project -> its front-of-queue candidate (repository, issue), over rows
     not already known as tasks. Key on (repository, issue) — same rationale as
     build_board: issue numbers are per-repo so alpha#73 must not shadow
@@ -825,7 +858,8 @@ def _queue_heads(queues: list[tuple[str, list[dict]]],
     heads = {}
     for name, rows in queues:
         mine = [(r["repository"], r["number"]) for r in rows
-                if _is_candidate(r) and (r["repository"], r["number"]) not in known]
+                if _is_candidate(r) and (r["repository"], r["number"]) not in known
+                and (r["repository"], r["number"]) not in quarantined]
         if mine:
             heads[name] = mine[0]
     return heads
@@ -850,7 +884,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                triage_running: bool = False,
                projects: Mapping[str, Project],
                last_claimed: Mapping[str, str],
-               max_open: int = sys.maxsize) -> NextClaimView:
+               max_open: int = sys.maxsize,
+               quarantined: Collection[tuple[str, int]] = ()) -> NextClaimView:
     """A forecast of what the claim round (dispatcher main._claim_new)
     consumes next, from data already on the board request. `queues` are each
     project's rank rows, `projects` maps repository -> its project, and
@@ -866,36 +901,35 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     or denied while this says will-claim.
 
     Gates it does NOT model, so `will-claim` can still be wrong:
-      * failures.check_quarantine — a quarantined candidate is forecast as
-        claimable. Resolving it needs a live `gh issue view` per record, which
-        does not belong on a route polled once per second; the record is
-        visible on /failures instead.
+      * failures.check_quarantine's live blocker check — `quarantined` skips
+        every local record, so a record whose blocker already closed hides
+        its candidate until the dispatcher's next pass clears it.
       * slot exhaustion (the round stops when allocate_slot returns None)
         and a create_workspace failure — only knowable at claim time.
       * queue movement since the rank rows were cached (rank_rows has a TTL,
         so the dispatcher's own pass may see a different head).
     """
-    eta = _pass_eta(heartbeat, now)
-    if eta is None:
+    blocker = local_blocker(heartbeat, now=now, tasks=tasks, capacity=capacity,
+                            gate=gate, claims_paused=claims_paused,
+                            triage_running=triage_running, projects=projects,
+                            max_open=max_open)
+    if blocker and blocker.name == "dispatcher-down":
         return NextClaimView(verdict="unknown", next_pass_eta="")
-    # claims_paused wins over budget-blocked: when both are true claims are still
-    # skipped, and the triage pause is the more actionable signal for the operator.
-    if claims_paused:
-        return NextClaimView(verdict="claims-paused", next_pass_eta=eta)
-    if not gate.admitted:
+    eta = _pass_eta(heartbeat, now) or ""
+    if blocker and blocker.name in ("claims-paused", "auth-dark"):
+        return NextClaimView(verdict=blocker.name, next_pass_eta=eta)
+    if blocker and blocker.name == "budget-blocked":
         return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
                              minutes_to_reset=gate.minutes_to_reset,
                              blocked_by=gate.note)
-    heads = _queue_heads(queues, tasks)
+    heads = _queue_heads(queues, tasks, quarantined)
     if not heads:
         return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
     paused = {p.name for p in projects.values() if p.paused}
     names = [n for n in heads if n not in paused]
     if not names:
         return NextClaimView(verdict="projects-paused", next_pass_eta=eta)
-    name = (_pick(names, tasks, projects, last_claimed)
-            if claim_room(capacity, max_open, tasks, triage_running) > 0
-            else None)
+    name = _pick(names, tasks, projects, last_claimed) if blocker is None else None
     if name is None:
         return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
     repository, issue = heads[name]
