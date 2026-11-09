@@ -12,5 +12,6 @@ uv sync --locked
 ./scripts/install-skills.sh
 
 # Committed hooks (.githooks/). post-checkout installs the skills in every new
-# worktree, however it is created. The setting is shared by all worktrees.
+# worktree, however it is created. pre-push refuses co-authored commits and,
+# with commit.gpgsign on, unsigned ones. The setting is shared by all worktrees.
 git config core.hooksPath .githooks
