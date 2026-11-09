@@ -223,28 +223,31 @@ def _age(task: state.TaskState, now: datetime) -> str:
     return f"{m}m" if m < 60 else f"{m // 60}h" if m < 2880 else f"{m // 1440}d"
 
 
-def _unreadable(root: Path, tasks) -> list[str]:
-    """Task files `load_all` skipped (corrupt), named by their file key."""
-    known = {state.task_key(t.repository, t.issue) for t in tasks} | {str(t.issue) for t in tasks}
+def _unreadable(root: Path) -> list[str]:
+    """Task files `load_all` would skip (corrupt), named by their file key. Each
+    file is re-read on its own, so a valid twin cannot hide a corrupt one."""
     out = []
     for p in sorted(root.glob("task-*.json")):
-        key = p.stem[len("task-"):]
-        if key in known:
+        try:
+            state._read(p)
+        except FileNotFoundError:
             continue
-        parsed = state.parse_task_key(key)
-        out.append(f"{parsed[0]}#{parsed[1]}" if parsed else p.stem)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            key = p.stem[len("task-"):]
+            parsed = state.parse_task_key(key)
+            out.append(f"{parsed[0]}#{parsed[1]}" if parsed else p.stem)
     return out
 
 
 def _task_line(t: state.TaskState, now, tabs, tabs_why) -> str:
     ref = f"{t.repository}#{t.issue}"
-    if state.consumes_capacity(t):
+    if state.consumes_capacity(t) and not t.park:
         if tabs is None:
             live = f"unknown ({tabs_why})"
         else:
             tab = sessions.session_name(t.repository, t.issue)
             live = f"live  {tab}" if tab in tabs else "live"
-        return f"{ref}  {t.stage.value}  {live}"
+        return f"{ref}  {t.stage.value}  {live}  {_age(t, now)}"
     park = f"{t.park} {t.park_reason}" if t.park == state.PARK_HUMAN and t.park_reason else t.park
     return f"{ref}  {t.stage.value}  {park}  {_age(t, now)}"
 
@@ -255,9 +258,9 @@ def _lines(lines: list[str]) -> str:
 
 
 def _tasks_row(root, tasks, now, tabs, tabs_why) -> str:
-    open_tasks = [t for t in tasks if t.stage not in state.TERMINAL_STAGES]
+    open_tasks = [t for t in tasks if t.stage != state.Stage.DONE]
     lines = [_task_line(t, now, tabs, tabs_why) for t in open_tasks]
-    lines += [f"{ref}  unknown (unreadable task file)" for ref in _unreadable(root, tasks)]
+    lines += [f"{ref}  unknown (unreadable task file)" for ref in _unreadable(root)]
     return _lines(lines)
 
 
