@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, NamedTuple, TextIO
+from urllib.parse import quote
 
-from dispatcher import config, herdr, state, triage
+from dispatcher import config, herdr, sessions, state, triage
 from dispatcher.claims import box_free
 from dispatcher.usage import unavailable
 from dispatcher.usage_providers import cache_path, usage_from_json
@@ -214,6 +215,71 @@ def _holds(root, request, marker, now) -> str:
     return " · ".join(holds + _quarantine(root)) or "none"
 
 
+def _age(task: state.TaskState, now: datetime) -> str:
+    since = _time(task.updated_at)
+    if since is None:
+        return "?"
+    m = _minutes(since, now)
+    return f"{m}m" if m < 60 else f"{m // 60}h" if m < 2880 else f"{m // 1440}d"
+
+
+def _unreadable(root: Path, tasks) -> list[str]:
+    """Task files `load_all` skipped (corrupt), named by their file key."""
+    known = {state.task_key(t.repository, t.issue) for t in tasks} | {str(t.issue) for t in tasks}
+    out = []
+    for p in sorted(root.glob("task-*.json")):
+        key = p.stem[len("task-"):]
+        if key in known:
+            continue
+        parsed = state.parse_task_key(key)
+        out.append(f"{parsed[0]}#{parsed[1]}" if parsed else p.stem)
+    return out
+
+
+def _task_line(t: state.TaskState, now, tabs, tabs_why) -> str:
+    ref = f"{t.repository}#{t.issue}"
+    if state.consumes_capacity(t):
+        if tabs is None:
+            live = f"unknown ({tabs_why})"
+        else:
+            tab = sessions.session_name(t.repository, t.issue)
+            live = f"live  {tab}" if tab in tabs else "live"
+        return f"{ref}  {t.stage.value}  {live}"
+    park = f"{t.park} {t.park_reason}" if t.park == state.PARK_HUMAN and t.park_reason else t.park
+    return f"{ref}  {t.stage.value}  {park}  {_age(t, now)}"
+
+
+def _lines(lines: list[str]) -> str:
+    """One row: the first line after the label, the rest indented under it."""
+    return ("\n" + " " * 11).join(lines) or "none"
+
+
+def _tasks_row(root, tasks, now, tabs, tabs_why) -> str:
+    open_tasks = [t for t in tasks if t.stage not in state.TERMINAL_STAGES]
+    lines = [_task_line(t, now, tabs, tabs_why) for t in open_tasks]
+    lines += [f"{ref}  unknown (unreadable task file)" for ref in _unreadable(root, tasks)]
+    return _lines(lines)
+
+
+def _question(t: state.TaskState, now, url: str) -> str | None:
+    base = f"{url}/task/{quote(t.repository, safe='')}/{t.issue}" if url else ""
+    ref, age = f"{t.repository}#{t.issue}", _age(t, now)
+    req = t.operator_request
+    if req is not None:
+        what = "plan approval" if req.kind == "plan-approval" else "answers"
+        return "  ".join(filter(None, [ref, what, req.path, age, base and base + "/review"]))
+    if t.park == state.PARK_HUMAN and t.park_reason == state.WHY_DECISION:
+        note = t.park_note
+        note = note[:59] + "…" if len(note) > 60 else note
+        return "  ".join(filter(None, [ref, "decision", f'"{note}"', age, base]))
+    return None
+
+
+def _questions_row(tasks, now, url) -> str:
+    live = [t for t in tasks if t.stage not in state.TERMINAL_STAGES]
+    return _lines([q for q in (_question(t, now, url) for t in live) if q])
+
+
 def _guard(probe: Callable):
     """(value, None) or (None, why): a source that fails degrades one row."""
     try:
@@ -226,7 +292,7 @@ def run(config_path: str, now: datetime, probes: Probes, out: TextIO) -> int:
     cfg = config.load_config(config_path)
     root = Path(cfg.state_dir)
     units, units_why = _guard(probes.units)
-    tabs, _ = _guard(probes.tabs)
+    tabs, tabs_why = _guard(probes.tabs)
     tasks = state.load_all(root)
     hb = _json(root / "pass.json")
     marker = _json(root / "auth-dark")
@@ -234,6 +300,8 @@ def run(config_path: str, now: datetime, probes: Probes, out: TextIO) -> int:
     usages = _usages(cfg, root, now)
     triage_tab = tabs is not None and triage.TAB_LABEL in tabs
     verdict = _verdict(cfg, root, now, units, tabs, tasks, hb, usages, marker)
+    if tabs is None:
+        verdict += f" · herdr unreachable ({tabs_why})"
     names = {p.name: p.paused for p in cfg.projects}
     rows = [
         ("dispatcher", _dispatcher_row(hb, units, now)),
@@ -243,6 +311,8 @@ def run(config_path: str, now: datetime, probes: Probes, out: TextIO) -> int:
                                 for n, p in names.items())),
         ("holds", _holds(root, request, marker, now)),
         ("slots", f"{_used(tasks, triage_tab)}/{cfg.capacity}"),
+        ("tasks", _tasks_row(root, tasks, now, tabs, tabs_why)),
+        ("questions", _questions_row(tasks, now, cfg.console_url)),
     ]
     print(f"VERDICT  {verdict}", file=out)
     for label, text in rows:
