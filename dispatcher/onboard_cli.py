@@ -10,6 +10,7 @@ import argparse
 import getpass
 import sys
 import time
+from datetime import datetime, timezone
 
 from dispatcher import config, onboard
 from dispatcher.infra_config import project_block
@@ -35,8 +36,10 @@ def _board(value: str) -> dict:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-ops")
-    add = parser.add_subparsers(dest="noun", required=True).add_parser(
-        "project").add_subparsers(dest="verb", required=True).add_parser(
+    nouns = parser.add_subparsers(dest="noun", required=True)
+    status = nouns.add_parser("status", help="read-only report of the box: what it is claiming and why not")
+    status.add_argument("--config", default=config.default_config_path())
+    add = nouns.add_parser("project").add_subparsers(dest="verb", required=True).add_parser(
         "add", help="onboard a project: it ends merged, deployed, visible and paused")
     add.add_argument("name", type=_slug)
     add.add_argument("repos", nargs="+", metavar="repo")
@@ -52,6 +55,10 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
     if getpass.getuser() != USER:
         print(f"run agent-ops as {USER} (sudo -iu {USER})", file=sys.stderr)
         return 2
+    if args.noun == "status":
+        from web import box_status  # the console's read model is heavy: load it on demand
+        return box_status.run(args.config, datetime.now(timezone.utc),
+                              box_status.system_probes(), sys.stdout)
     state_dir = config.load_config(args.config).state_dir
     existing = onboard.load_record(state_dir, args.name)
     if existing and existing.status == "complete":
