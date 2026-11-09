@@ -47,8 +47,14 @@ def _systemd_units() -> dict[str, Unit]:
         capture_output=True, text=True, timeout=10)
     if proc.returncode:
         raise RuntimeError(f"systemctl failed: {proc.stderr.strip()}")
+    return parse_units(proc.stdout)
+
+
+def parse_units(show: str) -> dict[str, Unit]:
+    """`systemctl show --timestamp=unix` output: one blank-line-separated
+    block per unit; a unit that never changed state has no stamp and is skipped."""
     units = {}
-    for block in proc.stdout.split("\n\n"):
+    for block in show.split("\n\n"):
         props = dict(l.split("=", 1) for l in block.splitlines() if "=" in l)
         stamp = props.get("StateChangeTimestamp", "").lstrip("@")
         if props.get("Id") and stamp.isdigit():
@@ -124,18 +130,32 @@ def _verdict(cfg, root, now, units, tabs, tasks, hb, usages, marker) -> str:
         hb, now=now, tasks=tasks, capacity=cfg.capacity, gate=gate,
         claims_paused=triage_tab or (root / triage.REQUEST_FILE).exists(),
         triage_running=triage_tab, projects=projects, max_open=cfg.max_open)
-    timer = (units or {}).get(TIMER)
     if blocker and blocker.name == "dispatcher-down":
-        service = (units or {}).get(SERVICE)
-        if service and service.state == "active":
-            return f"dispatcher busy (pass running since {_hhmm(service.since, now)})"
-        return f"not claiming: dispatcher-down ({_stale(hb, now)})"
-    if units is not None and (timer is None or timer.state != "active"):
-        return (f"not claiming: dispatcher-down ({TIMER} "
-                f"{timer.state if timer else 'not found'})")
+        return _stale_heartbeat(units, hb, now)
+    timer_down = _timer_down(units)
+    if timer_down:
+        return timer_down
     if blocker is None:
         return "no local blocker — candidates need GitHub (see console)"
     return f"not claiming: {blocker.name} ({_evidence(blocker.name, gate, usages, marker, request, projects, tasks, cfg, now, triage_tab)})"
+
+
+def _stale_heartbeat(units, hb, now) -> str:
+    """A stale heartbeat while the service is active is a long pass, not a dead dispatcher."""
+    service = (units or {}).get(SERVICE)
+    if service and service.state == "active":
+        return f"dispatcher busy (pass running since {_hhmm(service.since, now)})"
+    return f"not claiming: dispatcher-down ({_stale(hb, now)})"
+
+
+def _timer_down(units) -> str | None:
+    """Unknown units (a failed probe) say nothing about the timer."""
+    if units is None:
+        return None
+    timer = units.get(TIMER)
+    if timer is not None and timer.state == "active":
+        return None
+    return f"not claiming: dispatcher-down ({TIMER} {timer.state if timer else 'not found'})"
 
 
 def _stale(hb: dict | None, now: datetime) -> str:
