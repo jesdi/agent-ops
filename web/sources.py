@@ -197,8 +197,7 @@ class Sources:
         object, is SKIPPED. Every field would be blank and the row would be
         indistinguishable from a real entry — the console's constraint is
         never a blank, always an explicit state, and a row that says nothing
-        is worse than no row. Nothing else consumes this: the board's claim
-        forecast does not model quarantine.
+        is worse than no row. The board's claim forecast skips these heads.
 
         The read is guarded with (OSError, ValueError), not
         (json.JSONDecodeError, OSError): a torn write_text yields invalid UTF-8

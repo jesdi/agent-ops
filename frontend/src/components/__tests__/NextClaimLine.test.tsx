@@ -79,3 +79,10 @@ test('projects-paused explains that only paused projects have candidates', () =>
   render(<NextClaimLine nextClaim={{ ...withEta(300), verdict: 'projects-paused', next_issue: 0 }} />)
   expect(screen.getByTestId('next-claim').textContent).toMatch(/every project with candidates is paused/)
 })
+
+test('auth-dark renders its own line, not the budget reset copy', () => {
+  render(<NextClaimLine nextClaim={{ ...withEta(300), verdict: 'auth-dark' }} />)
+  const text = screen.getByTestId('next-claim').textContent ?? ''
+  expect(text).toMatch(/log ?in/i)
+  expect(text).not.toMatch(/unknown verdict/)
+})

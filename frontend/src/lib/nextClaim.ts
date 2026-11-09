@@ -7,6 +7,7 @@ import { formatDuration } from './format'
 const VERDICT_DETAIL: Partial<Record<string, (nc: NextClaimView) => string>> = {
   'will-claim':    (nc) => `will claim #${nc.next_issue}`,
   'budget-blocked':(nc) => nc.blocked_by || `budget resets in ${formatDuration(nc.minutes_to_reset * 60)}`,
+  'auth-dark':    () => 'login expired — log in again to resume claiming',
   'capacity-full': ()   => 'capacity full — waits for a free slot',
   'no-candidates': ()   => 'queue empty — nothing to claim',
   // projects-paused: candidates exist, but only in paused projects.
