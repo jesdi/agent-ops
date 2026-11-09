@@ -2,7 +2,7 @@
 
 ## When the box misbehaves
 
-Run `ssh box '~/.local/bin/agent-ops status'` first. It is a read-only report from local state: a `VERDICT` line (why the box is or isn't claiming), then rows for the dispatcher, units, projects, holds and slots. Then diagnose with `/diagnosing-bugs`.
+Run `ssh box '~/.local/bin/agent-ops status'` first. It is a read-only report from local state: a `VERDICT` line (why the box is or isn't claiming), then rows for the dispatcher, units, projects, holds, slots, tasks, questions and errors. Then diagnose with `/diagnosing-bugs`.
 
 ## Map of the box
 

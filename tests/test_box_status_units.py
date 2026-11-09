@@ -1,5 +1,10 @@
+import dataclasses
+import io
+import subprocess
 from datetime import datetime, timezone
 
+from tests.test_box_status_acceptance import NOW, Box, row
+from web import box_status
 from web.box_status import parse_journal, parse_units
 
 SHOW = """Id=agent-ops-dispatcher.timer
@@ -39,3 +44,15 @@ def test_parse_journal_reads_json_lines_and_skips_malformed_ones():
     assert len(entries) == 1
     assert (entries[0].unit, entries[0].priority, entries[0].message) == (
         "agent-ops-web.service", 3, "boom")
+
+
+def test_a_real_journalctl_failure_prints_its_stderr_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(box_status.subprocess, "run", lambda *a, **k:
+                        subprocess.CompletedProcess(a, 1, "", "Permission denied\n"))
+    box = Box(tmp_path, monkeypatch)
+    out = io.StringIO()
+    probes = dataclasses.replace(box.probes(), journal=box_status._journal)
+    box_status.run(str(box.config), NOW, probes, out)
+
+    assert row(out.getvalue(), "errors").split(None, 1)[1] == (
+        "unknown (journalctl failed: Permission denied)")
