@@ -877,6 +877,22 @@ def _pick(names: list[str], tasks: list[TaskState],
                         project_last_claims(last_claimed, project_of), caps)
 
 
+def _early_verdict(blocker: Blocker | None, gate: GateView,
+                   eta: str) -> NextClaimView | None:
+    """The forecast when the shared gate alone decides it, else None."""
+    if blocker is None:
+        return None
+    if blocker.name == "dispatcher-down":
+        return NextClaimView(verdict="unknown", next_pass_eta="")
+    if blocker.name in ("claims-paused", "auth-dark"):
+        return NextClaimView(verdict=blocker.name, next_pass_eta=eta)
+    if blocker.name == "budget-blocked":
+        return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
+                             minutes_to_reset=gate.minutes_to_reset,
+                             blocked_by=gate.note)
+    return None
+
+
 def next_claim(heartbeat: dict | None, *, now: datetime,
                tasks: list[TaskState], capacity: int,
                gate: GateView,
@@ -914,15 +930,10 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                             gate=gate, claims_paused=claims_paused,
                             triage_running=triage_running, projects=projects,
                             max_open=max_open)
-    if blocker and blocker.name == "dispatcher-down":
-        return NextClaimView(verdict="unknown", next_pass_eta="")
     eta = _pass_eta(heartbeat, now) or ""
-    if blocker and blocker.name in ("claims-paused", "auth-dark"):
-        return NextClaimView(verdict=blocker.name, next_pass_eta=eta)
-    if blocker and blocker.name == "budget-blocked":
-        return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
-                             minutes_to_reset=gate.minutes_to_reset,
-                             blocked_by=gate.note)
+    early = _early_verdict(blocker, gate, eta)
+    if early:
+        return early
     heads = _queue_heads(queues, tasks, quarantined)
     if not heads:
         return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
