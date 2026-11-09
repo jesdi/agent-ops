@@ -38,7 +38,7 @@ from dispatcher.board import BoardError
 from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
-from dispatcher import spec_publish, task_artifacts
+from dispatcher import implementation_grants, spec_publish, task_artifacts
 from dispatcher import base_line
 from dispatcher.artifacts import TICKETS_DIR, page_revision, plan_revision
 from dispatcher.loops import Decision, Outcome, ResetCause
@@ -709,6 +709,7 @@ def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskSta
     _heal_exclude(repository, task)
     _heal_identity(task)
     _write_working(task.worktree, stage, entry)
+    prompt = implementation_grants.prepare(task.worktree, stage.value, entry, launch.second, prompt)
     deps.sessions.spawn_stage(task.repository, task.issue, task.worktree, prompt,
                               stage.value, model, entry.effort,
                               second=launch.second, gh_config=gh_config)
@@ -739,6 +740,7 @@ def _continue_or_restart(cfg: Config, deps: Deps, repository: Repository,
         _heal_identity(task)
         block, drained = _drain(cfg, task.repository, task.issue)
         text = "\n\n".join(filter(None, (message, block))) or "Continue."
+        text = implementation_grants.prepare(task.worktree, stage.value, launch.entry, launch.second, text)
         deps.sessions.resume(task.repository, task.issue, task.worktree, text,
                              launch.model, launch.entry.effort,
                              second=launch.second, session_id=record.session_id,
