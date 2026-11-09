@@ -75,7 +75,7 @@ def _journal() -> list:
          "-o", "json", "--no-pager"],
         capture_output=True, text=True, timeout=20)
     if proc.returncode:
-        raise RuntimeError(proc.stderr.strip() or f"exit {proc.returncode}")
+        raise RuntimeError(f"journalctl failed: {proc.stderr.strip()}")
     return parse_journal(proc.stdout)
 
 
