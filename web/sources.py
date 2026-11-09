@@ -24,7 +24,7 @@ from dispatcher.state import TaskState
 
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
-DISPATCHER_KICK = ("systemctl", "--user", "start",
+DISPATCHER_KICK = ("systemctl", "--user", "start", "--no-block",
                    "agent-ops-dispatcher.service")
 
 
@@ -428,7 +428,7 @@ class Sources:
 
     def _kick_dispatcher(self) -> None:
         try:  # best-effort kick; the 5-minute timer is the floor
-            subprocess.run(self._systemctl, capture_output=True, timeout=30)
+            subprocess.run(self._systemctl, capture_output=True, timeout=5)
         except (OSError, subprocess.SubprocessError) as e:
             print(f"dispatcher kick failed (non-fatal): {e}")
 

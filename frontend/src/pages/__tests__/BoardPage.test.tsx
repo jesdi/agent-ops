@@ -321,6 +321,47 @@ test('same issue number on two repositories renders two distinct ghosts', async 
   expect(within(queued).getAllByText('next')).toHaveLength(1)
 })
 
+test('ghosts sharing an issue number get distinct action groups', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    columns: withGhosts([
+      { number: 73, repository: 'alpha', title: 'Alpha work', project: 'widget', url: 'u', score: 8.5, boost: 0 },
+      { number: 73, repository: 'beta', title: 'Beta work', project: 'widget', url: 'u', score: 3.5, boost: 0 },
+    ]),
+  })))
+  renderWithProviders(<BoardPage />)
+  const queued = await screen.findByTestId('column-queued')
+  await userEvent.click(within(queued).getByRole('button', { name: 'Details for alpha#73' }))
+  await userEvent.click(within(queued).getByRole('button', { name: 'Details for beta#73' }))
+  const alpha = within(queued).getByRole('group', { name: 'alpha#73' })
+  const beta = within(queued).getByRole('group', { name: 'beta#73' })
+  expect(within(beta).getAllByRole('button', { name: 'Boost' })).toHaveLength(1)
+  expect(within(beta).getByRole('button', { name: 'Boost' }))
+    .not.toBe(within(alpha).getByRole('button', { name: 'Boost' }))
+  expect(within(queued).queryByRole('group', { name: '#73' })).toBeNull()
+  expect(within(queued).queryByRole('group', { name: '73' })).toBeNull()
+})
+
+test('several expanded ghosts each expose their own named action group', async () => {
+  server.use(http.get('/api/board', () => HttpResponse.json({
+    ...fx_board,
+    columns: withGhosts([
+      { number: 73, repository: 'widget', project: 'widget', title: 'Ship dark mode', url: 'u', score: 8.5, boost: 0 },
+      { number: 74, repository: 'widget', project: 'widget', title: 'Fix flaky test', url: 'u', score: 3.5, boost: 0 },
+    ]),
+  })))
+  renderWithProviders(<BoardPage />)
+  const queued = await screen.findByTestId('column-queued')
+  await userEvent.click(within(queued).getByRole('button', { name: 'Details for widget#73' }))
+  await userEvent.click(within(queued).getByRole('button', { name: 'Details for widget#74' }))
+  const groups = within(queued).getAllByRole('group')
+  expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['widget#73', 'widget#74'])
+  for (const g of groups) {
+    expect(within(g).getAllByRole('button').map((b) => b.textContent))
+      .toEqual(['Boost', 'Demote', 'Next', 'Ready'])
+  }
+})
+
 test('a failed queue action shows its error marker in the Queued header', async () => {
   server.use(
     http.get('/api/board', () => HttpResponse.json({

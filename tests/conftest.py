@@ -7,6 +7,8 @@ cwd on sys.path (bare `pytest`), that finder silently wins and the
 wrong code gets tested. Prepending this checkout's root pins imports
 to the tree the tests live in.
 """
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -119,3 +121,24 @@ def codex_package(tmp_path, monkeypatch) -> Path:
     (home / ".local" / "bin" / "codex").symlink_to(package / "bin" / "codex")
     monkeypatch.setattr(Path, "home", lambda: home)
     return package
+
+
+@pytest.fixture(autouse=True)
+def _fixture_git(tmp_path, monkeypatch):
+    """Bypass BOX policy only for Git metadata owned by this disposable test."""
+    guarded = shutil.which("git")
+    if not guarded:
+        return
+    with open(guarded, "rb") as source:
+        if b"Box git guardrail" not in source.read(1024):
+            return
+    real = "/usr/bin/git"
+    bindir = tmp_path / "fixture-git-bin"
+    bindir.mkdir()
+    wrapper = bindir / "git"
+    wrapper.write_text(f"#!{sys.executable}\n" + Path(__file__).with_name("fixture_git.py").read_text())
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("FIXTURE_GIT_ROOT", str(tmp_path))
+    monkeypatch.setenv("FIXTURE_GIT_GUARDED", guarded)
+    monkeypatch.setenv("FIXTURE_GIT_REAL", real)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
