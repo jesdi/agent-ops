@@ -570,7 +570,8 @@ class GateView(BaseModel):
     note: str                  # verdict_note: the binding window and its numbers
     minutes_to_reset: float    # of the binding window; 0 when there is none
     binding: WindowView | None
-    reason: str = "ok"         # the usage Verdict's reason; "unavailable" = dead login
+    # the usage Verdict's reason; "unavailable" = dead login. Server-side only.
+    reason: str = Field("ok", exclude=True)
 
 
 class PriorityView(BaseModel):
