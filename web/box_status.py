@@ -82,9 +82,10 @@ def _json(path: Path) -> dict | None:
 
 def _time(raw: object) -> datetime | None:
     try:
-        return datetime.fromisoformat(str(raw))
+        t = datetime.fromisoformat(str(raw))
     except ValueError:
         return None
+    return t if t.tzinfo else None  # a naive stamp can't be compared with the aware clock
 
 
 def _usages(cfg: config.Config, root: Path, now: datetime) -> dict:
@@ -104,7 +105,9 @@ def _quarantine(root: Path) -> list[str]:
     lines = []
     for p in sorted((root / "quarantine").glob("*.json")):
         parsed, rec = state.parse_task_key(p.stem), _json(p)
-        if parsed and rec:
+        if parsed and rec is None:
+            lines.append(f"unknown (unreadable quarantine/{p.name})")
+        elif parsed:
             lines.append(f"quarantine: {parsed[0]}#{parsed[1]} blocked by "
                          f"{rec.get('blocker_repo')}#{rec.get('blocker_issue')}")
     return lines
