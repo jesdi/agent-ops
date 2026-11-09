@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from web.box_status import parse_units
+from web.box_status import parse_journal, parse_units
 
 SHOW = """Id=agent-ops-dispatcher.timer
 ActiveState=active
@@ -29,3 +29,13 @@ def test_parse_units_reads_each_block_and_skips_units_without_a_stamp():
 
 def test_parse_units_of_empty_output_is_empty():
     assert parse_units("") == {}
+
+
+def test_parse_journal_reads_json_lines_and_skips_malformed_ones():
+    good = ('{"__REALTIME_TIMESTAMP":"1762700000000000","_SYSTEMD_USER_UNIT":'
+            '"agent-ops-web.service","PRIORITY":"3","MESSAGE":"boom"}')
+    entries = parse_journal(f"{good}\nnot json\n{{\"MESSAGE\":\"no stamp\"}}\n")
+
+    assert len(entries) == 1
+    assert (entries[0].unit, entries[0].priority, entries[0].message) == (
+        "agent-ops-web.service", 3, "boom")

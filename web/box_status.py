@@ -6,10 +6,12 @@ the injected `Probes`, which only query."""
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, NamedTuple, TextIO
 from urllib.parse import quote
 
@@ -32,13 +34,16 @@ class Unit(NamedTuple):
 class Probes:
     """Every outside source the report reads; each one only queries.
     units: every `agent-ops-*` user unit and timer, by name.
-    tabs: the live herdr tab labels."""
+    tabs: the live herdr tab labels.
+    journal: the `agent-ops` journal entries (.time, .unit, .priority, .message),
+    oldest first; raises with journalctl's stderr when it fails."""
     units: Callable[[], dict[str, Unit]]
     tabs: Callable[[], set[str]]
+    journal: Callable[[], list] = lambda: []
 
 
 def system_probes() -> Probes:
-    return Probes(units=_systemd_units, tabs=_herdr_tabs)
+    return Probes(units=_systemd_units, tabs=_herdr_tabs, journal=_journal)
 
 
 def _systemd_units() -> dict[str, Unit]:
@@ -62,6 +67,33 @@ def parse_units(show: str) -> dict[str, Unit]:
             units[props["Id"]] = Unit(props["ActiveState"],
                                       datetime.fromtimestamp(int(stamp)).astimezone())
     return units
+
+
+def _journal() -> list:
+    proc = subprocess.run(
+        ["journalctl", "--user", "-u", "agent-ops-*", "--since", "6 hours ago",
+         "-o", "json", "--no-pager"],
+        capture_output=True, text=True, timeout=20)
+    if proc.returncode:
+        raise RuntimeError(f"journalctl failed: {proc.stderr.strip()}")
+    return parse_journal(proc.stdout)
+
+
+def parse_journal(output: str) -> list:
+    """`journalctl -o json` lines; a malformed line is skipped."""
+    entries = []
+    for line in output.splitlines():
+        try:
+            j = json.loads(line)
+            msg = j.get("MESSAGE")
+            entries.append(SimpleNamespace(
+                time=datetime.fromtimestamp(int(j["__REALTIME_TIMESTAMP"]) / 1e6, timezone.utc),
+                unit=j.get("_SYSTEMD_USER_UNIT") or j.get("USER_UNIT") or "",
+                priority=int(j.get("PRIORITY", 6)),
+                message=msg if isinstance(msg, str) else ""))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return entries
 
 
 def _herdr_tabs() -> set[str]:
@@ -282,6 +314,23 @@ def _questions_row(tasks, now, url) -> str:
     return _lines([q for q in (_question(t, now, url) for t in live) if q])
 
 
+_ERROR_RE = re.compile(r"Traceback|Error|ERROR|Exception|Failed with result")
+
+
+def _errors_row(entries, now) -> str:
+    """The last 20 warning-or-worse or error-looking lines of the past 6 h."""
+    since = now - timedelta(hours=6)
+    hits = [e for e in entries
+            if e.time >= since and e.unit.startswith("agent-ops-")
+            and (e.priority <= 4 or _ERROR_RE.search(e.message))]
+    return _lines([f"{_hhmm(e.time, now)}  {e.unit}  {e.message[:200]}"
+                   for e in hits[-20:]])
+
+
+def _or_unknown(value, why, render, what="") -> str:
+    return render(value) if value is not None else f"unknown ({what}{why})"
+
+
 def _guard(probe: Callable):
     """(value, None) or (None, why): a source that fails degrades one row."""
     try:
@@ -295,6 +344,7 @@ def run(config_path: str, now: datetime, probes: Probes, out: TextIO) -> int:
     root = Path(cfg.state_dir)
     units, units_why = _guard(probes.units)
     tabs, tabs_why = _guard(probes.tabs)
+    journal, journal_why = _guard(probes.journal)
     tasks = state.load_all(root)
     hb = _json(root / "pass.json")
     marker = _json(root / "auth-dark")
@@ -307,14 +357,15 @@ def run(config_path: str, now: datetime, probes: Probes, out: TextIO) -> int:
     names = {p.name: p.paused for p in cfg.projects}
     rows = [
         ("dispatcher", _dispatcher_row(hb, units, now)),
-        ("units", _units_row(units, now) if units is not None
-         else f"unknown ({units_why})"),
+        ("units", _or_unknown(units, units_why, lambda u: _units_row(u, now))),
         ("projects", " · ".join(f"{n}: {'PAUSED' if p else 'active'}"
                                 for n, p in names.items())),
         ("holds", _holds(root, request, marker, now)),
         ("slots", f"{_used(tasks, triage_tab)}/{cfg.capacity}"),
         ("tasks", _tasks_row(root, tasks, now, tabs, tabs_why)),
         ("questions", _questions_row(tasks, now, cfg.console_url)),
+        ("errors", _or_unknown(journal, journal_why, lambda j: _errors_row(j, now),
+                                "journalctl failed: ")),
     ]
     print(f"VERDICT  {verdict}", file=out)
     for label, text in rows:
