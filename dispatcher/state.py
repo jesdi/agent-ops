@@ -511,8 +511,8 @@ def load_all(state_dir: str | Path) -> list[TaskState]:
     for p in root.glob("task-*.json"):
         try:
             ts = _read(p)
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            continue
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue   # FileNotFoundError: deleted between the glob and the read
         # Identity comes from the JSON, never the filename stem.
         if ts is not None:
             tasks.append(ts)
