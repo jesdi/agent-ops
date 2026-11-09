@@ -76,8 +76,13 @@ def _journal() -> list:
         capture_output=True, text=True, timeout=20)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"exit {proc.returncode}")
+    return parse_journal(proc.stdout)
+
+
+def parse_journal(output: str) -> list:
+    """`journalctl -o json` lines; a malformed line is skipped."""
     entries = []
-    for line in proc.stdout.splitlines():
+    for line in output.splitlines():
         try:
             j = json.loads(line)
             msg = j.get("MESSAGE")
@@ -322,6 +327,10 @@ def _errors_row(entries, now) -> str:
                    for e in hits[-20:]])
 
 
+def _or_unknown(value, why, render, what="") -> str:
+    return render(value) if value is not None else f"unknown ({what}{why})"
+
+
 def _guard(probe: Callable):
     """(value, None) or (None, why): a source that fails degrades one row."""
     try:
@@ -348,16 +357,15 @@ def run(config_path: str, now: datetime, probes: Probes, out: TextIO) -> int:
     names = {p.name: p.paused for p in cfg.projects}
     rows = [
         ("dispatcher", _dispatcher_row(hb, units, now)),
-        ("units", _units_row(units, now) if units is not None
-         else f"unknown ({units_why})"),
+        ("units", _or_unknown(units, units_why, lambda u: _units_row(u, now))),
         ("projects", " · ".join(f"{n}: {'PAUSED' if p else 'active'}"
                                 for n, p in names.items())),
         ("holds", _holds(root, request, marker, now)),
         ("slots", f"{_used(tasks, triage_tab)}/{cfg.capacity}"),
         ("tasks", _tasks_row(root, tasks, now, tabs, tabs_why)),
         ("questions", _questions_row(tasks, now, cfg.console_url)),
-        ("errors", _errors_row(journal, now) if journal is not None
-         else f"unknown (journalctl failed: {journal_why})"),
+        ("errors", _or_unknown(journal, journal_why, lambda j: _errors_row(j, now),
+                                "journalctl failed: ")),
     ]
     print(f"VERDICT  {verdict}", file=out)
     for label, text in rows:
