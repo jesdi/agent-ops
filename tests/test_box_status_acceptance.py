@@ -236,6 +236,12 @@ def test_parked_login_keeps_its_slot(box):
     assert verdict(box.report()[1]) == BLOCKED + "capacity-full (3/3 slots)"
 
 
+def test_parked_login_task_keeps_its_live_tab_name(box):
+    box.task(284, park=PARK_LOGIN)
+    box.tabs = {"task-agent-ops-284"}
+    assert "agent-ops#284  implement  parked-login  task-agent-ops-284  2h" in box.report()[1]
+
+
 def test_quarantine_record_is_listed_without_any_network_call(box, monkeypatch):
     import subprocess
     import urllib.request

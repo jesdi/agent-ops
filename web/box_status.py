@@ -241,15 +241,14 @@ def _unreadable(root: Path) -> list[str]:
 
 def _task_line(t: state.TaskState, now, tabs, tabs_why) -> str:
     ref = f"{t.repository}#{t.issue}"
-    if state.consumes_capacity(t) and not t.park:
+    word = f"{t.park} {t.park_reason}" if t.park == state.PARK_HUMAN and t.park_reason else t.park
+    if state.consumes_capacity(t):  # unparked or parked-login: a session runs
+        tab = sessions.session_name(t.repository, t.issue)
         if tabs is None:
-            live = f"unknown ({tabs_why})"
+            word = word or f"unknown ({tabs_why})"
         else:
-            tab = sessions.session_name(t.repository, t.issue)
-            live = f"live  {tab}" if tab in tabs else "live"
-        return f"{ref}  {t.stage.value}  {live}  {_age(t, now)}"
-    park = f"{t.park} {t.park_reason}" if t.park == state.PARK_HUMAN and t.park_reason else t.park
-    return f"{ref}  {t.stage.value}  {park}  {_age(t, now)}"
+            word = "  ".join(filter(None, [word or "live", tab if tab in tabs else ""]))
+    return f"{ref}  {t.stage.value}  {word}  {_age(t, now)}"
 
 
 def _lines(lines: list[str]) -> str:
