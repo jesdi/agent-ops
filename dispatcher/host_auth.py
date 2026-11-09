@@ -3,7 +3,7 @@
 `begin(repos_by_project, access)` runs once per pass and mints one token per
 installation and project. The HostAuth it returns answers every host call: the
 installation token's env, None (the stored auth) for a repository the
-installation doesn't reach or with no App, and HostWait, never the stored auth,
+installation doesn't reach, and HostWait, never the stored auth,
 when the App errored for that repository: its host work waits for the next pass.
 """
 from __future__ import annotations
@@ -52,12 +52,10 @@ class HostAuth:
         return {} if found is None else {"env": found}
 
 
-STORED = HostAuth()   # no App: every repository on the stored auth
+STORED = HostAuth()   # before a pass begins: every repository on the stored auth
 
 
-def begin(projects: list[list[str]], access: github_app.Access | None) -> HostAuth:
-    if access is None:
-        return STORED
+def begin(projects: list[list[str]], access: github_app.Access) -> HostAuth:
     tokens, waits = {}, {}
     for repos in projects:
         try:

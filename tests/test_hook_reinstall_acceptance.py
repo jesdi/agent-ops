@@ -11,7 +11,7 @@ import pytest
 import dispatcher.workspace as workspace
 from dispatcher import herdr
 from dispatcher.sessions import Sessions
-from tests.test_containers import make_worktree
+from tests.test_containers import TOKENS, make_worktree
 from tests.test_workspace import repository
 
 REPO_HOOK = Path(__file__).resolve().parent.parent / "hooks" / "stop-hook.sh"
@@ -50,11 +50,13 @@ def wt_seen(tmp_path, monkeypatch):
 
 
 def spawn(wt, model="claude-fable-5"):
-    Sessions(state_dir=Path(wt).parent / "state").spawn_stage("acme", 42, wt, "P", "plan", model)
+    Sessions(state_dir=Path(wt).parent / "state").spawn_stage("acme", 42, wt, "P", "plan", model,
+                                                          gh_config=TOKENS)
 
 
 def resume(wt, model="claude-fable-5"):
-    Sessions().resume("acme", 42, wt, "go", model, session_id="recorded-session")
+    Sessions().resume("acme", 42, wt, "go", model, session_id="recorded-session",
+                      gh_config=TOKENS)
 
 
 def launches():
@@ -138,9 +140,10 @@ def test_dry_run_writes_nothing(tmp_path, wt_seen, op):
     before = snapshot(wt)
     s = Sessions(dry_run=True)
     if op == "spawn_stage":
-        s.spawn_stage("acme", 42, wt, "P", "plan", "claude-fable-5")
+        s.spawn_stage("acme", 42, wt, "P", "plan", "claude-fable-5", gh_config=TOKENS)
     else:
-        s.resume("acme", 42, wt, "go", "claude-fable-5", session_id="recorded-session")
+        s.resume("acme", 42, wt, "go", "claude-fable-5", session_id="recorded-session",
+                 gh_config=TOKENS)
     assert snapshot(wt) == before
     assert not (Path(wt) / ".claude").exists()
     assert not seen

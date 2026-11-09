@@ -23,7 +23,7 @@ class LaunchBoundarySessions(RecordingSessions):
         self.at_launch = []
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name,
-                    model, effort="", second=None, gh_config=""):
+                    model, effort="", second=None, *, gh_config):
         self.at_launch.append({
             "repository": repository, "issue": issue, "worktree": worktree,
             "prompt": prompt,
@@ -32,7 +32,7 @@ class LaunchBoundarySessions(RecordingSessions):
         if self.reject:
             raise RuntimeError("Synthetic fresh session launch failure")
         super().spawn_stage(repository, issue, worktree, prompt, stage_name,
-                            model, effort, second)
+                            model, effort, second, gh_config=gh_config)
 
 
 def _observe_launch(c, dependencies, *, reject=False):

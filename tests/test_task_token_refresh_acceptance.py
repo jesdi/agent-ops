@@ -78,24 +78,25 @@ class Sessions(FakeSessions):
         self.clones, self.launches = clones, []
 
     def _launch(self, repository, issue, worktree, model, gh_config):
-        extra = {"gh_config": gh_config} if gh_config else {}
         argv = containers.session_cmd(session_name(repository, issue), worktree, "2g", "2",
-                                      model, "P", clone=self.clones[repository], **extra)
-        hosts = Path(gh_config, "hosts.yml") if gh_config else None
+                                      model, "P", clone=self.clones[repository],
+                                      gh_config=gh_config)
+        hosts = Path(gh_config, "hosts.yml")
         self.launches.append(dict(
             repository=repository, issue=issue, gh_config=gh_config, argv=argv,
-            hosts=hosts.read_text() if hosts and hosts.exists() else None))
+            hosts=hosts.read_text() if hosts.exists() else None))
         self.alive_set.add(issue)
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model, effort="",
-                    second=None, gh_config=""):
-        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort, second)
+                    second=None, *, gh_config):
+        super().spawn_stage(repository, issue, worktree, prompt, stage_name, model, effort, second,
+                            gh_config=gh_config)
         self._launch(repository, issue, worktree, model, gh_config)
 
     def resume(self, repository, issue, worktree, message, model, effort="", second=None,
-               *, session_id=None, gh_config=""):
+               *, session_id=None, gh_config):
         super().resume(repository, issue, worktree, message, model, effort, second,
-                       session_id=session_id)
+                       session_id=session_id, gh_config=gh_config)
         self._launch(repository, issue, worktree, model, gh_config)
 
     def end(self, repository, issue):
@@ -117,8 +118,7 @@ class Box:
 
     def run(self):
         deps = main.Deps(github=github.GitHubClient(), sessions=self.sessions,
-                         notifier=FakeNotifier())
-        deps.app, deps.clock = self.app, self.clock
+                         notifier=FakeNotifier(), app=self.app, clock=self.clock)
         self.world.calls.clear()
         main.run_pass(self.cfg, deps)
 
@@ -314,7 +314,7 @@ def test_the_real_sessions_resume_mounts_the_task_token_dir_and_never_the_host_g
     box.spawn_all(("analytics",))
     real = RealSessions(state_dir=box.cfg.state_dir, clones=box.sessions.clones)
     box.sessions.resume = lambda repository, issue, worktree, message, model, effort="", \
-        second=None, *, session_id=None, gh_config="": real.resume(
+        second=None, *, session_id=None, gh_config: real.resume(
             repository, issue, worktree, message, model, effort, second,
             session_id=session_id, gh_config=gh_config)
     write_session(box.cfg.state_dir, "analytics", 7, SessionRecord("recorded-session", "spec"))

@@ -99,13 +99,13 @@ def _prune_records(state_dir, holders: dict[str, str]) -> None:
             record.unlink(missing_ok=True)
 
 
-def sync(access: github_app.Access | None, state_dir, holders: dict[str, str],
+def sync(access: github_app.Access, state_dir, holders: dict[str, str],
          now: datetime) -> list[str]:
     """Keep a token directory only for `holders` (task key -> its repository):
     any other directory goes with its expiry record, a crash's leftovers too.
-    A holder's token with under REFRESH left is re-minted (no App access: none
-    is). Returns why each refresh that failed waits for the next pass; the
-    current hosts.yml stays in place."""
+    A holder's token with under REFRESH left is re-minted. Returns why each
+    refresh that failed waits for the next pass; the current hosts.yml stays
+    in place."""
     _prune_records(state_dir, holders)
     root = Path(state_dir) / TOKENS
     waits = []
@@ -113,7 +113,7 @@ def sync(access: github_app.Access | None, state_dir, holders: dict[str, str],
         key = directory.name
         if key not in holders:
             shutil.rmtree(directory, ignore_errors=True)
-        elif access is not None and _due(state_dir, key, now):
+        elif _due(state_dir, key, now):
             try:
                 issue(access, state_dir, key, holders[key])
             except (github_app.AppError, github_app.NoAccess, OSError) as exc:

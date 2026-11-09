@@ -18,7 +18,7 @@ from dispatcher.state import (
     NO_SLOT, PARK_HUMAN, SessionRecord, Stage, load, read_session,
     write_session,
 )
-from tests.test_containers import make_worktree
+from tests.test_containers import TOKENS, make_worktree
 from tests.test_main import (
     FakeGitHub, FakeSessions, cfg, deps, make_task, write_tickets,
 )
@@ -46,20 +46,20 @@ class RecordingSessions(FakeSessions):
         self.resume_records = []
 
     def resume(self, repository, issue, worktree, message, model, effort="",
-               second=None, *, session_id=None, gh_config=""):
+               second=None, *, session_id=None, gh_config):
         self.resume_records.append({
             "repository": repository, "issue": issue, "worktree": worktree,
             "message": message, "model": model, "session_id": session_id,
         })
 
     def spawn_stage(self, repository, issue, worktree, prompt, stage_name, model,
-                    effort="", second=None, gh_config=""):
+                    effort="", second=None, *, gh_config):
         super().spawn_stage(repository, issue, worktree, prompt, stage_name,
-                            model, effort, second)
+                            model, effort, second, gh_config=gh_config)
         if self.launch_real:
             Sessions(state_dir=self.state_dir).spawn_stage(
                 repository, issue, worktree, prompt, stage_name, model,
-                effort=effort, second=second)
+                effort=effort, second=second, gh_config=gh_config)
 
 
 def _config(tmp_path, monkeypatch, model=CODEX_MODEL):
@@ -123,7 +123,8 @@ def test_codex_tab_command_names_the_recorded_id_and_quotes_the_message(
     assert runtimes.CODEX.resume(CODEX_ID, quoted) == f"resume {CODEX_ID} {quoted}"
     assert runtimes.CODEX.resume_cmd(CODEX_ID, quoted) == f"codex resume {CODEX_ID} {quoted}"
     assert shlex.split(runtimes.CODEX.resume_cmd(CODEX_ID)) == ["codex", "resume", CODEX_ID]
-    Sessions().resume("acme", 42, wt, message, CODEX_MODEL, session_id=CODEX_ID)
+    Sessions().resume("acme", 42, wt, message, CODEX_MODEL, session_id=CODEX_ID,
+                      gh_config=TOKENS)
     command = next(call[3] for call in calls if call[:2] == ["pane", "run"])
     assert " codex " in command
     assert command.endswith(f" resume {CODEX_ID} {quoted}")
@@ -141,7 +142,8 @@ def test_claude_tab_command_names_the_recorded_id_and_quotes_the_message(
     assert runtimes.CLAUDE.resume(CLAUDE_ID, quoted) == f"--resume {CLAUDE_ID} {quoted}"
     assert runtimes.CLAUDE.resume_cmd(CLAUDE_ID, quoted) == f"claude --resume {CLAUDE_ID} {quoted}"
     assert shlex.split(runtimes.CLAUDE.resume_cmd(CLAUDE_ID)) == ["claude", "--resume", CLAUDE_ID]
-    Sessions().resume("acme", 42, wt, message, CLAUDE_MODEL, session_id=CLAUDE_ID)
+    Sessions().resume("acme", 42, wt, message, CLAUDE_MODEL, session_id=CLAUDE_ID,
+                      gh_config=TOKENS)
     command = next(call[3] for call in calls if call[:2] == ["pane", "run"])
     assert " claude " in command
     assert command.endswith(f" --resume {CLAUDE_ID} {quoted}")

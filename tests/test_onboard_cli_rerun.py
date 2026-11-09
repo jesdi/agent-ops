@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from dispatcher import onboard, onboard_cli
+from tests.test_main import EveryRepoApp
 from tests.test_onboard import FakeSh, NOW, box, no_get, record, state  # noqa: F401
 
 ADD = ("analytics", "jesdi/analytics", "--board", "jesdi/4")
@@ -52,7 +53,7 @@ class Kick:
 
     def __call__(self, argv, cwd=None, env=None):
         self.calls.append(argv)
-        onboard.run(self.config, sh=FakeSh(), get=no_get, now=NOW)
+        onboard.run(self.config, sh=FakeSh(), get=no_get, now=NOW, app=EveryRepoApp())
         return ""
 
 

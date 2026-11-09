@@ -71,11 +71,12 @@ def test_onboarding_requires_identity_and_first_party_writes(console):
 def run_unit(tmp_path, monkeypatch):
     from pathlib import Path
     from dispatcher import onboard
+    from tests.test_main import EveryRepoApp
     from tests.test_onboard import LIVE, FakeSh
     monkeypatch.setenv("HOME", str(Path.home()))
     config = tmp_path / "targets.yaml"
     config.write_text(LIVE)
-    onboard.run(config, sh=FakeSh())
+    onboard.run(config, sh=FakeSh(), app=EveryRepoApp())
 
 
 def test_cli_started_record_is_reviewed_and_confirmed_in_console(console, tmp_path, monkeypatch):
