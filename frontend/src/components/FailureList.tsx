@@ -2,7 +2,7 @@ import type { FailuresView } from '../lib/api'
 import { relativeTime } from '../lib/format'
 import { chip } from '../lib/tone'
 
-export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
+export function FailureList({ failures, onRetry, errors = {}, busy = new Set() }: {
   failures: FailuresView
   onRetry: (repository: string, issue: number) => void
   /**
@@ -12,7 +12,8 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
    * an error slot.
    */
   errors?: Readonly<Record<string, string | null>>
-  busy?: boolean
+  /** Keys (`${repository}#${task_issue}`) with a retry in flight. */
+  busy?: ReadonlySet<string>
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -46,7 +47,8 @@ export function FailureList({ failures, onRetry, errors = {}, busy = false }: {
               <button
                 type="button"
                 className="ml-auto rounded border px-2 py-0.5 text-xs disabled:opacity-50"
-                disabled={busy}
+                disabled={busy.has(`${q.repository}#${q.task_issue}`)}
+                aria-label={`Retry ${q.repository} task #${q.task_issue}`}
                 onClick={() => onRetry(q.repository, q.task_issue)}
               >
                 Retry
