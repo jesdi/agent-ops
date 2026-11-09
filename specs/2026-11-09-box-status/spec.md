@@ -44,7 +44,8 @@
      record as `<repo>#<issue> blocked by <blocker_repo>#<blocker_issue>`; otherwise `none`.
    - `slots`: used / capacity.
    - `tasks`: each task file not done, as `<repo>#<issue>  <stage>  live|<park>[/<reason>]`
-     with its age since `updated_at`, and the herdr tab name when the tab is live.
+     with its age since `updated_at`, and the herdr tab name when the tab is live. An unparked
+     task whose herdr tab is gone shows `no session` instead of `live`.
    - `questions`: every task waiting on the operator: each `operator_request` (`plan approval`
      or `answers`) with its page path, age and the console link
      `<console_url>/task/<repository>/<issue>/review`; and every task parked `parked` with
@@ -160,7 +161,7 @@ clock is 2026-11-06 12:00 UTC.
 - **Given** the usage cache's gate does not admit the policy default model, with 40 minutes to
   reset, and no triage hold or auth-dark marker
 - **When** the operator runs `agent-ops status`
-- **Then** the verdict is `not claiming: budget-blocked (resets in 40m)`
+- **Then** the verdict is `not claiming: budget-blocked (resets in 40m, usage read <age> ago)`
 
 ### Scenario: capacity full
 

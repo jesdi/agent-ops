@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from typing import Annotated, Collection, Literal, Mapping, NamedTuple
+from typing import Annotated, Collection, Literal, Mapping
 
 from pydantic import BaseModel, Field, StrictBool, StrictStr
 
@@ -802,9 +802,8 @@ def _is_candidate(r: dict) -> bool:
             and "auto" in (r.get("labels") or []))
 
 
-class Blocker(NamedTuple):
-    name: str       # dispatcher-down|claims-paused|auth-dark|budget-blocked|projects-paused|capacity-full
-    evidence: str
+Blocker = Literal["dispatcher-down", "claims-paused", "auth-dark",
+                  "budget-blocked", "projects-paused", "capacity-full"]
 
 
 def local_blocker(heartbeat: dict | None, *, now: datetime,
@@ -817,16 +816,15 @@ def local_blocker(heartbeat: dict | None, *, now: datetime,
     Order: heartbeat, triage hold, usage (unavailable = auth-dark, any other
     denial = budget-blocked), every project paused, no claim room."""
     if _pass_eta(heartbeat, now) is None:
-        return Blocker("dispatcher-down", "no fresh pass heartbeat")
+        return "dispatcher-down"
     if claims_paused:
-        return Blocker("claims-paused", "triage sweep pending")
+        return "claims-paused"
     if not gate.admitted:
-        return Blocker("auth-dark" if gate.reason == "unavailable"
-                       else "budget-blocked", gate.note)
+        return "auth-dark" if gate.reason == "unavailable" else "budget-blocked"
     if projects and all(p.paused for p in projects.values()):
-        return Blocker("projects-paused", "every project is paused")
+        return "projects-paused"
     if claim_room(capacity, max_open, tasks, triage_running) <= 0:
-        return Blocker("capacity-full", "no free claim room")
+        return "capacity-full"
     return None
 
 
@@ -882,11 +880,11 @@ def _early_verdict(blocker: Blocker | None, gate: GateView,
     """The forecast when the shared gate alone decides it, else None."""
     if blocker is None:
         return None
-    if blocker.name == "dispatcher-down":
+    if blocker == "dispatcher-down":
         return NextClaimView(verdict="unknown", next_pass_eta="")
-    if blocker.name in ("claims-paused", "auth-dark"):
-        return NextClaimView(verdict=blocker.name, next_pass_eta=eta)
-    if blocker.name == "budget-blocked":
+    if blocker in ("claims-paused", "auth-dark"):
+        return NextClaimView(verdict=blocker, next_pass_eta=eta)
+    if blocker == "budget-blocked":
         return NextClaimView(verdict="budget-blocked", next_pass_eta=eta,
                              minutes_to_reset=gate.minutes_to_reset,
                              blocked_by=gate.note)

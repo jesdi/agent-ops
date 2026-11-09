@@ -16,7 +16,6 @@ from typing import Callable, NamedTuple, TextIO
 from urllib.parse import quote
 
 from dispatcher import config, herdr, sessions, state, triage
-from dispatcher.claims import box_free
 from dispatcher.usage import unavailable
 from dispatcher.usage_providers import cache_path, usage_from_json
 from web import read_model
@@ -163,22 +162,23 @@ def _verdict(cfg, root, now, units, tabs, tasks, hb, usages, marker) -> str:
         hb, now=now, tasks=tasks, capacity=cfg.capacity, gate=gate,
         claims_paused=triage_tab or (root / triage.REQUEST_FILE).exists(),
         triage_running=triage_tab, projects=projects, max_open=cfg.max_open)
-    if blocker and blocker.name == "dispatcher-down":
-        return _stale_heartbeat(units, hb, now)
+    if blocker == "dispatcher-down":
+        return _stale_heartbeat(root, units, hb, now)
     timer_down = _timer_down(units)
     if timer_down:
         return timer_down
     if blocker is None:
         return "no local blocker — candidates need GitHub (see console)"
-    return f"not claiming: {blocker.name} ({_evidence(blocker.name, gate, usages, marker, request, projects, tasks, cfg, now, triage_tab)})"
+    return f"not claiming: {blocker} ({_evidence(blocker, gate, usages, marker, request, projects, tasks, cfg, now, triage_tab)})"
 
 
-def _stale_heartbeat(units, hb, now) -> str:
-    """A stale heartbeat while the service is active is a long pass, not a dead dispatcher."""
+def _stale_heartbeat(root, units, hb, now) -> str:
+    """A stale heartbeat while the service runs is a long pass, not a dead
+    dispatcher. A oneshot service sits in `activating` for its whole run."""
     service = (units or {}).get(SERVICE)
-    if service and service.state == "active":
+    if service and service.state in ("active", "activating"):
         return f"dispatcher busy (pass running since {_hhmm(service.since, now)})"
-    return f"not claiming: dispatcher-down ({_stale(hb, now)})"
+    return f"not claiming: dispatcher-down ({_last_pass(root, hb, now)})"
 
 
 def _timer_down(units) -> str | None:
@@ -191,10 +191,14 @@ def _timer_down(units) -> str | None:
     return f"not claiming: dispatcher-down ({TIMER} {timer.state if timer else 'not found'})"
 
 
-def _stale(hb: dict | None, now: datetime) -> str:
-    finished = _time((hb or {}).get("finished_at"))
+def _last_pass(root: Path, hb: dict | None, now: datetime) -> str:
+    """The heartbeat in words; a file that is there but unusable is not "no pass.json"."""
+    if hb is None:
+        return ("unknown (unreadable pass.json)" if (root / "pass.json").exists()
+                else "no pass.json")
+    finished = _time(hb.get("finished_at"))
     if finished is None:
-        return "no pass.json"
+        return "unknown (pass.json finished_at missing or naive)"
     return (f"last pass {_minutes(finished, now)}m ago, "
             f"interval {hb.get('interval_minutes')}m")
 
@@ -219,10 +223,8 @@ def _used(tasks, triage_tab: bool) -> int:
     return len(state.active(tasks)) + int(triage_tab)
 
 
-def _dispatcher_row(hb, units, now) -> str:
-    finished = _time((hb or {}).get("finished_at"))
-    last = (f"last pass {_minutes(finished, now)}m ago, "
-            f"interval {hb.get('interval_minutes')}m" if finished else "no pass.json")
+def _dispatcher_row(root, hb, units, now) -> str:
+    last = _last_pass(root, hb, now)
     if units is None:
         return f"{last}, timer unknown"
     timer = units.get(TIMER)
@@ -273,13 +275,15 @@ def _unreadable(root: Path) -> list[str]:
 
 def _task_line(t: state.TaskState, now, tabs, tabs_why) -> str:
     ref = f"{t.repository}#{t.issue}"
-    word = f"{t.park} {t.park_reason}" if t.park == state.PARK_HUMAN and t.park_reason else t.park
+    word = f"{t.park}/{t.park_reason}" if t.park == state.PARK_HUMAN and t.park_reason else t.park
     if state.consumes_capacity(t):  # unparked or parked-login: a session runs
         tab = sessions.session_name(t.repository, t.issue)
         if tabs is None:
             word = word or f"unknown ({tabs_why})"
         else:
-            word = "  ".join(filter(None, [word or "live", tab if tab in tabs else ""]))
+            live = tab in tabs
+            word = "  ".join(filter(None, [word or ("live" if live else "no session"),
+                                           tab if live else ""]))
     return f"{ref}  {t.stage.value}  {word}  {_age(t, now)}"
 
 
@@ -356,7 +360,7 @@ def run(config_path: str, now: datetime, probes: Probes, out: TextIO) -> int:
         verdict += f" · herdr unreachable ({tabs_why})"
     names = {p.name: p.paused for p in cfg.projects}
     rows = [
-        ("dispatcher", _dispatcher_row(hb, units, now)),
+        ("dispatcher", _dispatcher_row(root, hb, units, now)),
         ("units", _or_unknown(units, units_why, lambda u: _units_row(u, now))),
         ("projects", " · ".join(f"{n}: {'PAUSED' if p else 'active'}"
                                 for n, p in names.items())),
