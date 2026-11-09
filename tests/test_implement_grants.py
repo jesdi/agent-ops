@@ -34,7 +34,7 @@ def test_implement_launch_bounds_driver_roles_to_current_grants(tmp_path, monkey
     (wt / '.git').write_text(f'gitdir: {tmp_path}/clone/.git/worktrees/task-42\n')
     monkeypatch.setenv('AGENT_OPS_STATE_DIR', str(tmp_path / 'state'))
     cmd = containers.session_cmd('task-42', str(wt), '2g', '2', primary.model_id, 'prompt',
-                                 second=runtime_grant)
+                                 second=runtime_grant, gh_config=str(tmp_path / 'gh'))
     assert ('/opt/codex' in cmd) == granted
     assert ('/root/.codex' in cmd) == granted
     assert '--models .agent/runtime-models.json' in prompt
