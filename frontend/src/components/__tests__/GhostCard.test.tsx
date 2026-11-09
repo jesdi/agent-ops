@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { vi } from 'vitest'
@@ -134,4 +134,76 @@ test('a queued card has no pick yet, so it offers another provider too', async (
   await expand()
   await userEvent.click(screen.getByRole('button', { name: /fable-5 capacity limited/i }))
   expect(screen.getByRole('button', { name: /run with gpt-5-codex/i })).toBeInTheDocument()
+})
+
+const NAMES = ['Boost', 'Demote', 'Next', 'Ready']
+
+function renderGhost(props: Partial<React.ComponentProps<typeof GhostCardView>> = {}) {
+  return renderWithProviders(
+    <GhostCardView ghost={ghost} isNext={false} busy={false}
+      onBoost={() => {}} onNext={() => {}} onReady={() => {}} {...props} />,
+  )
+}
+
+test('an expanded ghost groups exactly its four actions under the issue identifier', async () => {
+  renderGhost()
+  await expand()
+  const group = screen.getByRole('group', { name: 'widget#73' })
+  for (const name of NAMES) {
+    expect(within(group).getByRole('button', { name })).toBeInTheDocument()
+  }
+  expect(within(group).getAllByRole('button')).toHaveLength(4)
+  expect(within(group).queryByRole('link')).not.toBeInTheDocument()
+})
+
+test('the action group is named exactly by the identifier', async () => {
+  renderGhost()
+  await expand()
+  expect(screen.getByRole('group', { name: 'widget#73' })).toBeInTheDocument()
+  expect(screen.queryByRole('group', { name: 'Details for widget#73' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('group', { name: 'Actions for widget#73' })).not.toBeInTheDocument()
+})
+
+test('button names stay exact inside the group', async () => {
+  renderGhost()
+  await expand()
+  const group = screen.getByRole('group', { name: 'widget#73' })
+  for (const name of NAMES) {
+    expect(screen.getByRole('button', { name })).toBe(within(group).getByRole('button', { name }))
+  }
+})
+
+test('a collapsed ghost has no action group', async () => {
+  renderGhost()
+  expect(screen.queryByRole('group', { name: 'widget#73' })).toBeNull()
+  await expand()
+  expect(screen.getByRole('group', { name: 'widget#73' })).toBeInTheDocument()
+  await expand()
+  expect(screen.queryByRole('group', { name: 'widget#73' })).toBeNull()
+})
+
+test('actions clicked inside the group call their handlers', async () => {
+  const onBoost = vi.fn()
+  const onNext = vi.fn()
+  const onReady = vi.fn()
+  renderGhost({ onBoost, onNext, onReady })
+  await expand()
+  const group = screen.getByRole('group', { name: 'widget#73' })
+  for (const name of NAMES) await userEvent.click(within(group).getByRole('button', { name }))
+  expect(onBoost.mock.calls).toEqual([[73, 1], [73, -1]])
+  expect(onNext).toHaveBeenCalledWith(73)
+  expect(onReady).toHaveBeenCalledWith(73)
+})
+
+test('busy disables all four buttons inside the group', async () => {
+  renderGhost({ busy: true })
+  await expand()
+  const group = screen.getByRole('group', { name: 'widget#73' })
+  for (const name of NAMES) expect(within(group).getByRole('button', { name })).toBeDisabled()
+})
+
+test('the action group keeps the row classes', async () => {
+  renderGhost()
+  await expand()
+  expect(screen.getByRole('group', { name: 'widget#73' })).toHaveClass('mt-2', 'flex', 'gap-1')
 })
