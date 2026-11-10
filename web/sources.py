@@ -176,7 +176,7 @@ class Sources:
                 data, ttl = cached["data"], DESCRIPTION_TTL_SECONDS
             else:
                 data = {"title": "", "body": "", "url": "",
-                        "fetched_at": _iso(now), "error": str(exc)}
+                        "fetched_at": _iso(now), "error": str(exc) or type(exc).__name__}
                 ttl = DESCRIPTION_RETRY_SECONDS
         self._desc_cache[key] = {"data": data, "at": now, "ttl": ttl}
         return data
