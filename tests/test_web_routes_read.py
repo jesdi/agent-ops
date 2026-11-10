@@ -566,6 +566,40 @@ def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
     assert [q["task_issue"] for q in resp.json()["quarantined"]] == [75]
 
 
+def test_failures_degrades_to_200_on_wrong_typed_quarantine_record(tmp_path):
+    """Issue #88: a quarantine record that is readable, valid JSON and an
+    object can still carry a wrong-typed field (a hand edit, a partial
+    write). It must not reach QuarantineEntry validation and 500
+    /api/failures: a malformed record is skipped exactly like an unreadable
+    one, and the well-formed records still list."""
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    q = tmp_path / "quarantine"
+    q.mkdir(parents=True, exist_ok=True)
+    (q / "alpha-73.json").write_text(json.dumps(
+        {"task_issue": 73, "blocker_repo": "r", "blocker_issue": "abc",
+         "fingerprint": "f", "created_at": "c"}))
+    (q / "alpha-74.json").write_text(json.dumps(
+        {"task_issue": 74, "blocker_repo": 5, "blocker_issue": 0,
+         "fingerprint": "f", "created_at": "c"}))
+    (q / "alpha-75.json").write_text(json.dumps(
+        {"task_issue": 75, "blocker_repo": "r", "blocker_issue": 0,
+         "fingerprint": "f", "created_at": "c"}))
+
+    class _NullGitHub:
+        def rank_rows(self, _): return []
+
+    class _NullSessions:
+        def is_alive(self, _): return False
+
+    client = TestClient(create_app(cfg, Sources(cfg.state_dir, _NullSessions(),
+                                                _NullGitHub())),
+                        raise_server_exceptions=False)
+    resp = client.get("/api/failures", headers=HEADERS)
+    assert resp.status_code == 200
+    assert [q["task_issue"] for q in resp.json()["quarantined"]] == [75]
+
+
 def test_terminal_websocket_route_is_gone(tmp_path):
     """The board's PTY bridge was removed with the herdr migration; attach
     is `herdr --remote box` from a terminal. The path must 404 (a plain
