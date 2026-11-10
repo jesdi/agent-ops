@@ -9,7 +9,8 @@ foreground **podman client**, not the container. SIGKILL cannot be caught, so th
 proxies it to the container: the container keeps running, and `--rm` never fires because the
 client that would remove it is dead. Setup containers deliberately carry no `--memory`/`--cpus`,
 so a hung setup (a wedged package install, `sleep infinity`) runs uncapped and forever. Nothing
-removes it later: `Sessions.end` only removes `task-<N>`, and the provisioning failure path
+removes it later: `Sessions.end` only removes the session containers `task-<repo>-<issue>` and the
+legacy `task-<issue>`, and the provisioning failure path
 (`_report_provisioning_failure`) only files a report and quarantines the task. When the operator
 lifts the quarantine, the retry's `podman run --name task-<repo>-<issue>-setup` fails with
 "name already in use", which reads as a second provisioning failure. Root cause: the timeout was
