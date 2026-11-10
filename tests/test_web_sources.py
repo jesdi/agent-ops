@@ -479,6 +479,149 @@ def test_triage_state_running_pauses_claims_too(monkeypatch, src):
     assert src.triage_state() == (True, True)
 
 
+# --- triage probe cache -----------------------------------------------------
+
+def _triage_sources(tmp_path, monkeypatch, probe):
+    """Sources + clock + call counter around a monkeypatched triage.running."""
+    import dispatcher.triage as triage_mod
+    import web.sources as sources_mod
+    calls = []
+
+    def running():
+        calls.append(1)
+        return probe(len(calls))
+
+    monkeypatch.setattr(triage_mod, "running", running)
+    clock = FakeClock()
+    _, src = make_sources(tmp_path, clock=clock)
+    ttl = getattr(sources_mod, "TRIAGE_TTL_SECONDS", 5.0)
+    return src, clock, calls, ttl
+
+
+def test_triage_state_two_calls_within_ttl_probe_once(tmp_path, monkeypatch):
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    assert src.triage_state() == (False, False)
+    clock.t += 2
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_reprobes_after_ttl_and_reports_new_value(
+        tmp_path, monkeypatch):
+    src, clock, calls, ttl = _triage_sources(
+        tmp_path, monkeypatch, lambda n: n > 1)
+    assert src.triage_state() == (False, False)
+    clock.t += 2
+    assert src.triage_state() == (False, False)
+    clock.t += ttl + 1
+    assert src.triage_state() == (True, True)
+    assert len(calls) == 2
+
+
+def test_triage_state_reprobes_exactly_ttl_after_the_probe(
+        tmp_path, monkeypatch):
+    src, clock, calls, ttl = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    src.triage_state()
+    clock.t += ttl - 0.1
+    src.triage_state()
+    assert len(calls) == 1
+    clock.t += 0.1  # now exactly ttl after the probe: strict < means re-probe
+    src.triage_state()
+    assert len(calls) == 2
+
+
+def test_triage_state_just_inside_ttl_reuses_the_cache(tmp_path, monkeypatch):
+    src, clock, calls, ttl = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    src.triage_state()
+    clock.t += ttl - 0.1
+    src.triage_state()
+    assert len(calls) == 1
+
+
+def test_triage_state_failing_probe_degrades_and_is_cached(
+        tmp_path, monkeypatch):
+    def boom(n):
+        raise RuntimeError("simulated probe failure")
+
+    src, clock, calls, _ = _triage_sources(tmp_path, monkeypatch, boom)
+    assert src.triage_state() == (False, False)
+    clock.t += 1
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_failing_probe_is_retried_after_ttl(
+        tmp_path, monkeypatch):
+    def flaky(n):
+        if n == 1:
+            raise RuntimeError("simulated probe failure")
+        return True
+
+    src, clock, calls, ttl = _triage_sources(tmp_path, monkeypatch, flaky)
+    assert src.triage_state() == (False, False)
+    clock.t += 1
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+    clock.t += ttl + 1
+    assert src.triage_state() == (True, True)
+    assert len(calls) == 2
+
+
+def test_triage_state_new_request_file_shows_without_a_new_probe(
+        tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    assert src.triage_state() == (False, False)
+    (tmp_path / triage_mod.REQUEST_FILE).write_text(
+        '{"requested_at": "2026-08-01T00:00:00+00:00"}')
+    clock.t += 1
+    assert src.triage_state() == (True, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_removed_request_file_clears_pause_without_a_probe(
+        tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    (tmp_path / triage_mod.REQUEST_FILE).write_text(
+        '{"requested_at": "2026-08-01T00:00:00+00:00"}')
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    assert src.triage_state() == (True, False)
+    triage_mod.clear_request(tmp_path)
+    clock.t += 1
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_cached_running_true_still_pauses_claims(
+        tmp_path, monkeypatch):
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: True)
+    assert src.triage_state() == (True, True)
+    clock.t += 1
+    assert src.triage_state() == (True, True)
+    assert len(calls) == 1
+
+
+def test_triage_state_cache_follows_the_injected_clock(tmp_path, monkeypatch):
+    import time
+    src, clock, calls, ttl = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    src.triage_state()
+    real_now = time.time()
+    monkeypatch.setattr(time, "time", lambda: real_now + 10 * ttl)
+    monkeypatch.setattr(time, "monotonic", lambda: real_now + 10 * ttl)
+    src.triage_state()
+    assert len(calls) == 1
+    clock.t += ttl
+    src.triage_state()
+    assert len(calls) == 2
+
+
 def _quarantine(tmp_path, name, **rec):
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
