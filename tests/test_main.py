@@ -4417,17 +4417,13 @@ def test_auth_dark_legacy_marker_inside_interval_stays_silent(
     "not valid json{{",
     "null",
     json.dumps({"alerted": True}),
-    "alerted-garbage-since",
-    "alerted-garbage-last-alert",
+    json.dumps({"since": "garbage", "alerted": True,
+                "last_alert": _ago(hours=9)}),
+    json.dumps({"since": _ago(hours=9), "alerted": True,
+                "last_alert": "garbage"}),
 ], ids=["non-json", "null", "no-since", "bad-since", "bad-last-alert"])
 def test_auth_dark_corrupt_marker_resets_without_alert(
         tmp_path, monkeypatch, raw):
-    if raw == "alerted-garbage-since":
-        raw = json.dumps({"since": "garbage", "alerted": True,
-                          "last_alert": _ago(hours=9)})
-    elif raw == "alerted-garbage-last-alert":
-        raw = json.dumps({"since": _ago(hours=9), "alerted": True,
-                          "last_alert": "garbage"})
     c, d = _dark_pass(tmp_path, monkeypatch, raw)
     main.run_pass(c, d)                        # must not raise
     st = _marker(c)
