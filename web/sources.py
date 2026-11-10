@@ -48,6 +48,10 @@ class ArtifactListing:
     expired: bool
 
 
+_QUARANTINE_TYPES = {"task_issue": int, "blocker_repo": str, "blocker_issue": int,
+                     "fingerprint": str, "created_at": str}
+
+
 class Sources:
     def __init__(self, state_dir: str, sessions, github,
                  clock: Callable[[], float] = time.time,
@@ -219,6 +223,10 @@ class Sources:
             # record that is missing a field.
             entry = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
                      "fingerprint": "", "created_at": "", **d}
+            # A wrong-typed field would 500 FailuresView or reach GitHub; skip
+            # like an unreadable record. bool is an int subclass: reject it.
+            if not all(type(entry[k]) is t for k, t in _QUARANTINE_TYPES.items()):
+                continue
             entry["repository"] = (repository if keyed_issue is not None
                                    else p.stem.rsplit("-", 1)[0])
             if keyed_issue is not None:
